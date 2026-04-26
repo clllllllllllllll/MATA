@@ -107,6 +107,10 @@ This is a strict dependency chain. Each step requires the previous one to be com
 - **Admin accounts are programme-scoped.** A PC account only sees residents, targets, and reports for their assigned programmes.
 - **LOA and Employed data is captured but not yet acted on.** LOA type/dates and employer_tag are stored at parse time. Compliance treatment pending PM confirmation — currently mirrors R system (status = 'active' only counts toward denominator).
 - **Refresher Training data is captured but not yet acted on.** Annotation fields stored in resident_postings. Business logic pending PM confirmation.
+- **FM uses a non-standard compliance variant.** FM has confirmed special arrangements. Do NOT apply standard compliance logic to FM. Check `docs/business-logic.md` § BL-FM before touching any FM compliance code. `programmes.compliance_variant = 'fm'` for the FM row.
+- **All uploads are audit-logged.** Every RDB and TTF upload writes a row to `upload_logs` with full summary JSONB. See `docs/schema.md` § `upload_logs`.
+- **Period close generates frozen snapshots.** Closing a reporting period writes one `period_snapshots` row per programme. Historical compliance is served from snapshots, not by re-querying live tables. See `docs/schema.md` § `period_snapshots`.
+- **Legacy system cutover.** FormSG and Google Forms submission channels must be closed at a confirmed cutover date aligning with a period boundary. In-flight submissions at cutover are processed one final time through the legacy R scripts. After cutover, all attendance flows through this system only. No hybrid operation.
 
 ## Reference Documents
 
@@ -127,7 +131,10 @@ The following features have placeholder logic pending PM decisions:
 2. **LOA compliance treatment** — whether LOA months reduce the compliance denominator. See `docs/business-logic.md` § TBD-7.
 3. **Employed compliance treatment** — whether employed residents appear in compliance reporting. See `docs/business-logic.md` § TBD-7.
 4. **Refresher Training compliance treatment** — active months denominator impact and Max Cand flag meaning. See `docs/business-logic.md` § TBD-6.
-5. **Dual posting main posting rule** — formula determining main posting for dual-posted residents (e.g. IMHGrPsyc & TTSHPsychi). Compliance engine cannot handle dual postings correctly until this is confirmed.
+5. **Dual posting main posting rule** — for residents on a dual posting (e.g. IMHGrPsyc & TTSHPsychi), a preset formula determines which site is the "main posting". This formula has not been sighted and is not documented anywhere. Two sub-questions pending PM confirmation: (a) what is the rule that determines which site is the main posting? (b) once the main posting is determined, does the resident follow only the main posting's compliance targets, or do both sites' targets apply simultaneously? Compliance engine cannot handle dual postings correctly until both are confirmed. See `docs/business-logic.md` § BL-7.
+6. **FM compliance variant** — FM has confirmed special arrangements that differ from the standard compliance structure. Full details to be re-confirmed with FM PCs before implementation. Do NOT apply standard compliance logic to FM. Placeholder section exists at `docs/business-logic.md` § BL-FM. Implementation hook: `programmes.compliance_variant = 'fm'`.
+7. **Public holiday impact on compliance denominator** — PH detection and weekend exception logic are implemented (BL-5). What is unconfirmed is whether teachings on public holidays are excluded from the active days denominator in compliance calculations, or whether they are flagged only for display. Confirm with PM before finalising the denominator calculation. See `docs/business-logic.md` § TBD-PH.
+8. **Historical data migration strategy** — three options have been identified. Decision needed from PM/stakeholders before first period close. See `docs/business-logic.md` § TBD-MIGRATION.
 
 ## Confirmed Decisions (previously TBD)
 
@@ -138,3 +145,6 @@ The following features have placeholder logic pending PM decisions:
 | Recurrence editing granularity | All three options: this event only / this and all following / all in series |
 | Reallocation scope | Tag-group-only. No cross-tag or cross-posting flow. |
 | Details of Training (TBD-1) | Keyword list confirmed by PMs (incoming). Matching logic: `teaching_name` primary key + `duration_hours` tiebreaker for edge cases. Session type resolved per-resident at attendance submission time using native programme TTF. `session_type_id` on `teaching_events` is display/prototype only. Resident sees events from both current posting and native programme posting. |
+| Upload audit logging | Every RDB and TTF upload persists an `upload_logs` row with full JSONB summary. |
+| Period close behaviour | Triggers surplus hibernation + `period_snapshots` generation per programme. |
+| Legacy cutover | Hard cutover at a period boundary. FormSG/Google Forms closed at that date. No hybrid operation. |

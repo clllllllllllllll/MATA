@@ -478,7 +478,11 @@ Tag-based reallocation (BL-3) is applied in Python **after** the SQL batch fetch
 
 ## BL-7: Dual-Posting Compliance Reliability Flag
 
-Residents with more than one distinct active `posting_code` in a reporting period (dual-posted) cannot have their compliance calculated correctly until the main-posting rule is confirmed (see AGENTS.md TBD item 6). Until that decision is made, the system must not silently produce wrong numbers.
+Residents with more than one distinct active `posting_code` in a reporting period (dual-posted) cannot have their compliance calculated correctly until the main-posting rule is confirmed (see AGENTS.md TBD item 5). Until that decision is made, the system must not silently produce wrong numbers.
+
+**Two questions pending PM confirmation before this can be implemented correctly:**
+1. **Main posting determination** — For residents on a dual posting (e.g. IMHGrPsyc & TTSHPsychi), what is the rule that determines which site is the "main posting"? This formula has not been sighted and is not currently documented.
+2. **Compliance scope** — Once the main posting is determined, does the resident follow only the main posting's compliance targets, or do both sites' targets apply simultaneously? Can the TTF targets for each site differ?
 
 **Rule:** Any compliance result row where `is_dual_posted = true` (as returned by the SQL batch query) must be decorated with a warning before being returned to the caller.
 
@@ -522,21 +526,21 @@ This applies to **all** admin report endpoints and the resident dashboard. The c
 
 **Status:** Awaiting PM confirmation.
 
-Refresher Training annotations are captured and stored in resident_postings 
-(refresher_training_type, refresher_training_start, refresher_training_end).
-No business logic currently acts on them. Pending PM confirmation on:
-- Whether Refresher Training periods count toward active_months denominator
-- What "add to Max Cand" vs "don't add to Max Cand" means for compliance counting
+Refresher Training annotations are captured and stored in `resident_postings` (`refresher_training_type`, `refresher_training_start`, `refresher_training_end`). No business logic currently acts on them. The R system had no explicit handling for Refresher Training — cells likely passed through as garbled posting codes or were partially stripped, meaning the annotation was silently lost. The new system captures the data correctly at parse time, but no calculation acts on it until confirmed.
+
+**Questions pending PM confirmation:**
+- **Active months denominator** — When a resident has a Refresher Training annotation for part of a posting month, should that period count toward their `active_months` denominator for compliance, or should it be excluded similarly to LOA?
+- **Add to Max Cand** — Does `add to Max Cand` mean the resident counts toward the maximum candidate cap for that posting during the Refresher Training period? And does `don't add to Max Cand` exclude them from that cap entirely? This is a distinct question from the compliance denominator — it affects posting-level headcount caps, not just the individual resident's calculation.
 
 ## TBD-7: LOA and Employed Compliance Treatment
 
 **Status:** Awaiting PM confirmation.
 
-LOA months (status = 'loa', 'loa_working') and Employed months 
-(status = 'employed') are currently excluded from active_months, 
-mirroring the R system behaviour. Pending PM confirmation on:
-- Whether LOA months should reduce the compliance denominator
-- Whether employed residents should appear in compliance reporting
+**Important context:** The R system's behaviour of excluding LOA and Employed months was a **silent byproduct of how cells were parsed**, not an explicit design decision. LOA and XXX-Employed cells were stripped entirely during RDB parsing, treated as blank — no posting row was created, no data was retained. This silently reduced the compliance denominator and excluded employed residents from compliance calculation entirely. The new system captures this data properly but currently mirrors the R output by filtering to `status = 'active'` only until a deliberate decision is made.
+
+**Questions pending PM confirmation:**
+- **LOA months** — When a resident is on LOA for one or more months in a reporting period, should those months be excluded from their compliance denominator (i.e. not penalised for months on leave), or should LOA months count as normal active months where compliance is still expected?
+- **Employed residents** — Residents on SAF-Employed, SCDF-Employed, KTPH-Employed and other employed postings are currently excluded from compliance calculations entirely. Is this the intended behaviour going forward, or should employed residents appear in compliance reporting with their employed months explicitly flagged?
 
 ## Confirmed Decisions (previously TBD)
 
@@ -552,3 +556,66 @@ to zero at each reporting period boundary. ✅ Already correct in BL-4.
 
 **Reallocation scope:** Tag-group-only confirmed. Surplus cannot flow 
 across tag groups or across postings. ✅ Already correct in BL-3.
+
+---
+
+## BL-FM: FM (Family Medicine) Compliance Variant
+
+**Status:** Special arrangements confirmed with FM PCs. Full implementation details to be re-confirmed before development begins. Do NOT apply standard BL-1 through BL-7 logic to FM without reading this section first.
+
+**What is confirmed:**
+- FM uses `programmes.compliance_variant = 'fm'`
+- FM has structural differences from the standard compliance calculation path
+- The R script explicitly used a separate Excel template (`Template-Programme Reporting View-Single FM.xlsx`) for FM output, indicating the reporting structure differs
+
+**What needs re-confirmation before implementation:**
+- The exact compliance threshold FM uses (whether it differs from 70%)
+- Whether FM session types follow the same capping rule (BL-1) or a different one
+- Whether reallocation (BL-3) applies to FM or is disabled
+- The exact sheet structure differences that required a separate template in the R script
+- Whether FM R year handling follows the standard path
+
+**Developer instruction:** When building the compliance engine, branch on `programmes.compliance_variant` early:
+```python
+if programme.compliance_variant == 'fm':
+    return compute_fm_compliance(...)   # FM-specific path — DO NOT implement until spec confirmed
+else:
+    return compute_standard_compliance(...)
+```
+
+Do not implement the FM path with guessed logic. Leave it as a `NotImplementedError` stub until the spec is confirmed and this section is updated.
+
+---
+
+## TBD-PH: Public Holiday Impact on Compliance Denominator
+
+**Status:** Awaiting PM confirmation.
+
+PH detection (`is_public_holiday`) and weekend exception logic are fully implemented in BL-5. What is unconfirmed is the denominator impact:
+
+**Option A — Display only:** Teachings on public holidays are flagged in the UI for visibility but do NOT affect the compliance denominator or the active_months count. This is the simpler path and mirrors typical practice.
+
+**Option B — Excluded from denominator:** Teaching events that fall on a public holiday are excluded from both the numerator (not counted toward compliance) and the denominator (the monthly target is pro-rated to exclude PH days). This requires knowing the number of working days in each posting phase.
+
+**Current placeholder:** Treating PH teachings as display-flag only (Option A). Do not change this until PM confirms Option B is required.
+
+**Impact if Option B is confirmed:** The `active_months` denominator calculation in BL-1 would need to be replaced with an `active_working_days` calculation that subtracts public holidays and weekends (where not exception-approved) from each posting phase duration. This is a significant change to the compliance engine.
+
+---
+
+## TBD-MIGRATION: Historical Data Migration Strategy
+
+**Status:** Awaiting stakeholder decision before first period close.
+
+The legacy system produced Excel outputs (Programme Reporting View, Resident Dashboards, consolidated attendance files) across multiple reporting periods. Three options exist for handling this history:
+
+**Option A — Archive only (recommended default):**
+Legacy Excel files remain accessible on the shared drive. The new system holds data only from the cutover period onwards. PCs query history in the old files. Zero migration effort. Recommended unless there is a specific regulatory or operational requirement to query history through the new system.
+
+**Option B — Summary migration:**
+Write a one-time script that reads the legacy Programme Reporting View Excel files and inserts summary-level compliance records into a `legacy_compliance_records` table (separate from the live schema). Enough for historical reporting queries without recreating every individual attendance record. Medium effort — requires building an Excel parser for the legacy output format.
+
+**Option C — Full migration:**
+Parse the original FormSG CSVs and legacy `.rds` snapshot files and insert them as `attendance_records` and `resident_postings` into the new DB. Highest fidelity — full historical data queryable through the new system. Highest effort — requires porting the R script parsing logic to Python as a one-time migration job. Only warranted if there is a regulatory requirement to have all historical data in the same system.
+
+**Developer instruction:** Do not build any migration tooling until the option is confirmed. The decision does not affect the core system schema or business logic — it is purely additive.

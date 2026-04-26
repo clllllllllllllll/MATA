@@ -79,6 +79,7 @@ Upload RDB Posting Schedule Excel file. Creates/updates residents and their rota
 - **Content-Type:** multipart/form-data
 - **Body:** `file` (xlsx)
 - **Processing:** See `docs/parsing.md` § RDB Parser
+- **Audit log:** On completion (success or partial), a row is written to `upload_logs` with `upload_type = 'rdb'` and the full summary JSONB. See `docs/schema.md` § `upload_logs`.
 - **Response:**
 ```json
 {
@@ -88,6 +89,8 @@ Upload RDB Posting Schedule Excel file. Creates/updates residents and their rota
   "posting_codes_added": ["TTSHAnaes", "KTPHGerMed"],
   "loa_records": 12,
   "employed_residents_flagged": 3,
+  "rows_skipped": 0,
+  "skip_reasons": [],
   "errors": []
 }
 ```
@@ -104,6 +107,7 @@ Upload Teaching Target File Excel. Seeds session types and teaching targets.
 - **Re-upload guard:** Before the delete step, the endpoint checks whether any `attendance_records` exist that reference events whose `session_type_id` is present in the current scope's `teaching_targets`. If attendance exists and the new TTF removes or changes any of those session types, the upload returns `422` listing the affected session types. The admin must use the CRUD UI (`PUT /admin/teaching-targets/{id}`) for mid-period corrections to those rows instead. Purely additive re-uploads (new rows only, no changes to existing session types with attendance) are allowed.
 - **Concurrency:** A scope-level PostgreSQL advisory lock (`pg_try_advisory_xact_lock`) is acquired at the start of the transaction. A second upload for the **same** scope while one is in progress returns `409`. Uploads for different scopes (e.g. DR vs GRM, or different periods) do not block each other. See `docs/parsing.md` § TTF Upload Behaviour for the lock key derivation.
 - **Upserts:** `session_types` and `posting_codes` are written with `ON CONFLICT DO NOTHING` / `DO UPDATE` — safe to re-upload without duplicate errors in shared catalogue tables. See `docs/parsing.md` § TTF Upload Behaviour for the full SQL.
+- **Audit log:** On completion (success or partial), a row is written to `upload_logs` with `upload_type = 'ttf'`, `programme_code`, and the full summary JSONB. See `docs/schema.md` § `upload_logs`.
 - **Response:**
 ```json
 {
@@ -172,19 +176,72 @@ Create a new reporting period.
 
 ### PUT `/admin/reporting-periods/{id}/close`
 
-Close a reporting period. Prevents further attendance submissions.
+Close a reporting period. Prevents further attendance submissions and freezes compliance state.
 
 - **Auth:** admin only
+- **Actions triggered at close (in order):**
+  1. Set `reporting_periods.status = 'closed'`
+  2. Set all `surplus_ledger.is_hibernating = true` for all non-hibernating rows in this period
+  3. Generate one `period_snapshots` row per programme that has TTF data for this period — frozen compliance state as JSONB. See `docs/schema.md` § `period_snapshots`.
+  4. If a snapshot already exists for a `(reporting_period_id, programme_code)` pair (period was previously closed, reopened, and is being closed again), the existing snapshot is replaced.
+- **Response:**
+```json
+{
+  "period_label": "Jan - June 2026",
+  "snapshots_generated": 2,
+  "programmes_snapshotted": ["DR", "GRM"]
+}
+```
 
 ### PUT `/admin/reporting-periods/{id}/reopen`
 
 Reopen a closed reporting period.
 
 - **Auth:** admin only
+- **Note:** Reopening does NOT delete existing snapshots. New snapshots will be generated (and replace old ones) when the period is closed again.
 
 ---
 
-### Public Holidays
+### Upload Logs
+
+### GET `/admin/upload-logs`
+
+List past upload history for audit and troubleshooting. Replaces the legacy R script logfile.
+
+- **Auth:** admin only
+- **Query params:** `upload_type` (`rdb` | `ttf`), `programme_code`, `reporting_period_id`, `limit` (default 20)
+- **Response:** Array of upload log entries ordered by `uploaded_at` descending:
+```json
+[
+  {
+    "id": "uuid",
+    "upload_type": "ttf",
+    "uploaded_by": "pc@nhg.com.sg",
+    "uploaded_at": "2026-01-10T09:15:00Z",
+    "reporting_period_id": "uuid",
+    "programme_code": "DR",
+    "status": "success",
+    "summary": {
+      "targets_created": 29,
+      "session_types_upserted": 5,
+      "posting_codes_added": ["AICAIC"],
+      "rows_exploded": 3,
+      "rows_skipped": 0,
+      "errors": []
+    }
+  }
+]
+```
+
+### GET `/admin/upload-logs/{id}`
+
+Get a single upload log entry with full summary detail.
+
+- **Auth:** admin only
+
+---
+
+### Admin Reporting Views and Exports
 
 The `public_holidays` table drives PH detection in exception handling (BL-5). If it is empty, no teaching is ever flagged as falling on a public holiday — a silent failure. These endpoints allow admins to seed and maintain the table.
 
@@ -221,6 +278,12 @@ Delete a single public holiday entry.
 
 ---
 
+### Admin Compliance Reports
+
+> **Implementation note:** All four admin report endpoints compute compliance via a **SQL batch query** across all residents in the programme at once, then apply tag-based reallocation in Python over the result set. This keeps the DB round-trip count constant regardless of cohort size. See `docs/business-logic.md` § BL-6 for the query sketch and the rationale for splitting SQL (admin) vs Python JIT (resident dashboard).
+
+> **Export format:** All four report endpoints support `?format=xlsx` in addition to the default JSON response. The Excel output mirrors the legacy Programme Reporting View format from the R scripts (MONTHLY VIEW, POSTING VIEW, TEACHING ATTENDANCE BREAKDOWN, RESIDENT'S SUBMITTED ATTENDANCE sheets). If `format` is omitted, JSON is returned.
+
 ### Admin Reporting Views
 
 > **Implementation note:** All four admin report endpoints compute compliance via a **SQL batch query** across all residents in the programme at once, then apply tag-based reallocation in Python over the result set. This keeps the DB round-trip count constant regardless of cohort size. See `docs/business-logic.md` § BL-6 for the query sketch and the rationale for splitting SQL (admin) vs Python JIT (resident dashboard).
@@ -238,7 +301,7 @@ Monthly attendance summary per resident.
 Posting-level compliance summary.
 
 - **Auth:** admin only
-- **Query params:** `reporting_period_id`, `programme_code`
+- **Query params:** `reporting_period_id`, `programme_code`, `format` (`json` | `xlsx`)
 - **Response:** Per-resident, per-posting rows with: `target100`, `target70`, `achieved_and_counted`, `shortage`, `percentage`, `met_70pct`, `colour`, `compliance_unreliable`, `compliance_unreliable_reason`. Dual-posted residents have `compliance_unreliable = true`. See `docs/business-logic.md` § BL-7.
 
 ### GET `/admin/reports/attendance-breakdown`
@@ -246,16 +309,24 @@ Posting-level compliance summary.
 Detailed breakdown by session type within each posting.
 
 - **Auth:** admin only
-- **Query params:** `reporting_period_id`, `programme_code`, `resident_id` (optional)
+- **Query params:** `reporting_period_id`, `programme_code`, `resident_id` (optional), `format` (`json` | `xlsx`)
 - **Response:** Per (resident, posting, session_type) rows with achieved, target, surplus, reallocation transfers
 
 ### GET `/admin/reports/submitted-attendances`
 
-Raw list of all submitted attendance records.
+Raw flat export of all submitted attendance records. Equivalent to the legacy consolidated attendance Excel file from Script D1.
 
 - **Auth:** admin only
-- **Query params:** `reporting_period_id`, `programme_code`, `posting_code`, `resident_id`, `date_from`, `date_to` (all optional)
-- **Response:** Array of attendance records with event details
+- **Query params:** `reporting_period_id`, `programme_code`, `posting_code`, `resident_id`, `date_from`, `date_to` (all optional), `format` (`json` | `xlsx` | `csv`)
+- **Response columns (xlsx/csv):** Resident Name, MCR, Programme, R Year, Posting (RDB), Posting Month, Event Date, Teaching Name, Session Type (resolved per resident), Duration, Tracked, Achieved, Target (monthly), Shortage, Tag, Submitted At, Status
+- **Note:** The `session_type` column reflects the per-resident resolved session type from TTF keyword matching — not the `session_type_id` stored on the event.
+
+### GET `/admin/exports/period-snapshot/{snapshot_id}`
+
+Export a historical period snapshot as a formatted Excel file. Available for closed periods only. Replaces the need to keep legacy Programme Reporting View Excel files in a file system archive.
+
+- **Auth:** admin only
+- **Response:** Excel file (`.xlsx`) rendered from the frozen `period_snapshots.snapshot_data` JSONB. Same sheet structure as the live reporting view exports. Use this to retrieve historical compliance records for any closed period without re-running calculations.
 
 ---
 

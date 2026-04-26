@@ -432,8 +432,13 @@ The following posting codes appear in the TTF but NOT in the current RDB. They a
 **DR dormant codes:**
 `CGHDiagRd`, `NTFGHDiagRd`, `NUHDiagRd`, `SGHNuclea`, `SKHDiagRd`
 
-**Status:** Handling confirmed — accept as-is, add to posting_codes with display_name = NULL. 
-Canonical code correctness pending PM confirmation.
+**Status:** Handling approach confirmed — accept dormant codes as-is and add to `posting_codes` with `display_name = NULL`. However, the **canonical correctness of the codes themselves is still pending PM confirmation**. These codes were previously stored in a legacy bracket notation format (e.g. `KTPH Pall Med [] [KTPHPallia]`) which has since been cleaned up, but the cleaned codes have not been verified by PMs.
+
+**Risk if codes are wrong:** If PMs confirm that any of these codes are incorrect, all `teaching_targets` rows referencing those codes will need to be updated. This is a data correction, not a schema change — FK constraints will handle consistency. Do not block development on this, but do not present these codes to stakeholders as confirmed.
+
+**Questions pending PM confirmation:**
+- Are the GRM dormant codes listed above correct as-is, or do any need updating?
+- Are the DR dormant codes listed above correct as-is, or do any need updating?
 
 ---
 

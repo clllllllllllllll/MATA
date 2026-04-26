@@ -24,6 +24,9 @@ session_types ─1:N─ teaching_events (display only)
 
 reporting_periods ─1:N─ teaching_targets
 reporting_periods ─1:N─ resident_postings
+reporting_periods ─1:N─ period_snapshots
+
+users ─1:N─ upload_logs
 ```
 
 ---
@@ -38,8 +41,11 @@ Master list of residency programmes.
 | code | VARCHAR(20) | UNIQUE, NOT NULL | e.g. `DR`, `GERI`, `ANAES`, `FM`, `IM` |
 | name | VARCHAR(100) | NOT NULL | e.g. `Diagnostic Radiology`, `Geriatric Medicine` |
 | classification | VARCHAR(20) | | `junior` or `senior` or `both` |
+| compliance_variant | VARCHAR(20) | DEFAULT 'standard' | `standard` or `fm`. Controls which compliance calculation path is used. See `docs/business-logic.md` § BL-FM for FM-specific rules. |
 
 Seeded from RDB "Specialization" column. Programme code derived from abbreviation lookup table.
+
+**Important:** Do NOT apply standard compliance logic to FM without first reading `docs/business-logic.md` § BL-FM. FM has confirmed special arrangements that differ structurally from other programmes. Set `compliance_variant = 'fm'` for the FM programme row at seed time.
 
 ---
 
@@ -323,6 +329,113 @@ Programme-specific rules for accepting weekend teachings.
 - ORTHO: `programme_code = 'ORTHO'`, `day_type = 'sat'`, `start_time_min = 08:30`, `end_time_max = 10:30`
 - ANAES: `programme_code = 'ANAES'`, `day_type = 'sat'`, `start_time_min = 08:30`, `end_time_max = 12:30`
 - FM: `programme_code = 'FM'`, `day_type = 'sat'`, `start_time_min = 08:00`, `end_time_max = 13:00`
+
+---
+
+## Table: `upload_logs`
+
+Persistent audit trail of every RDB and TTF upload. Written by the upload endpoints at completion — success or failure. Replaces the legacy R script logfile.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| id | UUID | PK | |
+| upload_type | VARCHAR(10) | NOT NULL | `rdb` or `ttf` |
+| uploaded_by | UUID | FK → users.id, NOT NULL | Admin who triggered the upload |
+| uploaded_at | TIMESTAMPTZ | DEFAULT now() | |
+| reporting_period_id | UUID | FK → reporting_periods.id, nullable | NULL only if period lookup fails |
+| programme_code | VARCHAR(20) | | TTF uploads only — NULL for RDB |
+| status | VARCHAR(10) | NOT NULL | `success`, `partial`, `failed` |
+| summary | JSONB | NOT NULL | Full structured log of what was processed |
+
+**`summary` JSONB shape for RDB uploads:**
+```json
+{
+  "residents_created": 42,
+  "residents_updated": 5,
+  "postings_created": 504,
+  "posting_codes_added": ["TTSHAnaes", "KTPHGerMed"],
+  "loa_records": 12,
+  "employed_residents_flagged": 3,
+  "rows_skipped": 3,
+  "skip_reasons": [
+    { "row": 12, "mcr": "M12345A", "reason": "missing posting code" },
+    { "row": 47, "mcr": "M99999Z", "reason": "unknown programme" }
+  ],
+  "warnings": []
+}
+```
+
+**`summary` JSONB shape for TTF uploads:**
+```json
+{
+  "targets_created": 29,
+  "session_types_upserted": 5,
+  "posting_codes_added": ["AICAIC", "DPPallia"],
+  "rows_exploded": 3,
+  "rows_skipped": 0,
+  "skip_reasons": [],
+  "errors": []
+}
+```
+
+**Note:** The upload endpoint response body and the `upload_logs.summary` field contain identical data. The response is for the immediate API caller; the log record is for historical auditability. Both are written in the same transaction — if the write to `upload_logs` fails, the upload is still considered complete (log write is best-effort, non-blocking).
+
+---
+
+## Table: `period_snapshots`
+
+Frozen compliance state captured at reporting period close. Replaces the legacy file-based archiving of Programme Reporting View Excel files.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| id | UUID | PK | |
+| reporting_period_id | UUID | FK → reporting_periods.id, NOT NULL | |
+| programme_code | VARCHAR(20) | NOT NULL | One snapshot per (period, programme) |
+| snapshot_data | JSONB | NOT NULL | Full compliance state at period close — see shape below |
+| generated_at | TIMESTAMPTZ | DEFAULT now() | |
+| generated_by | UUID | FK → users.id | Admin who triggered period close |
+
+**Unique constraint:** `UNIQUE(reporting_period_id, programme_code)`
+
+**`snapshot_data` JSONB shape:**
+```json
+{
+  "period_label": "Jan - June 2026",
+  "programme_code": "DR",
+  "generated_at": "2026-07-01T00:00:00Z",
+  "residents": [
+    {
+      "mcr": "M12345A",
+      "name": "John Tan",
+      "r_year": "R3",
+      "postings": [
+        {
+          "posting_code": "TTSHDiagRd",
+          "active_months": 3,
+          "target_70": 21,
+          "achieved_and_counted": 18,
+          "percentage": 0.857,
+          "met_70pct": true,
+          "colour": "green",
+          "session_types": [
+            {
+              "session_type": "Department Learning Events [1h]",
+              "target_100": 21,
+              "achieved": 20,
+              "achieved_and_counted": 20,
+              "surplus": 0,
+              "shortage": 0
+            }
+          ]
+        }
+      ],
+      "overall_met": true
+    }
+  ]
+}
+```
+
+**Usage:** Snapshots are the historical record for closed periods. The live `attendance_records` and `surplus_ledger` tables remain untouched — snapshots are additive. Snapshots can be rendered into Excel exports at any time after period close via `GET /admin/exports/period-snapshot/{id}`. They are never updated after creation — if a period is reopened and reclosed, a new snapshot is generated and replaces the old one.
 
 ---
 
