@@ -22,7 +22,7 @@ mata/
 │   ├── schema.md              # Database schema — tables, columns, types, constraints
 │   ├── api.md                 # API endpoints — routes, request/response shapes
 │   ├── business-logic.md      # Compliance engine, surplus chain, reallocation rules
-│   └── parsing.md             # RDB and TTF upload parsing rules and edge cases
+│   └── parsing.md             # RDB, TTF, FormF1, PH upload parsing rules and edge cases
 ├── backend/
 │   ├── alembic/               # Database migrations
 │   ├── app/
@@ -35,17 +35,19 @@ mata/
 │   │   │   ├── programme.py
 │   │   │   ├── teaching.py    # teaching_targets, session_types, teaching_events
 │   │   │   ├── attendance.py
-│   │   │   └── reporting.py   # reporting_periods, surplus_ledger
+│   │   │   └── reporting.py   # reporting_periods, surplus_ledger, form_f1_records
 │   │   ├── routers/           # FastAPI routers (one file per domain)
-│   │   │   ├── admin.py       # RDB upload, TTF upload, reporting views, period CRUD
+│   │   │   ├── admin.py       # RDB upload, TTF upload, FormF1 upload, PH upload, reporting views, period CRUD, multi-posting rules CRUD, weekend_exceptions CRUD, loa_types CRUD, programmes CRUD
 │   │   │   ├── secretary.py   # Teaching event CRUD, CME dashboard
-│   │   │   ├── resident.py    # Submission portal, dashboard, attendance CRUD
+│   │   │   ├── resident.py    # Submission portal, dashboard, attendance CRUD, ad-hoc teaching
 │   │   │   └── auth.py        # Auth stub (swap to Supabase Auth later)
 │   │   ├── services/          # Business logic (no HTTP concerns)
 │   │   │   ├── compliance.py  # 70% threshold, capping, traffic light
 │   │   │   ├── surplus.py     # Surplus chain, tag-based reallocation
+│   │   │   ├── clawback.py    # Clawback calculation engine (Phase 10)
 │   │   │   ├── rdb_parser.py  # RDB Excel upload parser
 │   │   │   ├── ttf_parser.py  # TTF Excel upload parser
+│   │   │   ├── formf1_parser.py  # FormF1 Excel upload parser
 │   │   │   └── validation.py  # Duplicate/conflict detection, date checks
 │   │   ├── schemas/           # Pydantic request/response models
 │   │   └── middleware/        # Auth middleware, error handling
@@ -69,9 +71,9 @@ mata/
 
 | Role | Auth Method | Scope |
 |------|------------|-------|
-| Admin (Programme Coordinator) | Email + password | Programme-scoped. Each account linked to one or more programmes via `programme_scope` field. Manages RDB, TTF, teaching targets, period close, all reporting views for their programmes only. |
-| Department Secretary | Email + password | Scoped to ONE specific posting site (e.g. TTSHAnaes only). Creates teaching events, views CME Dashboard and Teaching Schedule. |
-| Resident | MCR number only | Sees teachings for current posting only. Submission Portal + personal Dashboard. |
+| Admin (Programme Coordinator) | Email + password | Programme-scoped via `programme_scope TEXT[]`. Each account linked to one or more programmes. Manages RDB, TTF, FormF1, PH uploads, teaching targets, period close, multi-posting rules, weekend exceptions, all reporting views for their programmes only. |
+| Department Secretary | Email + password | Scoped to ONE specific posting site (e.g. TTSHAnaes only). Creates teaching events, views CME Dashboard and Teaching Schedule. Cannot create events on public holidays. |
+| Resident | MCR number only | Sees teachings for current posting and native programme posting. Submission Portal + personal Dashboard + ad-hoc teaching submission. |
 
 ## Auth Stub (Phase 1)
 
@@ -90,10 +92,13 @@ All endpoints check these headers for authorization. When Supabase Auth is wired
 
 This is a strict dependency chain. Each step requires the previous one to be complete.
 
-1. **Admin uploads RDB** → residents, postings, rotation schedule created
-2. **Admin uploads TTF** → session types, teaching targets, secretary dropdowns seeded
-3. **Secretary creates teaching events** → events appear in resident portal
-4. **Resident submits attendance** → compliance engine has data to calculate
+1. **Admin seeds multi-posting rules** → database seeded with combine/half_month/main_posting rules (one-time setup, managed via CRUD UI)
+2. **Admin uploads Public Holidays** → PH table populated, secretary event creation block active
+3. **Admin uploads RDB** → residents, postings, rotation schedule created. Multi-posting rules applied at parse time to FM and combined posting cells.
+4. **Admin uploads TTF** → session types, teaching targets, secretary dropdowns seeded
+5. **Admin uploads FormF1** → active/inactive status per resident per calendar month seeded (denominator gate for compliance)
+6. **Secretary creates teaching events** → events appear in resident portal
+7. **Resident submits attendance** → compliance engine has data to calculate
 
 ## Key Architectural Rules
 
@@ -103,14 +108,29 @@ This is a strict dependency chain. Each step requires the previous one to be com
 - **Tag-based reallocation flows top-down by duration only.** Longer-duration surplus can fill shorter-duration shortfall, never upward. One-for-one in session counts. Tag-group-only — surplus cannot flow across tag groups or across postings.
 - **Teaching events are programme-neutral.** Secretary creates an event for a site; the compliance engine applies programme-specific TTF rules per resident.
 - **UNIQUE constraint on (resident_id, event_id)** prevents duplicate attendance at the DB layer.
-- **No STP in the system.** STP data ("Details of Training") is manually added to TTF before upload.
+- **Session type is NEVER stored on attendance_records.** It is always resolved at compliance read time from `teaching_name_catalogue` using `(keyword = teaching_event.teaching_name, posting_code, programme_code, r_year, reporting_period_id)`. This means compliance always reflects the current TTF state — if a PC corrects the TTF, compliance recalculates automatically on the next read. The `session_type_id` on `teaching_events` is display/prototype only and is never used for compliance.
+- **teaching_name_catalogue is the single source of truth for keyword→session_type mapping.** Seeded from TTF column K at upload time. One row per (keyword, posting, programme, r_year, period). Also serves as the event visibility gate — residents only see events whose teaching_name exists in their catalogue row.
+- **TTF re-upload is always a full replace within scope, regardless of existing attendance.** There is no attendance guard blocking re-uploads. PCs may re-upload a revised TTF at any point in the period. Attendance records for events whose teaching_name no longer maps to a catalogue row will be silently excluded from compliance on the next read. The re-upload response warns the PC with counts of affected attendance.
+- **No STP in the system.** STP data ("Details of Training") is manually added to TTF column K before upload. Column K is a mandatory field — without it, resident event visibility and session type resolution are non-functional.
 - **Admin accounts are programme-scoped.** A PC account only sees residents, targets, and reports for their assigned programmes.
-- **LOA and Employed data is captured but not yet acted on.** LOA type/dates and employer_tag are stored at parse time. Compliance treatment pending PM confirmation — currently mirrors R system (status = 'active' only counts toward denominator).
-- **Refresher Training data is captured but not yet acted on.** Annotation fields stored in resident_postings. Business logic pending PM confirmation.
-- **FM uses a non-standard compliance variant.** FM has confirmed special arrangements. Do NOT apply standard compliance logic to FM. Check `docs/business-logic.md` § BL-FM before touching any FM compliance code. `programmes.compliance_variant = 'fm'` for the FM row.
-- **All uploads are audit-logged.** Every RDB and TTF upload writes a row to `upload_logs` with full summary JSONB. See `docs/schema.md` § `upload_logs`.
-- **Period close generates frozen snapshots.** Closing a reporting period writes one `period_snapshots` row per programme. Historical compliance is served from snapshots, not by re-querying live tables. See `docs/schema.md` § `period_snapshots`.
+- **FormF1 is the primary active/inactive source for compliance.** FormF1 active/inactive is calculated on a calendar month basis, which aligns with compliance targets. RDB posting phases use academic months — using RDB phases to derive active/inactive creates date boundary inconsistencies. FormF1 is the confirmed default. This is an open architectural decision (FormF1 vs RDB) pending final confirmation.
+- **Active/inactive from FormF1 gates the compliance denominator.** A resident-month is excluded from both numerator and denominator when `form_f1_records.is_active = false` for that month. Extension status is treated as Active. Employed residents are Active in FormF1.
+- **LOA and Refresher Training data is captured in resident_postings** for audit/display. The compliance denominator is governed by FormF1, not by RDB LOA annotations. RDB LOA annotations are not acted on by the compliance engine — they are stored for display and future use only.
+- **Secretary and resident event creation/submission on public holiday dates is hard-blocked.** `POST /secretary/teaching-events` and `POST /resident/adhoc-teaching` validate the event date against the `public_holidays` table and return 422 if the date matches.
+- **Multi-posting rules are seeded in the database.** The three rule types (main_posting, combine, half_month) are managed via admin CRUD UI. No file upload needed. Rules are looked up at RDB parse time to correctly collapse or split resident_postings rows.
+- **FM uses the standard compliance engine.** FM is not a special compliance variant. Two FM-specific rules apply within the standard path: (1) `Department Teaching [5h]` attendance posting is always overridden to `NHGPlyNHGPly`; (2) Saturday teachings are accepted if start_time >= 08:00 and end_time <= 13:00 (handled via weekend_exceptions table). Note: FM Saturday exception has been removed from the confirmed weekend_exceptions list per PC update — handle this via `posting_groups` or re-confirm with PCs.
+- **Ad-hoc teaching submissions are supported.** Residents can submit ad-hoc teachings not pre-created by secretaries. The system derives the posting from `resident_postings` at the given date and creates a `teaching_events` row (is_adhoc = true) and attendance record in the same transaction. PH block applies. Compliance treatment is identical to secretary-created sessions.
+- **All uploads are audit-logged.** Every RDB, TTF, and FormF1 upload writes a row to `upload_logs` with full summary JSONB.
+- **Period close generates frozen snapshots.** Closing a reporting period writes one `period_snapshots` row per programme. Historical compliance is served from snapshots, not by re-querying live tables.
 - **Legacy system cutover.** FormSG and Google Forms submission channels must be closed at a confirmed cutover date aligning with a period boundary. In-flight submissions at cutover are processed one final time through the legacy R scripts. After cutover, all attendance flows through this system only. No hybrid operation.
+- **R year required flag drives TTF matching.** Programmes where `r_year_required = false` use `r_year = 'ALL'` as a sentinel value in both `resident_postings` and `teaching_targets`. The TTF matcher checks `r_year == 'ALL' OR r_year == resident_r_year`. See `docs/business-logic.md` § BL-11.
+- **Weekend session compliance warning.** When a resident submits attendance for a session on a Saturday or Sunday and no matching `weekend_exceptions` rule is found, the submission response includes a `compliance_warning` field. The session is stored; the resident is informed it will not count toward PTT compliance.
+- **ORTHO weekend session mutation is read-time only.** ORTHO Saturday sessions of type `NHG Orthopaedic Surgery Residency Teaching [3h]` are mutated to `National Didactics & Department Teaching [1h]` at compliance read time via `mutates_to_session_type_id` and `adjusted_duration_hours` on the `weekend_exceptions` row. Raw attendance is stored as submitted — never mutated in the database.
+- **Global session types are always excluded from PTT compliance.** `global_session_types` is a system-wide catalogue of attendance-trackable but compliance-exempt session types (e.g. Department Meeting). At compliance read time, if `teaching_event.teaching_name` matches any active `global_session_types.name`, the attendance record is excluded from both numerator and denominator — this check takes priority over the TTF catalogue. Secretary dropdown combines TTF keywords and global session types into one unified list. Visibility follows normal posting rules.
+- **Tag-based reallocation sorts by tag label alphabetically, not by duration.** The R script sorts by tag string (e.g. `A1` before `A2`). By convention, PCs assign earlier tags to longer-duration session types. Flow is always from alphabetically earlier tag → later tag only. One-for-one in session counts regardless of duration difference. The TTF upload validator warns when tag alphabetical order does not align with duration descending.
+- **Multi-posting cell with explicit date ranges applies to ALL sheets**, not FM only. Any sheet in the RDB may contain cells with multiple posting codes and explicit `(from DD-MMM-YYYY to DD-MMM-YYYY)` date ranges.
+- **Unmatched multi-posting cells fall back to independent calculation.** If a multi-posting cell has no matching `multi_posting_rules` entry and no matching `posting_groups` entry, each posting is calculated independently. Active months use whole-month counting (no proration). An upload warning is generated.
+- **Posting groups aggregate compliance across related posting codes.** When a resident serves at multiple postings sharing the same `posting_groups.group_code`, active_months and target_100 are summed across all group members. Each posting's own TTF monthly_target applies. Seeded from TTF column E at upload time and manageable via admin CRUD UI. Applies globally to all programmes.
 
 ## Reference Documents
 
@@ -121,20 +141,12 @@ Read these files in `docs/` before writing code for any domain:
 | `docs/schema.md` | Any model, migration, or database query |
 | `docs/api.md` | Any router, endpoint, or Pydantic schema |
 | `docs/business-logic.md` | Compliance engine, surplus chain, reallocation, any calculation |
-| `docs/parsing.md` | RDB or TTF upload endpoints, Excel parsing |
+| `docs/parsing.md` | RDB, TTF, FormF1, or PH upload endpoints, Excel parsing |
 
-## TBD — Awaiting PM Confirmation
+## TBD — Awaiting Confirmation
 
-The following features have placeholder logic pending PM decisions:
-
-1. **Dormant posting codes** — canonical code correctness for sites not in current RDB pending PM confirmation. Handling confirmed: accept as-is, add to posting_codes with display_name = NULL. See `docs/parsing.md` § TBD-2.
-2. **LOA compliance treatment** — whether LOA months reduce the compliance denominator. See `docs/business-logic.md` § TBD-7.
-3. **Employed compliance treatment** — whether employed residents appear in compliance reporting. See `docs/business-logic.md` § TBD-7.
-4. **Refresher Training compliance treatment** — active months denominator impact and Max Cand flag meaning. See `docs/business-logic.md` § TBD-6.
-5. **Dual posting main posting rule** — for residents on a dual posting (e.g. IMHGrPsyc & TTSHPsychi), a preset formula determines which site is the "main posting". This formula has not been sighted and is not documented anywhere. Two sub-questions pending PM confirmation: (a) what is the rule that determines which site is the main posting? (b) once the main posting is determined, does the resident follow only the main posting's compliance targets, or do both sites' targets apply simultaneously? Compliance engine cannot handle dual postings correctly until both are confirmed. See `docs/business-logic.md` § BL-7.
-6. **FM compliance variant** — FM has confirmed special arrangements that differ from the standard compliance structure. Full details to be re-confirmed with FM PCs before implementation. Do NOT apply standard compliance logic to FM. Placeholder section exists at `docs/business-logic.md` § BL-FM. Implementation hook: `programmes.compliance_variant = 'fm'`.
-7. **Public holiday impact on compliance denominator** — PH detection and weekend exception logic are implemented (BL-5). What is unconfirmed is whether teachings on public holidays are excluded from the active days denominator in compliance calculations, or whether they are flagged only for display. Confirm with PM before finalising the denominator calculation. See `docs/business-logic.md` § TBD-PH.
-8. **Historical data migration strategy** — three options have been identified. Decision needed from PM/stakeholders before first period close. See `docs/business-logic.md` § TBD-MIGRATION.
+1. **FormF1 vs RDB architectural decision (open)** — FormF1 is the confirmed default active/inactive source due to calendar month alignment. The formal decision on whether to permanently commit to FormF1 or switch to RDB-derived active/inactive is still open. If RDB is chosen later, it becomes a compliance engine code change only — schema is already ready via `loa_types` and `working_days_in_month`. See `docs/business-logic.md` § TBD-7.
+2. **Historical data migration strategy** — Three options: archive only / summary migration / full migration. Decision needed before first period close. See `docs/business-logic.md` § TBD-MIGRATION.
 
 ## Confirmed Decisions (previously TBD)
 
@@ -143,8 +155,157 @@ The following features have placeholder logic pending PM decisions:
 | Admin scope | Programme-scoped via `users.programme_scope TEXT[]` |
 | Surplus period boundary | Resets to zero at each reporting period boundary |
 | Recurrence editing granularity | All three options: this event only / this and all following / all in series |
-| Reallocation scope | Tag-group-only. No cross-tag or cross-posting flow. |
-| Details of Training (TBD-1) | Keyword list confirmed by PMs (incoming). Matching logic: `teaching_name` primary key + `duration_hours` tiebreaker for edge cases. Session type resolved per-resident at attendance submission time using native programme TTF. `session_type_id` on `teaching_events` is display/prototype only. Resident sees events from both current posting and native programme posting. |
-| Upload audit logging | Every RDB and TTF upload persists an `upload_logs` row with full JSONB summary. |
+| Reallocation scope | Tag-group-only. No cross-tag or cross-posting flow. Tag sort is alphabetical by label (A1→A2→A3), not by duration. One-for-one session count transfers. |
+| Details of Training (TBD-1) | Resolved. Keywords stored in `teaching_name_catalogue` (first-class table, seeded from TTF column K at upload). Session type resolved at compliance read time — never stored on attendance_records. r_year is part of the catalogue key. |
+| Upload audit logging | Every RDB, TTF, and FormF1 upload persists an `upload_logs` row with full JSONB summary. |
 | Period close behaviour | Triggers surplus hibernation + `period_snapshots` generation per programme. |
 | Legacy cutover | Hard cutover at a period boundary. FormSG/Google Forms closed at that date. No hybrid operation. |
+| Dormant posting codes (TBD-2) | RDB posting code is the canonical standard for TTF as well. Last `[]` bracket in TTF posting column = RDB posting code. Dormant codes accepted with display_name = NULL. |
+| Combined posting event ownership | For combine-type postings (e.g. IMHGrPsyc & TTSHPsychi), secretaries at both individual sites create events under their own posting codes. Compliance = total attended across both / total sessions created by both secretaries combined. Order of posting codes in combined label indicates which site the resident starts at — no compliance impact. |
+| Multi-posting rules source | Rules seeded directly into database (not parsed from file). Managed via admin CRUD UI. Three rule types: main_posting, combine, half_month. No file upload needed. |
+| FM compliance variant | FM uses the standard compliance engine — same 70%, same capping, same reallocation, same R year path. No separate variant. Two FM-specific rules: (1) Department Teaching [5h] posting overridden to NHGPlyNHGPly; (2) Saturday 08:00–13:00 exception pending re-confirmation with PCs. |
+| Public holiday event creation | Secretary and resident ad-hoc teaching creation on PH dates is hard-blocked (422). PH impact on compliance denominator is moot — no events created on PH dates. |
+| Active/inactive source (current default) | FormF1 is the default source. All active/inactive defaults to FormF1 parsing. Architectural decision formally still open. |
+| Ad-hoc teaching | Residents can submit ad-hoc teachings via dedicated endpoint. is_adhoc = true on teaching_events. Same compliance treatment as secretary-created events. |
+| Duration in TTF | Duration stays embedded in session type name as [Xh]. No separate TTF duration column. Secretary picks start_time only; end_time is server-computed. |
+| Non-tracked events | Non-tracked TTF rows (Tracked? = "No") are seeded into teaching_name_catalogue for event visibility. Attendance stored normally but excluded from compliance numerator and denominator. |
+| LOA types confirmed list | Full confirmed list: Annual Leaves, Childcare Leave, Compassionate Leave, Family Care Leave, Hospitalisation Leave, Marriage Leave, Maternity Leave, Medical Leave, National Service (NS), No-Pay-Leave, Paternity Leave, Training Leave, Unrecorded Leave, Unpaid Infant Care Leave. 14 types total. Parser warns (does not reject) on unknown LOA types. |
+| Refresher Training compliance treatment (TBD-6) | Closed. Refresher Training months handled automatically by FormF1 active/inactive gate. No separate compliance logic needed. `add to Max Cand` / `don't add to Max Cand` stored as display annotation only on `resident_postings`. |
+| R year not needed programmes (BL-11) | Resolved. 22 programmes have `r_year_required = false` and use `r_year = 'ALL'` sentinel. 6 programmes have `r_year_required = true`. 2 programmes (SPORTSMED, PALLMED) have `is_subspecialty = true` with R4→SS1, R5→SS2 remapping. 4 programmes have `rdb_alias` for RDB name normalisation. See `docs/business-logic.md` § BL-11. |
+| ORTHO weekend mutation | Option B confirmed. Read-time mutation via `mutates_to_session_type_id` + `adjusted_duration_hours` on `weekend_exceptions`. Raw data preserved. |
+| Weekend submission warning | Option B confirmed. Submission response includes `compliance_warning` field when weekend session has no matching exception rule. Session is stored; resident is informed. |
+| Clawback tab | 5th tab in admin/PC dashboard alongside Monthly View, Posting View, Attendance Breakdown, Submitted Attendances. Visible to admin/PC role only. Generated at period close. |
+| Secretary provisioning | TTSH-only at launch — 1 account per TTSH posting code (e.g. TTSHAnaes, TTSHGerMed). Architecture supports other institutions when they onboard — no schema change needed, just provision new accounts scoped to their posting codes. |
+| PC provisioning | Flexible — account count TBD. `users.programme_scope TEXT[]` supports multiple programmes per account. |
+| Weekend exceptions confirmed list | URO (2 rows: session name OR session type), DERM (all Saturday sessions, no time condition), ORTHO (Saturday 08:30–10:30, read-time mutation to 1h). SIG, FM, ANAES, and all emergency posting exceptions removed per PC confirmation. |
+| Tag-based reallocation sort | Sort by tag label alphabetically (A1→A2→A3). By convention A1 = longest duration, A2 = shorter, A3 = shortest. TTF upload validator warns if tag order doesn't align with duration descending. |
+| Multi-posting cell applies to all sheets | Not FM-specific. Any RDB sheet may contain multi-posting cells with explicit date ranges. |
+| Posting groups | `posting_groups` table groups related posting codes for compliance aggregation. Seeded from TTF column E at upload; admin CRUD for manual additions. Active months summed across group, whole-month counting, no proration. Applies globally to all programmes. |
+| Global session types | `global_session_types` table holds compliance-exempt session types (e.g. Department Meeting [1h]). Admin-managed via CRUD UI. Secretary dropdown shows unified list of TTF keywords + global types. Compliance engine excludes global type matches before TTF catalogue lookup. Visibility follows normal posting rules. |
+
+---
+
+## Security Rules
+
+**All security-relevant checks must be enforced server-side. Frontend checks are UX convenience only — never security boundaries.**
+
+### Authentication & Authorization
+
+- Identity is derived exclusively from the verified JWT on the server. Never trust client-provided user IDs, roles, or programme codes.
+- All protected endpoints validate the JWT and check role + scope before any DB operation.
+- Admin endpoints check `role = 'admin'` AND `programme_code IN programme_scope`.
+- Secretary endpoints check `role = 'secretary'` AND `posting_code = X-User-Site`.
+- Resident endpoints check `role = 'resident'` AND all DB queries are scoped to `resident_id` from JWT `sub`.
+- Residents authenticate with MCR only (Phase 1). This is an intentional design choice for this system — no upgrade path needed.
+
+### Row-Level Security (RLS) — Supabase
+
+When Supabase Auth is wired in (Phase 9), enable RLS on all sensitive tables. Policy patterns:
+
+```sql
+-- attendance_records: residents can only read/write their own records
+CREATE POLICY "resident_own_attendance" ON attendance_records
+  FOR ALL USING (resident_id = auth.uid());
+
+-- resident_postings: residents can only read their own postings
+CREATE POLICY "resident_own_postings" ON resident_postings
+  FOR SELECT USING (resident_id = auth.uid());
+
+-- teaching_targets: admin read scoped to programme_scope
+-- (implement via service role in backend, not direct client access)
+
+-- form_f1_records: admin only, no resident access
+-- teaching_events: residents read only (no write except via attendance endpoint)
+```
+
+Backend API operations that span multiple residents (admin reporting, clawback generation) must use the Supabase **service role key** — never the anon key. The service role key is **server-only** and must never be exposed to the frontend or included in client-side environment variables.
+
+### SQL Injection Protection
+
+- All DB queries must use SQLAlchemy ORM or parameterized raw SQL with `:param` binding. Never interpolate user input into SQL strings.
+- Pydantic schemas validate all request bodies at the API boundary before any DB access.
+
+```python
+# NEVER
+session.execute(f"SELECT * FROM residents WHERE mcr = '{mcr}'")
+
+# ALWAYS
+session.execute(text("SELECT * FROM residents WHERE mcr = :mcr"), {"mcr": mcr})
+```
+
+### Mass Assignment Protection
+
+- Never pass `**request.dict()` or raw request bodies directly to ORM create/update methods.
+- Explicitly allowlist permitted fields in every Pydantic schema. Fields like `role`, `programme_scope`, `employer_tag`, `is_active` must never be settable by end users.
+
+### API Security
+
+- All request bodies, query params, route params, and uploaded files are validated via Pydantic before any processing.
+- Error responses must never leak stack traces, SQL errors, internal paths, or sensitive object structures. Return safe generic messages for unexpected errors.
+- Rate limiting required on: `POST /auth/login`, all `POST /admin/upload/*` endpoints, `POST /resident/adhoc-teaching`.
+- CORS must be configured with an explicit allowlist of trusted origins. Never use wildcard `*` in production.
+
+### Security Headers
+
+Configure on all responses via FastAPI middleware:
+
+```python
+# Required headers
+Strict-Transport-Security: max-age=31536000; includeSubDomains
+X-Frame-Options: DENY
+X-Content-Type-Options: nosniff
+Referrer-Policy: strict-origin-when-cross-origin
+Content-Security-Policy: default-src 'self'
+```
+
+Use `slowapi` for rate limiting and configure security headers via middleware. Vercel handles HTTPS enforcement at the CDN layer.
+
+### Session Management
+
+- Access tokens: short-lived (15–60 minutes).
+- Refresh tokens: longer-lived with rotation on each use.
+- Logout must invalidate the token server-side — do not rely solely on expiry.
+- Tokens stored in `HttpOnly`, `Secure`, `SameSite=Strict` cookies where possible. Avoid `localStorage` for tokens.
+
+### File Upload Security
+
+- Validate file type, MIME type, and file size server-side on all `POST /admin/upload/*` endpoints. Reject files that fail validation before any parsing.
+- Accepted file types: `.xlsx` only (`.csv` additionally for public holidays).
+- Maximum file size: 10MB per upload.
+- Never use client-provided filenames. Generate server-side filenames for any stored files.
+- Upload endpoints are admin-only. No resident or secretary file upload paths exist.
+
+### Secrets & Environment Variables
+
+```
+# SERVER-ONLY — never expose to frontend
+DATABASE_URL=postgresql+asyncpg://...
+SUPABASE_SERVICE_ROLE_KEY=...
+JWT_SECRET=...
+
+# Safe for frontend (Vite prefix)
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=...
+VITE_API_BASE_URL=https://api.your-domain.com
+```
+
+Never hardcode credentials. `.env` files must be in `.gitignore`. Provide only placeholder values in `.env.example`.
+
+### Frontend Security
+
+- Never store sensitive data in `localStorage`. Use `HttpOnly` cookies for auth tokens.
+- Never use `dangerouslySetInnerHTML` without explicit DOMPurify sanitisation.
+- All frontend role/scope checks are UX only. The backend enforces all access control.
+
+### Pending Security Decision Format
+
+When a security decision cannot be determined from existing documentation, insert this marker:
+
+```
+<!-- Pending Security Decision: [describe what needs to be decided]
+     Example: It is unclear whether non-owner users in the same programme
+     can view this resource. RLS policy and API authorization logic must be
+     confirmed before implementation. -->
+```
+
+Do not invent authorization logic. Block implementation until the decision is documented.

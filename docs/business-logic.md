@@ -12,15 +12,53 @@ For each `(resident, posting, session_type)` triplet, the raw achieved count is 
 def compute_achieved_and_counted(
     raw_achieved: int,
     monthly_target: int,
-    active_months: int  # number of month-phases at this posting
+    active_months: float  # may be fractional for half-month postings
 ) -> int:
     target_100 = monthly_target * active_months
     return min(raw_achieved, target_100)
 ```
 
-**How to count active_months:** Count `resident_postings` rows where `posting_code` matches within the reporting period and `status IN ('active', 'loa_working')`. Use `resident_postings.r_year` (not `residents.r_year`) when joining to `teaching_targets` — a resident who crosses a year boundary mid-period must be matched against the correct target for each phase.
-Rows with status = 'loa' or status = 'employed' are excluded.
-Note: LOA, Employed, and Refresher Training compliance treatment is pending PM confirmation — currently mirrors R system behaviour by only counting status = 'active'.
+**How to count active_months:**
+- Join `resident_postings` rows where `posting_code` matches, within the reporting period, and `status IN ('active', 'loa_working')`
+- Sum `active_months_weight` per row (default 1.0, set to 0.5 for half-month posting rules)
+- Use `resident_postings.r_year` (NOT `residents.r_year`) when joining to `teaching_targets` — a resident who crosses a year boundary mid-period must be matched against the correct target for each phase
+- Gate by `form_f1_records.is_active`: for each calendar month, check `form_f1_records` for this resident's MCR. If `is_active = false` for that month, exclude those resident_postings rows from the active_months count and exclude associated attendance from the numerator
+- Active month counting is **whole-month only** — a posting is credited a full calendar month for any month it appears in, regardless of how many days within that month were spent there. No proration.
+
+**FormF1 active/inactive gate (current default):**
+The `form_f1_records` table is the authoritative active/inactive source. A resident-month where `is_active = false` is excluded from both the compliance numerator and denominator. This is the confirmed default. See TBD-7 for the open architectural decision.
+
+**FormF1 and multi-posting cells:** FormF1 active/inactive is per calendar month per resident — not per posting code. If a resident has two postings in the same calendar month (e.g. multi-posting cell), FormF1 applies uniformly to both. A month cannot be Active for one posting and Inactive for another.
+
+**active_months weight for half-month postings:**
+For residents with a `half_month` rule applied (e.g. TTSHGas/NUHGas), each posting's `active_months_weight = 0.5`. Both `active_months` and `Target(mth)` are halved accordingly. Numerator sessions count fully.
+
+**Posting group aggregation:**
+When a resident's `posting_code` belongs to a `posting_groups` entry, active_months and target_100 are aggregated across ALL posting codes sharing the same `group_code` and `programme_code`:
+
+```python
+def compute_group_target_100(
+    resident_id: str,
+    group_code: str,
+    programme_code: str,
+    session_type_id: str,
+    reporting_period_id: str
+) -> float:
+    """
+    For grouped postings (e.g. TTSHRespi + TTSHRespi(MICU)):
+    target_100 = sum of (monthly_target × active_months) across ALL group members.
+    Each posting's own monthly_target from its TTF row applies per phase.
+    active_months uses whole-month counting gated by FormF1.
+    """
+    group_members = get_posting_group_members(group_code, programme_code)
+    total_target_100 = 0.0
+    for posting_code in group_members:
+        phases = get_active_phases(resident_id, posting_code, reporting_period_id)
+        for phase in phases:
+            target = get_teaching_target(posting_code, programme_code, phase.r_year, session_type_id)
+            total_target_100 += target.monthly_target * phase.active_months_weight
+    return total_target_100
+```
 
 **"Achieved" vs "Achieved and counted":**
 - `achieved` = raw count of attendance records (display only)
@@ -86,72 +124,73 @@ When a teaching target row has `is_reallocatable = true` and a `tag` value, exce
 
 ### Rules
 
-1. **Same tag = same group.** All rows at the same posting with the same tag value are in one reallocation group.
-2. **Flow direction: longer → shorter only.** Sort group by `session_types.duration_hours` descending. Surplus from higher-duration types can transfer to lower-duration types, never upward.
-3. **One-for-one in session counts.** 1 excess 2h session = 1 session credit toward a 1h shortfall. Duration is not a multiplier.
-4. **Only tracked sessions participate.** Untracked session types are excluded from reallocation.
+1. **Same tag prefix = same group.** Tags use a prefix + number convention e.g. `A1`, `A2`, `A3`. All rows sharing the same prefix (all chars except the last character) at the same posting form one reallocation group.
+2. **Flow direction: alphabetically earlier tag → alphabetically later tag only.** The R script sorts by tag label alphabetically ascending — `A1` before `A2`, `A2` before `A3`. By convention, PCs assign earlier tags to longer-duration session types and later tags to shorter-duration session types: `A1` = longest (e.g. 2h), `A2` = shorter (e.g. 1h), `A3` = shortest (e.g. 0.5h). The compliance engine enforces alphabetical order — it does NOT sort by duration.
+3. **One-for-one in session counts.** 1 surplus session from `A1` = 1 session credit toward `A2` or `A3` shortfall. Duration is never a multiplier — 1 surplus [2h] session credits exactly 1 [1h] shortfall, not 2.
+4. **Only tracked sessions participate.** Untracked session types (`is_tracked = false`) are excluded from reallocation.
 5. **Reallocation happens after capping.** First compute `achieved_and_counted` per session type, then reallocate.
+
+**Convention enforced by TTF upload validator:** The upload warns (not blocks) if a tag group's alphabetical order does not align with duration descending order — e.g. if `A1` maps to a `[1h]` session type and `A2` maps to a `[2h]` session type. This catches PC mislabelling early.
 
 ### Algorithm
 
 ```python
 def reallocate_by_tag(rows: list[dict]) -> list[dict]:
     """
-    rows: all teaching_target rows for ONE (resident, posting) with 
-          is_reallocatable=True, grouped by tag.
-    Each row has: tag, session_type_id, duration_hours, achieved, target_70, 
+    rows: all teaching_target rows for ONE (resident, posting) with
+          is_reallocatable=True.
+    Each row has: tag, session_type_id, duration_hours, achieved, target_70,
                   achieved_and_counted
+    Sort is by tag label ALPHABETICALLY (matches R script order() on Tag column).
+    Convention: A1 = longest duration, A2 = shorter, A3 = shortest.
     """
-    from itertools import groupby
-
-    # Group by tag
+    # Group by tag prefix (all chars except last)
     tag_groups = {}
     for row in rows:
         if not row['tag']:
             continue
-        tag_groups.setdefault(row['tag'], []).append(row)
+        prefix = row['tag'][:-1]  # e.g. 'A1' → prefix 'A', 'A2' → prefix 'A'
+        tag_groups.setdefault(prefix, []).append(row)
 
-    for tag, group in tag_groups.items():
+    for prefix, group in tag_groups.items():
         if len(group) < 2:
             continue
+        # Sort alphabetically by tag label — A1 before A2 before A3
+        group.sort(key=lambda r: r['tag'])
+        bringover = [0] * len(group)
 
-        # Sort by duration descending — longest first
-        group.sort(key=lambda r: r['duration_hours'], reverse=True)
-
-        # Calculate surplus per row (achieved above target_70)
-        surplus = []
-        for row in group:
-            s = max(0, row['achieved_and_counted'] - row['target_70'])
-            surplus.append(s)
-
-        # Transfer from longest to shortest
-        for i in range(len(group)):
-            if group[i]['achieved_and_counted'] >= group[i]['target_70']:
-                continue  # this row doesn't need help
-            needed = group[i]['target_70'] - group[i]['achieved_and_counted']
-            # Look at rows with longer duration (earlier in sorted list)
-            for j in range(i):
-                if needed <= 0:
-                    break
-                transfer = min(surplus[j], needed)
-                if transfer > 0:
-                    group[j]['achieved_and_counted'] -= transfer
-                    group[i]['achieved_and_counted'] += transfer
-                    surplus[j] -= transfer
-                    needed -= transfer
-
+        for c in range(len(group)):
+            if group[c]['achieved_and_counted'] >= group[c]['target_70']:
+                # Has surplus — compute how much can be brought over
+                bringover[c] = group[c]['achieved_and_counted'] - group[c]['target_70']
+            elif c > 0 and sum(bringover) > 0:
+                # Has shortfall — fill from earlier tags (alphabetically before)
+                needed = group[c]['target_70'] - group[c]['achieved_and_counted']
+                for d in range(c):
+                    if needed <= 0:
+                        break
+                    transfer = min(bringover[d], needed)
+                    if transfer > 0:
+                        group[d]['achieved_and_counted'] -= transfer
+                        group[c]['achieved_and_counted'] += transfer
+                        bringover[d] -= transfer
+                        needed -= transfer
     return rows
 ```
 
 ### Example
 
-At YishCommHosp (GRM), tag `A`:
-- Case-based Teaching [2h]: target_70 = 2, achieved = 4, surplus = 2
-- Department/Programme Teaching [1h]: target_70 = 9, achieved = 7, shortfall = 2
+At YishCommHosp (GRM), tag prefix `A`:
+- `A1` = Case-based Teaching [2h]: target_70 = 2, achieved = 4 → surplus = 2
+- `A2` = Department/Programme Teaching [1h]: target_70 = 9, achieved = 7 → shortfall = 2
 
-After reallocation:
-- Case-based Teaching [2h]: achieved adjusted to 2 (gave away 2)
-- Department/Programme Teaching [1h]: achieved adjusted to 9 (received 2, shortfall filled)
+After reallocation (A1 → A2):
+- `A1`: achieved adjusted to 2 (gave away 2 sessions, one-for-one)
+- `A2`: achieved adjusted to 9 (received 2 session credits, shortfall filled)
+
+3-tier example with A1 (2h), A2 (1h), A3 (0.5h):
+- Surplus flows A1→A2, A1→A3, A2→A3 as needed
+- Each transfer is 1-for-1 regardless of duration difference
 
 ---
 
@@ -161,7 +200,7 @@ Surplus tracks independently per `(resident, posting_code, session_type)`.
 
 ### Accumulation
 
-`surplus_ledger` stores **pre-reallocation** surplus — the raw surplus per `(resident, posting, session_type)` before any tag-based transfers. Reallocation (BL-3) is always a read-time computation applied after fetching ledger values; it is never written back to `surplus_ledger`. This keeps the ledger as a stable audit trail and means target changes mid-period do not require ledger corrections.
+`surplus_ledger` stores **pre-reallocation** surplus — the raw surplus per `(resident, posting, session_type)` before any tag-based transfers. Reallocation (BL-3) is always a read-time computation applied after fetching ledger values; it is never written back to `surplus_ledger`.
 
 `update_surplus` is called **before** `reallocate_by_tag`, using the capped `achieved_and_counted` value (post-cap, pre-reallocation):
 
@@ -169,36 +208,26 @@ Surplus tracks independently per `(resident, posting_code, session_type)`.
 def update_surplus(resident_id, posting_code, session_type_id, reporting_period_id):
     target = get_teaching_target(...)
     achieved = count_attendance_records(...)
-    # active_months derived from resident_postings.r_year, not residents.r_year
     surplus = max(0, achieved - target.monthly_target * active_months)
-
     upsert_surplus_ledger(
         resident_id=resident_id,
         posting_code=posting_code,
         session_type_id=session_type_id,
         reporting_period_id=reporting_period_id,
-        achieved_count=achieved,
-        target_count=target.monthly_target * active_months,
         surplus=surplus,         # pre-reallocation
         is_hibernating=False
     )
-    # reallocate_by_tag() is called after this, at the read layer only
 ```
 
 ### Hibernation and Resumption
 
 Hibernation is triggered at **two points**, not lazily on compliance read:
 
-1. **On RDB upload** — after `resident_postings` rows are written for the new period, the parser identifies all `(resident, posting_code)` pairs that no longer have an active phase in this period and sets `is_hibernating = true` for those ledger rows.
-2. **On period close** (`PUT /admin/reporting-periods/{id}/close`) — all non-hibernating `surplus_ledger` rows for the period are set to `is_hibernating = true` as a housekeeping step (they will be superseded by a fresh period anyway, but this makes the boundary clean).
+1. **On RDB upload** — after `resident_postings` rows are written, the parser identifies all `(resident, posting_code)` pairs with no active phase in this period and sets `is_hibernating = true`.
+2. **On period close** — all non-hibernating `surplus_ledger` rows for the period are set to `is_hibernating = true`.
 
 ```python
-# Called by the RDB upload service after writing resident_postings
 def hibernate_stale_surplus(session, reporting_period_id: str):
-    """
-    Mark surplus as hibernating for any (resident, posting) combination
-    that has no active or loa_working phase in this reporting period.
-    """
     session.execute(text("""
         UPDATE surplus_ledger sl
         SET    is_hibernating = true
@@ -214,22 +243,9 @@ def hibernate_stale_surplus(session, reporting_period_id: str):
     """), {"period_id": reporting_period_id})
 ```
 
-When resident returns to a posting they've been at before:
-```python
-# Resume — the existing surplus is already there, just un-hibernate
-UPDATE surplus_ledger 
-SET is_hibernating = false 
-WHERE resident_id = :rid AND posting_code = :returning_posting
-AND reporting_period_id = :period_id
-```
-
-### Cross-session-type isolation
-
-Surplus for "Department/Programme Teaching [1h]" NEVER flows into "Case-based Teaching [2h]" through the surplus chain. Each session type's surplus is independent. Reallocation (BL-3) is the only mechanism for cross-type transfers, and it only works within tag groups.
-
 ### Period boundary behaviour
 
-Surplus resets to zero at each reporting period boundary and does NOT carry across H1/H2. All surplus_ledger rows for the old period remain as historical records — new period starts fresh.
+Surplus resets to zero at each reporting period boundary and does NOT carry across H1/H2.
 
 ---
 
@@ -242,7 +258,9 @@ def is_public_holiday(teaching_date: date, ph_list: list[date]) -> bool:
     return teaching_date in ph_list
 ```
 
-Attendance on public holidays is flagged but NOT automatically rejected. Exception rules determine whether it counts.
+**Secretary event creation on PH dates is hard-blocked.** `POST /secretary/teaching-events` validates the event date against the `public_holidays` table and returns 422 if the date matches. The same block applies to `POST /resident/adhoc-teaching`.
+
+**PH impact on compliance denominator:** Since no events can be created on PH dates, there are no PH attendance records to count or exclude. PH detection is for display/flagging only and has no denominator impact.
 
 ### Weekend detection
 
@@ -256,8 +274,6 @@ def is_weekend(teaching_date: date) -> tuple[bool, str]:
 
 ### Weekend exception logic
 
-When a teaching falls on a weekend, check the `weekend_exceptions` table:
-
 ```python
 def is_weekend_accepted(
     teaching_date: date,
@@ -267,17 +283,15 @@ def is_weekend_accepted(
     programme_code: str,
     session_type_id: str,
     session_name: str
-) -> bool:
+) -> tuple[bool, dict | None]:
+    """
+    Returns (accepted: bool, mutation_row: dict | None)
+    mutation_row is set when a mutates_to_session_type_id is configured for the matching exception.
+    """
     if not is_weekend(teaching_date)[0]:
-        return True  # not a weekend, always accepted
-
+        return True, None
     day_type = 'sat' if teaching_date.weekday() == 5 else 'sun'
-
-    exceptions = query_weekend_exceptions(
-        posting_code=posting_code,
-        programme_code=programme_code
-    )
-
+    exceptions = query_weekend_exceptions(posting_code=posting_code, programme_code=programme_code)
     for exc in exceptions:
         if exc.day_type not in (day_type, 'both'):
             continue
@@ -289,37 +303,71 @@ def is_weekend_accepted(
             continue
         if exc.session_name_pattern and exc.session_name_pattern not in session_name:
             continue
-        return True  # matched an exception rule
-
-    return False  # no exception, weekend teaching not accepted
+        # Matched — check for mutation
+        mutation = None
+        if exc.mutates_to_session_type_id:
+            mutation = {
+                'session_type_id': exc.mutates_to_session_type_id,
+                'duration_hours': exc.adjusted_duration_hours
+            }
+        return True, mutation
+    return False, None
 ```
+
+### Weekend submission warning (Option B)
+
+When a resident submits attendance and `is_weekend_accepted()` returns `False` for one or more events, the submission still proceeds (sessions are stored) but the response includes a `compliance_warning` field:
+
+```python
+# In POST /resident/attendance response
+{
+    "submitted": 2,
+    "errors": [],
+    "compliance_warning": "1 session(s) submitted on a weekend will not count toward your PTT compliance as they do not meet the weekend exception rules for your programme."
+}
+```
+
+The warning is per-submission, not per-session. The resident is informed upfront so they are not surprised when their compliance percentage does not reflect these submissions.
+
+### ORTHO weekend session mutation (read-time, Option B)
+
+ORTHO Saturday sessions of type `NHG Orthopaedic Surgery Residency Teaching [3h]` are mutated to `National Didactics & Department Teaching [1h]` at compliance read time via the `weekend_exceptions` table.
+
+**How it works:**
+1. Attendance is stored as submitted — raw data is never modified.
+2. At compliance read time, `is_weekend_accepted()` returns the `mutation_row` for the matched ORTHO exception.
+3. The compliance engine uses `mutation_row['session_type_id']` and `mutation_row['duration_hours']` instead of the original values for this attendance record.
+4. The TTF matcher resolves compliance targets using the mutated session type.
+
+**Why read-time (not event creation or submission time):** Consistent with how the original R script worked (batch post-processing before compliance calculation). Preserves raw data for auditability. If ORTHO changes their policy, update the `weekend_exceptions` row — no data migration needed.
+
+### URO weekend exception seeding
+
+URO accepts Saturday sessions under two independent conditions (OR logic). Since `weekend_exceptions` matches one condition per row, URO requires two rows:
+
+**URO Row 1** — session name match:
+`programme_code = 'URO'`, `day_type = 'sat'`, `session_name_pattern = 'Urology National Teaching (Sat)'`, all other fields NULL
+
+**URO Row 2** — session type match:
+`programme_code = 'URO'`, `day_type = 'sat'`, `session_type_id = <National Teaching [2h]>`, all other fields NULL
+
+**Note:** SIG has been removed from the confirmed weekend exceptions list per PC update. SIG no longer has a weekend exception row.
 
 ### Duplicate and conflict detection
 
-Pre-save check at the API layer when creating attendance records. Compare against existing records for the same resident on the same date.
-
 ```python
-def check_duplicate_or_conflict(
-    session_a: dict,  # {start_time, end_time, session_type_id}
-    session_b: dict,
-) -> str:
-    """Returns: 'duplicate', 'conflict_same_type', 'conflict_diff_type', or 'ok'"""
+def check_duplicate_or_conflict(session_a: dict, session_b: dict) -> str:
     if (session_a['start_time'] == session_b['start_time'] and
         session_a['end_time'] == session_b['end_time']):
         if session_a['session_type_id'] == session_b['session_type_id']:
             return 'duplicate'
         return 'conflict_same_time_diff_type'
-
-    # Overlap check
     if session_b['start_time'] < session_a['end_time'] and session_a['start_time'] < session_b['end_time']:
         if session_a['session_type_id'] == session_b['session_type_id']:
             return 'conflict_overlap_same_type'
         return 'conflict_overlap_diff_type'
-
     return 'ok'
 ```
-
-**Note:** The UNIQUE constraint on `(resident_id, teaching_event_id)` catches exact duplicates at the DB layer. The conflict detection above catches overlapping-but-different events at the API layer.
 
 ---
 
@@ -328,73 +376,66 @@ def check_duplicate_or_conflict(
 The compliance engine runs **JIT (just-in-time)** — recalculated on read, not stored as a materialised value.
 
 **Identity inputs to every compliance calculation:**
-- `programme_code` — from the resident's JWT claim (set at login from `residents.programme_code`, which comes from the RDB Specialization column). This selects which TTF the resident is measured against.
-- `posting_code` — derived at request time from `resident_postings` (never from the JWT). This selects which rows within that TTF apply to the resident's current rotation.
-- `r_year` — from the `resident_postings` row for each phase (not `residents.r_year`). This handles year-boundary crossings correctly.
-- `reporting_period_id` — from `reporting_periods` WHERE `status = 'open'`.
-
-A GRM resident and a DR resident at the same posting site will always resolve to different `teaching_targets` rows because their `programme_code` differs.
+- `programme_code` — from the resident's JWT claim
+- `posting_code` — derived at request time from `resident_postings`
+- `r_year` — from the `resident_postings` row for each phase (not `residents.r_year`)
+- `reporting_period_id` — from `reporting_periods` WHERE `status = 'open'`
+- `is_active` — from `form_f1_records` for the resident's MCR and each calendar month
 
 ### Resident dashboard — Python (single-resident JIT)
 
-When `GET /resident/dashboard` is called, the compliance engine runs in Python:
-
-1. Query all active `resident_postings` for the resident within the reporting period (status `active` or `loa_working`). Use `resident_postings.r_year` (not `residents.r_year`) for target lookup.
-2. For each active posting phase, query `attendance_records` joined via `teaching_events.posting_code` where `event_date BETWEEN phase.start_date AND phase.end_date` and `attendance_records.status = 'submitted'`. Do **not** filter by `attendance_records.posting_code` — it is audit-only and may be stale after RDB re-uploads.
-3. Group by `(posting_code, session_type_id)`
-4. Apply capping (BL-1)
-5. Update `surplus_ledger` with pre-reallocation values (BL-4)
-6. Apply tag-based reallocation (BL-3) — read-time only, not written back
-7. Compute posting-level compliance (BL-2)
-8. If the resident is dual-posted, annotate results with `compliance_unreliable = true` (BL-7)
-
-For a single resident this involves a small, bounded number of queries and is fast enough to run synchronously on every request. Python logic is correct by construction — no SQL aggregation quirks.
+1. Query all active `resident_postings` for the resident within the reporting period (status `active` or `loa_working`)
+2. For each phase, check `form_f1_records.is_active` for the corresponding calendar month. If false, exclude from denominator and numerator
+3. For each active posting phase, check `posting_groups` for `(posting_code, programme_code)`. If a group is found, fetch all posting codes sharing the same `group_code`. Sum active_months and attendance across ALL group members (whole-month counting, no proration)
+4. For each active posting phase, query `attendance_records` joined via `teaching_events.posting_code` where `event_date BETWEEN phase.start_date AND phase.end_date` and `attendance_records.status = 'submitted'`. Do NOT filter by `attendance_records.posting_code` — it is audit-only
+5. For each attendance record, **first check `global_session_types`**: if `teaching_event.teaching_name` matches any active `global_session_types.name` → exclude from compliance entirely (skip catalogue lookup, excluded from both numerator and denominator). This check takes priority over the TTF catalogue.
+6. For remaining records, resolve `session_type_id` at read time by joining `teaching_name_catalogue` WHERE `keyword = teaching_event.teaching_name AND posting_code = teaching_event.posting_code AND programme_code = resident.programme_code AND r_year = phase.r_year AND reporting_period_id = current_period`. Use `duration_hours` tiebreaker if multiple catalogue rows match. If no catalogue match — silently exclude from compliance.
+7. Apply ORTHO weekend mutation if applicable (BL-5)
+8. Group by `(group_code OR posting_code, session_type_id)` — use group_code when a posting group exists, posting_code otherwise
+9. Apply capping (BL-1), accounting for `active_months_weight` and posting group aggregation
+10. Update `surplus_ledger` with pre-reallocation values (BL-4)
+11. Apply tag-based reallocation (BL-3) — read-time only, not written back
+12. Compute posting-level compliance (BL-2)
+13. Annotate dual-posting flag (BL-7)
 
 ### Admin reporting views — SQL (batch, programme-wide)
 
-When any `GET /admin/reports/*` endpoint is called, compliance is computed **in SQL** across all residents in the programme at once. A single query joins `attendance_records`, `teaching_targets`, and `resident_postings` and returns all the aggregated values the report needs:
-
 ```sql
--- Posting-level compliance for all residents in a programme+period.
---
--- Key design rules reflected here:
---   1. teaching_targets joined on resident_postings.r_year (not residents.r_year)
---      so residents who cross a year boundary mid-period get the correct target.
---   2. Attendance is attributed via teaching_events.posting_code, NOT
---      attendance_records.posting_code (which is audit-only and can drift
---      after RDB re-uploads).
---   3. Attendance is only counted for events whose event_date falls within
---      a month-phase where the resident was active or loa_working at that
---      posting — preventing loa-status months from inflating the numerator.
-
-WITH active_phases AS (
-    -- One row per (resident, posting, month-phase) that counts toward compliance
-    SELECT
-        resident_id,
-        posting_code,
-        r_year,
-        reporting_period_id,
-        start_date,
-        end_date
-    FROM   resident_postings
+WITH form_f1_active AS (
+    -- Active months from FormF1 — the denominator gate
+    SELECT mcr, month_label
+    FROM   form_f1_records
     WHERE  reporting_period_id = :period_id
-    AND    status IN ('active', 'loa_working')
+    AND    is_active = true
+),
+active_phases AS (
+    SELECT
+        rp.resident_id,
+        rp.posting_code,
+        rp.r_year,
+        rp.reporting_period_id,
+        rp.start_date,
+        rp.end_date,
+        rp.active_months_weight
+    FROM   resident_postings rp
+    JOIN   residents res ON res.id = rp.resident_id
+    JOIN   form_f1_active f1
+           ON  f1.mcr = res.mcr
+           -- Map academic month phase to calendar month label
+           AND f1.month_label = TO_CHAR(rp.start_date, 'Mon-YY')
+    WHERE  rp.reporting_period_id = :period_id
+    AND    rp.status IN ('active', 'loa_working')
 ),
 active_months_agg AS (
-    -- Count of active phases per (resident, posting) — the denominator base
     SELECT
         resident_id,
         posting_code,
         r_year,
-        COUNT(*) AS active_months
+        SUM(active_months_weight) AS active_months
     FROM   active_phases
     GROUP  BY resident_id, posting_code, r_year
 ),
 counted_attendance AS (
-    -- Attendance counts only for events that fall within an active phase.
-    -- session_type_id is resolved via the resident's native programme TTF
-    -- (teaching_targets), not from teaching_events — the same event may
-    -- map to different session types for different programmes.
     SELECT
         ar.resident_id,
         te.posting_code,
@@ -407,31 +448,27 @@ counted_attendance AS (
            AND ap.posting_code = te.posting_code
            AND te.event_date  BETWEEN ap.start_date AND ap.end_date
     JOIN   residents r_res ON r_res.id = ar.resident_id
-    JOIN   teaching_targets tt_resolve
-           ON  tt_resolve.posting_code        = te.posting_code
-           AND tt_resolve.programme_code      = r_res.programme_code
-           AND tt_resolve.reporting_period_id = :period_id
-           AND tt_resolve.r_year              = ap.r_year
-           AND tt_resolve.details_of_training ILIKE '%' || te.teaching_name || '%'
-           -- Duration tiebreaker: if teaching_name matches multiple session types,
-           -- use event duration to discriminate. session_types.duration_hours must
-           -- match the event's duration_hours when multiple rows would otherwise match.
+    JOIN   teaching_name_catalogue tnc
+           ON  tnc.posting_code        = te.posting_code
+           AND tnc.programme_code      = r_res.programme_code
+           AND tnc.reporting_period_id = :period_id
+           AND tnc.keyword             = te.teaching_name
            AND (
-               -- Only apply duration filter when ambiguity exists
-               (SELECT COUNT(*) FROM teaching_targets tt2
-                WHERE tt2.posting_code        = te.posting_code
-                AND   tt2.programme_code      = r_res.programme_code
-                AND   tt2.reporting_period_id = :period_id
-                AND   tt2.r_year              = ap.r_year
-                AND   tt2.details_of_training ILIKE '%' || te.teaching_name || '%'
-               ) = 1
-               OR EXISTS (
-                   SELECT 1 FROM session_types st2
-                   WHERE st2.id             = tt_resolve.session_type_id
-                   AND   st2.duration_hours = te.duration_hours
-               )
+               (SELECT COUNT(*) FROM teaching_name_catalogue tnc2
+                WHERE tnc2.posting_code = te.posting_code
+                AND tnc2.programme_code = r_res.programme_code
+                AND tnc2.reporting_period_id = :period_id
+                AND tnc2.keyword = te.teaching_name) = 1
+               OR tnc.duration_hours = te.duration_hours
            )
+    JOIN   teaching_targets tt_resolve
+           ON  tt_resolve.posting_code        = tnc.posting_code
+           AND tt_resolve.programme_code      = tnc.programme_code
+           AND tt_resolve.reporting_period_id = tnc.reporting_period_id
+           AND tt_resolve.r_year              = ap.r_year
+           AND tt_resolve.session_type_id     = tnc.session_type_id
     WHERE  ar.status = 'submitted'
+    AND    tt_resolve.is_tracked = true
     GROUP  BY ar.resident_id, te.posting_code, tt_resolve.session_type_id
 )
 SELECT
@@ -444,13 +481,11 @@ SELECT
           tt.monthly_target * ama.active_months)                  AS achieved_and_counted,
     tt.monthly_target * ama.active_months                         AS target_100,
     CEIL((tt.monthly_target * ama.active_months) * 0.70)          AS target_70,
-    -- Flag dual-posted residents so callers can mark compliance as unreliable
-    -- until TBD dual-posting rule is confirmed (see BL-7)
     EXISTS (
         SELECT 1 FROM active_phases ap2
-        WHERE  ap2.resident_id        = r.id
+        WHERE  ap2.resident_id = r.id
         AND    ap2.reporting_period_id = :period_id
-        AND    ap2.posting_code       != ama.posting_code
+        AND    ap2.posting_code != ama.posting_code
         GROUP  BY ap2.resident_id
         HAVING COUNT(DISTINCT ap2.posting_code) > 1
     )                                                             AS is_dual_posted
@@ -468,32 +503,25 @@ LEFT JOIN counted_attendance ca
 WHERE  r.programme_code = :programme_code
 ```
 
-Tag-based reallocation (BL-3) is applied in Python **after** the SQL batch fetch — the SQL returns one row per `(resident, posting, session_type)` and the Python reallocation loop runs over that result set before the response is serialised.
+Tag-based reallocation (BL-3) is applied in Python after the SQL batch fetch.
 
-**Why split:** A single resident's dashboard involves a handful of rows — Python JIT is simpler and always correct. Admin views over hundreds of residents would be slow if each resident triggered a separate Python JIT pass; pushing the aggregation into SQL keeps the query count constant regardless of cohort size.
-
-**Why JIT at all:** Attendance can be deleted and resubmitted, teaching targets can be edited mid-period. Pre-computed/materialised compliance would require invalidation logic. JIT (per-request recalculation) is simpler and always correct.
+**Why split:** A single resident dashboard involves a handful of rows — Python JIT is simpler and always correct. Admin views over hundreds of residents would be slow if each triggered a separate Python pass; pushing aggregation into SQL keeps query count constant.
 
 ---
 
 ## BL-7: Dual-Posting Compliance Reliability Flag
 
-Residents with more than one distinct active `posting_code` in a reporting period (dual-posted) cannot have their compliance calculated correctly until the main-posting rule is confirmed (see AGENTS.md TBD item 5). Until that decision is made, the system must not silently produce wrong numbers.
-
-**Two questions pending PM confirmation before this can be implemented correctly:**
-1. **Main posting determination** — For residents on a dual posting (e.g. IMHGrPsyc & TTSHPsychi), what is the rule that determines which site is the "main posting"? This formula has not been sighted and is not currently documented.
-2. **Compliance scope** — Once the main posting is determined, does the resident follow only the main posting's compliance targets, or do both sites' targets apply simultaneously? Can the TTF targets for each site differ?
-
-**Rule:** Any compliance result row where `is_dual_posted = true` (as returned by the SQL batch query) must be decorated with a warning before being returned to the caller.
+Residents with more than one distinct active `posting_code` in a reporting period may have compliance calculated using multi-posting rules. The `compliance_unreliable` flag fires only when two posting codes are detected in the same month and **no matching rule is found** in `multi_posting_rules`.
 
 ```python
 def annotate_dual_posting_warnings(rows: list[dict]) -> list[dict]:
     for row in rows:
-        if row.get('is_dual_posted'):
+        if row.get('is_dual_posted') and row.get('no_rule_found'):
             row['compliance_unreliable'] = True
             row['compliance_unreliable_reason'] = (
-                "Resident is dual-posted this period. Compliance figures are "
-                "provisional until the main-posting rule is confirmed (TBD)."
+                "Resident has multiple postings this month with no matching "
+                "multi-posting rule. Compliance figures are provisional — "
+                "add a rule in Admin > Multi-Posting Rules."
             )
         else:
             row['compliance_unreliable'] = False
@@ -501,105 +529,207 @@ def annotate_dual_posting_warnings(rows: list[dict]) -> list[dict]:
     return rows
 ```
 
-This applies to **all** admin report endpoints and the resident dashboard. The compliance numbers are still returned (so PCs can see the provisional picture), but the flag allows the UI to render a warning badge and prevents automated pass/fail decisions from being made on unreliable rows.
+If a `multi_posting_rules` row matches and the rule type is applied correctly (combine / half_month / main_posting), compliance is fully reliable and the flag does NOT fire.
 
 ---
 
-## TBD-1: Details of Training — Keyword-Based Filtering
+## BL-8: Multi-Posting Compliance Rules
 
-**Status:** PM keyword list incoming — deduplication and "and others" ambiguity resolved by PMs.
+Three rule types govern how multiple posting codes in the same RDB month-cell are handled for compliance.
 
-**Confirmed behaviour:**
+### combine type
 
-1. Each `teaching_targets` row has a `details_of_training` field containing comma-separated keywords (e.g. "Journal Club, Grand Round, M&M").
-2. Each keyword maps to exactly ONE session type within a posting per programme (no ambiguity). Validated at TTF upload time.
-3. **Secretary dropdown:** `GET /secretary/teaching-name-options` queries the union of all `details_of_training` keywords across ALL programmes at the secretary's `posting_code`. The event is programme-agnostic — the secretary picks a name, not a session type.
-4. **Session type resolution happens at attendance submission time, per resident.** When a resident submits attendance for an event, the backend looks up `teaching_targets` WHERE `posting_code = event.posting_code` AND `programme_code = resident.programme_code` AND `details_of_training` contains `teaching_name`. The matched row's `session_type_id` is used for compliance. The same event resolves to different session types for residents of different native programmes.
+Two posting codes appear in the same RDB cell and match a `combine` rule → a single `resident_postings` row is created with `combined_label` as posting_code (e.g. `IMHGrPsyc & TTSHPsychi`).
 
-   **Duration tiebreaker:** If `teaching_name` alone matches multiple session types at the same posting (edge case — e.g. "Multidisciplinary Meeting" appearing in both `Department/Programme Teaching [1h]` and `Case-based Teaching [0.75h]`), `duration_hours` from the event is used as a secondary discriminator to resolve to the correct session type. The deduplication rule therefore is: within a posting, each `(keyword, duration)` combination must map to exactly one session type.
-5. **Resident visibility filter:** A resident sees events at both their **current posting** AND their **native programme posting** (if different). Within each posting, events are filtered to only those whose `teaching_name` keyword appears in the resident's native programme TTF for that posting. A GRM resident and an Anaes resident at the same posting may see different events.
-6. **Compliance matching:** Attendance → `teaching_name` + `posting_code` + resident's `programme_code` + `r_year` → `teaching_targets` row → `session_type_id` and compliance target.
+- Secretaries at both individual sites create teaching events under their own posting codes (IMHGrPsyc and TTSHPsychi separately)
+- Compliance = total attended across both sites / total sessions created by both secretaries combined
+- The combined posting label must have its own TTF row — compliance targets are from that combined row
+- Posting order in the label (e.g. `IMHGrPsyc & TTSHPsychi` vs `TTSHPsychi & IMHGrPsyc`) indicates which site the resident starts at first — no compliance impact
 
-**Placeholder implementation:** Until TTF `details_of_training` is populated, the secretary dropdown shows all session types at the posting, and residents see all events at their current and native postings without keyword filtering.
+### half_month type
 
-## TBD-6: Refresher Training Compliance Treatment
+Two posting codes appear in the same RDB cell and match a `half_month` rule (currently only TTSHGas / NUHGas) → two separate `resident_postings` rows are created, each with `active_months_weight = 0.5`.
 
-**Status:** Awaiting PM confirmation.
+- Both `active_months` and `Target(mth)` are halved per posting
+- Numerator sessions count fully at each posting — no numerator weighting
+- A resident can accumulate 1.5 months at TTSHGas and 0.5 months at NUHGas across a period
 
-Refresher Training annotations are captured and stored in `resident_postings` (`refresher_training_type`, `refresher_training_start`, `refresher_training_end`). No business logic currently acts on them. The R system had no explicit handling for Refresher Training — cells likely passed through as garbled posting codes or were partially stripped, meaning the annotation was silently lost. The new system captures the data correctly at parse time, but no calculation acts on it until confirmed.
+### main_posting type (FM)
 
-**Questions pending PM confirmation:**
-- **Active months denominator** — When a resident has a Refresher Training annotation for part of a posting month, should that period count toward their `active_months` denominator for compliance, or should it be excluded similarly to LOA?
-- **Add to Max Cand** — Does `add to Max Cand` mean the resident counts toward the maximum candidate cap for that posting during the Refresher Training period? And does `don't add to Max Cand` exclude them from that cap entirely? This is a distinct question from the compliance denominator — it affects posting-level headcount caps, not just the individual resident's calculation.
+Multiple posting codes appear in a single FM sheet cell. Look up `multi_posting_rules` for this programme + posting codes → if a match is found, collapse to `main_posting_code`.
 
-## TBD-7: LOA and Employed Compliance Treatment
-
-**Status:** Awaiting PM confirmation.
-
-**Important context:** The R system's behaviour of excluding LOA and Employed months was a **silent byproduct of how cells were parsed**, not an explicit design decision. LOA and XXX-Employed cells were stripped entirely during RDB parsing, treated as blank — no posting row was created, no data was retained. This silently reduced the compliance denominator and excluded employed residents from compliance calculation entirely. The new system captures this data properly but currently mirrors the R output by filtering to `status = 'active'` only until a deliberate decision is made.
-
-**Questions pending PM confirmation:**
-- **LOA months** — When a resident is on LOA for one or more months in a reporting period, should those months be excluded from their compliance denominator (i.e. not penalised for months on leave), or should LOA months count as normal active months where compliance is still expected?
-- **Employed residents** — Residents on SAF-Employed, SCDF-Employed, KTPH-Employed and other employed postings are currently excluded from compliance calculations entirely. Is this the intended behaviour going forward, or should employed residents appear in compliance reporting with their employed months explicitly flagged?
-
-## Confirmed Decisions (previously TBD)
-
-**Admin scope (TBD-3):** Admin/PC accounts are programme-scoped. 
-Each account is linked to one or more programmes via users.programme_scope 
-and only sees data for those programmes.
-
-**Surplus period boundary (TBD-4):** Confirmed in BL-4 — surplus resets 
-to zero at each reporting period boundary. ✅ Already correct in BL-4.
-
-**Recurrence editing (TBD-5):** All three options are required — 
-"this event only", "this and all following", "all events in the series".
-
-**Reallocation scope:** Tag-group-only confirmed. Surplus cannot flow 
-across tag groups or across postings. ✅ Already correct in BL-3.
+- If no match found for any posting code in the cell → fall back to `exclusion_code` (NHGPlyNHGPly for FM)
+- This handles the FM polyclinic rotation where residents alternate between specialty departments and NHGPly
 
 ---
 
-## BL-FM: FM (Family Medicine) Compliance Variant
+## BL-FM: FM (Family Medicine) — Standard Engine with Specific Annotations
 
-**Status:** Special arrangements confirmed with FM PCs. Full implementation details to be re-confirmed before development begins. Do NOT apply standard BL-1 through BL-7 logic to FM without reading this section first.
+**FM uses the standard compliance engine (BL-1 through BL-7).** There is no separate FM compliance variant. Two FM-specific rules apply as annotations within the standard path:
 
-**What is confirmed:**
-- FM uses `programmes.compliance_variant = 'fm'`
-- FM has structural differences from the standard compliance calculation path
-- The R script explicitly used a separate Excel template (`Template-Programme Reporting View-Single FM.xlsx`) for FM output, indicating the reporting structure differs
+**Rule 1 — Department Teaching [5h] posting override:**
+When an FM resident submits attendance for a session of type `Department Teaching [5h]`, the posting for compliance attribution is always overridden to `NHGPlyNHGPly`, regardless of what posting site the event was created under.
 
-**What needs re-confirmation before implementation:**
-- The exact compliance threshold FM uses (whether it differs from 70%)
-- Whether FM session types follow the same capping rule (BL-1) or a different one
-- Whether reallocation (BL-3) applies to FM or is disabled
-- The exact sheet structure differences that required a separate template in the R script
-- Whether FM R year handling follows the standard path
-
-**Developer instruction:** When building the compliance engine, branch on `programmes.compliance_variant` early:
 ```python
-if programme.compliance_variant == 'fm':
-    return compute_fm_compliance(...)   # FM-specific path — DO NOT implement until spec confirmed
-else:
-    return compute_standard_compliance(...)
+# Applied at attendance submission time and compliance read time
+if programme_code == 'FM' and session_type_name == 'Department Teaching [5h]':
+    compliance_posting_code = 'NHGPlyNHGPly'
 ```
 
-Do not implement the FM path with guessed logic. Leave it as a `NotImplementedError` stub until the spec is confirmed and this section is updated.
+**Rule 2 — FM Saturday exception:**
+FM Saturday teachings are accepted if `start_time >= 08:00` and `end_time <= 13:00`. This is handled via the `weekend_exceptions` table with a row: `programme_code = 'FM'`, `day_type = 'sat'`, `start_time_min = 08:00`, `end_time_max = 13:00`.
+
+**Reporting:** FM output uses the same compliance calculation as all other programmes. The R script's separate Excel template for FM was a layout difference only — not a calculation difference. No separate report template is needed in the new system.
 
 ---
 
-## TBD-PH: Public Holiday Impact on Compliance Denominator
+## BL-9: Ad-hoc Teaching Submissions
 
-**Status:** Awaiting PM confirmation.
+Residents can submit ad-hoc teachings not pre-created by secretaries via `POST /resident/adhoc-teaching`.
 
-PH detection (`is_public_holiday`) and weekend exception logic are fully implemented in BL-5. What is unconfirmed is the denominator impact:
+**Flow:**
+1. Resident provides: `date`, `start_time`, `teaching_name`
+2. System derives `posting_code` from `resident_postings` for the given date (status IN ('active', 'loa_working'))
+3. System resolves `session_type_id` from `teaching_name_catalogue` (same logic as secretary event creation)
+4. System creates a `teaching_events` row with `is_adhoc = true`
+5. System creates an `attendance_records` row in the same transaction
+6. `end_time` = `start_time + session_type.duration_hours`
 
-**Option A — Display only:** Teachings on public holidays are flagged in the UI for visibility but do NOT affect the compliance denominator or the active_months count. This is the simpler path and mirrors typical practice.
+**Compliance treatment:** Ad-hoc sessions are treated identically to secretary-created sessions for compliance purposes. `is_tracked` and session type resolution follow the same rules.
 
-**Option B — Excluded from denominator:** Teaching events that fall on a public holiday are excluded from both the numerator (not counted toward compliance) and the denominator (the monthly target is pro-rated to exclude PH days). This requires knowing the number of working days in each posting phase.
+**Validation:**
+- Date must not be a public holiday (422 if PH)
+- Teaching name must exist in `teaching_name_catalogue` for the resident's posting + programme + r_year (422 if not found)
+- Duplicate detection (BL-5) applies
 
-**Current placeholder:** Treating PH teachings as display-flag only (Option A). Do not change this until PM confirms Option B is required.
+---
 
-**Impact if Option B is confirmed:** The `active_months` denominator calculation in BL-1 would need to be replaced with an `active_working_days` calculation that subtracts public holidays and weekends (where not exception-approved) from each posting phase duration. This is a significant change to the compliance engine.
+## BL-10: Clawback Calculation
+
+Generated at period close for residents who failed to meet the 70% PTT threshold.
+
+**Trigger condition:** Any `(resident, posting)` where `percentage(posting) < 0.70` AND the posting has at least one active month.
+
+**Exclusions (no clawback row generated):** SAF-Employed and SCDF-Employed residents.
+
+**Suppressed rows (row generated, amount = 0):** Extension status residents, R7 residents. Set `clawback_suppressed_reason` accordingly. Row is still shown in clawback tab.
+
+**Formula:**
+```python
+def compute_clawback(
+    programme: str,
+    r_year: str,           # 'R1'…'R6', 'SS1'…'SS3', 'R7'
+    active_months: float,
+    norm_rates: dict,      # {'R1': x, 'R2': y, ...} seeded from template
+    norm_rates_fm: dict,   # {'R1': a, 'R2': b, 'R3': c}
+    im_programmes: list,   # programme codes classed as IM sub-specialty
+    non_im_senior_rate: float,
+    sr_rate: float,
+) -> float:
+    if r_year == 'R7':
+        return 0.0   # R7 suppressed
+    if programme == 'FM':
+        rate = norm_rates_fm.get(r_year, 0)
+    elif r_year.startswith('SS'):
+        rate = sr_rate
+    elif programme == 'IM':
+        rate = sr_rate
+    elif programme in im_programmes:
+        rate = non_im_senior_rate
+    elif r_year in norm_rates:
+        rate = norm_rates[r_year]
+    else:
+        return 0.0  # ERR18 — r_year not found
+    return round((rate / 12) * active_months, 2)
+```
+
+**Clawback tab:** Displayed as a 5th tab in the admin/PC dashboard alongside Monthly View, Posting View, Attendance Breakdown, Submitted Attendances. Read-only. Generated/refreshed at period close. Visible to admin/PC role only.
+
+---
+
+## BL-11: R Year Not Required Programmes
+
+22 of the 28 programmes do not differentiate teaching targets by residency year. For these programmes, `r_year_required = false` on the `programmes` table.
+
+### Sentinel value
+
+Both `resident_postings.r_year` and `teaching_targets.r_year` are set to `'ALL'` for these programmes at parse/upload time.
+
+### TTF matcher rule
+
+```python
+def r_year_matches(target_r_year: str, posting_r_year: str) -> bool:
+    """
+    target_r_year: from teaching_targets.r_year
+    posting_r_year: from resident_postings.r_year
+    """
+    if target_r_year == 'ALL' or posting_r_year == 'ALL':
+        return True
+    return target_r_year == posting_r_year
+```
+
+### Subspecialty R year remapping
+
+For programmes with `is_subspecialty = true` (SPORTSMED, PALLMED), the RDB parser remaps r_year values at parse time:
+
+```python
+if programme.is_subspecialty:
+    r_year_map = {'R4': 'SS1', 'R5': 'SS2', 'R6': 'SS3'}
+    r_year = r_year_map.get(r_year, r_year)
+```
+
+### RDB alias normalisation
+
+For programmes with a non-NULL `rdb_alias`, the RDB parser normalises the programme name on upload:
+
+```python
+# Applied when reading RDB Specialization column
+ALIAS_MAP = {
+    'Infectious Disease': 'ID',
+    'Renal Medicine Extended': 'RENAL',
+    'Surgery-in-General': 'SIG',
+    'Microbiology': 'MICROB',
+}
+programme_code = ALIAS_MAP.get(raw_specialization, raw_specialization)
+```
+
+### r_year_required = false (22 programmes)
+AIM, CARDIO, EM, ENDO, ENT, EYE, GASTRO, GERI, GS, ID, IM, MEDONCO, ORTHO, PATH, REHAB, RENAL, RHEUM, SPORTSMED, SIG, URO, MICROB, PALLMED
+
+### r_year_required = true (6 programmes)
+ANAES, DERM, DR, FM, PSY, RESPI
+
+---
+
+## TBD-6: Refresher Training Compliance Treatment ✅ CLOSED
+
+**Status: Closed.** Handled automatically by FormF1 active/inactive gate.
+
+Refresher Training months that render a resident inactive appear as `Inactive` in FormF1 — no separate handling needed. The compliance denominator is governed by FormF1, not by RDB Refresher Training annotations.
+
+The `add to Max Cand` / `don't add to Max Cand` flag is stored as a display annotation on `resident_postings.refresher_training_type`. No compliance impact. No code action needed beyond storing the value for display.
+
+---
+
+## TBD-7: Active/Inactive Source — FormF1 vs RDB
+
+**Status:** FormF1 is the confirmed default. Architectural decision formally open.
+
+**Current behaviour (FormF1 default):**
+- `form_f1_records.is_active` per calendar month is the denominator gate
+- Active status values: `Active`, `Extension` → is_active = true
+- Inactive → is_active = false → excluded from both numerator and denominator
+- Employed residents: Active in FormF1 (they have real postings in RDB, no funding/clawback)
+- LOA months that render a resident inactive appear as Inactive in FormF1 — no separate LOA compliance logic needed
+
+**Why FormF1 over RDB for active/inactive:**
+FormF1 is calculated on calendar month basis, aligning with compliance targets. RDB posting phases use academic months (e.g. `08 Jul 25 - 03 Aug 25`). Using RDB academic phases to derive active/inactive creates date boundary inconsistencies with calendar-month compliance targets.
+
+**If decision shifts to RDB:**
+This would be a compliance engine code change only — schema is already ready. `loa_types` reference table and `working_days_in_month` on `resident_postings` are already stored. The ≥15 working calendar days rule (calendar days minus LOA days) would replace the FormF1 gate.
+
+**Refresher Training and Employed treatment under FormF1:**
+Both are handled automatically via FormF1 values. No special-case code needed.
 
 ---
 
@@ -607,15 +737,37 @@ PH detection (`is_public_holiday`) and weekend exception logic are fully impleme
 
 **Status:** Awaiting stakeholder decision before first period close.
 
-The legacy system produced Excel outputs (Programme Reporting View, Resident Dashboards, consolidated attendance files) across multiple reporting periods. Three options exist for handling this history:
-
 **Option A — Archive only (recommended default):**
-Legacy Excel files remain accessible on the shared drive. The new system holds data only from the cutover period onwards. PCs query history in the old files. Zero migration effort. Recommended unless there is a specific regulatory or operational requirement to query history through the new system.
+Legacy Excel files remain accessible. New system holds data from cutover period onwards. Zero migration effort.
 
 **Option B — Summary migration:**
-Write a one-time script that reads the legacy Programme Reporting View Excel files and inserts summary-level compliance records into a `legacy_compliance_records` table (separate from the live schema). Enough for historical reporting queries without recreating every individual attendance record. Medium effort — requires building an Excel parser for the legacy output format.
+One-time script reads legacy Programme Reporting View Excel files and inserts summary-level compliance records. Medium effort.
 
 **Option C — Full migration:**
-Parse the original FormSG CSVs and legacy `.rds` snapshot files and insert them as `attendance_records` and `resident_postings` into the new DB. Highest fidelity — full historical data queryable through the new system. Highest effort — requires porting the R script parsing logic to Python as a one-time migration job. Only warranted if there is a regulatory requirement to have all historical data in the same system.
+Parse original FormSG CSVs and legacy `.rds` snapshot files. Highest fidelity, highest effort.
 
-**Developer instruction:** Do not build any migration tooling until the option is confirmed. The decision does not affect the core system schema or business logic — it is purely additive.
+**Developer instruction:** Do not build any migration tooling until the option is confirmed.
+
+---
+
+## Confirmed Decisions (previously TBD)
+
+**Admin scope (TBD-3):** Admin/PC accounts are programme-scoped via `users.programme_scope TEXT[]`.
+
+**Surplus period boundary (TBD-4):** Surplus resets to zero at each reporting period boundary. ✅
+
+**Recurrence editing (TBD-5):** All three options required — "this event only", "this and all following", "all events in the series".
+
+**Reallocation scope:** Tag-group-only confirmed. No cross-tag or cross-posting flow. ✅
+
+**TBD-PH (Public Holiday):** Hard block on event creation on PH dates (secretary and resident). Denominator question moot since no PH events can be created. ✅
+
+**TBD-2 (Dormant posting codes):** RDB posting code is canonical standard. Last `[]` bracket in TTF = RDB posting code. Dormant codes accepted with display_name = NULL. ✅
+
+**Dual posting (TBD-5 original):** Combined postings follow their own TTF row. Resolved via multi_posting_rules table and R script analysis. ✅
+
+**FM compliance variant:** FM uses standard engine. No NotImplementedError stub. Two FM-specific rule annotations apply. ✅
+
+**TBD-6 (Refresher Training):** Closed. Handled automatically by FormF1 gate. No compliance action needed. ✅
+
+**BL-11 (R year not required programmes):** Closed. `r_year = 'ALL'` sentinel, 22 programmes confirmed, TTF matcher rule documented. ✅
