@@ -300,6 +300,29 @@ The following strings appear in RDB cells but are handled as cell annotation/sta
 - `Refresher Training (add to Max Cand)` — sets `refresher_training_type`, no compliance impact
 - `Refresher Training (don't add to Max Cand)` — sets `refresher_training_type`, no compliance impact
 
+### Cell Normalisation Before Parsing
+
+Before classifying any posting cell, `rdb_parser.py` must normalise harmless Excel formatting drift:
+
+- Preserve the raw original cell value for upload warnings and audit logs
+- Convert `None` to an empty string
+- Replace non-breaking spaces with normal spaces
+- Normalise line endings (`\r\n`, `\r`) to `\n`
+- Trim leading/trailing whitespace from the full cell and each line
+- Remove empty lines after line-ending normalisation and trimming
+- Collapse repeated internal whitespace only in parser-controlled tokens such as dates and annotation wrappers; do not alter posting codes, LOA type names, or free-text values used for audit/display
+- Normalise date tokens with spaced hyphens:
+  - `06 - Apr - 2026` → `06-Apr-2026`
+  - `06- Apr-2026` → `06-Apr-2026`
+- Allow trailing whitespace before closing brackets, e.g. `... 31-Aug-2025 )`
+
+Normalisation must only fix syntax. It must not infer missing business intent.
+
+Examples:
+- `LOA (Maternity Leave from 22-Aug-2025 to 31-Aug-2025 )` is valid after trimming trailing whitespace.
+- `TTSHAnaes (Continue working during LOA from 06 - Apr - 2026 to 03 - May - 2026 )` is valid after date normalisation.
+- `Continue working during LOA ...` without an explicit posting code remains ambiguous and must emit a warning rather than inferring from adjacent cells.
+
 ### LOA Date Parsing
 
 LOA dates use format `DD-MMM-YYYY` (e.g. `01-Sep-2025`). Also handle variants with spaces around hyphens.

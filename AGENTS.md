@@ -94,7 +94,7 @@ This is a strict dependency chain. Each step requires the previous one to be com
 
 1. **Admin seeds multi-posting rules** → database seeded with combine/half_month/main_posting rules (one-time setup, managed via CRUD UI)
 2. **Admin uploads Public Holidays** → PH table populated, secretary event creation block active
-3. **Admin uploads RDB** → residents, postings, rotation schedule created. Multi-posting rules applied at parse time to FM and combined posting cells.
+3. **Admin uploads RDB** → residents, postings, rotation schedule created. Multi-posting rules applied at parse time to FM and combined posting cells. - Always apply RDB cell normalisation before posting cell classification (see docs/parsing.md)
 4. **Admin uploads TTF** → session types, teaching targets, secretary dropdowns seeded
 5. **Admin uploads FormF1** → active/inactive status per resident per calendar month seeded (denominator gate for compliance)
 6. **Secretary creates teaching events** → events appear in resident portal
