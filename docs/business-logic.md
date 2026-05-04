@@ -612,6 +612,19 @@ Generated at period close for residents who failed to meet the 70% PTT threshold
 
 **Exclusions (no clawback row generated):** SAF-Employed and SCDF-Employed residents.
 
+**IM sub-specialty programme classification (for clawback rate lookup):**
+Programmes are classified as IM sub-specialties based on their appearance 
+in the Phase 3 sheet of the RDB. These programmes use `non_im_senior_rate` 
+for clawback calculation.
+
+The confirmed list must be verified against Programme_ABBREV.xlsx — 
+the R script derives this dynamically at runtime from Phase 3 RDB 
+sheet contents, not from a hardcoded list.
+
+# TODO: Seed confirmed im_programmes list here once verified against 
+# Programme_ABBREV.xlsx Phase 3 sheet contents
+im_programmes = []  # placeholder — verify before seeding clawback.py
+
 **Suppressed rows (row generated, amount = 0):** Extension status residents, R7 residents. Set `clawback_suppressed_reason` accordingly. Row is still shown in clawback tab.
 
 **Formula:**
