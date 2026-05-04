@@ -124,7 +124,7 @@ Each step is a hard dependency on the previous:
 
 - Compliance is measured in **session counts, not hours** — 1 session = 1 session regardless of duration
 - The **70% threshold is at the posting level**, aggregated across all session types for that posting
-- Session type is resolved **per resident at attendance submission time** using their native programme's TTF and the event's `teaching_name + duration_hours` as the matching key — the same event may count as different session types for residents of different programmes
+- Session type is **not stored on attendance records**. It is resolved at compliance read time via teaching_name_catalogue using full context (posting, programme, r_year, reporting period).
 - Surplus sessions accumulate per `(resident, posting, session_type)` and hibernate when the resident rotates away; they resume on return and reset at each reporting period boundary
 - Tag-based reallocation allows longer-duration surplus to fill shorter-duration shortfall within the same tag group at a posting
 

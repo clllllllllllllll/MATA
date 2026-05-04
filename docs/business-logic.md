@@ -577,7 +577,7 @@ if programme_code == 'FM' and session_type_name == 'Department Teaching [5h]':
 ```
 
 **Rule 2 — FM Saturday exception:**
-FM Saturday teachings are accepted if `start_time >= 08:00` and `end_time <= 13:00`. This is handled via the `weekend_exceptions` table with a row: `programme_code = 'FM'`, `day_type = 'sat'`, `start_time_min = 08:00`, `end_time_max = 13:00`.
+FM Saturday exception is removed. Do not seed FM Saturday weekend exception.
 
 **Reporting:** FM output uses the same compliance calculation as all other programmes. The R script's separate Excel template for FM was a layout difference only — not a calculation difference. No separate report template is needed in the new system.
 
