@@ -695,23 +695,275 @@ Visibility follows the same rule as all other events — residents only see even
 
 ---
 
-## Indexes
+## Index Requirements
+
+Indexes are part of the schema contract. Implement them in SQLAlchemy models and Alembic migrations, and keep index names stable so migrations remain readable.
+
+### General rules
+
+- Add indexes for all foreign-key columns that are used in joins or filters.
+- Add composite indexes for high-frequency query paths; do not rely on single-column indexes when the query always filters by multiple fields.
+- Do not add indexes for every column. Indexes improve reads but slow writes and increase storage, which matters for bulk uploads.
+- Unique constraints already create indexes in PostgreSQL. Do not duplicate equivalent unique indexes unless a different column order is required for a known query path.
+- Prefer partial indexes for active/status-filtered lookups where the predicate is stable, for example `status = 'submitted'` or `is_active = true`.
+- Use PostgreSQL GIN indexes only where appropriate, especially array fields such as `users.programme_scope`.
+- Revisit indexes after Phase 6 admin report/compliance SQL is implemented using `EXPLAIN ANALYZE` on real-ish sample data.
+
+### Required indexes by table
+
+#### `programmes`
 
 ```sql
--- High-frequency lookups
-CREATE INDEX idx_resident_postings_resident ON resident_postings(resident_id);
-CREATE INDEX idx_resident_postings_posting ON resident_postings(posting_code);
-CREATE INDEX idx_resident_postings_period ON resident_postings(reporting_period_id);
-CREATE INDEX idx_attendance_resident ON attendance_records(resident_id);
-CREATE INDEX idx_attendance_event ON attendance_records(teaching_event_id);
-CREATE INDEX idx_teaching_events_posting ON teaching_events(posting_code);
-CREATE INDEX idx_teaching_events_date ON teaching_events(event_date);
-CREATE INDEX idx_teaching_targets_lookup ON teaching_targets(reporting_period_id, programme_code, posting_code);
-CREATE INDEX idx_surplus_resident ON surplus_ledger(resident_id, posting_code, session_type_id);
-CREATE INDEX idx_form_f1_lookup ON form_f1_records(reporting_period_id, mcr, month_label);
-CREATE INDEX idx_multi_posting_rules_lookup ON multi_posting_rules(programme_code, posting_code_1, posting_code_2);
-CREATE INDEX idx_catalogue_lookup ON teaching_name_catalogue(keyword, posting_code, programme_code, r_year, reporting_period_id);
-CREATE INDEX idx_posting_groups_lookup ON posting_groups(posting_code, programme_code);
-CREATE INDEX idx_posting_groups_group ON posting_groups(group_code, programme_code);
-CREATE INDEX idx_global_session_types_name ON global_session_types(name) WHERE is_active = true;
+-- UNIQUE(code) already covers direct programme lookup.
+CREATE INDEX idx_programmes_rdb_alias
+ON programmes(rdb_alias)
+WHERE rdb_alias IS NOT NULL;
 ```
+
+#### `posting_codes`
+
+```sql
+-- UNIQUE(code) already covers canonical posting lookup.
+CREATE INDEX idx_posting_codes_institution_department
+ON posting_codes(institution, department);
+```
+
+#### `reporting_periods`
+
+```sql
+-- Fast lookup of the current/open period.
+CREATE INDEX idx_reporting_periods_status
+ON reporting_periods(status);
+
+CREATE INDEX idx_reporting_periods_date_range
+ON reporting_periods(start_date, end_date);
+```
+
+#### `residents`
+
+```sql
+-- UNIQUE(mcr) and UNIQUE(employee_code) cover login/import identity lookups.
+CREATE INDEX idx_residents_programme_status
+ON residents(programme_code, status);
+
+CREATE INDEX idx_residents_employer_tag
+ON residents(employer_tag)
+WHERE employer_tag IS NOT NULL;
+```
+
+#### `resident_postings`
+
+```sql
+-- RDB upload replacement, resident dashboard current-posting lookup, and compliance active phase lookup.
+CREATE INDEX idx_resident_postings_period_resident
+ON resident_postings(reporting_period_id, resident_id);
+
+CREATE INDEX idx_resident_postings_resident_period_dates
+ON resident_postings(resident_id, reporting_period_id, start_date, end_date);
+
+CREATE INDEX idx_resident_postings_period_posting_status
+ON resident_postings(reporting_period_id, posting_code, status);
+
+CREATE INDEX idx_resident_postings_compliance_phase
+ON resident_postings(reporting_period_id, resident_id, posting_code, r_year, status);
+
+CREATE INDEX idx_resident_postings_month_label
+ON resident_postings(reporting_period_id, month_label);
+```
+
+#### `teaching_targets`
+
+```sql
+-- UNIQUE(reporting_period_id, programme_code, r_year, posting_code, session_type_id) already exists.
+-- This supports target lookup by posting/programme/year before grouping by session type.
+CREATE INDEX idx_teaching_targets_lookup
+ON teaching_targets(reporting_period_id, programme_code, posting_code, r_year);
+
+CREATE INDEX idx_teaching_targets_reallocation
+ON teaching_targets(reporting_period_id, programme_code, posting_code, tag)
+WHERE is_reallocatable = true;
+```
+
+#### `teaching_name_catalogue`
+
+```sql
+-- Critical compliance/event-visibility lookup.
+CREATE INDEX idx_teaching_name_catalogue_resolution
+ON teaching_name_catalogue(reporting_period_id, programme_code, posting_code, r_year, keyword);
+
+CREATE INDEX idx_teaching_name_catalogue_session_type
+ON teaching_name_catalogue(session_type_id);
+
+CREATE INDEX idx_teaching_name_catalogue_tracked
+ON teaching_name_catalogue(reporting_period_id, programme_code, posting_code, r_year, is_tracked);
+```
+
+#### `teaching_events`
+
+```sql
+CREATE INDEX idx_teaching_events_posting_date
+ON teaching_events(posting_code, event_date);
+
+CREATE INDEX idx_teaching_events_series
+ON teaching_events(series_id)
+WHERE series_id IS NOT NULL;
+
+CREATE INDEX idx_teaching_events_name_date
+ON teaching_events(teaching_name, event_date);
+
+CREATE INDEX idx_teaching_events_adhoc
+ON teaching_events(is_adhoc, event_date)
+WHERE is_adhoc = true;
+```
+
+#### `event_series`
+
+```sql
+CREATE INDEX idx_event_series_posting
+ON event_series(posting_code);
+```
+
+#### `attendance_records`
+
+```sql
+-- UNIQUE(resident_id, teaching_event_id) already prevents duplicate submission.
+CREATE INDEX idx_attendance_records_resident_status
+ON attendance_records(resident_id, status);
+
+CREATE INDEX idx_attendance_records_event_status
+ON attendance_records(teaching_event_id, status);
+
+CREATE INDEX idx_attendance_records_submitted_at
+ON attendance_records(submitted_at);
+
+CREATE INDEX idx_attendance_records_submitted_resident_event
+ON attendance_records(resident_id, teaching_event_id)
+WHERE status = 'submitted';
+```
+
+#### `surplus_ledger`
+
+```sql
+CREATE INDEX idx_surplus_ledger_lookup
+ON surplus_ledger(reporting_period_id, resident_id, posting_code, session_type_id);
+
+CREATE INDEX idx_surplus_ledger_hibernation
+ON surplus_ledger(reporting_period_id, is_hibernating);
+```
+
+#### `form_f1_records`
+
+```sql
+-- UNIQUE(reporting_period_id, mcr, month_label) already exists.
+CREATE INDEX idx_form_f1_records_active_lookup
+ON form_f1_records(reporting_period_id, mcr, month_label, is_active);
+
+CREATE INDEX idx_form_f1_records_upload
+ON form_f1_records(upload_id)
+WHERE upload_id IS NOT NULL;
+```
+
+#### `public_holidays`
+
+```sql
+-- UNIQUE(holiday_date) should exist for idempotent upsert.
+CREATE INDEX idx_public_holidays_year
+ON public_holidays(EXTRACT(YEAR FROM holiday_date));
+```
+
+#### `multi_posting_rules`
+
+```sql
+CREATE INDEX idx_multi_posting_rules_lookup
+ON multi_posting_rules(programme_code, posting_code_1, posting_code_2, rule_type);
+
+CREATE INDEX idx_multi_posting_rules_reverse_lookup
+ON multi_posting_rules(programme_code, posting_code_2, posting_code_1, rule_type);
+```
+
+#### `posting_groups`
+
+```sql
+CREATE INDEX idx_posting_groups_posting_programme
+ON posting_groups(posting_code, programme_code);
+
+CREATE INDEX idx_posting_groups_group_programme
+ON posting_groups(group_code, programme_code);
+```
+
+#### `weekend_exceptions`
+
+```sql
+CREATE INDEX idx_weekend_exceptions_lookup
+ON weekend_exceptions(programme_code, posting_code, day_type);
+
+CREATE INDEX idx_weekend_exceptions_session_type
+ON weekend_exceptions(session_type_id)
+WHERE session_type_id IS NOT NULL;
+```
+
+#### `users`
+
+```sql
+-- UNIQUE(email) should exist for admin/secretary login.
+CREATE INDEX idx_users_role
+ON users(role);
+
+CREATE INDEX idx_users_posting_code
+ON users(posting_code)
+WHERE posting_code IS NOT NULL;
+
+CREATE INDEX idx_users_programme_scope_gin
+ON users USING GIN(programme_scope);
+```
+
+#### `upload_logs`
+
+```sql
+CREATE INDEX idx_upload_logs_type_created
+ON upload_logs(upload_type, created_at DESC);
+
+CREATE INDEX idx_upload_logs_period_programme
+ON upload_logs(reporting_period_id, programme_code);
+
+CREATE INDEX idx_upload_logs_uploaded_by
+ON upload_logs(uploaded_by);
+```
+
+#### `period_snapshots`
+
+```sql
+CREATE INDEX idx_period_snapshots_period_programme
+ON period_snapshots(reporting_period_id, programme_code);
+```
+
+#### `clawback_records`
+
+```sql
+CREATE INDEX idx_clawback_records_period_programme
+ON clawback_records(reporting_period_id, programme_code);
+
+CREATE INDEX idx_clawback_records_resident
+ON clawback_records(resident_id);
+```
+
+#### `global_session_types`
+
+```sql
+CREATE INDEX idx_global_session_types_active_name
+ON global_session_types(name)
+WHERE is_active = true;
+```
+
+### Performance verification checklist
+
+After Phase 6 reporting/compliance queries exist, verify the following query families with `EXPLAIN ANALYZE`:
+
+- resident current-posting lookup by `(resident_id, reporting_period_id, today)`
+- resident visible events by `(posting_code, event_date)`
+- attendance lookup by `(resident_id, teaching_event_id)` and submitted status
+- compliance catalogue resolution by `(reporting_period_id, programme_code, posting_code, r_year, keyword)`
+- admin report batch query by `(reporting_period_id, programme_code)`
+- upload log browsing by `upload_type`, `reporting_period_id`, `programme_code`, `created_at`
+
+---

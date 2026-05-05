@@ -54,6 +54,104 @@ X-User-Site: <posting_code>          # secretary only
 
 ---
 
+## Cross-Cutting API Security, Validation, Rate Limiting, and Caching
+
+These rules apply to every endpoint unless a stricter endpoint-specific rule is documented.
+
+### Request validation and sanitisation
+
+- Validate all request bodies, query parameters, path parameters, and uploaded files with Pydantic schemas or explicit parser validation before any database write.
+- Reject unknown enum values with `422` unless the relevant parser spec explicitly says the value is stored with a warning.
+- Normalize user-controlled string inputs by trimming leading/trailing whitespace and rejecting control characters where not meaningful.
+- Do not use client-provided filenames for storage paths or parser selection. Upload slot determines parser selection; filename is audit-only.
+- Enforce server-side file validation on upload endpoints:
+  - allowed extensions: `.xlsx` for RDB, TTF, FormF1; `.xlsx` or `.csv` for public holidays
+  - validate MIME/content where practical
+  - enforce maximum upload size from config
+  - reject password-protected or unreadable workbooks with `422`
+- All write endpoints must be idempotent only where explicitly documented. Otherwise duplicate/conflict cases return `409`.
+
+### SQL injection protection
+
+- Use SQLAlchemy ORM/query builder or parameterised raw SQL only.
+- Never interpolate user input into SQL strings, including identifiers, sort fields, filters, search terms, or `ORDER BY` clauses.
+- For dynamic sorting/filtering, map accepted public field names to hardcoded model columns.
+- PostgreSQL advisory-lock keys must be derived from validated internal IDs or deterministic hashes, not raw concatenated user strings.
+
+### XSS and response safety
+
+- API responses are JSON by default and must not intentionally return executable HTML.
+- Do not trust stored free-text fields such as `teaching_name`, `details_of_training`, `posting_code`, `display_name`, or uploaded filename. They must be treated as plain text by the frontend.
+- Backend-generated export files must escape spreadsheet formula injection. Any exported cell beginning with `=`, `+`, `-`, or `@` from user-controlled data must be prefixed safely before writing CSV/XLSX.
+- Error responses must not leak stack traces, SQL errors, internal paths, environment variables, secrets, or raw parser internals.
+- Security headers middleware should set at least:
+  - `X-Content-Type-Options: nosniff`
+  - `X-Frame-Options: DENY`
+  - `Referrer-Policy: no-referrer`
+  - a restrictive `Content-Security-Policy` for any non-API responses
+
+### Authentication and authorization
+
+- All non-auth endpoints require authenticated identity from middleware.
+- Authorization is server-side only. Frontend role checks are UX only.
+- Admin access is programme-scoped via `users.programme_scope`; `NULL` means no access, not all-access.
+- Secretary access is posting-scoped via `users.posting_code` / `X-User-Site`.
+- Resident access is identity-scoped via `residents.id`; current posting is derived from `resident_postings` at request time.
+- Do not expose resources across roles even when IDs are guessed correctly.
+
+### Rate limiting
+
+Implement rate limiting middleware before public/UAT use. In local Phase 1 it may be an in-memory implementation; production should use Redis or the deployment platform equivalent.
+
+Required default limits, configurable via environment variables:
+
+| Endpoint group | Suggested default | Key |
+|---|---:|---|
+| `POST /auth/login` | 5 attempts / minute | IP + role + identifier where available |
+| `POST /admin/upload/*` | 10 uploads / hour | authenticated admin id + upload type |
+| mutation endpoints (`POST`, `PUT`, `DELETE`) | 60 requests / minute | authenticated user id + route group |
+| report/export endpoints | 20 requests / minute | authenticated user id + report type |
+| resident attendance submission | 30 requests / minute | resident id |
+| general authenticated `GET` endpoints | 300 requests / minute | authenticated user id |
+
+When a limit is exceeded, return:
+
+```json
+{ "detail": "Too many requests" }
+```
+
+with HTTP `429` and `Retry-After` where possible.
+
+### Caching policy
+
+Caching is allowed only where it cannot violate role scope, freshness expectations, or auditability.
+
+Required cache rules:
+
+- Use a small cache abstraction/service rather than ad hoc module globals.
+- Cache keys must include all scope-defining inputs, especially `role`, `user_id`, `programme_scope`, `programme_code`, `posting_code`, `resident_id`, `reporting_period_id`, and query params where relevant.
+- Never cache authentication responses, raw uploaded files, mutation responses, or error responses containing validation details.
+- Short-TTL cache is recommended for low-risk reference/config reads:
+  - `programmes`
+  - `loa_types`
+  - `global_session_types`
+  - `public_holidays`
+  - `posting_groups`
+  - `multi_posting_rules`
+  - `weekend_exceptions`
+  - `reporting_periods`
+- Compliance/report cache is allowed only with scoped keys and explicit invalidation. Suggested TTL: 30–120 seconds during normal operation.
+- Invalidate relevant cache entries after:
+  - any RDB, TTF, FormF1, or public holiday upload
+  - admin CRUD changes to config tables
+  - secretary teaching event create/update/delete
+  - resident attendance submit/delete
+  - reporting period close/reopen
+- Period snapshots are immutable after close except reopen/reclose flows; snapshot/export reads may use longer cache TTLs.
+- If distributed deployment is used, replace in-memory cache with Redis or the platform cache so invalidation works across workers.
+
+---
+
 ## Admin Endpoints
 
 ### POST `/admin/upload/rdb`

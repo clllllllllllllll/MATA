@@ -12,6 +12,7 @@ MATA tracks medical resident attendance at teaching events across hospital posti
 | Frontend | React (Vite + TypeScript) |
 | Database | PostgreSQL (local dev → Supabase hosted) |
 | Auth | Stubbed middleware initially → Supabase Auth later |
+| Cache / rate limit store | In-memory for local dev → Redis or platform equivalent for production |
 
 ## Repo Structure
 
@@ -274,6 +275,17 @@ Use `slowapi` for rate limiting and configure security headers via middleware. V
 - Maximum file size: 10MB per upload.
 - Never use client-provided filenames. Generate server-side filenames for any stored files.
 - Upload endpoints are admin-only. No resident or secretary file upload paths exist.
+
+
+### Database Performance, Indexing, Caching, and Rate Limits
+
+- Implement all indexes documented in `docs/schema.md` in SQLAlchemy models and Alembic migrations.
+- Add indexes for all high-frequency foreign-key joins and composite query paths used by resident dashboards, uploads, event visibility, compliance, and reports.
+- Do not invent indexes blindly for every column. Indexes must support documented query paths and should be revisited with `EXPLAIN ANALYZE` after Phase 6 reports exist.
+- Use a cache abstraction for reference/config reads and report/compliance reads where safe. In-memory TTL cache is acceptable for local/early phases; production or multi-worker deployment must use Redis or a platform cache.
+- Cache keys must include role and scope inputs. Never share cached admin/resident/secretary data across scopes.
+- Invalidate cache after uploads, admin config CRUD, teaching event mutations, attendance mutations, and reporting period close/reopen.
+- Implement rate limiting middleware before public/UAT use. Auth, upload, mutation, report/export, and resident attendance endpoints must have separate configurable limits.
 
 ### Secrets & Environment Variables
 

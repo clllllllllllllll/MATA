@@ -577,7 +577,7 @@ if programme_code == 'FM' and session_type_name == 'Department Teaching [5h]':
 ```
 
 **Rule 2 — FM Saturday exception:**
-FM Saturday exception is removed. Do not seed FM Saturday weekend exception.
+FM Saturday teachings are accepted if `start_time >= 08:00` and `end_time <= 13:00`. This is handled via the `weekend_exceptions` table with a row: `programme_code = 'FM'`, `day_type = 'sat'`, `start_time_min = 08:00`, `end_time_max = 13:00`.
 
 **Reporting:** FM output uses the same compliance calculation as all other programmes. The R script's separate Excel template for FM was a layout difference only — not a calculation difference. No separate report template is needed in the new system.
 
@@ -784,3 +784,50 @@ Parse original FormSG CSVs and legacy `.rds` snapshot files. Highest fidelity, h
 **TBD-6 (Refresher Training):** Closed. Handled automatically by FormF1 gate. No compliance action needed. ✅
 
 **BL-11 (R year not required programmes):** Closed. `r_year = 'ALL'` sentinel, 22 programmes confirmed, TTF matcher rule documented. ✅
+
+---
+
+## BL-12: Performance, Caching, and Read-Time Calculation Safety
+
+MATA compliance is calculated JIT (just-in-time) on read. Performance optimisations must not turn JIT compliance into stale stored business truth.
+
+### Caching rules
+
+- Compliance results may be cached only as derived read models, never as source-of-truth records.
+- Cache keys must include all inputs that affect the result:
+  - `resident_id` or admin identity/scope
+  - `programme_code`
+  - `posting_code` or `group_code` where relevant
+  - `reporting_period_id`
+  - report endpoint and query params
+  - role/scope information
+- Suggested TTL for live compliance/report results: 30–120 seconds.
+- Period snapshots generated at close are frozen records; snapshot/export reads may have longer TTLs.
+
+### Required invalidation triggers
+
+Invalidate affected compliance/report caches after:
+
+- RDB upload or re-upload
+- TTF upload, re-upload, or teaching target edit
+- FormF1 upload or re-upload
+- public holiday upload or public holiday CRUD change
+- `posting_groups`, `multi_posting_rules`, `weekend_exceptions`, `global_session_types`, `programmes`, or `loa_types` CRUD change
+- secretary teaching event create/update/delete
+- resident attendance submit/delete
+- resident ad-hoc teaching create
+- reporting period close/reopen
+
+### What must never be cached as authoritative
+
+- raw attendance rows
+- raw uploaded files
+- mutable upload parse warnings/errors
+- authentication results
+- authorization decisions without scope keying
+- `surplus_ledger` after tag reallocation; the ledger stores pre-reallocation values only
+
+### Query performance expectations
+
+Compliance and reporting queries must use the indexes documented in `docs/schema.md`. Admin report SQL should be checked with `EXPLAIN ANALYZE` once sample data exists. If performance remains poor, prefer query/index tuning before introducing materialised compliance tables.
+

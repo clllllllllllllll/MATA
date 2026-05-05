@@ -121,6 +121,7 @@ All five source-of-truth files (`schema.md`, `api.md`, `business-logic.md`, `par
 6. **TBD-7 (FormF1 vs RDB as active/inactive source) is an open architectural decision.** FormF1 is the confirmed default. Do NOT resolve in code. Gate on `form_f1_records.is_active`. Add: `# TBD-7: active/inactive source — FormF1 is default, RDB pivot held open`
 7. **TBD-MIGRATION (Historical data migration strategy) is open.** Do not build migration tooling until the option is confirmed.
 8. **For full detail on any rule, go to the authoritative source-of-truth file.** Do not rely on this navigation document alone.
+9. **Database performance, caching, and rate limiting are explicit implementation concerns.** Implement indexes from `schema.md`, cache only scoped derived/reference reads, invalidate caches on writes/uploads, and rate-limit auth/upload/mutation/report endpoints.
 
 > **⚠️ Most likely LLM mistake:** Treating these source-of-truth files as describing already-implemented code and trying to "fix" or "refactor" existing code that doesn't yet exist. The silent consequence is wasted effort building patches for non-existent code, or worse, generating code that assumes other modules are already functional when they are not.
 
@@ -183,6 +184,7 @@ All other TBDs (TBD-1 mechanism, TBD-2, TBD-3, TBD-4/PH, TBD-5, TBD-5b, TBD-6, T
 | Excel parsing | openpyxl | [Assumed — verify in `requirements.txt`] |
 | Auth (Phase 1) | Stub middleware | Headers: `X-User-Role`, `X-User-Id`, `X-User-Programme`, `X-User-Site` |
 | Auth (Phase 2) | Supabase Auth | JWT-based; RLS on sensitive tables |
+| Cache / rate limiting | In-memory local dev → Redis/platform store for production | Scoped TTL caching and rate-limit state |
 | Hosting | Supabase (DB) + Vercel (frontend) | [Assumed — AGENTS.md mentions Vercel for HTTPS] |
 
 **[Assumed — standard/org choice]:** The selection of FastAPI, React/Vite/TypeScript, and PostgreSQL/Supabase was not documented with explicit alternatives-considered reasoning. These are standard technology choices for this type of application.
