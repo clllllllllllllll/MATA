@@ -1,0 +1,241 @@
+from __future__ import annotations
+
+from datetime import date, time
+from decimal import Decimal
+from uuid import UUID
+
+from sqlalchemy import Boolean, Date, ForeignKey, Index, Numeric, String, Text, Time, UniqueConstraint, text
+from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.models.base import Base, UUIDTimestampMixin
+
+
+class SessionType(UUIDTimestampMixin, Base):
+    __tablename__ = "session_types"
+
+    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    duration_hours: Mapped[Decimal] = mapped_column(Numeric(4, 2), nullable=False)
+    duration_label: Mapped[str | None] = mapped_column(String(10), nullable=True)
+
+
+class TeachingTarget(UUIDTimestampMixin, Base):
+    __tablename__ = "teaching_targets"
+    __table_args__ = (
+        UniqueConstraint(
+            "reporting_period_id",
+            "programme_code",
+            "r_year",
+            "posting_code",
+            "session_type_id",
+            name="uq_teaching_targets_scope",
+        ),
+        Index(
+            "idx_teaching_targets_lookup",
+            "reporting_period_id",
+            "programme_code",
+            "posting_code",
+            "r_year",
+        ),
+        Index(
+            "idx_teaching_targets_reallocation",
+            "reporting_period_id",
+            "programme_code",
+            "posting_code",
+            "tag",
+            postgresql_where=text("is_reallocatable = true"),
+        ),
+    )
+
+    reporting_period_id: Mapped[UUID] = mapped_column(
+        ForeignKey("reporting_periods.id"),
+        nullable=False,
+    )
+    programme_code: Mapped[str] = mapped_column(
+        String(20),
+        ForeignKey("programmes.code"),
+        nullable=False,
+    )
+    r_year: Mapped[str] = mapped_column(String(10), nullable=False)
+    posting_code: Mapped[str] = mapped_column(
+        String(50),
+        ForeignKey("posting_codes.code"),
+        nullable=False,
+    )
+    session_type_id: Mapped[UUID] = mapped_column(
+        ForeignKey("session_types.id"),
+        nullable=False,
+    )
+    monthly_target: Mapped[int] = mapped_column(nullable=False)
+    is_tracked: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+    )
+    is_reallocatable: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    )
+    tag: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    details_of_training: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class TeachingNameCatalogue(UUIDTimestampMixin, Base):
+    __tablename__ = "teaching_name_catalogue"
+    __table_args__ = (
+        UniqueConstraint(
+            "keyword",
+            "posting_code",
+            "programme_code",
+            "r_year",
+            "reporting_period_id",
+            name="uq_teaching_name_catalogue_resolution",
+        ),
+        Index(
+            "idx_teaching_name_catalogue_resolution",
+            "reporting_period_id",
+            "programme_code",
+            "posting_code",
+            "r_year",
+            "keyword",
+        ),
+        Index(
+            "idx_teaching_name_catalogue_session_type",
+            "session_type_id",
+        ),
+        Index(
+            "idx_teaching_name_catalogue_tracked",
+            "reporting_period_id",
+            "programme_code",
+            "posting_code",
+            "r_year",
+            "is_tracked",
+        ),
+    )
+
+    keyword: Mapped[str] = mapped_column(String(200), nullable=False)
+    session_type_id: Mapped[UUID] = mapped_column(
+        ForeignKey("session_types.id"),
+        nullable=False,
+    )
+    posting_code: Mapped[str] = mapped_column(
+        String(50),
+        ForeignKey("posting_codes.code"),
+        nullable=False,
+    )
+    programme_code: Mapped[str] = mapped_column(
+        String(20),
+        ForeignKey("programmes.code"),
+        nullable=False,
+    )
+    r_year: Mapped[str] = mapped_column(String(10), nullable=False)
+    reporting_period_id: Mapped[UUID] = mapped_column(
+        ForeignKey("reporting_periods.id"),
+        nullable=False,
+    )
+    duration_hours: Mapped[Decimal] = mapped_column(Numeric(4, 2), nullable=False)
+    is_tracked: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+    )
+
+
+class EventSeries(UUIDTimestampMixin, Base):
+    __tablename__ = "event_series"
+    __table_args__ = (
+        Index("idx_event_series_posting", "posting_code"),
+    )
+
+    posting_code: Mapped[str | None] = mapped_column(
+        String(50),
+        ForeignKey("posting_codes.code"),
+        nullable=True,
+    )
+    recurrence_pattern: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    recurrence_interval: Mapped[int] = mapped_column(
+        nullable=False,
+        server_default=text("1"),
+    )
+    days_of_week: Mapped[list[str] | None] = mapped_column(ARRAY(String()), nullable=True)
+    end_type: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_after_count: Mapped[int | None] = mapped_column(nullable=True)
+
+
+class TeachingEvent(UUIDTimestampMixin, Base):
+    __tablename__ = "teaching_events"
+    __table_args__ = (
+        Index(
+            "idx_teaching_events_posting_date",
+            "posting_code",
+            "event_date",
+        ),
+        Index(
+            "idx_teaching_events_series",
+            "series_id",
+            postgresql_where=text("series_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_teaching_events_name_date",
+            "teaching_name",
+            "event_date",
+        ),
+        Index(
+            "idx_teaching_events_adhoc",
+            "is_adhoc",
+            "event_date",
+            postgresql_where=text("is_adhoc = true"),
+        ),
+    )
+
+    posting_code: Mapped[str] = mapped_column(
+        String(50),
+        ForeignKey("posting_codes.code"),
+        nullable=False,
+    )
+    teaching_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_date: Mapped[date] = mapped_column(Date, nullable=False)
+    start_time: Mapped[time] = mapped_column(Time, nullable=False)
+    end_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    duration_hours: Mapped[Decimal | None] = mapped_column(Numeric(4, 2), nullable=True)
+    session_type_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("session_types.id"),
+        nullable=True,
+    )
+    series_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("event_series.id"),
+        nullable=True,
+    )
+    cme_points_awarded: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    )
+    smc_event_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    is_adhoc: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    )
+    created_by_role: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+
+class GlobalSessionType(UUIDTimestampMixin, Base):
+    __tablename__ = "global_session_types"
+    __table_args__ = (
+        Index(
+            "idx_global_session_types_active_name",
+            "name",
+            postgresql_where=text("is_active = true"),
+        ),
+    )
+
+    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    duration_hours: Mapped[Decimal] = mapped_column(Numeric(4, 2), nullable=False)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+    )
