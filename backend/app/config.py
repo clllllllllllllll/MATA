@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     database_url: str = Field(
         default="postgresql+asyncpg://postgres:postgres@localhost:5432/mata_db",
     )
+    sync_database_url: str = Field(
+        default="postgresql://postgres:postgres@localhost:5432/mata_db",
+    )
 
     cors_origins: list[str] = Field(
         default_factory=lambda: [

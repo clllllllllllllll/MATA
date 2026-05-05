@@ -82,7 +82,8 @@ Until Supabase Auth is integrated, use a simple middleware that reads role and i
 
 ```
 X-User-Role: admin | secretary | resident
-X-User-Id: <user_id or MCR>
+X-User-Id: <users.id for admin/secretary> | <residents.id for resident> 
+Residents log in using MCR only. After login, protected-route identity uses residents.id as the subject. MCR is a resident login credential and JWT/header claim, not the X-User-Id value.
 X-User-Site: <posting_code>        # secretary only
 X-User-Programme: <programme_code> # admin only, comma-separated for multiple e.g. DR,GRM
 ```

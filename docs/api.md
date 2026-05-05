@@ -48,6 +48,7 @@ Residents are **not** in the `users` table. They authenticate with their **MCR n
 ```
 X-User-Role: admin | secretary | resident
 X-User-Id: <users.id for admin/secretary> | <residents.id for resident>
+Resident login accepts MCR only. Protected resident requests use residents.id as the authenticated subject. The resident MCR may be carried as a claim/header for convenience, but it is not used as X-User-Id.
 X-User-Programme: <programme_code>   # resident and admin only
 X-User-Site: <posting_code>          # secretary only
 ```
