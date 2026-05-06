@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from json import JSONDecodeError, loads
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -25,7 +26,7 @@ class Settings(BaseSettings):
         default="postgresql://postgres:postgres@localhost:5432/mata_db",
     )
 
-    cors_origins: list[str] = Field(
+    cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
             "http://localhost:5173",
             "http://127.0.0.1:5173",
@@ -50,7 +51,24 @@ class Settings(BaseSettings):
     @classmethod
     def _parse_cors_origins(cls, value: object) -> object:
         if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
+            cleaned = value.strip()
+            if not cleaned:
+                return []
+
+            if cleaned.startswith("["):
+                try:
+                    parsed = loads(cleaned)
+                except JSONDecodeError:
+                    return [origin.strip() for origin in cleaned.split(",") if origin.strip()]
+
+                if isinstance(parsed, list):
+                    return [str(origin).strip() for origin in parsed if str(origin).strip()]
+
+            return [origin.strip() for origin in cleaned.split(",") if origin.strip()]
+
+        if isinstance(value, (tuple, set)):
+            return [str(origin).strip() for origin in value if str(origin).strip()]
+
         return value
 
     @property
