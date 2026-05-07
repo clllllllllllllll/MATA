@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Mapping
 from uuid import UUID
 
 from app.services.parser_common import ParserResult
@@ -28,6 +28,36 @@ class NormalizedRDBCell:
     normalized_lines: list[str]
 
 
+@dataclass(slots=True, frozen=True)
+class ParsedMultiPostingFragment:
+    posting_code: str
+    start_date: date
+    end_date: date
+    day_part: str | None
+    raw_line: str
+
+
+@dataclass(slots=True, frozen=True)
+class ParsedPostingCell:
+    posting_code: str | None
+    status: str
+    loa_type: str | None
+    loa_start: date | None
+    loa_end: date | None
+    employer_tag: str | None
+    refresher_training_type: str | None
+    refresher_training_start: date | None
+    refresher_training_end: date | None
+    pending_sr_promotion_start: date | None
+    pending_sr_promotion_end: date | None
+    multi_posting_fragments: list[ParsedMultiPostingFragment]
+    working_days: int | None
+    warnings: list[str]
+    annotations: list[dict[str, Any]]
+    raw_cell: Any
+    normalized_lines: list[str]
+
+
 _MCR_LIKE_PATTERN = re.compile(r"^[A-Za-z]\d+[A-Za-z]$")
 _DATE_RANGE_PATTERN = re.compile(
     r"^\s*(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4})\s*-\s*(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4})\s*$"
@@ -41,6 +71,19 @@ _PURE_LOA_LINE_PATTERN = re.compile(
 )
 _CONTINUE_WORKING_LOA_PATTERN = re.compile(
     r"Continue\s+working\s+during\s+LOA\s+from\s+(?P<start>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})\s+to\s+(?P<end>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})\s*\)?",
+    re.IGNORECASE,
+)
+_EMPLOYED_PATTERN = re.compile(r"^(?P<tag>[\w]+)-[Ee]mployed$")
+_REFRESHER_PATTERN = re.compile(
+    r"^(?P<posting>.+?)\s*\(\s*Refresher\s+Training\s+\((?P<kind>add\s+to\s+Max\s+Cand|don't\s+add\s+to\s+Max\s+Cand)\)\s+from\s+(?P<start>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})\s+to\s+(?P<end>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})\s*\)\s*$",
+    re.IGNORECASE,
+)
+_PENDING_SR_PROMOTION_PATTERN = re.compile(
+    r"^(?P<posting>.+?)\s*\(\s*Pending\s+for\s+SR\s+Promotion\s+from\s+(?P<start>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})\s+to\s+(?P<end>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})\s*\)\s*$",
+    re.IGNORECASE,
+)
+_MULTI_POSTING_DATE_RANGE_PATTERN = re.compile(
+    r"^\(\s*from\s+(?P<start>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})\s+to\s+(?P<end>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})(?:\s+(?P<day_part>AM|PM))?\s*\)\s*$",
     re.IGNORECASE,
 )
 
@@ -241,6 +284,341 @@ def parse_loa_annotation(cell_value: Any) -> dict[str, Any]:
         result["loa_start"] = first_continue["start"]
         result["loa_end"] = first_continue["end"]
     return result
+
+
+def validate_loa_type(
+    loa_type: str | None, context: Mapping[str, Any] | None = None
+) -> tuple[str | None, list[str]]:
+    if loa_type is None:
+        return None, []
+
+    if context is None:
+        return loa_type, []
+
+    known_loa_types = context.get("known_loa_types")
+    if known_loa_types is None:
+        return loa_type, []
+
+    normalized_known = {str(item).strip() for item in known_loa_types}
+    if loa_type in normalized_known:
+        return loa_type, []
+
+    return loa_type, [f"Unknown LOA type: {loa_type}"]
+
+
+def parse_refresher_training_annotation(cell_line: str) -> dict[str, Any] | None:
+    match = _REFRESHER_PATTERN.match(cell_line.strip())
+    if match is None:
+        return None
+
+    kind_raw = re.sub(r"\s+", " ", match.group("kind").strip()).lower()
+    if kind_raw.startswith("add"):
+        refresher_type = "add to Max Cand"
+    else:
+        refresher_type = "don't add to Max Cand"
+
+    return {
+        "kind": "refresher_training",
+        "posting_code": match.group("posting").strip(),
+        "refresher_training_type": refresher_type,
+        "refresher_training_start": _parse_date_token(match.group("start")),
+        "refresher_training_end": _parse_date_token(match.group("end")),
+        "raw_line": cell_line.strip(),
+    }
+
+
+def parse_pending_sr_promotion_annotation(cell_line: str) -> dict[str, Any] | None:
+    match = _PENDING_SR_PROMOTION_PATTERN.match(cell_line.strip())
+    if match is None:
+        return None
+
+    return {
+        "kind": "pending_sr_promotion",
+        "posting_code": match.group("posting").strip(),
+        "pending_sr_promotion_start": _parse_date_token(match.group("start")),
+        "pending_sr_promotion_end": _parse_date_token(match.group("end")),
+        "raw_line": cell_line.strip(),
+    }
+
+
+def compute_working_days(
+    *,
+    phase_start: date,
+    phase_end: date,
+    loa_start: date | None,
+    loa_end: date | None,
+) -> int:
+    total_days = (phase_end - phase_start).days + 1
+    if loa_start is not None and loa_end is not None:
+        overlap_start = max(phase_start, loa_start)
+        overlap_end = min(phase_end, loa_end)
+        if overlap_start <= overlap_end:
+            total_days -= (overlap_end - overlap_start).days + 1
+    return max(0, total_days)
+
+
+def _resolve_normalized_cell(normalized_cell: Any) -> NormalizedRDBCell:
+    if isinstance(normalized_cell, NormalizedRDBCell):
+        return normalized_cell
+    return normalize_rdb_cell(normalized_cell)
+
+
+def _extract_posting_code_from_continue_line(line: str) -> str | None:
+    match = _CONTINUE_WORKING_LOA_PATTERN.search(line)
+    if match is None:
+        return None
+    prefix = line[: match.start()].rstrip()
+    if prefix.endswith("("):
+        prefix = prefix[:-1].rstrip()
+    return prefix or None
+
+
+def _extract_posting_code_for_loa_working(lines: list[str]) -> str | None:
+    for line in lines:
+        if _PURE_LOA_LINE_PATTERN.match(line):
+            continue
+
+        continue_line_posting = _extract_posting_code_from_continue_line(line)
+        if continue_line_posting:
+            return continue_line_posting
+
+        return line.strip() or None
+
+    return None
+
+
+def _parse_multi_posting_fragments(
+    normalized_lines: list[str],
+) -> tuple[list[ParsedMultiPostingFragment], list[str]]:
+    warnings: list[str] = []
+    fragments: list[ParsedMultiPostingFragment] = []
+    current_posting_code: str | None = None
+    saw_date_range = False
+
+    for line in normalized_lines:
+        match = _MULTI_POSTING_DATE_RANGE_PATTERN.match(line)
+        if match is not None:
+            saw_date_range = True
+            if current_posting_code is None:
+                warnings.append(
+                    f"Unattached multi-posting date fragment ignored: {line}"
+                )
+                continue
+
+            day_part_raw = match.group("day_part")
+            day_part = day_part_raw.upper() if day_part_raw else None
+            fragments.append(
+                ParsedMultiPostingFragment(
+                    posting_code=current_posting_code,
+                    start_date=_parse_date_token(match.group("start")),
+                    end_date=_parse_date_token(match.group("end")),
+                    day_part=day_part,
+                    raw_line=line,
+                )
+            )
+            continue
+
+        current_posting_code = line.strip() or None
+
+    if not saw_date_range:
+        return [], []
+    return fragments, warnings
+
+
+def _compute_working_days_from_context(
+    context: Mapping[str, Any],
+    loa_start: date | None,
+    loa_end: date | None,
+) -> int | None:
+    phase_start = context.get("phase_start")
+    phase_end = context.get("phase_end")
+    if not isinstance(phase_start, date) or not isinstance(phase_end, date):
+        return None
+    return compute_working_days(
+        phase_start=phase_start,
+        phase_end=phase_end,
+        loa_start=loa_start,
+        loa_end=loa_end,
+    )
+
+
+def classify_posting_cell(
+    normalized_cell: NormalizedRDBCell | Any, context: Mapping[str, Any]
+) -> ParsedPostingCell | None:
+    normalized = _resolve_normalized_cell(normalized_cell)
+    if not normalized.normalized_value:
+        return None
+
+    warnings: list[str] = []
+
+    if len(normalized.normalized_lines) == 1:
+        employed_match = _EMPLOYED_PATTERN.match(normalized.normalized_lines[0])
+        if employed_match is not None:
+            return ParsedPostingCell(
+                posting_code=None,
+                status="employed",
+                loa_type=None,
+                loa_start=None,
+                loa_end=None,
+                employer_tag=employed_match.group("tag"),
+                refresher_training_type=None,
+                refresher_training_start=None,
+                refresher_training_end=None,
+                pending_sr_promotion_start=None,
+                pending_sr_promotion_end=None,
+                multi_posting_fragments=[],
+                working_days=None,
+                warnings=[],
+                annotations=[
+                    {
+                        "kind": "employed",
+                        "employer_tag": employed_match.group("tag"),
+                        "raw_line": normalized.normalized_lines[0],
+                    }
+                ],
+                raw_cell=normalized.raw_value,
+                normalized_lines=normalized.normalized_lines,
+            )
+
+    multi_posting_fragments, multi_warnings = _parse_multi_posting_fragments(
+        normalized.normalized_lines
+    )
+    if multi_posting_fragments:
+        warnings.extend(multi_warnings)
+        return ParsedPostingCell(
+            posting_code=None,
+            status="active",
+            loa_type=None,
+            loa_start=None,
+            loa_end=None,
+            employer_tag=None,
+            refresher_training_type=None,
+            refresher_training_start=None,
+            refresher_training_end=None,
+            pending_sr_promotion_start=None,
+            pending_sr_promotion_end=None,
+            multi_posting_fragments=multi_posting_fragments,
+            working_days=_compute_working_days_from_context(context, None, None),
+            warnings=warnings,
+            annotations=[],
+            raw_cell=normalized.raw_value,
+            normalized_lines=normalized.normalized_lines,
+        )
+
+    if len(normalized.normalized_lines) == 1:
+        pending = parse_pending_sr_promotion_annotation(normalized.normalized_lines[0])
+        if pending is not None:
+            return ParsedPostingCell(
+                posting_code=pending["posting_code"],
+                status="active",
+                loa_type=None,
+                loa_start=None,
+                loa_end=None,
+                employer_tag=None,
+                refresher_training_type=None,
+                refresher_training_start=None,
+                refresher_training_end=None,
+                pending_sr_promotion_start=pending["pending_sr_promotion_start"],
+                pending_sr_promotion_end=pending["pending_sr_promotion_end"],
+                multi_posting_fragments=[],
+                working_days=_compute_working_days_from_context(context, None, None),
+                warnings=[],
+                annotations=[pending],
+                raw_cell=normalized.raw_value,
+                normalized_lines=normalized.normalized_lines,
+            )
+
+        refresher = parse_refresher_training_annotation(normalized.normalized_lines[0])
+        if refresher is not None:
+            return ParsedPostingCell(
+                posting_code=refresher["posting_code"],
+                status="active",
+                loa_type=None,
+                loa_start=None,
+                loa_end=None,
+                employer_tag=None,
+                refresher_training_type=refresher["refresher_training_type"],
+                refresher_training_start=refresher["refresher_training_start"],
+                refresher_training_end=refresher["refresher_training_end"],
+                pending_sr_promotion_start=None,
+                pending_sr_promotion_end=None,
+                multi_posting_fragments=[],
+                working_days=_compute_working_days_from_context(context, None, None),
+                warnings=[],
+                annotations=[refresher],
+                raw_cell=normalized.raw_value,
+                normalized_lines=normalized.normalized_lines,
+            )
+
+    loa = parse_loa_annotation(normalized.normalized_value)
+    loa_type, loa_warnings = validate_loa_type(loa["loa_type"], context)
+    warnings.extend(loa_warnings)
+
+    if loa["status"] == "loa":
+        return ParsedPostingCell(
+            posting_code=None,
+            status="loa",
+            loa_type=loa_type,
+            loa_start=loa["loa_start"],
+            loa_end=loa["loa_end"],
+            employer_tag=None,
+            refresher_training_type=None,
+            refresher_training_start=None,
+            refresher_training_end=None,
+            pending_sr_promotion_start=None,
+            pending_sr_promotion_end=None,
+            multi_posting_fragments=[],
+            working_days=_compute_working_days_from_context(
+                context, loa["loa_start"], loa["loa_end"]
+            ),
+            warnings=warnings,
+            annotations=loa["annotations"],
+            raw_cell=normalized.raw_value,
+            normalized_lines=normalized.normalized_lines,
+        )
+
+    if loa["status"] == "loa_working":
+        return ParsedPostingCell(
+            posting_code=_extract_posting_code_for_loa_working(normalized.normalized_lines),
+            status="loa_working",
+            loa_type=loa_type,
+            loa_start=loa["loa_start"],
+            loa_end=loa["loa_end"],
+            employer_tag=None,
+            refresher_training_type=None,
+            refresher_training_start=None,
+            refresher_training_end=None,
+            pending_sr_promotion_start=None,
+            pending_sr_promotion_end=None,
+            multi_posting_fragments=[],
+            working_days=_compute_working_days_from_context(
+                context, loa["loa_start"], loa["loa_end"]
+            ),
+            warnings=warnings,
+            annotations=loa["annotations"],
+            raw_cell=normalized.raw_value,
+            normalized_lines=normalized.normalized_lines,
+        )
+
+    return ParsedPostingCell(
+        posting_code=normalized.normalized_lines[0],
+        status="active",
+        loa_type=None,
+        loa_start=None,
+        loa_end=None,
+        employer_tag=None,
+        refresher_training_type=None,
+        refresher_training_start=None,
+        refresher_training_end=None,
+        pending_sr_promotion_start=None,
+        pending_sr_promotion_end=None,
+        multi_posting_fragments=[],
+        working_days=_compute_working_days_from_context(context, None, None),
+        warnings=[],
+        annotations=[],
+        raw_cell=normalized.raw_value,
+        normalized_lines=normalized.normalized_lines,
+    )
 
 
 async def parse_rdb_upload(
