@@ -4,7 +4,18 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Boolean, Date, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -55,7 +66,13 @@ class ResidentPosting(UUIDTimestampMixin, Base):
             "resident_id",
             "reporting_period_id",
             "start_date",
+            "day_part",
             name="uq_resident_postings_period_phase",
+            postgresql_nulls_not_distinct=True,
+        ),
+        CheckConstraint(
+            "day_part IS NULL OR day_part IN ('AM', 'PM')",
+            name="ck_resident_postings_day_part",
         ),
         Index(
             "idx_resident_postings_period_resident",
@@ -102,6 +119,7 @@ class ResidentPosting(UUIDTimestampMixin, Base):
     )
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    day_part: Mapped[str | None] = mapped_column(String(2), nullable=True)
     month_label: Mapped[str | None] = mapped_column(String(10), nullable=True)
     r_year: Mapped[str] = mapped_column(String(10), nullable=False)
     status: Mapped[str] = mapped_column(

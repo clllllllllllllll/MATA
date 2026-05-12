@@ -5,6 +5,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+*.pyc
 *.so
 *.egg
 *.egg-info/
@@ -92,4 +93,5 @@ logs/
 # =============================================================================
 backend/uploads/
 backend/tmp/
+backend/devtools/tmp_*.py
 docs/dev/

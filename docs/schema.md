@@ -164,6 +164,7 @@ One row per (resident, posting, month-phase). The 12-month rotation schedule fro
 | reporting_period_id | UUID | FK → reporting_periods.id, NOT NULL | |
 | start_date | DATE | NOT NULL | Phase start date from RDB column header |
 | end_date | DATE | NOT NULL | Phase end date from RDB column header |
+| day_part | VARCHAR(2) | nullable, CHECK NULL/`AM`/`PM` | AM/PM fragment marker for same-day multi-posting rows. NULL means full-day/no half-day marker. |
 | month_label | VARCHAR(10) | | e.g. `Jul-25`, `Aug-25` |
 | r_year | VARCHAR(10) | NOT NULL | Residency year at this phase. For programmes with `r_year_required = false`, this is set to `'ALL'`. For subspecialty programmes (SPORTSMED, PALLMED), R4→SS1/R5→SS2 remapping is applied. Copied from RDB column F at parse time. Used for teaching_target lookup — do NOT use residents.r_year for compliance. |
 | status | VARCHAR(20) | DEFAULT 'active' | `active`, `loa`, `loa_working`, `employed` |
@@ -176,7 +177,7 @@ One row per (resident, posting, month-phase). The 12-month rotation schedule fro
 | active_months_weight | DECIMAL(3,1) | DEFAULT 1.0 | For half-month posting split (TTSHGas/NUHGas). Set to 0.5 when multi_posting_rules half_month rule applies. |
 | working_days_in_month | INTEGER | | Computed at RDB parse time: calendar days in phase minus LOA days. Stored for future use — not currently used for compliance. |
 
-**Unique constraint:** `UNIQUE(resident_id, reporting_period_id, start_date)`
+**Unique constraint:** `UNIQUE NULLS NOT DISTINCT(resident_id, reporting_period_id, start_date, day_part)`
 
 **RDB re-upload behaviour:** On re-upload, existing `resident_postings` rows for the period are deleted and re-inserted (delete-first within scope, not blind insert). This prevents duplicate-key errors and ensures corrections take effect cleanly. The scope for deletion is `(reporting_period_id)` across all residents found in the uploaded file. Residents not present in the new upload are left untouched.
 

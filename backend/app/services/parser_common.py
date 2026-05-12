@@ -8,7 +8,6 @@ from typing import Any, Awaitable, Callable, Iterable, Literal, Mapping
 from uuid import UUID
 
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -170,6 +169,9 @@ async def write_upload_log(
     reporting_period_id: UUID | str | None = None,
     programme_code: str | None = None,
 ) -> None:
+    summary_payload = dict(summary)
+    summary_payload["original_filename"] = original_filename
+
     params = {
         "upload_type": upload_type,
         "uploaded_by": str(uploaded_by) if uploaded_by else None,
@@ -178,67 +180,33 @@ async def write_upload_log(
         ),
         "programme_code": programme_code,
         "status": status,
-        "summary": json.dumps(dict(summary), default=str),
-        "original_filename": original_filename,
+        "summary": json.dumps(summary_payload, default=str),
     }
 
-    insert_with_filename = text(
-        """
-        INSERT INTO upload_logs (
-            upload_type,
-            uploaded_by,
-            reporting_period_id,
-            programme_code,
-            status,
-            summary,
-            original_filename
-        )
-        VALUES (
-            :upload_type,
-            :uploaded_by,
-            :reporting_period_id,
-            :programme_code,
-            :status,
-            :summary,
-            :original_filename
-        )
-        """
+    await session.execute(
+        text(
+            """
+            INSERT INTO upload_logs (
+                upload_type,
+                uploaded_by,
+                reporting_period_id,
+                programme_code,
+                status,
+                summary
+            )
+            VALUES (
+                :upload_type,
+                :uploaded_by,
+                :reporting_period_id,
+                :programme_code,
+                :status,
+                :summary
+            )
+            """
+        ),
+        params,
     )
-
-    insert_without_filename = text(
-        """
-        INSERT INTO upload_logs (
-            upload_type,
-            uploaded_by,
-            reporting_period_id,
-            programme_code,
-            status,
-            summary
-        )
-        VALUES (
-            :upload_type,
-            :uploaded_by,
-            :reporting_period_id,
-            :programme_code,
-            :status,
-            :summary
-        )
-        """
-    )
-
-    try:
-        await session.execute(insert_with_filename, params)
-        await session.commit()
-    except SQLAlchemyError as exc:
-        if "original_filename" not in str(exc).lower():
-            raise
-        await session.rollback()
-        fallback_summary = dict(summary)
-        fallback_summary["original_filename"] = original_filename
-        fallback_params = dict(params)
-        fallback_params["summary"] = json.dumps(fallback_summary, default=str)
-        await session.execute(insert_without_filename, fallback_params)
-        await session.commit()
+    await session.commit()
 
 
 def normalise_scope_values(raw_scope: str | Iterable[str] | None) -> set[str]:

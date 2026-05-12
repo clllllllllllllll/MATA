@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from app.services.rdb_parser import normalize_rdb_cell, parse_loa_annotation
 
 
@@ -35,6 +37,24 @@ def test_normalize_rdb_cell_normalizes_spaced_hyphen_dates_only() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "raw_date",
+    [
+        "06-Apr-2026",
+        "06 - Apr - 2026",
+        "06- Apr -2026",
+        "06 Apr 2026",
+        "06 \u2013 Apr \u2013 2026",
+    ],
+)
+def test_normalize_rdb_cell_canonicalizes_supported_date_token_drift(raw_date: str) -> None:
+    normalized = normalize_rdb_cell(f"LOA (Maternity Leave from {raw_date} to 03 May 2026 )")
+
+    assert normalized.normalized_value == (
+        "LOA (Maternity Leave from 06-Apr-2026 to 03-May-2026 )"
+    )
+
+
 def test_normalize_rdb_cell_does_not_modify_posting_or_free_text_hyphens() -> None:
     raw = "SAF-Employed"
 
@@ -53,9 +73,11 @@ def test_normalize_rdb_cell_simple_posting_code_kept_as_single_line() -> None:
 def test_normalize_rdb_cell_preserves_employed_tags_and_casing() -> None:
     normalized_upper = normalize_rdb_cell("SAF-Employed")
     normalized_mixed = normalize_rdb_cell("TTSH-employed")
+    normalized_spaced = normalize_rdb_cell("SCDF Employed")
 
     assert normalized_upper.normalized_value == "SAF-Employed"
-    assert normalized_mixed.normalized_value == "TTSH-employed"
+    assert normalized_mixed.normalized_value == "TTSH-Employed"
+    assert normalized_spaced.normalized_value == "SCDF-Employed"
 
 
 def test_normalize_rdb_cell_numeric_fm_posting_code_stays_string() -> None:

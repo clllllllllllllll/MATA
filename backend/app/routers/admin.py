@@ -21,7 +21,7 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 try:
-    from app.database import get_db as get_db_session
+    from app.database import get_db_session
 except Exception:
 
     async def get_db_session() -> AsyncIterator[AsyncSession | None]:
@@ -167,11 +167,13 @@ async def upload_rdb(
     except UploadValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    parser_result = await dispatch_parser_by_upload_slot(
-        upload_type="rdb",
+    from app.services.rdb_parser import parse_rdb_upload
+
+    parser_result = await parse_rdb_upload(
         file_bytes=validated.file_bytes,
         original_filename=validated.original_filename,
         reporting_period_id=reporting_period_id,
+        db_session=db,
     )
 
     await _write_upload_log_safely(

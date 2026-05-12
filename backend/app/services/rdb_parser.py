@@ -3,8 +3,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal
+from io import BytesIO
 from typing import Any, Mapping
 from uuid import UUID
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.parser_common import ParserResult
 
@@ -58,24 +63,104 @@ class ParsedPostingCell:
     normalized_lines: list[str]
 
 
+@dataclass(slots=True, frozen=True)
+class ProgrammeConfig:
+    code: str
+    r_year_required: bool
+    is_subspecialty: bool
+
+
+@dataclass(slots=True)
+class ParsedRDBResident:
+    employee_code: str | None
+    name: str
+    mcr: str
+    classification: str | None
+    base_institution: str | None
+    raw_r_year: str
+    programme_code: str
+    resolved_r_year: str
+    reg_type: str | None
+    employer_tag: str | None
+    postings: list["ResidentPostingWrite"]
+
+
+@dataclass(slots=True)
+class ResidentPostingWrite:
+    resident_mcr: str
+    posting_code: str | None
+    reporting_period_id: UUID
+    start_date: date
+    end_date: date
+    day_part: str | None
+    month_label: str | None
+    r_year: str
+    status: str
+    loa_type: str | None = None
+    loa_start_date: date | None = None
+    loa_end_date: date | None = None
+    refresher_training_type: str | None = None
+    refresher_training_start: date | None = None
+    refresher_training_end: date | None = None
+    active_months_weight: Decimal = Decimal("1.0")
+    working_days_in_month: int | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class MultiPostingRuleConfig:
+    programme_code: str
+    posting_code_1: str
+    posting_code_2: str | None
+    rule_type: str
+    combined_label: str | None
+    main_posting_code: str | None
+    exclusion_code: str | None
+
+
+@dataclass(slots=True)
+class RDBParseAccumulator:
+    residents: dict[str, ParsedRDBResident]
+    posting_codes: set[str]
+    warnings: list[Any]
+    errors: list[Any]
+    rows_skipped: int
+    skip_reasons: list[Any]
+    unknown_loa_types: set[str]
+    loa_records: int
+    employed_residents_flagged: set[str]
+    multi_posting_rules_applied: int
+
+
 _MCR_LIKE_PATTERN = re.compile(r"^[A-Za-z]\d+[A-Za-z]$")
 _DATE_RANGE_PATTERN = re.compile(
     r"^\s*(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4})\s*-\s*(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4})\s*$"
 )
-_DATE_TOKEN_HYPHEN_PATTERN = re.compile(
-    r"\b(\d{1,2})\s*-\s*([A-Za-z]{3})\s*-\s*(\d{2,4})\b"
+_DATE_TOKEN_PATTERN = re.compile(
+    r"\b(?P<day>\d{1,2})(?:\s*-\s*|\s+)(?P<month>[A-Za-z]{3,9})(?:\s*-\s*|\s+)(?P<year>\d{2,4})\b"
+)
+_CONTINUE_WORKING_PHRASE_PATTERN = re.compile(
+    r"\bcontinue\s+working\s+during\s+loa\b",
+    re.IGNORECASE,
+)
+_SAFE_EMPLOYED_MARKER_PATTERN = re.compile(
+    r"^(?P<tag>[A-Za-z0-9_]+)(?:\s*-\s*|\s+)employed$",
+    re.IGNORECASE,
 )
 _PURE_LOA_LINE_PATTERN = re.compile(
-    r"^LOA\s*\(\s*(?P<loa_type>.+?)\s+from\s+(?P<start>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})\s+to\s+(?P<end>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})\s*\)\s*$",
+    r"^LOA\s*\(\s*(?P<loa_type>.+?)\s+from\s+(?P<start>\d{1,2}\s*-\s*[A-Za-z]{3,9}\s*-\s*\d{2,4})\s+to\s+(?P<end>\d{1,2}\s*-\s*[A-Za-z]{3,9}\s*-\s*\d{2,4})\s*\)\s*$",
     re.IGNORECASE,
 )
 _CONTINUE_WORKING_LOA_PATTERN = re.compile(
-    r"Continue\s+working\s+during\s+LOA\s+from\s+(?P<start>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})\s+to\s+(?P<end>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})\s*\)?",
+    r"Continue\s+working\s+during\s+LOA\s+from\s+(?P<start>\d{1,2}\s*-\s*[A-Za-z]{3,9}\s*-\s*\d{2,4})\s+to\s+(?P<end>\d{1,2}\s*-\s*[A-Za-z]{3,9}\s*-\s*\d{2,4})\s*\)?",
     re.IGNORECASE,
 )
-_EMPLOYED_PATTERN = re.compile(r"^(?P<tag>[\w]+)-[Ee]mployed$")
+_EMPLOYED_PATTERN = re.compile(r"^(?P<tag>[\w]+)-employed$", re.IGNORECASE)
 _REFRESHER_PATTERN = re.compile(
-    r"^(?P<posting>.+?)\s*\(\s*Refresher\s+Training\s+\((?P<kind>add\s+to\s+Max\s+Cand|don't\s+add\s+to\s+Max\s+Cand)\)\s+from\s+(?P<start>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})\s+to\s+(?P<end>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})\s*\)\s*$",
+    r"^(?P<posting>.+?)\s*\(\s*Refresher\s+Training\s+\((?P<kind>add\s+to\s+Max\s+Cand|don['’]t\s+add\s+to\s+Max\s+Cand)\)\s+from\s+(?P<start>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})\s+to\s+(?P<end>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})\s*\)\s*$",
+    re.IGNORECASE,
+)
+_REFRESHER_PREFIX_PATTERN = re.compile(
+    r"^(?P<posting>.+?)\s*\(\s*Refresher\s+Training\b",
     re.IGNORECASE,
 )
 _PENDING_SR_PROMOTION_PATTERN = re.compile(
@@ -86,6 +171,36 @@ _MULTI_POSTING_DATE_RANGE_PATTERN = re.compile(
     r"^\(\s*from\s+(?P<start>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})\s+to\s+(?P<end>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})(?:\s+(?P<day_part>AM|PM))?\s*\)\s*$",
     re.IGNORECASE,
 )
+_POSTING_CODE_MAX_LENGTH = 50
+_DASH_TRANSLATION = str.maketrans(
+    {
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2012": "-",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2212": "-",
+    }
+)
+_APOSTROPHE_TRANSLATION = str.maketrans(
+    {
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u02bc": "'",
+    }
+)
+_REFRESHER_PATTERN = re.compile(
+    r"^(?P<posting>.+?)\s*\(\s*Refresher\s+Training\s+\((?P<kind>add\s+to\s+Max\s+Cand|don't\s+add\s+to\s+Max\s+Cand)\)\s+from\s+(?P<start>\d{1,2}\s*-\s*[A-Za-z]{3,9}\s*-\s*\d{2,4})\s+to\s+(?P<end>\d{1,2}\s*-\s*[A-Za-z]{3,9}\s*-\s*\d{2,4})\s*\)\s*$",
+    re.IGNORECASE,
+)
+_PENDING_SR_PROMOTION_PATTERN = re.compile(
+    r"^(?P<posting>.+?)\s*\(\s*Pending\s+for\s+SR\s+Promotion\s+from\s+(?P<start>\d{1,2}\s*-\s*[A-Za-z]{3,9}\s*-\s*\d{2,4})\s+to\s+(?P<end>\d{1,2}\s*-\s*[A-Za-z]{3,9}\s*-\s*\d{2,4})\s*\)\s*$",
+    re.IGNORECASE,
+)
+_MULTI_POSTING_DATE_RANGE_PATTERN = re.compile(
+    r"^\(\s*from\s+(?P<start>\d{1,2}\s*-\s*[A-Za-z]{3,9}\s*-\s*\d{2,4})\s+to\s+(?P<end>\d{1,2}\s*-\s*[A-Za-z]{3,9}\s*-\s*\d{2,4})(?:\s+(?P<day_part>AM|PM))?\s*\)\s*$",
+    re.IGNORECASE,
+)
 
 
 def _to_cell_text(value: Any) -> str:
@@ -94,16 +209,30 @@ def _to_cell_text(value: Any) -> str:
     return str(value)
 
 
+def _canonicalize_known_rdb_phrases(value: str) -> str:
+    return _CONTINUE_WORKING_PHRASE_PATTERN.sub("Continue working during LOA", value)
+
+
+def _canonicalize_employed_marker(value: str) -> str:
+    match = _SAFE_EMPLOYED_MARKER_PATTERN.match(value.strip())
+    if match is None:
+        return value
+    return f"{match.group('tag')}-Employed"
+
+
 def _normalize_hyphens_in_date_tokens(value: str) -> str:
-    return _DATE_TOKEN_HYPHEN_PATTERN.sub(
-        lambda match: f"{match.group(1)}-{match.group(2)}-{match.group(3)}",
-        value,
+    normalized = value.translate(_DASH_TRANSLATION)
+    return _DATE_TOKEN_PATTERN.sub(
+        lambda match: (
+            f"{match.group('day')}-{match.group('month')}-{match.group('year')}"
+        ),
+        normalized,
     )
 
 
 def _parse_date_token(token: str) -> date:
     normalized = _normalize_hyphens_in_date_tokens(token.strip())
-    for fmt in ("%d-%b-%Y", "%d-%b-%y"):
+    for fmt in ("%d-%b-%Y", "%d-%b-%y", "%d-%B-%Y", "%d-%B-%y"):
         try:
             return datetime.strptime(normalized, fmt).date()
         except ValueError:
@@ -205,6 +334,7 @@ def detect_rdb_sheets(workbook: Any) -> dict[str, str]:
 def normalize_rdb_cell(raw_value: Any) -> NormalizedRDBCell:
     text = _to_cell_text(raw_value)
     text = text.replace("\u00A0", " ")
+    text = text.translate(_APOSTROPHE_TRANSLATION)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
 
     normalized_lines: list[str] = []
@@ -212,6 +342,9 @@ def normalize_rdb_cell(raw_value: Any) -> NormalizedRDBCell:
         stripped = line.strip()
         if not stripped:
             continue
+        stripped = re.sub(r"[ \t\f\v]+", " ", stripped)
+        stripped = _canonicalize_known_rdb_phrases(stripped)
+        stripped = _canonicalize_employed_marker(stripped)
         normalized_lines.append(_normalize_hyphens_in_date_tokens(stripped))
 
     return NormalizedRDBCell(
@@ -242,10 +375,22 @@ def parse_loa_annotation(cell_value: Any) -> dict[str, Any]:
     for line in normalized_lines:
         pure_match = _PURE_LOA_LINE_PATTERN.match(line)
         if pure_match is not None:
+            loa_type_raw = pure_match.group("loa_type").strip()
+            if _is_continue_working_annotation(loa_type_raw):
+                continue_annotations.append(
+                    {
+                        "kind": "continue_working_during_loa",
+                        "loa_type": None,
+                        "start": _parse_date_token(pure_match.group("start")),
+                        "end": _parse_date_token(pure_match.group("end")),
+                        "raw_line": line,
+                    }
+                )
+                continue
             pure_annotations.append(
                 {
                     "kind": "pure_loa",
-                    "loa_type": pure_match.group("loa_type").strip(),
+                    "loa_type": loa_type_raw,
                     "start": _parse_date_token(pure_match.group("start")),
                     "end": _parse_date_token(pure_match.group("end")),
                     "raw_line": line,
@@ -274,7 +419,9 @@ def parse_loa_annotation(cell_value: Any) -> dict[str, Any]:
         has_non_loa_lines = any(
             _PURE_LOA_LINE_PATTERN.match(line) is None for line in normalized_lines
         )
-        result["status"] = "loa_working" if has_non_loa_lines else "loa"
+        result["status"] = (
+            "loa_working" if continue_annotations or has_non_loa_lines else "loa"
+        )
         return result
 
     if continue_annotations:
@@ -302,6 +449,10 @@ def validate_loa_type(
     normalized_known = {str(item).strip() for item in known_loa_types}
     if loa_type in normalized_known:
         return loa_type, []
+    known_by_casefold = {item.casefold(): item for item in normalized_known}
+    canonical = known_by_casefold.get(loa_type.casefold())
+    if canonical is not None:
+        return canonical, []
 
     return loa_type, [f"Unknown LOA type: {loa_type}"]
 
@@ -325,6 +476,47 @@ def parse_refresher_training_annotation(cell_line: str) -> dict[str, Any] | None
         "refresher_training_end": _parse_date_token(match.group("end")),
         "raw_line": cell_line.strip(),
     }
+
+
+def _extract_refresher_posting_prefix(cell_line: str) -> str | None:
+    match = _REFRESHER_PREFIX_PATTERN.match(cell_line.strip())
+    if match is None:
+        return None
+    posting_code = match.group("posting").strip()
+    return posting_code or None
+
+
+def _is_safe_posting_code(posting_code: str | None) -> bool:
+    return bool(posting_code and len(posting_code) <= _POSTING_CODE_MAX_LENGTH)
+
+
+def _looks_like_refresher_annotation(cell_line: str) -> bool:
+    return "refresher training" in cell_line.lower()
+
+
+def _is_continue_working_annotation(value: str | None) -> bool:
+    return (value or "").strip().casefold() == "continue working during loa"
+
+
+def _looks_like_malformed_employed_marker(cell_line: str) -> bool:
+    normalized = cell_line.strip()
+    return "employed" in normalized.lower() and _EMPLOYED_PATTERN.match(normalized) is None
+
+
+def _resolve_malformed_refresher_posting(
+    cell_line: str,
+) -> tuple[str | None, list[str]]:
+    warning = (
+        "Malformed refresher training annotation: refresher metadata ignored."
+    )
+    posting_code = _extract_refresher_posting_prefix(cell_line)
+    if _is_safe_posting_code(posting_code):
+        return posting_code, [warning]
+
+    return None, [
+        "Malformed refresher training annotation skipped: "
+        "cannot safely derive posting_code within 50 characters."
+    ]
 
 
 def parse_pending_sr_promotion_annotation(cell_line: str) -> dict[str, Any] | None:
@@ -357,6 +549,17 @@ def compute_working_days(
     return max(0, total_days)
 
 
+def resolve_r_year(raw_r_year: str, programme: ProgrammeConfig) -> str:
+    normalized_raw = (raw_r_year or "").strip()
+    if not programme.r_year_required:
+        return "ALL"
+    if programme.is_subspecialty:
+        return {"R4": "SS1", "R5": "SS2", "R6": "SS3"}.get(
+            normalized_raw, normalized_raw
+        )
+    return normalized_raw
+
+
 def _resolve_normalized_cell(normalized_cell: Any) -> NormalizedRDBCell:
     if isinstance(normalized_cell, NormalizedRDBCell):
         return normalized_cell
@@ -381,6 +584,14 @@ def _extract_posting_code_for_loa_working(lines: list[str]) -> str | None:
         continue_line_posting = _extract_posting_code_from_continue_line(line)
         if continue_line_posting:
             return continue_line_posting
+
+        refresher = parse_refresher_training_annotation(line)
+        if refresher is not None:
+            return refresher["posting_code"]
+
+        refresher_posting, _ = _resolve_malformed_refresher_posting(line)
+        if refresher_posting is not None:
+            return refresher_posting
 
         return line.strip() or None
 
@@ -479,6 +690,28 @@ def classify_posting_cell(
                 raw_cell=normalized.raw_value,
                 normalized_lines=normalized.normalized_lines,
             )
+        if _looks_like_malformed_employed_marker(normalized.normalized_lines[0]):
+            return ParsedPostingCell(
+                posting_code=None,
+                status="active",
+                loa_type=None,
+                loa_start=None,
+                loa_end=None,
+                employer_tag=None,
+                refresher_training_type=None,
+                refresher_training_start=None,
+                refresher_training_end=None,
+                pending_sr_promotion_start=None,
+                pending_sr_promotion_end=None,
+                multi_posting_fragments=[],
+                working_days=None,
+                warnings=[
+                    "Malformed employed marker skipped: expected '<tag>-Employed'."
+                ],
+                annotations=[],
+                raw_cell=normalized.raw_value,
+                normalized_lines=normalized.normalized_lines,
+            )
 
     multi_posting_fragments, multi_warnings = _parse_multi_posting_fragments(
         normalized.normalized_lines
@@ -506,6 +739,7 @@ def classify_posting_cell(
         )
 
     if len(normalized.normalized_lines) == 1:
+        line = normalized.normalized_lines[0]
         pending = parse_pending_sr_promotion_annotation(normalized.normalized_lines[0])
         if pending is not None:
             return ParsedPostingCell(
@@ -528,7 +762,7 @@ def classify_posting_cell(
                 normalized_lines=normalized.normalized_lines,
             )
 
-        refresher = parse_refresher_training_annotation(normalized.normalized_lines[0])
+        refresher = parse_refresher_training_annotation(line)
         if refresher is not None:
             return ParsedPostingCell(
                 posting_code=refresher["posting_code"],
@@ -546,6 +780,28 @@ def classify_posting_cell(
                 working_days=_compute_working_days_from_context(context, None, None),
                 warnings=[],
                 annotations=[refresher],
+                raw_cell=normalized.raw_value,
+                normalized_lines=normalized.normalized_lines,
+            )
+
+        if _looks_like_refresher_annotation(line):
+            posting_code, malformed_warnings = _resolve_malformed_refresher_posting(line)
+            return ParsedPostingCell(
+                posting_code=posting_code,
+                status="active",
+                loa_type=None,
+                loa_start=None,
+                loa_end=None,
+                employer_tag=None,
+                refresher_training_type=None,
+                refresher_training_start=None,
+                refresher_training_end=None,
+                pending_sr_promotion_start=None,
+                pending_sr_promotion_end=None,
+                multi_posting_fragments=[],
+                working_days=_compute_working_days_from_context(context, None, None),
+                warnings=malformed_warnings,
+                annotations=[],
                 raw_cell=normalized.raw_value,
                 normalized_lines=normalized.normalized_lines,
             )
@@ -578,16 +834,43 @@ def classify_posting_cell(
         )
 
     if loa["status"] == "loa_working":
+        loa_working_posting = _extract_posting_code_for_loa_working(
+            normalized.normalized_lines
+        )
+        loa_working_refresher: dict[str, Any] | None = None
+        for line in normalized.normalized_lines:
+            if _PURE_LOA_LINE_PATTERN.match(line):
+                continue
+            parsed_refresher = parse_refresher_training_annotation(line)
+            if parsed_refresher is not None:
+                loa_working_refresher = parsed_refresher
+                break
+            if _looks_like_refresher_annotation(line):
+                _, malformed_warnings = _resolve_malformed_refresher_posting(line)
+                warnings.extend(malformed_warnings)
+
         return ParsedPostingCell(
-            posting_code=_extract_posting_code_for_loa_working(normalized.normalized_lines),
+            posting_code=loa_working_posting,
             status="loa_working",
             loa_type=loa_type,
             loa_start=loa["loa_start"],
             loa_end=loa["loa_end"],
             employer_tag=None,
-            refresher_training_type=None,
-            refresher_training_start=None,
-            refresher_training_end=None,
+            refresher_training_type=(
+                loa_working_refresher["refresher_training_type"]
+                if loa_working_refresher is not None
+                else None
+            ),
+            refresher_training_start=(
+                loa_working_refresher["refresher_training_start"]
+                if loa_working_refresher is not None
+                else None
+            ),
+            refresher_training_end=(
+                loa_working_refresher["refresher_training_end"]
+                if loa_working_refresher is not None
+                else None
+            ),
             pending_sr_promotion_start=None,
             pending_sr_promotion_end=None,
             multi_posting_fragments=[],
@@ -595,7 +878,11 @@ def classify_posting_cell(
                 context, loa["loa_start"], loa["loa_end"]
             ),
             warnings=warnings,
-            annotations=loa["annotations"],
+            annotations=(
+                [*loa["annotations"], loa_working_refresher]
+                if loa_working_refresher is not None
+                else loa["annotations"]
+            ),
             raw_cell=normalized.raw_value,
             normalized_lines=normalized.normalized_lines,
         )
@@ -621,27 +908,958 @@ def classify_posting_cell(
     )
 
 
+def _cell_text(sheet: Any, row: int, column: int) -> str:
+    return _to_cell_text(sheet.cell(row=row, column=column).value).strip()
+
+
+def _normalize_optional_text(value: str) -> str | None:
+    stripped = (value or "").strip()
+    if not stripped or stripped == "-":
+        return None
+    return stripped
+
+
+def _parse_resident_employee_code(
+    raw_employee_code: str,
+) -> tuple[str | None, str | None, str | None]:
+    normalized_cell = normalize_rdb_cell(raw_employee_code)
+    normalized = _normalize_optional_text(normalized_cell.normalized_value)
+    if normalized is None:
+        return None, None, None
+
+    employed_match = _EMPLOYED_PATTERN.match(normalized)
+    if employed_match is not None:
+        return None, employed_match.group("tag"), None
+
+    if _looks_like_malformed_employed_marker(normalized):
+        return (
+            None,
+            None,
+            f"Malformed employed marker in employee_code column: {normalized}",
+        )
+
+    return normalized, None, None
+
+
+def _normalize_programme_lookup_key(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def _warning_unknown_loa_type(warning: str) -> str | None:
+    prefix = "Unknown LOA type: "
+    if warning.startswith(prefix):
+        return warning[len(prefix) :].strip()
+    return None
+
+
+def _fragment_codes(
+    fragments: list[ParsedMultiPostingFragment],
+) -> list[str]:
+    codes: list[str] = []
+    for fragment in fragments:
+        if fragment.posting_code not in codes:
+            codes.append(fragment.posting_code)
+    return codes
+
+
+def _fragment_bounds(
+    fragments: list[ParsedMultiPostingFragment],
+    posting_code: str | None = None,
+) -> tuple[date, date]:
+    scoped = [
+        fragment
+        for fragment in fragments
+        if posting_code is None or fragment.posting_code == posting_code
+    ]
+    return min(fragment.start_date for fragment in scoped), max(
+        fragment.end_date for fragment in scoped
+    )
+
+
+def _fragment_day_part(
+    fragments: list[ParsedMultiPostingFragment],
+    posting_code: str,
+) -> str | None:
+    day_parts = {
+        fragment.day_part
+        for fragment in fragments
+        if fragment.posting_code == posting_code
+    }
+    return next(iter(day_parts)) if len(day_parts) == 1 else None
+
+
+def _working_days_for_phase(start_date: date, end_date: date) -> int:
+    return compute_working_days(
+        phase_start=start_date,
+        phase_end=end_date,
+        loa_start=None,
+        loa_end=None,
+    )
+
+
+def _warn_duplicate_resident_posting_suppressed(
+    accumulator: RDBParseAccumulator,
+    *,
+    resident_mcr: str,
+    programme_code: str,
+    posting: ResidentPostingWrite,
+) -> None:
+    accumulator.warnings.append(
+        {
+            "type": "duplicate_resident_posting_suppressed",
+            "mcr": resident_mcr,
+            "programme_code": programme_code,
+            "month_label": posting.month_label,
+            "posting_code": posting.posting_code,
+            "start_date": posting.start_date.isoformat(),
+            "day_part": posting.day_part,
+            "message": (
+                "Suppressed a duplicate resident_postings row before insert "
+                "for the same resident, reporting period, start_date, and "
+                "day_part."
+            ),
+        }
+    )
+
+
+def _deduplicate_resident_postings(
+    *,
+    resident: ParsedRDBResident,
+    accumulator: RDBParseAccumulator,
+) -> list[ResidentPostingWrite]:
+    deduplicated: list[ResidentPostingWrite] = []
+    seen: set[tuple[UUID, date, str | None]] = set()
+    for posting in resident.postings:
+        key = (posting.reporting_period_id, posting.start_date, posting.day_part)
+        if key in seen:
+            _warn_duplicate_resident_posting_suppressed(
+                accumulator,
+                resident_mcr=resident.mcr,
+                programme_code=resident.programme_code,
+                posting=posting,
+            )
+            continue
+        seen.add(key)
+        deduplicated.append(posting)
+    return deduplicated
+
+
+def _rule_matches(rule: MultiPostingRuleConfig, codes: list[str]) -> bool:
+    if rule.posting_code_2:
+        return rule.posting_code_1 in codes and rule.posting_code_2 in codes
+    return rule.posting_code_1 in codes
+
+
+def _find_multi_posting_rule(
+    rules: list[MultiPostingRuleConfig],
+    codes: list[str],
+) -> MultiPostingRuleConfig | None:
+    for rule_type in ("combine", "half_month", "main_posting"):
+        for rule in rules:
+            if rule.rule_type == rule_type and _rule_matches(rule, codes):
+                return rule
+    return None
+
+
+def _base_posting_from_cell(
+    *,
+    resident_mcr: str,
+    reporting_period_id: UUID,
+    header: PostingColumnHeader,
+    r_year: str,
+    parsed_cell: ParsedPostingCell,
+) -> ResidentPostingWrite:
+    return ResidentPostingWrite(
+        resident_mcr=resident_mcr,
+        posting_code=parsed_cell.posting_code,
+        reporting_period_id=reporting_period_id,
+        start_date=header.start_date,
+        end_date=header.end_date,
+        day_part=None,
+        month_label=header.month_label,
+        r_year=r_year or "ALL",
+        status=parsed_cell.status,
+        loa_type=parsed_cell.loa_type,
+        loa_start_date=parsed_cell.loa_start,
+        loa_end_date=parsed_cell.loa_end,
+        refresher_training_type=parsed_cell.refresher_training_type,
+        refresher_training_start=parsed_cell.refresher_training_start,
+        refresher_training_end=parsed_cell.refresher_training_end,
+        active_months_weight=Decimal("1.0"),
+        working_days_in_month=parsed_cell.working_days,
+    )
+
+
+def _apply_multi_posting_cell(
+    *,
+    resident_mcr: str,
+    programme_code: str,
+    reporting_period_id: UUID,
+    header: PostingColumnHeader,
+    r_year: str,
+    parsed_cell: ParsedPostingCell,
+    rules: list[MultiPostingRuleConfig],
+    accumulator: RDBParseAccumulator,
+) -> list[ResidentPostingWrite]:
+    fragments = parsed_cell.multi_posting_fragments
+    codes = _fragment_codes(fragments)
+    accumulator.posting_codes.update(codes)
+
+    if len(codes) <= 1:
+        return [
+            ResidentPostingWrite(
+                resident_mcr=resident_mcr,
+                posting_code=fragment.posting_code,
+                reporting_period_id=reporting_period_id,
+                start_date=fragment.start_date,
+                end_date=fragment.end_date,
+                day_part=fragment.day_part,
+                month_label=header.month_label,
+                r_year=r_year or "ALL",
+                status="active",
+                active_months_weight=Decimal("1.0"),
+                working_days_in_month=_working_days_for_phase(
+                    fragment.start_date,
+                    fragment.end_date,
+                ),
+            )
+            for fragment in fragments
+        ]
+
+    rule = _find_multi_posting_rule(rules, codes)
+
+    if rule is None:
+        accumulator.warnings.append(
+            {
+                "type": "unmatched_multi_posting",
+                "mcr": resident_mcr,
+                "programme_code": programme_code,
+                "posting_codes": codes,
+                "message": (
+                    f"MCR={resident_mcr}: {' + '.join(codes)} - no "
+                    "combine/half_month/main_posting rule found. Compliance "
+                    "calculated independently per posting."
+                ),
+            }
+        )
+        return [
+            ResidentPostingWrite(
+                resident_mcr=resident_mcr,
+                posting_code=fragment.posting_code,
+                reporting_period_id=reporting_period_id,
+                start_date=fragment.start_date,
+                end_date=fragment.end_date,
+                day_part=fragment.day_part,
+                month_label=header.month_label,
+                r_year=r_year or "ALL",
+                status="active",
+                active_months_weight=Decimal("1.0"),
+                working_days_in_month=_working_days_for_phase(
+                    fragment.start_date,
+                    fragment.end_date,
+                ),
+            )
+            for fragment in fragments
+        ]
+
+    accumulator.multi_posting_rules_applied += 1
+
+    if rule.rule_type == "combine":
+        combined_code = rule.combined_label or " & ".join(codes)
+        accumulator.posting_codes.add(combined_code)
+        start_date, end_date = _fragment_bounds(fragments)
+        return [
+            ResidentPostingWrite(
+                resident_mcr=resident_mcr,
+                posting_code=combined_code,
+                reporting_period_id=reporting_period_id,
+                start_date=start_date,
+                end_date=end_date,
+                day_part=None,
+                month_label=header.month_label,
+                r_year=r_year or "ALL",
+                status="active",
+                active_months_weight=Decimal("1.0"),
+                working_days_in_month=_working_days_for_phase(start_date, end_date),
+            )
+        ]
+
+    if rule.rule_type == "half_month":
+        return [
+            ResidentPostingWrite(
+                resident_mcr=resident_mcr,
+                posting_code=code,
+                reporting_period_id=reporting_period_id,
+                start_date=_fragment_bounds(fragments, code)[0],
+                end_date=_fragment_bounds(fragments, code)[1],
+                day_part=_fragment_day_part(fragments, code),
+                month_label=header.month_label,
+                r_year=r_year or "ALL",
+                status="active",
+                active_months_weight=Decimal("0.5"),
+                working_days_in_month=_working_days_for_phase(
+                    _fragment_bounds(fragments, code)[0],
+                    _fragment_bounds(fragments, code)[1],
+                ),
+            )
+            for code in codes
+        ]
+
+    collapsed_code = rule.main_posting_code or rule.exclusion_code or codes[0]
+    accumulator.posting_codes.add(collapsed_code)
+    start_date, end_date = _fragment_bounds(fragments)
+    return [
+        ResidentPostingWrite(
+            resident_mcr=resident_mcr,
+            posting_code=collapsed_code,
+            reporting_period_id=reporting_period_id,
+            start_date=start_date,
+            end_date=end_date,
+            day_part=None,
+            month_label=header.month_label,
+            r_year=r_year or "ALL",
+            status="active",
+            active_months_weight=Decimal("1.0"),
+            working_days_in_month=_working_days_for_phase(start_date, end_date),
+        )
+    ]
+
+
+async def _load_programme_lookup(
+    session: AsyncSession,
+) -> dict[str, ProgrammeConfig]:
+    result = await session.execute(
+        text(
+            """
+            SELECT code, name, r_year_required, is_subspecialty, rdb_alias
+            FROM programmes
+            """
+        )
+    )
+    lookup: dict[str, ProgrammeConfig] = {}
+    for row in result.mappings().all():
+        config = ProgrammeConfig(
+            code=str(row["code"]).strip(),
+            r_year_required=bool(row["r_year_required"]),
+            is_subspecialty=bool(row["is_subspecialty"]),
+        )
+        lookup[_normalize_programme_lookup_key(config.code)] = config
+
+        alias = row.get("rdb_alias")
+        if alias:
+            lookup[_normalize_programme_lookup_key(str(alias))] = config
+
+        programme_name = row.get("name")
+        if programme_name:
+            lookup[_normalize_programme_lookup_key(str(programme_name))] = config
+    return lookup
+
+
+async def _load_known_loa_types(session: AsyncSession) -> set[str]:
+    result = await session.execute(text("SELECT code FROM loa_types"))
+    return {str(row["code"]).strip() for row in result.mappings().all()}
+
+
+async def _load_multi_posting_rules(
+    session: AsyncSession, programme_code: str
+) -> list[MultiPostingRuleConfig]:
+    result = await session.execute(
+        text(
+            """
+            SELECT programme_code,
+                   posting_code_1,
+                   posting_code_2,
+                   rule_type,
+                   combined_label,
+                   main_posting_code,
+                   exclusion_code
+            FROM multi_posting_rules
+            WHERE programme_code = :programme_code
+            """
+        ),
+        {"programme_code": programme_code},
+    )
+    return [
+        MultiPostingRuleConfig(
+            programme_code=str(row["programme_code"]),
+            posting_code_1=str(row["posting_code_1"]),
+            posting_code_2=str(row["posting_code_2"]) if row["posting_code_2"] else None,
+            rule_type=str(row["rule_type"]),
+            combined_label=str(row["combined_label"]) if row["combined_label"] else None,
+            main_posting_code=(
+                str(row["main_posting_code"]) if row["main_posting_code"] else None
+            ),
+            exclusion_code=str(row["exclusion_code"]) if row["exclusion_code"] else None,
+        )
+        for row in result.mappings().all()
+    ]
+
+
+async def _fetch_existing_resident_ids(
+    session: AsyncSession, mcrs: list[str]
+) -> dict[str, UUID]:
+    if not mcrs:
+        return {}
+    result = await session.execute(
+        text(
+            """
+            SELECT mcr, id
+            FROM residents
+            WHERE mcr = ANY(:mcrs)
+            """
+        ),
+        {"mcrs": mcrs},
+    )
+    return {str(row["mcr"]): row["id"] for row in result.mappings().all()}
+
+
+async def _fetch_existing_posting_codes(
+    session: AsyncSession, codes: list[str]
+) -> set[str]:
+    if not codes:
+        return set()
+    result = await session.execute(
+        text(
+            """
+            SELECT code
+            FROM posting_codes
+            WHERE code = ANY(:codes)
+            """
+        ),
+        {"codes": codes},
+    )
+    return {str(row["code"]) for row in result.mappings().all()}
+
+
+async def _insert_posting_code(session: AsyncSession, code: str) -> None:
+    await session.execute(
+        text(
+            """
+            INSERT INTO posting_codes (code, display_name)
+            VALUES (:code, NULL)
+            ON CONFLICT (code) DO NOTHING
+            """
+        ),
+        {"code": code},
+    )
+
+
+async def _insert_resident(
+    session: AsyncSession, resident: ParsedRDBResident
+) -> UUID:
+    result = await session.execute(
+        text(
+            """
+            INSERT INTO residents (
+                employee_code,
+                name,
+                mcr,
+                classification,
+                base_institution,
+                programme_code,
+                r_year,
+                reg_type,
+                employer_tag
+            )
+            VALUES (
+                :employee_code,
+                :name,
+                :mcr,
+                :classification,
+                :base_institution,
+                :programme_code,
+                :r_year,
+                :reg_type,
+                :employer_tag
+            )
+            RETURNING id
+            """
+        ),
+        {
+            "employee_code": resident.employee_code,
+            "name": resident.name,
+            "mcr": resident.mcr,
+            "classification": resident.classification,
+            "base_institution": resident.base_institution,
+            "programme_code": resident.programme_code,
+            "r_year": resident.raw_r_year,
+            "reg_type": resident.reg_type,
+            "employer_tag": resident.employer_tag,
+        },
+    )
+    resident_id = result.scalar_one_or_none()
+    if resident_id is None:
+        raise RDBParserError(f"Resident insert did not return an id for {resident.mcr}")
+    return resident_id
+
+
+async def _update_resident(
+    session: AsyncSession, resident: ParsedRDBResident
+) -> UUID:
+    result = await session.execute(
+        text(
+            """
+            UPDATE residents
+            SET employee_code = :employee_code,
+                name = :name,
+                classification = :classification,
+                base_institution = :base_institution,
+                programme_code = :programme_code,
+                r_year = :r_year,
+                reg_type = :reg_type,
+                employer_tag = :employer_tag
+            WHERE mcr = :mcr
+            RETURNING id
+            """
+        ),
+        {
+            "employee_code": resident.employee_code,
+            "name": resident.name,
+            "mcr": resident.mcr,
+            "classification": resident.classification,
+            "base_institution": resident.base_institution,
+            "programme_code": resident.programme_code,
+            "r_year": resident.raw_r_year,
+            "reg_type": resident.reg_type,
+            "employer_tag": resident.employer_tag,
+        },
+    )
+    resident_id = result.scalar_one_or_none()
+    if resident_id is None:
+        raise RDBParserError(f"Resident update did not return an id for {resident.mcr}")
+    return resident_id
+
+
+async def _delete_existing_postings_for_uploaded_residents(
+    session: AsyncSession,
+    *,
+    reporting_period_id: UUID,
+    resident_ids: list[UUID],
+) -> None:
+    if not resident_ids:
+        return
+    await session.execute(
+        text(
+            """
+            DELETE FROM resident_postings
+            WHERE reporting_period_id = :reporting_period_id
+              AND resident_id = ANY(:resident_ids)
+            """
+        ),
+        {
+            "reporting_period_id": str(reporting_period_id),
+            "resident_ids": resident_ids,
+        },
+    )
+
+
+async def _insert_resident_posting(
+    session: AsyncSession,
+    *,
+    resident_id: UUID,
+    posting: ResidentPostingWrite,
+) -> None:
+    await session.execute(
+        text(
+            """
+            INSERT INTO resident_postings (
+                resident_id,
+                posting_code,
+                reporting_period_id,
+                start_date,
+                end_date,
+                day_part,
+                month_label,
+                r_year,
+                status,
+                loa_type,
+                loa_start_date,
+                loa_end_date,
+                refresher_training_type,
+                refresher_training_start,
+                refresher_training_end,
+                active_months_weight,
+                working_days_in_month
+            )
+            VALUES (
+                :resident_id,
+                :posting_code,
+                :reporting_period_id,
+                :start_date,
+                :end_date,
+                :day_part,
+                :month_label,
+                :r_year,
+                :status,
+                :loa_type,
+                :loa_start_date,
+                :loa_end_date,
+                :refresher_training_type,
+                :refresher_training_start,
+                :refresher_training_end,
+                :active_months_weight,
+                :working_days_in_month
+            )
+            """
+        ),
+        {
+            "resident_id": resident_id,
+            "posting_code": posting.posting_code,
+            "reporting_period_id": str(posting.reporting_period_id),
+            "start_date": posting.start_date,
+            "end_date": posting.end_date,
+            "day_part": posting.day_part,
+            "month_label": posting.month_label,
+            "r_year": posting.r_year or "ALL",
+            "status": posting.status,
+            "loa_type": posting.loa_type,
+            "loa_start_date": posting.loa_start_date,
+            "loa_end_date": posting.loa_end_date,
+            "refresher_training_type": posting.refresher_training_type,
+            "refresher_training_start": posting.refresher_training_start,
+            "refresher_training_end": posting.refresher_training_end,
+            "active_months_weight": posting.active_months_weight,
+            "working_days_in_month": posting.working_days_in_month,
+        },
+    )
+
+
+async def _persist_rdb_upload(
+    *,
+    session: AsyncSession,
+    reporting_period_id: UUID,
+    parsed: RDBParseAccumulator,
+) -> tuple[int, int, int, list[str]]:
+    posting_codes = sorted(code for code in parsed.posting_codes if code)
+    existing_codes = await _fetch_existing_posting_codes(session, posting_codes)
+    added_codes = [code for code in posting_codes if code not in existing_codes]
+    for code in added_codes:
+        await _insert_posting_code(session, code)
+
+    residents = list(parsed.residents.values())
+    existing_residents = await _fetch_existing_resident_ids(
+        session, [resident.mcr for resident in residents]
+    )
+
+    resident_ids: dict[str, UUID] = {}
+    residents_created = 0
+    residents_updated = 0
+    for resident in residents:
+        if resident.mcr in existing_residents:
+            resident_ids[resident.mcr] = await _update_resident(session, resident)
+            residents_updated += 1
+        else:
+            resident_ids[resident.mcr] = await _insert_resident(session, resident)
+            residents_created += 1
+
+    await _delete_existing_postings_for_uploaded_residents(
+        session,
+        reporting_period_id=reporting_period_id,
+        resident_ids=list(resident_ids.values()),
+    )
+
+    postings_created = 0
+    for resident in residents:
+        resident_id = resident_ids[resident.mcr]
+        for posting in _deduplicate_resident_postings(
+            resident=resident,
+            accumulator=parsed,
+        ):
+            await _insert_resident_posting(
+                session,
+                resident_id=resident_id,
+                posting=posting,
+            )
+            postings_created += 1
+
+    from app.services.surplus import hibernate_stale_surplus
+
+    await hibernate_stale_surplus(session, reporting_period_id)
+    return residents_created, residents_updated, postings_created, added_codes
+
+
+async def _parse_workbook_to_accumulator(
+    *,
+    file_bytes: bytes,
+    reporting_period_id: UUID,
+    db_session: AsyncSession,
+) -> RDBParseAccumulator:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(filename=BytesIO(file_bytes), data_only=True)
+    try:
+        programme_lookup = await _load_programme_lookup(db_session)
+        known_loa_types = await _load_known_loa_types(db_session)
+        rules_by_programme: dict[str, list[MultiPostingRuleConfig]] = {}
+        accumulator = RDBParseAccumulator(
+            residents={},
+            posting_codes=set(),
+            warnings=[],
+            errors=[],
+            rows_skipped=0,
+            skip_reasons=[],
+            unknown_loa_types=set(),
+            loa_records=0,
+            employed_residents_flagged=set(),
+            multi_posting_rules_applied=0,
+        )
+
+        detected_sheets = detect_rdb_sheets(workbook)
+        for sheet_name, sheet_type in detected_sheets.items():
+            if sheet_type == "skip":
+                continue
+            if sheet_type == "ssr":
+                accumulator.warnings.append(
+                    {
+                        "type": "unsupported_sheet",
+                        "sheet": sheet_name,
+                        "message": "SSR sheet detected but SSR persistence is not implemented in this phase.",
+                    }
+                )
+                continue
+
+            sheet = workbook[sheet_name]
+            posting_headers = detect_posting_columns(sheet)
+            for row_index in range(3, sheet.max_row + 1):
+                mcr = _cell_text(sheet, row_index, 3).upper()
+                if not mcr:
+                    continue
+                if _MCR_LIKE_PATTERN.fullmatch(mcr) is None:
+                    accumulator.rows_skipped += 1
+                    accumulator.skip_reasons.append(
+                        {
+                            "sheet": sheet_name,
+                            "row": row_index,
+                            "reason": "invalid_mcr",
+                            "mcr": mcr,
+                        }
+                    )
+                    continue
+
+                raw_programme = _cell_text(sheet, row_index, 7)
+                programme = programme_lookup.get(
+                    _normalize_programme_lookup_key(raw_programme)
+                )
+                if programme is None:
+                    accumulator.rows_skipped += 1
+                    warning = {
+                        "type": "unknown_programme",
+                        "sheet": sheet_name,
+                        "row": row_index,
+                        "mcr": mcr,
+                        "specialization": raw_programme,
+                    }
+                    accumulator.warnings.append(warning)
+                    accumulator.skip_reasons.append(warning)
+                    continue
+
+                if programme.code not in rules_by_programme:
+                    rules_by_programme[programme.code] = await _load_multi_posting_rules(
+                        db_session, programme.code
+                    )
+
+                raw_employee_code = _cell_text(sheet, row_index, 1)
+                employee_code, row_employer_tag, employee_code_warning = (
+                    _parse_resident_employee_code(raw_employee_code)
+                )
+                if employee_code_warning:
+                    accumulator.warnings.append(
+                        {
+                            "type": "row_warning",
+                            "sheet": sheet_name,
+                            "row": row_index,
+                            "mcr": mcr,
+                            "message": employee_code_warning,
+                        }
+                    )
+
+                raw_r_year = _cell_text(sheet, row_index, 6)
+                resolved_r_year = resolve_r_year(raw_r_year, programme)
+                parsed_resident = ParsedRDBResident(
+                    employee_code=employee_code,
+                    name=_cell_text(sheet, row_index, 2),
+                    mcr=mcr,
+                    classification=_normalize_optional_text(
+                        _cell_text(sheet, row_index, 4)
+                    ),
+                    base_institution=_normalize_optional_text(
+                        _cell_text(sheet, row_index, 5)
+                    ),
+                    raw_r_year=raw_r_year,
+                    programme_code=programme.code,
+                    resolved_r_year=resolved_r_year or "ALL",
+                    reg_type=_normalize_optional_text(_cell_text(sheet, row_index, 8)),
+                    employer_tag=row_employer_tag,
+                    postings=[],
+                )
+                if row_employer_tag:
+                    accumulator.employed_residents_flagged.add(mcr)
+
+                for header in posting_headers:
+                    raw_cell = sheet.cell(
+                        row=row_index, column=header.column_index
+                    ).value
+                    parsed_cell = classify_posting_cell(
+                        normalize_rdb_cell(raw_cell),
+                        {
+                            "known_loa_types": known_loa_types,
+                            "phase_start": header.start_date,
+                            "phase_end": header.end_date,
+                        },
+                    )
+                    if parsed_cell is None:
+                        continue
+
+                    for warning in parsed_cell.warnings:
+                        accumulator.warnings.append(
+                            {
+                                "type": "cell_warning",
+                                "sheet": sheet_name,
+                                "row": row_index,
+                                "month_label": header.month_label,
+                                "message": warning,
+                            }
+                        )
+                        unknown_loa_type = _warning_unknown_loa_type(warning)
+                        if unknown_loa_type:
+                            accumulator.unknown_loa_types.add(unknown_loa_type)
+
+                    if parsed_cell.status == "employed":
+                        parsed_resident.employer_tag = parsed_cell.employer_tag
+                        accumulator.employed_residents_flagged.add(mcr)
+                        continue
+
+                    if parsed_cell.status in {"loa", "loa_working"}:
+                        accumulator.loa_records += 1
+
+                    if parsed_cell.multi_posting_fragments:
+                        parsed_resident.postings.extend(
+                            _apply_multi_posting_cell(
+                                resident_mcr=mcr,
+                                programme_code=programme.code,
+                                reporting_period_id=reporting_period_id,
+                                header=header,
+                                r_year=parsed_resident.resolved_r_year,
+                                parsed_cell=parsed_cell,
+                                rules=rules_by_programme[programme.code],
+                                accumulator=accumulator,
+                            )
+                        )
+                        continue
+
+                    if parsed_cell.status == "active" and parsed_cell.posting_code is None:
+                        accumulator.rows_skipped += 1
+                        accumulator.skip_reasons.append(
+                            {
+                                "sheet": sheet_name,
+                                "row": row_index,
+                                "month_label": header.month_label,
+                                "reason": "missing_posting_code",
+                                "raw_cell": _to_cell_text(raw_cell).strip(),
+                            }
+                        )
+                        continue
+
+                    posting = _base_posting_from_cell(
+                        resident_mcr=mcr,
+                        reporting_period_id=reporting_period_id,
+                        header=header,
+                        r_year=parsed_resident.resolved_r_year,
+                        parsed_cell=parsed_cell,
+                    )
+                    if posting.posting_code is not None:
+                        accumulator.posting_codes.add(posting.posting_code)
+                    parsed_resident.postings.append(posting)
+
+                accumulator.residents[mcr] = parsed_resident
+
+        return accumulator
+    finally:
+        workbook.close()
+
+
 async def parse_rdb_upload(
     *,
     file_bytes: bytes,
     original_filename: str,
     reporting_period_id: UUID | None,
     programme_code: str | None = None,
+    db_session: AsyncSession | None = None,
 ) -> ParserResult:
+    if reporting_period_id is None:
+        return ParserResult(
+            upload_type="rdb",
+            errors=["reporting_period_id is required for RDB upload."],
+            metadata={
+                "original_filename": original_filename,
+                "reporting_period_id": None,
+                "byte_count": len(file_bytes),
+            },
+        )
+
+    if db_session is None:
+        return ParserResult(
+            upload_type="rdb",
+            errors=["Database session is required for RDB upload persistence."],
+            metadata={
+                "original_filename": original_filename,
+                "reporting_period_id": str(reporting_period_id),
+                "byte_count": len(file_bytes),
+            },
+        )
+
+    try:
+        parsed = await _parse_workbook_to_accumulator(
+            file_bytes=file_bytes,
+            reporting_period_id=reporting_period_id,
+            db_session=db_session,
+        )
+        (
+            residents_created,
+            residents_updated,
+            postings_created,
+            posting_codes_added,
+        ) = await _persist_rdb_upload(
+            session=db_session,
+            reporting_period_id=reporting_period_id,
+            parsed=parsed,
+        )
+        await db_session.commit()
+    except Exception as exc:
+        await db_session.rollback()
+        return ParserResult(
+            upload_type="rdb",
+            errors=[str(exc)],
+            metadata={
+                "original_filename": original_filename,
+                "reporting_period_id": str(reporting_period_id),
+                "byte_count": len(file_bytes),
+            },
+        )
+
     metadata: dict[str, Any] = {
         "original_filename": original_filename,
         "reporting_period_id": str(reporting_period_id) if reporting_period_id else None,
         "byte_count": len(file_bytes),
-        "phase": "skeleton",
+        "residents_created": residents_created,
+        "residents_updated": residents_updated,
+        "postings_created": postings_created,
+        "posting_codes_added": posting_codes_added,
+        "loa_records": parsed.loa_records,
+        "unknown_loa_types": sorted(parsed.unknown_loa_types),
+        "employed_residents_flagged": len(parsed.employed_residents_flagged),
+        "multi_posting_rules_applied": parsed.multi_posting_rules_applied,
+        "rows_skipped": parsed.rows_skipped,
+        "skip_reasons": parsed.skip_reasons,
     }
     if programme_code:
         metadata["programme_code"] = programme_code
 
     return ParserResult(
         upload_type="rdb",
-        created_count=0,
-        updated_count=0,
-        warnings=["RDB parser skeleton in place. Full parsing logic is not implemented in this phase."],
-        errors=[],
+        created_count=residents_created + postings_created,
+        updated_count=residents_updated,
+        warnings=parsed.warnings,
+        errors=parsed.errors,
         metadata=metadata,
     )

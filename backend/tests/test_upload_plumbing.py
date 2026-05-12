@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from io import BytesIO
 from uuid import uuid4
 
@@ -71,6 +72,36 @@ def test_endpoint_slot_determines_parser_not_filename(monkeypatch) -> None:
     assert called["ttf"] == 0
 
 
+def test_rdb_upload_route_passes_database_session_to_parser(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_rdb_parser(**kwargs):
+        captured.update(kwargs)
+        return ParserResult(upload_type="rdb")
+
+    monkeypatch.setattr("app.services.rdb_parser.parse_rdb_upload", _fake_rdb_parser)
+
+    app = FastAPI()
+    app.include_router(admin.router)
+    client = TestClient(app)
+    response = client.post(
+        "/admin/upload/rdb",
+        headers=_admin_headers(),
+        data={"reporting_period_id": str(uuid4())},
+        files={
+            "file": (
+                "rdb.xlsx",
+                _make_valid_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["db_session"] is not None
+    assert "Database session is required for RDB upload persistence." not in response.text
+
+
 def test_invalid_extension_returns_422() -> None:
     client = _build_client()
     response = client.post(
@@ -136,8 +167,9 @@ def test_upload_logs_helper_can_write_row() -> None:
         sql, params = session.statements[0]
         assert "INSERT INTO upload_logs" in sql
         assert params["upload_type"] == "rdb"
-        assert params["original_filename"] == "rdb.xlsx"
         assert params["status"] == "success"
+        summary = json.loads(params["summary"])
+        assert summary["original_filename"] == "rdb.xlsx"
 
     asyncio.run(_exercise())
 
