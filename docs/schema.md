@@ -432,7 +432,7 @@ Rules governing how multiple posting codes in a single RDB cell are interpreted.
 
 ## Table: `posting_groups`
 
-Groups multiple RDB posting codes under a single compliance aggregate. When a resident serves at two postings in the same group across a period (e.g. `TTSHRespi` and `TTSHRespi(MICU)`), their active months are pooled and target100 is calculated across the combined months. Each posting still has its own TTF rows and monthly targets — the group only affects how active_months are summed.
+Groups multiple RDB posting codes under a single compliance aggregate. Seeded primarily from non-empty TTF Column E values (`dashboard_posting`). When a resident serves at two postings in the same group across a period (e.g. `TTSHRespi` and `TTSHRespi(MICU)`), their active months are pooled and target100 is calculated across the combined months. Each posting still has its own TTF rows and monthly targets — the group only affects how active_months and posting-level compliance aggregation are summed.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
@@ -451,6 +451,8 @@ Groups multiple RDB posting codes under a single compliance aggregate. When a re
 4. Each posting's own `monthly_target` applies per phase: `target_100 = sum(monthly_target_at_posting × months_at_posting)` across all group members
 5. `target_70 = ceil(target_100 × 0.70)`
 6. If no group is found for a posting code → calculate independently (posting stands alone)
+
+**Important clarification:** Column E / `group_code` does not replace the posting's own `monthly_target`. Each posting_code still contributes its own `monthly_target × months_at_posting`; grouping only changes the final posting-level aggregation identity.
 
 **Seeding sources:**
 - **TTF upload (primary):** When TTF column E ("For Dashboard (RDB Posting/Subspeciality)") is non-empty for a posting code row, the parser automatically upserts a `posting_groups` row: `group_code = column_E_value`, `posting_code = column_D_value`, `programme_code = from TTF`

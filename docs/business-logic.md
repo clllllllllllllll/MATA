@@ -60,6 +60,8 @@ def compute_group_target_100(
     return total_target_100
 ```
 
+**TTF Column E source:** `posting_groups` is primarily seeded from TTF Column E. A non-empty Column E value becomes the compliance `group_code`; the resolved Column D posting code becomes the group member. Column E does not replace the row’s monthly target. Each Column D row still contributes its own `monthly_target`; grouping only changes the posting-level aggregation identity.
+
 **"Achieved" vs "Achieved and counted":**
 - `achieved` = raw count of attendance records (display only)
 - `achieved_and_counted` = min(achieved, target_100) — this feeds compliance

@@ -428,13 +428,32 @@ def detect_ttf_sheet(workbook) -> str | None:
 | B | programme_code | e.g. `DR`, `GERI` |
 | C | r_year | Single (`R2`) or multi (`R4, R5, R6`) — must be exploded. Set to `'ALL'` for programmes with `r_year_required = false`. |
 | D | posting_code | Bare code (e.g. `KTPHDiagRd`) or legacy bracket format |
-| E | dashboard_posting | Display only — can be ignored |
+| E | dashboard_posting | Compliance grouping key. When non-empty, this value seeds `posting_groups.group_code`; the resolved Column D posting code becomes `posting_groups.            posting_code`. All posting codes sharing the same Column E value and programme are aggregated under that group for active-month counting, `target_100`, `target_70`, posting-level percentage, shortage, and clawback. When empty, no posting group row is created and the posting remains standalone under its resolved Column D posting code. |
 | F | session_type | Full name with duration, e.g. `Department/Programme Teaching [1h]` |
 | G | monthly_target | Integer frequency target at 100% |
 | H | is_tracked | `Yes` → true, anything else → false |
 | I | is_reallocatable | `Y` → true, anything else → false |
 | J | tag | Reallocation group label, e.g. `A`, `B`. Empty = no reallocation |
 | K | details_of_training | Comma-separated keywords (e.g. `Journal Club, Grand Round, M&M`). Each `(keyword, duration)` combination must map to exactly one session type within a posting per programme. |
+
+### TTF Column E — Posting Group / Dashboard Posting
+
+Column E is not display-only. It is the source of `posting_groups`.
+
+For each TTF row:
+- Column D remains the posting code used by `teaching_targets` and `teaching_name_catalogue`.
+- Column G remains the monthly target for that specific Column D row.
+- If Column E is non-empty, create/upsert a `posting_groups` row:
+  - `group_code = Column E`
+  - `posting_code = resolved Column D`
+  - `programme_code = TTF programme`
+- If Column E is empty, do not create a `posting_groups` row.
+
+Compliance impact:
+- Events/attendance still match through the actual posting code from Column D.
+- Each posting keeps its own TTF monthly target from Column G.
+- During compliance calculation, postings sharing the same `group_code` are aggregated.
+- Active months, `target_100`, `target_70`, posting-level percentage, shortage, and clawback are calculated on the grouped basis.
 
 ### Duration Extraction from Session Type Name
 
