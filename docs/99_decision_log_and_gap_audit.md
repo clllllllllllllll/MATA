@@ -258,11 +258,22 @@ Every important decision made during the project, with reasoning and consequence
 
 #### Decision: Multi-posting rules seeded in DB — no file upload
 - **Status:** ✅ Confirmed
-- **Decision:** The three rule types (`main_posting`, `combine`, `half_month`) are managed via admin CRUD UI. Rules are seeded directly into the `multi_posting_rules` table. No file upload needed.
-- **Reasoning:** Multi-posting rules are stable configuration data, not per-period upload data. CRUD UI is simpler and allows immediate correction.
+- **Decision:** The three rule types (`main_posting`, `combine`, `half_month`) are managed via admin CRUD UI. `Multiple postings per month.xlsx` is a seed/update source for the `multi_posting_rules` table, not a recurring upload slot.
+- **Reasoning:** Multi-posting rules are stable configuration data, not per-period upload data. CRUD UI is simpler and allows immediate correction. The workbook provides initial/source-of-truth seed rows when configuration needs to be refreshed.
 - **Alternatives considered:** Parsing rules from RDB file — rejected, rules are cross-programme and don't belong in a per-programme upload.
 - **Consequences for codebase:** Admin CRUD endpoints for `multi_posting_rules`. `rdb_parser.py` looks up the table at parse time. No rule file parser.
 - **Reference file and section:** `schema.md` § `multi_posting_rules`; `AGENTS.md` confirmed decisions
+- **Do not change without PM/stakeholder approval:** Yes
+
+---
+
+#### Decision: FM main-posting semantics and PC CRUD workflow
+- **Status:** ✅ Confirmed
+- **Decision:** PCs manage multi-posting rules through three logical Admin CRUD tabs: Main Posting, To Combine Posting, and Half Month Posting. For FM `main_posting` rules, `RDB Posting #1` is the recognised trigger list. Exact-one recognised posting in an FM multi-posting cell collapses to that row's `Main posting`; zero recognised postings collapse to the configured `Exclusion (Only for FM)`, usually `NHGPlyNHGPly`; two or more recognised postings must not infer and should persist independently with `unmatched_multi_posting` unless an explicit rule exists.
+- **Reasoning:** PC clarified that FM exclusion is configured data, not a universal hardcoded fallback. Ambiguous cells with multiple recognised main postings need PC review rather than parser guessing.
+- **Alternatives considered:** Hardcoding `NHGPlyNHGPly` globally, inferring the full rule set from AY25 warnings, or suppressing unmatched warnings. All rejected because they hide PC review points or encode unconfirmed business intent.
+- **Consequences for codebase:** RDB parser applies explicit rules first, then FM trigger-list semantics. Seed/data migrations must be workbook-derived and idempotent. Non-FM unknown combinations still warn and persist independently.
+- **Reference file and section:** `parsing.md` § RDB Parser multi-posting cells; `business-logic.md` § BL-8; `schema.md` § `multi_posting_rules`; `api.md` § Admin multi-posting rule endpoints
 - **Do not change without PM/stakeholder approval:** Yes
 
 ---

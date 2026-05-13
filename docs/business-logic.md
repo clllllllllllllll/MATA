@@ -539,6 +539,17 @@ If a `multi_posting_rules` row matches and the rule type is applied correctly (c
 
 Three rule types govern how multiple posting codes in the same RDB month-cell are handled for compliance.
 
+### Rule source and CRUD workflow
+
+`Multiple postings per month.xlsx` is a seed/update source for database configuration. It is not a recurring operational upload and is not part of the normal RDB/TTF/FormF1 upload flow.
+
+Long-term, PCs manage `multi_posting_rules` through Admin CRUD in three logical tabs:
+- Main Posting
+- To Combine Posting
+- Half Month Posting
+
+Seed refreshes must be idempotent. Re-running a seed or data migration must not create duplicate rules, and it must preserve manually added CRUD rules unless a workbook-derived row has the same unique key and intentionally replaces that row's configured output.
+
 ### combine type
 
 Two posting codes appear in the same RDB cell and match a `combine` rule → a single `resident_postings` row is created with `combined_label` as posting_code (e.g. `IMHGrPsyc & TTSHPsychi`).
@@ -558,16 +569,21 @@ Two posting codes appear in the same RDB cell and match a `half_month` rule (cur
 
 ### main_posting type (FM)
 
-Multiple posting codes appear in a single FM sheet cell. Look up `multi_posting_rules` for this programme + posting codes → if a match is found, collapse to `main_posting_code`.
+Multiple posting codes appear in a single FM sheet cell. Explicit two-code `main_posting` rows, if present, are applied first. If no explicit rule matches, the parser uses the FM `main_posting` rows where `posting_code_2 IS NULL` as the recognised `RDB Posting #1` trigger list.
 
-- If no match found for any posting code in the cell → fall back to `exclusion_code` (NHGPlyNHGPly for FM)
-- This handles the FM polyclinic rotation where residents alternate between specialty departments and NHGPly
+- Exact one recognised `RDB Posting #1` code in the cell → collapse to that row's `main_posting_code`.
+- Zero recognised `RDB Posting #1` codes in the cell → collapse to the configured `exclusion_code`, usually `NHGPlyNHGPly`.
+- Two or more recognised `RDB Posting #1` codes in the cell → do not infer. Persist postings independently and emit `unmatched_multi_posting` unless an explicit rule exists.
+- A singular `NHGPlyNHGPly` cell is a normal standalone posting. It does not require a multi-posting rule and does not warn.
+- This handles the FM polyclinic rotation where residents alternate between specialty departments and NHGPly without hardcoding `NHGPlyNHGPly` as a universal exclusion.
+
+Non-FM unmatched combinations continue to persist independently and emit `unmatched_multi_posting`. The warning is the PC review workflow: add a rule through CRUD if the combination is valid, or fix the source RDB and re-upload if it is not.
 
 ---
 
 ## BL-FM: FM (Family Medicine) — Standard Engine with Specific Annotations
 
-**FM uses the standard compliance engine (BL-1 through BL-7).** There is no separate FM compliance variant. Two FM-specific rules apply as annotations within the standard path:
+**FM uses the standard compliance engine (BL-1 through BL-7).** There is no separate FM compliance variant. FM-specific rules are annotations within the standard path:
 
 **Rule 1 — Department Teaching [5h] posting override:**
 When an FM resident submits attendance for a session of type `Department Teaching [5h]`, the posting for compliance attribution is always overridden to `NHGPlyNHGPly`, regardless of what posting site the event was created under.
@@ -578,8 +594,11 @@ if programme_code == 'FM' and session_type_name == 'Department Teaching [5h]':
     compliance_posting_code = 'NHGPlyNHGPly'
 ```
 
-**Rule 2 — FM Saturday exception:**
-FM Saturday teachings are accepted if `start_time >= 08:00` and `end_time <= 13:00`. This is handled via the `weekend_exceptions` table with a row: `programme_code = 'FM'`, `day_type = 'sat'`, `start_time_min = 08:00`, `end_time_max = 13:00`.
+**Rule 2 — FM main-posting parser semantics:**
+FM multi-posting cells use the `main_posting` trigger-list semantics in BL-8. This is parse-time posting resolution only; it does not create a separate FM compliance engine.
+
+**FM Saturday exception removed:**
+FM is not in the confirmed `weekend_exceptions` seed list. Saturday FM sessions follow the general weekend warning/exclusion flow unless a future PC-confirmed exception is added through Admin CRUD.
 
 **Reporting:** FM output uses the same compliance calculation as all other programmes. The R script's separate Excel template for FM was a layout difference only — not a calculation difference. No separate report template is needed in the new system.
 

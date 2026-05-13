@@ -182,6 +182,22 @@ Upload RDB Posting Schedule Excel file.
 }
 ```
 
+- **`unmatched_multi_posting` warning payload (when applicable):**
+```json
+{
+  "type": "unmatched_multi_posting",
+  "mcr": "M12345A",
+  "resident_name": "Resident Name",
+  "programme_code": "CARDIO",
+  "month_label": "Aug-25",
+  "sheet_name": "Phase 3",
+  "row_number": 42,
+  "cell_ref": "J42",
+  "posting_codes": ["NHCCardio", "TTSHCardio"],
+  "message": "No matching multi-posting rule found. Postings were persisted independently. Add a multi_posting_rule or correct the RDB source if needed."
+}
+```
+
 ### POST `/admin/upload/ttf`
 
 Upload Teaching Target File Excel.
@@ -277,16 +293,25 @@ Delete a single teaching target row.
 
 ### GET `/admin/multi-posting-rules`
 
-List all multi-posting rules.
+List all multi-posting rules. The Admin configuration UI presents these rows in three logical tabs:
+- Main Posting (`rule_type = "main_posting"`)
+- To Combine Posting (`rule_type = "combine"`)
+- Half Month Posting (`rule_type = "half_month"`)
 
 - **Auth:** admin only
 - **Query params:** `programme_code`, `rule_type` (optional)
+- **Authorization:** `programme_code`, when supplied, must be within the admin's `programme_scope`. If omitted, return only rows for programmes in scope.
+- **Ordering:** Stable order by `programme_code`, `rule_type`, `posting_code_1`, `posting_code_2`.
 
 ### POST `/admin/multi-posting-rules`
 
-Add a new multi-posting rule.
+Add a new multi-posting rule. This is the long-term PC workflow for maintaining rules after the initial seed/update from `Multiple postings per month.xlsx`; that workbook is not a recurring upload endpoint.
 
 - **Auth:** admin only
+- **Authorization:** `programme_code` must be within the admin's `programme_scope`.
+- **Duplicate handling:** Return `409` if a row already exists for `(programme_code, posting_code_1, posting_code_2, rule_type)`. Pair matching should also check the reverse pair for `combine` and `half_month` unless order is explicitly meaningful for the rule.
+- **Conflict validation:** Return `422` when the output fields do not match the rule type, for example `combine` without `combined_label`, `half_month` with output fields set, or `main_posting` without `main_posting_code`.
+- **Posting validation:** All posting codes referenced by `posting_code_1`, `posting_code_2`, `combined_label`, `main_posting_code`, and `exclusion_code` must exist in `posting_codes` or be created as dormant posting codes before insertion.
 - **Body:**
 ```json
 {
@@ -305,12 +330,22 @@ Add a new multi-posting rule.
 Update an existing multi-posting rule.
 
 - **Auth:** admin only
+- **Authorization:** The existing row's `programme_code` and any replacement `programme_code` must be within the admin's `programme_scope`.
+- **Duplicate/conflict handling:** Same validation as create. Return `409` if the update would duplicate another row's `(programme_code, posting_code_1, posting_code_2, rule_type)`.
+- **Scope safety:** Do not allow a PC to move a rule into or out of a programme they cannot administer.
 
 ### DELETE `/admin/multi-posting-rules/{id}`
 
 Delete a multi-posting rule.
 
 - **Auth:** admin only
+- **Authorization:** The row's `programme_code` must be within the admin's `programme_scope`.
+- **Behaviour:** Deleting a rule does not delete existing `resident_postings`. The effect is seen on the next RDB re-upload or future parse.
+
+**Rule-specific API semantics:**
+- `main_posting`: Used by FM Main Posting tab. Rows with `posting_code_2 = null` define the recognised `RDB Posting #1` trigger list. `exclusion_code` is the configured zero-match fallback, usually `NHGPlyNHGPly`.
+- `combine`: Used by To Combine Posting tab. Two posting codes collapse to `combined_label`.
+- `half_month`: Used by Half Month Posting tab. Two posting codes split into independent rows with `active_months_weight = 0.5`.
 
 ### GET `/admin/posting-groups`
 

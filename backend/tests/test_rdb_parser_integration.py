@@ -438,6 +438,29 @@ def _distinct_warning_posting_codes(warning: dict) -> list[str]:
     return distinct_codes
 
 
+def _assert_unmatched_warning_trace_fields(
+    warning: dict,
+    *,
+    mcr: str,
+    resident_name: str,
+    programme_code: str,
+    month_label: str,
+    sheet_name: str,
+    row_number: int,
+    cell_ref: str,
+) -> None:
+    assert warning.get("type") == "unmatched_multi_posting"
+    assert warning.get("mcr") == mcr
+    assert warning.get("resident_name") == resident_name
+    assert warning.get("programme_code") == programme_code
+    assert warning.get("month_label") == month_label
+    assert warning.get("sheet_name") == sheet_name
+    assert warning.get("row_number") == row_number
+    assert warning.get("cell_ref") == cell_ref
+    assert isinstance(warning.get("posting_codes"), list)
+    assert warning.get("message")
+
+
 def test_sample_upload_creates_residents_postings_posting_codes_and_upload_log() -> None:
     session = FakeRDBSession()
     user_id = uuid4()
@@ -763,6 +786,51 @@ def test_same_day_am_pm_multi_posting_does_not_generate_duplicate_phase_rows() -
     assert all(row["r_year"] == "ALL" for row in session.resident_postings)
 
 
+def test_standard_sheet_stops_parsing_at_red_line_marker() -> None:
+    session = FakeRDBSession()
+    period_id = uuid4()
+    marker = "Please do not insert any row beyond this red line"
+    file_bytes = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Valid Above Marker",
+                mcr="M11111A",
+                r_year="R2",
+                programme="DR",
+                jul="TTSHAnaes",
+            ),
+            [marker, "", "", "", "", "", "", "", "", "", ""],
+            _resident_row(
+                employee_code="E999",
+                name="Legend Like Row",
+                mcr="M99999Z",
+                r_year="R2",
+                programme="DR",
+                jul="LegendPostingCode",
+            ),
+        ],
+        sheet_name="Phase 1",
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="rdb-red-line-stop.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert result.metadata["rows_skipped"] == 0
+    assert result.warnings == []
+    assert set(session.residents.keys()) == {"M11111A"}
+    assert "M99999Z" not in session.residents
+    assert [row["posting_code"] for row in session.resident_postings] == ["TTSHAnaes"]
+    assert "LegendPostingCode" not in session.posting_codes
+
+
 def test_single_posting_explicit_date_fragments_with_am_do_not_emit_unmatched_warning() -> None:
     session = FakeRDBSession()
     period_id = uuid4()
@@ -927,6 +995,16 @@ def test_true_multi_posting_without_rule_still_emits_unmatched_warning() -> None
     assert result.errors == []
     warnings = _unmatched_multi_posting_warnings(result)
     assert len(warnings) == 1
+    _assert_unmatched_warning_trace_fields(
+        warnings[0],
+        mcr="M11111A",
+        resident_name="True Unmatched Multi Posting",
+        programme_code="ANAES",
+        month_label="Aug-25",
+        sheet_name="Phase 1",
+        row_number=3,
+        cell_ref="I3",
+    )
     assert _distinct_warning_posting_codes(warnings[0]) == ["TTSHAnaes", "TTSHCardio"]
 
 
@@ -1321,6 +1399,16 @@ def test_real_ay25_workbook_unmatched_multi_posting_warnings_have_no_single_post
     )
 
     unmatched = _unmatched_multi_posting_warnings(result)
+    for warning in unmatched:
+        assert warning.get("mcr")
+        assert warning.get("resident_name")
+        assert warning.get("programme_code")
+        assert warning.get("month_label")
+        assert warning.get("sheet_name")
+        assert warning.get("row_number")
+        assert warning.get("posting_codes")
+        assert warning.get("cell_ref")
+
     single_posting_unmatched = [
         warning
         for warning in unmatched
@@ -1574,6 +1662,287 @@ def test_fm_main_posting_rule_collapses_specialty_and_nhgply_fragments() -> None
     assert "NHGPlyNHGPly" not in {
         row["posting_code"] for row in session.resident_postings
     }
+
+
+def test_fm_main_posting_exact_one_recognised_posting_collapses_without_warning() -> None:
+    session = FakeRDBSession()
+    session.multi_posting_rules.extend(
+        [
+            {
+                "programme_code": "FM",
+                "posting_code_1": "NUHPaedia",
+                "posting_code_2": None,
+                "rule_type": "main_posting",
+                "combined_label": None,
+                "main_posting_code": "NUHPaedia",
+                "exclusion_code": "NHGPlyNHGPly",
+            },
+            {
+                "programme_code": "FM",
+                "posting_code_1": "TTSHGenSrg",
+                "posting_code_2": None,
+                "rule_type": "main_posting",
+                "combined_label": None,
+                "main_posting_code": "TTSHGenSrg",
+                "exclusion_code": "NHGPlyNHGPly",
+            },
+        ]
+    )
+    period_id = uuid4()
+    file_bytes = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="FM Exact One",
+                mcr="M11111A",
+                r_year="R2",
+                programme="FM",
+                jul=(
+                    "NUHPaedia\n"
+                    "(from 08-Jul-2025 to 15-Jul-2025)\n"
+                    "NHGPlyNHGPly\n"
+                    "(from 16-Jul-2025 to 03-Aug-2025)"
+                ),
+            )
+        ],
+        sheet_name="Phase 1 & 2 (FM)",
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="fm-exact-one.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert result.metadata["multi_posting_rules_applied"] == 1
+    assert [row["posting_code"] for row in session.resident_postings] == ["NUHPaedia"]
+    assert _unmatched_multi_posting_warnings(result) == []
+
+
+def test_fm_main_posting_zero_recognised_postings_collapses_to_configured_exclusion() -> None:
+    session = FakeRDBSession()
+    session.multi_posting_rules.append(
+        {
+            "programme_code": "FM",
+            "posting_code_1": "NUHPaedia",
+            "posting_code_2": None,
+            "rule_type": "main_posting",
+            "combined_label": None,
+            "main_posting_code": "NUHPaedia",
+            "exclusion_code": "NHGPlyNHGPly",
+        }
+    )
+    period_id = uuid4()
+    file_bytes = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="FM Zero Match",
+                mcr="M11111A",
+                r_year="R2",
+                programme="FM",
+                jul=(
+                    "TTSHUrolog\n"
+                    "(from 08-Jul-2025 to 15-Jul-2025)\n"
+                    "NHGPlyNHGPly\n"
+                    "(from 16-Jul-2025 to 03-Aug-2025)"
+                ),
+            )
+        ],
+        sheet_name="Phase 1 & 2 (FM)",
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="fm-zero-match.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert result.metadata["multi_posting_rules_applied"] == 1
+    assert [row["posting_code"] for row in session.resident_postings] == ["NHGPlyNHGPly"]
+    assert _unmatched_multi_posting_warnings(result) == []
+
+
+def test_fm_main_posting_two_or_more_recognised_postings_still_warns() -> None:
+    session = FakeRDBSession()
+    session.multi_posting_rules.extend(
+        [
+            {
+                "programme_code": "FM",
+                "posting_code_1": "TTSHGenSrg",
+                "posting_code_2": None,
+                "rule_type": "main_posting",
+                "combined_label": None,
+                "main_posting_code": "TTSHGenSrg",
+                "exclusion_code": "NHGPlyNHGPly",
+            },
+            {
+                "programme_code": "FM",
+                "posting_code_1": "TTSHUrolog",
+                "posting_code_2": None,
+                "rule_type": "main_posting",
+                "combined_label": None,
+                "main_posting_code": "TTSHUrolog",
+                "exclusion_code": "NHGPlyNHGPly",
+            },
+        ]
+    )
+    period_id = uuid4()
+    file_bytes = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="FM Ambiguous",
+                mcr="M11111A",
+                r_year="R2",
+                programme="FM",
+                jul=(
+                    "TTSHGenSrg\n"
+                    "(from 08-Jul-2025 to 12-Jul-2025)\n"
+                    "TTSHUrolog\n"
+                    "(from 13-Jul-2025 to 18-Jul-2025)\n"
+                    "NHGPlyNHGPly\n"
+                    "(from 19-Jul-2025 to 03-Aug-2025)"
+                ),
+            )
+        ],
+        sheet_name="Phase 1 & 2 (FM)",
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="fm-ambiguous.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert result.metadata["multi_posting_rules_applied"] == 0
+    assert {row["posting_code"] for row in session.resident_postings} == {
+        "TTSHGenSrg",
+        "TTSHUrolog",
+        "NHGPlyNHGPly",
+    }
+    warnings = _unmatched_multi_posting_warnings(result)
+    assert len(warnings) == 1
+    _assert_unmatched_warning_trace_fields(
+        warnings[0],
+        mcr="M11111A",
+        resident_name="FM Ambiguous",
+        programme_code="FM",
+        month_label="Jul-25",
+        sheet_name="Phase 1 & 2 (FM)",
+        row_number=3,
+        cell_ref="I3",
+    )
+    assert _distinct_warning_posting_codes(warnings[0]) == [
+        "TTSHGenSrg",
+        "TTSHUrolog",
+        "NHGPlyNHGPly",
+    ]
+
+
+def test_singular_nhgply_cell_is_valid_standalone_without_multi_posting_lookup() -> None:
+    session = FakeRDBSession()
+    session.multi_posting_rules.append(
+        {
+            "programme_code": "FM",
+            "posting_code_1": "NUHPaedia",
+            "posting_code_2": None,
+            "rule_type": "main_posting",
+            "combined_label": None,
+            "main_posting_code": "NUHPaedia",
+            "exclusion_code": "NHGPlyNHGPly",
+        }
+    )
+    period_id = uuid4()
+    file_bytes = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="FM NHGPly",
+                mcr="M11111A",
+                r_year="R2",
+                programme="FM",
+                jul="NHGPlyNHGPly",
+            )
+        ],
+        sheet_name="Phase 1 & 2 (FM)",
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="fm-nhgply-standalone.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert result.metadata["multi_posting_rules_applied"] == 0
+    assert [row["posting_code"] for row in session.resident_postings] == ["NHGPlyNHGPly"]
+    assert _unmatched_multi_posting_warnings(result) == []
+
+
+def test_non_fm_unknown_pair_persists_independently_and_warns() -> None:
+    session = FakeRDBSession()
+    period_id = uuid4()
+    file_bytes = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Non FM Unknown",
+                mcr="M11111A",
+                r_year="R2",
+                programme="ANAES",
+                jul=(
+                    "TTSHAnaes\n"
+                    "(from 08-Jul-2025 to 15-Jul-2025)\n"
+                    "TTSHCardio\n"
+                    "(from 16-Jul-2025 to 03-Aug-2025)"
+                ),
+            )
+        ],
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="non-fm-unmatched.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert {row["posting_code"] for row in session.resident_postings} == {
+        "TTSHAnaes",
+        "TTSHCardio",
+    }
+    warnings = _unmatched_multi_posting_warnings(result)
+    assert len(warnings) == 1
+    _assert_unmatched_warning_trace_fields(
+        warnings[0],
+        mcr="M11111A",
+        resident_name="Non FM Unknown",
+        programme_code="ANAES",
+        month_label="Jul-25",
+        sheet_name="Phase 1",
+        row_number=3,
+        cell_ref="I3",
+    )
+    assert _distinct_warning_posting_codes(warnings[0]) == ["TTSHAnaes", "TTSHCardio"]
 
 
 def test_hibernate_stale_surplus_runs_after_postings_are_inserted() -> None:

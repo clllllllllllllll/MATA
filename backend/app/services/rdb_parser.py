@@ -21,6 +21,7 @@ class RDBParserError(ValueError):
 @dataclass(slots=True, frozen=True)
 class PostingColumnHeader:
     column_index: int
+    column_header_cell_ref: str
     month_label: str
     start_date: date
     end_date: date
@@ -171,6 +172,7 @@ _MULTI_POSTING_DATE_RANGE_PATTERN = re.compile(
     r"^\(\s*from\s+(?P<start>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})\s+to\s+(?P<end>\d{1,2}\s*-\s*[A-Za-z]{3}\s*-\s*\d{2,4})(?:\s+(?P<day_part>AM|PM))?\s*\)\s*$",
     re.IGNORECASE,
 )
+_RDB_RED_LINE_MARKER = "please do not insert any row beyond this red line"
 _POSTING_CODE_MAX_LENGTH = 50
 _DASH_TRANSLATION = str.maketrans(
     {
@@ -207,6 +209,14 @@ def _to_cell_text(value: Any) -> str:
     if value is None:
         return ""
     return str(value)
+
+
+def _row_contains_red_line_marker(sheet: Any, row_index: int) -> bool:
+    for column_index in range(1, sheet.max_column + 1):
+        cell_text = _to_cell_text(sheet.cell(row=row_index, column=column_index).value)
+        if _RDB_RED_LINE_MARKER in cell_text.casefold():
+            return True
+    return False
 
 
 def _canonicalize_known_rdb_phrases(value: str) -> str:
@@ -284,6 +294,7 @@ def detect_posting_columns(sheet: Any) -> list[PostingColumnHeader]:
         detected.append(
             PostingColumnHeader(
                 column_index=column_index,
+                column_header_cell_ref=sheet.cell(row=2, column=column_index).coordinate,
                 month_label=month_label,
                 start_date=start_date,
                 end_date=end_date,
@@ -1054,11 +1065,59 @@ def _find_multi_posting_rule(
     rules: list[MultiPostingRuleConfig],
     codes: list[str],
 ) -> MultiPostingRuleConfig | None:
-    for rule_type in ("combine", "half_month", "main_posting"):
+    for rule_type in ("combine", "half_month"):
         for rule in rules:
             if rule.rule_type == rule_type and _rule_matches(rule, codes):
                 return rule
+
+    for rule in rules:
+        if (
+            rule.rule_type == "main_posting"
+            and rule.posting_code_2 is not None
+            and _rule_matches(rule, codes)
+        ):
+            return rule
     return None
+
+
+def _find_fm_main_posting_rule(
+    *,
+    programme_code: str,
+    rules: list[MultiPostingRuleConfig],
+    codes: list[str],
+) -> MultiPostingRuleConfig | None:
+    if programme_code != "FM":
+        return None
+
+    main_posting_rules = [
+        rule
+        for rule in rules
+        if rule.rule_type == "main_posting" and rule.posting_code_2 is None
+    ]
+    if not main_posting_rules:
+        return None
+
+    matched_rules = [rule for rule in main_posting_rules if rule.posting_code_1 in codes]
+    if len(matched_rules) == 1:
+        return matched_rules[0]
+    if len(matched_rules) > 1:
+        return None
+
+    exclusion_code = next(
+        (rule.exclusion_code for rule in main_posting_rules if rule.exclusion_code),
+        None,
+    )
+    if exclusion_code is None:
+        return None
+    return MultiPostingRuleConfig(
+        programme_code=programme_code,
+        posting_code_1=exclusion_code,
+        posting_code_2=None,
+        rule_type="main_posting",
+        combined_label=None,
+        main_posting_code=exclusion_code,
+        exclusion_code=exclusion_code,
+    )
 
 
 def _base_posting_from_cell(
@@ -1093,9 +1152,13 @@ def _base_posting_from_cell(
 def _apply_multi_posting_cell(
     *,
     resident_mcr: str,
+    resident_name: str,
     programme_code: str,
     reporting_period_id: UUID,
     header: PostingColumnHeader,
+    sheet_name: str,
+    row_number: int,
+    cell_ref: str,
     r_year: str,
     parsed_cell: ParsedPostingCell,
     rules: list[MultiPostingRuleConfig],
@@ -1127,18 +1190,30 @@ def _apply_multi_posting_cell(
         ]
 
     rule = _find_multi_posting_rule(rules, codes)
+    if rule is None:
+        rule = _find_fm_main_posting_rule(
+            programme_code=programme_code,
+            rules=rules,
+            codes=codes,
+        )
 
     if rule is None:
         accumulator.warnings.append(
             {
                 "type": "unmatched_multi_posting",
                 "mcr": resident_mcr,
+                "resident_name": resident_name,
                 "programme_code": programme_code,
+                "month_label": header.month_label,
+                "sheet_name": sheet_name,
+                "row_number": row_number,
+                "cell_ref": cell_ref,
                 "posting_codes": codes,
                 "message": (
-                    f"MCR={resident_mcr}: {' + '.join(codes)} - no "
-                    "combine/half_month/main_posting rule found. Compliance "
-                    "calculated independently per posting."
+                    "No matching multi-posting rule found. Postings were persisted "
+                    "independently. Add a multi_posting_rule through Main Posting / "
+                    "To Combine Posting / Half Month Posting if this combination is "
+                    "valid, or correct the RDB source and re-upload."
                 ),
             }
         )
@@ -1621,6 +1696,9 @@ async def _parse_workbook_to_accumulator(
             sheet = workbook[sheet_name]
             posting_headers = detect_posting_columns(sheet)
             for row_index in range(3, sheet.max_row + 1):
+                if _row_contains_red_line_marker(sheet, row_index):
+                    break
+
                 mcr = _cell_text(sheet, row_index, 3).upper()
                 if not mcr:
                     continue
@@ -1736,9 +1814,15 @@ async def _parse_workbook_to_accumulator(
                         parsed_resident.postings.extend(
                             _apply_multi_posting_cell(
                                 resident_mcr=mcr,
+                                resident_name=parsed_resident.name,
                                 programme_code=programme.code,
                                 reporting_period_id=reporting_period_id,
                                 header=header,
+                                sheet_name=sheet_name,
+                                row_number=row_index,
+                                cell_ref=sheet.cell(
+                                    row=row_index, column=header.column_index
+                                ).coordinate,
                                 r_year=parsed_resident.resolved_r_year,
                                 parsed_cell=parsed_cell,
                                 rules=rules_by_programme[programme.code],

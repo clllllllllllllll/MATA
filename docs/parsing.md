@@ -235,9 +235,9 @@ PostingCode (Refresher Training (don't add to Max Cand) from 01-Sep-2025 to 05-O
 ```
 → `posting_code = "PostingCode"`, `status = "active"`, store refresher_training_type, refresher_training_start, refresher_training_end. **This is a cell annotation — NOT a loa_type.**
 
-**10. Multi-posting cell with explicit date ranges and AM/PM granularity (FM sheet):**
+**10. Multi-posting cell with explicit date ranges and AM/PM granularity:**
 
-This is the FM-specific cell variant where a single cell contains multiple posting codes each with their own explicit date range fragments, including half-day AM/PM granularity:
+This cell variant contains multiple posting codes each with their own explicit date range fragments, including half-day AM/PM granularity:
 
 ```
 NUHPaedia
@@ -255,14 +255,54 @@ NHGPlyNHGPly
 2. Identify posting code lines: lines that are not `(from ...)` patterns and are not empty
 3. For each posting code line, collect all subsequent `(from DD-MMM-YYYY to DD-MMM-YYYY [AM|PM])` lines until the next posting code line
 4. Aggregate total date ranges per posting code
-5. Look up `multi_posting_rules` table for this programme + posting code pair
-6. Apply the matching rule type:
+5. Look up explicit `multi_posting_rules` rows for this programme + posting code combination. Explicit `combine`, `half_month`, and two-code `main_posting` rules take priority.
+6. Apply the matching explicit rule type:
    - `combine` → create one `resident_postings` row with `combined_label` as posting_code
    - `half_month` → create two rows each with `active_months_weight = 0.5`
-   - `main_posting` → collapse to `main_posting_code`; if no match → use `exclusion_code`
-7. If no matching rule found → create separate `resident_postings` rows for each posting code. Each posting is calculated independently for compliance. Active months use whole-month counting — a posting is credited a full calendar month for any month it appears in, regardless of how many days. No proration. Add a warning to upload response: `"unmatched_multi_posting": ["MCR=M12345A: TTSHCardio + TTSHAnaes — no combine/half_month/main_posting rule found. Compliance calculated independently per posting. Add a multi_posting_rule or posting_group if these should be combined."]`
+   - explicit `main_posting` with both `posting_code_1` and `posting_code_2` → collapse to `main_posting_code`
+7. If no explicit rule matched and `programme_code = 'FM'`, apply the FM main-posting trigger-list semantics:
+   - Count how many distinct posting codes in the cell appear as `RDB Posting #1` / `posting_code_1` in FM `main_posting` rows where `posting_code_2 IS NULL`.
+   - Exact one recognised posting → collapse the whole cell to that row's configured `main_posting_code`.
+   - Zero recognised postings → collapse the whole cell to the configured `exclusion_code` from the FM `main_posting` seed rows, usually `NHGPlyNHGPly`.
+   - Two or more recognised postings → do not infer. Persist each posting independently and emit `unmatched_multi_posting` unless an explicit rule exists.
+8. If no matching rule found → create separate `resident_postings` rows for each posting code. Each posting is calculated independently for compliance. Active months use whole-month counting — a posting is credited a full calendar month for any month it appears in, regardless of how many days. No proration. Add a warning to upload response: `"unmatched_multi_posting": ["MCR=M12345A: TTSHCardio + TTSHAnaes — no combine/half_month/main_posting rule found. Compliance calculated independently per posting. Add a multi_posting_rule or posting_group if these should be combined."]`
 
 **Note:** This multi-posting cell variant applies to ALL sheets — not FM only. Any RDB sheet (Phase 1 & 2, Phase 3, etc.) may contain cells with multiple posting codes and explicit date ranges.
+
+**FM standalone NHGPly:** A singular `NHGPlyNHGPly` cell is a valid standalone posting. It is parsed as a normal simple posting, does not require `multi_posting_rules` lookup, and must not emit an `unmatched_multi_posting` warning.
+
+**Unmatched warning workflow:** `unmatched_multi_posting` is an intentional PC review signal, not a parser failure. For non-FM unresolved combinations, and for ambiguous FM cells with two or more recognised main-posting triggers, the parser preserves independent rows and warns so PCs can either add a rule through Admin CRUD or correct the source RDB before reparsing.
+
+Each `unmatched_multi_posting` warning payload must include workbook traceability fields for operational review:
+- `type` = `unmatched_multi_posting`
+- `mcr`
+- `resident_name`
+- `programme_code`
+- `posting_codes`
+- `month_label`
+- `sheet_name`
+- `row_number`
+- `cell_ref` (preferred exact Excel cell coordinate, e.g. `J42`)
+- `message`
+
+### Final Product PC Review Workflow (documentation target)
+
+After RDB upload, the Admin UI should present unmatched warnings in a review table with:
+- Programme
+- Resident
+- MCR
+- Month
+- Sheet
+- Row
+- Cell
+- Posting Combination
+- Message / Suggested action
+
+This table is for operational triage only. It helps PCs:
+- identify the exact source RDB cell
+- decide whether the source workbook needs correction
+- add a rule via Multi-posting Rules CRUD (`Main Posting`, `To Combine Posting`, `Half Month Posting`) if the combination is valid
+- re-upload/reparse RDB after correction
 
 **Relationship to posting_groups:** `multi_posting_rules` governs how the RDB cell is **parsed** into `resident_postings` rows. `posting_groups` governs how compliance is **aggregated** across separate postings that were posted at independently. They are independent — a resident may have two clean separate `resident_postings` rows (no multi_posting_rule needed) but still have their compliance pooled via `posting_groups` if they served at both postings across the period.
 
@@ -796,7 +836,7 @@ Parser deletes existing `resident_postings` rows for residents present in the ne
 Posting codes that appear in the TTF but not in the current RDB are valid (dormant sites). Accept and add to `posting_codes` with `display_name = NULL`. Do not fail the upload. The canonical posting code is the RDB posting code — the last `[]` bracket in the TTF posting column.
 
 ### Multi-posting rule not found
-If two posting codes appear in the same RDB cell and no matching rule is found in `multi_posting_rules`, create separate `resident_postings` rows for each posting code and include a warning in the upload response. Set a note that compliance may be unreliable for this resident until the rule is confirmed.
+If two or more posting codes appear in the same RDB cell and no matching rule is found in `multi_posting_rules`, create separate `resident_postings` rows for each posting code and include a warning in the upload response. For FM, first apply the exact-one / zero / two-or-more recognised main-posting trigger-list semantics above. Warnings are preserved for true unresolved combinations so PCs can add or adjust rules through Admin CRUD, or fix the RDB source and re-upload.
 
 ### Unknown programme in RDB
 If `resolve_programme_code()` returns None for a specialization value (neither a known code nor a known alias), log a warning in the upload response and skip those rows. Do not fail the upload.

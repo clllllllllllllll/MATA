@@ -407,18 +407,18 @@ For PH detection and secretary/resident event creation blocking.
 
 ## Table: `multi_posting_rules`
 
-Rules governing how multiple posting codes in a single RDB cell are interpreted. Seeded directly into the database — not parsed from a file. Managed via admin CRUD UI.
+Rules governing how multiple posting codes in a single RDB cell are interpreted. Seeded directly into the database and managed via admin CRUD UI. `Multiple postings per month.xlsx` is a seed/update source for this table, not a recurring upload slot.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
 | id | UUID | PK | |
 | programme_code | VARCHAR(20) | FK → programmes.code, NOT NULL | |
-| posting_code_1 | VARCHAR(50) | FK → posting_codes.code, NOT NULL | First posting code in pair |
-| posting_code_2 | VARCHAR(50) | FK → posting_codes.code, nullable | Second posting code. NULL for single-posting rules. |
+| posting_code_1 | VARCHAR(50) | FK → posting_codes.code, NOT NULL | First posting code in pair. For FM `main_posting` rows where `posting_code_2 IS NULL`, this is one entry in the recognised `RDB Posting #1` trigger list. |
+| posting_code_2 | VARCHAR(50) | FK → posting_codes.code, nullable | Second posting code. NULL for FM trigger-list `main_posting` rows and other single-trigger rules. |
 | rule_type | VARCHAR(20) | NOT NULL | `main_posting`, `combine`, `half_month` |
 | combined_label | VARCHAR(100) | | For `combine` type: the canonical combined posting code (e.g. `IMHGrPsyc & TTSHPsychi`) |
-| main_posting_code | VARCHAR(50) | FK → posting_codes.code, nullable | For `main_posting` type: the posting to collapse to |
-| exclusion_code | VARCHAR(50) | FK → posting_codes.code, nullable | For `main_posting` type (FM): fallback posting when no match found (e.g. `NHGPlyNHGPly`) |
+| main_posting_code | VARCHAR(50) | FK → posting_codes.code, nullable | For `main_posting` type: the posting to collapse to when the rule is selected |
+| exclusion_code | VARCHAR(50) | FK → posting_codes.code, nullable | For FM `main_posting` trigger-list rows: fallback posting when zero recognised trigger-list codes appear in the multi-posting cell. Usually `NHGPlyNHGPly`, but read from configuration and not hardcoded globally. |
 | created_at | TIMESTAMPTZ | DEFAULT now() | |
 
 **Unique constraint:** `UNIQUE(programme_code, posting_code_1, posting_code_2, rule_type)`
@@ -426,7 +426,10 @@ Rules governing how multiple posting codes in a single RDB cell are interpreted.
 **Rule type behaviour:**
 - `combine`: Two RDB lines in same cell match this rule → create one `resident_postings` row with `combined_label` as posting_code. Combined label must exist as a `posting_codes` row. Compliance follows the combined posting's TTF row.
 - `half_month`: Two posting codes in same cell match this rule → create two `resident_postings` rows each with `active_months_weight = 0.5`. Both active_months and Target(mth) halved per posting. Numerator sessions count fully.
-- `main_posting`: Multiple posting codes in cell (FM) → collapse to `main_posting_code`. If no match found → fall back to `exclusion_code` (NHGPlyNHGPly for FM).
+- explicit two-code `main_posting`: Two posting codes in the same cell match this rule → collapse to `main_posting_code`.
+- FM trigger-list `main_posting`: Rows with `posting_code_2 IS NULL` define the recognised `RDB Posting #1` list. Exact one recognised code in the cell collapses to that row's `main_posting_code`; zero recognised codes collapse to the configured `exclusion_code`; two or more recognised codes remain independent and emit `unmatched_multi_posting` unless an explicit rule exists.
+
+**Unmatched behaviour:** If no `multi_posting_rules` row applies, the parser preserves one `resident_postings` row per posting fragment and emits `unmatched_multi_posting`. This is intentional for PC review. It does not delete data or suppress the upload. A singular `NHGPlyNHGPly` cell is a valid standalone FM posting and is not an unmatched multi-posting case.
 
 ---
 
