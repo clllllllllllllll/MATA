@@ -15,6 +15,7 @@ from app.services.parser_common import (
     validate_upload_payload,
     write_upload_log,
 )
+from app.services.ttf_parser import TTFUploadLockError, parse_ttf_upload
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -207,13 +208,16 @@ async def upload_ttf(
     except UploadValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    parser_result = await dispatch_parser_by_upload_slot(
-        upload_type="ttf",
+    try:
+        parser_result = await parse_ttf_upload(
         file_bytes=validated.file_bytes,
         original_filename=validated.original_filename,
         reporting_period_id=reporting_period_id,
         programme_code=programme_code,
+        db_session=db,
     )
+    except TTFUploadLockError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     await _write_upload_log_safely(
         db=db,

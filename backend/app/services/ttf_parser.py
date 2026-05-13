@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal
+from hashlib import blake2b
 from dataclasses import asdict, dataclass
 from io import BytesIO
 from typing import Any
 from uuid import UUID
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.parser_common import ParserResult
 
@@ -136,6 +141,10 @@ class ParsedPostingGroupRow:
     programme_code: str
 
 
+class TTFUploadLockError(RuntimeError):
+    """Raised when a same-scope TTF upload is already in progress."""
+
+
 def _cell_text(value: Any) -> str:
     if value is None:
         return ""
@@ -251,6 +260,259 @@ def extract_tag_family(tag: str) -> str:
     return cleaned
 
 
+def _duration_label_from_session_type(session_type_name: str) -> str | None:
+    match = _DURATION_PATTERN.search(session_type_name)
+    if match is None:
+        return None
+    return f"{match.group(1)}h"
+
+
+def _advisory_lock_keys(reporting_period_id: UUID, programme_code: str) -> tuple[int, int]:
+    scope_key = f"{reporting_period_id}:{programme_code}".encode("utf-8")
+    digest = blake2b(scope_key, digest_size=8).digest()
+    signed = int.from_bytes(digest, byteorder="big", signed=True)
+    key1 = signed >> 32
+    key2 = signed & 0xFFFFFFFF
+    if key2 >= 2**31:
+        key2 -= 2**32
+    return key1, key2
+
+
+async def _acquire_ttf_scope_lock(
+    db_session: AsyncSession,
+    *,
+    reporting_period_id: UUID,
+    programme_code: str,
+) -> bool:
+    key1, key2 = _advisory_lock_keys(reporting_period_id, programme_code)
+    result = await db_session.execute(
+        text("SELECT pg_try_advisory_xact_lock(:key1, :key2) AS acquired"),
+        {"key1": key1, "key2": key2},
+    )
+    acquired = result.scalar()
+    return bool(acquired)
+
+
+async def _persist_ttf_rows(
+    *,
+    db_session: AsyncSession,
+    reporting_period_id: UUID,
+    programme_code: str,
+    teaching_targets: list[ParsedTeachingTargetRow],
+    catalogue_rows: list[ParsedCatalogueRow],
+    posting_group_rows: list[ParsedPostingGroupRow],
+) -> dict[str, Any]:
+    session_type_rows = {
+        row.session_type: {
+            "name": row.session_type,
+            "duration_hours": Decimal(str(row.duration_hours)),
+            "duration_label": _duration_label_from_session_type(row.session_type),
+        }
+        for row in teaching_targets
+    }
+
+    for payload in session_type_rows.values():
+        await db_session.execute(
+            text(
+                """
+                INSERT INTO session_types (name, duration_hours, duration_label)
+                VALUES (:name, :duration_hours, :duration_label)
+                ON CONFLICT (name) DO UPDATE
+                SET duration_hours = EXCLUDED.duration_hours,
+                    duration_label = EXCLUDED.duration_label
+                """
+            ),
+            payload,
+        )
+
+    session_type_names = sorted(session_type_rows.keys())
+    session_type_lookup_result = await db_session.execute(
+        text("SELECT id, name FROM session_types WHERE name = ANY(:names)"),
+        {"names": session_type_names},
+    )
+    session_type_id_by_name = {
+        row["name"]: row["id"] for row in session_type_lookup_result.mappings().all()
+    }
+
+    posting_codes = sorted({row.posting_code for row in teaching_targets})
+    existing_codes_result = await db_session.execute(
+        text("SELECT code FROM posting_codes WHERE code = ANY(:codes)"),
+        {"codes": posting_codes},
+    )
+    existing_codes = {row["code"] for row in existing_codes_result.mappings().all()}
+
+    for posting_code in posting_codes:
+        await db_session.execute(
+            text(
+                """
+                INSERT INTO posting_codes (code, display_name)
+                VALUES (:code, NULL)
+                ON CONFLICT (code) DO NOTHING
+                """
+            ),
+            {"code": posting_code},
+        )
+    posting_codes_added = sorted(set(posting_codes) - existing_codes)
+
+    await db_session.execute(
+        text(
+            """
+            DELETE FROM teaching_name_catalogue
+            WHERE reporting_period_id = :reporting_period_id
+              AND programme_code = :programme_code
+            """
+        ),
+        {
+            "reporting_period_id": str(reporting_period_id),
+            "programme_code": programme_code,
+        },
+    )
+    await db_session.execute(
+        text(
+            """
+            DELETE FROM teaching_targets
+            WHERE reporting_period_id = :reporting_period_id
+              AND programme_code = :programme_code
+            """
+        ),
+        {
+            "reporting_period_id": str(reporting_period_id),
+            "programme_code": programme_code,
+        },
+    )
+
+    for row in teaching_targets:
+        await db_session.execute(
+            text(
+                """
+                INSERT INTO teaching_targets (
+                    reporting_period_id,
+                    programme_code,
+                    r_year,
+                    posting_code,
+                    session_type_id,
+                    monthly_target,
+                    is_tracked,
+                    is_reallocatable,
+                    tag,
+                    details_of_training
+                )
+                VALUES (
+                    :reporting_period_id,
+                    :programme_code,
+                    :r_year,
+                    :posting_code,
+                    :session_type_id,
+                    :monthly_target,
+                    :is_tracked,
+                    :is_reallocatable,
+                    :tag,
+                    :details_of_training
+                )
+                """
+            ),
+            {
+                "reporting_period_id": row.reporting_period_id,
+                "programme_code": row.programme_code,
+                "r_year": row.r_year,
+                "posting_code": row.posting_code,
+                "session_type_id": session_type_id_by_name[row.session_type],
+                "monthly_target": int(row.monthly_target),
+                "is_tracked": row.is_tracked,
+                "is_reallocatable": row.is_reallocatable,
+                "tag": row.tag,
+                "details_of_training": row.details_of_training,
+            },
+        )
+
+    for row in catalogue_rows:
+        await db_session.execute(
+            text(
+                """
+                INSERT INTO teaching_name_catalogue (
+                    keyword,
+                    session_type_id,
+                    posting_code,
+                    programme_code,
+                    r_year,
+                    reporting_period_id,
+                    duration_hours,
+                    is_tracked
+                )
+                VALUES (
+                    :keyword,
+                    :session_type_id,
+                    :posting_code,
+                    :programme_code,
+                    :r_year,
+                    :reporting_period_id,
+                    :duration_hours,
+                    :is_tracked
+                )
+                """
+            ),
+            {
+                "keyword": row.keyword,
+                "session_type_id": session_type_id_by_name[row.session_type],
+                "posting_code": row.posting_code,
+                "programme_code": row.programme_code,
+                "r_year": row.r_year,
+                "reporting_period_id": row.reporting_period_id,
+                "duration_hours": Decimal(str(row.duration_hours)),
+                "is_tracked": row.is_tracked,
+            },
+        )
+
+    for row in posting_group_rows:
+        await db_session.execute(
+            text(
+                """
+                INSERT INTO posting_groups (group_code, posting_code, programme_code)
+                VALUES (:group_code, :posting_code, :programme_code)
+                ON CONFLICT (posting_code, programme_code) DO UPDATE
+                  SET group_code = EXCLUDED.group_code
+                """
+            ),
+            {
+                "group_code": row.group_code,
+                "posting_code": row.posting_code,
+                "programme_code": row.programme_code,
+            },
+        )
+
+    orphan_result = await db_session.execute(
+        text(
+            """
+            SELECT COUNT(*) AS orphan_count
+            FROM attendance_records ar
+            JOIN teaching_events te ON te.id = ar.teaching_event_id
+            LEFT JOIN teaching_name_catalogue tnc
+              ON tnc.keyword = te.teaching_name
+             AND tnc.posting_code = te.posting_code
+             AND tnc.programme_code = :programme_code
+             AND tnc.reporting_period_id = :reporting_period_id
+            WHERE tnc.id IS NULL
+              AND ar.status = 'submitted'
+            """
+        ),
+        {
+            "programme_code": programme_code,
+            "reporting_period_id": str(reporting_period_id),
+        },
+    )
+    orphan_count = int(orphan_result.scalar() or 0)
+
+    return {
+        "targets_created": len(teaching_targets),
+        "session_types_upserted": len(session_type_rows),
+        "posting_codes_added": posting_codes_added,
+        "catalogue_rows_seeded": len(catalogue_rows),
+        "posting_groups_upserted": len(posting_group_rows),
+        "rows_exploded": len(teaching_targets),
+        "orphaned_attendance_count": orphan_count,
+    }
+
+
 async def parse_ttf_upload(
     *,
     file_bytes: bytes,
@@ -258,6 +520,7 @@ async def parse_ttf_upload(
     reporting_period_id: UUID | None,
     programme_code: str | None = None,
     known_programmes: set[str] | None = None,
+    db_session: AsyncSession | None = None,
 ) -> ParserResult:
     metadata: dict[str, Any] = {
         "original_filename": original_filename,
@@ -543,23 +806,93 @@ async def parse_ttf_upload(
         (row.group_code, row.posting_code, row.programme_code): row
         for row in posting_group_rows
     }
+    deduped_posting_group_rows = list(deduped_posting_groups.values())
+
+    if errors:
+        metadata.update(
+            {
+                "ttf_sheet": sheet_name,
+                "ttf_header_row": header_row,
+                "targets": [asdict(row) for row in teaching_targets],
+                "catalogue_rows": [asdict(row) for row in catalogue_rows],
+                "posting_groups": [asdict(row) for row in deduped_posting_group_rows],
+                "counts": {
+                    "targets": len(teaching_targets),
+                    "catalogue_rows": len(catalogue_rows),
+                    "posting_groups": len(deduped_posting_group_rows),
+                },
+            }
+        )
+        return ParserResult(
+            upload_type="ttf",
+            warnings=warnings,
+            errors=errors,
+            metadata=metadata,
+        )
+
+    persistence_counts: dict[str, Any] = {}
+    if db_session is not None:
+        lock_acquired = await _acquire_ttf_scope_lock(
+            db_session,
+            reporting_period_id=reporting_period_id,
+            programme_code=programme_code or "",
+        )
+        if not lock_acquired:
+            raise TTFUploadLockError(
+                "A TTF upload for this reporting_period_id and programme_code is already in progress."
+            )
+        try:
+            persistence_counts = await _persist_ttf_rows(
+                db_session=db_session,
+                reporting_period_id=reporting_period_id,
+                programme_code=programme_code or "",
+                teaching_targets=teaching_targets,
+                catalogue_rows=catalogue_rows,
+                posting_group_rows=deduped_posting_group_rows,
+            )
+            await db_session.commit()
+        except Exception:
+            await db_session.rollback()
+            raise
+        orphan_count = persistence_counts.get("orphaned_attendance_count", 0)
+        if orphan_count > 0:
+            warnings.append(
+                {
+                    "type": "orphaned_attendance",
+                    "reporting_period_id": period_id_str,
+                    "programme_code": programme_code,
+                    "count": orphan_count,
+                    "message": (
+                        "Attendance exists for events whose teaching_name/posting_code no longer "
+                        "maps to teaching_name_catalogue in this uploaded scope."
+                    ),
+                }
+            )
+
     metadata.update(
         {
             "ttf_sheet": sheet_name,
             "ttf_header_row": header_row,
             "targets": [asdict(row) for row in teaching_targets],
             "catalogue_rows": [asdict(row) for row in catalogue_rows],
-            "posting_groups": [asdict(row) for row in deduped_posting_groups.values()],
+            "posting_groups": [asdict(row) for row in deduped_posting_group_rows],
             "counts": {
                 "targets": len(teaching_targets),
                 "catalogue_rows": len(catalogue_rows),
-                "posting_groups": len(deduped_posting_groups),
+                "posting_groups": len(deduped_posting_group_rows),
             },
+            "targets_created": persistence_counts.get("targets_created", 0),
+            "session_types_upserted": persistence_counts.get("session_types_upserted", 0),
+            "posting_codes_added": persistence_counts.get("posting_codes_added", []),
+            "catalogue_rows_seeded": persistence_counts.get("catalogue_rows_seeded", 0),
+            "rows_exploded": persistence_counts.get("rows_exploded", len(teaching_targets)),
         }
     )
     return ParserResult(
         upload_type="ttf",
+        created_count=persistence_counts.get("targets_created", 0),
+        updated_count=persistence_counts.get("session_types_upserted", 0),
         warnings=warnings,
-        errors=errors,
+        errors=[],
         metadata=metadata,
     )
