@@ -73,6 +73,18 @@ def detect_rdb_sheets(workbook) -> dict[str, str]:
 - **Row 2:** Column headers with date ranges (e.g. `08 Jul 25 - 03 Aug 25`) — detected dynamically
 - **Rows 3+:** Resident data
 
+### Resident Row Stop Marker
+
+When parsing standard RDB sheets, stop resident-row parsing once any cell in a row contains `Please do not insert any row beyond this red line` case-insensitively.
+
+Rows below this marker are legend/reference rows and must not produce:
+- residents
+- resident_postings
+- posting_codes
+- upload warnings
+
+This stop marker takes priority over any parseable-looking values below the red line.
+
 ### Column Mapping
 
 | Column | Field | Notes |
