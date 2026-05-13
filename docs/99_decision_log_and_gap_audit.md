@@ -91,12 +91,12 @@ Every important decision made during the project, with reasoning and consequence
 
 ---
 
-#### Decision: RDB re-upload — delete-first within period scope
+#### Decision: RDB re-upload — full-period snapshot replace
 - **Status:** ✅ Confirmed
-- **Decision:** On RDB re-upload, existing `resident_postings` rows for the reporting period are deleted and re-inserted. Scoped to residents present in the uploaded file. Residents not in the new upload are untouched.
-- **Reasoning:** Prevents duplicate-key errors and ensures corrections take effect cleanly. Scope limitation protects residents not in the current upload batch.
+- **Decision:** On RDB re-upload, existing `resident_postings` rows for the selected `reporting_period_id` are deleted and re-inserted as a full replacement snapshot for that period.
+- **Reasoning:** RDB uploads are complete period snapshots, not partial uploads. Full replace prevents stale residents/postings from lingering after correction uploads.
 - **Alternatives considered:** Upsert-only approach — rejected, harder to handle deleted postings.
-- **Consequences for codebase:** `rdb_parser.py` runs `DELETE FROM resident_postings WHERE reporting_period_id = :period_id AND resident_id IN (:uploaded_resident_ids)` before insert.
+- **Consequences for codebase:** `rdb_parser.py` runs `DELETE FROM resident_postings WHERE reporting_period_id = :period_id` only after successful parse/validation, then inserts the new parsed rows in the same transaction.
 - **Reference file and section:** `parsing.md` § RDB Parser Processing Order; `schema.md` § `resident_postings`
 - **Do not change without PM/stakeholder approval:** Yes
 

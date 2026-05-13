@@ -372,10 +372,10 @@ mata/
    - `r_year_required` flag: if `false`, sets `r_year = 'ALL'` sentinel on `resident_postings`
    - `is_subspecialty` flag: if `true` (SPORTSMED, PALLMED), remaps R4→SS1, R5→SS2, R6→SS3
 4. For each posting cell: parses cell variant (10 types — see Section 11), looks up `multi_posting_rules` for combine/half_month/main_posting handling
-5. Writes to: `residents` (upsert by MCR), `resident_postings` (delete-first within `reporting_period_id` scope, then insert), `posting_codes` (upsert)
+5. Writes to: `residents` (upsert by MCR), `resident_postings` (full replace within selected `reporting_period_id` after successful parse/validation), `posting_codes` (upsert)
 6. Calls `hibernate_stale_surplus()` after insert
 7. Writes `upload_logs` row with `upload_type = 'rdb'`
-8. Re-upload: safe — deletes existing `resident_postings` for residents in the uploaded file, then re-inserts
+8. Re-upload: safe — treats upload as complete snapshot and replaces all `resident_postings` within the selected `reporting_period_id` after successful parse/validation
 
 **TTF Upload Flow:**
 1. Admin selects reporting period AND programme code, then uploads `.xlsx` via `POST /admin/upload/ttf`
@@ -510,7 +510,7 @@ See `99_decision_log_and_gap_audit.md` for the full TBD register with placeholde
 | Compliance unit | Session counts, never hours | PM approval |
 | Reallocation write | Read-time only via `reallocate_by_tag()`; never written to `surplus_ledger` | PM approval |
 | TTF upload behaviour | Full replace within `(reporting_period_id, programme_code)` scope; warn (not 422) if attendance exists | PM approval |
-| RDB re-upload | Delete-first within `reporting_period_id` scope, then re-insert | PM approval |
+| RDB re-upload | Full replace within selected `reporting_period_id` after successful parse/validation | PM approval |
 | FormF1 re-upload | Full replace within `reporting_period_id` scope; allowed at any time | PM approval |
 | Posting code source | `posting_codes` table only; never derived by regex or string pattern | PM approval |
 | Resident event visibility | Only after RDB posting schedule upload; enforced via `resident_postings` lookup | PM approval |
@@ -574,7 +574,7 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 
 - **LOA types:** 14 confirmed types. Parser warns (does not reject) on unknown. "Continue working during LOA", "Pending for SR Promotion", "Refresher Training" are cell annotations — NOT `loa_types` seed rows.
 - **Writes to:** `residents`, `resident_postings`, `posting_codes`
-- **Re-upload:** delete-first within `reporting_period_id` scope, then re-insert
+- **Re-upload:** complete snapshot full replace within selected `reporting_period_id` after successful parse/validation
 
 ### TTF (Teaching Target File)
 
@@ -682,7 +682,7 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 
 | Endpoint | Purpose | Key Behaviour |
 |----------|---------|---------------|
-| `POST /admin/upload/rdb` | RDB upload | Calls `rdb_parser.py`; delete-first re-upload |
+| `POST /admin/upload/rdb` | RDB upload | Calls `rdb_parser.py`; complete snapshot full-period replacement |
 | `POST /admin/upload/ttf` | TTF upload | Calls `ttf_parser.py`; 409 advisory lock; warns on existing attendance |
 | `POST /admin/upload/form-f1` | FormF1 upload | Calls `form_f1_parser.py`; full replace |
 | `POST /admin/upload/public-holidays` | PH upload | Upsert on `holiday_date` |

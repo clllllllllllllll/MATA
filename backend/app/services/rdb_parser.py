@@ -1505,25 +1505,20 @@ async def _update_resident(
     return resident_id
 
 
-async def _delete_existing_postings_for_uploaded_residents(
+async def _delete_existing_postings_for_reporting_period(
     session: AsyncSession,
     *,
     reporting_period_id: UUID,
-    resident_ids: list[UUID],
 ) -> None:
-    if not resident_ids:
-        return
     await session.execute(
         text(
             """
             DELETE FROM resident_postings
             WHERE reporting_period_id = :reporting_period_id
-              AND resident_id = ANY(:resident_ids)
             """
         ),
         {
             "reporting_period_id": str(reporting_period_id),
-            "resident_ids": resident_ids,
         },
     )
 
@@ -1627,10 +1622,9 @@ async def _persist_rdb_upload(
             resident_ids[resident.mcr] = await _insert_resident(session, resident)
             residents_created += 1
 
-    await _delete_existing_postings_for_uploaded_residents(
+    await _delete_existing_postings_for_reporting_period(
         session,
         reporting_period_id=reporting_period_id,
-        resident_ids=list(resident_ids.values()),
     )
 
     postings_created = 0
@@ -1898,6 +1892,34 @@ async def parse_rdb_upload(
             reporting_period_id=reporting_period_id,
             db_session=db_session,
         )
+        if parsed.errors:
+            return ParserResult(
+                upload_type="rdb",
+                warnings=parsed.warnings,
+                errors=parsed.errors,
+                metadata={
+                    "original_filename": original_filename,
+                    "reporting_period_id": str(reporting_period_id),
+                    "byte_count": len(file_bytes),
+                    "rows_skipped": parsed.rows_skipped,
+                    "skip_reasons": parsed.skip_reasons,
+                },
+            )
+        if not parsed.residents and (parsed.rows_skipped > 0 or parsed.skip_reasons):
+            return ParserResult(
+                upload_type="rdb",
+                warnings=parsed.warnings,
+                errors=[
+                    "RDB validation failed: no valid resident rows were parsed from the workbook."
+                ],
+                metadata={
+                    "original_filename": original_filename,
+                    "reporting_period_id": str(reporting_period_id),
+                    "byte_count": len(file_bytes),
+                    "rows_skipped": parsed.rows_skipped,
+                    "skip_reasons": parsed.skip_reasons,
+                },
+            )
         (
             residents_created,
             residents_updated,

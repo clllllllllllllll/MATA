@@ -842,7 +842,13 @@ def check_overlapping_phases(phases: list[dict], resident_mcr: str) -> list[str]
 ```
 
 ### RDB re-upload (same reporting period)
-Parser deletes existing `resident_postings` rows for residents present in the new file before inserting corrected rows. Residents not in the new upload are untouched.
+RDB uploads are complete snapshots for the selected reporting period. On re-upload, existing `resident_postings` for the selected `reporting_period_id` are deleted after successful parse/validation and then replaced with rows parsed from the uploaded RDB.
+
+Safety rules:
+- If parse/validation returns errors, no delete is performed.
+- Replacement is scoped to the selected `reporting_period_id` only.
+- `residents` is upsert-only by MCR and is never deleted by RDB upload.
+- Residents absent from a new RDB remain in `residents` for history but have no `resident_postings` for that `reporting_period_id`.
 
 ### Dormant TTF posting codes
 Posting codes that appear in the TTF but not in the current RDB are valid (dormant sites). Accept and add to `posting_codes` with `display_name = NULL`. Do not fail the upload. The canonical posting code is the RDB posting code — the last `[]` bracket in the TTF posting column.

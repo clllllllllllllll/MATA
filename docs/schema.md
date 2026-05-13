@@ -179,7 +179,7 @@ One row per (resident, posting, month-phase). The 12-month rotation schedule fro
 
 **Unique constraint:** `UNIQUE NULLS NOT DISTINCT(resident_id, reporting_period_id, start_date, day_part)`
 
-**RDB re-upload behaviour:** On re-upload, existing `resident_postings` rows for the period are deleted and re-inserted (delete-first within scope, not blind insert). This prevents duplicate-key errors and ensures corrections take effect cleanly. The scope for deletion is `(reporting_period_id)` across all residents found in the uploaded file. Residents not present in the new upload are left untouched.
+**RDB re-upload behaviour:** RDB uploads are complete snapshots for the selected reporting period. On re-upload, existing `resident_postings` for the selected `reporting_period_id` are deleted after successful parse/validation and then replaced with rows parsed from the uploaded RDB. `residents` are upserted by MCR and are never deleted by RDB upload; residents absent from a new RDB remain in `residents` for history but have no `resident_postings` for that `reporting_period_id`.
 
 **Cell parsing rules:**
 - Simple posting: `TTSHAnaes` → status = `active`, posting_code = `TTSHAnaes`

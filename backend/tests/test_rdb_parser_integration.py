@@ -250,15 +250,11 @@ class FakeRDBSession:
             return _FakeScalarResult(resident["id"])
 
         if "DELETE FROM resident_postings" in sql:
-            resident_ids = set(params["resident_ids"])
             period_id = str(params["reporting_period_id"])
             self.resident_postings = [
                 row
                 for row in self.resident_postings
-                if not (
-                    str(row["reporting_period_id"]) == period_id
-                    and row["resident_id"] in resident_ids
-                )
+                if str(row["reporting_period_id"]) != period_id
             ]
             return _FakeScalarResult()
 
@@ -534,7 +530,7 @@ def test_sample_upload_creates_residents_postings_posting_codes_and_upload_log()
     )
 
 
-def test_reupload_delete_first_is_scoped_to_uploaded_residents_and_prevents_duplicates() -> None:
+def test_reupload_delete_first_replaces_entire_reporting_period_snapshot() -> None:
     session = FakeRDBSession()
     period_id = uuid4()
     first_file = _rdb_workbook(
@@ -588,14 +584,150 @@ def test_reupload_delete_first_is_scoped_to_uploaded_residents_and_prevents_dupl
     )
 
     one_id = session.residents["M12345A"]["id"]
-    two_id = session.residents["M54321B"]["id"]
     one_rows = [row for row in session.resident_postings if row["resident_id"] == one_id]
-    two_rows = [row for row in session.resident_postings if row["resident_id"] == two_id]
 
     assert [row["posting_code"] for row in one_rows] == ["SGHDiagRd"]
-    assert [row["posting_code"] for row in two_rows] == ["KTPHDiagRd"]
-    assert len(session.resident_postings) == 2
+    assert len(session.resident_postings) == 1
+    assert "M54321B" in session.residents
     assert session.residents["M12345A"]["name"] == "Resident One Updated"
+
+
+def test_reupload_does_not_delete_resident_postings_from_other_reporting_periods() -> None:
+    session = FakeRDBSession()
+    first_period_id = uuid4()
+    second_period_id = uuid4()
+
+    first_period_file = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One",
+                mcr="M12345A",
+                r_year="R2",
+                programme="DR",
+                jul="TTSHAnaes",
+            )
+        ]
+    )
+    second_period_file = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One",
+                mcr="M12345A",
+                r_year="R2",
+                programme="DR",
+                jul="KTPHDiagRd",
+            )
+        ]
+    )
+    replacement_file = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One Updated",
+                mcr="M12345A",
+                r_year="R2",
+                programme="DR",
+                jul="SGHDiagRd",
+            )
+        ]
+    )
+
+    _run(
+        parse_rdb_upload(
+            file_bytes=first_period_file,
+            original_filename="first-period.xlsx",
+            reporting_period_id=first_period_id,
+            db_session=session,
+        )
+    )
+    _run(
+        parse_rdb_upload(
+            file_bytes=second_period_file,
+            original_filename="second-period.xlsx",
+            reporting_period_id=second_period_id,
+            db_session=session,
+        )
+    )
+    _run(
+        parse_rdb_upload(
+            file_bytes=replacement_file,
+            original_filename="first-period-reupload.xlsx",
+            reporting_period_id=first_period_id,
+            db_session=session,
+        )
+    )
+
+    first_period_rows = [
+        row
+        for row in session.resident_postings
+        if str(row["reporting_period_id"]) == str(first_period_id)
+    ]
+    second_period_rows = [
+        row
+        for row in session.resident_postings
+        if str(row["reporting_period_id"]) == str(second_period_id)
+    ]
+    assert [row["posting_code"] for row in first_period_rows] == ["SGHDiagRd"]
+    assert [row["posting_code"] for row in second_period_rows] == ["KTPHDiagRd"]
+
+
+def test_reupload_validation_error_keeps_existing_resident_postings_for_period() -> None:
+    session = FakeRDBSession()
+    period_id = uuid4()
+    first_file = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One",
+                mcr="M12345A",
+                r_year="R2",
+                programme="DR",
+                jul="TTSHAnaes",
+            )
+        ]
+    )
+    invalid_second_file = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One",
+                mcr="M12345A",
+                r_year="R2",
+                programme="UNKNOWN_PROGRAMME",
+                jul="SGHDiagRd",
+            )
+        ]
+    )
+
+    first_result = _run(
+        parse_rdb_upload(
+            file_bytes=first_file,
+            original_filename="first.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+    assert first_result.errors == []
+    before_rows = list(session.resident_postings)
+
+    second_result = _run(
+        parse_rdb_upload(
+            file_bytes=invalid_second_file,
+            original_filename="second-invalid.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert second_result.errors != []
+    assert "no valid resident rows" in second_result.errors[0].lower()
+    assert any(
+        isinstance(warning, dict) and warning.get("type") == "unknown_programme"
+        for warning in second_result.warnings
+    )
+    assert session.resident_postings == before_rows
 
 
 def test_programme_alias_r_year_all_subspecialty_and_employed_cells() -> None:

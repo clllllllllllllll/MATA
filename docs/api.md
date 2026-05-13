@@ -163,6 +163,7 @@ Upload RDB Posting Schedule Excel file.
 - **Content-Type:** multipart/form-data
 - **Body:** `file` (xlsx), `reporting_period_id` (UUID)
 - **Processing:** See `docs/parsing.md` § RDB Parser
+- **Re-upload semantics:** RDB uploads are complete snapshots for the selected reporting period. After successful parse/validation, existing `resident_postings` for the selected `reporting_period_id` are fully replaced in one transaction. If parse/validation fails, existing rows are left unchanged.
 - **Audit log:** Writes `upload_logs` row with `upload_type = 'rdb'`
 - **Response:**
 ```json
