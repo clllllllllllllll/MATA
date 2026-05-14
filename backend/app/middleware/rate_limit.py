@@ -5,10 +5,10 @@ import time
 from dataclasses import dataclass
 
 from fastapi import Request
-from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import Settings
+from app.errors import ErrorCode, build_error_response
 
 
 @dataclass
@@ -29,9 +29,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if limit is not None and window_seconds is not None and group is not None:
             allowed, retry_after = await self._allow_request(request, group, limit, window_seconds)
             if not allowed:
-                response = JSONResponse(
+                response = build_error_response(
                     status_code=429,
-                    content={"detail": "Too many requests"},
+                    detail="Too many requests",
+                    error_code=ErrorCode.RATE_LIMITED.value,
                 )
                 response.headers["Retry-After"] = str(max(1, retry_after))
                 return response

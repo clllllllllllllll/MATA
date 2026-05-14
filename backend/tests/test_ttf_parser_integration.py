@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
+from app.middleware.errors import install_error_handlers
 from app.routers import admin
 from app.services.ttf_parser import parse_ttf_upload
 
@@ -419,6 +420,7 @@ def test_validation_error_prevents_any_db_writes_even_with_db_session() -> None:
 def test_upload_route_uses_db_session_writes_upload_log_and_maps_lock_to_409() -> None:
     session = FakeTTFSession()
     app = FastAPI()
+    install_error_handlers(app)
     app.include_router(admin.router)
 
     async def _db_override():

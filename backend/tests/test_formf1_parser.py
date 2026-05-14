@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
+from app.middleware.errors import install_error_handlers
 from app.routers import admin
 from app.services.formf1_parser import parse_formf1_upload
 
@@ -555,6 +556,7 @@ def test_upload_route_writes_upload_log_and_response_matches_docs_shape() -> Non
     session.residents.add("M12345A")
 
     app = FastAPI()
+    install_error_handlers(app)
     app.include_router(admin.router)
 
     async def _db_override():
@@ -626,6 +628,7 @@ def test_upload_route_returns_422_for_duplicate_mcr_and_keeps_records() -> None:
     before = [dict(row) for row in session.form_f1_records]
 
     app = FastAPI()
+    install_error_handlers(app)
     app.include_router(admin.router)
 
     async def _db_override():
@@ -653,6 +656,16 @@ def test_upload_route_returns_422_for_duplicate_mcr_and_keeps_records() -> None:
     )
 
     assert response.status_code == 422
-    detail = response.json()["detail"]
-    assert detail["duplicate_mcr_errors"]
+    body = response.json()
+    assert body["detail"] == "FormF1 validation failed"
+    assert body["error_code"] == "UPLOAD_VALIDATION_FAILED"
+    assert body["errors"] == ["Duplicate MCR detected in FormF1 upload."]
+    assert body["metadata"]["duplicate_mcr_errors"]
+    assert body["metadata"]["records_created"] == 0
+    assert body["metadata"]["records_updated"] == 0
     assert session.form_f1_records == before
+    assert session.upload_logs
+    latest_log = session.upload_logs[-1]
+    assert latest_log["status"] == "failed"
+    summary = json.loads(latest_log["summary"])
+    assert summary["metadata"]["duplicate_mcr_errors"]

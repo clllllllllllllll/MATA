@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
+from app.middleware.errors import install_error_handlers
 from app.routers import admin
 from app.services.rdb_parser import parse_rdb_upload
 
@@ -494,6 +495,7 @@ def test_sample_upload_creates_residents_postings_posting_codes_and_upload_log()
     assert "TTSHAnaes" in session.posting_codes
 
     app = FastAPI()
+    install_error_handlers(app)
     app.include_router(admin.router)
 
     async def _db_override():

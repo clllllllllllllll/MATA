@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
+from app.middleware.errors import install_error_handlers
 from app.routers import admin
 from app.services.parser_common import ParserResult, write_upload_log
 
@@ -25,6 +26,7 @@ def _make_valid_xlsx_bytes() -> bytes:
 
 def _build_client() -> TestClient:
     app = FastAPI()
+    install_error_handlers(app)
     app.include_router(admin.router)
 
     async def _db_override():
@@ -82,6 +84,7 @@ def test_rdb_upload_route_passes_database_session_to_parser(monkeypatch) -> None
     monkeypatch.setattr("app.services.rdb_parser.parse_rdb_upload", _fake_rdb_parser)
 
     app = FastAPI()
+    install_error_handlers(app)
     app.include_router(admin.router)
     client = TestClient(app)
     response = client.post(

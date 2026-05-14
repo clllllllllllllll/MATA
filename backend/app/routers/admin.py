@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from typing import Annotated, Any, AsyncIterator
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.errors import ApiError, ErrorCode, UploadValidationApiError
 from app.services.parser_common import (
     ParserResult,
     UploadValidationError,
@@ -42,14 +43,26 @@ async def require_admin_context(
     x_user_programme: Annotated[str | None, Header(alias="X-User-Programme")] = None,
 ) -> AdminContext:
     if x_user_role != "admin":
-        raise HTTPException(status_code=403, detail="Forbidden - admin role required")
+        raise ApiError(
+            status_code=403,
+            detail="Forbidden - admin role required",
+            error_code=ErrorCode.FORBIDDEN.value,
+        )
     if not x_user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+        raise ApiError(
+            status_code=401,
+            detail="Unauthorized",
+            error_code=ErrorCode.UNAUTHORIZED.value,
+        )
 
     try:
         user_id = UUID(x_user_id)
     except ValueError as exc:
-        raise HTTPException(status_code=401, detail="Unauthorized") from exc
+        raise ApiError(
+            status_code=401,
+            detail="Unauthorized",
+            error_code=ErrorCode.UNAUTHORIZED.value,
+        ) from exc
 
     return AdminContext(
         user_id=user_id, programme_scope=normalise_scope_values(x_user_programme)
@@ -58,14 +71,16 @@ async def require_admin_context(
 
 def _require_programme_in_scope(admin_context: AdminContext, programme_code: str) -> None:
     if not admin_context.programme_scope:
-        raise HTTPException(
+        raise ApiError(
             status_code=403,
             detail="Forbidden - admin programme scope is empty",
+            error_code=ErrorCode.FORBIDDEN.value,
         )
     if programme_code not in admin_context.programme_scope:
-        raise HTTPException(
+        raise ApiError(
             status_code=403,
             detail="Forbidden - programme not in admin scope",
+            error_code=ErrorCode.FORBIDDEN.value,
         )
 
 
@@ -128,6 +143,64 @@ def _format_public_holiday_response(result: ParserResult) -> dict[str, Any]:
     }
 
 
+_METADATA_INTERNAL_KEYS = {"exception", "traceback", "stack", "stacktrace"}
+
+
+def _sanitise_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(metadata or {})
+    for key in _METADATA_INTERNAL_KEYS:
+        payload.pop(key, None)
+    return payload
+
+
+def _normalise_error_messages(
+    errors: list[str | dict[str, Any]],
+) -> tuple[list[str], list[dict[str, Any]]]:
+    error_messages: list[str] = []
+    structured_errors: list[dict[str, Any]] = []
+    for item in errors:
+        if isinstance(item, str):
+            error_messages.append(item)
+            continue
+
+        structured_errors.append(item)
+        message = item.get("message")
+        if isinstance(message, str) and message.strip():
+            error_messages.append(message.strip())
+        else:
+            error_messages.append("Validation error")
+
+    return error_messages, structured_errors
+
+
+def _raise_upload_validation_error_if_needed(
+    *,
+    upload_label: str,
+    parser_result: ParserResult,
+) -> None:
+    if not parser_result.errors:
+        return
+
+    safe_metadata = _sanitise_metadata(parser_result.metadata)
+    error_messages, structured_errors = _normalise_error_messages(parser_result.errors)
+    if structured_errors:
+        safe_metadata.setdefault("parser_errors", structured_errors)
+
+    if any(key in (parser_result.metadata or {}) for key in _METADATA_INTERNAL_KEYS):
+        raise ApiError(
+            status_code=500,
+            detail="Internal server error",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+
+    raise UploadValidationApiError(
+        detail=f"{upload_label} validation failed",
+        errors=error_messages,
+        warnings=parser_result.warnings,
+        metadata=safe_metadata,
+    )
+
+
 async def _write_upload_log_safely(
     *,
     db: AsyncSession | None,
@@ -171,7 +244,12 @@ async def upload_rdb(
             file_bytes=file_bytes,
         )
     except UploadValidationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise ApiError(
+            status_code=422,
+            detail="Upload file validation failed",
+            error_code=ErrorCode.FILE_VALIDATION_FAILED.value,
+            errors=[str(exc)],
+        ) from exc
 
     from app.services.rdb_parser import parse_rdb_upload
 
@@ -188,6 +266,10 @@ async def upload_rdb(
         original_filename=validated.original_filename,
         uploaded_by=admin_context.user_id,
         reporting_period_id=reporting_period_id,
+    )
+    _raise_upload_validation_error_if_needed(
+        upload_label="RDB",
+        parser_result=parser_result,
     )
 
     return _format_rdb_response(parser_result)
@@ -211,18 +293,28 @@ async def upload_ttf(
             file_bytes=file_bytes,
         )
     except UploadValidationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise ApiError(
+            status_code=422,
+            detail="Upload file validation failed",
+            error_code=ErrorCode.FILE_VALIDATION_FAILED.value,
+            errors=[str(exc)],
+        ) from exc
 
     try:
         parser_result = await parse_ttf_upload(
-        file_bytes=validated.file_bytes,
-        original_filename=validated.original_filename,
-        reporting_period_id=reporting_period_id,
-        programme_code=programme_code,
-        db_session=db,
-    )
+            file_bytes=validated.file_bytes,
+            original_filename=validated.original_filename,
+            reporting_period_id=reporting_period_id,
+            programme_code=programme_code,
+            db_session=db,
+        )
     except TTFUploadLockError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise ApiError(
+            status_code=409,
+            detail="Another TTF upload for this scope is in progress",
+            error_code=ErrorCode.CONFLICT.value,
+            errors=[str(exc)],
+        ) from exc
 
     await _write_upload_log_safely(
         db=db,
@@ -231,6 +323,10 @@ async def upload_ttf(
         uploaded_by=admin_context.user_id,
         reporting_period_id=reporting_period_id,
         programme_code=programme_code,
+    )
+    _raise_upload_validation_error_if_needed(
+        upload_label="TTF",
+        parser_result=parser_result,
     )
 
     return _format_ttf_response(parser_result)
@@ -251,7 +347,12 @@ async def upload_formf1(
             file_bytes=file_bytes,
         )
     except UploadValidationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise ApiError(
+            status_code=422,
+            detail="Upload file validation failed",
+            error_code=ErrorCode.FILE_VALIDATION_FAILED.value,
+            errors=[str(exc)],
+        ) from exc
 
     parser_result = await parse_formf1_upload(
         file_bytes=validated.file_bytes,
@@ -267,11 +368,11 @@ async def upload_formf1(
         uploaded_by=admin_context.user_id,
         reporting_period_id=reporting_period_id,
     )
-
-    response_payload = _format_formf1_response(parser_result)
-    if (parser_result.metadata or {}).get("validation_failed"):
-        raise HTTPException(status_code=422, detail=response_payload)
-    return response_payload
+    _raise_upload_validation_error_if_needed(
+        upload_label="FormF1",
+        parser_result=parser_result,
+    )
+    return _format_formf1_response(parser_result)
 
 
 @router.post("/upload/public-holidays")
@@ -288,7 +389,12 @@ async def upload_public_holidays(
             file_bytes=file_bytes,
         )
     except UploadValidationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise ApiError(
+            status_code=422,
+            detail="Upload file validation failed",
+            error_code=ErrorCode.FILE_VALIDATION_FAILED.value,
+            errors=[str(exc)],
+        ) from exc
 
     parser_result = await dispatch_parser_by_upload_slot(
         upload_type="public_holidays",
@@ -301,6 +407,10 @@ async def upload_public_holidays(
         parser_result=parser_result,
         original_filename=validated.original_filename,
         uploaded_by=admin_context.user_id,
+    )
+    _raise_upload_validation_error_if_needed(
+        upload_label="Public holiday upload",
+        parser_result=parser_result,
     )
 
     return _format_public_holiday_response(parser_result)

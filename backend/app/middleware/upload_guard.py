@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from fastapi import Request
-from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import Settings
+from app.errors import ErrorCode, build_error_response
 
 
 class UploadGuardMiddleware(BaseHTTPMiddleware):
@@ -20,23 +20,26 @@ class UploadGuardMiddleware(BaseHTTPMiddleware):
             content_length = request.headers.get("content-length")
 
             if "multipart/form-data" not in content_type:
-                return JSONResponse(
+                return build_error_response(
                     status_code=422,
-                    content={"detail": "Invalid upload content type"},
+                    detail="Invalid upload content type",
+                    error_code=ErrorCode.FILE_VALIDATION_FAILED.value,
                 )
 
             if content_length:
                 try:
                     content_length_int = int(content_length)
                 except ValueError:
-                    return JSONResponse(
+                    return build_error_response(
                         status_code=422,
-                        content={"detail": "Invalid upload content length"},
+                        detail="Invalid upload content length",
+                        error_code=ErrorCode.FILE_VALIDATION_FAILED.value,
                     )
                 if content_length_int > self._settings.max_upload_size_bytes:
-                    return JSONResponse(
+                    return build_error_response(
                         status_code=413,
-                        content={"detail": "Uploaded file exceeds maximum allowed size"},
+                        detail="Uploaded file exceeds maximum allowed size",
+                        error_code=ErrorCode.FILE_VALIDATION_FAILED.value,
                     )
 
         return await call_next(request)
