@@ -535,14 +535,12 @@ async def test_real_dr_ttf_excel_mapping_regression() -> None:
         pytest.skip("Real DR sample did not parse into Phase 2.4 intermediate shape in this environment.")
 
     keywords_of_interest = {
-        "Journal Club2",
-        "Bedside Teaching2",
-        "Case Discussion2",
-        "Journal Club3",
-        "Bedside Teaching3",
-        "Case Discussion3",
+        "DR Demo Row 44",
+        "DR Demo Row 45",
+        "DR Demo Row 46",
+        "DR Demo Row 47",
     }
-    postings_of_interest = {"TTSHDiagRd", "TTSHDiagRd(Body)", "WHDiagRd(Body)"}
+    postings_of_interest = {"TTSHDiagRd", "TTSHDiagRd(Body)"}
 
     filtered_catalogue = [
         row
@@ -558,42 +556,64 @@ async def test_real_dr_ttf_excel_mapping_regression() -> None:
         row for row in result.metadata["targets"] if row["posting_code"] in postings_of_interest
     ]
 
-    # Keyword mapping checks
+    # Keyword mapping checks against current DR fixture labels.
     keyword_map = {row["keyword"]: row for row in filtered_catalogue}
-    for key in ("Journal Club3", "Bedside Teaching3", "Case Discussion3"):
-        assert key in keyword_map, f"Expected keyword {key} in parsed catalogue."
-        assert keyword_map[key]["posting_code"] == "WHDiagRd(Body)"
+    assert "DR Demo Row 44" in keyword_map
+    assert keyword_map["DR Demo Row 44"]["posting_code"] == "TTSHDiagRd"
+    assert keyword_map["DR Demo Row 44"]["programme_code"] == "DR"
+    assert keyword_map["DR Demo Row 44"]["r_year"] == "R1"
+    assert keyword_map["DR Demo Row 44"]["session_type"] == "Department Learning Events [1h]"
+    assert keyword_map["DR Demo Row 44"]["duration_hours"] == 1.0
 
-    for key in ("Journal Club2", "Bedside Teaching2", "Case Discussion2"):
-        assert key in keyword_map, f"Expected keyword {key} in parsed catalogue."
-        assert keyword_map[key]["posting_code"] in {"TTSHDiagRd", "TTSHDiagRd(Body)"}
+    assert "DR Demo Row 45" in keyword_map
+    assert keyword_map["DR Demo Row 45"]["posting_code"] == "TTSHDiagRd(Body)"
+    assert keyword_map["DR Demo Row 45"]["programme_code"] == "DR"
+    assert keyword_map["DR Demo Row 45"]["r_year"] == "R1"
+    assert keyword_map["DR Demo Row 45"]["session_type"] == "National Teaching [3h]"
+    assert keyword_map["DR Demo Row 45"]["duration_hours"] == 3.0
 
-    assert "DLE Realloc Test" in keyword_map
-    assert keyword_map["DLE Realloc Test"]["posting_code"] == "TTSHDiagRd"
-    assert keyword_map["DLE Realloc Test"]["programme_code"] == "DR"
-    assert keyword_map["DLE Realloc Test"]["r_year"] == "R4"
-    assert keyword_map["DLE Realloc Test"]["session_type"] == "Department Learning Events [1h]"
-    assert keyword_map["DLE Realloc Test"]["duration_hours"] == 1.0
+    assert "DR Demo Row 46" in keyword_map
+    assert keyword_map["DR Demo Row 46"]["posting_code"] == "TTSHDiagRd"
+    assert keyword_map["DR Demo Row 46"]["programme_code"] == "DR"
+    assert keyword_map["DR Demo Row 46"]["r_year"] == "R2"
+    assert keyword_map["DR Demo Row 46"]["session_type"] == "Department Learning Events [1h]"
+    assert keyword_map["DR Demo Row 46"]["duration_hours"] == 1.0
 
-    assert "National Realloc Test" in keyword_map
-    assert keyword_map["National Realloc Test"]["posting_code"] == "TTSHDiagRd"
-    assert keyword_map["National Realloc Test"]["programme_code"] == "DR"
-    assert keyword_map["National Realloc Test"]["r_year"] == "R4"
-    assert keyword_map["National Realloc Test"]["session_type"] == "National Teaching [3h]"
-    assert keyword_map["National Realloc Test"]["duration_hours"] == 3.0
+    assert "DR Demo Row 47" in keyword_map
+    assert keyword_map["DR Demo Row 47"]["posting_code"] == "TTSHDiagRd"
+    assert keyword_map["DR Demo Row 47"]["programme_code"] == "DR"
+    assert keyword_map["DR Demo Row 47"]["r_year"] == "R2"
+    assert keyword_map["DR Demo Row 47"]["session_type"] == "National Teaching [3h]"
+    assert keyword_map["DR Demo Row 47"]["duration_hours"] == 3.0
+
+    # Monthly targets remain row-specific on teaching targets.
+    target_index = {
+        (row["posting_code"], row["r_year"], row["session_type"]): row
+        for row in result.metadata["targets"]
+    }
+    assert target_index[("TTSHDiagRd", "R1", "Department Learning Events [1h]")]["monthly_target"] == 7.0
+    assert target_index[("TTSHDiagRd(Body)", "R1", "National Teaching [3h]")]["monthly_target"] == 3.0
+    assert target_index[("TTSHDiagRd", "R2", "Department Learning Events [1h]")]["monthly_target"] == 7.0
+    assert target_index[("TTSHDiagRd", "R2", "National Teaching [3h]")]["monthly_target"] == 3.0
 
     # Posting groups checks
+    assert any(
+        row["group_code"] == "TTSHDiagRd"
+        and row["posting_code"] == "TTSHDiagRd"
+        and row["programme_code"] == "DR"
+        for row in filtered_groups
+    )
     assert any(
         row["group_code"] == "TTSHDiagRd"
         and row["posting_code"] == "TTSHDiagRd(Body)"
         and row["programme_code"] == "DR"
         for row in filtered_groups
     )
-    assert not any(row["posting_code"] == "WHDiagRd(Body)" for row in filtered_groups)
+    assert not any(row["posting_code"] == "WHDiagRd(Body)" for row in result.metadata["posting_groups"])
 
     # Column E must not replace Column D in targets/catalogue
-    assert any(row["posting_code"] == "WHDiagRd(Body)" for row in filtered_targets)
-    assert all(row["posting_code"] != "TTSHDiagRd" for row in filtered_targets if row["posting_code"] == "WHDiagRd(Body)")
+    assert any(row["posting_code"] == "TTSHDiagRd(Body)" for row in filtered_targets)
+    assert target_index[("TTSHDiagRd(Body)", "R1", "National Teaching [3h]")]["posting_code"] == "TTSHDiagRd(Body)"
 
     # Real workbook A1/A2 verification
     a1_rows = [
