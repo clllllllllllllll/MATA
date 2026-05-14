@@ -243,7 +243,10 @@ Upload FormF1 Excel file for active/inactive status per resident per calendar mo
 - **Content-Type:** multipart/form-data
 - **Body:** `file` (xlsx), `reporting_period_id` (UUID)
 - **Processing:** See `docs/parsing.md` § FormF1 Parser
-- **Behaviour:** Full replace per `reporting_period_id` scope. Re-upload allowed at any time (e.g. to update for unforeseen LOAs).
+- **Parsed/persisted fields only:** MCR, monthly status columns, and promotion date/senior promotion date. Other FormF1 profile/identity columns are non-authoritative and are not persisted from FormF1.
+- **Column detection:** Dynamic header/column detection is preferred. Current-template fallback positions remain supported: column E = MCR, columns M–X = monthly statuses, column Y = promotion date.
+- **Behaviour:** Full replace per `reporting_period_id` scope. Re-upload allowed at any time (e.g. to update for unforeseen LOAs). Promotion date is parsed and persisted but is not used by compliance yet.
+- **422 fail-fast with no replacement:** If duplicate MCR validation fails, or if header/month-column detection is unsafe, return `422` and preserve existing `form_f1_records` rows for the period.
 - **Audit log:** Writes `upload_logs` row with `upload_type = 'form_f1'`
 - **Response:**
 ```json
@@ -251,9 +254,13 @@ Upload FormF1 Excel file for active/inactive status per resident per calendar mo
   "records_created": 312,
   "records_updated": 0,
   "mcr_not_found_warnings": [],
+  "skipped_mcr_warnings": [],
+  "duplicate_mcr_errors": [],
   "month_labels_parsed": ["Jul-25", "Aug-25", "Sep-25", "Oct-25", "Nov-25", "Dec-25"],
   "active_count": 280,
   "inactive_count": 32,
+  "promotion_dates_parsed": 74,
+  "promotion_date_warnings": [],
   "errors": []
 }
 ```

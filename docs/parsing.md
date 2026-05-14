@@ -665,23 +665,48 @@ ON CONFLICT (posting_code, programme_code) DO UPDATE
 **Sheet:** `Table 1`
 **Trigger:** `POST /admin/upload/form-f1` with `reporting_period_id`
 
-### File Structure
+### File Structure and Header Detection
 
-- Rows 1–27: Header/legend content — skip entirely
-- **Row 28:** Column headers
-- **Row 29+:** Resident data
+- Parse only sheet `Table 1`.
+- Detect the header row dynamically.
+- The current template often has headers on row 28 and data from row 29 onward, but parser logic must not depend on fixed row numbers when dynamic detection is practical.
+- A safe header row should contain:
+  - an MCR header
+  - expected month status headers for the selected reporting period
+  - promotion date / senior promotion header (if present)
+- Data rows start immediately after the detected header row.
+- Stop parsing when MCR is blank and the row has no monthly status values, or at sheet end.
 
-### Column Mapping
+### Column Resolution
 
-| Column | Field | Notes |
-|--------|-------|-------|
-| A | specialty | Raw specialty string |
-| D | name | Resident name |
-| E | mcr | Join key to residents.mcr |
-| H | r_year | Year of residency |
-| M–X | monthly status | 12 calendar months Jul–Jun |
+Prefer resolving columns by header names:
+- MCR header
+- month headers derived from the selected `reporting_periods.start_date` / `end_date`
+- promotion date / senior promotion header
 
-Month columns M–X (0-indexed: 12–23) map to: Jul, Aug, Sep, Oct, Nov, Dec, Jan, Feb, Mar, Apr, May, Jun.
+If headers are ambiguous or not safely detectable, use template fallback positions:
+- Column E = MCR
+- Columns M–X = monthly status values
+- Column Y = promotion date / senior promotion date
+
+Ignore all non-authoritative FormF1 columns for persistence.
+
+### Persisted Fields from FormF1
+
+FormF1 parser persists only:
+- `mcr` (the only resident identifier used from FormF1)
+- `month_label`
+- `status_raw`
+- `is_active`
+- `promotion_date`
+- reporting/upload metadata (`reporting_period_id`, `upload_id`)
+
+Resident identity/profile/programme/r_year/posting remain authoritative from RDB-backed data and must not be overwritten by FormF1 uploads.
+
+### Month Labels
+
+- Month labels must be derived from the selected reporting period dates (not hardcoded AY25/AY26 assumptions).
+- Persisted `month_label` format must align with `resident_postings.month_label`, e.g. `Jul-25`.
 
 ### Status Normalisation
 
@@ -691,9 +716,31 @@ Month columns M–X (0-indexed: 12–23) map to: Jul, Aug, Sep, Oct, Nov, Dec, J
 | `Extension` | true | Always track — funding not allocated, clawback not exercised (`clawback_suppressed_reason = 'Extension'`) |
 | `Inactive` | false | Excluded from both numerator and denominator |
 
-**Exhaustive status list:** `Active`, `Inactive`, `Extension`. No other values are expected. Warn on any unrecognised value but do not fail the upload.
+**Expected status list:** `Active`, `Inactive`, `Extension`.
+Unknown values must produce a warning, preserve `status_raw`, and must not fail upload.
 
 **When is_active = false:** The resident-month is excluded from both the compliance numerator and denominator. Sessions attended in that month are stored but not counted.
+
+### Promotion Date Parsing
+
+- blank → `promotion_date = NULL`
+- Excel date cell → persist parsed date
+- parseable text date such as `6 Jan 26`, `06-Jan-26`, `06-Jan-2026` → extract first parseable date
+- unparseable free text → warning, `promotion_date = NULL`, do not fail upload
+
+Promotion date is captured in this phase but not consumed by compliance logic yet.
+
+### Parser Safety and Validation Rules
+
+- Blank MCR → skip row and warning.
+- Malformed MCR → skip row and warning.
+- Valid MCR not found in `residents` → warning, do not block upload.
+- Do not create residents from FormF1.
+- Duplicate MCR within the same parsed upload payload is a blocking validation error (`422`) before any DB writes.
+- Duplicate means the same normalized MCR appears more than once in parsed data rows, regardless of whether status values match.
+- If validation errors exist, do not delete existing `form_f1_records`.
+- If FormF1 header row cannot be safely detected, return `422` before any DB writes.
+- If expected reporting-period month columns cannot be safely mapped, return `422` before any DB writes.
 
 ### Upload Behaviour
 
@@ -702,43 +749,6 @@ Month columns M–X (0-indexed: 12–23) map to: Jul, Aug, Sep, Oct, Nov, Dec, J
 - Delete-and-reinsert within scope: `DELETE FROM form_f1_records WHERE reporting_period_id = :period_id`
 - If MCR not found in `residents` table → add to warnings but do not fail upload
 - Write `upload_logs` row with `upload_type = 'form_f1'`
-
-### Parsing Logic
-
-```python
-def parse_formf1(file_path: str, reporting_period_id: str) -> list[dict]:
-    import openpyxl
-    wb = openpyxl.load_workbook(file_path, data_only=True)
-    ws = wb['Table 1']
-
-    MONTH_LABELS = ['Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun']
-    # Columns M–X = indices 12–23 (0-based)
-    MONTH_COL_OFFSET = 12
-
-    records = []
-    # Data starts at row 29 (1-indexed) = index 28 (0-indexed)
-    for row_idx in range(28, ws.max_row):
-        mcr = str(ws.cell(row_idx + 1, 5).value or '').strip()  # col E
-        if not mcr or not re.match(r'[A-Z]\d+[A-Z]', mcr):
-            continue
-        for month_offset, month_label_prefix in enumerate(MONTH_LABELS):
-            col = MONTH_COL_OFFSET + month_offset + 1  # 1-indexed
-            raw_status = str(ws.cell(row_idx + 1, col).value or '').strip()
-            if not raw_status:
-                continue
-            # Derive reporting year from period context — e.g. Jul-25 for AY2025
-            year_suffix = '25' if month_offset < 6 else '26'  # adjust per period
-            month_label = f"{month_label_prefix}-{year_suffix}"
-            is_active = raw_status.lower() != 'inactive'
-            records.append({
-                'reporting_period_id': reporting_period_id,
-                'mcr': mcr,
-                'month_label': month_label,
-                'status_raw': raw_status,
-                'is_active': is_active,
-            })
-    return records
-```
 
 ---
 

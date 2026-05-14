@@ -94,6 +94,7 @@ class FormF1Record(UUIDTimestampMixin, Base):
     month_label: Mapped[str] = mapped_column(String(10), nullable=False)
     status_raw: Mapped[str] = mapped_column(String(50), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    promotion_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     upload_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("upload_logs.id"),
         nullable=True,

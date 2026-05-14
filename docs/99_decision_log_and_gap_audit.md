@@ -179,6 +179,16 @@ Every important decision made during the project, with reasoning and consequence
 
 ---
 
+#### Decision: FormF1 parser persistence scope = MCR + monthly status + promotion_date only
+- **Status:** ✅ Confirmed
+- **Decision:** FormF1 parser uses only MCR, monthly Active/Inactive/Extension status columns, and promotion date/senior promotion date for persistence. MCR is the only resident identifier from FormF1.
+- **Reasoning:** Resident identity, programme, r_year, and posting are authoritative from RDB-backed tables. Persisting non-authoritative FormF1 profile columns risks drift and silent overwrites.
+- **Consequences for codebase:** FormF1 upload does not overwrite resident profile/programme/r_year/posting data. `form_f1_records.promotion_date` is stored for future use but is not consumed by compliance yet. Duplicate normalized MCR within a single FormF1 upload is a blocking `422` validation error because parser cannot safely choose between conflicting rows. Dynamic header detection is preferred so template row shifts do not require parser rewrites.
+- **Reference file and section:** `parsing.md` § FormF1 Parser; `schema.md` § `form_f1_records`; `api.md` § POST `/admin/upload/form-f1`
+- **Do not change without PM/stakeholder approval:** Yes
+
+---
+
 #### Decision: r_year = 'ALL' sentinel for 22 programmes
 - **Status:** ✅ Confirmed
 - **Decision:** 22 programmes with `r_year_required = false` use `r_year = 'ALL'` as a sentinel in `resident_postings`, `teaching_targets`, and `teaching_name_catalogue`. 6 programmes use actual r_year. 2 subspecialty programmes (SPORTSMED, PALLMED) remap R4→SS1, R5→SS2, R6→SS3.

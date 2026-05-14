@@ -753,6 +753,7 @@ The `add to Max Cand` / `don't add to Max Cand` flag is stored as a display anno
 - `form_f1_records.is_active` per calendar month is the denominator gate
 - Active status values: `Active`, `Extension` → is_active = true
 - Inactive → is_active = false → excluded from both numerator and denominator
+- `form_f1_records.promotion_date` is captured from FormF1 for future R3→R4/senior promotion handling, but current compliance logic must not use it yet
 - Employed residents: Active in FormF1 (they have real postings in RDB, no funding/clawback)
 - LOA months that render a resident inactive appear as Inactive in FormF1 — no separate LOA compliance logic needed
 

@@ -390,9 +390,10 @@ mata/
 
 **FormF1 Upload Flow:**
 1. Admin selects reporting period and uploads `.xlsx` via `POST /admin/upload/form-f1`
-2. `form_f1_parser.py` reads "Table 1" sheet, skips rows 1–27, data from row 28+
-3. Status normalisation: `Active`/`Extension` → `is_active = true`; `Inactive` → `is_active = false`
-4. Full replace per `reporting_period_id` scope; re-upload allowed at any time
+2. `form_f1_parser.py` reads `Table 1`, detects header row/columns dynamically where possible (with current-template fallback E for MCR, M–X for monthly statuses, Y for promotion date)
+3. Persists only MCR, monthly statuses (`status_raw` + `is_active` by month), and promotion date; other FormF1 profile columns are non-authoritative
+4. Status normalisation: `Active`/`Extension` → `is_active = true`; `Inactive` → `is_active = false`
+5. Full replace per `reporting_period_id` scope; re-upload allowed at any time
 
 **Reporting Periods:** CRUD via `/admin/reporting-periods`. Close triggers: (1) set status = 'closed', (2) hibernate surplus, (3) generate `clawback_records` (BL-10), (4) generate `period_snapshots`. Reopen clears snapshot, allows new submissions.
 
@@ -593,13 +594,15 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 
 - **Owner:** Admin uploads
 - **Format:** `.xlsx`
-- **Sheet:** `Table 1`; rows 1–27 skipped; data from row 28 header, row 29+
-- **Columns:** E (MCR), M–X (Jul–Jun monthly status)
+- **Sheet:** `Table 1`; detect header row and required columns dynamically where practical (current template often has row 28 headers and row 29+ data)
+- **Columns used for persistence:** MCR, monthly status columns, promotion date/senior promotion date only
+- **Current-template fallback positions:** E (MCR), M–X (monthly status), Y (promotion date)
 - **Status normalisation:** `Active`/`Extension` → `is_active = true`; `Inactive` → `is_active = false`
 - **Extension:** Always treated as Active (teaching tracked, clawback not exercised — `clawback_suppressed_reason = 'Extension'`)
 - **Employed residents:** Active in FormF1 (real posting, no clawback)
 - **FormF1 is per-resident per-calendar-month** — not per posting code. A month cannot be Active for one posting and Inactive for another.
 - **Full replace per `reporting_period_id` scope; re-upload allowed at any time**
+- **promotion_date capture:** Parsed/stored when possible for future R3→R4/senior-promotion logic; not used by compliance yet
 - **Year suffix in `month_label`:** [Needs verification] — sample parser hardcodes `'25'`/`'26'`; should be dynamic based on reporting period dates
 
 ### STP (Structured Teaching Plan)

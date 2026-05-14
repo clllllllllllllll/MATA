@@ -371,10 +371,11 @@ Per-resident per-calendar-month active/inactive status parsed from the FormF1 fi
 |--------|------|-------------|-------|
 | id | UUID | PK | |
 | reporting_period_id | UUID | FK → reporting_periods.id, NOT NULL | |
-| mcr | VARCHAR(20) | NOT NULL | Join key to residents.mcr |
+| mcr | VARCHAR(20) | NOT NULL | The only resident identifier read from FormF1. Join key to residents.mcr |
 | month_label | VARCHAR(10) | NOT NULL | e.g. `Jul-25`, `Aug-25` — calendar month |
 | status_raw | VARCHAR(50) | NOT NULL | Raw value from FormF1: `Active`, `Inactive`, `Extension` |
 | is_active | BOOLEAN | NOT NULL | Derived: `Active` and `Extension` → true. `Inactive` → false. |
+| promotion_date | DATE | NULL | Parsed from FormF1 promotion date / senior promotion date column (current template column Y). Stored for future R3→R4/senior-promotion compliance handling only. Not used by compliance in this phase. |
 | upload_id | UUID | FK → upload_logs.id | Which upload produced this record |
 | created_at | TIMESTAMPTZ | DEFAULT now() | |
 
@@ -386,6 +387,10 @@ Per-resident per-calendar-month active/inactive status parsed from the FormF1 fi
 - `Inactive` → is_active = false (excluded from both numerator and denominator)
 
 **Re-upload behaviour:** Full replace per `reporting_period_id` scope. Re-upload is allowed at any time (to handle unforeseen LOAs like maternity). Delete-and-reinsert within scope.
+
+**FormF1 persistence scope (authoritative):**
+- Persist only FormF1-derived fields: `mcr`, `month_label`, `status_raw`, `is_active`, `promotion_date`, and upload/reporting-period metadata (`reporting_period_id`, `upload_id`, timestamps).
+- FormF1 identity/profile columns outside MCR are non-authoritative and must not overwrite resident identity/programme/r_year/posting data from RDB-backed tables.
 
 **Note:** FormF1 is the confirmed default active/inactive source. The formal architectural decision (FormF1 vs RDB) is still open. See `docs/business-logic.md` § TBD-7.
 
@@ -582,9 +587,13 @@ Persistent audit trail of every RDB, TTF, and FormF1 upload.
   "records_created": 312,
   "records_updated": 0,
   "mcr_not_found_warnings": ["M99999Z"],
+  "skipped_mcr_warnings": ["row 41: blank MCR"],
+  "duplicate_mcr_errors": [],
   "month_labels_parsed": ["Jul-25", "Aug-25", "Sep-25", "Oct-25", "Nov-25", "Dec-25"],
   "active_count": 280,
   "inactive_count": 32,
+  "promotion_dates_parsed": 74,
+  "promotion_date_warnings": ["M12345A: unparseable promotion date text"],
   "errors": []
 }
 ```
