@@ -1,0 +1,658 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from datetime import date, datetime
+from io import BytesIO
+from uuid import uuid4
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from openpyxl import Workbook
+
+from app.routers import admin
+from app.services.formf1_parser import parse_formf1_upload
+
+
+class _FakeScalarResult:
+    def __init__(self, value: object = None) -> None:
+        self._value = value
+
+    def scalar(self) -> object:
+        return self._value
+
+    def mappings(self) -> "_FakeScalarResult":
+        return self
+
+    def all(self) -> list[dict]:
+        return []
+
+
+class _FakeMappingResult:
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+
+    def mappings(self) -> "_FakeMappingResult":
+        return self
+
+    def all(self) -> list[dict]:
+        return self._rows
+
+
+class FakeFormF1Session:
+    def __init__(self) -> None:
+        self.reporting_periods: dict[str, dict[str, date]] = {}
+        self.residents: set[str] = set()
+        self.form_f1_records: list[dict] = []
+        self.upload_logs: list[dict] = []
+        self.commits = 0
+        self.rollbacks = 0
+
+    async def execute(self, statement, params: dict | None = None):
+        sql = str(statement)
+        params = dict(params or {})
+
+        if "FROM reporting_periods" in sql:
+            period_id = str(params["reporting_period_id"])
+            row = self.reporting_periods.get(period_id)
+            return _FakeMappingResult([row] if row else [])
+
+        if "SELECT mcr FROM residents WHERE mcr = ANY" in sql:
+            input_mcrs = set(params["mcrs"])
+            rows = [{"mcr": mcr} for mcr in sorted(self.residents & input_mcrs)]
+            return _FakeMappingResult(rows)
+
+        if "DELETE FROM form_f1_records" in sql:
+            period_id = str(params["reporting_period_id"])
+            self.form_f1_records = [
+                row
+                for row in self.form_f1_records
+                if row["reporting_period_id"] != period_id
+            ]
+            return _FakeScalarResult()
+
+        if "INSERT INTO form_f1_records" in sql:
+            self.form_f1_records.append(
+                {
+                    "reporting_period_id": str(params["reporting_period_id"]),
+                    "mcr": params["mcr"],
+                    "month_label": params["month_label"],
+                    "status_raw": params["status_raw"],
+                    "is_active": params["is_active"],
+                    "promotion_date": params["promotion_date"],
+                    "upload_id": params["upload_id"],
+                }
+            )
+            return _FakeScalarResult()
+
+        if "INSERT INTO upload_logs" in sql:
+            self.upload_logs.append(dict(params))
+            return _FakeScalarResult()
+
+        raise AssertionError(f"Unhandled SQL in fake FormF1 session: {sql}")
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+def _add_reporting_period(
+    session: FakeFormF1Session, *, period_id, start_date: date, end_date: date
+) -> None:
+    session.reporting_periods[str(period_id)] = {
+        "start_date": start_date,
+        "end_date": end_date,
+    }
+
+
+def _table1_xlsx(
+    *,
+    header_row: int,
+    header_cells: dict[int, object],
+    data_rows: list[dict[int, object]],
+) -> bytes:
+    workbook = Workbook()
+    ws = workbook.active
+    ws.title = "Table 1"
+
+    for col, value in header_cells.items():
+        ws.cell(row=header_row, column=col, value=value)
+    for offset, row_values in enumerate(data_rows, start=1):
+        row_idx = header_row + offset
+        for col, value in row_values.items():
+            ws.cell(row=row_idx, column=col, value=value)
+
+    payload = BytesIO()
+    workbook.save(payload)
+    workbook.close()
+    return payload.getvalue()
+
+
+def _headers_admin() -> dict[str, str]:
+    return {
+        "X-User-Role": "admin",
+        "X-User-Id": str(uuid4()),
+        "X-User-Programme": "DR,GERI",
+    }
+
+
+def _month_headers_jul_dec_2025(start_col: int) -> dict[int, str]:
+    return {
+        start_col + 0: "Jul-25",
+        start_col + 1: "Aug-25",
+        start_col + 2: "Sep-25",
+        start_col + 3: "Oct-25",
+        start_col + 4: "Nov-25",
+        start_col + 5: "Dec-25",
+    }
+
+
+def test_dynamic_header_detection_and_persistence_only_authoritative_fields() -> None:
+    session = FakeFormF1Session()
+    period_id = uuid4()
+    _add_reporting_period(
+        session,
+        period_id=period_id,
+        start_date=date(2025, 7, 1),
+        end_date=date(2025, 12, 31),
+    )
+    session.residents.add("M12345A")
+
+    header_cells = {2: "MCR", 20: "Senior Promotion Date"}
+    header_cells.update(_month_headers_jul_dec_2025(10))
+    data_rows = [
+        {
+            2: "m12345a",
+            10: "Active",
+            11: "Extension",
+            12: "Inactive",
+            13: "Unknown",
+            14: "",
+            15: "Active",
+            20: "06-Jan-2026",
+        },
+        {
+            2: "",
+            10: "",
+            11: "",
+            12: "",
+            13: "",
+            14: "",
+            15: "",
+        },
+    ]
+    file_bytes = _table1_xlsx(header_row=6, header_cells=header_cells, data_rows=data_rows)
+
+    result = _run(
+        parse_formf1_upload(
+            file_bytes=file_bytes,
+            original_filename="formf1.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert result.metadata["month_labels_parsed"] == [
+        "Jul-25",
+        "Aug-25",
+        "Sep-25",
+        "Oct-25",
+        "Nov-25",
+        "Dec-25",
+    ]
+    assert result.metadata["records_created"] == 5
+    assert result.metadata["active_count"] == 4
+    assert result.metadata["inactive_count"] == 1
+    assert result.metadata["promotion_dates_parsed"] == 1
+    assert result.metadata["promotion_date_warnings"] == []
+    assert any("unknown status" in warning for warning in result.warnings)
+    assert {row["month_label"] for row in session.form_f1_records} == {
+        "Jul-25",
+        "Aug-25",
+        "Sep-25",
+        "Oct-25",
+        "Dec-25",
+    }
+    assert all(row["mcr"] == "M12345A" for row in session.form_f1_records)
+    assert all(row["promotion_date"] == date(2026, 1, 6) for row in session.form_f1_records)
+    assert all(set(row.keys()) == {
+        "reporting_period_id",
+        "mcr",
+        "month_label",
+        "status_raw",
+        "is_active",
+        "promotion_date",
+        "upload_id",
+    } for row in session.form_f1_records)
+
+
+def test_fallback_positions_e_mx_y_work() -> None:
+    session = FakeFormF1Session()
+    period_id = uuid4()
+    _add_reporting_period(
+        session,
+        period_id=period_id,
+        start_date=date(2025, 7, 1),
+        end_date=date(2025, 12, 31),
+    )
+    session.residents.add("M23456B")
+
+    header_cells = {1: "not a usable header"}
+    data_rows = [{5: "M23456B", 13: "Active", 14: "Inactive", 15: "Extension", 25: datetime(2026, 2, 6)}]
+    file_bytes = _table1_xlsx(
+        header_row=28,
+        header_cells=header_cells,
+        data_rows=data_rows,
+    )
+
+    result = _run(
+        parse_formf1_upload(
+            file_bytes=file_bytes,
+            original_filename="fallback.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert result.metadata["header_detection_mode"] == "fallback"
+    assert result.metadata["records_created"] == 3
+    assert {row["month_label"] for row in session.form_f1_records} == {
+        "Jul-25",
+        "Aug-25",
+        "Sep-25",
+    }
+    assert all(row["promotion_date"] == date(2026, 2, 6) for row in session.form_f1_records)
+
+
+def test_promotion_date_text_parse_and_unparseable_warning() -> None:
+    session = FakeFormF1Session()
+    period_id = uuid4()
+    _add_reporting_period(
+        session,
+        period_id=period_id,
+        start_date=date(2025, 7, 1),
+        end_date=date(2025, 12, 31),
+    )
+    session.residents.update({"M11111A", "M22222B"})
+
+    header_cells = {3: "MCR", 18: "promotion date"}
+    header_cells.update(_month_headers_jul_dec_2025(8))
+    data_rows = [
+        {3: "M11111A", 8: "Active", 18: "6 Jan 26"},
+        {3: "M22222B", 8: "Active", 18: "pending confirmation"},
+        {3: "", 8: "", 9: "", 10: "", 11: "", 12: "", 13: ""},
+    ]
+    file_bytes = _table1_xlsx(header_row=4, header_cells=header_cells, data_rows=data_rows)
+
+    result = _run(
+        parse_formf1_upload(
+            file_bytes=file_bytes,
+            original_filename="promotion-text.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert result.metadata["promotion_dates_parsed"] == 1
+    assert len(result.metadata["promotion_date_warnings"]) == 1
+    assert "M22222B" in result.metadata["promotion_date_warnings"][0]
+    by_mcr = {row["mcr"]: row for row in session.form_f1_records}
+    assert by_mcr["M11111A"]["promotion_date"] == date(2026, 1, 6)
+    assert by_mcr["M22222B"]["promotion_date"] is None
+
+
+def test_blank_malformed_and_not_found_mcr_warnings() -> None:
+    session = FakeFormF1Session()
+    period_id = uuid4()
+    _add_reporting_period(
+        session,
+        period_id=period_id,
+        start_date=date(2025, 7, 1),
+        end_date=date(2025, 12, 31),
+    )
+    session.residents.add("M12345A")
+
+    header_cells = {2: "MCR"}
+    header_cells.update(_month_headers_jul_dec_2025(10))
+    data_rows = [
+        {2: "", 10: "Active"},
+        {2: "bad-mcr", 10: "Active"},
+        {2: "M12345A", 10: "Active"},
+        {2: "M99999Z", 10: "Active"},
+        {2: "", 10: "", 11: "", 12: "", 13: "", 14: "", 15: ""},
+    ]
+    file_bytes = _table1_xlsx(header_row=5, header_cells=header_cells, data_rows=data_rows)
+
+    result = _run(
+        parse_formf1_upload(
+            file_bytes=file_bytes,
+            original_filename="mcr-warnings.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert len(result.metadata["skipped_mcr_warnings"]) == 2
+    assert result.metadata["mcr_not_found_warnings"] == ["M99999Z"]
+    assert {row["mcr"] for row in session.form_f1_records} == {"M12345A", "M99999Z"}
+
+
+def test_duplicate_normalized_mcr_returns_validation_422_shape_and_preserves_existing() -> None:
+    session = FakeFormF1Session()
+    period_id = uuid4()
+    _add_reporting_period(
+        session,
+        period_id=period_id,
+        start_date=date(2025, 7, 1),
+        end_date=date(2025, 12, 31),
+    )
+    session.residents.add("M12345A")
+    session.form_f1_records = [
+        {
+            "reporting_period_id": str(period_id),
+            "mcr": "MOLD11A",
+            "month_label": "Jul-25",
+            "status_raw": "Active",
+            "is_active": True,
+            "promotion_date": None,
+            "upload_id": None,
+        }
+    ]
+    before = [dict(row) for row in session.form_f1_records]
+
+    header_cells = {2: "MCR"}
+    header_cells.update(_month_headers_jul_dec_2025(10))
+    data_rows = [
+        {2: "m12345a", 10: "Active"},
+        {2: "M12345A", 10: "Inactive"},
+        {2: "", 10: "", 11: "", 12: "", 13: "", 14: "", 15: ""},
+    ]
+    file_bytes = _table1_xlsx(header_row=7, header_cells=header_cells, data_rows=data_rows)
+
+    result = _run(
+        parse_formf1_upload(
+            file_bytes=file_bytes,
+            original_filename="duplicate.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == ["Duplicate MCR detected in FormF1 upload."]
+    assert result.metadata["validation_failed"] is True
+    assert result.metadata["duplicate_mcr_errors"]
+    assert session.form_f1_records == before
+
+
+def test_unsafe_header_detection_returns_validation_error_and_preserves_existing() -> None:
+    session = FakeFormF1Session()
+    period_id = uuid4()
+    _add_reporting_period(
+        session,
+        period_id=period_id,
+        start_date=date(2025, 7, 1),
+        end_date=date(2025, 12, 31),
+    )
+    session.form_f1_records = [
+        {
+            "reporting_period_id": str(period_id),
+            "mcr": "MOLD11A",
+            "month_label": "Jul-25",
+            "status_raw": "Active",
+            "is_active": True,
+            "promotion_date": None,
+            "upload_id": None,
+        }
+    ]
+    before = [dict(row) for row in session.form_f1_records]
+
+    file_bytes = _table1_xlsx(
+        header_row=1,
+        header_cells={1: "noise"},
+        data_rows=[],
+    )
+
+    result = _run(
+        parse_formf1_upload(
+            file_bytes=file_bytes,
+            original_filename="unsafe-header.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.metadata["validation_failed"] is True
+    assert "cannot be detected safely" in result.errors[0].lower()
+    assert session.form_f1_records == before
+
+
+def test_unsafe_month_column_mapping_returns_validation_error_and_preserves_existing() -> None:
+    session = FakeFormF1Session()
+    period_id = uuid4()
+    _add_reporting_period(
+        session,
+        period_id=period_id,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 6, 30),
+    )
+    session.form_f1_records = [
+        {
+            "reporting_period_id": str(period_id),
+            "mcr": "MOLD11A",
+            "month_label": "Jan-26",
+            "status_raw": "Active",
+            "is_active": True,
+            "promotion_date": None,
+            "upload_id": None,
+        }
+    ]
+    before = [dict(row) for row in session.form_f1_records]
+
+    # Fallback mapping for Jan-26..Jun-26 requires row 28+/M-X. Keep sheet too short.
+    file_bytes = _table1_xlsx(
+        header_row=20,
+        header_cells={1: "not usable"},
+        data_rows=[{1: "still not enough fallback"}],
+    )
+
+    result = _run(
+        parse_formf1_upload(
+            file_bytes=file_bytes,
+            original_filename="unsafe-month-map.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.metadata["validation_failed"] is True
+    assert session.form_f1_records == before
+
+
+def test_successful_reupload_full_replaces_scope_records() -> None:
+    session = FakeFormF1Session()
+    period_a = uuid4()
+    period_b = uuid4()
+    _add_reporting_period(
+        session,
+        period_id=period_a,
+        start_date=date(2025, 7, 1),
+        end_date=date(2025, 12, 31),
+    )
+    _add_reporting_period(
+        session,
+        period_id=period_b,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 6, 30),
+    )
+    session.residents.update({"M12345A", "M67890B"})
+    session.form_f1_records = [
+        {
+            "reporting_period_id": str(period_a),
+            "mcr": "M12345A",
+            "month_label": "Jul-25",
+            "status_raw": "Active",
+            "is_active": True,
+            "promotion_date": None,
+            "upload_id": None,
+        },
+        {
+            "reporting_period_id": str(period_b),
+            "mcr": "MOTHER1A",
+            "month_label": "Jan-26",
+            "status_raw": "Inactive",
+            "is_active": False,
+            "promotion_date": None,
+            "upload_id": None,
+        },
+    ]
+
+    header_cells = {2: "MCR"}
+    header_cells.update(_month_headers_jul_dec_2025(10))
+    data_rows = [{2: "M67890B", 10: "Active", 11: "Inactive"}]
+    file_bytes = _table1_xlsx(header_row=6, header_cells=header_cells, data_rows=data_rows)
+
+    result = _run(
+        parse_formf1_upload(
+            file_bytes=file_bytes,
+            original_filename="replace.xlsx",
+            reporting_period_id=period_a,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    period_a_rows = [
+        row for row in session.form_f1_records if row["reporting_period_id"] == str(period_a)
+    ]
+    period_b_rows = [
+        row for row in session.form_f1_records if row["reporting_period_id"] == str(period_b)
+    ]
+    assert len(period_a_rows) == 2
+    assert {row["mcr"] for row in period_a_rows} == {"M67890B"}
+    assert len(period_b_rows) == 1
+    assert period_b_rows[0]["mcr"] == "MOTHER1A"
+
+
+def test_upload_route_writes_upload_log_and_response_matches_docs_shape() -> None:
+    session = FakeFormF1Session()
+    period_id = uuid4()
+    _add_reporting_period(
+        session,
+        period_id=period_id,
+        start_date=date(2025, 7, 1),
+        end_date=date(2025, 12, 31),
+    )
+    session.residents.add("M12345A")
+
+    app = FastAPI()
+    app.include_router(admin.router)
+
+    async def _db_override():
+        yield session
+
+    app.dependency_overrides[admin.get_db_session] = _db_override
+    client = TestClient(app)
+
+    header_cells = {2: "MCR", 20: "Promotion Date"}
+    header_cells.update(_month_headers_jul_dec_2025(10))
+    data_rows = [{2: "M12345A", 10: "Active", 20: "06-Jan-2026"}]
+    payload = _table1_xlsx(header_row=8, header_cells=header_cells, data_rows=data_rows)
+
+    response = client.post(
+        "/admin/upload/form-f1",
+        headers=_headers_admin(),
+        data={"reporting_period_id": str(period_id)},
+        files={
+            "file": (
+                "formf1.xlsx",
+                payload,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    for key in (
+        "records_created",
+        "records_updated",
+        "mcr_not_found_warnings",
+        "skipped_mcr_warnings",
+        "duplicate_mcr_errors",
+        "month_labels_parsed",
+        "active_count",
+        "inactive_count",
+        "promotion_dates_parsed",
+        "promotion_date_warnings",
+        "errors",
+    ):
+        assert key in body
+    assert session.upload_logs
+    summary = json.loads(session.upload_logs[-1]["summary"])
+    assert summary["upload_type"] == "form_f1"
+
+
+def test_upload_route_returns_422_for_duplicate_mcr_and_keeps_records() -> None:
+    session = FakeFormF1Session()
+    period_id = uuid4()
+    _add_reporting_period(
+        session,
+        period_id=period_id,
+        start_date=date(2025, 7, 1),
+        end_date=date(2025, 12, 31),
+    )
+    session.residents.add("M12345A")
+    session.form_f1_records = [
+        {
+            "reporting_period_id": str(period_id),
+            "mcr": "MOLD11A",
+            "month_label": "Jul-25",
+            "status_raw": "Active",
+            "is_active": True,
+            "promotion_date": None,
+            "upload_id": None,
+        }
+    ]
+    before = [dict(row) for row in session.form_f1_records]
+
+    app = FastAPI()
+    app.include_router(admin.router)
+
+    async def _db_override():
+        yield session
+
+    app.dependency_overrides[admin.get_db_session] = _db_override
+    client = TestClient(app)
+
+    header_cells = {2: "MCR"}
+    header_cells.update(_month_headers_jul_dec_2025(10))
+    data_rows = [{2: "M12345A", 10: "Active"}, {2: "m12345a", 10: "Inactive"}]
+    payload = _table1_xlsx(header_row=5, header_cells=header_cells, data_rows=data_rows)
+
+    response = client.post(
+        "/admin/upload/form-f1",
+        headers=_headers_admin(),
+        data={"reporting_period_id": str(period_id)},
+        files={
+            "file": (
+                "dupe.xlsx",
+                payload,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["duplicate_mcr_errors"]
+    assert session.form_f1_records == before

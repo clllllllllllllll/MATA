@@ -15,6 +15,7 @@ from app.services.parser_common import (
     validate_upload_payload,
     write_upload_log,
 )
+from app.services.formf1_parser import parse_formf1_upload
 from app.services.ttf_parser import TTFUploadLockError, parse_ttf_upload
 
 
@@ -105,9 +106,13 @@ def _format_formf1_response(result: ParserResult) -> dict[str, Any]:
         "records_created": metadata.get("records_created", result.created_count),
         "records_updated": metadata.get("records_updated", result.updated_count),
         "mcr_not_found_warnings": metadata.get("mcr_not_found_warnings", []),
+        "skipped_mcr_warnings": metadata.get("skipped_mcr_warnings", []),
+        "duplicate_mcr_errors": metadata.get("duplicate_mcr_errors", []),
         "month_labels_parsed": metadata.get("month_labels_parsed", []),
         "active_count": metadata.get("active_count", 0),
         "inactive_count": metadata.get("inactive_count", 0),
+        "promotion_dates_parsed": metadata.get("promotion_dates_parsed", 0),
+        "promotion_date_warnings": metadata.get("promotion_date_warnings", []),
         "warnings": result.warnings,
         "errors": result.errors,
     }
@@ -248,11 +253,11 @@ async def upload_formf1(
     except UploadValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    parser_result = await dispatch_parser_by_upload_slot(
-        upload_type="form_f1",
+    parser_result = await parse_formf1_upload(
         file_bytes=validated.file_bytes,
         original_filename=validated.original_filename,
         reporting_period_id=reporting_period_id,
+        db_session=db,
     )
 
     await _write_upload_log_safely(
@@ -263,7 +268,10 @@ async def upload_formf1(
         reporting_period_id=reporting_period_id,
     )
 
-    return _format_formf1_response(parser_result)
+    response_payload = _format_formf1_response(parser_result)
+    if (parser_result.metadata or {}).get("validation_failed"):
+        raise HTTPException(status_code=422, detail=response_payload)
+    return response_payload
 
 
 @router.post("/upload/public-holidays")
