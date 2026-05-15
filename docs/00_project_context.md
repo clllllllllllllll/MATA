@@ -118,7 +118,7 @@ All five source-of-truth files (`schema.md`, `api.md`, `business-logic.md`, `par
 3. **Use `resident_postings.r_year`, not `residents.r_year`**, for compliance target lookups. A resident may cross a residency year boundary mid-period.
 4. **Posting codes come from the `posting_codes` table only.** They are not derivable by regex or string pattern. Codes like `AICAIC`, `MOHHGTG1`, `NHGPlyNHGPly`, `RenCiCommHosp` break any pattern.
 5. **R scripts A–F are legacy reference only.** Do not port their logic unless explicitly listed in Section 4A of `99_decision_log_and_gap_audit.md`. Logic in Section 4B must not be re-implemented.
-6. **TBD-7 (FormF1 vs RDB as active/inactive source) is an open architectural decision.** FormF1 is the confirmed default. Do NOT resolve in code. Gate on `form_f1_records.is_active`. Add: `# TBD-7: active/inactive source — FormF1 is default, RDB pivot held open`
+6. **Active/inactive source is resolved.** FormF1 is the final authoritative source. Gate compliance on `form_f1_records.is_active` where `Active` and `Extension` are active, `Inactive` is inactive, and inactive resident-months are excluded from both numerator and denominator.
 7. **TBD-MIGRATION (Historical data migration strategy) is open.** Do not build migration tooling until the option is confirmed.
 8. **For full detail on any rule, go to the authoritative source-of-truth file.** Do not rely on this navigation document alone.
 9. **Database performance, caching, and rate limiting are explicit implementation concerns.** Implement indexes from `schema.md`, cache only scoped derived/reference reads, invalidate caches on writes/uploads, and rate-limit auth/upload/mutation/report endpoints.
@@ -160,7 +160,7 @@ All five source-of-truth files (`schema.md`, `api.md`, `business-logic.md`, `par
 
 | TBD | Status | Summary |
 |-----|--------|---------|
-| TBD-7 | ❓ Open | FormF1 vs RDB as active/inactive source. FormF1 is confirmed default. |
+| TBD-7 | ✅ Resolved | FormF1 is the final authoritative active/inactive source for compliance. |
 | TBD-MIGRATION | ❓ Open | Historical data migration strategy: archive only / summary / full migration |
 
 ### Resolved TBDs
@@ -253,7 +253,7 @@ Compliance read (GET /resident/dashboard, GET /admin/reports/*)
        If no match → silently exclude from compliance
     3. ORTHO weekend mutation applied if applicable (read-time only via weekend_exceptions)
     4. BL-1 capping: achieved_and_counted = min(raw_achieved, monthly_target × active_months)
-       active_months gated by form_f1_records.is_active (FormF1 default; TBD-7)
+       active_months gated by form_f1_records.is_active (final authoritative source)
     5. posting_groups aggregation (if applicable — sum active_months and target across group)
     6. BL-4 surplus update (pre-reallocation values written to surplus_ledger)
     7. BL-3 tag-based reallocation (read-time only — never written back)
@@ -485,7 +485,7 @@ mata/
 
 | TBD | Title | Summary | Instruction |
 |-----|-------|---------|-------------|
-| TBD-7 | FormF1 vs RDB as active/inactive source | FormF1 is confirmed default. Architectural decision formally still open. If flipped to RDB → compliance engine code change only; schema already ready (`loa_types`, `working_days_in_month`). | Do NOT resolve. Gate on `form_f1_records.is_active`. Add TODO: `# TBD-7: active/inactive source — FormF1 is default, RDB pivot held open` |
+| TBD-7 | Active/inactive source (resolved) | FormF1 is the final authoritative source for active/inactive status. `Active` and `Extension` are active; `Inactive` is inactive. Inactive resident-months are excluded from both numerator and denominator. | Keep FormF1 parser/upload + `form_f1_records.is_active` as the final path. Do not implement RDB-derived denominator logic. |
 | TBD-MIGRATION | Historical data migration strategy | Three options: archive only / summary migration / full migration. Decision needed before first period close. | Do NOT build migration tooling until option is confirmed. Add TODO: `# TBD-MIGRATION: awaiting stakeholder decision` |
 
 ### Resolved TBDs — Do NOT Reopen
@@ -526,7 +526,7 @@ See `99_decision_log_and_gap_audit.md` for the full TBD register with placeholde
 | TTF is compliance input | STP is planning only; never uploaded to system | PM approval |
 | `teaching_events.session_type_id` | Display/prototype only; does NOT drive compliance | PM approval |
 | CME/SMC points | Informational only; do NOT feed compliance | PM approval |
-| Active/inactive source | `form_f1_records.is_active` (FormF1 default); TBD-7 formally open | PM approval |
+| Active/inactive source | `form_f1_records.is_active` (final authoritative source) | Confirmed |
 | R year sentinel | 22 programmes use `r_year = 'ALL'`; 6 `r_year_required = true`; 2 subspecialty with SS remapping | PM approval |
 | `global_session_types` priority | Matched events excluded from compliance BEFORE `teaching_name_catalogue` lookup | PM approval |
 | ORTHO weekend mutation | Read-time only via `mutates_to_session_type_id` + `adjusted_duration_hours`; raw DB never mutated | PM approval |
@@ -894,7 +894,7 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| TBD-7 open | If FormF1→RDB flip happens, compliance engine code change needed | Gate on `form_f1_records.is_active`; schema already ready for RDB path |
+| Active/inactive source resolved | FormF1 is final; no RDB pivot for denominator logic | Gate on `form_f1_records.is_active`; keep RDB LOA/refresher/employed fields as parser/audit/display data only |
 | TBD-MIGRATION open | No historical data migration plan | Do not build tooling until decision confirmed |
 | Posting code patterns | Regex-based code generation silently produces wrong codes | Always query `posting_codes` table |
 | `r_year = 'ALL'` sentinel | 22 programmes affected; lookup with actual r_year returns zero results | TTF matcher must handle `'ALL'` sentinel |
@@ -936,7 +936,7 @@ MCR, programme coordinator, admin, secretary, resident portal,
 submission portal, duplicate detection, weekend_exceptions, public_holidays,
 advisory lock, programme_scope, dual posting, multi_posting_rules,
 dormant posting code, LOA, LOA types, employed, refresher training,
-TBD-1, TBD-7, TBD-MIGRATION, placeholder logic,
+TBD-1, TBD-MIGRATION, placeholder logic,
 X-User-Role, X-User-Id, X-User-Programme, X-User-MCR, X-User-Site,
 KEEP PORT discard legacy R script, Codex specification, implementation status,
 ORTHO mutation, mutates_to_session_type_id, adjusted_duration_hours,

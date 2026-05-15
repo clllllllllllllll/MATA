@@ -423,7 +423,7 @@ def compute_working_days(start_date: date, end_date: date, loa_start: date | Non
     return max(0, total_days)
 ```
 
-This value is stored on `resident_postings.working_days_in_month` but is not currently used for compliance — it is stored for future use if the architectural decision shifts from FormF1 to RDB-derived active/inactive.
+This value is stored on `resident_postings.working_days_in_month` but is not used for compliance active/inactive gating. Compliance uses FormF1 (`form_f1_records.is_active`) as the final authoritative source; this field remains parser/audit/display data unless a separate future requirement explicitly changes it.
 
 ### SSR Sheet
 

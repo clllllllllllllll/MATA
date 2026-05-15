@@ -399,7 +399,7 @@ Per-resident per-calendar-month active/inactive status parsed from the FormF1 fi
 - Persist only FormF1-derived fields: `mcr`, `month_label`, `status_raw`, `is_active`, `promotion_date`, and upload/reporting-period metadata (`reporting_period_id`, `upload_id`, timestamps).
 - FormF1 identity/profile columns outside MCR are non-authoritative and must not overwrite resident identity/programme/r_year/posting data from RDB-backed tables.
 
-**Note:** FormF1 is the confirmed default active/inactive source. The formal architectural decision (FormF1 vs RDB) is still open. See `docs/business-logic.md` § TBD-7.
+**Note:** FormF1 is the final authoritative active/inactive source for compliance. `form_f1_records.is_active` is the denominator gate. RDB LOA/refresher/employed annotations are parser/audit/display data and are not used to derive active/inactive status.
 
 ---
 

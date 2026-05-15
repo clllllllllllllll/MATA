@@ -116,7 +116,7 @@ This is a strict dependency chain. Each step requires the previous one to be com
 - **TTF re-upload is always a full replace within scope, regardless of existing attendance.** There is no attendance guard blocking re-uploads. PCs may re-upload a revised TTF at any point in the period. Attendance records for events whose teaching_name no longer maps to a catalogue row will be silently excluded from compliance on the next read. The re-upload response warns the PC with counts of affected attendance.
 - **No STP in the system.** STP data ("Details of Training") is manually added to TTF column K before upload. Column K is a mandatory field — without it, resident event visibility and session type resolution are non-functional.
 - **Admin accounts are programme-scoped.** A PC account only sees residents, targets, and reports for their assigned programmes.
-- **FormF1 is the primary active/inactive source for compliance.** FormF1 active/inactive is calculated on a calendar month basis, which aligns with compliance targets. RDB posting phases use academic months — using RDB phases to derive active/inactive creates date boundary inconsistencies. FormF1 is the confirmed default. This is an open architectural decision (FormF1 vs RDB) pending final confirmation.
+- **FormF1 is the final authoritative active/inactive source for compliance.** FormF1 active/inactive is calculated on a calendar month basis, which aligns with compliance targets. RDB posting phases use academic months — using RDB phases to derive active/inactive creates date boundary inconsistencies. FormF1 is final.
 - **Active/inactive from FormF1 gates the compliance denominator.** A resident-month is excluded from both numerator and denominator when `form_f1_records.is_active = false` for that month. Extension status is treated as Active. Employed residents are Active in FormF1.
 - **LOA and Refresher Training data is captured in resident_postings** for audit/display. The compliance denominator is governed by FormF1, not by RDB LOA annotations. RDB LOA annotations are not acted on by the compliance engine — they are stored for display and future use only.
 - **Secretary and resident event creation/submission on public holiday dates is hard-blocked.** `POST /secretary/teaching-events` and `POST /resident/adhoc-teaching` validate the event date against the `public_holidays` table and return 422 if the date matches.
@@ -152,8 +152,7 @@ Read these files in `docs/` before writing code for any domain:
 
 ## TBD — Awaiting Confirmation
 
-1. **FormF1 vs RDB architectural decision (open)** — FormF1 is the confirmed default active/inactive source due to calendar month alignment. The formal decision on whether to permanently commit to FormF1 or switch to RDB-derived active/inactive is still open. If RDB is chosen later, it becomes a compliance engine code change only — schema is already ready via `loa_types` and `working_days_in_month`. See `docs/business-logic.md` § TBD-7.
-2. **Historical data migration strategy** — Three options: archive only / summary migration / full migration. Decision needed before first period close. See `docs/business-logic.md` § TBD-MIGRATION.
+1. **Historical data migration strategy** — Three options: archive only / summary migration / full migration. Decision needed before first period close. See `docs/business-logic.md` § TBD-MIGRATION.
 
 ## Confirmed Decisions (previously TBD)
 
@@ -173,7 +172,7 @@ Read these files in `docs/` before writing code for any domain:
 | FM compliance variant | FM uses the standard compliance engine — same 70%, same capping, same reallocation, same R year path. No separate variant. FM-specific annotations are Department Teaching [5h] posting override to NHGPlyNHGPly and FM main-posting parser semantics. FM Saturday exception is removed from the confirmed weekend exception list. |
 | Public holiday event creation | Secretary and resident ad-hoc teaching creation on PH dates is hard-blocked (422). PH impact on compliance denominator is moot — no events created on PH dates. |
 | Academic Calendar / AY Dates month bucketing | `POST /admin/upload/public-holidays` parses `Public Holidays` + `AY Dates`, ignores `Fr RMT`, and writes `public_holidays` + `academic_month_boundaries`. Compliance month bucketing resolves by `resident.programme_code` → `programmes.ay_date_category` (`im_subspec` / `non_im_subspec`) → boundary row by `event_date`. JR/SR/SRs wording is detection-only and not persisted. |
-| Active/inactive source (current default) | FormF1 is the default source. All active/inactive defaults to FormF1 parsing. Architectural decision formally still open. |
+| Active/inactive source | FormF1 is the final authoritative source. `form_f1_records.is_active` is the compliance denominator gate. |
 | Ad-hoc teaching | Residents can submit ad-hoc teachings via dedicated endpoint. is_adhoc = true on teaching_events. Same compliance treatment as secretary-created events. |
 | Duration in TTF | Duration stays embedded in session type name as [Xh]. No separate TTF duration column. Secretary picks start_time only; end_time is server-computed. |
 | Non-tracked events | Non-tracked TTF rows (Tracked? = "No") are seeded into teaching_name_catalogue for event visibility. Attendance stored normally but excluded from compliance numerator and denominator. |

@@ -26,8 +26,8 @@ def compute_achieved_and_counted(
 - Active month counting is **whole-month only** — a posting is credited a full calendar month for any month it appears in, regardless of how many days within that month were spent there. No proration.
 - Attendance month bucketing for teaching events/compliance views uses `academic_month_boundaries` (AY Dates), not raw calendar-month extraction from event dates.
 
-**FormF1 active/inactive gate (current default):**
-The `form_f1_records` table is the authoritative active/inactive source. A resident-month where `is_active = false` is excluded from both the compliance numerator and denominator. This is the confirmed default. See TBD-7 for the open architectural decision.
+**FormF1 active/inactive gate (final):**
+The `form_f1_records` table is the final authoritative active/inactive source. A resident-month where `is_active = false` is excluded from both the compliance numerator and denominator.
 
 **FormF1 and multi-posting cells:** FormF1 active/inactive is per calendar month per resident — not per posting code. If a resident has two postings in the same calendar month (e.g. multi-posting cell), FormF1 applies uniformly to both. A month cannot be Active for one posting and Inactive for another.
 
@@ -392,7 +392,7 @@ Rules:
 - SR/SRs header wording in Excel is detection-only parser text and has no persistence meaning.
 - `resident_postings.r_year` behaviour is unchanged and still used for TTF target lookup.
 - `reporting_periods` windows remain Jan-Jun / Jul-Dec and are not replaced by AY categories.
-- FormF1 remains the default active/inactive denominator gate (calendar-month based).
+- FormF1 is the final active/inactive denominator gate (calendar-month based).
 
 ---
 
@@ -770,11 +770,11 @@ The `add to Max Cand` / `don't add to Max Cand` flag is stored as a display anno
 
 ---
 
-## TBD-7: Active/Inactive Source — FormF1 vs RDB
+## TBD-7: Active/Inactive Source — FormF1 vs RDB ✅ CLOSED
 
-**Status:** FormF1 is the confirmed default. Architectural decision formally open.
+**Status:** Resolved. FormF1 is the final authoritative active/inactive source for compliance.
 
-**Current behaviour (FormF1 default):**
+**Final behaviour:**
 - `form_f1_records.is_active` per calendar month is the denominator gate
 - Active status values: `Active`, `Extension` → is_active = true
 - Inactive → is_active = false → excluded from both numerator and denominator
@@ -785,8 +785,8 @@ The `add to Max Cand` / `don't add to Max Cand` flag is stored as a display anno
 **Why FormF1 over RDB for active/inactive:**
 FormF1 is calculated on calendar month basis, aligning with compliance targets. RDB posting phases use academic months (e.g. `08 Jul 25 - 03 Aug 25`). Using RDB academic phases to derive active/inactive creates date boundary inconsistencies with calendar-month compliance targets.
 
-**If decision shifts to RDB:**
-This would be a compliance engine code change only — schema is already ready. `loa_types` reference table and `working_days_in_month` on `resident_postings` are already stored. The ≥15 working calendar days rule (calendar days minus LOA days) would replace the FormF1 gate.
+**RDB-derived denominator logic:**
+Not implemented. Do not derive active/inactive status from RDB LOA/refresher/employed annotations. These remain parser/audit/display fields unless a separate future requirement explicitly changes this.
 
 **Refresher Training and Employed treatment under FormF1:**
 Both are handled automatically via FormF1 values. No special-case code needed.

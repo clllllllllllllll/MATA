@@ -25,6 +25,97 @@ Every important decision made during the project, with reasoning and consequence
 
 ---
 
+#### Decision: External / cross-cluster residents workflow (future Phase 5B; not Phase 3)
+- **Status:** ✅ Confirmed future workflow
+- **Decision:** External residents are residents from NUH or SingHealth who are posted to NHG/TTSH departments. Native NHG residents remain RDB-backed. Allowed external home clusters are strictly `NUH` and `SingHealth`.
+- **Workflow direction:** External residents self-register on first use via an external-resident registration path. After registration, login is MCR-only (same credential style as native NHG residents). External residents may self-update their current NHG posting after registration.
+- **External registration capture fields:** `name`, `mcr`, `home_cluster` (`NUH` or `SingHealth`), `current_nhg_posting` (NHG-posted hospital/department).
+- **Functional scope:** External residents have the same resident attendance submission functions as native residents for event participation (view/submit attendance based on current NHG posting, ad-hoc teaching submission, and past attendance views).
+- **Explicit exclusions:** External residents are excluded from NHG compliance and clawback surfaces:
+  - no resident compliance dashboard
+  - no clawback output
+  - no NHG compliance numerator inclusion
+  - no NHG compliance denominator inclusion
+- **Export requirement:** External attendance must be exportable by NHG PCs for onward sharing to relevant NUH or SingHealth PCs.
+- **Phase guardrail:** This is a future implementation scope under **Phase 5B / resident attendance flow** and is explicitly out of Phase 3 admin CRUD.
+- **Pending implementation/design details:**
+  - whether external residents live in `residents` with a type flag vs a separate table
+  - exact endpoint names for external registration/login/update-posting
+  - exact admin export endpoint/filter shape for external attendance
+  - whether MCR uniqueness is global across native + external residents
+- **Reference file and section:** `AGENTS.md` (new confirmed requirement direction; pre-Phase 3 docs update)
+- **Do not change without PM/stakeholder approval:** Yes
+
+---
+
+#### Decision: TTSH-pilot event visibility and submission mode (future behavior clarification)
+- **Status:** ✅ Confirmed future behavior clarification
+- **Decision:** During TTSH-led pilot behavior:
+  - If resident is posted to a TTSH department: resident can submit against secretary-created events and can submit ad-hoc teaching.
+  - If resident is posted outside TTSH: secretary-created event lists are not expected; resident uses ad-hoc submission only.
+- **Applicability:** Applies to both native NHG residents and external NUH/SingHealth residents.
+- **Reasoning:** Pilot operating model expects secretary event generation mainly from TTSH departments while preserving attendance capture for non-TTSH postings through ad-hoc flow.
+- **Phase guardrail:** Clarified behavior only; do not implement now.
+- **Pending implementation/design detail:** Posting capability signal is still open:
+  - preferred: explicit posting capability flag (e.g. `posting_codes.supports_secretary_events`)
+  - alternative: derive from `posting_codes.institution = 'TTSH'`
+- **Reference file and section:** `AGENTS.md` + resident/secretary flow design context
+- **Do not change without PM/stakeholder approval:** Yes
+
+---
+
+#### Decision: Master admin is an explicit authorization concept (not inferred from NULL scope)
+- **Status:** ✅ Confirmed authorization direction
+- **Decision:** Master admin is explicit and separate from programme-scoped PC authorization.
+- **Master admin scope:** Can upload RDB, Public Holidays / AY Dates, FormF1, and TTF for any programme; can read global/admin-wide config and upload logs where appropriate.
+- **Programme PC scope:** Can upload TTF only for programmes in `programme_scope`; can view/manage only programme-scoped data for assigned programmes.
+- **Invariant preserved:** `programme_scope = NULL` means no access, not all access.
+- **Explicit non-inference rule:** Master admin must not be inferred from `programme_scope IS NULL`.
+- **Pending implementation/design detail:** Exact schema/auth mechanism is open, e.g.:
+  - `users.admin_level = 'master' | 'programme'`
+  - `users.is_master_admin = true/false`
+  - explicit equivalent with same semantics
+- **Pending endpoint authorization matrix detail:** Exact split of master-admin-only vs programme-PC-accessible upload/config endpoints remains to be finalized.
+- **Reference file and section:** `AGENTS.md` security and scope rules (`programme_scope` semantics)
+- **Do not change without PM/stakeholder approval:** Yes
+
+---
+
+#### Decision: Bulk TTF upload is deferred
+- **Status:** ✅ Confirmed deferred
+- **Decision:** Bulk TTF upload (all departments/programmes in one operation) is deferred.
+- **Current safe workflow:**
+  - master admin uploads TTF one programme at a time through existing TTF endpoint
+  - programme PC uploads only for programmes in their scoped programmes
+- **Parser selection invariant:** Endpoint/upload slot determines parser selection. No filename-based programme detection. Filename remains audit-only unless future explicit bulk design changes it.
+- **Phase guardrail:** No bulk-upload implementation in current phase/document update.
+- **Pending implementation/design details:**
+  - input format choice (zip of files vs multi-file upload vs one workbook with many programme sheets)
+  - programme mapping approach (manual per file vs manifest-based vs other explicit mapping)
+  - transaction behavior (partial success allowed vs full atomic batch)
+- **Reference file and section:** `api.md` upload slot behavior; `AGENTS.md` parser and upload rules
+- **Do not change without PM/stakeholder approval:** Yes
+
+---
+
+#### Decision: Latest uploaded TTF export/email is deferred to end-of-roadmap
+- **Status:** ✅ Confirmed deferred
+- **Decision:** "Latest uploaded TTF" means latest original uploaded TTF workbook regardless of uploader type (programme PC or master admin). Feature is master-admin-triggered and deferred until end-of-roadmap after core workflows stabilize.
+- **Preferred staged delivery plan (future):**
+  1. export/download latest uploaded TTF
+  2. email latest uploaded TTF after email destination/provider/config is finalized
+- **Explicitly not now:** no email sending implementation, no file storage implementation, no UI button, and no backend endpoint in this phase unless later explicitly requested.
+- **Pending implementation/design details:**
+  - ETA corporate destination mailbox/contact is undecided
+  - email provider undecided (Microsoft Graph/Outlook, SMTP, SendGrid, or other)
+  - file storage decision required because current upload flow may persist parsed data + metadata but not original workbook
+  - retention policy for original uploaded TTF files
+  - export semantics: exact original workbook vs regenerated workbook from parsed rows
+- **Reference file and section:** upload audit and roadmap sequencing context
+- **Do not change without PM/stakeholder approval:** Yes
+
+---
+
 #### Decision: Surplus resets at reporting period boundary
 - **Status:** ✅ Confirmed
 - **Decision:** `surplus_ledger` values reset to zero at each `reporting_periods` boundary. Surplus does NOT carry across H1/H2.
@@ -168,13 +259,13 @@ Every important decision made during the project, with reasoning and consequence
 
 ---
 
-#### Decision: FormF1 as active/inactive source (confirmed default; TBD-7 open)
-- **Status:** ✅ Confirmed as default; ❓ architectural decision formally open
+#### Decision: FormF1 as final active/inactive source (TBD-7 resolved)
+- **Status:** ✅ Confirmed and final
 - **Decision:** `form_f1_records.is_active` per calendar month is the compliance denominator gate. `Active` and `Extension` → true. `Inactive` → false (excluded from both numerator and denominator).
 - **Reasoning:** FormF1 is calculated on a calendar month basis, which aligns with compliance targets. RDB posting phases use academic months (e.g. `08 Jul 25 - 03 Aug 25`). Using RDB phases creates date boundary inconsistencies.
-- **Alternatives considered:** RDB-derived active/inactive using ≥15 working calendar days rule — held open as TBD-7. Schema already ready (`loa_types`, `working_days_in_month`). If flipped, it's a compliance engine code change only.
+- **Alternatives considered:** RDB-derived active/inactive using ≥15 working calendar days rule — rejected for current architecture.
 - **Consequences for codebase:** `compliance.py` gates on `form_f1_records.is_active`. `formf1_parser.py` populates the table. FormF1 is per-resident per-month — not per posting code.
-- **Reference file and section:** `business-logic.md` § BL-1, BL-6, TBD-7
+- **Reference file and section:** `business-logic.md` § BL-1, BL-6, TBD-7 (closed)
 - **Do not change without PM/stakeholder approval:** Yes
 
 ---
@@ -497,19 +588,16 @@ Status: ✅ Resolved
 
 ---
 
-### Open TBDs
+### TBD Status Entries
 
 ---
 
 #### TBD-7: FormF1 vs RDB as Active/Inactive Source
-- **Status:** ❓ Open — FormF1 is confirmed default
-- **Description:** The formal architectural decision on whether to permanently commit to FormF1 or switch to RDB-derived active/inactive is still open.
-- **Why it matters:** The active/inactive source gates the compliance denominator. Getting it wrong inflates or deflates compliance percentages for every resident.
-- **Current placeholder logic:** `compliance.py` gates on `form_f1_records.is_active`. For each calendar month, if `is_active = false` → exclude from both numerator and denominator. `Active` and `Extension` → true. `Inactive` → false.
-- **File and section:** `business-logic.md` § TBD-7; `compliance.py` (planned)
-- **Who should answer:** PM / Programme Director
-- **Can development proceed?** Yes — FormF1 gate is fully specified and development can proceed using it as default. If decision flips to RDB, it is a compliance engine code change only — schema is already ready via `loa_types` and `working_days_in_month` on `resident_postings`.
-- **Mandatory instruction:** **Do NOT resolve in code. Gate on `form_f1_records.is_active`. Add TODO: `# TBD-7: active/inactive source — FormF1 is default, RDB pivot held open`**
+- **Status:** ✅ Resolved — FormF1 is final
+- **Resolution:** `form_f1_records.is_active` is the final authoritative active/inactive source for compliance denominator gating.
+- **Operational rule:** `Active` and `Extension` are active; `Inactive` is inactive; inactive resident-months are excluded from both numerator and denominator.
+- **File and section:** `business-logic.md` § TBD-7; `schema.md` `form_f1_records`
+- **Implementation guardrail:** Do not implement RDB-derived denominator logic. Do not derive active/inactive from RDB LOA/refresher/employed annotations.
 
 ---
 
@@ -634,7 +722,7 @@ Status: ✅ Resolved
 #### ❌ LOA/Employed treatment via RDB-derived active/inactive logic
 - **What it was:** Deriving active/inactive status from RDB posting phases using a ≥15 working calendar days rule.
 - **Why rejected:** RDB posting phases use academic months (e.g. `08 Jul 25 - 03 Aug 25`) which don't align with calendar-month compliance targets. Creates date boundary inconsistencies.
-- **When it might become valid:** If TBD-7 is resolved in favour of RDB. Schema is already ready (`loa_types`, `working_days_in_month`).
+- **When it might become valid:** Only if a separate future requirement explicitly changes the confirmed FormF1 decision.
 - **What replaced it:** FormF1 active/inactive gate (`form_f1_records.is_active`), which uses calendar months aligned with compliance targets.
 
 ---
@@ -754,7 +842,7 @@ Status: ✅ Resolved
 
 | # | Question | Why It Matters | Who Answers | Can Dev Proceed? |
 |---|----------|---------------|-------------|-----------------|
-| 1 | TBD-7: Should FormF1 or RDB be the permanent active/inactive source? | Gates compliance denominator for every resident | PM / Programme Director | Yes — FormF1 gate implemented as default |
+| 1 | Active/inactive source (TBD-7 closed) | Gates compliance denominator for every resident | PM / Programme Director | Resolved — FormF1 is final authoritative source |
 | 2 | TBD-MIGRATION: Archive only, summary, or full migration for historical data? | Determines whether historical reports available in new system | PM / Senior Management | Yes — decision needed before first period close |
 | 3 | What is the exact list of clawback norm rates per r_year? | Required for BL-10 clawback calculation | PM / Finance | Yes — rates seeded from template, placeholder structure in place |
 | 4 | Are there any additional programmes beyond the 28 seeded in `programmes`? | Missing programmes would cause parse failures on RDB upload | PM | Yes — new programmes can be added via admin CRUD |
@@ -829,7 +917,7 @@ Status: ✅ Resolved
 
 | # | What Is Missing | Why It Matters | Where Placeholder Is Used | Where to Update When Provided |
 |---|----------------|---------------|--------------------------|-------------------------------|
-| 1 | TBD-7 formal decision (FormF1 vs RDB) | Gates compliance denominator | `compliance.py` — gates on `form_f1_records.is_active` with TODO comment | `compliance.py` — swap gate logic; `form_f1_records` table may become secondary |
+| 1 | Active/inactive source lock (TBD-7 closed) | Gates compliance denominator | `compliance.py` — gate on `form_f1_records.is_active` | Keep FormF1 path authoritative |
 | 2 | TBD-MIGRATION option selection | Determines historical data availability | No code exists — placeholder TODO only | New migration script(s) when option confirmed |
 | 3 | Clawback norm rates per r_year | Required for BL-10 calculation amounts | `clawback.py` — rate lookup structure in place, actual rates need seeding | `clawback.py` → `norm_rates` and `norm_rates_fm` dicts |
 | 4 | Exact `teaching_name_catalogue` keyword case-sensitivity rule | Determines whether "Journal Club" matches "journal club" | Not specified — developer must choose | `compliance.py` and `ttf_parser.py` — matching query |
@@ -888,10 +976,10 @@ These are implementation errors that would fail silently — no exception thrown
 
 ---
 
-#### ⚠️ Blind Spot 7: Resolving TBD-7 in code without PM confirmation
+#### ⚠️ Blind Spot 7: Implementing RDB-derived denominator logic against confirmed FormF1 decision
 - **Where:** `compliance.py` — active/inactive gate
-- **Silent consequence:** Premature architectural commitment. If PM later decides differently, the code must be rewritten. Risk of building dependent features on the wrong foundation.
-- **How to detect:** Code review: search for `form_f1_records` usage without a TBD-7 TODO comment.
+- **Silent consequence:** Incorrect denominator gating and compliance drift from confirmed requirements.
+- **How to detect:** Code review: search for denominator logic derived from RDB LOA/refresher/employed fields instead of `form_f1_records.is_active`.
 
 ---
 
@@ -960,7 +1048,7 @@ These are implementation errors that would fail silently — no exception thrown
 | 3 | Surplus resets at period boundary | PM-confirmed policy | PM | `surplus.py` — period close logic |
 | 4 | Tag-based reallocation sort: alphabetical by tag label | Matches R script; PC convention | PM | `surplus.py` → `reallocate_by_tag()` |
 | 5 | Reallocation is read-time only | Audit trail integrity | PM | `surplus.py` — never write back |
-| 6 | FormF1 as default active/inactive source | TBD-7 — formally open | PM / Programme Director | `compliance.py` — `form_f1_records.is_active` gate |
+| 6 | FormF1 as final active/inactive source | TBD-7 resolved | PM / Programme Director | `compliance.py` — `form_f1_records.is_active` gate |
 | 7 | `r_year = 'ALL'` sentinel for 22 programmes | Programme configuration | PM | `rdb_parser.py`, `ttf_parser.py`, `compliance.py` |
 | 8 | `teaching_events.session_type_id` is display only | Cross-programme correctness | PM | Schema design; `compliance.py` ignores it |
 | 9 | TTF re-upload: warn, not 422 | PC workflow requirement | PM | `ttf_parser.py` — orphan detection |
@@ -983,6 +1071,11 @@ These are implementation errors that would fail silently — no exception thrown
 | 26 | Weekend submission: stored + warning | Resident transparency policy | PM | `POST /resident/attendance` response |
 | 27 | Clawback suppressed rows shown (Extension, R7) | Senior management visibility | PM | `clawback_records` — all rows displayed |
 | 28 | AY month bucketing via `academic_month_boundaries` + `programmes.ay_date_category` (ignore SR/SRs header wording) | Compliance month assignment correctness and parser stability across workbook header drift | PM / Programme Director | `parsing.md` AY Dates parser; `schema.md` programme/category + boundary tables; `business-logic.md` BL-5A |
+| 29 | External/cross-cluster residents workflow is future Phase 5B, excluded from NHG compliance/clawback | Prevents accidental inclusion in NHG denominator/numerator and scope creep into Phase 3 | PM / Programme Director | Future resident auth/submission/export design |
+| 30 | Master admin must be explicit; never inferred from `programme_scope = NULL` | Access-control correctness and least-privilege integrity | PM / Security owner | `users` auth model and admin endpoint guards |
+| 31 | TTSH pilot visibility: non-TTSH postings use ad-hoc-only path when secretary list is unavailable | Preserves pilot operations without blocking attendance capture | PM / Programme Director | Future resident event visibility logic |
+| 32 | Bulk TTF upload deferred; one-programme-at-a-time remains current workflow | Avoids premature high-risk parser/mapping complexity | PM | Existing `POST /admin/upload/ttf` scope flow |
+| 33 | Latest uploaded TTF export/email deferred to end-of-roadmap and staged | Prevents premature storage/email coupling before core stabilization | PM / IT | Future admin productivity module |
 
 > **⚠️ Most likely LLM mistake:** Changing the 70% threshold to 75% or 65% because it "seems more reasonable." The threshold is a regulatory requirement. The silent consequence is every compliance calculation being wrong for every resident.
 
