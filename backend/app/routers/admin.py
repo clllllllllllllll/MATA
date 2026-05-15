@@ -11,12 +11,12 @@ from app.errors import ApiError, ErrorCode, UploadValidationApiError
 from app.services.parser_common import (
     ParserResult,
     UploadValidationError,
-    dispatch_parser_by_upload_slot,
     normalise_scope_values,
     validate_upload_payload,
     write_upload_log,
 )
 from app.services.formf1_parser import parse_formf1_upload
+from app.services.public_holiday_parser import parse_public_holiday_upload
 from app.services.ttf_parser import TTFUploadLockError, parse_ttf_upload
 
 
@@ -136,8 +136,13 @@ def _format_formf1_response(result: ParserResult) -> dict[str, Any]:
 def _format_public_holiday_response(result: ParserResult) -> dict[str, Any]:
     metadata = result.metadata or {}
     return {
-        "inserted": metadata.get("inserted", result.created_count),
-        "skipped": metadata.get("skipped", result.updated_count),
+        "public_holidays_created": metadata.get("public_holidays_created", 0),
+        "academic_month_boundaries_created": metadata.get(
+            "academic_month_boundaries_created", 0
+        ),
+        "ay_categories_parsed": metadata.get("ay_categories_parsed", []),
+        "academic_year_label": metadata.get("academic_year_label"),
+        "ignored_sheets": metadata.get("ignored_sheets", []),
         "warnings": result.warnings,
         "errors": result.errors,
     }
@@ -396,10 +401,10 @@ async def upload_public_holidays(
             errors=[str(exc)],
         ) from exc
 
-    parser_result = await dispatch_parser_by_upload_slot(
-        upload_type="public_holidays",
+    parser_result = await parse_public_holiday_upload(
         file_bytes=validated.file_bytes,
         original_filename=validated.original_filename,
+        db_session=db,
     )
 
     await _write_upload_log_safely(

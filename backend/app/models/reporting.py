@@ -4,7 +4,19 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Numeric, String, UniqueConstraint, desc, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    UniqueConstraint,
+    desc,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -61,6 +73,41 @@ class UploadLog(UUIDTimestampMixin, Base):
     programme_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
     status: Mapped[str] = mapped_column(String(10), nullable=False)
     summary: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class AcademicMonthBoundary(UUIDTimestampMixin, Base):
+    __tablename__ = "academic_month_boundaries"
+    __table_args__ = (
+        CheckConstraint(
+            "ay_date_category IN ('im_subspec', 'non_im_subspec')",
+            name="ck_academic_month_boundaries_ay_date_category",
+        ),
+        CheckConstraint("start_date <= end_date", name="ck_academic_month_boundaries_date_range"),
+        UniqueConstraint(
+            "academic_year_label",
+            "ay_date_category",
+            "month_label",
+            name="uq_academic_month_boundaries_scope",
+        ),
+        Index(
+            "idx_academic_month_boundaries_lookup",
+            "academic_year_label",
+            "ay_date_category",
+            "start_date",
+            "end_date",
+        ),
+        Index("idx_academic_month_boundaries_upload", "upload_id"),
+    )
+
+    academic_year_label: Mapped[str] = mapped_column(String(20), nullable=False)
+    ay_date_category: Mapped[str] = mapped_column(String(30), nullable=False)
+    month_label: Mapped[str] = mapped_column(String(10), nullable=False)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    upload_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("upload_logs.id"),
+        nullable=True,
+    )
 
 
 class FormF1Record(UUIDTimestampMixin, Base):

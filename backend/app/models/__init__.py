@@ -9,6 +9,7 @@ from app.models.posting import (
 )
 from app.models.programme import Programme
 from app.models.reporting import (
+    AcademicMonthBoundary,
     ClawbackRecord,
     FormF1Record,
     LoaType,
@@ -28,6 +29,7 @@ from app.models.teaching import (
 
 __all__ = [
     "AttendanceRecord",
+    "AcademicMonthBoundary",
     "Base",
     "ClawbackRecord",
     "EventSeries",
