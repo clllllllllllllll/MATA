@@ -266,6 +266,24 @@ Every important decision made during the project, with reasoning and consequence
 
 ---
 
+#### Decision: AY Dates in Academic Calendar / Public Holiday workbook are required for compliance month bucketing
+- **Status:** ✅ Confirmed
+- **Decision:** `POST /admin/upload/public-holidays` now parses both `Public Holidays` and `AY Dates` sheets. `AY Dates` is required to populate attendance month-bucketing boundaries in `academic_month_boundaries`. `Fr RMT` is ignored.
+- **Decision details:**
+  - Internal categories are fixed to `im_subspec` and `non_im_subspec`.
+  - Category is resolved by **programme code**, not by display name.
+  - Category does **not** depend on JR/SR wording, resident classification, or `r_year`.
+  - SR/SRs wording in workbook headers is legacy/inconsistent detection text only and must not affect persistence.
+  - IM Sub-Spec and Non-IM Sub-Spec categories apply to both JR and SR.
+- **Confirmed programme-code mapping (all 28 seeded programmes):**
+  - `im_subspec`: AIM, CARDIO, DERM, ENDO, GASTRO, GERI, ID, IM, MEDONCO, PALLMED, REHAB, RENAL, RESPI, RHEUM
+  - `non_im_subspec`: ANAES, DR, EM, ENT, EYE, FM, GS, MICROB, ORTHO, PATH, PSY, SIG, SPORTSMED, URO
+- **Consequences for codebase:** Compliance month bucketing resolves `resident.programme_code -> programmes.ay_date_category -> academic_month_boundaries(event_date BETWEEN start_date AND end_date)`. Header text is detection-only and not stored.
+- **Reference file and section:** `schema.md` § `programmes`, `academic_month_boundaries`; `parsing.md` § Academic Calendar / Public Holiday File Parser; `business-logic.md` § BL-5A
+- **Do not change without PM/stakeholder approval:** Yes
+
+---
+
 #### Decision: Multi-posting rules seeded in DB — no file upload
 - **Status:** ✅ Confirmed
 - **Decision:** The three rule types (`main_posting`, `combine`, `half_month`) are managed via admin CRUD UI. `Multiple postings per month.xlsx` is a seed/update source for the `multi_posting_rules` table, not a recurring upload slot.
@@ -964,6 +982,7 @@ These are implementation errors that would fail silently — no exception thrown
 | 25 | `posting_groups` independent from `multi_posting_rules` | Architectural separation | PM | Separate tables, separate usage contexts |
 | 26 | Weekend submission: stored + warning | Resident transparency policy | PM | `POST /resident/attendance` response |
 | 27 | Clawback suppressed rows shown (Extension, R7) | Senior management visibility | PM | `clawback_records` — all rows displayed |
+| 28 | AY month bucketing via `academic_month_boundaries` + `programmes.ay_date_category` (ignore SR/SRs header wording) | Compliance month assignment correctness and parser stability across workbook header drift | PM / Programme Director | `parsing.md` AY Dates parser; `schema.md` programme/category + boundary tables; `business-logic.md` BL-5A |
 
 > **⚠️ Most likely LLM mistake:** Changing the 70% threshold to 75% or 65% because it "seems more reasonable." The threshold is a regulatory requirement. The silent consequence is every compliance calculation being wrong for every resident.
 

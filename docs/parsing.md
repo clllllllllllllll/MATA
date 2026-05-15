@@ -1,4 +1,4 @@
-# Parsing Rules — RDB, TTF, FormF1, and Public Holiday Uploads
+# Parsing Rules — RDB, TTF, FormF1, and Academic Calendar / Public Holiday Uploads
 
 ---
 
@@ -11,7 +11,7 @@ All admin file uploads are routed through **dedicated upload slots** on the admi
 | RDB Posting Schedule | `POST /admin/upload/rdb` | `.xlsx` | `reporting_period_id` |
 | Teaching Target File (TTF) | `POST /admin/upload/ttf` | `.xlsx` | `reporting_period_id`, `programme_code` |
 | Form F1 | `POST /admin/upload/form-f1` | `.xlsx` | `reporting_period_id` |
-| Public Holidays | `POST /admin/upload/public-holidays` | `.xlsx` or `.csv` | _(none beyond file)_ |
+| Academic Calendar / Public Holidays | `POST /admin/upload/public-holidays` | `.xlsx` or `.csv` | _(none beyond file)_ |
 
 The TTF slot additionally requires the admin to select a **programme** (e.g. DR, GRM) from a dropdown before uploading, as a single TTF covers one programme at a time.
 
@@ -752,60 +752,113 @@ Promotion date is captured in this phase but not consumed by compliance logic ye
 
 ---
 
-## Public Holiday File Parser
+## Academic Calendar / Public Holiday File Parser
 
-**Upload slot:** Admin uploads via the dedicated **Public Holidays** file input on the admin upload page. The filename is not used for parsing.
+**Upload slot:** Admin uploads via the dedicated **Academic Calendar / Public Holidays** file input on the admin upload page. The filename is not used for parser selection.
 **Accepted formats:** `.xlsx` or `.csv`
-**Format:** Three columns — `Date (dd-mmm-yy)` | `Day of Week` | `Public Holiday name`
-**Trigger:** `POST /admin/upload/public-holidays`
+**Trigger:** `POST /admin/upload/public-holidays` (endpoint name unchanged for backward compatibility)
 
-### Parsing Logic
+This upload slot now parses two workbook concerns:
+- `Public Holidays` sheet → `public_holidays`
+- `AY Dates` sheet → `academic_month_boundaries`
 
-```python
-def parse_public_holidays(file_path: str) -> list[dict]:
-    """
-    Parse PH file. Skip header row. Parse date from dd-mmm-yy format.
-    Validate computed day-of-week matches uploaded day — warn if mismatch.
-    """
-    import pandas as pd
-    from datetime import datetime
-    import calendar
+`Fr RMT` sheet is always ignored.
 
-    df = pd.read_excel(file_path, header=0)
-    records = []
-    warnings = []
+### Workbook Sheet Handling
 
-    for _, row in df.iterrows():
-        raw_date = str(row.iloc[0]).strip()
-        uploaded_day = str(row.iloc[1]).strip() if len(row) > 1 else ''
-        ph_name = str(row.iloc[2]).strip() if len(row) > 2 else ''
+- `Public Holidays` sheet is required for holiday parsing.
+- `AY Dates` sheet is required for AY boundary parsing.
+- `Fr RMT` sheet is non-functional for MATA and must be ignored.
+- Unknown extra sheets are ignored unless explicitly adopted by a future spec.
 
-        try:
-            parsed_date = datetime.strptime(raw_date, '%d-%b-%y').date()
-        except ValueError:
-            try:
-                parsed_date = datetime.strptime(raw_date, '%d-%b-%Y').date()
-            except ValueError:
-                warnings.append(f"Cannot parse date: {raw_date}")
-                continue
+### Public Holidays Parsing Rules
 
-        computed_day = calendar.day_name[parsed_date.weekday()]
-        if uploaded_day and computed_day.lower() != uploaded_day.lower():
-            warnings.append(
-                f"Day mismatch for {raw_date}: file says {uploaded_day}, "
-                f"computed {computed_day}. Using computed date — verify the row."
-            )
+Source format remains:
+- Three columns: `Date (dd-mmm-yy)` | `Day of Week` | `Public Holiday name`
 
-        records.append({
-            'holiday_date': parsed_date,
-            'name': ph_name,
-            'day_of_week': computed_day,
-            'year': parsed_date.year,
-        })
-    return records, warnings
-```
+Parser rules:
+- Parse dates from `dd-mmm-yy` or `dd-mmm-yyyy`.
+- Validate day-of-week text against computed weekday; mismatch = warning, not failure.
+- Do not persist header names.
+- Persist `holiday_date`, and persist holiday names only because `public_holidays.name` is already part of schema.
+- Header text is not business data and must not be treated as persisted business meaning.
 
-**Upload behaviour:** `INSERT ... ON CONFLICT (holiday_date) DO NOTHING` — safe to re-run. Write `upload_logs` row with `upload_type = 'public_holidays'`.
+Upload behaviour for `public_holidays`:
+- Upsert by `holiday_date` (idempotent re-upload).
+
+### AY Dates Parsing Rules
+
+`AY Dates` contains two category tables used for compliance month bucketing:
+- `im_subspec`
+- `non_im_subspec`
+
+These categories apply by programme code only and do not branch by JR/SR:
+- JR/SR wording in headers is legacy/inconsistent wording only.
+- R1–R3 and R4+ use the same category per programme.
+- Do not infer category from `r_year`, resident classification, or SR/JR labels.
+
+#### Accepted Header Variants
+
+Examples resolving to `im_subspec`:
+- `IM Sub-Spec SRs`
+- `IM Sub-Specs`
+- `IM Subspec`
+- `IM Subspecialty`
+- `IM Sub-Specialty SR`
+
+Examples resolving to `non_im_subspec`:
+- `Non IM Sub-Spec SRs`
+- `Non-IM Sub-Specs`
+- `MOPEX Non IM Sub-Spec SRs`
+- `MOPEX / Non IM Subspec`
+- `Non IM Subspecialty`
+
+#### Dynamic Header Detection Strategy
+
+Detection is dynamic and does not rely on exact header text:
+1. Lowercase text.
+2. Normalize spaces, hyphens, and slashes.
+3. Ignore `sr` / `srs` tokens.
+4. Normalize `sub spec`, `sub-spec`, `subspec`, `subspecialty`, `sub-specialty` to a common token.
+5. Classify the normalized header to `im_subspec` or `non_im_subspec`.
+6. Validate table shape by requiring date-like rows under each detected header.
+
+Persistence rules:
+- Persist only normalized internal categories (`im_subspec`, `non_im_subspec`), `academic_year_label`, `month_label`, `start_date`, `end_date`.
+- Do not store raw header text.
+
+#### AY Dates Validation and Failure Behaviour
+
+Return `422` for any of the following:
+- 0 AY category tables found.
+- only 1 of 2 required categories found.
+- duplicate same category table with conflicting rows.
+- invalid date range rows.
+- `start_date > end_date`.
+- overlapping ranges within the same `(academic_year_label, ay_date_category)`.
+
+Accepted without warning:
+- headers that include or omit `SR` / `SRs`.
+
+Accepted with ignore behaviour:
+- `Fr RMT` sheet present (always ignored).
+
+Deterministic duplicate-table rule:
+- If the same category appears more than once with exact same normalized rows, keep the first and ignore exact duplicates with a warning.
+- If same category appears more than once with conflicting rows, fail with `422`.
+
+### Upload Response/Audit Expectations
+
+The upload response summary should include both PH and AY outcomes:
+- `public_holidays_created`
+- `academic_month_boundaries_created`
+- `ay_categories_parsed` (must be `["im_subspec", "non_im_subspec"]` on success)
+- `academic_year_label`
+- `ignored_sheets` (e.g. `["Fr RMT"]`)
+- `warnings`
+- `errors`
+
+Write one `upload_logs` row with `upload_type = 'public_holidays'`, including both PH and AY summary details.
 
 ---
 

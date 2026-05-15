@@ -24,6 +24,7 @@ def compute_achieved_and_counted(
 - Use `resident_postings.r_year` (NOT `residents.r_year`) when joining to `teaching_targets` — a resident who crosses a year boundary mid-period must be matched against the correct target for each phase
 - Gate by `form_f1_records.is_active`: for each calendar month, check `form_f1_records` for this resident's MCR. If `is_active = false` for that month, exclude those resident_postings rows from the active_months count and exclude associated attendance from the numerator
 - Active month counting is **whole-month only** — a posting is credited a full calendar month for any month it appears in, regardless of how many days within that month were spent there. No proration.
+- Attendance month bucketing for teaching events/compliance views uses `academic_month_boundaries` (AY Dates), not raw calendar-month extraction from event dates.
 
 **FormF1 active/inactive gate (current default):**
 The `form_f1_records` table is the authoritative active/inactive source. A resident-month where `is_active = false` is excluded from both the compliance numerator and denominator. This is the confirmed default. See TBD-7 for the open architectural decision.
@@ -373,12 +374,35 @@ def check_duplicate_or_conflict(session_a: dict, session_b: dict) -> str:
 
 ---
 
+## BL-5A: Academic-Year Month Bucketing (AY Dates)
+
+Attendance/event month assignment for compliance should use `academic_month_boundaries`, not raw calendar-month extraction from `event_date`.
+
+Resolver chain:
+1. `resident.programme_code`
+2. `programmes.ay_date_category` (`im_subspec` or `non_im_subspec`)
+3. `academic_month_boundaries` row where:
+   - `ay_date_category` matches programme category
+   - `event_date BETWEEN start_date AND end_date`
+4. Assigned bucket = `academic_month_boundaries.month_label`
+
+Rules:
+- JR/SR does not branch this resolver.
+- R1-R3 and R4+ use the same AY-date category for a programme.
+- SR/SRs header wording in Excel is detection-only parser text and has no persistence meaning.
+- `resident_postings.r_year` behaviour is unchanged and still used for TTF target lookup.
+- `reporting_periods` windows remain Jan-Jun / Jul-Dec and are not replaced by AY categories.
+- FormF1 remains the default active/inactive denominator gate (calendar-month based).
+
+---
+
 ## BL-6: Compliance Calculation Trigger
 
 The compliance engine runs **JIT (just-in-time)** — recalculated on read, not stored as a materialised value.
 
 **Identity inputs to every compliance calculation:**
 - `programme_code` — from the resident's JWT claim
+- `ay_date_category` — from `programmes.ay_date_category` for the resident programme
 - `posting_code` — derived at request time from `resident_postings`
 - `r_year` — from the `resident_postings` row for each phase (not `residents.r_year`)
 - `reporting_period_id` — from `reporting_periods` WHERE `status = 'open'`
@@ -387,18 +411,19 @@ The compliance engine runs **JIT (just-in-time)** — recalculated on read, not 
 ### Resident dashboard — Python (single-resident JIT)
 
 1. Query all active `resident_postings` for the resident within the reporting period (status `active` or `loa_working`)
-2. For each phase, check `form_f1_records.is_active` for the corresponding calendar month. If false, exclude from denominator and numerator
+2. For each phase, check `form_f1_records.is_active` for the corresponding calendar month. If false, exclude from denominator and numerator (FormF1 gate, separate from AY month bucketing)
 3. For each active posting phase, check `posting_groups` for `(posting_code, programme_code)`. If a group is found, fetch all posting codes sharing the same `group_code`. Sum active_months and attendance across ALL group members (whole-month counting, no proration)
-4. For each active posting phase, query `attendance_records` joined via `teaching_events.posting_code` where `event_date BETWEEN phase.start_date AND phase.end_date` and `attendance_records.status = 'submitted'`. Do NOT filter by `attendance_records.posting_code` — it is audit-only
-5. For each attendance record, **first check `global_session_types`**: if `teaching_event.teaching_name` matches any active `global_session_types.name` → exclude from compliance entirely (skip catalogue lookup, excluded from both numerator and denominator). This check takes priority over the TTF catalogue.
-6. For remaining records, resolve `session_type_id` at read time by joining `teaching_name_catalogue` WHERE `keyword = teaching_event.teaching_name AND posting_code = teaching_event.posting_code AND programme_code = resident.programme_code AND r_year = phase.r_year AND reporting_period_id = current_period`. Use `duration_hours` tiebreaker if multiple catalogue rows match. If no catalogue match — silently exclude from compliance.
-7. Apply ORTHO weekend mutation if applicable (BL-5)
-8. Group by `(group_code OR posting_code, session_type_id)` — use group_code when a posting group exists, posting_code otherwise
-9. Apply capping (BL-1), accounting for `active_months_weight` and posting group aggregation
-10. Update `surplus_ledger` with pre-reallocation values (BL-4)
-11. Apply tag-based reallocation (BL-3) — read-time only, not written back
-12. Compute posting-level compliance (BL-2)
-13. Annotate dual-posting flag (BL-7)
+4. For each attendance event, resolve AY month bucket using `programmes.ay_date_category` and `academic_month_boundaries` where `event_date BETWEEN start_date AND end_date`
+5. For each active posting phase, query `attendance_records` joined via `teaching_events.posting_code` where `event_date BETWEEN phase.start_date AND phase.end_date` and `attendance_records.status = 'submitted'`. Do NOT filter by `attendance_records.posting_code` — it is audit-only
+6. For each attendance record, **first check `global_session_types`**: if `teaching_event.teaching_name` matches any active `global_session_types.name` → exclude from compliance entirely (skip catalogue lookup, excluded from both numerator and denominator). This check takes priority over the TTF catalogue.
+7. For remaining records, resolve `session_type_id` at read time by joining `teaching_name_catalogue` WHERE `keyword = teaching_event.teaching_name AND posting_code = teaching_event.posting_code AND programme_code = resident.programme_code AND r_year = phase.r_year AND reporting_period_id = current_period`. Use `duration_hours` tiebreaker if multiple catalogue rows match. If no catalogue match — silently exclude from compliance.
+8. Apply ORTHO weekend mutation if applicable (BL-5)
+9. Group by `(group_code OR posting_code, session_type_id)` — use group_code when a posting group exists, posting_code otherwise
+10. Apply capping (BL-1), accounting for `active_months_weight` and posting group aggregation
+11. Update `surplus_ledger` with pre-reallocation values (BL-4)
+12. Apply tag-based reallocation (BL-3) — read-time only, not written back
+13. Compute posting-level compliance (BL-2)
+14. Annotate dual-posting flag (BL-7)
 
 ### Admin reporting views — SQL (batch, programme-wide)
 
@@ -423,7 +448,7 @@ active_phases AS (
     JOIN   residents res ON res.id = rp.resident_id
     JOIN   form_f1_active f1
            ON  f1.mcr = res.mcr
-           -- Map academic month phase to calendar month label
+           -- FormF1 gate uses calendar month labels; AY month bucketing is resolved separately from `academic_month_boundaries` by event_date
            AND f1.month_label = TO_CHAR(rp.start_date, 'Mon-YY')
     WHERE  rp.reporting_period_id = :period_id
     AND    rp.status IN ('active', 'loa_working')

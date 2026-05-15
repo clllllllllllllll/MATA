@@ -23,7 +23,7 @@ mata/
 │   ├── schema.md              # Database schema — tables, columns, types, constraints
 │   ├── api.md                 # API endpoints — routes, request/response shapes
 │   ├── business-logic.md      # Compliance engine, surplus chain, reallocation rules
-│   └── parsing.md             # RDB, TTF, FormF1, PH upload parsing rules and edge cases
+│   └── parsing.md             # RDB, TTF, FormF1, and Academic Calendar / Public Holidays upload parsing rules and edge cases
 ├── backend/
 │   ├── alembic/               # Database migrations
 │   ├── app/
@@ -38,7 +38,7 @@ mata/
 │   │   │   ├── attendance.py
 │   │   │   └── reporting.py   # reporting_periods, surplus_ledger, form_f1_records
 │   │   ├── routers/           # FastAPI routers (one file per domain)
-│   │   │   ├── admin.py       # RDB upload, TTF upload, FormF1 upload, PH upload, reporting views, period CRUD, multi-posting rules CRUD, weekend_exceptions CRUD, loa_types CRUD, programmes CRUD
+│   │   │   ├── admin.py       # RDB upload, TTF upload, FormF1 upload, Academic Calendar / Public Holidays upload, reporting views, period CRUD, multi-posting rules CRUD, weekend_exceptions CRUD, loa_types CRUD, programmes CRUD
 │   │   │   ├── secretary.py   # Teaching event CRUD, CME dashboard
 │   │   │   ├── resident.py    # Submission portal, dashboard, attendance CRUD, ad-hoc teaching
 │   │   │   └── auth.py        # Auth stub (swap to Supabase Auth later)
@@ -49,6 +49,7 @@ mata/
 │   │   │   ├── rdb_parser.py  # RDB Excel upload parser
 │   │   │   ├── ttf_parser.py  # TTF Excel upload parser
 │   │   │   ├── formf1_parser.py  # FormF1 Excel upload parser
+│   │   │   ├── public_holiday_parser.py  # Academic Calendar / Public Holidays workbook parser (Public Holidays + AY Dates; Fr RMT ignored)
 │   │   │   └── validation.py  # Duplicate/conflict detection, date checks
 │   │   ├── schemas/           # Pydantic request/response models
 │   │   └── middleware/        # Auth middleware, error handling
@@ -72,7 +73,7 @@ mata/
 
 | Role | Auth Method | Scope |
 |------|------------|-------|
-| Admin (Programme Coordinator) | Email + password | Programme-scoped via `programme_scope TEXT[]`. Each account linked to one or more programmes. Manages RDB, TTF, FormF1, PH uploads, teaching targets, period close, multi-posting rules, weekend exceptions, all reporting views for their programmes only. |
+| Admin (Programme Coordinator) | Email + password | Programme-scoped via `programme_scope TEXT[]`. Each account linked to one or more programmes. Manages RDB, TTF, FormF1, and Academic Calendar / Public Holidays uploads, teaching targets, period close, multi-posting rules, weekend exceptions, all reporting views for their programmes only. |
 | Department Secretary | Email + password | Scoped to ONE specific posting site (e.g. TTSHAnaes only). Creates teaching events, views CME Dashboard and Teaching Schedule. Cannot create events on public holidays. |
 | Resident | MCR number only | Sees teachings for current posting and native programme posting. Submission Portal + personal Dashboard + ad-hoc teaching submission. |
 
@@ -95,7 +96,7 @@ All endpoints check these headers for authorization. When Supabase Auth is wired
 This is a strict dependency chain. Each step requires the previous one to be complete.
 
 1. **Admin seeds multi-posting rules** → database seeded with combine/half_month/main_posting rules (one-time setup, managed via CRUD UI)
-2. **Admin uploads Public Holidays** → PH table populated, secretary event creation block active
+2. **Admin uploads Academic Calendar / Public Holidays** → `POST /admin/upload/public-holidays` parses `Public Holidays` + `AY Dates`, ignores `Fr RMT`, and populates `public_holidays` + `academic_month_boundaries` (PH event-creation block active)
 3. **Admin uploads RDB** → residents, postings, rotation schedule created. Multi-posting rules applied at parse time to FM and combined posting cells. - Always apply RDB cell normalisation before posting cell classification (see docs/parsing.md)
 4. **Admin uploads TTF** → session types, teaching targets, secretary dropdowns seeded
 5. **Admin uploads FormF1** → active/inactive status per resident per calendar month seeded (denominator gate for compliance)
@@ -119,11 +120,14 @@ This is a strict dependency chain. Each step requires the previous one to be com
 - **Active/inactive from FormF1 gates the compliance denominator.** A resident-month is excluded from both numerator and denominator when `form_f1_records.is_active = false` for that month. Extension status is treated as Active. Employed residents are Active in FormF1.
 - **LOA and Refresher Training data is captured in resident_postings** for audit/display. The compliance denominator is governed by FormF1, not by RDB LOA annotations. RDB LOA annotations are not acted on by the compliance engine — they are stored for display and future use only.
 - **Secretary and resident event creation/submission on public holiday dates is hard-blocked.** `POST /secretary/teaching-events` and `POST /resident/adhoc-teaching` validate the event date against the `public_holidays` table and return 422 if the date matches.
+- **Public holiday dates do not directly affect the compliance denominator.** Denominator impact is moot because secretary event creation and resident ad-hoc teaching are hard-blocked on PH dates.
+- **AY Dates drive attendance/compliance month bucketing via `academic_month_boundaries`.** Resolver path: `resident.programme_code` → `programmes.ay_date_category` → `academic_month_boundaries` where `event_date BETWEEN start_date AND end_date`.
+- **AY-date category resolution is programme-code-only and not header-text semantics.** It does not branch by JR/SR, r_year, or resident classification. Workbook SR/SRs wording is detection-only and must not be persisted. Internal categories are `im_subspec` and `non_im_subspec`.
 - **Multi-posting rules are seeded in the database and managed through Admin CRUD.** `Multiple postings per month.xlsx` is a seed/update source, not a recurring upload. PCs maintain three logical tabs long-term: Main Posting, To Combine Posting, and Half Month Posting. Rules are looked up at RDB parse time to correctly collapse or split resident_postings rows.
 - **FM main_posting semantics use the Main Posting `RDB Posting #1` trigger list.** If an FM multi-posting cell contains exactly one recognised trigger posting, collapse to that row's `Main posting`. If it contains zero recognised trigger postings, collapse to the configured `Exclusion (Only for FM)` value, usually `NHGPlyNHGPly`. If it contains two or more recognised trigger postings, do not infer; persist independently and emit `unmatched_multi_posting` unless an explicit rule exists. A singular `NHGPlyNHGPly` cell is a valid standalone posting and does not require a multi-posting rule.
 - **FM uses the standard compliance engine.** FM is not a special compliance variant. There is no programmes.compliance_variant column and no separate FM branch or engine. The FM Saturday exception has been removed from the confirmed weekend_exceptions list. Do not seed any FM-specific weekend exception.
 - **Ad-hoc teaching submissions are supported.** Residents can submit ad-hoc teachings not pre-created by secretaries. The system derives the posting from `resident_postings` at the given date and creates a `teaching_events` row (is_adhoc = true) and attendance record in the same transaction. PH block applies. Compliance treatment is identical to secretary-created sessions.
-- **All uploads are audit-logged.** Every RDB, TTF, and FormF1 upload writes a row to `upload_logs` with full summary JSONB.
+- **All uploads are audit-logged.** Every RDB, TTF, FormF1, and Academic Calendar / Public Holidays upload writes a row to `upload_logs` with full summary JSONB.
 - **Period close generates frozen snapshots.** Closing a reporting period writes one `period_snapshots` row per programme. Historical compliance is served from snapshots, not by re-querying live tables.
 - **Legacy system cutover.** FormSG and Google Forms submission channels must be closed at a confirmed cutover date aligning with a period boundary. In-flight submissions at cutover are processed one final time through the legacy R scripts. After cutover, all attendance flows through this system only. No hybrid operation.
 - **R year required flag drives TTF matching.** Programmes where `r_year_required = false` use `r_year = 'ALL'` as a sentinel value in both `resident_postings` and `teaching_targets`. The TTF matcher checks `r_year == 'ALL' OR r_year == resident_r_year`. See `docs/business-logic.md` § BL-11.
@@ -144,7 +148,7 @@ Read these files in `docs/` before writing code for any domain:
 | `docs/schema.md` | Any model, migration, or database query |
 | `docs/api.md` | Any router, endpoint, or Pydantic schema |
 | `docs/business-logic.md` | Compliance engine, surplus chain, reallocation, any calculation |
-| `docs/parsing.md` | RDB, TTF, FormF1, or PH upload endpoints, Excel parsing |
+| `docs/parsing.md` | RDB, TTF, FormF1, and Academic Calendar / Public Holidays upload endpoints, Excel parsing |
 
 ## TBD — Awaiting Confirmation
 
@@ -160,7 +164,7 @@ Read these files in `docs/` before writing code for any domain:
 | Recurrence editing granularity | All three options: this event only / this and all following / all in series |
 | Reallocation scope | Tag-group-only. No cross-tag or cross-posting flow. Tag sort is alphabetical by label (A1→A2→A3), not by duration. One-for-one session count transfers. |
 | Details of Training (TBD-1) | Resolved. Keywords stored in `teaching_name_catalogue` (first-class table, seeded from TTF column K at upload). Session type resolved at compliance read time — never stored on attendance_records. r_year is part of the catalogue key. |
-| Upload audit logging | Every RDB, TTF, and FormF1 upload persists an `upload_logs` row with full JSONB summary. |
+| Upload audit logging | Every RDB, TTF, FormF1, and Academic Calendar / Public Holidays upload persists an `upload_logs` row with full JSONB summary. |
 | Period close behaviour | Triggers surplus hibernation + `period_snapshots` generation per programme. |
 | Legacy cutover | Hard cutover at a period boundary. FormSG/Google Forms closed at that date. No hybrid operation. |
 | Dormant posting codes (TBD-2) | RDB posting code is the canonical standard for TTF as well. Last `[]` bracket in TTF posting column = RDB posting code. Dormant codes accepted with display_name = NULL. |
@@ -168,6 +172,7 @@ Read these files in `docs/` before writing code for any domain:
 | Multi-posting rules source | Rules seeded directly into database from `Multiple postings per month.xlsx` as a seed/update source, not a recurring upload. Managed via admin CRUD UI in three tabs: Main Posting, To Combine Posting, Half Month Posting. |
 | FM compliance variant | FM uses the standard compliance engine — same 70%, same capping, same reallocation, same R year path. No separate variant. FM-specific annotations are Department Teaching [5h] posting override to NHGPlyNHGPly and FM main-posting parser semantics. FM Saturday exception is removed from the confirmed weekend exception list. |
 | Public holiday event creation | Secretary and resident ad-hoc teaching creation on PH dates is hard-blocked (422). PH impact on compliance denominator is moot — no events created on PH dates. |
+| Academic Calendar / AY Dates month bucketing | `POST /admin/upload/public-holidays` parses `Public Holidays` + `AY Dates`, ignores `Fr RMT`, and writes `public_holidays` + `academic_month_boundaries`. Compliance month bucketing resolves by `resident.programme_code` → `programmes.ay_date_category` (`im_subspec` / `non_im_subspec`) → boundary row by `event_date`. JR/SR/SRs wording is detection-only and not persisted. |
 | Active/inactive source (current default) | FormF1 is the default source. All active/inactive defaults to FormF1 parsing. Architectural decision formally still open. |
 | Ad-hoc teaching | Residents can submit ad-hoc teachings via dedicated endpoint. is_adhoc = true on teaching_events. Same compliance treatment as secretary-created events. |
 | Duration in TTF | Duration stays embedded in session type name as [Xh]. No separate TTF duration column. Secretary picks start_time only; end_time is server-computed. |

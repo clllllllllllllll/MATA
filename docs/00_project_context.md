@@ -62,7 +62,7 @@ Six-month windows (H1: Jan–June, H2: Jul–Dec) stored in the `reporting_perio
 | **RDB** (Resident Database / Posting Schedule) | Admin | Which resident is at which posting site by month | `residents`, `resident_postings`, `posting_codes` |
 | **TTF** (Teaching Target File) | Admin (PC creates from STP) | Compliance targets: session types, monthly targets, keywords, tags | `teaching_targets`, `session_types`, `teaching_name_catalogue`, `posting_codes`, `posting_groups` |
 | **FormF1** | Admin | Active/inactive status per resident per calendar month | `form_f1_records` |
-| **Public Holidays** | Admin | Holiday dates for event creation blocking | `public_holidays` |
+| **Academic Calendar / Public Holidays** | Admin | Public holiday dates plus AY date boundaries (`Public Holidays` + `AY Dates` sheets; `Fr RMT` ignored) | `public_holidays`, `academic_month_boundaries` |
 
 **STP (Structured Teaching Plan):** Created by Secretary. A planning document only. **STP is never uploaded to the system.** The PC manually converts STP to TTF before Admin uploads TTF. Column K (Details of Training / tag info) is absent from STP and must be added manually by PC — this is why conversion cannot be automated.
 
@@ -141,7 +141,7 @@ All five source-of-truth files (`schema.md`, `api.md`, `business-logic.md`, `par
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| **Database schema design** (`schema.md`) | 📋 Planned | Full schema specified. Tables include: `programmes`, `posting_codes`, `reporting_periods`, `residents`, `resident_postings`, `loa_types`, `session_types`, `teaching_targets`, `teaching_name_catalogue`, `teaching_events`, `event_series`, `attendance_records`, `surplus_ledger`, `form_f1_records`, `public_holidays`, `multi_posting_rules`, `posting_groups`, `weekend_exceptions`, `users`, `upload_logs`, `period_snapshots`, `clawback_records`, `global_session_types` |
+| **Database schema design** (`schema.md`) | 📋 Planned | Full schema specified. Tables include: `programmes`, `posting_codes`, `reporting_periods`, `residents`, `resident_postings`, `loa_types`, `session_types`, `teaching_targets`, `teaching_name_catalogue`, `teaching_events`, `event_series`, `attendance_records`, `surplus_ledger`, `form_f1_records`, `public_holidays`, `academic_month_boundaries`, `multi_posting_rules`, `posting_groups`, `weekend_exceptions`, `users`, `upload_logs`, `period_snapshots`, `clawback_records`, `global_session_types` |
 | **Alembic migrations** | 📋 Planned | Structure defined in `AGENTS.md` repo layout |
 | **FastAPI backend structure** | 📋 Planned | Routers: `admin.py`, `secretary.py`, `resident.py`, `auth.py`. Services: `compliance.py`, `surplus.py`, `clawback.py`, `rdb_parser.py`, `ttf_parser.py`, `formf1_parser.py`, `validation.py` |
 | **RDB parser** (`rdb_parser.py`) | 📋 Planned | Full spec in `parsing.md` |
@@ -351,7 +351,7 @@ mata/
 | `schema.md` | All 23 tables, columns, types, constraints, relationships, indexes, seed data | 📋 Design-only specification | Any model, migration, or database query | `session_type_id` is NOT stored on `attendance_records` — it is resolved at compliance read time. If stored, compliance becomes stale when TTF is re-uploaded. |
 | `api.md` | All FastAPI endpoints, request/response shapes, auth model (two identity paths), error codes | 📋 Design-only specification | Any router, endpoint, or Pydantic schema | Two completely separate identity paths: admin/secretary authenticate via `users` table; residents authenticate via `residents` table with MCR only. They share JWT infrastructure but resolve identity from different tables. |
 | `business-logic.md` | Compliance engine (BL-1–BL-11), surplus chain, reallocation, hibernation, weekend/PH exceptions, clawback, FM rules, all TBD logic | 📋 Design-only specification | Compliance engine, surplus chain, reallocation, any calculation | Tag-based reallocation sorts alphabetically by tag label (A1→A2→A3), NOT by duration. The R script sorts by tag string. Convention: A1 = longest, A2 = shorter. Sorting by duration instead of alphabetically produces different reallocation results with no error. |
-| `parsing.md` | RDB, TTF, FormF1, and PH upload parsing rules, cell format variants (10 types), edge cases, validation rules | 📋 Design-only specification | Any upload endpoint or Excel parsing work | RDB posting columns are NOT at a fixed column range (I–T). The parser must detect them dynamically by scanning row 2 for date-range headers. Hardcoding column positions silently misses months. |
+| `parsing.md` | RDB, TTF, FormF1, and Academic Calendar / PH upload parsing rules, cell format variants (10 types), edge cases, validation rules | 📋 Design-only specification | Any upload endpoint or Excel parsing work | RDB posting columns are NOT at a fixed column range (I–T). The parser must detect them dynamically by scanning row 2 for date-range headers. Hardcoding column positions silently misses months. |
 | `AGENTS.md` | Coding-agent behaviour, repo structure, tech stack, three roles, auth stub, initialisation order, key architectural rules, confirmed decisions, security rules | 📋 Design-only specification | Every coding task (alongside this document) | Multi-posting cell with explicit date ranges applies to ALL RDB sheets, not FM only. Assuming it's FM-only causes silent parsing failures for non-FM programmes. |
 
 > **⚠️ Most likely LLM mistake:** Treating these specification files as documenting implemented code and trying to "fix bugs" in them. They are design specs. The silent consequence is generating patches or refactors for code that doesn't exist yet, wasting effort and creating confusion about what is actually implemented.
@@ -394,6 +394,13 @@ mata/
 3. Persists only MCR, monthly statuses (`status_raw` + `is_active` by month), and promotion date; other FormF1 profile columns are non-authoritative
 4. Status normalisation: `Active`/`Extension` → `is_active = true`; `Inactive` → `is_active = false`
 5. Full replace per `reporting_period_id` scope; re-upload allowed at any time
+
+**Academic Calendar / Public Holidays Upload Flow:**
+1. Admin uploads workbook via `POST /admin/upload/public-holidays` (endpoint name unchanged)
+2. Parser reads `Public Holidays` sheet into `public_holidays`
+3. Parser reads `AY Dates` sheet into `academic_month_boundaries`
+4. `Fr RMT` sheet is ignored
+5. Upload summary includes both PH and AY-boundary results (`public_holidays_created`, `academic_month_boundaries_created`, `ay_categories_parsed`, `academic_year_label`, `ignored_sheets`)
 
 **Reporting Periods:** CRUD via `/admin/reporting-periods`. Close triggers: (1) set status = 'closed', (2) hibernate surplus, (3) generate `clawback_records` (BL-10), (4) generate `period_snapshots`. Reopen clears snapshot, allows new submissions.
 
@@ -688,7 +695,7 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 | `POST /admin/upload/rdb` | RDB upload | Calls `rdb_parser.py`; complete snapshot full-period replacement |
 | `POST /admin/upload/ttf` | TTF upload | Calls `ttf_parser.py`; 409 advisory lock; warns on existing attendance |
 | `POST /admin/upload/form-f1` | FormF1 upload | Calls `form_f1_parser.py`; full replace |
-| `POST /admin/upload/public-holidays` | PH upload | Upsert on `holiday_date` |
+| `POST /admin/upload/public-holidays` | Academic Calendar + PH upload | Upsert `public_holidays` and replace/seed `academic_month_boundaries` from AY Dates workbook content |
 | `PUT /admin/teaching-targets/{id}` | Mid-period TTF correction | Re-seeds `teaching_name_catalogue` for that specific target |
 | `GET /admin/reports/clawback` | Clawback 5th tab | Read-only; generated at period close |
 | `PUT /admin/reporting-periods/{id}/close` | Close period | Hibernation → clawback → snapshots |

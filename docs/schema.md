@@ -9,6 +9,7 @@ programmes ─1:N─ teaching_targets
 programmes ─1:N─ residents (via programme_code)
 programmes ─1:N─ multi_posting_rules
 programmes ─1:N─ posting_groups
+programmes ─1:N─ academic_month_boundaries (via ay_date_category)
 
 posting_codes ─1:N─ resident_postings
 posting_codes ─1:N─ teaching_targets
@@ -37,6 +38,7 @@ posting_codes ─1:N─ teaching_name_catalogue
 programmes ─1:N─ teaching_name_catalogue
 
 users ─1:N─ upload_logs
+upload_logs ─1:N─ academic_month_boundaries
 ```
 
 ---
@@ -51,6 +53,7 @@ Master list of residency programmes.
 | code | VARCHAR(20) | UNIQUE, NOT NULL | e.g. `DR`, `GERI`, `ANAES`, `FM`, `IM` |
 | name | VARCHAR(100) | NOT NULL | e.g. `Diagnostic Radiology`, `Geriatric Medicine` |
 | classification | VARCHAR(20) | | `junior` or `senior` or `both` |
+| ay_date_category | VARCHAR(30) | NOT NULL, CHECK IN (`im_subspec`, `non_im_subspec`) | Selects which AY month-boundary category is used for attendance month bucketing in compliance (`academic_month_boundaries`) |
 | r_year_required | BOOLEAN | DEFAULT true | If false, programme uses `r_year = 'ALL'` sentinel — TTF targets apply to all r_years equally |
 | is_subspecialty | BOOLEAN | DEFAULT false | If true, RDB parser remaps R4→SS1, R5→SS2, R6→SS3 for this programme |
 | rdb_alias | VARCHAR(100) | nullable | Alternative programme name that appears in RDB cells. Used for normalisation at RDB parse time. |
@@ -59,42 +62,46 @@ Master list of residency programmes.
 
 **Seed data (from Programme_ABBREV.xlsx — 28 programmes):**
 
-| code | name | r_year_required | is_subspecialty | rdb_alias |
-|------|------|----------------|----------------|-----------|
-| AIM | Advanced Internal Medicine | false | false | NULL |
-| ANAES | Anaesthesiology | true | false | NULL |
-| CARDIO | Cardiology | false | false | NULL |
-| DERM | Dermatology | true | false | NULL |
-| DR | Diagnostic Radiology | true | false | NULL |
-| EM | Emergency Medicine | false | false | NULL |
-| ENDO | Endocrinology | false | false | NULL |
-| ENT | Otorhinolaryngology | false | false | NULL |
-| EYE | Ophthalmology | false | false | NULL |
-| FM | Family Medicine | true | false | NULL |
-| GASTRO | Gastroenterology | false | false | NULL |
-| GERI | Geriatric Medicine | false | false | NULL |
-| GS | General Surgery | false | false | NULL |
-| ID | Infectious Diseases | false | false | Infectious Disease |
-| IM | Internal Medicine | false | false | NULL |
-| MEDONCO | Medical Oncology | false | false | NULL |
-| ORTHO | Orthopaedic Surgery | false | false | NULL |
-| PATH | Pathology | false | false | NULL |
-| PSY | Psychiatry | true | false | NULL |
-| REHAB | Rehabilitation Medicine | false | false | NULL |
-| RENAL | Renal Medicine | false | false | Renal Medicine Extended |
-| RESPI | Respiratory Medicine | true | false | NULL |
-| RHEUM | Rheumatology | false | false | NULL |
-| SPORTSMED | Sports Medicine | false | true | NULL |
-| SIG | Surgery-In-General | false | false | Surgery-in-General |
-| URO | Urology | false | false | NULL |
-| MICROB | Pathology (Microbiology) | false | false | Microbiology |
-| PALLMED | Palliative Medicine | false | true | NULL |
+| code | name | ay_date_category | r_year_required | is_subspecialty | rdb_alias |
+|------|------|------------------|----------------|----------------|-----------|
+| AIM | Advanced Internal Medicine | im_subspec | false | false | NULL |
+| ANAES | Anaesthesiology | non_im_subspec | true | false | NULL |
+| CARDIO | Cardiology | im_subspec | false | false | NULL |
+| DERM | Dermatology | im_subspec | true | false | NULL |
+| DR | Diagnostic Radiology | non_im_subspec | true | false | NULL |
+| EM | Emergency Medicine | non_im_subspec | false | false | NULL |
+| ENDO | Endocrinology | im_subspec | false | false | NULL |
+| ENT | Otorhinolaryngology | non_im_subspec | false | false | NULL |
+| EYE | Ophthalmology | non_im_subspec | false | false | NULL |
+| FM | Family Medicine | non_im_subspec | true | false | NULL |
+| GASTRO | Gastroenterology | im_subspec | false | false | NULL |
+| GERI | Geriatric Medicine | im_subspec | false | false | NULL |
+| GS | General Surgery | non_im_subspec | false | false | NULL |
+| ID | Infectious Diseases | im_subspec | false | false | Infectious Disease |
+| IM | Internal Medicine | im_subspec | false | false | NULL |
+| MEDONCO | Medical Oncology | im_subspec | false | false | NULL |
+| ORTHO | Orthopaedic Surgery | non_im_subspec | false | false | NULL |
+| PATH | Pathology | non_im_subspec | false | false | NULL |
+| PSY | Psychiatry | non_im_subspec | true | false | NULL |
+| REHAB | Rehabilitation Medicine | im_subspec | false | false | NULL |
+| RENAL | Renal Medicine | im_subspec | false | false | Renal Medicine Extended |
+| RESPI | Respiratory Medicine | im_subspec | true | false | NULL |
+| RHEUM | Rheumatology | im_subspec | false | false | NULL |
+| SPORTSMED | Sports Medicine | non_im_subspec | false | true | NULL |
+| SIG | Surgery-In-General | non_im_subspec | false | false | Surgery-in-General |
+| URO | Urology | non_im_subspec | false | false | NULL |
+| MICROB | Pathology (Microbiology) | non_im_subspec | false | false | Microbiology |
+| PALLMED | Palliative Medicine | im_subspec | false | true | NULL |
 
 **r_year_required = false (22 programmes):** AIM, CARDIO, EM, ENDO, ENT, EYE, GASTRO, GERI, GS, ID, IM, MEDONCO, ORTHO, PATH, REHAB, RENAL, RHEUM, SPORTSMED, SIG, URO, MICROB, PALLMED
 
 **r_year_required = true (6 programmes):** ANAES, DERM, DR, FM, PSY, RESPI
 
 **is_subspecialty = true (2 programmes):** SPORTSMED, PALLMED — R4→SS1, R5→SS2, R6→SS3 remapping applied by RDB parser
+
+**ay_date_category = im_subspec (14 programmes):** AIM, CARDIO, DERM, ENDO, GASTRO, GERI, ID, IM, MEDONCO, PALLMED, REHAB, RENAL, RESPI, RHEUM
+
+**ay_date_category = non_im_subspec (14 programmes):** ANAES, DR, EM, ENT, EYE, FM, GS, MICROB, ORTHO, PATH, PSY, SIG, SPORTSMED, URO
 
 ---
 
@@ -410,6 +417,36 @@ For PH detection and secretary/resident event creation blocking.
 
 ---
 
+## Table: `academic_month_boundaries`
+
+Academic-calendar month boundary ranges parsed from the **AY Dates** sheet in the Academic Calendar / Public Holiday workbook. Used to bucket attendance/event dates into AY months for compliance calculations.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| id | UUID | PK | |
+| academic_year_label | VARCHAR(20) | NOT NULL | e.g. `AY2026` |
+| ay_date_category | VARCHAR(30) | NOT NULL, CHECK IN (`im_subspec`, `non_im_subspec`) | Category selected from `programmes.ay_date_category` |
+| month_label | VARCHAR(10) | NOT NULL | e.g. `Jul-26`, `Aug-26` |
+| start_date | DATE | NOT NULL | Inclusive |
+| end_date | DATE | NOT NULL | Inclusive |
+| upload_id | UUID | FK → upload_logs.id, NOT NULL | Upload log row from `POST /admin/upload/public-holidays` |
+| created_at | TIMESTAMPTZ | DEFAULT now() | |
+| updated_at | TIMESTAMPTZ | DEFAULT now() | |
+
+**Check constraints:**
+- `CHECK (ay_date_category IN ('im_subspec', 'non_im_subspec'))`
+- `CHECK (start_date <= end_date)`
+
+**Unique constraint:** `UNIQUE(academic_year_label, ay_date_category, month_label)`
+
+**Validation and safety rules (parser-level):**
+- No overlapping ranges within the same `(academic_year_label, ay_date_category)`.
+- Missing category tables or missing month ranges are treated as unsafe and fail the upload (422).
+- Duplicate category tables with conflicting rows fail the upload (422).
+- Exact duplicate category tables are accepted deterministically by keeping the first parsed table and ignoring subsequent exact duplicates with a warning.
+
+---
+
 ## Table: `multi_posting_rules`
 
 Rules governing how multiple posting codes in a single RDB cell are interpreted. Seeded directly into the database and managed via admin CRUD UI. `Multiple postings per month.xlsx` is a seed/update source for this table, not a recurring upload slot.
@@ -537,7 +574,7 @@ For admin and secretary authentication **only**. Residents are **not** stored he
 
 ## Table: `upload_logs`
 
-Persistent audit trail of every RDB, TTF, and FormF1 upload.
+Persistent audit trail of every RDB, TTF, FormF1, and Academic Calendar / Public Holidays upload.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
@@ -594,6 +631,19 @@ Persistent audit trail of every RDB, TTF, and FormF1 upload.
   "inactive_count": 32,
   "promotion_dates_parsed": 74,
   "promotion_date_warnings": ["M12345A: unparseable promotion date text"],
+  "errors": []
+}
+```
+
+**`summary` JSONB shape for Academic Calendar / Public Holidays uploads:**
+```json
+{
+  "public_holidays_created": 11,
+  "academic_month_boundaries_created": 24,
+  "ay_categories_parsed": ["im_subspec", "non_im_subspec"],
+  "academic_year_label": "AY2026",
+  "ignored_sheets": ["Fr RMT"],
+  "warnings": [],
   "errors": []
 }
 ```
@@ -884,6 +934,16 @@ WHERE upload_id IS NOT NULL;
 -- UNIQUE(holiday_date) should exist for idempotent upsert.
 CREATE INDEX idx_public_holidays_year
 ON public_holidays(EXTRACT(YEAR FROM holiday_date));
+```
+
+#### `academic_month_boundaries`
+
+```sql
+CREATE INDEX idx_academic_month_boundaries_lookup
+ON academic_month_boundaries(academic_year_label, ay_date_category, start_date, end_date);
+
+CREATE INDEX idx_academic_month_boundaries_upload
+ON academic_month_boundaries(upload_id);
 ```
 
 #### `multi_posting_rules`

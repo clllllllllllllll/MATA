@@ -571,15 +571,35 @@ List all public holidays.
 
 ### POST `/admin/upload/public-holidays`
 
-Upload a public holiday file to seed the `public_holidays` table.
+Upload the Academic Calendar / Public Holiday workbook to seed:
+- `public_holidays` (from `Public Holidays` sheet)
+- `academic_month_boundaries` (from `AY Dates` sheet)
+
+Endpoint name remains unchanged for backward compatibility.
 
 - **Auth:** admin only
 - **Content-Type:** multipart/form-data
 - **Body:** `file` (xlsx or csv)
-- **File format:** Three columns: `Date (dd-mmm-yy)` | `Day of Week` | `Public Holiday name`
-- **Behaviour:** Upsert on `holiday_date` — safe to re-run. Day-of-week mismatch returns a warning but does not fail.
+- **Parser selection:** endpoint/upload slot determines parser; filename is audit-only
+- **Sheet handling:**
+  - parse `Public Holidays`
+  - parse `AY Dates`
+  - ignore `Fr RMT`
+- **Public Holidays behaviour:** Upsert on `holiday_date` — safe to re-run. Day-of-week mismatch returns a warning but does not fail.
+- **AY Dates behaviour:** Requires both `im_subspec` and `non_im_subspec` category tables; header SR/SRs wording is accepted and ignored semantically.
 - **Audit log:** Writes `upload_logs` row with `upload_type = 'public_holidays'`
-- **Response:** `{ "inserted": 11, "skipped": 0, "warnings": [] }`
+- **Response:**
+```json
+{
+  "public_holidays_created": 11,
+  "academic_month_boundaries_created": 24,
+  "ay_categories_parsed": ["im_subspec", "non_im_subspec"],
+  "academic_year_label": "AY2026",
+  "ignored_sheets": ["Fr RMT"],
+  "warnings": [],
+  "errors": []
+}
+```
 
 ### DELETE `/admin/public-holidays/{id}`
 
