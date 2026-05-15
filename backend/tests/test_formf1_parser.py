@@ -544,6 +544,70 @@ def test_successful_reupload_full_replaces_scope_records() -> None:
     assert period_b_rows[0]["mcr"] == "MOTHER1A"
 
 
+def test_month_labels_are_dynamic_and_not_hardcoded_to_ay25_ay26() -> None:
+    session = FakeFormF1Session()
+    period_id = uuid4()
+    # Use a non-AY25/AY26 period to verify dynamic label derivation.
+    _add_reporting_period(
+        session,
+        period_id=period_id,
+        start_date=date(2027, 1, 1),
+        end_date=date(2027, 6, 30),
+    )
+    session.residents.add("M55555C")
+
+    header_cells = {2: "MCR"}
+    header_cells.update(
+        {
+            10: "Jan-27",
+            11: "Feb-27",
+            12: "Mar-27",
+            13: "Apr-27",
+            14: "May-27",
+            15: "Jun-27",
+        }
+    )
+    data_rows = [
+        {
+            2: "M55555C",
+            10: "Active",
+            11: "Inactive",
+            12: "Extension",
+            13: "Active",
+            14: "Active",
+            15: "Inactive",
+        }
+    ]
+    file_bytes = _table1_xlsx(header_row=6, header_cells=header_cells, data_rows=data_rows)
+
+    result = _run(
+        parse_formf1_upload(
+            file_bytes=file_bytes,
+            original_filename="formf1-2027.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert result.metadata["month_labels_parsed"] == [
+        "Jan-27",
+        "Feb-27",
+        "Mar-27",
+        "Apr-27",
+        "May-27",
+        "Jun-27",
+    ]
+    assert {row["month_label"] for row in session.form_f1_records} == {
+        "Jan-27",
+        "Feb-27",
+        "Mar-27",
+        "Apr-27",
+        "May-27",
+        "Jun-27",
+    }
+
+
 def test_upload_route_writes_upload_log_and_response_matches_docs_shape() -> None:
     session = FakeFormF1Session()
     period_id = uuid4()

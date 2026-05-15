@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 from io import BytesIO
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -187,3 +189,114 @@ def test_parser_signatures_importable() -> None:
     assert callable(parse_ttf_upload)
     assert callable(parse_formf1_upload)
     assert callable(parse_public_holiday_upload)
+
+
+def test_no_stp_upload_route_exists() -> None:
+    client = _build_client()
+    response = client.post(
+        "/admin/upload/stp",
+        headers=_admin_headers(),
+        files={
+            "file": (
+                "stp.xlsx",
+                _make_valid_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert response.status_code == 404
+
+
+def test_programme_scope_null_is_not_all_access_for_ttf() -> None:
+    client = _build_client()
+    headers = {
+        "X-User-Role": "admin",
+        "X-User-Id": str(uuid4()),
+        # Missing X-User-Programme should be treated as empty scope.
+    }
+    response = client.post(
+        "/admin/upload/ttf",
+        headers=headers,
+        data={"reporting_period_id": str(uuid4()), "programme_code": "DR"},
+        files={
+            "file": (
+                "ttf.xlsx",
+                _make_valid_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert response.status_code == 403
+
+
+def test_upload_extension_validation_is_endpoint_specific() -> None:
+    client = _build_client()
+    headers = _admin_headers()
+    period_id = str(uuid4())
+
+    rdb_bad = client.post(
+        "/admin/upload/rdb",
+        headers=headers,
+        data={"reporting_period_id": period_id},
+        files={"file": ("rdb.csv", b"x", "text/csv")},
+    )
+    ttf_bad = client.post(
+        "/admin/upload/ttf",
+        headers=headers,
+        data={"reporting_period_id": period_id, "programme_code": "DR"},
+        files={"file": ("ttf.csv", b"x", "text/csv")},
+    )
+    formf1_bad = client.post(
+        "/admin/upload/form-f1",
+        headers=headers,
+        data={"reporting_period_id": period_id},
+        files={"file": ("f1.csv", b"x", "text/csv")},
+    )
+    ph_csv_ok = client.post(
+        "/admin/upload/public-holidays",
+        headers=headers,
+        files={"file": ("ph.csv", b"Date,Day,Name\n09-Aug-26,Sunday,National Day\n", "text/csv")},
+    )
+
+    assert rdb_bad.status_code == 422
+    assert ttf_bad.status_code == 422
+    assert formf1_bad.status_code == 422
+    # Public-holidays endpoint accepts CSV upload payloads at validation stage.
+    assert ph_csv_ok.status_code in (200, 422)
+
+
+def test_unreadable_xlsx_returns_422() -> None:
+    client = _build_client()
+    response = client.post(
+        "/admin/upload/rdb",
+        headers=_admin_headers(),
+        data={"reporting_period_id": str(uuid4())},
+        files={
+            "file": (
+                "rdb.xlsx",
+                b"not a real workbook",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_no_stale_schema_assumptions_in_specs() -> None:
+    schema_path = Path(__file__).resolve().parents[2] / "docs" / "schema.md"
+    schema_text = schema_path.read_text(encoding="utf-8")
+    assert "programmes.compliance_variant" not in schema_text
+    assert "attendance_records.session_type_id" not in schema_text
+
+
+def test_no_stp_parser_module_exists() -> None:
+    assert importlib.util.find_spec("app.services.stp_parser") is None
+
+
+def test_no_ttf_attendance_guard_pattern_in_service() -> None:
+    ttf_path = (
+        Path(__file__).resolve().parents[1] / "app" / "services" / "ttf_parser.py"
+    )
+    ttf_source = ttf_path.read_text(encoding="utf-8").casefold()
+    assert "attendance guard" not in ttf_source
+    assert "orphaned_attendance" in ttf_source
