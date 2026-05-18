@@ -4,10 +4,23 @@ from dataclasses import dataclass
 from typing import Annotated, Any, AsyncIterator
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Header, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode, UploadValidationApiError
+from app.schemas import (
+    FormF1RecordResponse,
+    GlobalSessionTypeResponse,
+    LoaTypeResponse,
+    MultiPostingRuleResponse,
+    PostingGroupResponse,
+    ProgrammeResponse,
+    PublicHolidayResponse,
+    ReportingPeriodResponse,
+    UploadLogResponse,
+    WeekendExceptionResponse,
+)
+from app.services import admin_config
 from app.services.parser_common import (
     ParserResult,
     UploadValidationError,
@@ -419,3 +432,173 @@ async def upload_public_holidays(
     )
 
     return _format_public_holiday_response(parser_result)
+
+
+@router.get("/reporting-periods", response_model=list[ReportingPeriodResponse])
+async def list_reporting_periods(
+    reporting_period_id: UUID | None = Query(default=None),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[ReportingPeriodResponse]:
+    del admin_context  # role guard is enforced by dependency
+    if db is None:
+        return []
+    rows = await admin_config.list_reporting_periods(
+        db,
+        reporting_period_id=reporting_period_id,
+    )
+    return [ReportingPeriodResponse.model_validate(row) for row in rows]
+
+
+@router.get("/public-holidays", response_model=list[PublicHolidayResponse])
+async def list_public_holidays(
+    year: int | None = Query(default=None),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[PublicHolidayResponse]:
+    del admin_context  # role guard is enforced by dependency
+    if db is None:
+        return []
+    rows = await admin_config.list_public_holidays(db, year=year)
+    return [PublicHolidayResponse.model_validate(row) for row in rows]
+
+
+@router.get("/programmes", response_model=list[ProgrammeResponse])
+async def list_programmes(
+    programme_code: str | None = Query(default=None),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[ProgrammeResponse]:
+    if db is None:
+        return []
+    rows = await admin_config.list_programmes(
+        db,
+        programme_scope=admin_context.programme_scope,
+        programme_code=programme_code,
+    )
+    return [ProgrammeResponse.model_validate(row) for row in rows]
+
+
+@router.get("/loa-types", response_model=list[LoaTypeResponse])
+async def list_loa_types(
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[LoaTypeResponse]:
+    del admin_context  # role guard is enforced by dependency
+    if db is None:
+        return []
+    rows = await admin_config.list_loa_types(db)
+    return [LoaTypeResponse.model_validate(row) for row in rows]
+
+
+@router.get("/multi-posting-rules", response_model=list[MultiPostingRuleResponse])
+async def list_multi_posting_rules(
+    programme_code: str | None = Query(default=None),
+    rule_type: str | None = Query(default=None),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[MultiPostingRuleResponse]:
+    if db is None:
+        return []
+    rows = await admin_config.list_multi_posting_rules(
+        db,
+        programme_scope=admin_context.programme_scope,
+        programme_code=programme_code,
+        rule_type=rule_type,
+    )
+    return [MultiPostingRuleResponse.model_validate(row) for row in rows]
+
+
+@router.get("/posting-groups", response_model=list[PostingGroupResponse])
+async def list_posting_groups(
+    programme_code: str | None = Query(default=None),
+    group_code: str | None = Query(default=None),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[PostingGroupResponse]:
+    if db is None:
+        return []
+    rows = await admin_config.list_posting_groups(
+        db,
+        programme_scope=admin_context.programme_scope,
+        programme_code=programme_code,
+        group_code=group_code,
+    )
+    return [PostingGroupResponse.model_validate(row) for row in rows]
+
+
+@router.get("/weekend-exceptions", response_model=list[WeekendExceptionResponse])
+async def list_weekend_exceptions(
+    programme_code: str | None = Query(default=None),
+    posting_code: str | None = Query(default=None),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[WeekendExceptionResponse]:
+    if db is None:
+        return []
+    rows = await admin_config.list_weekend_exceptions(
+        db,
+        programme_scope=admin_context.programme_scope,
+        programme_code=programme_code,
+        posting_code=posting_code,
+    )
+    return [WeekendExceptionResponse.model_validate(row) for row in rows]
+
+
+@router.get("/global-session-types", response_model=list[GlobalSessionTypeResponse])
+async def list_global_session_types(
+    is_active: bool | None = Query(default=None),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[GlobalSessionTypeResponse]:
+    del admin_context  # role guard is enforced by dependency
+    if db is None:
+        return []
+    rows = await admin_config.list_global_session_types(db, is_active=is_active)
+    return [GlobalSessionTypeResponse.model_validate(row) for row in rows]
+
+
+@router.get("/upload-logs", response_model=list[UploadLogResponse])
+async def list_upload_logs(
+    upload_type: str | None = Query(default=None),
+    programme_code: str | None = Query(default=None),
+    reporting_period_id: UUID | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=200),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[UploadLogResponse]:
+    if db is None:
+        return []
+    rows = await admin_config.list_upload_logs(
+        db,
+        programme_scope=admin_context.programme_scope,
+        upload_type=upload_type,
+        programme_code=programme_code,
+        reporting_period_id=reporting_period_id,
+        limit=limit,
+    )
+    return [UploadLogResponse.model_validate(row) for row in rows]
+
+
+@router.get("/form-f1-records", response_model=list[FormF1RecordResponse])
+async def list_form_f1_records(
+    reporting_period_id: UUID | None = Query(default=None),
+    programme_code: str | None = Query(default=None),
+    mcr: str | None = Query(default=None),
+    month_label: str | None = Query(default=None),
+    is_active: bool | None = Query(default=None),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[FormF1RecordResponse]:
+    if db is None:
+        return []
+    rows = await admin_config.list_form_f1_records(
+        db,
+        programme_scope=admin_context.programme_scope,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        mcr=mcr,
+        month_label=month_label,
+        is_active=is_active,
+    )
+    return [FormF1RecordResponse.model_validate(row) for row in rows]
