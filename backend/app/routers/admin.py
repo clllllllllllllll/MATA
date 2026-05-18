@@ -10,14 +10,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.errors import ApiError, ErrorCode, UploadValidationApiError
 from app.schemas import (
     FormF1RecordResponse,
+    GlobalSessionTypeCreateRequest,
     GlobalSessionTypeResponse,
+    GlobalSessionTypeUpdateRequest,
+    LoaTypeCreateRequest,
     LoaTypeResponse,
+    LoaTypeUpdateRequest,
+    MultiPostingRuleMutationRequest,
     MultiPostingRuleResponse,
+    PostingGroupMutationRequest,
     PostingGroupResponse,
+    ProgrammeUpdateRequest,
     ProgrammeResponse,
+    PublicHolidayUpsertRequest,
     PublicHolidayResponse,
+    ReportingPeriodCreateRequest,
     ReportingPeriodResponse,
+    ReportingPeriodUpdateRequest,
     UploadLogResponse,
+    WeekendExceptionMutationRequest,
     WeekendExceptionResponse,
 )
 from app.services import admin_config
@@ -450,6 +461,72 @@ async def list_reporting_periods(
     return [ReportingPeriodResponse.model_validate(row) for row in rows]
 
 
+@router.post("/reporting-periods", response_model=ReportingPeriodResponse)
+async def create_reporting_period(
+    payload: ReportingPeriodCreateRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ReportingPeriodResponse:
+    del admin_context  # role guard is enforced by dependency
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    row = await admin_config.create_reporting_period(
+        db,
+        label=payload.label,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+    )
+    return ReportingPeriodResponse.model_validate(row)
+
+
+@router.put("/reporting-periods/{reporting_period_id}", response_model=ReportingPeriodResponse)
+async def update_reporting_period(
+    reporting_period_id: UUID,
+    payload: ReportingPeriodUpdateRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ReportingPeriodResponse:
+    del admin_context  # role guard is enforced by dependency
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    row = await admin_config.update_reporting_period(
+        db,
+        reporting_period_id=reporting_period_id,
+        label=payload.label,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        status=payload.status,
+    )
+    return ReportingPeriodResponse.model_validate(row)
+
+
+@router.delete("/reporting-periods/{reporting_period_id}", status_code=204)
+async def delete_reporting_period(
+    reporting_period_id: UUID,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> None:
+    del admin_context  # role guard is enforced by dependency
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    await admin_config.delete_reporting_period(
+        db,
+        reporting_period_id=reporting_period_id,
+    )
+
+
 @router.get("/public-holidays", response_model=list[PublicHolidayResponse])
 async def list_public_holidays(
     year: int | None = Query(default=None),
@@ -461,6 +538,45 @@ async def list_public_holidays(
         return []
     rows = await admin_config.list_public_holidays(db, year=year)
     return [PublicHolidayResponse.model_validate(row) for row in rows]
+
+
+@router.post("/public-holidays", response_model=PublicHolidayResponse)
+async def upsert_public_holiday(
+    payload: PublicHolidayUpsertRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> PublicHolidayResponse:
+    del admin_context  # role guard is enforced by dependency
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    row = await admin_config.upsert_public_holiday(
+        db,
+        holiday_date=payload.holiday_date,
+        name=payload.name,
+        day_of_week=payload.day_of_week,
+        year=payload.year,
+    )
+    return PublicHolidayResponse.model_validate(row)
+
+
+@router.delete("/public-holidays/{holiday_id}", status_code=204)
+async def delete_public_holiday(
+    holiday_id: UUID,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> None:
+    del admin_context  # role guard is enforced by dependency
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    await admin_config.delete_public_holiday(db, holiday_id=holiday_id)
 
 
 @router.get("/programmes", response_model=list[ProgrammeResponse])
@@ -479,6 +595,30 @@ async def list_programmes(
     return [ProgrammeResponse.model_validate(row) for row in rows]
 
 
+@router.put("/programmes/{programme_code}", response_model=ProgrammeResponse)
+async def update_programme(
+    programme_code: str,
+    payload: ProgrammeUpdateRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ProgrammeResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    row = await admin_config.update_programme(
+        db,
+        programme_scope=admin_context.programme_scope,
+        programme_code=programme_code.strip(),
+        r_year_required=payload.r_year_required,
+        is_subspecialty=payload.is_subspecialty,
+        rdb_alias=payload.rdb_alias,
+    )
+    return ProgrammeResponse.model_validate(row)
+
+
 @router.get("/loa-types", response_model=list[LoaTypeResponse])
 async def list_loa_types(
     admin_context: AdminContext = Depends(require_admin_context),
@@ -489,6 +629,66 @@ async def list_loa_types(
         return []
     rows = await admin_config.list_loa_types(db)
     return [LoaTypeResponse.model_validate(row) for row in rows]
+
+
+@router.post("/loa-types", response_model=LoaTypeResponse)
+async def create_loa_type(
+    payload: LoaTypeCreateRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> LoaTypeResponse:
+    del admin_context  # role guard is enforced by dependency
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    row = await admin_config.create_loa_type(
+        db,
+        code=payload.code,
+        description=payload.description,
+    )
+    return LoaTypeResponse.model_validate(row)
+
+
+@router.put("/loa-types/{loa_type_id}", response_model=LoaTypeResponse)
+async def update_loa_type(
+    loa_type_id: UUID,
+    payload: LoaTypeUpdateRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> LoaTypeResponse:
+    del admin_context  # role guard is enforced by dependency
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    row = await admin_config.update_loa_type(
+        db,
+        loa_type_id=loa_type_id,
+        code=payload.code,
+        description=payload.description,
+    )
+    return LoaTypeResponse.model_validate(row)
+
+
+@router.delete("/loa-types/{loa_type_id}", status_code=204)
+async def delete_loa_type(
+    loa_type_id: UUID,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> None:
+    del admin_context  # role guard is enforced by dependency
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    await admin_config.delete_loa_type(db, loa_type_id=loa_type_id)
 
 
 @router.get("/multi-posting-rules", response_model=list[MultiPostingRuleResponse])
@@ -509,6 +709,79 @@ async def list_multi_posting_rules(
     return [MultiPostingRuleResponse.model_validate(row) for row in rows]
 
 
+@router.post("/multi-posting-rules", response_model=MultiPostingRuleResponse)
+async def create_multi_posting_rule(
+    payload: MultiPostingRuleMutationRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> MultiPostingRuleResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    row = await admin_config.create_multi_posting_rule(
+        db,
+        programme_scope=admin_context.programme_scope,
+        programme_code=payload.programme_code,
+        posting_code_1=payload.posting_code_1,
+        posting_code_2=payload.posting_code_2,
+        rule_type=payload.rule_type,
+        combined_label=payload.combined_label,
+        main_posting_code=payload.main_posting_code,
+        exclusion_code=payload.exclusion_code,
+    )
+    return MultiPostingRuleResponse.model_validate(row)
+
+
+@router.put("/multi-posting-rules/{rule_id}", response_model=MultiPostingRuleResponse)
+async def update_multi_posting_rule(
+    rule_id: UUID,
+    payload: MultiPostingRuleMutationRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> MultiPostingRuleResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    row = await admin_config.update_multi_posting_rule(
+        db,
+        programme_scope=admin_context.programme_scope,
+        rule_id=rule_id,
+        programme_code=payload.programme_code,
+        posting_code_1=payload.posting_code_1,
+        posting_code_2=payload.posting_code_2,
+        rule_type=payload.rule_type,
+        combined_label=payload.combined_label,
+        main_posting_code=payload.main_posting_code,
+        exclusion_code=payload.exclusion_code,
+    )
+    return MultiPostingRuleResponse.model_validate(row)
+
+
+@router.delete("/multi-posting-rules/{rule_id}", status_code=204)
+async def delete_multi_posting_rule(
+    rule_id: UUID,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> None:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    await admin_config.delete_multi_posting_rule(
+        db,
+        programme_scope=admin_context.programme_scope,
+        rule_id=rule_id,
+    )
+
+
 @router.get("/posting-groups", response_model=list[PostingGroupResponse])
 async def list_posting_groups(
     programme_code: str | None = Query(default=None),
@@ -525,6 +798,71 @@ async def list_posting_groups(
         group_code=group_code,
     )
     return [PostingGroupResponse.model_validate(row) for row in rows]
+
+
+@router.post("/posting-groups", response_model=PostingGroupResponse)
+async def create_posting_group(
+    payload: PostingGroupMutationRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> PostingGroupResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    row = await admin_config.create_posting_group(
+        db,
+        programme_scope=admin_context.programme_scope,
+        group_code=payload.group_code,
+        posting_code=payload.posting_code,
+        programme_code=payload.programme_code,
+    )
+    return PostingGroupResponse.model_validate(row)
+
+
+@router.put("/posting-groups/{posting_group_id}", response_model=PostingGroupResponse)
+async def update_posting_group(
+    posting_group_id: UUID,
+    payload: PostingGroupMutationRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> PostingGroupResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    row = await admin_config.update_posting_group(
+        db,
+        programme_scope=admin_context.programme_scope,
+        posting_group_id=posting_group_id,
+        group_code=payload.group_code,
+        posting_code=payload.posting_code,
+        programme_code=payload.programme_code,
+    )
+    return PostingGroupResponse.model_validate(row)
+
+
+@router.delete("/posting-groups/{posting_group_id}", status_code=204)
+async def delete_posting_group(
+    posting_group_id: UUID,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> None:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    await admin_config.delete_posting_group(
+        db,
+        programme_scope=admin_context.programme_scope,
+        posting_group_id=posting_group_id,
+    )
 
 
 @router.get("/weekend-exceptions", response_model=list[WeekendExceptionResponse])
@@ -545,6 +883,83 @@ async def list_weekend_exceptions(
     return [WeekendExceptionResponse.model_validate(row) for row in rows]
 
 
+@router.post("/weekend-exceptions", response_model=WeekendExceptionResponse)
+async def create_weekend_exception(
+    payload: WeekendExceptionMutationRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> WeekendExceptionResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    row = await admin_config.create_weekend_exception(
+        db,
+        programme_scope=admin_context.programme_scope,
+        programme_code=payload.programme_code,
+        posting_code=payload.posting_code,
+        day_type=payload.day_type,
+        start_time_min=payload.start_time_min,
+        end_time_max=payload.end_time_max,
+        session_type_id=payload.session_type_id,
+        session_name_pattern=payload.session_name_pattern,
+        mutates_to_session_type_id=payload.mutates_to_session_type_id,
+        adjusted_duration_hours=payload.adjusted_duration_hours,
+    )
+    return WeekendExceptionResponse.model_validate(row)
+
+
+@router.put("/weekend-exceptions/{weekend_exception_id}", response_model=WeekendExceptionResponse)
+async def update_weekend_exception(
+    weekend_exception_id: UUID,
+    payload: WeekendExceptionMutationRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> WeekendExceptionResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    row = await admin_config.update_weekend_exception(
+        db,
+        programme_scope=admin_context.programme_scope,
+        weekend_exception_id=weekend_exception_id,
+        programme_code=payload.programme_code,
+        posting_code=payload.posting_code,
+        day_type=payload.day_type,
+        start_time_min=payload.start_time_min,
+        end_time_max=payload.end_time_max,
+        session_type_id=payload.session_type_id,
+        session_name_pattern=payload.session_name_pattern,
+        mutates_to_session_type_id=payload.mutates_to_session_type_id,
+        adjusted_duration_hours=payload.adjusted_duration_hours,
+    )
+    return WeekendExceptionResponse.model_validate(row)
+
+
+@router.delete("/weekend-exceptions/{weekend_exception_id}", status_code=204)
+async def delete_weekend_exception(
+    weekend_exception_id: UUID,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> None:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    await admin_config.delete_weekend_exception(
+        db,
+        programme_scope=admin_context.programme_scope,
+        weekend_exception_id=weekend_exception_id,
+    )
+
+
 @router.get("/global-session-types", response_model=list[GlobalSessionTypeResponse])
 async def list_global_session_types(
     is_active: bool | None = Query(default=None),
@@ -556,6 +971,71 @@ async def list_global_session_types(
         return []
     rows = await admin_config.list_global_session_types(db, is_active=is_active)
     return [GlobalSessionTypeResponse.model_validate(row) for row in rows]
+
+
+@router.post("/global-session-types", response_model=GlobalSessionTypeResponse)
+async def create_global_session_type(
+    payload: GlobalSessionTypeCreateRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> GlobalSessionTypeResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    row = await admin_config.create_global_session_type(
+        db,
+        programme_scope=admin_context.programme_scope,
+        name=payload.name,
+        duration_hours=payload.duration_hours,
+        is_active=payload.is_active,
+    )
+    return GlobalSessionTypeResponse.model_validate(row)
+
+
+@router.put("/global-session-types/{global_session_type_id}", response_model=GlobalSessionTypeResponse)
+async def update_global_session_type(
+    global_session_type_id: UUID,
+    payload: GlobalSessionTypeUpdateRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> GlobalSessionTypeResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    row = await admin_config.update_global_session_type(
+        db,
+        programme_scope=admin_context.programme_scope,
+        global_session_type_id=global_session_type_id,
+        name=payload.name,
+        duration_hours=payload.duration_hours,
+        is_active=payload.is_active,
+    )
+    return GlobalSessionTypeResponse.model_validate(row)
+
+
+@router.delete("/global-session-types/{global_session_type_id}", status_code=204)
+async def delete_global_session_type(
+    global_session_type_id: UUID,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> None:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    await admin_config.delete_global_session_type(
+        db,
+        programme_scope=admin_context.programme_scope,
+        global_session_type_id=global_session_type_id,
+    )
 
 
 @router.get("/upload-logs", response_model=list[UploadLogResponse])
