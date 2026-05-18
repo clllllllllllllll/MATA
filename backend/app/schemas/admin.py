@@ -107,6 +107,113 @@ class UploadLogResponse(BaseModel):
     updated_at: datetime
 
 
+class ResidentResponse(BaseModel):
+    id: UUID
+    employee_code: str | None
+    name: str
+    mcr: str
+    classification: str | None
+    programme_code: str | None
+    r_year: str | None
+    reg_type: str | None
+    base_institution: str | None
+    email: str | None
+    phone: str | None
+    status: str
+    employer_tag: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ResidentPostingResponse(BaseModel):
+    id: UUID
+    resident_id: UUID
+    posting_code: str | None
+    reporting_period_id: UUID
+    start_date: date
+    end_date: date
+    day_part: str | None
+    month_label: str | None
+    r_year: str
+    status: str
+    loa_type: str | None
+    loa_start_date: date | None
+    loa_end_date: date | None
+    refresher_training_type: str | None
+    refresher_training_start: date | None
+    refresher_training_end: date | None
+    active_months_weight: Decimal
+    working_days_in_month: int | None
+    created_at: datetime
+    updated_at: datetime
+    resident_mcr: str | None = None
+    resident_name: str | None = None
+    resident_programme_code: str | None = None
+
+
+class PostingCodeResponse(BaseModel):
+    id: UUID
+    code: str
+    display_name: str | None
+    institution: str | None
+    department: str | None
+    billing_dept: str | None
+    is_emergency: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class SessionTypeResponse(BaseModel):
+    id: UUID
+    name: str
+    duration_hours: Decimal
+    duration_label: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TeachingTargetResponse(BaseModel):
+    id: UUID
+    reporting_period_id: UUID
+    programme_code: str
+    r_year: str
+    posting_code: str
+    session_type_id: UUID
+    monthly_target: int
+    is_tracked: bool
+    is_reallocatable: bool
+    tag: str | None
+    details_of_training: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TeachingNameCatalogueResponse(BaseModel):
+    id: UUID
+    keyword: str
+    session_type_id: UUID
+    posting_code: str
+    programme_code: str
+    r_year: str
+    reporting_period_id: UUID
+    duration_hours: Decimal
+    is_tracked: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class AcademicMonthBoundaryResponse(BaseModel):
+    id: UUID
+    academic_year_label: str
+    ay_date_category: str
+    month_label: str
+    start_date: date
+    end_date: date
+    upload_id: UUID | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class FormF1RecordResponse(BaseModel):
     id: UUID
     reporting_period_id: UUID

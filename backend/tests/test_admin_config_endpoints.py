@@ -365,6 +365,38 @@ def test_admin_only_access_rejects_non_admin() -> None:
     assert response.status_code == 403
 
 
+def test_all_phase3_read_endpoints_reject_non_admin() -> None:
+    session = FakeAdminConfigSession()
+    client = _build_client_with_session(session)
+    headers = {
+        "X-User-Role": "resident",
+        "X-User-Id": str(uuid4()),
+    }
+    paths = [
+        "/admin/reporting-periods",
+        "/admin/public-holidays",
+        "/admin/programmes",
+        "/admin/loa-types",
+        "/admin/multi-posting-rules",
+        "/admin/posting-groups",
+        "/admin/weekend-exceptions",
+        "/admin/global-session-types",
+        "/admin/upload-logs",
+        "/admin/form-f1-records",
+        "/admin/residents",
+        "/admin/resident-postings",
+        "/admin/posting-codes",
+        "/admin/session-types",
+        "/admin/teaching-targets",
+        "/admin/teaching-name-catalogue",
+        "/admin/academic-month-boundaries",
+        f"/admin/residents/{uuid4()}",
+    ]
+    for path in paths:
+        response = client.get(path, headers=headers)
+        assert response.status_code == 403
+
+
 def test_programme_scope_filters_programmes() -> None:
     client = _build_client_with_session(FakeAdminConfigSession())
     response = client.get("/admin/programmes", headers=_admin_headers("DR"))

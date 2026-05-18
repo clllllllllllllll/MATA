@@ -444,6 +444,496 @@ async def list_form_f1_records(
     return list(result.mappings().all())
 
 
+async def list_residents(
+    db: AsyncSession,
+    *,
+    programme_scope: set[str],
+    programme_code: str | None,
+    mcr: str | None,
+    name: str | None,
+    status: str | None,
+    employer_tag: str | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    codes = _scoped_programmes(
+        programme_scope=programme_scope,
+        programme_code=programme_code,
+    )
+    if not codes:
+        return []
+
+    params: dict[str, Any] = {"limit": limit}
+    where_clauses: list[str] = [
+        _scope_or_clause(
+            field_name="programme_code",
+            values=codes,
+            params=params,
+            param_prefix="programme_code",
+        )
+    ]
+    if mcr is not None:
+        params["mcr"] = mcr.strip().upper()
+        where_clauses.append("UPPER(mcr) = :mcr")
+    if name is not None:
+        params["name"] = f"%{name.strip()}%"
+        where_clauses.append("name ILIKE :name")
+    if status is not None:
+        params["status"] = status.strip().lower()
+        where_clauses.append("LOWER(status) = :status")
+    if employer_tag is not None:
+        params["employer_tag"] = employer_tag.strip().upper()
+        where_clauses.append("UPPER(employer_tag) = :employer_tag")
+
+    sql = """
+        SELECT
+            id,
+            employee_code,
+            name,
+            mcr,
+            classification,
+            programme_code,
+            r_year,
+            reg_type,
+            base_institution,
+            email,
+            phone,
+            status,
+            employer_tag,
+            created_at,
+            updated_at
+        FROM residents
+        WHERE
+    """
+    sql += " AND ".join(where_clauses)
+    sql += " ORDER BY programme_code ASC, mcr ASC, id ASC LIMIT :limit"
+    result = await db.execute(text(sql), params)
+    return list(result.mappings().all())
+
+
+async def get_resident_by_id(
+    db: AsyncSession,
+    *,
+    programme_scope: set[str],
+    resident_id: UUID,
+) -> dict[str, Any]:
+    codes = _scoped_programmes(
+        programme_scope=programme_scope,
+        programme_code=None,
+    )
+    if not codes:
+        _raise_not_found("Resident not found")
+
+    params: dict[str, Any] = {"resident_id": str(resident_id)}
+    scope_clause = _scope_or_clause(
+        field_name="programme_code",
+        values=codes,
+        params=params,
+        param_prefix="programme_code",
+    )
+    sql = f"""
+        SELECT
+            id,
+            employee_code,
+            name,
+            mcr,
+            classification,
+            programme_code,
+            r_year,
+            reg_type,
+            base_institution,
+            email,
+            phone,
+            status,
+            employer_tag,
+            created_at,
+            updated_at
+        FROM residents
+        WHERE id = :resident_id AND {scope_clause}
+    """
+    result = await db.execute(text(sql), params)
+    row = result.mappings().one_or_none()
+    if row is None:
+        _raise_not_found("Resident not found")
+    return dict(row)
+
+
+async def list_resident_postings(
+    db: AsyncSession,
+    *,
+    programme_scope: set[str],
+    reporting_period_id: UUID | None,
+    programme_code: str | None,
+    posting_code: str | None,
+    mcr: str | None,
+    resident_id: UUID | None,
+    month_label: str | None,
+    r_year: str | None,
+    status: str | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    codes = _scoped_programmes(
+        programme_scope=programme_scope,
+        programme_code=programme_code,
+    )
+    if not codes:
+        return []
+
+    params: dict[str, Any] = {"limit": limit}
+    where_clauses: list[str] = [
+        _scope_or_clause(
+            field_name="r.programme_code",
+            values=codes,
+            params=params,
+            param_prefix="programme_code",
+        )
+    ]
+    if reporting_period_id is not None:
+        params["reporting_period_id"] = str(reporting_period_id)
+        where_clauses.append("rp.reporting_period_id = :reporting_period_id")
+    if posting_code is not None:
+        params["posting_code"] = posting_code.strip()
+        where_clauses.append("rp.posting_code = :posting_code")
+    if mcr is not None:
+        params["mcr"] = mcr.strip().upper()
+        where_clauses.append("UPPER(r.mcr) = :mcr")
+    if resident_id is not None:
+        params["resident_id"] = str(resident_id)
+        where_clauses.append("rp.resident_id = :resident_id")
+    if month_label is not None:
+        params["month_label"] = month_label.strip()
+        where_clauses.append("rp.month_label = :month_label")
+    if r_year is not None:
+        params["r_year"] = r_year.strip().upper()
+        where_clauses.append("UPPER(rp.r_year) = :r_year")
+    if status is not None:
+        params["status"] = status.strip().lower()
+        where_clauses.append("LOWER(rp.status) = :status")
+
+    sql = """
+        SELECT
+            rp.id,
+            rp.resident_id,
+            rp.posting_code,
+            rp.reporting_period_id,
+            rp.start_date,
+            rp.end_date,
+            rp.day_part,
+            rp.month_label,
+            rp.r_year,
+            rp.status,
+            rp.loa_type,
+            rp.loa_start_date,
+            rp.loa_end_date,
+            rp.refresher_training_type,
+            rp.refresher_training_start,
+            rp.refresher_training_end,
+            rp.active_months_weight,
+            rp.working_days_in_month,
+            rp.created_at,
+            rp.updated_at,
+            r.mcr AS resident_mcr,
+            r.name AS resident_name,
+            r.programme_code AS resident_programme_code
+        FROM resident_postings rp
+        JOIN residents r ON r.id = rp.resident_id
+        WHERE
+    """
+    sql += " AND ".join(where_clauses)
+    sql += """
+        ORDER BY
+            rp.reporting_period_id ASC,
+            r.mcr ASC,
+            rp.start_date ASC,
+            rp.day_part ASC NULLS FIRST,
+            rp.id ASC
+        LIMIT :limit
+    """
+    result = await db.execute(text(sql), params)
+    return list(result.mappings().all())
+
+
+async def list_posting_codes(
+    db: AsyncSession,
+    *,
+    code: str | None,
+    institution: str | None,
+    department: str | None,
+    is_emergency: bool | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {"limit": limit}
+    where_clauses: list[str] = []
+    if code is not None:
+        params["code"] = f"%{code.strip()}%"
+        where_clauses.append("code ILIKE :code")
+    if institution is not None:
+        params["institution"] = f"%{institution.strip()}%"
+        where_clauses.append("institution ILIKE :institution")
+    if department is not None:
+        params["department"] = f"%{department.strip()}%"
+        where_clauses.append("department ILIKE :department")
+    if is_emergency is not None:
+        params["is_emergency"] = is_emergency
+        where_clauses.append("is_emergency = :is_emergency")
+
+    sql = """
+        SELECT
+            id,
+            code,
+            display_name,
+            institution,
+            department,
+            billing_dept,
+            is_emergency,
+            created_at,
+            updated_at
+        FROM posting_codes
+    """
+    if where_clauses:
+        sql += " WHERE " + " AND ".join(where_clauses)
+    sql += " ORDER BY code ASC, id ASC LIMIT :limit"
+    result = await db.execute(text(sql), params)
+    return list(result.mappings().all())
+
+
+async def list_session_types(
+    db: AsyncSession,
+    *,
+    name: str | None,
+    duration_hours: Decimal | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {"limit": limit}
+    where_clauses: list[str] = []
+    if name is not None:
+        params["name"] = f"%{name.strip()}%"
+        where_clauses.append("name ILIKE :name")
+    if duration_hours is not None:
+        params["duration_hours"] = duration_hours
+        where_clauses.append("duration_hours = :duration_hours")
+
+    sql = """
+        SELECT id, name, duration_hours, duration_label, created_at, updated_at
+        FROM session_types
+    """
+    if where_clauses:
+        sql += " WHERE " + " AND ".join(where_clauses)
+    sql += " ORDER BY name ASC, id ASC LIMIT :limit"
+    result = await db.execute(text(sql), params)
+    return list(result.mappings().all())
+
+
+async def list_teaching_targets(
+    db: AsyncSession,
+    *,
+    programme_scope: set[str],
+    reporting_period_id: UUID | None,
+    programme_code: str | None,
+    posting_code: str | None,
+    r_year: str | None,
+    session_type_id: UUID | None,
+    is_tracked: bool | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    codes = _scoped_programmes(
+        programme_scope=programme_scope,
+        programme_code=programme_code,
+    )
+    if not codes:
+        return []
+
+    params: dict[str, Any] = {"limit": limit}
+    where_clauses: list[str] = [
+        _scope_or_clause(
+            field_name="programme_code",
+            values=codes,
+            params=params,
+            param_prefix="programme_code",
+        )
+    ]
+    if reporting_period_id is not None:
+        params["reporting_period_id"] = str(reporting_period_id)
+        where_clauses.append("reporting_period_id = :reporting_period_id")
+    if posting_code is not None:
+        params["posting_code"] = posting_code.strip()
+        where_clauses.append("posting_code = :posting_code")
+    if r_year is not None:
+        params["r_year"] = r_year.strip().upper()
+        where_clauses.append("UPPER(r_year) = :r_year")
+    if session_type_id is not None:
+        params["session_type_id"] = str(session_type_id)
+        where_clauses.append("session_type_id = :session_type_id")
+    if is_tracked is not None:
+        params["is_tracked"] = is_tracked
+        where_clauses.append("is_tracked = :is_tracked")
+
+    sql = """
+        SELECT
+            id,
+            reporting_period_id,
+            programme_code,
+            r_year,
+            posting_code,
+            session_type_id,
+            monthly_target,
+            is_tracked,
+            is_reallocatable,
+            tag,
+            details_of_training,
+            created_at,
+            updated_at
+        FROM teaching_targets
+        WHERE
+    """
+    sql += " AND ".join(where_clauses)
+    sql += """
+        ORDER BY
+            reporting_period_id ASC,
+            programme_code ASC,
+            posting_code ASC,
+            r_year ASC,
+            session_type_id ASC,
+            id ASC
+        LIMIT :limit
+    """
+    result = await db.execute(text(sql), params)
+    return list(result.mappings().all())
+
+
+async def list_teaching_name_catalogue(
+    db: AsyncSession,
+    *,
+    programme_scope: set[str],
+    reporting_period_id: UUID | None,
+    programme_code: str | None,
+    posting_code: str | None,
+    r_year: str | None,
+    keyword: str | None,
+    session_type_id: UUID | None,
+    is_tracked: bool | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    codes = _scoped_programmes(
+        programme_scope=programme_scope,
+        programme_code=programme_code,
+    )
+    if not codes:
+        return []
+
+    params: dict[str, Any] = {"limit": limit}
+    where_clauses: list[str] = [
+        _scope_or_clause(
+            field_name="programme_code",
+            values=codes,
+            params=params,
+            param_prefix="programme_code",
+        )
+    ]
+    if reporting_period_id is not None:
+        params["reporting_period_id"] = str(reporting_period_id)
+        where_clauses.append("reporting_period_id = :reporting_period_id")
+    if posting_code is not None:
+        params["posting_code"] = posting_code.strip()
+        where_clauses.append("posting_code = :posting_code")
+    if r_year is not None:
+        params["r_year"] = r_year.strip().upper()
+        where_clauses.append("UPPER(r_year) = :r_year")
+    if keyword is not None:
+        params["keyword"] = f"%{keyword.strip()}%"
+        where_clauses.append("keyword ILIKE :keyword")
+    if session_type_id is not None:
+        params["session_type_id"] = str(session_type_id)
+        where_clauses.append("session_type_id = :session_type_id")
+    if is_tracked is not None:
+        params["is_tracked"] = is_tracked
+        where_clauses.append("is_tracked = :is_tracked")
+
+    sql = """
+        SELECT
+            id,
+            keyword,
+            session_type_id,
+            posting_code,
+            programme_code,
+            r_year,
+            reporting_period_id,
+            duration_hours,
+            is_tracked,
+            created_at,
+            updated_at
+        FROM teaching_name_catalogue
+        WHERE
+    """
+    sql += " AND ".join(where_clauses)
+    sql += """
+        ORDER BY
+            reporting_period_id ASC,
+            programme_code ASC,
+            posting_code ASC,
+            r_year ASC,
+            keyword ASC,
+            id ASC
+        LIMIT :limit
+    """
+    result = await db.execute(text(sql), params)
+    return list(result.mappings().all())
+
+
+async def list_academic_month_boundaries(
+    db: AsyncSession,
+    *,
+    ay_date_category: str | None,
+    month_label: str | None,
+    date_from: date | None,
+    date_to: date | None,
+    upload_id: UUID | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {"limit": limit}
+    where_clauses: list[str] = []
+    if ay_date_category is not None:
+        params["ay_date_category"] = ay_date_category.strip().lower()
+        where_clauses.append("ay_date_category = :ay_date_category")
+    if month_label is not None:
+        params["month_label"] = month_label.strip()
+        where_clauses.append("month_label = :month_label")
+    if date_from is not None:
+        params["date_from"] = date_from
+        where_clauses.append("end_date >= :date_from")
+    if date_to is not None:
+        params["date_to"] = date_to
+        where_clauses.append("start_date <= :date_to")
+    if upload_id is not None:
+        params["upload_id"] = str(upload_id)
+        where_clauses.append("upload_id = :upload_id")
+
+    sql = """
+        SELECT
+            id,
+            academic_year_label,
+            ay_date_category,
+            month_label,
+            start_date,
+            end_date,
+            upload_id,
+            created_at,
+            updated_at
+        FROM academic_month_boundaries
+    """
+    if where_clauses:
+        sql += " WHERE " + " AND ".join(where_clauses)
+    sql += """
+        ORDER BY
+            academic_year_label ASC,
+            ay_date_category ASC,
+            start_date ASC,
+            id ASC
+        LIMIT :limit
+    """
+    result = await db.execute(text(sql), params)
+    return list(result.mappings().all())
+
+
 def _validate_programme_scope_for_write(programme_scope: set[str]) -> None:
     # TODO(master-admin): introduce an explicit master-admin claim/flag.
     # Do not infer master-admin from empty/null programme_scope.

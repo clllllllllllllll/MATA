@@ -138,6 +138,50 @@ def test_non_admin_access_rejected() -> None:
     assert response.status_code == 403
 
 
+def test_all_upload_endpoints_reject_non_admin() -> None:
+    client = _build_client()
+    headers = {
+        "X-User-Role": "secretary",
+        "X-User-Id": str(uuid4()),
+    }
+    period_id = str(uuid4())
+    files = {
+        "file": (
+            "upload.xlsx",
+            _make_valid_xlsx_bytes(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    rdb = client.post(
+        "/admin/upload/rdb",
+        headers=headers,
+        data={"reporting_period_id": period_id},
+        files=files,
+    )
+    ttf = client.post(
+        "/admin/upload/ttf",
+        headers=headers,
+        data={"reporting_period_id": period_id, "programme_code": "DR"},
+        files=files,
+    )
+    form_f1 = client.post(
+        "/admin/upload/form-f1",
+        headers=headers,
+        data={"reporting_period_id": period_id},
+        files=files,
+    )
+    public_holidays = client.post(
+        "/admin/upload/public-holidays",
+        headers=headers,
+        files=files,
+    )
+
+    assert rdb.status_code == 403
+    assert ttf.status_code == 403
+    assert form_f1.status_code == 403
+    assert public_holidays.status_code == 403
+
+
 def test_upload_logs_helper_can_write_row() -> None:
     class _FakeAsyncSession:
         def __init__(self) -> None:

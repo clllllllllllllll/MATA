@@ -493,6 +493,49 @@ def test_admin_only_mutation_access_rejects_non_admin() -> None:
     assert response.status_code == 403
 
 
+def test_all_phase3_mutation_endpoints_reject_non_admin() -> None:
+    session = FakeMutationSession()
+    client = _build_client_with_session(session)
+    headers = {
+        "X-User-Role": "resident",
+        "X-User-Id": str(uuid4()),
+    }
+    period_id = session.reporting_periods[0]["id"]
+    global_type_id = session.global_session_types[0]["id"]
+    paths_with_payloads = [
+        ("POST", "/admin/reporting-periods", {"label": "Jul - Dec 2026", "start_date": "2026-07-01", "end_date": "2026-12-31"}),
+        ("PUT", f"/admin/reporting-periods/{period_id}", {"status": "closed"}),
+        ("DELETE", f"/admin/reporting-periods/{period_id}", None),
+        ("POST", "/admin/public-holidays", {"holiday_date": "2026-08-09", "name": "National Day", "day_of_week": "Sunday", "year": 2026}),
+        ("DELETE", f"/admin/public-holidays/{uuid4()}", None),
+        ("PUT", "/admin/programmes/DR", {"r_year_required": True}),
+        ("POST", "/admin/loa-types", {"code": "Study Leave", "description": "x"}),
+        ("PUT", f"/admin/loa-types/{uuid4()}", {"description": "x"}),
+        ("DELETE", f"/admin/loa-types/{uuid4()}", None),
+        ("POST", "/admin/multi-posting-rules", {"programme_code": "DR", "posting_code_1": "TTSHDR", "posting_code_2": "KTPHDR", "rule_type": "combine", "combined_label": "TTSHDR & KTPHDR"}),
+        ("PUT", f"/admin/multi-posting-rules/{uuid4()}", {"programme_code": "DR", "posting_code_1": "TTSHDR", "posting_code_2": "KTPHDR", "rule_type": "combine", "combined_label": "TTSHDR & KTPHDR"}),
+        ("DELETE", f"/admin/multi-posting-rules/{uuid4()}", None),
+        ("POST", "/admin/posting-groups", {"group_code": "DR-GROUP", "posting_code": "TTSHRespi", "programme_code": "DR"}),
+        ("PUT", f"/admin/posting-groups/{uuid4()}", {"group_code": "DR-GROUP", "posting_code": "TTSHRespi", "programme_code": "DR"}),
+        ("DELETE", f"/admin/posting-groups/{uuid4()}", None),
+        ("POST", "/admin/weekend-exceptions", {"programme_code": "DR", "posting_code": "TTSHDR", "day_type": "sat"}),
+        ("PUT", f"/admin/weekend-exceptions/{uuid4()}", {"programme_code": "DR", "posting_code": "TTSHDR", "day_type": "sat"}),
+        ("DELETE", f"/admin/weekend-exceptions/{uuid4()}", None),
+        ("POST", "/admin/global-session-types", {"name": "Dept Meeting [1h]", "duration_hours": 1.0, "is_active": True}),
+        ("PUT", f"/admin/global-session-types/{global_type_id}", {"is_active": False}),
+        ("DELETE", f"/admin/global-session-types/{global_type_id}", None),
+    ]
+
+    for method, path, payload in paths_with_payloads:
+        if method == "POST":
+            response = client.post(path, headers=headers, json=payload or {})
+        elif method == "PUT":
+            response = client.put(path, headers=headers, json=payload or {})
+        else:
+            response = client.delete(path, headers=headers)
+        assert response.status_code == 403
+
+
 def test_programme_scope_enforced_for_scoped_mutations() -> None:
     client = _build_client_with_session(FakeMutationSession())
     response = client.post(
@@ -686,3 +729,21 @@ def test_cache_invalidation_called_after_successful_mutation(monkeypatch) -> Non
     )
     assert response.status_code == 200
     assert calls
+
+
+def test_mutation_responses_are_not_cached(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def _forbid_cache_set(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls.append("set")
+        raise AssertionError("cache.set should not be used for mutation responses")
+
+    monkeypatch.setattr("app.services.admin_config.cache.set", _forbid_cache_set)
+    client = _build_client_with_session(FakeMutationSession())
+    response = client.post(
+        "/admin/loa-types",
+        headers=_admin_headers("DR"),
+        json={"code": "Family Care Leave", "description": "Family care leave"},
+    )
+    assert response.status_code == 200
+    assert calls == []

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import date
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Annotated, Any, AsyncIterator
 from uuid import UUID
 
@@ -9,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode, UploadValidationApiError
 from app.schemas import (
+    AcademicMonthBoundaryResponse,
     FormF1RecordResponse,
     GlobalSessionTypeCreateRequest,
     GlobalSessionTypeResponse,
@@ -20,13 +23,19 @@ from app.schemas import (
     MultiPostingRuleResponse,
     PostingGroupMutationRequest,
     PostingGroupResponse,
+    PostingCodeResponse,
     ProgrammeUpdateRequest,
     ProgrammeResponse,
+    ResidentPostingResponse,
+    ResidentResponse,
     PublicHolidayUpsertRequest,
     PublicHolidayResponse,
     ReportingPeriodCreateRequest,
     ReportingPeriodResponse,
     ReportingPeriodUpdateRequest,
+    SessionTypeResponse,
+    TeachingNameCatalogueResponse,
+    TeachingTargetResponse,
     UploadLogResponse,
     WeekendExceptionMutationRequest,
     WeekendExceptionResponse,
@@ -1082,3 +1091,215 @@ async def list_form_f1_records(
         is_active=is_active,
     )
     return [FormF1RecordResponse.model_validate(row) for row in rows]
+
+
+@router.get("/residents", response_model=list[ResidentResponse])
+async def list_residents(
+    programme_code: str | None = Query(default=None),
+    mcr: str | None = Query(default=None),
+    name: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    employer_tag: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[ResidentResponse]:
+    if db is None:
+        return []
+    rows = await admin_config.list_residents(
+        db,
+        programme_scope=admin_context.programme_scope,
+        programme_code=programme_code,
+        mcr=mcr,
+        name=name,
+        status=status,
+        employer_tag=employer_tag,
+        limit=limit,
+    )
+    return [ResidentResponse.model_validate(row) for row in rows]
+
+
+@router.get("/residents/{resident_id}", response_model=ResidentResponse)
+async def get_resident(
+    resident_id: UUID,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ResidentResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    row = await admin_config.get_resident_by_id(
+        db,
+        programme_scope=admin_context.programme_scope,
+        resident_id=resident_id,
+    )
+    return ResidentResponse.model_validate(row)
+
+
+@router.get("/resident-postings", response_model=list[ResidentPostingResponse])
+async def list_resident_postings(
+    reporting_period_id: UUID | None = Query(default=None),
+    programme_code: str | None = Query(default=None),
+    posting_code: str | None = Query(default=None),
+    mcr: str | None = Query(default=None),
+    resident_id: UUID | None = Query(default=None),
+    month_label: str | None = Query(default=None),
+    r_year: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[ResidentPostingResponse]:
+    if db is None:
+        return []
+    rows = await admin_config.list_resident_postings(
+        db,
+        programme_scope=admin_context.programme_scope,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        posting_code=posting_code,
+        mcr=mcr,
+        resident_id=resident_id,
+        month_label=month_label,
+        r_year=r_year,
+        status=status,
+        limit=limit,
+    )
+    return [ResidentPostingResponse.model_validate(row) for row in rows]
+
+
+@router.get("/posting-codes", response_model=list[PostingCodeResponse])
+async def list_posting_codes(
+    code: str | None = Query(default=None),
+    institution: str | None = Query(default=None),
+    department: str | None = Query(default=None),
+    is_emergency: bool | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[PostingCodeResponse]:
+    del admin_context
+    if db is None:
+        return []
+    rows = await admin_config.list_posting_codes(
+        db,
+        code=code,
+        institution=institution,
+        department=department,
+        is_emergency=is_emergency,
+        limit=limit,
+    )
+    return [PostingCodeResponse.model_validate(row) for row in rows]
+
+
+@router.get("/session-types", response_model=list[SessionTypeResponse])
+async def list_session_types(
+    name: str | None = Query(default=None),
+    duration_hours: Decimal | None = Query(default=None, gt=0),
+    limit: int = Query(default=100, ge=1, le=500),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[SessionTypeResponse]:
+    del admin_context
+    if db is None:
+        return []
+    rows = await admin_config.list_session_types(
+        db,
+        name=name,
+        duration_hours=duration_hours,
+        limit=limit,
+    )
+    return [SessionTypeResponse.model_validate(row) for row in rows]
+
+
+@router.get("/teaching-targets", response_model=list[TeachingTargetResponse])
+async def list_teaching_targets(
+    reporting_period_id: UUID | None = Query(default=None),
+    programme_code: str | None = Query(default=None),
+    posting_code: str | None = Query(default=None),
+    r_year: str | None = Query(default=None),
+    session_type_id: UUID | None = Query(default=None),
+    is_tracked: bool | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[TeachingTargetResponse]:
+    if db is None:
+        return []
+    rows = await admin_config.list_teaching_targets(
+        db,
+        programme_scope=admin_context.programme_scope,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        posting_code=posting_code,
+        r_year=r_year,
+        session_type_id=session_type_id,
+        is_tracked=is_tracked,
+        limit=limit,
+    )
+    return [TeachingTargetResponse.model_validate(row) for row in rows]
+
+
+@router.get(
+    "/teaching-name-catalogue",
+    response_model=list[TeachingNameCatalogueResponse],
+)
+async def list_teaching_name_catalogue(
+    reporting_period_id: UUID | None = Query(default=None),
+    programme_code: str | None = Query(default=None),
+    posting_code: str | None = Query(default=None),
+    r_year: str | None = Query(default=None),
+    keyword: str | None = Query(default=None),
+    session_type_id: UUID | None = Query(default=None),
+    is_tracked: bool | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[TeachingNameCatalogueResponse]:
+    if db is None:
+        return []
+    rows = await admin_config.list_teaching_name_catalogue(
+        db,
+        programme_scope=admin_context.programme_scope,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        posting_code=posting_code,
+        r_year=r_year,
+        keyword=keyword,
+        session_type_id=session_type_id,
+        is_tracked=is_tracked,
+        limit=limit,
+    )
+    return [TeachingNameCatalogueResponse.model_validate(row) for row in rows]
+
+
+@router.get(
+    "/academic-month-boundaries",
+    response_model=list[AcademicMonthBoundaryResponse],
+)
+async def list_academic_month_boundaries(
+    ay_date_category: str | None = Query(default=None),
+    month_label: str | None = Query(default=None),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    upload_id: UUID | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[AcademicMonthBoundaryResponse]:
+    del admin_context
+    if db is None:
+        return []
+    rows = await admin_config.list_academic_month_boundaries(
+        db,
+        ay_date_category=ay_date_category,
+        month_label=month_label,
+        date_from=date_from,
+        date_to=date_to,
+        upload_id=upload_id,
+        limit=limit,
+    )
+    return [AcademicMonthBoundaryResponse.model_validate(row) for row in rows]
