@@ -25,43 +25,39 @@ Every important decision made during the project, with reasoning and consequence
 
 ---
 
-#### Decision: External / cross-cluster residents workflow (future Phase 5B; not Phase 3)
-- **Status:** ✅ Confirmed future workflow
-- **Decision:** External residents are residents from NUH or SingHealth who are posted to NHG/TTSH departments. Native NHG residents remain RDB-backed. Allowed external home clusters are strictly `NUH` and `SingHealth`.
-- **Workflow direction:** External residents self-register on first use via an external-resident registration path. After registration, login is MCR-only (same credential style as native NHG residents). External residents may self-update their current NHG posting after registration.
-- **External registration capture fields:** `name`, `mcr`, `home_cluster` (`NUH` or `SingHealth`), `current_nhg_posting` (NHG-posted hospital/department).
-- **Functional scope:** External residents have the same resident attendance submission functions as native residents for event participation (view/submit attendance based on current NHG posting, ad-hoc teaching submission, and past attendance views).
+#### Decision: External / cross-cluster residents workflow (Phase 5B)
+- **Status:** ✅ Confirmed implementation direction
+- **Decision:** External residents are residents from `NUH` or `SingHealth` who are posted to NHG/TTSH departments. They use a separate `external_residents` table and separate `external_attendance_records` table. Native NHG residents remain RDB-backed in `residents` + `resident_postings`.
+- **External registration capture fields:** `name`, `mcr`, `home_cluster` (`NUH` or `SingHealth`), `current_nhg_posting_code`.
+- **MCR uniqueness:** MCR is globally unique for every doctor. Because native and external identities use separate tables, enforce cross-table uniqueness in service logic: reject registration if MCR exists in either `residents` or `external_residents`.
+- **Workflow direction:** External residents self-register on first use. After registration, login is MCR-only. External residents may self-update their current NHG posting.
+- **Posting model:** External current posting is stored separately on `external_residents.current_nhg_posting_code`; do not use native `resident_postings`.
+- **Functional scope:** External residents can view supported posting events, submit attendance, view past attendance, and submit ad-hoc teaching.
 - **Explicit exclusions:** External residents are excluded from NHG compliance and clawback surfaces:
-  - no resident compliance dashboard
+  - no NHG resident compliance dashboard
   - no clawback output
   - no NHG compliance numerator inclusion
   - no NHG compliance denominator inclusion
-- **Export requirement:** External attendance must be exportable by NHG PCs for onward sharing to relevant NUH or SingHealth PCs.
-- **Phase guardrail:** This is a future implementation scope under **Phase 5B / resident attendance flow** and is explicitly out of Phase 3 admin CRUD.
-- **Pending implementation/design details:**
-  - whether external residents live in `residents` with a type flag vs a separate table
-  - exact endpoint names for external registration/login/update-posting
-  - exact admin export endpoint/filter shape for external attendance
-  - whether MCR uniqueness is global across native + external residents
-- **Reference file and section:** `AGENTS.md` (new confirmed requirement direction; pre-Phase 3 docs update)
+  - no surplus ledger / period snapshot inclusion
+- **Export requirement:** External attendance must be exportable/queryable later by NHG PCs for onward sharing to relevant NUH or SingHealth PCs.
+- **Export status:** ❓ TBD/deferred. Exact dashboard/export endpoint, filters, response shape, CSV/XLSX requirements, and role matrix will be confirmed together with dashboard requirements.
+- **Do not use:** `users`, `programme_scope`, native `residents`, or native `resident_postings` for external resident identity/posting state.
+- **Reference file and section:** `schema.md` § `external_residents`, `external_attendance_records`; `api.md` § External Resident Endpoints; `business-logic.md` § BL-12
 - **Do not change without PM/stakeholder approval:** Yes
-
 ---
 
-#### Decision: TTSH-pilot event visibility and submission mode (future behavior clarification)
-- **Status:** ✅ Confirmed future behavior clarification
-- **Decision:** During TTSH-led pilot behavior:
-  - If resident is posted to a TTSH department: resident can submit against secretary-created events and can submit ad-hoc teaching.
-  - If resident is posted outside TTSH: secretary-created event lists are not expected; resident uses ad-hoc submission only.
+#### Decision: Secretary-created event visibility capability flag
+- **Status:** ✅ Confirmed implementation direction
+- **Decision:** Use `posting_codes.supports_secretary_events BOOLEAN DEFAULT false` as the scalable capability flag for secretary-created event visibility.
+- **Current pilot:** TTSH pilot postings can be seeded/configured with `supports_secretary_events = true`, so residents posted there see secretary-created events plus ad-hoc submission.
+- **Future onboarding:** Future hospitals such as KTPH can be enabled by setting the same flag on their posting codes. This avoids service-code hardcoding and makes onboarding a data/config change.
+- **Behaviour:**
+  - `supports_secretary_events = true` → residents/external residents at that posting may see secretary-created event lists and may also submit ad-hoc teaching.
+  - `supports_secretary_events = false` → no secretary-created event list is expected; ad-hoc submission remains available.
 - **Applicability:** Applies to both native NHG residents and external NUH/SingHealth residents.
-- **Reasoning:** Pilot operating model expects secretary event generation mainly from TTSH departments while preserving attendance capture for non-TTSH postings through ad-hoc flow.
-- **Phase guardrail:** Clarified behavior only; do not implement now.
-- **Pending implementation/design detail:** Posting capability signal is still open:
-  - preferred: explicit posting capability flag (e.g. `posting_codes.supports_secretary_events`)
-  - alternative: derive from `posting_codes.institution = 'TTSH'`
-- **Reference file and section:** `AGENTS.md` + resident/secretary flow design context
+- **Rejected approach:** Hardcoding `posting_codes.institution = 'TTSH'` in service logic.
+- **Reference file and section:** `schema.md` § `posting_codes`; `business-logic.md` § BL-12; `api.md` § Resident/External Resident Endpoints
 - **Do not change without PM/stakeholder approval:** Yes
-
 ---
 
 #### Decision: Master admin is an explicit authorization concept (not inferred from NULL scope)

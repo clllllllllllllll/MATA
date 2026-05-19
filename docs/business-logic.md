@@ -648,6 +648,56 @@ Residents can submit ad-hoc teachings not pre-created by secretaries via `POST /
 - Teaching name must exist in `teaching_name_catalogue` for the resident's posting + programme + r_year (422 if not found)
 - Duplicate detection (BL-5) applies
 
+
+---
+
+## BL-12: External / Cross-Cluster Resident Attendance
+
+External residents are NUH or SingHealth residents who are temporarily posted to NHG/TTSH departments and need to record teaching attendance for forwarding to their home cluster.
+
+**Identity and storage:**
+- External residents live in `external_residents`, not `users` and not native `residents`.
+- External attendance lives in `external_attendance_records`, not native `attendance_records`.
+- External residents are not RDB-backed and do not use `resident_postings`.
+- MCR is globally unique across native `residents` and `external_residents`; enforce cross-table checks in service code.
+
+**Allowed home clusters:**
+- `NUH`
+- `SingHealth`
+
+No other `home_cluster` values are valid.
+
+**Posting state:**
+External residents store their current NHG posting as `external_residents.current_nhg_posting_code`. They may update it themselves. This is separate from native RDB posting schedules and has no compliance denominator meaning.
+
+**Secretary-created event visibility:**
+Use `posting_codes.supports_secretary_events` as the scalable capability flag:
+- `true` → external/native residents at that posting may see secretary-created event lists.
+- `false` → ad-hoc submission remains available, but no secretary-created list is expected.
+
+Do not hardcode TTSH in service logic. Current TTSH pilot postings can be enabled by setting this flag in seed/config data; future hospitals such as KTPH can be onboarded the same way.
+
+**Compliance exclusion:**
+External residents are excluded from all NHG compliance surfaces:
+- no NHG compliance dashboard
+- no numerator inclusion
+- no denominator inclusion
+- no surplus ledger
+- no period snapshots
+- no clawback
+
+`GET /resident/dashboard` for an external resident returns `not_applicable`, not compliance metrics.
+
+**Submission behaviour:**
+- External residents can submit attendance for eligible secretary-created events at their current NHG posting.
+- External residents can submit ad-hoc teaching.
+- PH ad-hoc teaching is hard-blocked with `422`.
+- Weekend non-exception submissions are stored and return `compliance_warning`.
+- Session type is not stored on external attendance.
+
+**Export status:**
+External attendance must be exportable/queryable later by NHG PCs for forwarding to NUH/SingHealth PCs, but CSV/XLSX/dashboard export shape is deferred until requirements are confirmed.
+
 ---
 
 ## BL-10: Clawback Calculation

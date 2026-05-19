@@ -6,7 +6,7 @@ Base URL: `http://localhost:8000/api/v1`
 
 ## Authentication Model
 
-There are **two completely separate identity paths**. They share the JWT infrastructure but resolve identity from different tables and carry different claims.
+There are separate identity paths. They share the JWT infrastructure but resolve identity from different tables and carry different claims.
 
 ### Path 1 — Admin and Secretary (`users` table)
 
@@ -36,6 +36,23 @@ Residents are **not** in the `users` table. They authenticate with their **MCR n
 
 `programme_code` is embedded at login time from `residents.programme_code`. It scopes all compliance lookups to the resident's native programme. **`posting_code` is NOT in the JWT** — current posting is always derived at request time from `resident_postings`.
 
+### Path 3 — External Residents (`external_residents` table)
+
+External/cross-cluster residents are **not** in the `users` table and are **not** native `residents`. They self-register first, then authenticate with their **MCR number only**. Allowed `home_cluster` values are strictly `NUH` and `SingHealth`. The JWT payload carries:
+
+```json
+{
+  "sub": "<external_residents.id>",
+  "role": "external_resident",
+  "mcr": "M12345A",
+  "home_cluster": "NUH"
+}
+```
+
+`current_nhg_posting_code` is not trusted from JWT for authorization-sensitive reads; fetch it from `external_residents` at request time. External residents do not receive NHG compliance or clawback surfaces.
+
+**Global MCR uniqueness:** `POST /external-residents/register` must reject an MCR that already exists in either native `residents` or `external_residents`.
+
 ### How the compliance chain resolves from login
 
 1. Resident logs in with MCR → JWT issued with `programme_code = 'GRM'`
@@ -46,8 +63,8 @@ Residents are **not** in the `users` table. They authenticate with their **MCR n
 ### Request identity headers (Phase 1 stub)
 
 ```
-X-User-Role: admin | secretary | resident
-X-User-Id: <users.id for admin/secretary> | <residents.id for resident>
+X-User-Role: admin | secretary | resident | external_resident
+X-User-Id: <users.id for admin/secretary> | <residents.id for resident> | <external_residents.id for external_resident>
 Resident login accepts MCR only. Protected resident requests use residents.id as the authenticated subject. The resident MCR may be carried as a claim/header for convenience, but it is not used as X-User-Id.
 X-User-Programme: <programme_code>   # resident and admin only
 X-User-Site: <posting_code>          # secretary only
@@ -981,6 +998,110 @@ Return current identity from validated JWT.
 ### PUT `/auth/settings`
 
 Update password. Admin/secretary only.
+
+
+---
+
+## External Resident Endpoints
+
+External residents are future Phase 5B scope. They use separate identity and attendance tables. They are never stored in `users`, never stored in native `residents`, and never represented through `resident_postings`.
+
+### POST `/external-residents/register`
+
+Self-register an external/cross-cluster resident.
+
+- **Auth:** public/self-service with rate limiting
+- **Body:**
+```json
+{
+  "name": "Resident Name",
+  "mcr": "M12345A",
+  "home_cluster": "NUH",
+  "current_nhg_posting_code": "TTSHGerMed"
+}
+```
+- **Validation:**
+  1. `home_cluster` must be `NUH` or `SingHealth`.
+  2. `mcr` must not exist in native `residents`.
+  3. `mcr` must not exist in `external_residents`.
+  4. `current_nhg_posting_code` must exist in `posting_codes`.
+- **Writes:** `external_residents` only. Do not create `users`, native `residents`, or `resident_postings` rows.
+- **Duplicate/conflict:** `409` when MCR already exists.
+
+### PUT `/external-residents/me/posting`
+
+Update the external resident's current NHG posting.
+
+- **Auth:** external resident only
+- **Body:**
+```json
+{
+  "current_nhg_posting_code": "KTPHGerMed"
+}
+```
+- **Validation:** posting code must exist in `posting_codes`.
+- **Behaviour:** updates `external_residents.current_nhg_posting_code`. No native `resident_postings` rows are created.
+
+### GET `/resident/events` for external residents
+
+The same route may support native and external residents through identity branching.
+
+- For native `role = resident`, use native Phase 5A behaviour from `resident_postings`.
+- For `role = external_resident`, derive current posting from `external_residents.current_nhg_posting_code`.
+- If the posting's `posting_codes.supports_secretary_events = true`, return eligible secretary-created events for that posting.
+- If `supports_secretary_events = false`, return no secretary-created event list but keep ad-hoc submission available in the frontend.
+- Filter `event_date <= today`.
+- Exclude events already submitted by that external resident in `external_attendance_records`.
+- Do not apply native NHG compliance catalogue/denominator logic to external residents.
+
+### POST `/resident/attendance` for external residents
+
+The same route may support native and external residents through identity branching.
+
+- For `role = external_resident`, validate the event belongs to the external resident's current NHG posting.
+- Create `external_attendance_records`, not native `attendance_records`.
+- Duplicate protected by `UNIQUE(external_resident_id, teaching_event_id)`.
+- Weekend non-exception attendance is stored and returns `compliance_warning`.
+- Do not store `session_type_id`.
+- Do not include the row in NHG compliance.
+
+### POST `/resident/adhoc-teaching` for external residents
+
+The same route may support native and external residents through identity branching.
+
+- For `role = external_resident`, derive posting from `external_residents.current_nhg_posting_code`.
+- PH hard-block with `422`.
+- Create `teaching_events` with `is_adhoc = true`, `created_by_role = 'external_resident'`, and `posting_code = current_nhg_posting_code`.
+- Create `external_attendance_records` in the same transaction.
+- Weekend non-exception attendance is stored and returns `compliance_warning`.
+- Do not create native `attendance_records`.
+
+### GET `/resident/attendance-history`
+
+Return the authenticated resident's past submitted attendance.
+
+- **Auth:** native resident or external resident
+- **Native resident:** read from `attendance_records` scoped by `resident_id`.
+- **External resident:** read from `external_attendance_records` scoped by `external_resident_id`.
+- **Filters:** `date_from`, `date_to`, `status` optional.
+
+### GET `/resident/dashboard` for external residents
+
+External residents do not receive an NHG compliance dashboard.
+
+- **Auth:** external resident only
+- **Response:**
+```json
+{
+  "compliance_status": "not_applicable",
+  "reason": "external_resident_excluded_from_nhg_compliance",
+  "message": "External resident attendance is stored for future export to the home cluster PC. NHG compliance and clawback do not apply."
+}
+```
+
+### External attendance export
+
+External attendance export for NHG PCs is **TBD/deferred** until dashboard/export requirements are confirmed. Do not implement CSV/XLSX/email/export endpoints yet. Ensure `external_attendance_records` remains queryable for future export work.
 
 ---
 

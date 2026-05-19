@@ -14,12 +14,16 @@ programmes ─1:N─ academic_month_boundaries (via ay_date_category)
 posting_codes ─1:N─ resident_postings
 posting_codes ─1:N─ teaching_targets
 posting_codes ─1:N─ teaching_events
+posting_codes ─1:N─ external_residents (current_nhg_posting_code)
 posting_codes ─1:N─ multi_posting_rules
 posting_codes ─1:N─ posting_groups
 
 residents ─1:N─ resident_postings
 residents ─1:N─ attendance_records
 residents ─1:N─ surplus_ledger
+
+external_residents ─1:N─ external_attendance_records
+teaching_events ─1:N─ external_attendance_records
 
 teaching_events ─1:N─ attendance_records
 teaching_events ─N:1─ event_series (nullable)
@@ -118,8 +122,11 @@ Canonical registry of all posting sites. Seeded from both RDB (active sites) and
 | department | VARCHAR(50) | | e.g. `Anaes`, `GerMed`, `DiagRd` |
 | billing_dept | VARCHAR(50) | | For clawback (Phase 10) |
 | is_emergency | BOOLEAN | DEFAULT false | Emergency postings accept weekend AND public holiday teachings |
+| supports_secretary_events | BOOLEAN | DEFAULT false | Posting capability flag. If true, residents/external residents at this posting may see secretary-created event lists. If false, the posting is ad-hoc-only for resident submission unless a future pilot explicitly enables it. |
 
 **Important:** Posting codes are NOT derivable by regex from institution+department. Real codes like `MOHHGTG1`, `AICAIC`, `RenCiCommHosp`, `NHGPlyNHGPly` break any uniform pattern. This table is the source of truth — no string parsing.
+
+**Secretary-event visibility capability:** `supports_secretary_events` is the scalable pilot/onboarding switch. Current TTSH pilot postings can be seeded/set to `true`; future hospitals such as KTPH can be enabled by data/config update, not service-code hardcoding. Resident event visibility must check this flag instead of hardcoding institution names.
 
 ---
 
@@ -349,6 +356,47 @@ One row per (resident, teaching_event) submission.
 **Unique constraint:** `UNIQUE(resident_id, teaching_event_id)` — DB-level duplicate prevention.
 
 **Session type is NOT stored here.** It is resolved at compliance read time from `teaching_name_catalogue` using the event's `teaching_name`, `posting_code`, and the resident's `programme_code` + `r_year`.
+
+
+---
+
+## Table: `external_residents`
+
+One row per external/cross-cluster resident who self-registers to submit attendance for NHG/TTSH-posted teaching. External residents are **not** native NHG residents, are **not** `users`, and are **not** RDB-backed.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| id | UUID | PK | |
+| name | VARCHAR(100) | NOT NULL | Self-registered display name |
+| mcr | VARCHAR(20) | UNIQUE, NOT NULL | MCR is the login credential. Service layer must also reject MCRs already present in native `residents`. |
+| home_cluster | VARCHAR(20) | NOT NULL, CHECK IN (`NUH`, `SingHealth`) | External home cluster only. No other values accepted. |
+| current_nhg_posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Current NHG posting selected/updated by the external resident. Not derived from `resident_postings`. |
+| status | VARCHAR(20) | DEFAULT 'active' | `active`, `inactive` |
+
+**Global MCR uniqueness:** MCR is a unique identifier for every doctor. Because native and external identities live in separate tables, enforce cross-table uniqueness in the service layer: registration must reject if the MCR exists in either `residents.mcr` or `external_residents.mcr`.
+
+**Compliance exclusion:** External residents are excluded from NHG compliance, NHG numerator/denominator, surplus, period snapshots, and clawback. Do not join this table into native compliance queries.
+
+---
+
+## Table: `external_attendance_records`
+
+One row per external resident attendance submission. Stored separately from native `attendance_records` so external attendance cannot enter NHG compliance joins accidentally.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| id | UUID | PK | |
+| external_resident_id | UUID | FK → external_residents.id, NOT NULL | |
+| teaching_event_id | UUID | FK → teaching_events.id, NOT NULL | |
+| submitted_at | TIMESTAMPTZ | DEFAULT now() | |
+| status | VARCHAR(20) | DEFAULT 'submitted' | `submitted`, `flagged`, `removed` |
+| posting_code | VARCHAR(50) | | Audit copy of event posting at submission time. Not used for NHG compliance. |
+
+**Unique constraint:** `UNIQUE(external_resident_id, teaching_event_id)`
+
+**Session type is NOT stored here.** External attendance can be viewed/exported later for the resident's home-cluster PC, but it does not participate in NHG PTT compliance.
+
+**Export status:** External attendance export/dashboard requirements are deferred. Keep data queryable and auditable; do not implement CSV/XLSX export until requirements are confirmed.
 
 ---
 
@@ -791,6 +839,9 @@ WHERE rdb_alias IS NOT NULL;
 -- UNIQUE(code) already covers canonical posting lookup.
 CREATE INDEX idx_posting_codes_institution_department
 ON posting_codes(institution, department);
+
+CREATE INDEX idx_posting_codes_supports_secretary_events
+ON posting_codes(supports_secretary_events);
 ```
 
 #### `reporting_periods`
@@ -903,6 +954,34 @@ ON attendance_records(submitted_at);
 
 CREATE INDEX idx_attendance_records_submitted_resident_event
 ON attendance_records(resident_id, teaching_event_id)
+WHERE status = 'submitted';
+```
+
+
+#### `external_residents`
+
+```sql
+CREATE UNIQUE INDEX idx_external_residents_mcr
+ON external_residents(mcr);
+
+CREATE INDEX idx_external_residents_current_posting
+ON external_residents(current_nhg_posting_code, status);
+
+CREATE INDEX idx_external_residents_home_cluster
+ON external_residents(home_cluster);
+```
+
+#### `external_attendance_records`
+
+```sql
+CREATE INDEX idx_external_attendance_external_status
+ON external_attendance_records(external_resident_id, status);
+
+CREATE INDEX idx_external_attendance_event_status
+ON external_attendance_records(teaching_event_id, status);
+
+CREATE UNIQUE INDEX idx_external_attendance_submitted_external_event
+ON external_attendance_records(external_resident_id, teaching_event_id)
 WHERE status = 'submitted';
 ```
 

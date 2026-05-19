@@ -76,14 +76,15 @@ mata/
 | Admin (Programme Coordinator) | Email + password | Programme-scoped via `programme_scope TEXT[]`. Each account linked to one or more programmes. Manages RDB, TTF, FormF1, and Academic Calendar / Public Holidays uploads, teaching targets, period close, multi-posting rules, weekend exceptions, all reporting views for their programmes only. |
 | Department Secretary | Email + password | Scoped to ONE specific posting site (e.g. TTSHAnaes only). Creates teaching events, views CME Dashboard and Teaching Schedule. Cannot create events on public holidays. |
 | Resident | MCR number only | Sees teachings for current posting and native programme posting. Submission Portal + personal Dashboard + ad-hoc teaching submission. |
+| External Resident | MCR number only after self-registration | NUH/SingHealth residents posted to NHG/TTSH departments. Uses separate external resident tables, can submit attendance/ad-hoc teaching, excluded from NHG compliance and clawback. |
 
 ## Auth Stub (Phase 1)
 
 Until Supabase Auth is integrated, use a simple middleware that reads role and identity from request headers:
 
 ```
-X-User-Role: admin | secretary | resident
-X-User-Id: <users.id for admin/secretary> | <residents.id for resident> 
+X-User-Role: admin | secretary | resident | external_resident
+X-User-Id: <users.id for admin/secretary> | <residents.id for resident> | <external_residents.id for external_resident> 
 Residents log in using MCR only. After login, protected-route identity uses residents.id as the subject. MCR is a resident login credential and JWT/header claim, not the X-User-Id value.
 X-User-Site: <posting_code>        # secretary only
 X-User-Programme: <programme_code> # admin only, comma-separated for multiple e.g. DR,GRM
@@ -138,6 +139,11 @@ This is a strict dependency chain. Each step requires the previous one to be com
 - **Multi-posting cell with explicit date ranges applies to ALL sheets**, not FM only. Any sheet in the RDB may contain cells with multiple posting codes and explicit `(from DD-MMM-YYYY to DD-MMM-YYYY)` date ranges.
 - **Unmatched multi-posting cells fall back to independent calculation.** If a multi-posting cell has no matching `multi_posting_rules` entry and no matching `posting_groups` entry, each posting is calculated independently. Active months use whole-month counting (no proration). An upload warning is generated.
 - **Posting groups aggregate compliance across related posting codes.** When a resident serves at multiple postings sharing the same `posting_groups.group_code`, active_months and target_100 are summed across all group members. Each posting's own TTF monthly_target applies. Seeded from non-empty TTF Column E values at upload time and manageable via admin CRUD UI. If Column E is empty, the posting stands alone and compliance is calculated independently under its own posting_code. Applies globally to all programmes.
+- **External residents use separate tables.** External/cross-cluster residents from `NUH` or `SingHealth` live in `external_residents`; their submissions live in `external_attendance_records`. Do not store them in `users`, native `residents`, `programme_scope`, or native `resident_postings`.
+- **MCR is globally unique.** Registration/login logic must reject an MCR already present in either `residents` or `external_residents`.
+- **External residents are excluded from NHG compliance.** External attendance is stored only for future export/forwarding to their home-cluster PCs. It never enters NHG numerator, denominator, surplus, snapshots, or clawback.
+- **Secretary-created event visibility uses `posting_codes.supports_secretary_events`.** Do not hardcode TTSH. Current TTSH pilot postings can be enabled via data; future hospitals such as KTPH can be onboarded by setting the same flag. Ad-hoc submission remains available even when secretary-created event lists are not supported.
+- **External attendance export is deferred.** Keep external attendance queryable/auditable, but do not implement CSV/XLSX/email/dashboard export until requirements are confirmed.
 
 ## Reference Documents
 

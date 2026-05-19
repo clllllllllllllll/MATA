@@ -50,6 +50,7 @@ Residents log in via React frontend (MCR-only auth in Phase 1)
 | **Admin / Programme Coordinator (PC)** | Email + password (Phase 1 stub) | Programme-scoped via `users.programme_scope TEXT[]` | Upload RDB, TTF, FormF1, PH files; manage configuration; view compliance reports; close/reopen reporting periods |
 | **Secretary** | Email + password (Phase 1 stub) | Scoped to ONE posting site via `users.posting_code` | Create/manage teaching events; view CME dashboard; view teaching schedule |
 | **Resident** | MCR number only (no password in Phase 1) | Own data only; events filtered by current posting(s) | Submit attendance; submit ad-hoc teaching; view personal compliance dashboard |
+| **External Resident** | MCR number only after self-registration | Own external attendance only; current NHG posting selected/updated by resident | Submit attendance/ad-hoc teaching; view past attendance; no NHG compliance dashboard or clawback |
 
 ### Reporting Periods
 
@@ -141,7 +142,7 @@ All five source-of-truth files (`schema.md`, `api.md`, `business-logic.md`, `par
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| **Database schema design** (`schema.md`) | 📋 Planned | Full schema specified. Tables include: `programmes`, `posting_codes`, `reporting_periods`, `residents`, `resident_postings`, `loa_types`, `session_types`, `teaching_targets`, `teaching_name_catalogue`, `teaching_events`, `event_series`, `attendance_records`, `surplus_ledger`, `form_f1_records`, `public_holidays`, `academic_month_boundaries`, `multi_posting_rules`, `posting_groups`, `weekend_exceptions`, `users`, `upload_logs`, `period_snapshots`, `clawback_records`, `global_session_types` |
+| **Database schema design** (`schema.md`) | 📋 Planned | Full schema specified. Tables include: `programmes`, `posting_codes`, `reporting_periods`, `residents`, `resident_postings`, `external_residents`, `external_attendance_records`, `loa_types`, `session_types`, `teaching_targets`, `teaching_name_catalogue`, `teaching_events`, `event_series`, `attendance_records`, `surplus_ledger`, `form_f1_records`, `public_holidays`, `academic_month_boundaries`, `multi_posting_rules`, `posting_groups`, `weekend_exceptions`, `users`, `upload_logs`, `period_snapshots`, `clawback_records`, `global_session_types` |
 | **Alembic migrations** | 📋 Planned | Structure defined in `AGENTS.md` repo layout |
 | **FastAPI backend structure** | 📋 Planned | Routers: `admin.py`, `secretary.py`, `resident.py`, `auth.py`. Services: `compliance.py`, `surplus.py`, `clawback.py`, `rdb_parser.py`, `ttf_parser.py`, `formf1_parser.py`, `validation.py` |
 | **RDB parser** (`rdb_parser.py`) | 📋 Planned | Full spec in `parsing.md` |
@@ -359,6 +360,15 @@ mata/
 ---
 
 ## Section 8 — Three User Roles and Workflows
+
+### External Resident Flow (Phase 5B)
+
+External residents are NUH or SingHealth residents posted to NHG/TTSH departments. They self-register with `name`, `mcr`, `home_cluster`, and `current_nhg_posting_code`, then log in with MCR only. They are stored in `external_residents`, and their submissions are stored in `external_attendance_records`.
+
+External residents are excluded from NHG compliance, numerator, denominator, surplus, snapshots, and clawback. Their attendance is stored for future export/forwarding to their home-cluster PCs. Export/dashboard shape is deferred until requirements are confirmed.
+
+Secretary-created event visibility is controlled by `posting_codes.supports_secretary_events`, not hardcoded TTSH logic. Current TTSH pilot postings can be enabled through data/config; future hospitals such as KTPH can be onboarded by setting the same flag. Ad-hoc submission remains available even when secretary-created event lists are not supported.
+
 
 ### Admin / Programme Coordinator (PC)
 
