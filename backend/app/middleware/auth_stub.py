@@ -10,7 +10,7 @@ from starlette.responses import Response
 
 from app.database import AsyncSessionLocal
 from app.errors import ErrorCode, build_error_response
-from app.models import Resident, User
+from app.models import ExternalResident, Resident, User
 
 
 @dataclass
@@ -33,7 +33,12 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if request.method == "OPTIONS" or path in self.OPEN_PATHS or path.endswith("/auth/login"):
+        if (
+            request.method == "OPTIONS"
+            or path in self.OPEN_PATHS
+            or path.endswith("/auth/login")
+            or path.endswith("/external-residents/register")
+        ):
             return await call_next(request)
 
         role = (request.headers.get("X-User-Role") or "").strip().lower()
@@ -59,6 +64,8 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             identity_or_error = await self._resolve_user_identity(request, role, subject_id)
         elif role == "resident":
             identity_or_error = await self._resolve_resident_identity(request, subject_id)
+        elif role == "external_resident":
+            identity_or_error = await self._resolve_external_resident_identity(subject_id)
         else:
             return build_error_response(
                 status_code=401,
@@ -152,6 +159,28 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             role="resident",
             subject_id=str(resident.id),
             programme_code=resident.programme_code,
+            mcr=resident.mcr,
+        )
+
+    async def _resolve_external_resident_identity(
+        self,
+        subject_id: UUID,
+    ) -> AuthIdentity | Response:
+        async with AsyncSessionLocal() as session:
+            resident = await session.scalar(
+                select(ExternalResident).where(ExternalResident.id == subject_id),
+            )
+
+        if resident is None or resident.status == "inactive":
+            return build_error_response(
+                status_code=401,
+                detail="Unauthorized",
+                error_code=ErrorCode.UNAUTHORIZED.value,
+            )
+
+        return AuthIdentity(
+            role="external_resident",
+            subject_id=str(resident.id),
             mcr=resident.mcr,
         )
 

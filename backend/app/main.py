@@ -11,7 +11,7 @@ from app.middleware import (
     configure_cors,
     install_error_handlers,
 )
-from app.routers import admin, auth, resident, secretary
+from app.routers import admin, auth, external_residents, resident, secretary
 from app.schemas import HealthResponse
 
 
@@ -31,6 +31,7 @@ def create_app() -> FastAPI:
     app.add_middleware(AuthStubMiddleware)
 
     app.include_router(auth.router, prefix=settings.api_prefix)
+    app.include_router(external_residents.router, prefix=settings.api_prefix)
     app.include_router(admin.router, prefix=settings.api_prefix)
     app.include_router(secretary.router, prefix=settings.api_prefix)
     app.include_router(resident.router, prefix=settings.api_prefix)

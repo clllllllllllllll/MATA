@@ -141,6 +141,71 @@ class ResidentPosting(UUIDTimestampMixin, Base):
     working_days_in_month: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
+class ExternalResident(UUIDTimestampMixin, Base):
+    __tablename__ = "external_residents"
+    __table_args__ = (
+        CheckConstraint(
+            "home_cluster IN ('NUH', 'SingHealth')",
+            name="ck_external_residents_home_cluster",
+        ),
+        Index("idx_external_residents_mcr", "mcr", unique=True),
+        Index(
+            "idx_external_residents_current_posting",
+            "current_nhg_posting_code",
+            "status",
+        ),
+        Index("idx_external_residents_home_cluster", "home_cluster"),
+    )
+
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    mcr: Mapped[str] = mapped_column(String(20), nullable=False)
+    home_cluster: Mapped[str] = mapped_column(String(20), nullable=False)
+    current_nhg_posting_code: Mapped[str] = mapped_column(
+        String(50),
+        ForeignKey("posting_codes.code"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        server_default=text("'active'"),
+    )
+
+
+class ExternalResidentPosting(UUIDTimestampMixin, Base):
+    __tablename__ = "external_resident_postings"
+    __table_args__ = (
+        Index(
+            "idx_external_resident_postings_external_current",
+            "external_resident_id",
+            "is_current",
+        ),
+        Index(
+            "idx_external_resident_postings_external_dates",
+            "external_resident_id",
+            "start_date",
+            "end_date",
+        ),
+    )
+
+    external_resident_id: Mapped[UUID] = mapped_column(
+        ForeignKey("external_residents.id"),
+        nullable=False,
+    )
+    posting_code: Mapped[str] = mapped_column(
+        String(50),
+        ForeignKey("posting_codes.code"),
+        nullable=False,
+    )
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    is_current: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+    )
+
+
 class User(UUIDTimestampMixin, Base):
     __tablename__ = "users"
     __table_args__ = (

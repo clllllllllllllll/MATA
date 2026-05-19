@@ -49,6 +49,16 @@ def _attendance_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _external_attendance_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "external_resident_id": row["external_resident_id"],
+        "teaching_event_id": row["teaching_event_id"],
+        "status": row["status"],
+        "posting_code": row.get("posting_code"),
+    }
+
+
 def _compute_end_time(event_date: date, start_time: time, duration_hours: Decimal) -> time:
     minutes = int(duration_hours * Decimal("60"))
     return (datetime.combine(event_date, start_time) + timedelta(minutes=minutes)).time()
@@ -66,9 +76,20 @@ def _cache_posting_prefix(posting_code: str) -> str:
     return f"resident_events|posting_code={posting_code}"
 
 
-def invalidate_resident_caches(*, resident_id: UUID | str, posting_codes: set[str]) -> None:
-    cache.invalidate_prefix(f"resident_events|resident_id={resident_id}")
-    cache.invalidate_prefix(f"resident_dashboard|resident_id={resident_id}")
+def invalidate_resident_caches(
+    *,
+    resident_id: UUID | str | None = None,
+    external_resident_id: UUID | str | None = None,
+    posting_codes: set[str],
+) -> None:
+    if resident_id is not None:
+        cache.invalidate_prefix(f"resident_events|resident_id={resident_id}")
+        cache.invalidate_prefix(f"resident_dashboard|resident_id={resident_id}")
+    if external_resident_id is not None:
+        cache.invalidate_prefix(f"resident_events|external_resident_id={external_resident_id}")
+        cache.invalidate_prefix(
+            f"resident_dashboard|external_resident_id={external_resident_id}"
+        )
     for posting_code in posting_codes:
         cache.invalidate_prefix(_cache_posting_prefix(posting_code))
 
@@ -83,6 +104,30 @@ async def _resident(db: AsyncSession, resident_id: UUID) -> dict[str, Any]:
             """
         ),
         {"resident_id": str(resident_id)},
+    )
+    row = result.mappings().one_or_none()
+    if row is None or row.get("status") == "inactive":
+        raise ApiError(
+            status_code=401,
+            detail="Unauthorized",
+            error_code=ErrorCode.UNAUTHORIZED.value,
+        )
+    return dict(row)
+
+
+async def _external_resident(
+    db: AsyncSession,
+    external_resident_id: UUID,
+) -> dict[str, Any]:
+    result = await db.execute(
+        text(
+            """
+            SELECT id, name, mcr, home_cluster, current_nhg_posting_code, status
+            FROM external_residents
+            WHERE id = :external_resident_id
+            """
+        ),
+        {"external_resident_id": str(external_resident_id)},
     )
     row = result.mappings().one_or_none()
     if row is None or row.get("status") == "inactive":
@@ -277,6 +322,30 @@ async def _get_event(db: AsyncSession, event_id: UUID) -> dict[str, Any]:
     return dict(row)
 
 
+async def _posting_supports_secretary_events(
+    db: AsyncSession,
+    posting_code: str,
+) -> bool:
+    result = await db.execute(
+        text(
+            """
+            SELECT supports_secretary_events
+            FROM posting_codes
+            WHERE code = :posting_code
+            """
+        ),
+        {"posting_code": posting_code},
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        raise ApiError(
+            status_code=422,
+            detail="current_nhg_posting_code is not valid",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
+    return bool(row["supports_secretary_events"])
+
+
 async def _events_for_postings(
     db: AsyncSession,
     *,
@@ -338,6 +407,68 @@ async def _events_for_postings(
     return [dict(row) for row in result.mappings().all()]
 
 
+async def _events_for_external_posting(
+    db: AsyncSession,
+    *,
+    external_resident_id: UUID,
+    posting_code: str,
+    today: date,
+    date_from: date | None,
+    date_to: date | None,
+) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {
+        "external_resident_id": str(external_resident_id),
+        "posting_code": posting_code,
+        "today": today,
+    }
+    where = [
+        "posting_code = :posting_code",
+        "event_date <= :today",
+        "created_by_role = 'secretary'",
+        """NOT EXISTS (
+              SELECT 1
+              FROM external_attendance_records ear
+              WHERE ear.external_resident_id = :external_resident_id
+                AND ear.teaching_event_id = teaching_events.id
+                AND ear.status = 'submitted'
+          )""",
+    ]
+    if date_from is not None:
+        params["date_from"] = date_from
+        where.append("event_date >= :date_from")
+    if date_to is not None:
+        params["date_to"] = date_to
+        where.append("event_date <= :date_to")
+
+    result = await db.execute(
+        text(
+            f"""
+            SELECT
+                id,
+                posting_code,
+                teaching_name,
+                event_date,
+                start_time,
+                end_time,
+                duration_hours,
+                session_type_id,
+                series_id,
+                cme_points_awarded,
+                smc_event_code,
+                is_adhoc,
+                created_by_role,
+                created_at,
+                updated_at
+            FROM teaching_events
+            WHERE {' AND '.join(where)}
+            ORDER BY event_date ASC, start_time ASC, teaching_name ASC
+            """
+        ),
+        params,
+    )
+    return [dict(row) for row in result.mappings().all()]
+
+
 def _matching_context(
     contexts: list[dict[str, Any]],
     *,
@@ -349,12 +480,42 @@ def _matching_context(
 async def list_available_events(
     db: AsyncSession,
     *,
-    resident_id: UUID,
+    role: str = "resident",
+    resident_id: UUID | None = None,
+    external_resident_id: UUID | None = None,
     today: date | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
 ) -> dict[str, Any]:
     today = today or date.today()
+    if role == "external_resident":
+        if external_resident_id is None:
+            raise ApiError(
+                status_code=401,
+                detail="Unauthorized",
+                error_code=ErrorCode.UNAUTHORIZED.value,
+            )
+        resident = await _external_resident(db, external_resident_id)
+        posting_code = resident["current_nhg_posting_code"]
+        supports_secretary_events = await _posting_supports_secretary_events(db, posting_code)
+        if not supports_secretary_events:
+            return {"events": [], "reason": "secretary_events_not_supported"}
+        events = await _events_for_external_posting(
+            db,
+            external_resident_id=external_resident_id,
+            posting_code=posting_code,
+            today=today,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        return {"events": [_event_row(row) for row in events]}
+
+    if resident_id is None:
+        raise ApiError(
+            status_code=401,
+            detail="Unauthorized",
+            error_code=ErrorCode.UNAUTHORIZED.value,
+        )
     resident = await _resident(db, resident_id)
     period = await _open_reporting_period(db)
     if period is None:
@@ -453,6 +614,116 @@ async def _insert_attendance(
     return _attendance_row(dict(result.mappings().one()))
 
 
+async def _duplicate_external_attendance_exists(
+    db: AsyncSession,
+    *,
+    external_resident_id: UUID,
+    event_id: UUID | str,
+) -> bool:
+    result = await db.execute(
+        text(
+            """
+            SELECT 1
+            FROM external_attendance_records
+            WHERE external_resident_id = :external_resident_id
+              AND teaching_event_id = :event_id
+              AND status = 'submitted'
+            LIMIT 1
+            """
+        ),
+        {
+            "external_resident_id": str(external_resident_id),
+            "event_id": str(event_id),
+        },
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def _insert_external_attendance(
+    db: AsyncSession,
+    *,
+    external_resident_id: UUID,
+    event_id: UUID | str,
+    posting_code: str,
+) -> dict[str, Any]:
+    result = await db.execute(
+        text(
+            """
+            INSERT INTO external_attendance_records (
+                external_resident_id,
+                teaching_event_id,
+                status,
+                posting_code
+            )
+            VALUES (
+                :external_resident_id,
+                :event_id,
+                'submitted',
+                :posting_code
+            )
+            RETURNING id, external_resident_id, teaching_event_id, status, posting_code
+            """
+        ),
+        {
+            "external_resident_id": str(external_resident_id),
+            "event_id": str(event_id),
+            "posting_code": posting_code,
+        },
+    )
+    return _external_attendance_row(dict(result.mappings().one()))
+
+
+async def _resolve_teaching_name_for_posting(
+    db: AsyncSession,
+    *,
+    posting_code: str,
+    teaching_name: str,
+) -> dict[str, Any] | None:
+    global_result = await db.execute(
+        text(
+            """
+            SELECT
+                name AS keyword,
+                NULL AS session_type_id,
+                name AS session_type,
+                duration_hours,
+                false AS is_tracked,
+                true AS is_global
+            FROM global_session_types
+            WHERE is_active = true
+              AND name = :teaching_name
+            ORDER BY name ASC
+            """
+        ),
+        {"teaching_name": teaching_name},
+    )
+    global_row = global_result.mappings().one_or_none()
+    if global_row is not None:
+        return dict(global_row)
+
+    result = await db.execute(
+        text(
+            """
+            SELECT
+                tnc.keyword,
+                tnc.session_type_id,
+                st.name AS session_type,
+                tnc.duration_hours,
+                tnc.is_tracked,
+                false AS is_global
+            FROM teaching_name_catalogue tnc
+            JOIN session_types st ON st.id = tnc.session_type_id
+            WHERE tnc.posting_code = :posting_code
+              AND tnc.keyword = :teaching_name
+            ORDER BY tnc.duration_hours DESC, st.name ASC
+            """
+        ),
+        {"posting_code": posting_code, "teaching_name": teaching_name},
+    )
+    row = result.mappings().one_or_none()
+    return dict(row) if row is not None else None
+
+
 async def _weekend_is_accepted(
     db: AsyncSession,
     *,
@@ -506,11 +777,97 @@ async def _weekend_is_accepted(
 async def submit_attendance(
     db: AsyncSession,
     *,
-    resident_id: UUID,
+    role: str = "resident",
+    resident_id: UUID | None = None,
+    external_resident_id: UUID | None = None,
     event_ids: list[UUID],
     today: date | None = None,
 ) -> dict[str, Any]:
     today = today or date.today()
+    if role == "external_resident":
+        if external_resident_id is None:
+            raise ApiError(
+                status_code=401,
+                detail="Unauthorized",
+                error_code=ErrorCode.UNAUTHORIZED.value,
+            )
+        resident = await _external_resident(db, external_resident_id)
+        posting_code = resident["current_nhg_posting_code"]
+        submitted = 0
+        weekend_warning_count = 0
+        touched_postings: set[str] = set()
+        for event_id in event_ids:
+            event = await _get_event(db, event_id)
+            if event["event_date"] > today:
+                raise ApiError(
+                    status_code=422,
+                    detail="Future teaching events cannot be submitted",
+                    error_code=ErrorCode.VALIDATION_FAILED.value,
+                )
+            if event["posting_code"] != posting_code:
+                raise ApiError(
+                    status_code=422,
+                    detail="Teaching event is outside the resident posting scope",
+                    error_code=ErrorCode.VALIDATION_FAILED.value,
+                )
+            supports_secretary_events = await _posting_supports_secretary_events(
+                db,
+                posting_code,
+            )
+            if event.get("created_by_role") == "secretary" and not supports_secretary_events:
+                raise ApiError(
+                    status_code=422,
+                    detail="Secretary-created events are not supported for this posting",
+                    error_code=ErrorCode.VALIDATION_FAILED.value,
+                )
+            if await _duplicate_external_attendance_exists(
+                db,
+                external_resident_id=external_resident_id,
+                event_id=event_id,
+            ):
+                raise ApiError(
+                    status_code=409,
+                    detail="Attendance already submitted for this teaching event",
+                    error_code=ErrorCode.CONFLICT.value,
+                )
+            await _insert_external_attendance(
+                db,
+                external_resident_id=external_resident_id,
+                event_id=event_id,
+                posting_code=event["posting_code"],
+            )
+            submitted += 1
+            touched_postings.add(event["posting_code"])
+            accepted = await _weekend_is_accepted(
+                db,
+                event=event,
+                programme_code="",
+                session_type_id=event.get("session_type_id"),
+            )
+            if not accepted:
+                weekend_warning_count += 1
+
+        await db.commit()
+        invalidate_resident_caches(
+            external_resident_id=external_resident_id,
+            posting_codes=touched_postings,
+        )
+        return {
+            "submitted": submitted,
+            "errors": [],
+            "compliance_warning": (
+                WEEKEND_WARNING.format(count=weekend_warning_count)
+                if weekend_warning_count
+                else None
+            ),
+        }
+
+    if resident_id is None:
+        raise ApiError(
+            status_code=401,
+            detail="Unauthorized",
+            error_code=ErrorCode.UNAUTHORIZED.value,
+        )
     resident = await _resident(db, resident_id)
     period = await _open_reporting_period(db)
     if period is None:
@@ -598,11 +955,117 @@ async def submit_attendance(
 async def submit_adhoc_teaching(
     db: AsyncSession,
     *,
-    resident_id: UUID,
+    role: str = "resident",
+    resident_id: UUID | None = None,
+    external_resident_id: UUID | None = None,
     event_date: date,
     start_time: time,
     teaching_name: str,
 ) -> dict[str, Any]:
+    if role == "external_resident":
+        if external_resident_id is None:
+            raise ApiError(
+                status_code=401,
+                detail="Unauthorized",
+                error_code=ErrorCode.UNAUTHORIZED.value,
+            )
+        resident = await _external_resident(db, external_resident_id)
+        await _ensure_not_public_holiday(db, event_date)
+        posting_code = resident["current_nhg_posting_code"]
+        resolved = await _resolve_teaching_name_for_posting(
+            db,
+            posting_code=posting_code,
+            teaching_name=teaching_name,
+        )
+        duration_hours = resolved["duration_hours"] if resolved is not None else None
+        end_time = (
+            _compute_end_time(event_date, start_time, duration_hours)
+            if duration_hours is not None
+            else None
+        )
+        event_result = await db.execute(
+            text(
+                """
+                INSERT INTO teaching_events (
+                    posting_code,
+                    teaching_name,
+                    event_date,
+                    start_time,
+                    end_time,
+                    duration_hours,
+                    session_type_id,
+                    is_adhoc,
+                    created_by_role
+                )
+                VALUES (
+                    :posting_code,
+                    :teaching_name,
+                    :event_date,
+                    :start_time,
+                    :end_time,
+                    :duration_hours,
+                    :session_type_id,
+                    true,
+                    'external_resident'
+                )
+                RETURNING
+                    id,
+                    posting_code,
+                    teaching_name,
+                    event_date,
+                    start_time,
+                    end_time,
+                    duration_hours,
+                    session_type_id,
+                    series_id,
+                    cme_points_awarded,
+                    smc_event_code,
+                    is_adhoc,
+                    created_by_role,
+                    created_at,
+                    updated_at
+                """
+            ),
+            {
+                "posting_code": posting_code,
+                "teaching_name": teaching_name,
+                "event_date": event_date,
+                "start_time": start_time,
+                "end_time": end_time,
+                "duration_hours": duration_hours,
+                "session_type_id": resolved.get("session_type_id") if resolved else None,
+            },
+        )
+        event = _event_row(dict(event_result.mappings().one()))
+        attendance = await _insert_external_attendance(
+            db,
+            external_resident_id=external_resident_id,
+            event_id=event["id"],
+            posting_code=event["posting_code"],
+        )
+        accepted = await _weekend_is_accepted(
+            db,
+            event=event,
+            programme_code="",
+            session_type_id=event.get("session_type_id"),
+        )
+        await db.commit()
+        invalidate_resident_caches(
+            external_resident_id=external_resident_id,
+            posting_codes={event["posting_code"]},
+        )
+        return {
+            "event": event,
+            "attendance": attendance,
+            "compliance_warning": None if accepted else WEEKEND_WARNING.format(count=1),
+        }
+
+    if resident_id is None:
+        raise ApiError(
+            status_code=401,
+            detail="Unauthorized",
+            error_code=ErrorCode.UNAUTHORIZED.value,
+        )
     resident = await _resident(db, resident_id)
     period = await _open_reporting_period(db)
     if period is None:
@@ -753,11 +1216,108 @@ async def remove_attendance(
     return {"removed_count": 1}
 
 
+async def list_attendance_history(
+    db: AsyncSession,
+    *,
+    role: str = "resident",
+    resident_id: UUID | None = None,
+    external_resident_id: UUID | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    status: str | None = None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    where = ["attendance.status != 'removed'"]
+    if role == "external_resident":
+        if external_resident_id is None:
+            raise ApiError(
+                status_code=401,
+                detail="Unauthorized",
+                error_code=ErrorCode.UNAUTHORIZED.value,
+            )
+        await _external_resident(db, external_resident_id)
+        table_name = "external_attendance_records"
+        id_column = "external_resident_id"
+        params["subject_id"] = str(external_resident_id)
+    else:
+        if resident_id is None:
+            raise ApiError(
+                status_code=401,
+                detail="Unauthorized",
+                error_code=ErrorCode.UNAUTHORIZED.value,
+            )
+        await _resident(db, resident_id)
+        table_name = "attendance_records"
+        id_column = "resident_id"
+        params["subject_id"] = str(resident_id)
+    where.append(f"attendance.{id_column} = :subject_id")
+    if date_from is not None:
+        params["date_from"] = date_from
+        where.append("events.event_date >= :date_from")
+    if date_to is not None:
+        params["date_to"] = date_to
+        where.append("events.event_date <= :date_to")
+    if status:
+        params["status"] = status.strip().lower()
+        where.append("attendance.status = :status")
+
+    result = await db.execute(
+        text(
+            f"""
+            SELECT
+                attendance.id AS attendance_id,
+                attendance.teaching_event_id,
+                events.teaching_name,
+                events.event_date,
+                events.start_time,
+                events.end_time,
+                events.duration_hours,
+                events.posting_code,
+                attendance.status,
+                attendance.submitted_at
+            FROM {table_name} attendance
+            JOIN teaching_events events
+              ON events.id = attendance.teaching_event_id
+            WHERE {' AND '.join(where)}
+            ORDER BY events.event_date DESC, attendance.submitted_at DESC
+            """
+        ),
+        params,
+    )
+    rows = [dict(row) for row in result.mappings().all()]
+    return {"attendance": rows}
+
+
 async def dashboard_placeholder(
     db: AsyncSession,
     *,
-    resident_id: UUID,
+    role: str = "resident",
+    resident_id: UUID | None = None,
+    external_resident_id: UUID | None = None,
 ) -> dict[str, Any]:
+    if role == "external_resident":
+        if external_resident_id is None:
+            raise ApiError(
+                status_code=401,
+                detail="Unauthorized",
+                error_code=ErrorCode.UNAUTHORIZED.value,
+            )
+        await _external_resident(db, external_resident_id)
+        return {
+            "compliance_status": "not_applicable",
+            "reason": "external_resident_excluded_from_nhg_compliance",
+            "message": (
+                "External resident attendance is stored for future export to the home "
+                "cluster PC. NHG compliance and clawback do not apply."
+            ),
+        }
+
+    if resident_id is None:
+        raise ApiError(
+            status_code=401,
+            detail="Unauthorized",
+            error_code=ErrorCode.UNAUTHORIZED.value,
+        )
     resident = await _resident(db, resident_id)
     period = await _open_reporting_period(db)
     return {

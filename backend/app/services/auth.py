@@ -35,6 +35,16 @@ def _resident_user(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _external_resident_user(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "role": "external_resident",
+        "name": row["name"],
+        "mcr": row["mcr"],
+        "home_cluster": row["home_cluster"],
+    }
+
+
 def _user_identity(row: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "id": row["id"],
@@ -49,6 +59,13 @@ def _user_identity(row: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _normalise_mcr(raw_mcr: str | None) -> str | None:
+    if raw_mcr is None:
+        return None
+    cleaned = raw_mcr.strip().upper()
+    return cleaned or None
+
+
 async def login(
     db: AsyncSession,
     *,
@@ -57,25 +74,33 @@ async def login(
     password: str | None,
     mcr: str | None,
 ) -> dict[str, Any]:
-    if role == "resident":
-        if not mcr:
+    if role in {"resident", "external_resident"}:
+        normalised_mcr = _normalise_mcr(mcr)
+        if not normalised_mcr:
             raise _auth_failure()
+        table_name = "residents" if role == "resident" else "external_residents"
         result = await db.execute(
             text(
                 """
-                SELECT id, name, mcr, programme_code, status
-                FROM residents
+                SELECT *
+                FROM """
+                + table_name
+                + """
                 WHERE mcr = :mcr
                 """
             ),
-            {"mcr": mcr},
+            {"mcr": normalised_mcr},
         )
-        resident = result.mappings().one_or_none()
-        if resident is None or resident.get("status") == "inactive":
+        identity_row = result.mappings().one_or_none()
+        if identity_row is None or identity_row.get("status") == "inactive":
             raise _auth_failure()
-        user = _resident_user(dict(resident))
+        user = (
+            _resident_user(dict(identity_row))
+            if role == "resident"
+            else _external_resident_user(dict(identity_row))
+        )
         return {
-            "access_token": _stub_access_token(role="resident", subject_id=user["id"]),
+            "access_token": _stub_access_token(role=role, subject_id=user["id"]),
             "token_type": "bearer",
             "user": user,
         }
@@ -136,6 +161,22 @@ async def get_current_identity(
         if resident is None or resident.get("status") == "inactive":
             raise _auth_failure()
         return _resident_user(dict(resident))
+
+    if role == "external_resident":
+        result = await db.execute(
+            text(
+                """
+                SELECT id, name, mcr, home_cluster, status
+                FROM external_residents
+                WHERE id = :external_resident_id
+                """
+            ),
+            {"external_resident_id": str(subject_id)},
+        )
+        resident = result.mappings().one_or_none()
+        if resident is None or resident.get("status") == "inactive":
+            raise _auth_failure()
+        return _external_resident_user(dict(resident))
 
     result = await db.execute(
         text(

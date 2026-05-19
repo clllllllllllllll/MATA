@@ -23,13 +23,15 @@ class LoginRequest(BaseModel):
     @classmethod
     def _normalise_role(cls, value: str) -> str:
         lowered = value.strip().lower()
-        if lowered not in {"admin", "secretary", "resident"}:
-            raise ValueError("role must be one of: admin, secretary, resident")
+        if lowered not in {"admin", "secretary", "resident", "external_resident"}:
+            raise ValueError(
+                "role must be one of: admin, secretary, resident, external_resident"
+            )
         return lowered
 
     @model_validator(mode="after")
     def _validate_login_shape(self) -> "LoginRequest":
-        if self.role == "resident":
+        if self.role in {"resident", "external_resident"}:
             if not self.mcr:
                 raise ValueError("mcr is required for resident login")
             return self

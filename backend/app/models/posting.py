@@ -18,6 +18,10 @@ class PostingCode(UUIDTimestampMixin, Base):
             "institution",
             "department",
         ),
+        Index(
+            "idx_posting_codes_supports_secretary_events",
+            "supports_secretary_events",
+        ),
     )
 
     code: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
@@ -26,6 +30,11 @@ class PostingCode(UUIDTimestampMixin, Base):
     department: Mapped[str | None] = mapped_column(String(50), nullable=True)
     billing_dept: Mapped[str | None] = mapped_column(String(50), nullable=True)
     is_emergency: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    )
+    supports_secretary_events: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
         server_default=text("false"),

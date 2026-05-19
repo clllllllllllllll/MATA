@@ -61,7 +61,7 @@ async def me(
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
     role = (x_user_role or "").strip().lower()
-    if role not in {"admin", "secretary", "resident"}:
+    if role not in {"admin", "secretary", "resident", "external_resident"}:
         raise ApiError(
             status_code=401,
             detail="Unauthorized",

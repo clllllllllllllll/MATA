@@ -1,4 +1,4 @@
-from app.models.attendance import AttendanceRecord, SurplusLedger
+from app.models.attendance import AttendanceRecord, ExternalAttendanceRecord, SurplusLedger
 from app.models.base import Base
 from app.models.posting import (
     MultiPostingRule,
@@ -17,7 +17,7 @@ from app.models.reporting import (
     ReportingPeriod,
     UploadLog,
 )
-from app.models.resident import Resident, ResidentPosting, User
+from app.models.resident import ExternalResident, ExternalResidentPosting, Resident, ResidentPosting, User
 from app.models.teaching import (
     EventSeries,
     GlobalSessionType,
@@ -29,6 +29,9 @@ from app.models.teaching import (
 
 __all__ = [
     "AttendanceRecord",
+    "ExternalAttendanceRecord",
+    "ExternalResident",
+    "ExternalResidentPosting",
     "AcademicMonthBoundary",
     "Base",
     "ClawbackRecord",

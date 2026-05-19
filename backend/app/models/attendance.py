@@ -54,6 +54,49 @@ class AttendanceRecord(UUIDTimestampMixin, Base):
     posting_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
 
+class ExternalAttendanceRecord(UUIDTimestampMixin, Base):
+    __tablename__ = "external_attendance_records"
+    __table_args__ = (
+        Index(
+            "idx_external_attendance_external_status",
+            "external_resident_id",
+            "status",
+        ),
+        Index(
+            "idx_external_attendance_event_status",
+            "teaching_event_id",
+            "status",
+        ),
+        Index(
+            "idx_external_attendance_submitted_external_event",
+            "external_resident_id",
+            "teaching_event_id",
+            unique=True,
+            postgresql_where=text("status = 'submitted'"),
+        ),
+    )
+
+    external_resident_id: Mapped[UUID] = mapped_column(
+        ForeignKey("external_residents.id"),
+        nullable=False,
+    )
+    teaching_event_id: Mapped[UUID] = mapped_column(
+        ForeignKey("teaching_events.id"),
+        nullable=False,
+    )
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        server_default=text("'submitted'"),
+    )
+    posting_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+
 class SurplusLedger(UUIDTimestampMixin, Base):
     __tablename__ = "surplus_ledger"
     __table_args__ = (
