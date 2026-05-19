@@ -33,7 +33,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if request.method == "OPTIONS" or path in self.OPEN_PATHS:
+        if request.method == "OPTIONS" or path in self.OPEN_PATHS or path.endswith("/auth/login"):
             return await call_next(request)
 
         role = (request.headers.get("X-User-Role") or "").strip().lower()

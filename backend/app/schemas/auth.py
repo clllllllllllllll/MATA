@@ -1,0 +1,38 @@
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: str = Field(min_length=1, max_length=20)
+    email: str | None = Field(default=None, max_length=100)
+    password: str | None = Field(default=None, max_length=255)
+    mcr: str | None = Field(default=None, max_length=20)
+
+    @field_validator("role", "email", "password", "mcr")
+    @classmethod
+    def _trim_strings(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
+
+    @field_validator("role")
+    @classmethod
+    def _normalise_role(cls, value: str) -> str:
+        lowered = value.strip().lower()
+        if lowered not in {"admin", "secretary", "resident"}:
+            raise ValueError("role must be one of: admin, secretary, resident")
+        return lowered
+
+    @model_validator(mode="after")
+    def _validate_login_shape(self) -> "LoginRequest":
+        if self.role == "resident":
+            if not self.mcr:
+                raise ValueError("mcr is required for resident login")
+            return self
+        if not self.email or not self.password:
+            raise ValueError("email and password are required for admin/secretary login")
+        return self
