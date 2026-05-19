@@ -95,3 +95,8 @@ backend/uploads/
 backend/tmp/
 backend/devtools/tmp_*.py
 docs/dev/
+# =============================================================================
+# Local UI design/reference exports
+# =============================================================================
+docs/ui-ref-code/
+docs/ui-ref-screenshots/
