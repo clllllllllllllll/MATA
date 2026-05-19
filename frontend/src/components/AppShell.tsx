@@ -4,7 +4,6 @@ import { breadcrumbMap, navItems, roleOptions } from '../config/navigation'
 import { useAppState } from '../context/useAppState'
 import type { AppRole } from '../types/app'
 import {
-  IconBell,
   IconCheck,
   IconChevDown,
   IconChevRight,
@@ -89,9 +88,6 @@ export const AppShell = () => {
           aria-haspopup="menu"
           aria-expanded={isRoleMenuOpen}
         >
-          <span className="sidebar-bell" aria-hidden="true">
-            <IconBell size={14} />
-          </span>
           <div className="avatar">{roleNameById[role].slice(0, 2).toUpperCase()}</div>
           <div className="sidebar-user-details">
             <strong>{roleNameById[role]}</strong>
@@ -181,11 +177,6 @@ export const AppShell = () => {
                   </span>
                 </span>
               ))}
-            </div>
-            <div className="appbar-right app-bar-actions">
-              <button type="button" className="appbar-bell icon-button" aria-label="Notifications">
-                <IconBell size={18} />
-              </button>
             </div>
           </div>
         </header>

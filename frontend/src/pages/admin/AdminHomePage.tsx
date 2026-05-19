@@ -1,4 +1,3 @@
-import { useMemo, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   IconCalendar,
@@ -10,18 +9,7 @@ import {
   IconUpload,
 } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
-import { StatusBadge } from '../../components/StatusBadge'
-import { uploadLabels } from '../../config/frontendConfig'
 import { useAppState } from '../../context/useAppState'
-import type { UploadType } from '../../types/app'
-
-const sourceOrder: UploadType[] = ['public_holidays', 'rdb', 'ttf', 'form_f1']
-const sourceIconByType: Record<UploadType, ReactNode> = {
-  public_holidays: <IconCalendar size={18} />,
-  rdb: <IconFile size={18} />,
-  ttf: <IconGrid size={18} />,
-  form_f1: <IconFile size={18} />,
-}
 
 const workspaceTiles = [
   {
@@ -68,18 +56,6 @@ const workspaceTiles = [
   },
 ]
 
-const getStatusTone = (uploadedAtIso?: string) => {
-  if (!uploadedAtIso) {
-    return { label: 'Missing', tone: 'critical' as const }
-  }
-
-  const ageInDays = (Date.now() - new Date(uploadedAtIso).getTime()) / (1000 * 60 * 60 * 24)
-  if (ageInDays > 30) {
-    return { label: 'Stale', tone: 'warning' as const }
-  }
-  return { label: 'Current', tone: 'success' as const }
-}
-
 const formatDateTime = (iso?: string) =>
   iso
     ? new Date(iso).toLocaleString(undefined, {
@@ -91,16 +67,6 @@ const formatDateTime = (iso?: string) =>
 export const AdminHomePage = () => {
   const navigate = useNavigate()
   const { uploadHistory, warnings } = useAppState()
-
-  const latestByType = useMemo(() => {
-    const map = new Map<UploadType, (typeof uploadHistory)[number]>()
-    uploadHistory.forEach((entry) => {
-      if (!map.has(entry.uploadType)) {
-        map.set(entry.uploadType, entry)
-      }
-    })
-    return map
-  }, [uploadHistory])
 
   const unresolvedWarnings = warnings.filter((item) => item.status === 'unresolved')
   const lastSyncText = uploadHistory[0]
@@ -128,44 +94,34 @@ export const AdminHomePage = () => {
         }
       />
 
-      <section className="grid grid-4">
-        {sourceOrder.map((uploadType) => {
-          const latest = latestByType.get(uploadType)
-          const status = getStatusTone(latest?.uploadedAtIso)
-          return (
-            <article key={uploadType} className="status-card">
-              <div className="top">
-                <div className="icon-wrap">{sourceIconByType[uploadType]}</div>
-                <StatusBadge label={status.label} tone={status.tone} />
-              </div>
-              <h3>{uploadLabels[uploadType]}</h3>
-              <p className="source-subtext">{formatDateTime(latest?.uploadedAtIso)}</p>
-              <button type="button" className="source-link" onClick={() => navigate('/admin/upload')}>
-                Upload {'->'}
-              </button>
-            </article>
-          )
-        })}
-      </section>
-
       <section className="grid grid-3">
-        {workspaceTiles.map((tile) => (
-          <article key={tile.title} className="tile">
-            <div className="icon-wrap">{tile.icon}</div>
-            <div className="t-title">{tile.title}</div>
-            <div className="t-desc">{tile.description}</div>
-            <div className="t-foot">
-              <strong>{tile.stat}</strong>
-            </div>
+        {workspaceTiles.map((tile) =>
+          tile.path === '#' ? (
+            <article key={tile.title} className="tile">
+              <div className="icon-wrap">{tile.icon}</div>
+              <div className="t-title">{tile.title}</div>
+              <div className="t-desc">{tile.description}</div>
+              <div className="t-foot">
+                <strong>{tile.stat}</strong>
+              </div>
+            </article>
+          ) : (
             <button
+              key={tile.title}
               type="button"
-              className="source-link t-open"
-              onClick={() => (tile.path === '#' ? undefined : navigate(tile.path))}
+              className="tile tile-button"
+              onClick={() => navigate(tile.path)}
+              aria-label={`${tile.title}. ${tile.description}`}
             >
-              Open {'->'}
+              <div className="icon-wrap">{tile.icon}</div>
+              <div className="t-title">{tile.title}</div>
+              <div className="t-desc">{tile.description}</div>
+              <div className="t-foot">
+                <strong>{tile.stat}</strong>
+              </div>
             </button>
-          </article>
-        ))}
+          ),
+        )}
       </section>
 
       <section className="bottom-split">
