@@ -30,6 +30,24 @@ Residents in medical training programmes are required to attend a minimum number
 
 ## Getting Started
 
+### Docker Compose (Full Stack)
+
+From repo root:
+
+```bash
+docker compose up --build
+docker compose exec backend alembic upgrade head
+```
+
+Open:
+- Frontend (Nginx): `http://localhost:8080`
+- Backend direct health: `http://localhost:8000/health`
+- Backend proxied health via frontend/Nginx: `http://localhost:8080/health`
+
+Notes:
+- Docker frontend build uses `VITE_API_BASE_URL=/api/v1` and reaches backend via Nginx proxy.
+- Local Vite development can still use `http://localhost:8000/api/v1` directly.
+
 ### Prerequisites
 
 - Python 3.12+

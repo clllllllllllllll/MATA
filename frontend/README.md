@@ -39,6 +39,21 @@ Notes:
 - Backend should run at `http://localhost:8000` (default API prefix `/api/v1`).
 - If backend is offline or blocked by CORS, the upload cards display a connection error.
 - Ensure backend CORS allowlist includes `http://localhost:5173`.
+- For Docker full-stack startup, frontend is served by Nginx on `http://localhost:8080` and proxies API calls to backend using `/api/v1`.
+- In Docker mode, set frontend build-time API base to `/api/v1` (already wired in `docker-compose.yml`).
+- Local Vite dev can still use direct backend API base: `http://localhost:8000/api/v1`.
+
+### Docker full-stack startup
+
+From repo root:
+
+1. `docker compose up --build`
+2. `docker compose exec backend alembic upgrade head`
+3. Open `http://localhost:8080`
+
+Checks:
+- Direct backend health: `http://localhost:8000/health`
+- Proxied health through Nginx: `http://localhost:8080/health`
 
 ### Data safety
 

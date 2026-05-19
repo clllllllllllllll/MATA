@@ -24,11 +24,23 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/mata_db
       SYNC_DATABASE_URL: postgresql://postgres:postgres@db:5432/mata_db
+      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080
     depends_on:
       db:
         condition: service_healthy
     ports:
       - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api/v1
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
 
 volumes:
   mata_postgres_data:
