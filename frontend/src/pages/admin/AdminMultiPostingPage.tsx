@@ -72,7 +72,7 @@ export const AdminMultiPostingPage = () => {
     if ('warningId' in (location.state ?? {})) {
       return stored
     }
-    return stored.warningType === 'unmatched_multi_posting' ? stored : null
+    return stored.type === 'unmatched_multi_posting' ? stored : null
   }, [location.state])
 
   return (
@@ -93,7 +93,7 @@ export const AdminMultiPostingPage = () => {
 
       {warningContext ? (
         <section className="inline-callout callout-warning">
-          Resolving warning context: {warningContext.warningType} -{' '}
+          Resolving warning context: {warningContext.type} -{' '}
           {warningContext.residentName ?? 'Resident'} - {warningContext.mcr ?? 'M00000X'} -{' '}
           {warningContext.monthLabel ?? 'Unknown month'}
         </section>

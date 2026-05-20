@@ -2,6 +2,59 @@ import { uploadLabels } from '../config/frontendConfig'
 import type { UploadType } from '../types/app'
 import type { NormalizedWarning, UploadMeta, WarningSeverity } from '../types/upload'
 
+const normalizeToken = (value: string | undefined): string =>
+  (value ?? '').trim().toLowerCase()
+
+const normalizePostingCodes = (codes: string[] | undefined): string =>
+  (codes ?? []).map((item) => item.trim().toLowerCase()).sort().join(',')
+
+export const makeUploadScopeKey = (params: {
+  uploadType: UploadType
+  reportingPeriodId?: string
+  programmeCode?: string
+}): string => {
+  if (params.uploadType === 'public_holidays') {
+    return 'public_holidays'
+  }
+  if (params.uploadType === 'ttf') {
+    return `ttf|${normalizeToken(params.reportingPeriodId)}|${normalizeToken(params.programmeCode)}`
+  }
+  return `${params.uploadType}|${normalizeToken(params.reportingPeriodId)}`
+}
+
+export const makeWarningDedupeKey = (warning: {
+  uploadType: UploadType
+  reportingPeriodId?: string
+  programmeCode?: string
+  type: string
+  mcr?: string
+  residentName?: string
+  monthLabel?: string
+  sheetName?: string
+  rowNumber?: number
+  cellRef?: string
+  postingCodes?: string[]
+  message: string
+}): string => {
+  const scopeKey = makeUploadScopeKey({
+    uploadType: warning.uploadType,
+    reportingPeriodId: warning.reportingPeriodId,
+    programmeCode: warning.programmeCode,
+  })
+  return [
+    scopeKey,
+    normalizeToken(warning.type),
+    normalizeToken(warning.mcr),
+    normalizeToken(warning.residentName),
+    normalizeToken(warning.monthLabel),
+    normalizeToken(warning.sheetName),
+    String(warning.rowNumber ?? ''),
+    normalizeToken(warning.cellRef),
+    normalizePostingCodes(warning.postingCodes),
+    normalizeToken(warning.message),
+  ].join('|')
+}
+
 const toStringValue = (value: unknown): string | undefined => {
   if (typeof value === 'string') {
     const trimmed = value.trim()
@@ -29,51 +82,106 @@ const severityFromWarningType = (warningType: string): WarningSeverity => {
   return 'info'
 }
 
+const toRowNumber = (value: unknown): number | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  if (typeof value === 'string' && Number.isFinite(Number(value))) {
+    return Number(value)
+  }
+  return undefined
+}
+
+const toPostingCodes = (value: unknown): string[] | undefined => {
+  if (!Array.isArray(value)) {
+    return undefined
+  }
+  const parsed = value.map(toStringValue).filter((item): item is string => Boolean(item))
+  return parsed.length > 0 ? parsed : undefined
+}
+
 const objectWarningToItem = (
   warning: Record<string, unknown>,
   fallbackType: string,
   uploadMeta: UploadMeta,
-  index: number,
 ): NormalizedWarning => {
   const warningType = toStringValue(warning.type) ?? fallbackType
+  const reportingPeriodId =
+    toStringValue(warning.reporting_period_id) ??
+    toStringValue(warning.reportingPeriodId) ??
+    uploadMeta.reportingPeriodId
+  const programmeCode =
+    toStringValue(warning.programme_code) ??
+    toStringValue(warning.programmeCode) ??
+    uploadMeta.programmeCode
+  const residentName = toStringValue(warning.resident_name) ?? toStringValue(warning.residentName)
+  const monthLabel =
+    toStringValue(warning.month_label) ??
+    toStringValue(warning.month) ??
+    toStringValue(warning.monthLabel)
+  const rowNumber = toRowNumber(warning.row_number)
+  const cellRef =
+    toStringValue(warning.cell_ref) ??
+    toStringValue(warning.cell) ??
+    toStringValue(warning.cellRef)
+  const postingCodes =
+    toPostingCodes(warning.posting_codes) ??
+    toPostingCodes(warning.postingCodes)
   const message =
     toStringValue(warning.message) ??
     toStringValue(warning.detail) ??
     toStringValue(warning.error) ??
     JSON.stringify(warning)
+  const scopeKey = makeUploadScopeKey({
+    uploadType: uploadMeta.uploadType,
+    reportingPeriodId,
+    programmeCode,
+  })
+  const id = makeWarningDedupeKey({
+    uploadType: uploadMeta.uploadType,
+    reportingPeriodId,
+    programmeCode,
+    type: warningType,
+    mcr: toStringValue(warning.mcr),
+    residentName,
+    monthLabel,
+    sheetName: toStringValue(warning.sheet_name),
+    rowNumber,
+    cellRef,
+    postingCodes,
+    message,
+  })
 
   return {
-    id: `${uploadMeta.id}-${warningType}-${index}`,
+    id,
+    scopeKey,
     uploadType: uploadMeta.uploadType,
     uploadLabel: uploadMeta.uploadLabel,
     severity: severityFromWarningType(warningType.toLowerCase()),
-    warningType,
+    type: warningType,
     message,
-    residentName: toStringValue(warning.resident_name) ?? toStringValue(warning.residentName),
+    filename: uploadMeta.filename,
+    reportingPeriodId,
+    reportingPeriodLabel:
+      toStringValue(warning.reporting_period_label) ??
+      toStringValue(warning.reportingPeriodLabel) ??
+      uploadMeta.reportingPeriodLabel,
+    residentName,
     mcr: toStringValue(warning.mcr),
-    programmeCode:
-      toStringValue(warning.programme_code) ??
-      toStringValue(warning.programmeCode) ??
-      uploadMeta.programmeCode,
-    monthLabel:
-      toStringValue(warning.month_label) ??
-      toStringValue(warning.month) ??
-      toStringValue(warning.monthLabel),
+    programmeCode,
+    monthLabel,
     sheetName: toStringValue(warning.sheet_name),
-    rowNumber:
-      typeof warning.row_number === 'number'
-        ? warning.row_number
-        : Number.isFinite(Number(warning.row_number))
-          ? Number(warning.row_number)
-          : undefined,
-    cellRef:
-      toStringValue(warning.cell_ref) ??
-      toStringValue(warning.cell) ??
-      toStringValue(warning.cellRef),
+    rowNumber,
+    cellRef,
     source: toStringValue(warning.source),
+    postingCodes,
     raw: warning,
     status: 'unresolved',
     uploadMetaId: uploadMeta.id,
+    suggestedAction:
+      warningType === 'unmatched_multi_posting'
+        ? 'Review or add a rule in Multi-Posting Rules, then re-upload the RDB if needed.'
+        : undefined,
   }
 }
 
@@ -81,18 +189,35 @@ const scalarWarningToItem = (
   warning: string,
   warningType: string,
   uploadMeta: UploadMeta,
-  index: number,
 ): NormalizedWarning => ({
-  id: `${uploadMeta.id}-${warningType}-${index}`,
+  id: makeWarningDedupeKey({
+    uploadType: uploadMeta.uploadType,
+    reportingPeriodId: uploadMeta.reportingPeriodId,
+    programmeCode: uploadMeta.programmeCode,
+    type: warningType,
+    message: warning,
+  }),
+  scopeKey: makeUploadScopeKey({
+    uploadType: uploadMeta.uploadType,
+    reportingPeriodId: uploadMeta.reportingPeriodId,
+    programmeCode: uploadMeta.programmeCode,
+  }),
   uploadType: uploadMeta.uploadType,
   uploadLabel: uploadMeta.uploadLabel,
   severity: severityFromWarningType(warningType.toLowerCase()),
-  warningType,
+  type: warningType,
   message: warning,
+  filename: uploadMeta.filename,
+  reportingPeriodId: uploadMeta.reportingPeriodId,
+  reportingPeriodLabel: uploadMeta.reportingPeriodLabel,
   programmeCode: uploadMeta.programmeCode,
   raw: warning,
   status: 'unresolved',
   uploadMetaId: uploadMeta.id,
+  suggestedAction:
+    warningType === 'unmatched_multi_posting'
+      ? 'Review or add a rule in Multi-Posting Rules, then re-upload the RDB if needed.'
+      : undefined,
 })
 
 const warningBuckets: Array<{ key: string; warningType: string }> = [
@@ -103,6 +228,8 @@ const warningBuckets: Array<{ key: string; warningType: string }> = [
   { key: 'skipped_mcr_warnings', warningType: 'skipped_mcr' },
   { key: 'duplicate_mcr_errors', warningType: 'duplicate_mcr_error' },
   { key: 'promotion_date_warnings', warningType: 'promotion_date_warning' },
+  { key: 'orphaned_attendance', warningType: 'orphaned_attendance' },
+  { key: 'unmatched_multi_posting', warningType: 'unmatched_multi_posting' },
   { key: 'errors', warningType: 'error' },
 ]
 
@@ -117,9 +244,9 @@ export const normalizeWarningsFromUploadResponse = (
       return
     }
 
-    value.forEach((entry, index) => {
+    value.forEach((entry) => {
       if (typeof entry === 'string') {
-        output.push(scalarWarningToItem(entry, bucket.warningType, uploadMeta, index))
+        output.push(scalarWarningToItem(entry, bucket.warningType, uploadMeta))
         return
       }
       if (typeof entry === 'object' && entry !== null) {
@@ -128,7 +255,6 @@ export const normalizeWarningsFromUploadResponse = (
             entry as Record<string, unknown>,
             bucket.warningType,
             uploadMeta,
-            index,
           ),
         )
       }
@@ -149,6 +275,8 @@ export const getWarningsCount = (response: Record<string, unknown>): number =>
   countFromArrayKey(response, 'skipped_mcr_warnings') +
   countFromArrayKey(response, 'duplicate_mcr_errors') +
   countFromArrayKey(response, 'promotion_date_warnings') +
+  countFromArrayKey(response, 'orphaned_attendance') +
+  countFromArrayKey(response, 'unmatched_multi_posting') +
   countFromArrayKey(response, 'errors')
 
 const sumNumericByKeys = (
@@ -190,7 +318,9 @@ export const getSummaryCounts = (response: Record<string, unknown>) => {
 export const makeUploadMeta = (params: {
   uploadType: UploadType
   response: Record<string, unknown>
+  filename?: string
   reportingPeriodId?: string
+  reportingPeriodLabel?: string
   programmeCode?: string
 }): UploadMeta => {
   const uploadedAtIso = new Date().toISOString()
@@ -201,7 +331,9 @@ export const makeUploadMeta = (params: {
     uploadType: params.uploadType,
     uploadLabel: uploadLabels[params.uploadType],
     uploadedAtIso,
+    filename: params.filename,
     reportingPeriodId: params.reportingPeriodId,
+    reportingPeriodLabel: params.reportingPeriodLabel,
     programmeCode: params.programmeCode,
     response: params.response,
     warningsCount: getWarningsCount(params.response),

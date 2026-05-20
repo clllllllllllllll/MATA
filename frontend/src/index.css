@@ -1158,8 +1158,20 @@ small {
 .filter-bar {
   padding: 16px;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
+  align-items: end;
+}
+
+.button-link {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  color: var(--purple);
+  font-size: inherit;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .table-wrap {
@@ -1200,7 +1212,8 @@ td,
   padding: 11px 14px;
   border-bottom: 1px solid var(--line);
   color: var(--ink);
-  vertical-align: middle;
+  vertical-align: top;
+  line-height: 1.4;
 }
 
 tr:last-child td {
@@ -1214,6 +1227,72 @@ tr:last-child td {
 
 .table-clickable-row:hover {
   background: #fafafd;
+}
+
+.warnings-table {
+  table-layout: fixed;
+  min-width: 1420px;
+}
+
+.warnings-table .col-severity {
+  width: 90px;
+}
+
+.warnings-table .col-type {
+  width: 180px;
+}
+
+.warnings-table .col-upload {
+  width: 165px;
+}
+
+.warnings-table .col-resident {
+  width: 150px;
+}
+
+.warnings-table .col-mcr {
+  width: 110px;
+}
+
+.warnings-table .col-programme {
+  width: 100px;
+}
+
+.warnings-table .col-month {
+  width: 95px;
+}
+
+.warnings-table .col-source {
+  width: 150px;
+}
+
+.warnings-table .col-status {
+  width: 95px;
+}
+
+.warnings-table .col-message {
+  width: auto;
+}
+
+.warnings-table .cell-type,
+.warnings-table .cell-upload,
+.warnings-table .cell-resident,
+.warnings-table .cell-mcr,
+.warnings-table .cell-programme,
+.warnings-table .cell-month,
+.warnings-table .cell-source,
+.warnings-table .cell-status {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.warnings-table .cell-message {
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: break-word;
+  line-height: 1.45;
+  min-width: 360px;
 }
 
 .tabs-underline {

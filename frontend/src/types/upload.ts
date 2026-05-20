@@ -1,6 +1,15 @@
 import type { UploadType } from './app'
 
-export type WarningSeverity = 'critical' | 'warning' | 'info' | 'resolved'
+export type WarningSeverity = 'critical' | 'warning' | 'info'
+export type WarningStatus = 'unresolved' | 'resolved' | 'dismissed'
+
+export interface ReportingPeriodOption {
+  id: string
+  label: string
+  startDate: string
+  endDate: string
+  status: 'open' | 'closed' | string
+}
 
 export interface UploadCardState {
   file: File | null
@@ -14,7 +23,9 @@ export interface UploadMeta {
   uploadType: UploadType
   uploadLabel: string
   uploadedAtIso: string
+  filename?: string
   reportingPeriodId?: string
+  reportingPeriodLabel?: string
   programmeCode?: string
   response: Record<string, unknown>
   warningsCount: number
@@ -22,11 +33,15 @@ export interface UploadMeta {
 
 export interface NormalizedWarning {
   id: string
+  scopeKey: string
   uploadType: UploadType
   uploadLabel: string
   severity: WarningSeverity
-  warningType: string
+  type: string
   message: string
+  filename?: string
+  reportingPeriodId?: string
+  reportingPeriodLabel?: string
   residentName?: string
   mcr?: string
   programmeCode?: string
@@ -34,8 +49,10 @@ export interface NormalizedWarning {
   sheetName?: string
   rowNumber?: number
   cellRef?: string
+  postingCodes?: string[]
   source?: string
   raw: unknown
-  status: 'unresolved' | 'resolved'
+  status: WarningStatus
   uploadMetaId: string
+  suggestedAction?: string
 }

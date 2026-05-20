@@ -52,6 +52,11 @@ export const AdminUploadPage = () => {
   const {
     reportingPeriodId,
     setReportingPeriodId,
+    reportingPeriodLabel,
+    reportingPeriods,
+    reportingPeriodsLoading,
+    reportingPeriodsError,
+    reloadReportingPeriods,
     selectedProgrammeCode,
     setSelectedProgrammeCode,
     demoAdminId,
@@ -83,11 +88,39 @@ export const AdminUploadPage = () => {
     addUploadResult({
       uploadType,
       response,
+      filename: file.name,
       reportingPeriodId,
+      reportingPeriodLabel,
       programmeCode: uploadType === 'ttf' ? selectedProgrammeCode : undefined,
     })
 
     return response
+  }
+
+  const formatPeriodOptionLabel = (label: string, startDate: string, endDate: string) => {
+    const start = new Date(startDate)
+    const end = new Date(endDate)
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) {
+      return label
+    }
+    const rangeText = `${start.toLocaleDateString(undefined, {
+      month: 'short',
+      year: 'numeric',
+    })} - ${end.toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}`
+    return `${label} (${rangeText})`
+  }
+
+  const hasSelectorOptions = reportingPeriods.length > 0
+  const useManualReportingPeriodFallback =
+    reportingPeriodsError !== null || (!reportingPeriodsLoading && reportingPeriods.length === 0)
+
+  const reviewWarningsForUpload = (uploadType: UploadType) => {
+    const latest = latestByType.get(uploadType)
+    if (!latest) {
+      navigate('/admin/upload/warnings')
+      return
+    }
+    navigate('/admin/upload/warnings')
   }
 
   return (
@@ -105,16 +138,37 @@ export const AdminUploadPage = () => {
         <h2>Upload parameters</h2>
         <div className="form-grid">
           <label>
-            Reporting period ID
-            <input
-              type="text"
-              value={reportingPeriodId}
-              onChange={(event) => setReportingPeriodId(event.target.value)}
-              placeholder="reporting_periods.id (UUID), required for RDB, TTF, FormF1"
-            />
-            <small>
-              Manual entry only in Phase 1. Use the exact `reporting_periods.id` value from backend data.
-            </small>
+            Reporting period
+            {hasSelectorOptions ? (
+              <>
+                <select value={reportingPeriodId} onChange={(event) => setReportingPeriodId(event.target.value)}>
+                  {reportingPeriods.map((period) => (
+                    <option key={period.id} value={period.id}>
+                      {formatPeriodOptionLabel(period.label, period.startDate, period.endDate)}
+                    </option>
+                  ))}
+                </select>
+                <small>Selects the reporting_period_id sent for RDB, TTF, and FormF1 uploads.</small>
+              </>
+            ) : null}
+            {reportingPeriodsLoading ? <small>Loading reporting periods...</small> : null}
+            {useManualReportingPeriodFallback ? (
+              <>
+                <input
+                  type="text"
+                  value={reportingPeriodId}
+                  onChange={(event) => setReportingPeriodId(event.target.value)}
+                  placeholder="reporting_periods.id (UUID), required for RDB, TTF, FormF1"
+                />
+                <small>
+                  Reporting-period list unavailable. Use manual UUID fallback.{' '}
+                  <button type="button" className="button-link" onClick={() => void reloadReportingPeriods()}>
+                    Retry loading list
+                  </button>
+                </small>
+              </>
+            ) : null}
+            {reportingPeriodsError ? <small className="upload-validation-text">{reportingPeriodsError}</small> : null}
           </label>
           <label>
             Programme code (TTF)
@@ -144,7 +198,7 @@ export const AdminUploadPage = () => {
           lastUploadedText={formatDateTime(latestByType.get('public_holidays')?.uploadedAtIso)}
           accept={acceptedByType.public_holidays}
           onUpload={(file) => uploadOne('public_holidays', file)}
-          onReviewWarnings={() => navigate('/admin/upload/warnings')}
+          onReviewWarnings={() => reviewWarningsForUpload('public_holidays')}
         />
 
         <UploadCard
@@ -156,7 +210,7 @@ export const AdminUploadPage = () => {
           requiresReportingPeriod
           reportingPeriodId={reportingPeriodId}
           onUpload={(file) => uploadOne('rdb', file)}
-          onReviewWarnings={() => navigate('/admin/upload/warnings')}
+          onReviewWarnings={() => reviewWarningsForUpload('rdb')}
         />
 
         <UploadCard
@@ -170,7 +224,7 @@ export const AdminUploadPage = () => {
           reportingPeriodId={reportingPeriodId}
           programmeCode={selectedProgrammeCode}
           onUpload={(file) => uploadOne('ttf', file)}
-          onReviewWarnings={() => navigate('/admin/upload/warnings')}
+          onReviewWarnings={() => reviewWarningsForUpload('ttf')}
         />
 
         <UploadCard
@@ -182,7 +236,7 @@ export const AdminUploadPage = () => {
           requiresReportingPeriod
           reportingPeriodId={reportingPeriodId}
           onUpload={(file) => uploadOne('form_f1', file)}
-          onReviewWarnings={() => navigate('/admin/upload/warnings')}
+          onReviewWarnings={() => reviewWarningsForUpload('form_f1')}
         />
       </section>
     </div>

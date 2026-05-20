@@ -169,12 +169,12 @@ export const AdminHomePage = () => {
           <ul className="warning-list">
             {unresolvedWarnings.slice(0, 5).map((warning) => (
               <li key={warning.id}>
-                <span className={`dot dot-${warning.severity}`} />
-                <div>
-                  <strong>{warning.warningType}</strong>
-                  <p>{warning.message}</p>
-                </div>
-              </li>
+                  <span className={`dot dot-${warning.severity}`} />
+                  <div>
+                    <strong>{warning.type}</strong>
+                    <p>{warning.message}</p>
+                  </div>
+                </li>
             ))}
             {unresolvedWarnings.length === 0 ? <li>No unresolved warnings.</li> : null}
           </ul>

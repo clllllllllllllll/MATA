@@ -14,17 +14,16 @@ const warningTone = (severity: NormalizedWarning['severity']) => {
   if (severity === 'warning') {
     return 'warning' as const
   }
-  if (severity === 'resolved') {
-    return 'success' as const
-  }
   return 'info' as const
 }
 
 export const AdminWarningsPage = () => {
   const navigate = useNavigate()
-  const { warnings, markWarningResolved } = useAppState()
+  const { warnings, updateWarningStatus, demoAdminProgrammes } = useAppState()
   const [selectedWarning, setSelectedWarning] = useState<NormalizedWarning | null>(null)
   const [uploadTypeFilter, setUploadTypeFilter] = useState<string>('all')
+  const [severityFilter, setSeverityFilter] = useState<string>('all')
+  const [statusFilter, setStatusFilter] = useState<string>('unresolved')
   const [programmeFilter, setProgrammeFilter] = useState<string>('all')
   const [searchTerm, setSearchTerm] = useState('')
 
@@ -32,50 +31,78 @@ export const AdminWarningsPage = () => {
     () =>
       Array.from(
         new Set(
-          warnings
+          [...demoAdminProgrammes, ...warnings
             .map((warning) => warning.programmeCode)
-            .filter((item): item is string => Boolean(item && item.trim())),
+            .filter((item): item is string => Boolean(item && item.trim()))],
         ),
       ).sort(),
+    [warnings, demoAdminProgrammes],
+  )
+
+  const unresolvedCount = useMemo(
+    () => warnings.filter((item) => item.status === 'unresolved').length,
     [warnings],
   )
 
   const filteredWarnings = useMemo(() => {
     return warnings.filter((warning) => {
       const byUploadType = uploadTypeFilter === 'all' || warning.uploadType === uploadTypeFilter
+      const bySeverity = severityFilter === 'all' || warning.severity === severityFilter
+      const byStatus = statusFilter === 'all' || warning.status === statusFilter
       const byProgramme =
         programmeFilter === 'all' || warning.programmeCode === programmeFilter
       const bySearch =
         searchTerm.trim().length === 0 ||
         [
-          warning.warningType,
+          warning.type,
           warning.message,
           warning.residentName,
           warning.mcr,
           warning.monthLabel,
           warning.sheetName,
+          warning.filename,
+          warning.reportingPeriodLabel,
         ]
           .filter(Boolean)
           .join(' ')
           .toLowerCase()
           .includes(searchTerm.toLowerCase())
 
-      return byUploadType && byProgramme && bySearch
+      return byUploadType && bySeverity && byStatus && byProgramme && bySearch
     })
-  }, [warnings, uploadTypeFilter, programmeFilter, searchTerm])
+  }, [warnings, uploadTypeFilter, severityFilter, statusFilter, programmeFilter, searchTerm])
+
+  const clearFilters = () => {
+    setUploadTypeFilter('all')
+    setSeverityFilter('all')
+    setStatusFilter('unresolved')
+    setProgrammeFilter('all')
+    setSearchTerm('')
+  }
 
   const openRelatedConfig = (warning: NormalizedWarning) => {
     saveWarningContext(warning)
-    navigate('/admin/config/multi', { state: { warningId: warning.id } })
+    const params = new URLSearchParams({
+      warningId: warning.id,
+      warningType: warning.type,
+      mcr: warning.mcr ?? '',
+      month: warning.monthLabel ?? '',
+      postingCodes: warning.postingCodes?.join(',') ?? '',
+    })
+    navigate(`/admin/config/multi?${params.toString()}`, { state: { warningId: warning.id } })
   }
 
   return (
     <div className="page">
       <PageHero
-        title="Warning Review"
-        subtitle="Master Admin - Aggregated warnings from latest upload responses"
+        title="Warnings"
+        subtitle={`${unresolvedCount} unresolved warning${unresolvedCount === 1 ? '' : 's'}`}
         meta={[{ label: 'Rows', value: String(filteredWarnings.length) }]}
       />
+
+      <section className="inline-callout callout-info">
+        Showing current warnings from the latest upload for each upload slot in this browser session.
+      </section>
 
       <section className="card filter-bar">
         <label>
@@ -89,6 +116,24 @@ export const AdminWarningsPage = () => {
             <option value="rdb">RDB</option>
             <option value="ttf">TTF</option>
             <option value="form_f1">FormF1</option>
+          </select>
+        </label>
+        <label>
+          Severity
+          <select value={severityFilter} onChange={(event) => setSeverityFilter(event.target.value)}>
+            <option value="all">All</option>
+            <option value="critical">Critical</option>
+            <option value="warning">Warning</option>
+            <option value="info">Info</option>
+          </select>
+        </label>
+        <label>
+          Status
+          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+            <option value="unresolved">Unresolved</option>
+            <option value="resolved">Resolved</option>
+            <option value="dismissed">Dismissed</option>
+            <option value="all">All</option>
           </select>
         </label>
         <label>
@@ -107,18 +152,33 @@ export const AdminWarningsPage = () => {
         </label>
         <label>
           Warning search
-          <input
-            type="search"
-            value={searchTerm}
-            onChange={(event) => setSearchTerm(event.target.value)}
-            placeholder="Type, resident, MCR, message..."
-          />
+            <input
+              type="search"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Type, resident, MCR, message..."
+            />
         </label>
+        <button type="button" className="button button-ghost" onClick={clearFilters}>
+          Clear filters
+        </button>
       </section>
 
       <section className="table-wrap">
         <div className="table-scroll">
-        <table className="table">
+        <table className="table warnings-table">
+          <colgroup>
+            <col className="col-severity" />
+            <col className="col-type" />
+            <col className="col-upload" />
+            <col className="col-resident" />
+            <col className="col-mcr" />
+            <col className="col-programme" />
+            <col className="col-month" />
+            <col className="col-source" />
+            <col className="col-message" />
+            <col className="col-status" />
+          </colgroup>
           <thead>
             <tr>
               <th>Severity</th>
@@ -136,7 +196,9 @@ export const AdminWarningsPage = () => {
           <tbody>
             {filteredWarnings.length === 0 ? (
               <tr>
-                <td colSpan={10}>No warnings match the selected filters.</td>
+                <td colSpan={10}>
+                  {warnings.length === 0 ? 'No warnings to review.' : 'No warnings match the selected filters.'}
+                </td>
               </tr>
             ) : (
               filteredWarnings.map((warning) => (
@@ -145,25 +207,25 @@ export const AdminWarningsPage = () => {
                   className="table-clickable-row"
                   onClick={() => setSelectedWarning(warning)}
                 >
-                  <td>
+                  <td className="cell-severity">
                     <StatusBadge
                       label={warning.severity.toUpperCase()}
                       tone={warningTone(warning.severity)}
                     />
                   </td>
-                  <td>{warning.warningType}</td>
-                  <td>{warning.uploadLabel}</td>
-                  <td>{warning.residentName ?? '-'}</td>
-                  <td>{warning.mcr ?? '-'}</td>
-                  <td>{warning.programmeCode ?? '-'}</td>
-                  <td>{warning.monthLabel ?? '-'}</td>
-                  <td>
+                  <td className="cell-type">{warning.type}</td>
+                  <td className="cell-upload">{warning.uploadLabel}</td>
+                  <td className="cell-resident">{warning.residentName ?? '-'}</td>
+                  <td className="cell-mcr">{warning.mcr ?? '-'}</td>
+                  <td className="cell-programme">{warning.programmeCode ?? '-'}</td>
+                  <td className="cell-month">{warning.monthLabel ?? '-'}</td>
+                  <td className="cell-source">
                     {warning.sheetName || warning.rowNumber || warning.cellRef
                       ? `${warning.sheetName ?? '-'} / ${warning.rowNumber ?? '-'} / ${warning.cellRef ?? '-'}`
                       : '-'}
                   </td>
-                  <td>{warning.message}</td>
-                  <td>{warning.status}</td>
+                  <td className="cell-message">{warning.message}</td>
+                  <td className="cell-status">{warning.status}</td>
                 </tr>
               ))
             )}
@@ -173,19 +235,19 @@ export const AdminWarningsPage = () => {
       </section>
 
       <DetailDrawer
-        title={selectedWarning ? `Warning: ${selectedWarning.warningType}` : 'Warning detail'}
+        title={selectedWarning ? `Warning: ${selectedWarning.type}` : 'Warning detail'}
         open={Boolean(selectedWarning)}
         onClose={() => setSelectedWarning(null)}
         footer={
           selectedWarning ? (
             <>
-              {selectedWarning.warningType === 'unmatched_multi_posting' ? (
+              {selectedWarning.type === 'unmatched_multi_posting' ? (
                 <button
                   type="button"
                   className="button button-secondary"
                   onClick={() => openRelatedConfig(selectedWarning)}
                 >
-                  Open related config
+                  Open Multi-Posting Rules →
                 </button>
               ) : null}
               {selectedWarning.status !== 'resolved' ? (
@@ -193,11 +255,35 @@ export const AdminWarningsPage = () => {
                   type="button"
                   className="button button-primary"
                   onClick={() => {
-                    markWarningResolved(selectedWarning.id)
+                    updateWarningStatus(selectedWarning.id, 'resolved')
                     setSelectedWarning({ ...selectedWarning, status: 'resolved' })
                   }}
                 >
                   Mark resolved
+                </button>
+              ) : null}
+              {selectedWarning.status !== 'dismissed' ? (
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={() => {
+                    updateWarningStatus(selectedWarning.id, 'dismissed')
+                    setSelectedWarning({ ...selectedWarning, status: 'dismissed' })
+                  }}
+                >
+                  Dismiss
+                </button>
+              ) : null}
+              {selectedWarning.status !== 'unresolved' ? (
+                <button
+                  type="button"
+                  className="button button-ghost"
+                  onClick={() => {
+                    updateWarningStatus(selectedWarning.id, 'unresolved')
+                    setSelectedWarning({ ...selectedWarning, status: 'unresolved' })
+                  }}
+                >
+                  Reopen
                 </button>
               ) : null}
             </>
@@ -211,14 +297,29 @@ export const AdminWarningsPage = () => {
               <p>{selectedWarning.message}</p>
             </div>
             <div className="detail-block">
+              <h3>Subject</h3>
+              <p>resident_name: {selectedWarning.residentName ?? '-'}</p>
+              <p>mcr: {selectedWarning.mcr ?? '-'}</p>
+              <p>programme_code: {selectedWarning.programmeCode ?? '-'}</p>
+              <p>month: {selectedWarning.monthLabel ?? '-'}</p>
+              <p>reporting_period: {selectedWarning.reportingPeriodLabel ?? selectedWarning.reportingPeriodId ?? '-'}</p>
+              <p>file: {selectedWarning.filename ?? '-'}</p>
+            </div>
+            <div className="detail-block">
               <h3>Source traceability</h3>
               <p>sheet_name: {selectedWarning.sheetName ?? '-'}</p>
               <p>row_number: {selectedWarning.rowNumber ?? '-'}</p>
               <p>cell_ref: {selectedWarning.cellRef ?? '-'}</p>
               <p>upload_type: {selectedWarning.uploadType}</p>
             </div>
+            {selectedWarning.suggestedAction ? (
+              <div className="detail-block">
+                <h3>Suggested action</h3>
+                <p>{selectedWarning.suggestedAction}</p>
+              </div>
+            ) : null}
             <div className="detail-block">
-              <h3>Raw warning JSON</h3>
+              <h3>Developer details</h3>
               <pre className="raw-json">{JSON.stringify(selectedWarning.raw, null, 2)}</pre>
             </div>
           </div>
