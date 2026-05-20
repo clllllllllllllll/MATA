@@ -20,14 +20,17 @@ const uploadPathByType: Record<UploadType, string> = {
 export const uploadWorkbook = async (
   payload: UploadRequest,
 ): Promise<Record<string, unknown>> => {
+  const reportingPeriodId = payload.reportingPeriodId?.trim()
+  const programmeCode = payload.programmeCode?.trim()
+
   const formData = new FormData()
   formData.append('file', payload.file)
 
   if (payload.uploadType === 'rdb' || payload.uploadType === 'ttf' || payload.uploadType === 'form_f1') {
-    formData.append('reporting_period_id', payload.reportingPeriodId ?? '')
+    formData.append('reporting_period_id', reportingPeriodId ?? '')
   }
   if (payload.uploadType === 'ttf') {
-    formData.append('programme_code', payload.programmeCode ?? '')
+    formData.append('programme_code', programmeCode ?? '')
   }
 
   try {

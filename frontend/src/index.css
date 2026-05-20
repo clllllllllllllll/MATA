@@ -535,6 +535,7 @@ a {
   grid-template-columns: 1fr 1fr;
   gap: 14px;
   max-width: 980px;
+  align-items: start;
 }
 
 .grid-8-4,
@@ -943,8 +944,8 @@ small {
   text-align: center;
   cursor: pointer;
   transition: all 0.15s ease;
-  flex: 1;
-  min-height: 120px;
+  flex: 0 0 auto;
+  min-height: 130px;
   justify-content: center;
 }
 
@@ -976,12 +977,73 @@ small {
   gap: 10px;
   width: 100%;
   text-align: left;
+  justify-content: space-between;
+}
+
+.selected-file-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .upload-card-actions {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.upload-validation-slot {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 2px;
+}
+
+.upload-validation-text {
+  color: var(--red);
+}
+
+.upload-progress-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fafafd;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.upload-state-panel {
+  min-height: 126px;
+}
+
+.upload-progress-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.upload-progress-row span:last-child {
+  font-family: var(--font-mono);
+  color: var(--ink-3);
+}
+
+.upload-progress-track {
+  height: 6px;
+  width: 100%;
+  border-radius: 999px;
+  background: var(--bg-2);
+  overflow: hidden;
+}
+
+.upload-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--purple);
+  transition: width 0.25s ease;
 }
 
 .inline-muted {
@@ -1000,6 +1062,48 @@ small {
   border: 1px solid transparent;
 }
 
+.upload-result-card {
+  border-radius: 12px;
+  padding: 14px 14px 13px;
+  min-height: 126px;
+}
+
+.upload-result-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.upload-result-message {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.upload-summary-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.upload-summary-metrics strong {
+  font-weight: 600;
+  display: inline-block;
+  min-width: 34px;
+}
+
+.upload-summary-metrics-inline {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
 .callout-info {
   background: var(--blue-tint);
   color: var(--blue);
@@ -1013,11 +1117,17 @@ small {
 .callout-error {
   background: var(--red-tint);
   color: var(--red);
+  border-color: #f1b0ac;
 }
 
 .callout-success {
   background: var(--green-tint);
   color: var(--green-text);
+  border-color: #b6dcc4;
+}
+
+.callout-warning {
+  border-color: #f7d17a;
 }
 
 .upload-summary-row,
@@ -1025,7 +1135,7 @@ small {
 .tab-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 10px;
   flex-wrap: wrap;
 }
@@ -1041,6 +1151,8 @@ small {
   line-height: 1.5;
   overflow: auto;
   max-height: 260px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .filter-bar {

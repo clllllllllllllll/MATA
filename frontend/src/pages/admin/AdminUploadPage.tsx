@@ -34,6 +34,11 @@ const getStatusTone = (uploadedAtIso?: string) => {
   return { label: 'Current', tone: 'success' as const }
 }
 
+const toDisplayStatus = (uploadedAtIso?: string) => {
+  const status = getStatusTone(uploadedAtIso)
+  return status.label === 'Current' ? undefined : status
+}
+
 const formatDateTime = (iso?: string) =>
   iso
     ? new Date(iso).toLocaleString(undefined, {
@@ -105,9 +110,11 @@ export const AdminUploadPage = () => {
               type="text"
               value={reportingPeriodId}
               onChange={(event) => setReportingPeriodId(event.target.value)}
-              placeholder="UUID, required for RDB, TTF, FormF1"
+              placeholder="reporting_periods.id (UUID), required for RDB, TTF, FormF1"
             />
-            <small>Manual entry is used until reporting-period reference endpoint is available.</small>
+            <small>
+              Manual entry only in Phase 1. Use the exact `reporting_periods.id` value from backend data.
+            </small>
           </label>
           <label>
             Programme code (TTF)
@@ -121,7 +128,10 @@ export const AdminUploadPage = () => {
                 </option>
               ))}
             </select>
-            <small>TTF upload checks this value against X-User-Programme scope.</small>
+            <small>
+              TTF upload checks this value against X-User-Programme scope. Bulk TTF upload is deferred; upload one
+              programme at a time.
+            </small>
           </label>
         </div>
       </section>
@@ -130,8 +140,7 @@ export const AdminUploadPage = () => {
         <UploadCard
           icon={sourceIconByType.public_holidays}
           title="Academic Calendar / Public Holidays"
-          subtitle="POST /admin/upload/public-holidays"
-          sourceStatus={getStatusTone(latestByType.get('public_holidays')?.uploadedAtIso)}
+          sourceStatus={toDisplayStatus(latestByType.get('public_holidays')?.uploadedAtIso)}
           lastUploadedText={formatDateTime(latestByType.get('public_holidays')?.uploadedAtIso)}
           accept={acceptedByType.public_holidays}
           onUpload={(file) => uploadOne('public_holidays', file)}
@@ -141,8 +150,7 @@ export const AdminUploadPage = () => {
         <UploadCard
           icon={sourceIconByType.rdb}
           title="RDB Posting Schedule"
-          subtitle="POST /admin/upload/rdb"
-          sourceStatus={getStatusTone(latestByType.get('rdb')?.uploadedAtIso)}
+          sourceStatus={toDisplayStatus(latestByType.get('rdb')?.uploadedAtIso)}
           lastUploadedText={formatDateTime(latestByType.get('rdb')?.uploadedAtIso)}
           accept={acceptedByType.rdb}
           requiresReportingPeriod
@@ -154,8 +162,7 @@ export const AdminUploadPage = () => {
         <UploadCard
           icon={sourceIconByType.ttf}
           title="Teaching Target File"
-          subtitle="POST /admin/upload/ttf"
-          sourceStatus={getStatusTone(latestByType.get('ttf')?.uploadedAtIso)}
+          sourceStatus={toDisplayStatus(latestByType.get('ttf')?.uploadedAtIso)}
           lastUploadedText={formatDateTime(latestByType.get('ttf')?.uploadedAtIso)}
           accept={acceptedByType.ttf}
           requiresReportingPeriod
@@ -169,8 +176,7 @@ export const AdminUploadPage = () => {
         <UploadCard
           icon={sourceIconByType.form_f1}
           title="FormF1"
-          subtitle="POST /admin/upload/form-f1"
-          sourceStatus={getStatusTone(latestByType.get('form_f1')?.uploadedAtIso)}
+          sourceStatus={toDisplayStatus(latestByType.get('form_f1')?.uploadedAtIso)}
           lastUploadedText={formatDateTime(latestByType.get('form_f1')?.uploadedAtIso)}
           accept={acceptedByType.form_f1}
           requiresReportingPeriod
