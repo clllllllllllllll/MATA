@@ -1,4 +1,5 @@
 import type { NavItem, RoleOption } from '../types/app'
+import { frontendConfig } from './frontendConfig'
 
 export const roleOptions: RoleOption[] = [
   {
@@ -16,19 +17,19 @@ export const roleOptions: RoleOption[] = [
   {
     id: 'secretary',
     label: 'Secretary',
-    scopeLabel: 'TTSH Geriatric Medicine',
-    defaultPath: '/secretary',
+    scopeLabel: frontendConfig.demoSecretaryScopeLabel,
+    defaultPath: '/secretary/events',
   },
   {
     id: 'resident',
     label: 'Native Resident',
-    scopeLabel: 'TTSH Geriatric Medicine · MCR M00001A',
+    scopeLabel: 'TTSH Geriatric Medicine - MCR M00001A',
     defaultPath: '/resident',
   },
   {
     id: 'external_resident',
     label: 'External Resident',
-    scopeLabel: 'NUH · posted to TTSH GRM',
+    scopeLabel: 'NUH - posted to TTSH GRM',
     defaultPath: '/external',
   },
 ]
@@ -65,10 +66,10 @@ export const navItems: NavItem[] = [
     icon: 'upload',
   },
   {
-    label: 'Dashboard',
-    path: '/secretary',
+    label: 'Teaching Schedule',
+    path: '/secretary/events',
     roles: ['secretary'],
-    icon: 'home',
+    icon: 'calendar',
   },
   {
     label: 'Submission Portal',
@@ -90,7 +91,8 @@ export const breadcrumbMap: Record<string, string[]> = {
   '/admin/upload/warnings': ['Master Admin', 'Warning Review'],
   '/admin/config/multi': ['Master Admin', 'Multi-Posting Rules'],
   '/pc/upload-ttf': ['Programme PC', 'Upload TTF'],
-  '/secretary': ['Secretary', 'Dashboard'],
+  '/secretary': ['Secretary', 'Teaching Schedule'],
+  '/secretary/events': ['Secretary', 'Teaching Schedule'],
   '/resident': ['Native Resident', 'Submission Portal'],
   '/external': ['External Resident', 'Submission Portal'],
 }

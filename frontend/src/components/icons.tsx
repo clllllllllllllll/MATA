@@ -131,6 +131,21 @@ export const IconCheck = (props: IconProps) => (
   </SvgIcon>
 )
 
+export const IconPlus = (props: IconProps) => (
+  <SvgIcon {...props}>
+    <path d="M12 5v14" />
+    <path d="M5 12h14" />
+  </SvgIcon>
+)
+
+export const IconDownload = (props: IconProps) => (
+  <SvgIcon {...props}>
+    <path d="M12 4v11" />
+    <path d="M7 10l5 5 5-5" />
+    <path d="M4 20h16" />
+  </SvgIcon>
+)
+
 interface NamedIconProps extends IconProps {
   name: string
 }

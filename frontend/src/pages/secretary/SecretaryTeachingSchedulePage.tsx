@@ -1,0 +1,883 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { PageHero } from '../../components/PageHero'
+import { DetailDrawer } from '../../components/DetailDrawer'
+import { IconCalendar, IconDownload, IconPlus } from '../../components/icons'
+import { frontendConfig } from '../../config/frontendConfig'
+import { useAppState } from '../../context/useAppState'
+import type { ReportingPeriodOption } from '../../types/upload'
+import { ApiRequestError } from '../../api/http'
+import {
+  createSecretaryTeachingEvent,
+  deleteSecretaryTeachingEvent,
+  listSecretaryTeachingEvents,
+  listSecretaryTeachingNameOptions,
+  type SecretaryTeachingEvent,
+  type TeachingNameOption,
+} from '../../api/secretaryEvents'
+
+interface TeachingFormState {
+  teachingName: string
+  eventDate: string
+  startTime: string
+  cmePointsAwarded: boolean
+  smcEventCode: string
+}
+
+type DrawerMode = 'create' | 'duplicate' | 'edit'
+
+const INITIAL_FORM: TeachingFormState = {
+  teachingName: '',
+  eventDate: '',
+  startTime: '',
+  cmePointsAwarded: false,
+  smcEventCode: '',
+}
+
+const START_TIME_OPTIONS = Array.from({ length: 24 * 4 }, (_, index) => {
+  const totalMinutes = index * 15
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
+})
+
+const toTimeInputValue = (value?: string) => {
+  if (!value) {
+    return ''
+  }
+  const parts = value.split(':')
+  if (parts.length < 2) {
+    return ''
+  }
+  return `${parts[0].padStart(2, '0')}:${parts[1].padStart(2, '0')}`
+}
+
+const formatDate = (value?: string) => {
+  if (!value) {
+    return '-'
+  }
+  const dateValue = new Date(value)
+  if (!Number.isFinite(dateValue.getTime())) {
+    return value
+  }
+  return dateValue.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  })
+}
+
+const formatTime = (value?: string) => {
+  if (!value) {
+    return '-'
+  }
+  const parts = value.split(':')
+  if (parts.length < 2) {
+    return value
+  }
+  const hours = Number(parts[0])
+  const minutes = parts[1]
+  if (!Number.isFinite(hours)) {
+    return value
+  }
+  const suffix = hours >= 12 ? 'pm' : 'am'
+  const hour12 = hours % 12 || 12
+  return `${String(hour12).padStart(2, '0')}:${minutes} ${suffix}`
+}
+
+const formatDuration = (value?: number) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '-'
+  }
+  const rounded = Number.isInteger(value) ? String(value) : value.toFixed(1)
+  return `${rounded}h`
+}
+
+const normaliseApiError = (error: ApiRequestError, mode: 'list' | 'create' | 'options'): string => {
+  if (error.status === 401 || error.status === 403) {
+    return 'Secretary authentication or posting scope is invalid. Check demo secretary headers.'
+  }
+  if (error.status === 422) {
+    if (/public holiday/i.test(error.message)) {
+      return 'Teaching events cannot be created on public holidays.'
+    }
+    return error.message || 'Validation failed. Please review the form fields.'
+  }
+  if (error.status === 409) {
+    return error.message || 'This teaching event conflicts with existing records.'
+  }
+  if (error.isNetworkError) {
+    return 'Cannot reach backend API. Verify frontend proxy and backend server are running.'
+  }
+  if (mode === 'list') {
+    return 'Unable to load teaching events right now.'
+  }
+  if (mode === 'options') {
+    return 'Unable to load teaching name options. Use manual name entry for now.'
+  }
+  return 'Unable to create teaching event right now. Please try again.'
+}
+
+const buildEventCsv = (events: SecretaryTeachingEvent[]) => {
+  const headers = [
+    'Teaching Type',
+    'Name of Teaching',
+    'Date',
+    'Start Time',
+    'Duration',
+    'CME Points',
+    'SMC Event',
+    'Created',
+  ]
+  const rows = events.map((event) => [
+    '',
+    event.teachingName,
+    event.eventDate,
+    event.startTime,
+    event.durationHours ?? '',
+    event.cmePointsAwarded ? 'Yes' : 'No',
+    event.smcEventCode ?? '',
+    event.createdAt ?? '',
+  ])
+  const csvRows = [headers, ...rows]
+  return csvRows
+    .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(','))
+    .join('\n')
+}
+
+const toPeriodRange = (period: ReportingPeriodOption | undefined) => {
+  if (!period) {
+    return {}
+  }
+  return {
+    dateFrom: period.startDate,
+    dateTo: period.endDate,
+  }
+}
+
+const isDateWithinPeriod = (eventDate: string, periodStart?: string, periodEnd?: string) => {
+  if (!eventDate || !periodStart || !periodEnd) {
+    return true
+  }
+  return eventDate >= periodStart && eventDate <= periodEnd
+}
+
+export const SecretaryTeachingSchedulePage = () => {
+  const {
+    reportingPeriodId,
+    setReportingPeriodId,
+    reportingPeriods,
+    reportingPeriodsLoading,
+    reportingPeriodsError,
+  } = useAppState()
+
+  const [events, setEvents] = useState<SecretaryTeachingEvent[]>([])
+  const [recentCreatedEvents, setRecentCreatedEvents] = useState<SecretaryTeachingEvent[]>([])
+  const [eventsLoading, setEventsLoading] = useState(true)
+  const [eventsError, setEventsError] = useState<string | null>(null)
+  const [supportsEventListEndpoint, setSupportsEventListEndpoint] = useState(true)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+
+  const [nameOptions, setNameOptions] = useState<TeachingNameOption[]>([])
+  const [nameOptionsLoading, setNameOptionsLoading] = useState(false)
+  const [nameOptionsError, setNameOptionsError] = useState<string | null>(null)
+  const [supportsNameOptionsEndpoint, setSupportsNameOptionsEndpoint] = useState(true)
+  const [nameOptionsLoaded, setNameOptionsLoaded] = useState(false)
+
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [drawerMode, setDrawerMode] = useState<DrawerMode>('create')
+  const [formState, setFormState] = useState<TeachingFormState>(INITIAL_FORM)
+  const [formErrors, setFormErrors] = useState<Partial<Record<keyof TeachingFormState, string>>>({})
+  const [submitState, setSubmitState] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle')
+  const [submitMessage, setSubmitMessage] = useState<string | null>(null)
+  const [submitErrorDetailsOpen, setSubmitErrorDetailsOpen] = useState(false)
+  const [submitErrorDetails, setSubmitErrorDetails] = useState<unknown>(null)
+
+  const selectedPeriod = useMemo(
+    () => reportingPeriods.find((period) => period.id === reportingPeriodId),
+    [reportingPeriods, reportingPeriodId],
+  )
+
+  const loadEvents = useCallback(async (): Promise<SecretaryTeachingEvent[]> => {
+    const range = toPeriodRange(selectedPeriod)
+    const hasRange = Boolean(range.dateFrom || range.dateTo)
+    const filteredEvents = await listSecretaryTeachingEvents(range)
+    if (filteredEvents.length > 0 || !hasRange) {
+      return filteredEvents
+    }
+    return listSecretaryTeachingEvents()
+  }, [selectedPeriod])
+
+  useEffect(() => {
+    let active = true
+    ;(async () => {
+      setEventsLoading(true)
+      setEventsError(null)
+      try {
+        const response = await loadEvents()
+        if (!active) {
+          return
+        }
+        setSupportsEventListEndpoint(true)
+        setEvents(response)
+        setSelectedIds(new Set())
+      } catch (error) {
+        if (!active) {
+          return
+        }
+        if (error instanceof ApiRequestError && error.status === 404) {
+          setSupportsEventListEndpoint(false)
+          setEvents([])
+          setEventsError(
+            'Teaching-event list endpoint is unavailable. Showing locally created events for demo continuity.',
+          )
+        } else {
+          const message =
+            error instanceof ApiRequestError
+              ? normaliseApiError(error, 'list')
+              : 'Unable to load teaching events right now.'
+          setEventsError(message)
+        }
+      } finally {
+        if (active) {
+          setEventsLoading(false)
+        }
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [loadEvents])
+
+  const loadTeachingNameOptions = useCallback(async () => {
+    setNameOptionsLoading(true)
+    setNameOptionsError(null)
+    try {
+      const options = await listSecretaryTeachingNameOptions()
+      setSupportsNameOptionsEndpoint(true)
+      setNameOptions(options)
+      setNameOptionsLoaded(true)
+    } catch (error) {
+      if (error instanceof ApiRequestError && error.status === 404) {
+        setSupportsNameOptionsEndpoint(false)
+        setNameOptions([])
+      } else {
+        const message =
+          error instanceof ApiRequestError
+            ? normaliseApiError(error, 'options')
+            : 'Unable to load teaching name options.'
+        setNameOptionsError(message)
+      }
+      setNameOptionsLoaded(true)
+    } finally {
+      setNameOptionsLoading(false)
+    }
+  }, [])
+
+  const teachingTypeByName = useMemo(() => {
+    const map = new Map<string, string>()
+    nameOptions.forEach((option) => {
+      if (!map.has(option.keyword) && option.sessionType) {
+        map.set(option.keyword, option.sessionType)
+      }
+    })
+    return map
+  }, [nameOptions])
+
+  const visibleEvents = supportsEventListEndpoint ? events : recentCreatedEvents
+  const hasNameOptions = supportsNameOptionsEndpoint && nameOptions.length > 0
+  const isNameOptionsInitialLoading = nameOptionsLoading && nameOptions.length === 0
+  const shouldUseTextFallback =
+    !isNameOptionsInitialLoading && (!supportsNameOptionsEndpoint || !!nameOptionsError || nameOptions.length === 0)
+  const selectedPeriodDateError = useMemo(() => {
+    if (!formState.eventDate || !selectedPeriod) {
+      return null
+    }
+    return isDateWithinPeriod(formState.eventDate, selectedPeriod.startDate, selectedPeriod.endDate)
+      ? null
+      : 'Event date must be within the selected reporting period.'
+  }, [formState.eventDate, selectedPeriod])
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((previous) => {
+      const next = new Set(previous)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  const visibleSelectedCount = useMemo(() => {
+    const visibleIds = new Set(visibleEvents.map((event) => event.id))
+    return [...selectedIds].filter((id) => visibleIds.has(id)).length
+  }, [selectedIds, visibleEvents])
+  const singleSelectedEvent = useMemo(() => {
+    if (visibleSelectedCount !== 1) {
+      return null
+    }
+    const selectedId = [...selectedIds].find((id) => visibleEvents.some((event) => event.id === id))
+    if (!selectedId) {
+      return null
+    }
+    return visibleEvents.find((event) => event.id === selectedId) ?? null
+  }, [selectedIds, visibleEvents, visibleSelectedCount])
+
+  const resetForm = () => {
+    setFormState(INITIAL_FORM)
+    setFormErrors({})
+    setSubmitState('idle')
+    setSubmitMessage(null)
+    setSubmitErrorDetails(null)
+    setSubmitErrorDetailsOpen(false)
+  }
+
+  const closeDrawer = () => {
+    setDrawerOpen(false)
+    setDrawerMode('create')
+    resetForm()
+  }
+
+  const openDrawer = () => {
+    setDrawerMode('create')
+    resetForm()
+    setDrawerOpen(true)
+    if (!supportsNameOptionsEndpoint || nameOptionsLoaded || nameOptionsLoading) {
+      return
+    }
+    void loadTeachingNameOptions()
+  }
+
+  const clearSelection = () => {
+    setSelectedIds(() => new Set())
+  }
+
+  const handleOpenDuplicate = () => {
+    if (!singleSelectedEvent) {
+      return
+    }
+    setDrawerMode('duplicate')
+    setFormState({
+      teachingName: singleSelectedEvent.teachingName,
+      eventDate: singleSelectedEvent.eventDate,
+      startTime: toTimeInputValue(singleSelectedEvent.startTime),
+      cmePointsAwarded: singleSelectedEvent.cmePointsAwarded,
+      smcEventCode: singleSelectedEvent.smcEventCode ?? '',
+    })
+    setFormErrors({})
+    setSubmitState('idle')
+    setSubmitMessage(null)
+    setSubmitErrorDetails(null)
+    setSubmitErrorDetailsOpen(false)
+    setDrawerOpen(true)
+    if (!supportsNameOptionsEndpoint || nameOptionsLoaded || nameOptionsLoading) {
+      return
+    }
+    void loadTeachingNameOptions()
+  }
+
+  const handleOpenEdit = () => {
+    if (!singleSelectedEvent) {
+      return
+    }
+    setDrawerMode('edit')
+    setFormState({
+      teachingName: singleSelectedEvent.teachingName,
+      eventDate: singleSelectedEvent.eventDate,
+      startTime: toTimeInputValue(singleSelectedEvent.startTime),
+      cmePointsAwarded: singleSelectedEvent.cmePointsAwarded,
+      smcEventCode: singleSelectedEvent.smcEventCode ?? '',
+    })
+    setFormErrors({})
+    setSubmitState('idle')
+    setSubmitMessage('Edit is not available yet. Use Duplicate to create a modified copy.')
+    setSubmitErrorDetails(null)
+    setSubmitErrorDetailsOpen(false)
+    setDrawerOpen(true)
+    if (!supportsNameOptionsEndpoint || nameOptionsLoaded || nameOptionsLoading) {
+      return
+    }
+    void loadTeachingNameOptions()
+  }
+
+  const handleDeleteSelected = async () => {
+    const idsToDelete = visibleEvents.map((event) => event.id).filter((id) => selectedIds.has(id))
+    if (idsToDelete.length === 0) {
+      return
+    }
+    setSubmitState('submitting')
+    setSubmitMessage(null)
+    try {
+      await Promise.all(idsToDelete.map((id) => deleteSecretaryTeachingEvent(id)))
+      if (supportsEventListEndpoint) {
+        const refreshed = await loadEvents()
+        setEvents(refreshed)
+      } else {
+        setRecentCreatedEvents((previous) => previous.filter((event) => !idsToDelete.includes(event.id)))
+      }
+      setSelectedIds(() => new Set())
+      setSubmitState('idle')
+      setSubmitMessage(null)
+    } catch (error) {
+      const message =
+        error instanceof ApiRequestError
+          ? normaliseApiError(error, 'create')
+          : 'Unable to delete teaching event right now. Please try again.'
+      setSubmitState('error')
+      setSubmitMessage(message)
+    }
+  }
+
+  const handleCreate = async () => {
+    if (drawerMode === 'edit') {
+      setSubmitState('error')
+      setSubmitMessage('Edit is not available yet. Use Duplicate to create a modified copy.')
+      return
+    }
+    const nextErrors: Partial<Record<keyof TeachingFormState, string>> = {}
+    if (!formState.teachingName.trim()) {
+      nextErrors.teachingName = 'Teaching name is required.'
+    }
+    if (!formState.eventDate) {
+      nextErrors.eventDate = 'Event date is required.'
+    } else if (
+      selectedPeriod &&
+      !isDateWithinPeriod(formState.eventDate, selectedPeriod.startDate, selectedPeriod.endDate)
+    ) {
+      nextErrors.eventDate = 'Event date must be within the selected reporting period.'
+    }
+    if (!formState.startTime) {
+      nextErrors.startTime = 'Start time is required.'
+    }
+    setFormErrors(nextErrors)
+    if (Object.keys(nextErrors).length > 0) {
+      setSubmitState('error')
+      setSubmitMessage('Please complete required fields before creating the teaching event.')
+      return
+    }
+
+    setSubmitState('submitting')
+    setSubmitMessage(null)
+    setSubmitErrorDetails(null)
+    try {
+      const createdEvent = await createSecretaryTeachingEvent({
+        teachingName: formState.teachingName.trim(),
+        eventDate: formState.eventDate,
+        startTime: formState.startTime,
+        cmePointsAwarded: formState.cmePointsAwarded,
+        smcEventCode: formState.cmePointsAwarded ? formState.smcEventCode.trim() || undefined : undefined,
+      })
+
+      if (supportsEventListEndpoint) {
+        const refreshed = await loadEvents()
+        if (refreshed.some((event) => event.id === createdEvent.id)) {
+          setEvents(refreshed)
+        } else {
+          setEvents([createdEvent, ...refreshed.filter((event) => event.id !== createdEvent.id)])
+        }
+      } else {
+        setRecentCreatedEvents((previous) => [createdEvent, ...previous])
+      }
+
+      setSubmitState('success')
+      setSubmitMessage('Teaching event created successfully.')
+      setSelectedIds(new Set())
+      closeDrawer()
+    } catch (error) {
+      const message =
+        error instanceof ApiRequestError
+          ? normaliseApiError(error, 'create')
+          : 'Unable to create teaching event right now.'
+      setSubmitState('error')
+      setSubmitMessage(message)
+      if (error instanceof ApiRequestError) {
+        setSubmitErrorDetails(error.details)
+      }
+    }
+  }
+
+  const handleExport = () => {
+    const csv = buildEventCsv(visibleEvents)
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'secretary-teaching-schedule.csv'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <div className="page secretary-page">
+      <PageHero
+        title="Teaching Schedule"
+        subtitle={frontendConfig.demoSecretaryScopeLabel}
+        actions={
+          <div className="secretary-hero-actions">
+            <span className="scope-chip">
+              <IconCalendar size={12} />
+              Scoped to {frontendConfig.demoSecretaryScopeLabel}
+            </span>
+            <div className="hero-action-row">
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={handleExport}
+                disabled={visibleEvents.length === 0}
+              >
+                <IconDownload size={14} />
+                Export
+              </button>
+              <button type="button" className="button button-primary" onClick={openDrawer}>
+                <IconPlus size={14} />
+                Add Teaching
+              </button>
+            </div>
+          </div>
+        }
+      />
+
+      <section className="secretary-period-row">
+        {reportingPeriodsLoading ? <span className="inline-muted">Loading reporting periods...</span> : null}
+        {!reportingPeriodsLoading && reportingPeriods.length > 0 ? (
+          <div className="filter-row">
+            {reportingPeriods.map((period) => (
+              <button
+                key={period.id}
+                type="button"
+                className={`filter-chip ${period.id === reportingPeriodId ? 'active' : ''}`}
+                onClick={() => setReportingPeriodId(period.id)}
+              >
+                {period.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {reportingPeriodsError ? <p className="upload-validation-text">{reportingPeriodsError}</p> : null}
+      </section>
+
+      <section className="card secretary-table-card">
+        <div className="section-header secretary-table-header">
+          <h2>Teaching schedule</h2>
+          {visibleSelectedCount > 0 ? (
+            <div className="secretary-selection-toolbar">
+              <span className="inline-muted">{visibleSelectedCount} selected</span>
+              <button
+                type="button"
+                className="button button-ghost"
+                onClick={handleOpenEdit}
+                disabled={visibleSelectedCount !== 1}
+                title={visibleSelectedCount !== 1 ? 'Select exactly one row to edit.' : 'Edit endpoint is not available yet.'}
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={handleOpenDuplicate}
+                disabled={visibleSelectedCount !== 1}
+                title={visibleSelectedCount !== 1 ? 'Select exactly one row to duplicate.' : undefined}
+              >
+                Duplicate
+              </button>
+              <button
+                type="button"
+                className="button button-ghost danger"
+                onClick={() => void handleDeleteSelected()}
+              >
+                Delete
+              </button>
+              <button
+                type="button"
+                className="button button-ghost"
+                onClick={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  clearSelection()
+                }}
+              >
+                Clear
+              </button>
+            </div>
+          ) : (
+            <span className="inline-muted">Select rows to review details</span>
+          )}
+        </div>
+
+        {submitState === 'success' && submitMessage ? (
+          <div className="inline-callout callout-success secretary-inline-callout">
+            <span>{submitMessage}</span>
+          </div>
+        ) : null}
+        {eventsError ? (
+          <div className="inline-callout callout-warning secretary-inline-callout">
+            <span>{eventsError}</span>
+          </div>
+        ) : null}
+
+        <div className="table-wrap secretary-table-wrap">
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th className="col-check" />
+                  <th>Teaching Type</th>
+                  <th>Name of Teaching</th>
+                  <th>Date</th>
+                  <th>Start Time</th>
+                  <th>Duration</th>
+                  <th>CME Pts</th>
+                  <th>SMC Event</th>
+                  <th>Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {eventsLoading ? (
+                  <tr>
+                    <td colSpan={9}>Loading teaching events...</td>
+                  </tr>
+                ) : visibleEvents.length === 0 ? (
+                  <tr>
+                    <td colSpan={9}>No teaching events yet.</td>
+                  </tr>
+                ) : (
+                  visibleEvents.map((event) => {
+                    const selected = selectedIds.has(event.id)
+                    const teachingType = event.sessionTypeName ?? teachingTypeByName.get(event.teachingName) ?? '-'
+                    return (
+                      <tr
+                        key={event.id}
+                        className={`table-clickable-row ${selected ? 'secretary-row-selected' : ''}`}
+                        onClick={() => toggleSelected(event.id)}
+                      >
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            onChange={() => toggleSelected(event.id)}
+                            onClick={(clickEvent) => clickEvent.stopPropagation()}
+                            aria-label={`Select ${event.teachingName}`}
+                          />
+                        </td>
+                        <td>
+                          <span className="secretary-type-pill">{teachingType}</span>
+                        </td>
+                        <td className="secretary-teaching-name">{event.teachingName}</td>
+                        <td className="mono">{formatDate(event.eventDate)}</td>
+                        <td className="mono">{formatTime(event.startTime)}</td>
+                        <td>{formatDuration(event.durationHours)}</td>
+                        <td>
+                          <span
+                            className={`status-badge ${
+                              event.cmePointsAwarded ? 'status-badge-success' : 'status-badge-neutral'
+                            }`}
+                          >
+                            {event.cmePointsAwarded ? 'Yes' : 'No'}
+                          </span>
+                        </td>
+                        <td className="mono">{event.smcEventCode ?? '-'}</td>
+                        <td>{formatDate(event.createdAt)}</td>
+                      </tr>
+                    )
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <DetailDrawer
+        title={drawerMode === 'duplicate' ? 'Duplicate Teaching' : drawerMode === 'edit' ? 'Edit Teaching' : 'Add Teaching'}
+        open={drawerOpen}
+        onClose={closeDrawer}
+        footer={
+          <>
+            <button type="button" className="button button-ghost" onClick={closeDrawer}>
+              Cancel
+            </button>
+              <button
+                type="button"
+                className="button button-primary"
+                onClick={() => void handleCreate()}
+                disabled={drawerMode === 'edit' || !!selectedPeriodDateError}
+                title={drawerMode === 'edit' ? 'Edit endpoint is not available yet.' : undefined}
+              >
+              {drawerMode === 'duplicate' ? 'Create duplicate' : drawerMode === 'edit' ? 'Edit unavailable' : 'Create teaching'}
+            </button>
+          </>
+        }
+      >
+        <div className="secretary-form-grid">
+          <label>
+            Teaching name
+            {hasNameOptions ? (
+              <select
+                value={formState.teachingName}
+                onChange={(event) =>
+                  setFormState((previous) => ({
+                    ...previous,
+                    teachingName: event.target.value,
+                  }))
+                }
+              >
+                <option value="">Select teaching name</option>
+                {nameOptions.map((option) => (
+                  <option key={option.keyword} value={option.keyword}>
+                    {option.keyword}
+                  </option>
+                ))}
+              </select>
+            ) : shouldUseTextFallback ? (
+              <>
+                <input
+                  type="text"
+                  value={formState.teachingName}
+                  onChange={(event) =>
+                    setFormState((previous) => ({
+                      ...previous,
+                      teachingName: event.target.value,
+                    }))
+                  }
+                  placeholder="e.g. GRM Journal Club"
+                />
+                <small>
+                  Teaching name must match an available catalogue keyword for resident visibility.
+                </small>
+              </>
+            ) : (
+              <>
+                <input type="text" value="Loading teaching name options..." readOnly disabled />
+                <small>Loading teaching names for this secretary posting.</small>
+              </>
+            )}
+            {formErrors.teachingName ? (
+              <small className="upload-validation-text">{formErrors.teachingName}</small>
+            ) : null}
+            {nameOptionsError ? <small className="upload-validation-text">{nameOptionsError}</small> : null}
+            {!nameOptionsLoading && nameOptions.length === 0 && !nameOptionsError ? (
+              <small className="inline-muted">
+                No teaching-name options were returned. You can type a teaching name manually.
+              </small>
+            ) : null}
+          </label>
+
+          <div className="secretary-form-row">
+            <label>
+              Event date
+              <input
+                type="date"
+                value={formState.eventDate}
+                min={selectedPeriod?.startDate}
+                max={selectedPeriod?.endDate}
+                onChange={(event) =>
+                  setFormState((previous) => ({
+                    ...previous,
+                    eventDate: event.target.value,
+                  }))
+                }
+              />
+              {formErrors.eventDate ? <small className="upload-validation-text">{formErrors.eventDate}</small> : null}
+              {!formErrors.eventDate && selectedPeriodDateError ? (
+                <small className="upload-validation-text">{selectedPeriodDateError}</small>
+              ) : null}
+            </label>
+
+            <label>
+              Start time
+              <select
+                value={formState.startTime}
+                onChange={(event) =>
+                  setFormState((previous) => ({
+                    ...previous,
+                    startTime: event.target.value,
+                  }))
+                }
+              >
+                <option value="">Select start time</option>
+                {START_TIME_OPTIONS.map((value) => (
+                  <option key={value} value={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+              {formErrors.startTime ? <small className="upload-validation-text">{formErrors.startTime}</small> : null}
+            </label>
+          </div>
+
+          <div className="secretary-toggle-block">
+            <span className="secretary-toggle-label">CME points awarded</span>
+            <div className="secretary-yes-no">
+              <button
+                type="button"
+                className={!formState.cmePointsAwarded ? 'is-active' : ''}
+                onClick={() =>
+                  setFormState((previous) => ({
+                    ...previous,
+                    cmePointsAwarded: false,
+                    smcEventCode: '',
+                  }))
+                }
+              >
+                No
+              </button>
+              <button
+                type="button"
+                className={formState.cmePointsAwarded ? 'is-active' : ''}
+                onClick={() =>
+                  setFormState((previous) => ({
+                    ...previous,
+                    cmePointsAwarded: true,
+                  }))
+                }
+              >
+                Yes
+              </button>
+            </div>
+          </div>
+
+          {formState.cmePointsAwarded ? (
+            <label>
+              SMC event code (optional)
+              <input
+                type="text"
+                value={formState.smcEventCode}
+                onChange={(event) =>
+                  setFormState((previous) => ({
+                    ...previous,
+                    smcEventCode: event.target.value,
+                  }))
+                }
+                placeholder="SMC-XXXX-001"
+              />
+              <small>Shown for CME-awarded sessions. Leave empty if not applicable.</small>
+            </label>
+          ) : null}
+
+          {submitState === 'error' && submitMessage ? (
+            <div className="inline-callout callout-error">
+              <div className="secretary-error-stack">
+                <span>{submitMessage}</span>
+                {submitErrorDetails ? (
+                  <button
+                    type="button"
+                    className="button-link"
+                    onClick={() => setSubmitErrorDetailsOpen((previous) => !previous)}
+                  >
+                    {submitErrorDetailsOpen ? 'Hide developer details' : 'Show developer details'}
+                  </button>
+                ) : null}
+                {submitErrorDetailsOpen && submitErrorDetails ? (
+                  <pre className="raw-json">{JSON.stringify(submitErrorDetails, null, 2)}</pre>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </DetailDrawer>
+    </div>
+  )
+}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { breadcrumbMap, navItems, roleOptions } from '../config/navigation'
 import { useAppState } from '../context/useAppState'
 import type { AppRole } from '../types/app'
@@ -18,16 +18,38 @@ const roleNameById: Record<AppRole, string> = {
   external_resident: 'Demo External',
 }
 
+const roleFromPathname = (pathname: string): AppRole | null => {
+  if (pathname.startsWith('/secretary')) {
+    return 'secretary'
+  }
+  if (pathname.startsWith('/resident')) {
+    return 'resident'
+  }
+  if (pathname.startsWith('/external')) {
+    return 'external_resident'
+  }
+  if (pathname.startsWith('/pc')) {
+    return 'programme_pc'
+  }
+  if (pathname.startsWith('/admin')) {
+    return 'master_admin'
+  }
+  return null
+}
+
 export const AppShell = () => {
   const { role, setRole, warnings } = useAppState()
   const location = useLocation()
+  const navigate = useNavigate()
   const [isRoleMenuOpen, setRoleMenuOpen] = useState(false)
   const roleMenuRef = useRef<HTMLDivElement | null>(null)
+  const forcedRole = roleFromPathname(location.pathname)
+  const activeRole = forcedRole ?? role
 
-  const currentRoleOption = roleOptions.find((option) => option.id === role) ?? roleOptions[0]
+  const currentRoleOption = roleOptions.find((option) => option.id === activeRole) ?? roleOptions[0]
   const breadcrumbs = breadcrumbMap[location.pathname] ?? [currentRoleOption.label]
   const unresolvedWarningsCount = warnings.filter((warning) => warning.status === 'unresolved').length
-  const visibleNavItems = navItems.filter((item) => item.roles.includes(role))
+  const visibleNavItems = navItems.filter((item) => item.roles.includes(activeRole))
 
   const isNavActive = (path: string) => {
     const currentPath = location.pathname
@@ -55,6 +77,9 @@ export const AppShell = () => {
     if (path === '/admin/submissions') {
       return currentPath === '/admin/submissions'
     }
+    if (path === '/secretary/events') {
+      return currentPath === '/secretary' || currentPath === '/secretary/events'
+    }
     return currentPath === path
   }
 
@@ -77,6 +102,12 @@ export const AppShell = () => {
     }
   }, [])
 
+  useEffect(() => {
+    if (forcedRole && role !== forcedRole) {
+      setRole(forcedRole)
+    }
+  }, [forcedRole, role, setRole])
+
   return (
     <div className="app app-root">
       <aside className="sidebar">
@@ -88,9 +119,9 @@ export const AppShell = () => {
           aria-haspopup="menu"
           aria-expanded={isRoleMenuOpen}
         >
-          <div className="avatar">{roleNameById[role].slice(0, 2).toUpperCase()}</div>
+          <div className="avatar">{roleNameById[activeRole].slice(0, 2).toUpperCase()}</div>
           <div className="sidebar-user-details">
-            <strong>{roleNameById[role]}</strong>
+            <strong>{roleNameById[activeRole]}</strong>
             <p>{currentRoleOption.label}</p>
           </div>
           <span className={`sidebar-user-chevron ${isRoleMenuOpen ? 'is-open' : ''}`} aria-hidden="true">
@@ -103,7 +134,7 @@ export const AppShell = () => {
             <p className="role-switcher-title">SWITCH ROLE (DEMO AID)</p>
             <div className="role-switcher-list">
               {roleOptions.map((option) => {
-                const isCurrent = option.id === role
+                const isCurrent = option.id === activeRole
                 return (
                   <button
                     key={option.id}
@@ -112,6 +143,7 @@ export const AppShell = () => {
                     onClick={() => {
                       setRole(option.id)
                       setRoleMenuOpen(false)
+                      navigate(option.defaultPath)
                     }}
                     role="menuitemradio"
                     aria-checked={isCurrent}

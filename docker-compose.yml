@@ -37,6 +37,13 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_BASE_URL: /api/v1
+        VITE_DEMO_ADMIN_USER_ID: 5635c7b4-e0f1-4f59-88e1-f0b976b62d29
+        VITE_DEMO_ADMIN_PROGRAMME_SCOPE: DR,GERI
+        VITE_DEMO_SECRETARY_USER_ID: 00000000-0000-0000-0000-0000000000aa
+        VITE_DEMO_SECRETARY_SITE: TTSHGerMed
+        VITE_DEMO_SECRETARY_SCOPE_LABEL: TTSH Geriatric Medicine
+        VITE_DEFAULT_PROGRAMME_CODE: DR
+        VITE_DEFAULT_REPORTING_PERIOD_ID: ""
     depends_on:
       - backend
     ports:

@@ -67,6 +67,7 @@ class FakeSecretarySession:
             {
                 "keyword": "Journal Club",
                 "posting_code": "TTSHCardio",
+                "programme_code": "CARD",
                 "session_type_id": self.session_type_id,
                 "session_type": "Department Teaching [1h]",
                 "duration_hours": Decimal("1.0"),
@@ -75,8 +76,63 @@ class FakeSecretarySession:
             {
                 "keyword": "Wrong Site Teaching",
                 "posting_code": "TTSHNeuro",
+                "programme_code": "NEURO",
                 "session_type_id": self.other_session_type_id,
                 "session_type": "Other Teaching [1h]",
+                "duration_hours": Decimal("1.0"),
+                "is_tracked": True,
+            },
+            {
+                "keyword": "GERI Demo Row 22",
+                "posting_code": "TTSHGerMed",
+                "programme_code": "GERI",
+                "session_type_id": str(uuid4()),
+                "session_type": "GERI Session [1h]",
+                "duration_hours": Decimal("1.0"),
+                "is_tracked": True,
+            },
+            {
+                "keyword": "GERI Demo Row 2",
+                "posting_code": "TTSHGerMed",
+                "programme_code": "GERI",
+                "session_type_id": str(uuid4()),
+                "session_type": "GERI Session [1h]",
+                "duration_hours": Decimal("1.0"),
+                "is_tracked": True,
+            },
+            {
+                "keyword": "GERI Demo Row 10",
+                "posting_code": "TTSHGerMed",
+                "programme_code": "GERI",
+                "session_type_id": str(uuid4()),
+                "session_type": "GERI Session [1h]",
+                "duration_hours": Decimal("1.0"),
+                "is_tracked": True,
+            },
+            {
+                "keyword": "GERI Demo Row 11",
+                "posting_code": "TTSHGerMed",
+                "programme_code": "GERI",
+                "session_type_id": str(uuid4()),
+                "session_type": "GERI Session [1h]",
+                "duration_hours": Decimal("1.0"),
+                "is_tracked": True,
+            },
+            {
+                "keyword": "GERI Shared Teaching",
+                "posting_code": "TTSHGerMed",
+                "programme_code": "GERI",
+                "session_type_id": str(uuid4()),
+                "session_type": "GERI Shared [2h]",
+                "duration_hours": Decimal("2.0"),
+                "is_tracked": True,
+            },
+            {
+                "keyword": "GERI Shared Teaching",
+                "posting_code": "TTSHContCC",
+                "programme_code": "GERI",
+                "session_type_id": str(uuid4()),
+                "session_type": "GERI Shared Alt [1h]",
                 "duration_hours": Decimal("1.0"),
                 "is_tracked": True,
             },
@@ -195,6 +251,7 @@ class FakeSecretarySession:
             "end_time": end_time,
             "duration_hours": duration_hours,
             "session_type_id": session_type_id or self.session_type_id,
+            "session_type": "Department Teaching [1h]",
             "series_id": series_id,
             "cme_points_awarded": False,
             "smc_event_code": None,
@@ -223,6 +280,7 @@ class FakeSecretarySession:
             return _FakeResult(rows=[holiday] if holiday else [], scalar=1 if holiday else None)
 
         if "FROM teaching_name_catalogue" in sql and "JOIN session_types" in sql:
+            use_programme_pool = payload.get("programme_code") is not None
             rows = [
                 {
                     "keyword": row["keyword"],
@@ -231,9 +289,14 @@ class FakeSecretarySession:
                     "duration_hours": row["duration_hours"],
                     "is_tracked": row["is_tracked"],
                     "is_global": False,
+                    "posting_code": row["posting_code"],
                 }
                 for row in self.catalogue
-                if row["posting_code"] == payload["posting_code"]
+                if (
+                    row["programme_code"] == payload["programme_code"]
+                    if use_programme_pool
+                    else row["posting_code"] == payload["posting_code"]
+                )
                 and (
                     "teaching_name" not in payload
                     or row["keyword"] == payload["teaching_name"]
@@ -522,6 +585,7 @@ def test_list_endpoint_only_returns_secretary_posting_events() -> None:
     payload = response.json()
     assert {row["posting_code"] for row in payload["events"]} == {"TTSHCardio"}
     assert fake_db.other_event_id not in {row["id"] for row in payload["events"]}
+    assert payload["events"][0]["session_type"] == "Department Teaching [1h]"
 
 
 def test_secretary_cannot_access_another_posting_event() -> None:
@@ -536,19 +600,35 @@ def test_secretary_cannot_access_another_posting_event() -> None:
     assert response.status_code == 404
 
 
-def test_teaching_name_options_use_own_posting_and_include_active_globals() -> None:
+def test_teaching_name_options_use_programme_pool_and_include_active_globals() -> None:
     fake_db = FakeSecretarySession()
     client = _client(fake_db)
 
-    response = client.get("/secretary/teaching-name-options", headers=_headers(fake_db))
+    response = client.get(
+        "/secretary/teaching-name-options",
+        headers=_headers(fake_db, site="TTSHGerMed"),
+    )
 
     assert response.status_code == 200
     options = response.json()["options"]
-    keywords = {row["keyword"] for row in options}
-    assert "Journal Club" in keywords
+    keywords = [row["keyword"] for row in options]
+
+    assert "GERI Demo Row 22" in keywords
+    assert keywords.count("GERI Shared Teaching") == 1
     assert "Department Meeting [1h]" in keywords
     assert "Wrong Site Teaching" not in keywords
+    assert "Journal Club" not in keywords
     assert "Inactive Global [1h]" not in keywords
+
+    shared = next(row for row in options if row["keyword"] == "GERI Shared Teaching")
+    assert shared["posting_codes"] == ["TTSHContCC", "TTSHGerMed"]
+    assert shared["session_type_id"] is None
+    assert shared["session_type"] is None
+
+    row2_index = keywords.index("GERI Demo Row 2")
+    row10_index = keywords.index("GERI Demo Row 10")
+    row11_index = keywords.index("GERI Demo Row 11")
+    assert row2_index < row10_index < row11_index
 
 
 def test_residents_endpoint_lists_only_current_own_posting_residents() -> None:

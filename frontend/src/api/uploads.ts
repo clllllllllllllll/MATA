@@ -1,5 +1,6 @@
 import type { UploadType } from '../types/app'
 import { httpClient, toApiRequestError } from './http'
+import { buildAdminDemoHeaders } from './authHeaders'
 
 export interface UploadRequest {
   uploadType: UploadType
@@ -35,11 +36,7 @@ export const uploadWorkbook = async (
 
   try {
     const response = await httpClient.post(uploadPathByType[payload.uploadType], formData, {
-      headers: {
-        'X-User-Role': 'admin',
-        'X-User-Id': payload.adminId,
-        'X-User-Programme': payload.adminProgrammes.join(','),
-      },
+      headers: buildAdminDemoHeaders(payload.adminId, payload.adminProgrammes),
     })
 
     if (typeof response.data === 'object' && response.data !== null) {

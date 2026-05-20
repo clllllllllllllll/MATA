@@ -3,6 +3,7 @@ from __future__ import annotations
 from calendar import monthrange
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+import re
 from typing import Any
 from uuid import UUID
 
@@ -23,6 +24,12 @@ DAY_INDEX = {
     "sun": 6,
 }
 
+# Temporary pilot mapping for secretary site -> native programme teaching pool.
+# TODO: Replace with data-driven posting/programme configuration once available.
+SECRETARY_SITE_PROGRAMME_POOL: dict[str, str] = {
+    "TTSHGerMed": "GERI",
+}
+
 
 def invalidate_secretary_event_caches(posting_code: str) -> None:
     cache.invalidate_prefix(f"secretary_events|posting_code={posting_code}")
@@ -39,6 +46,7 @@ def _event_row(row: dict[str, Any]) -> dict[str, Any]:
         "end_time": row["end_time"],
         "duration_hours": row.get("duration_hours"),
         "session_type_id": row.get("session_type_id"),
+        "session_type": row.get("session_type"),
         "series_id": row.get("series_id"),
         "cme_points_awarded": row.get("cme_points_awarded", False),
         "smc_event_code": row.get("smc_event_code"),
@@ -72,6 +80,23 @@ async def _public_holiday_name(db: AsyncSession, event_date: date) -> str | None
     return row.get("name") or "Public holiday"
 
 
+def _resolve_secretary_programme_pool(posting_code: str) -> str | None:
+    return SECRETARY_SITE_PROGRAMME_POOL.get(posting_code)
+
+
+def _natural_sort_key(value: str) -> tuple[str | int, ...]:
+    chunks = re.split(r"(\d+)", value.strip())
+    key: list[str | int] = []
+    for chunk in chunks:
+        if not chunk:
+            continue
+        if chunk.isdigit():
+            key.append(int(chunk))
+        else:
+            key.append(chunk.casefold())
+    return tuple(key)
+
+
 async def _ensure_not_public_holiday(db: AsyncSession, event_date: date) -> None:
     holiday_name = await _public_holiday_name(db, event_date)
     if holiday_name is None:
@@ -90,6 +115,48 @@ async def resolve_teaching_name(
     posting_code: str,
     teaching_name: str,
 ) -> dict[str, Any]:
+    programme_code = _resolve_secretary_programme_pool(posting_code)
+    if programme_code is None:
+        catalogue_sql = """
+            SELECT
+                tnc.keyword,
+                tnc.session_type_id,
+                st.name AS session_type,
+                tnc.duration_hours,
+                tnc.is_tracked,
+                false AS is_global,
+                tnc.posting_code
+            FROM teaching_name_catalogue tnc
+            JOIN session_types st ON st.id = tnc.session_type_id
+            WHERE tnc.posting_code = :posting_code
+              AND tnc.keyword = :teaching_name
+            ORDER BY tnc.duration_hours DESC, st.name ASC
+        """
+        catalogue_params = {
+            "posting_code": posting_code,
+            "teaching_name": teaching_name,
+        }
+    else:
+        catalogue_sql = """
+            SELECT
+                tnc.keyword,
+                tnc.session_type_id,
+                st.name AS session_type,
+                tnc.duration_hours,
+                tnc.is_tracked,
+                false AS is_global,
+                tnc.posting_code
+            FROM teaching_name_catalogue tnc
+            JOIN session_types st ON st.id = tnc.session_type_id
+            WHERE tnc.programme_code = :programme_code
+              AND tnc.keyword = :teaching_name
+            ORDER BY tnc.duration_hours DESC, st.name ASC
+        """
+        catalogue_params = {
+            "programme_code": programme_code,
+            "teaching_name": teaching_name,
+        }
+
     global_result = await db.execute(
         text(
             """
@@ -112,32 +179,17 @@ async def resolve_teaching_name(
         return dict(global_row)
 
     result = await db.execute(
-        text(
-            """
-            SELECT
-                tnc.keyword,
-                tnc.session_type_id,
-                st.name AS session_type,
-                tnc.duration_hours,
-                tnc.is_tracked,
-                false AS is_global
-            FROM teaching_name_catalogue tnc
-            JOIN session_types st ON st.id = tnc.session_type_id
-            WHERE tnc.posting_code = :posting_code
-              AND tnc.keyword = :teaching_name
-            ORDER BY tnc.duration_hours DESC, st.name ASC
-            """
-        ),
-        {"posting_code": posting_code, "teaching_name": teaching_name},
+        text(catalogue_sql),
+        catalogue_params,
     )
-    row = result.mappings().one_or_none()
-    if row is None:
+    rows = [dict(row) for row in result.mappings().all()]
+    if not rows:
         raise ApiError(
             status_code=422,
             detail="teaching_name is not available for this secretary posting",
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
-    return dict(row)
+    return rows[0]
 
 
 async def list_teaching_events(
@@ -164,24 +216,26 @@ async def list_teaching_events(
         text(
             f"""
             SELECT
-                id,
-                posting_code,
-                teaching_name,
-                event_date,
-                start_time,
-                end_time,
-                duration_hours,
-                session_type_id,
-                series_id,
-                cme_points_awarded,
-                smc_event_code,
-                is_adhoc,
-                created_by_role,
-                created_at,
-                updated_at
-            FROM teaching_events
+                te.id,
+                te.posting_code,
+                te.teaching_name,
+                te.event_date,
+                te.start_time,
+                te.end_time,
+                te.duration_hours,
+                te.session_type_id,
+                st.name AS session_type,
+                te.series_id,
+                te.cme_points_awarded,
+                te.smc_event_code,
+                te.is_adhoc,
+                te.created_by_role,
+                te.created_at,
+                te.updated_at
+            FROM teaching_events te
+            LEFT JOIN session_types st ON st.id = te.session_type_id
             WHERE {' AND '.join(where)}
-            ORDER BY event_date ASC, start_time ASC, teaching_name ASC
+            ORDER BY te.event_date ASC, te.start_time ASC, te.teaching_name ASC
             """
         ),
         params,
@@ -429,23 +483,43 @@ async def teaching_name_options(
     *,
     posting_code: str,
 ) -> list[dict[str, Any]]:
-    catalogue_result = await db.execute(
-        text(
-            """
-            SELECT DISTINCT
+    programme_code = _resolve_secretary_programme_pool(posting_code)
+    if programme_code is None:
+        catalogue_sql = """
+            SELECT
                 tnc.keyword,
                 tnc.session_type_id,
                 st.name AS session_type,
                 tnc.duration_hours,
                 tnc.is_tracked,
-                false AS is_global
+                false AS is_global,
+                tnc.posting_code
             FROM teaching_name_catalogue tnc
             JOIN session_types st ON st.id = tnc.session_type_id
             WHERE tnc.posting_code = :posting_code
             ORDER BY tnc.keyword ASC, tnc.duration_hours DESC
-            """
-        ),
-        {"posting_code": posting_code},
+        """
+        catalogue_params = {"posting_code": posting_code}
+    else:
+        catalogue_sql = """
+            SELECT
+                tnc.keyword,
+                tnc.session_type_id,
+                st.name AS session_type,
+                tnc.duration_hours,
+                tnc.is_tracked,
+                false AS is_global,
+                tnc.posting_code
+            FROM teaching_name_catalogue tnc
+            JOIN session_types st ON st.id = tnc.session_type_id
+            WHERE tnc.programme_code = :programme_code
+            ORDER BY tnc.keyword ASC, tnc.duration_hours DESC
+        """
+        catalogue_params = {"programme_code": programme_code}
+
+    catalogue_result = await db.execute(
+        text(catalogue_sql),
+        catalogue_params,
     )
     global_result = await db.execute(
         text(
@@ -464,9 +538,79 @@ async def teaching_name_options(
         )
     )
 
-    options = [dict(row) for row in catalogue_result.mappings().all()]
-    options.extend(dict(row) for row in global_result.mappings().all())
-    return sorted(options, key=lambda row: (row["keyword"], row["is_global"]))
+    catalogue_rows = [dict(row) for row in catalogue_result.mappings().all()]
+    options_by_keyword: dict[str, dict[str, Any]] = {}
+
+    for row in catalogue_rows:
+        keyword = str(row.get("keyword") or "").strip()
+        if not keyword:
+            continue
+        posting_code_value = row.get("posting_code")
+        aggregate = options_by_keyword.setdefault(
+            keyword,
+            {
+                "keyword": keyword,
+                "session_type_id": row.get("session_type_id"),
+                "session_type": row.get("session_type"),
+                "duration_hours": row.get("duration_hours"),
+                "is_tracked": row.get("is_tracked"),
+                "is_global": False,
+                "posting_codes": [],
+                "_session_type_ids": set(),
+                "_session_types": set(),
+                "_durations": set(),
+                "_tracked_values": set(),
+            },
+        )
+
+        if posting_code_value and posting_code_value not in aggregate["posting_codes"]:
+            aggregate["posting_codes"].append(posting_code_value)
+        aggregate["_session_type_ids"].add(str(row.get("session_type_id")))
+        if row.get("session_type") is not None:
+            aggregate["_session_types"].add(str(row.get("session_type")))
+        if row.get("duration_hours") is not None:
+            aggregate["_durations"].add(str(row.get("duration_hours")))
+        aggregate["_tracked_values"].add(bool(row.get("is_tracked")))
+
+    options: list[dict[str, Any]] = []
+    for keyword in sorted(options_by_keyword.keys()):
+        aggregate = options_by_keyword[keyword]
+        session_type_ids = {
+            value for value in aggregate.pop("_session_type_ids") if value and value != "None"
+        }
+        session_types = aggregate.pop("_session_types")
+        durations = aggregate.pop("_durations")
+        tracked_values = aggregate.pop("_tracked_values")
+
+        if len(session_type_ids) != 1 or len(session_types) != 1:
+            aggregate["session_type_id"] = None
+            aggregate["session_type"] = None
+        if len(durations) != 1:
+            aggregate["duration_hours"] = None
+        if len(tracked_values) != 1:
+            aggregate["is_tracked"] = None
+        aggregate["posting_codes"] = sorted(aggregate["posting_codes"])
+        options.append(aggregate)
+
+    for row in global_result.mappings().all():
+        keyword = str(row.get("keyword") or "").strip()
+        if not keyword:
+            continue
+        if keyword in options_by_keyword:
+            continue
+        options.append(
+            {
+                "keyword": keyword,
+                "session_type_id": row.get("session_type_id"),
+                "session_type": row.get("session_type"),
+                "duration_hours": row.get("duration_hours"),
+                "is_tracked": row.get("is_tracked"),
+                "is_global": True,
+                "posting_codes": [],
+            }
+        )
+
+    return sorted(options, key=lambda row: (_natural_sort_key(row["keyword"]), row["is_global"]))
 
 
 async def current_residents(

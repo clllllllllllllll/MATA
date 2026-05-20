@@ -820,23 +820,61 @@ List residents currently posted to the secretary's site.
 
 ### GET `/secretary/teaching-name-options`
 
-Get available teaching name keywords for the dropdown.
+Get available teaching name keywords for the secretary event-creation dropdown.
 
 - **Auth:** secretary only
-- **Scope:** Returns a unified list combining:
-  1. Keywords from `teaching_name_catalogue` for `posting_code = X-User-Site` across ALL programmes
-  2. Active entries from `global_session_types` (compliance-exempt, available to all secretaries)
+- **Scope:** Returns a unified, deduplicated list combining:
+  1. Keywords from `teaching_name_catalogue` for the secretary’s **native programme teaching pool**, not only the exact `posting_code = X-User-Site`.
+  2. Active entries from `global_session_types` (compliance-exempt, available to all secretaries).
+
+For the TTSH pilot workflow, a secretary assigned to a native department/site such as `TTSHGerMed` should be able to create teaching events using the deduplicated teaching-name pool from the relevant native programme TTF, e.g. `GERI`, across that programme’s applicable postings.
+
+This allows one secretary-created event list to support residents from the same native programme who may currently be posted to different sites/postings, while resident visibility and compliance counting remain resolved per resident context.
+
+- **Resident visibility/compliance:** Event creation only stores the selected `teaching_name`. Whether a resident sees or counts that event is still resolved later using the resident’s own:
+  - `programme_code`
+  - current `resident_postings.posting_code`
+  - `resident_postings.r_year`
+  - `reporting_period_id`
+  - matching `teaching_name_catalogue` rows
+
 - **Response:**
+
 ```json
 {
   "options": [
-    {"keyword": "Journal Club", "session_type": "Department/Programme Teaching [1h]", "duration_hours": 1.0, "is_tracked": true, "is_global": false},
-    {"keyword": "Case discussions with supervisor", "session_type": "Case-based Teaching [2h]", "duration_hours": 2.0, "is_tracked": true, "is_global": false},
-    {"keyword": "Department Meeting", "session_type": "Department Meeting [1h]", "duration_hours": 1.0, "is_tracked": false, "is_global": true}
+    {
+      "keyword": "Journal Club",
+      "session_type": "Department/Programme Teaching [1h]",
+      "duration_hours": 1.0,
+      "is_tracked": true,
+      "is_global": false,
+      "posting_codes": ["TTSHGerMed", "TTSHContCC"]
+    },
+    {
+      "keyword": "Case discussions with supervisor",
+      "session_type": "Case-based Teaching [2h]",
+      "duration_hours": 2.0,
+      "is_tracked": true,
+      "is_global": false,
+      "posting_codes": ["TTSHGerMed"]
+    },
+    {
+      "keyword": "Department Meeting",
+      "session_type": "Department Meeting [1h]",
+      "duration_hours": 1.0,
+      "is_tracked": false,
+      "is_global": true,
+      "posting_codes": []
+    }
   ]
 }
 ```
-- **Note:** `is_global = true` entries come from `global_session_types` and are always excluded from PTT compliance. `is_tracked = false` entries from the TTF are also shown but excluded from compliance. Secretary sees a unified list — the compliance distinction is transparent to them.
+Deduplication: If the same keyword appears in multiple teaching_name_catalogue rows within the secretary’s native programme teaching pool, return it once. Where useful, include the contributing posting_codes.
+
+Session type ambiguity: If the same keyword maps to multiple session_type values across postings, the endpoint may return one option with the keyword and omit or null ambiguous session-type metadata. Compliance must not rely on the secretary dropdown’s displayed session type; compliance is resolved per resident at read time from teaching_name_catalogue.
+
+Note: is_global = true entries come from global_session_types and are always excluded from PTT compliance. is_tracked = false entries from the TTF are also shown but excluded from compliance. Secretary sees a unified list — the compliance distinction is transparent to them.
 
 ---
 

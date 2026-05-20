@@ -4,6 +4,7 @@ import { AdminHomePage } from './pages/admin/AdminHomePage'
 import { AdminMultiPostingPage } from './pages/admin/AdminMultiPostingPage'
 import { AdminUploadPage } from './pages/admin/AdminUploadPage'
 import { AdminWarningsPage } from './pages/admin/AdminWarningsPage'
+import { SecretaryTeachingSchedulePage } from './pages/secretary/SecretaryTeachingSchedulePage'
 import { StubPage } from './pages/StubPage'
 
 function App() {
@@ -26,12 +27,11 @@ function App() {
         />
         <Route
           path="/secretary"
-          element={
-            <StubPage
-              title="Secretary Dashboard"
-              subtitle="Optional visual stub. Backend secretary integration is deferred."
-            />
-          }
+          element={<Navigate to="/secretary/events" replace />}
+        />
+        <Route
+          path="/secretary/events"
+          element={<SecretaryTeachingSchedulePage />}
         />
         <Route
           path="/resident"

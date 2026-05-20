@@ -1,5 +1,6 @@
 import { httpClient, toApiRequestError } from './http'
 import type { ReportingPeriodOption } from '../types/upload'
+import { buildAdminDemoHeaders } from './authHeaders'
 
 const toReportingPeriod = (value: Record<string, unknown>): ReportingPeriodOption => ({
   id: String(value.id ?? ''),
@@ -15,11 +16,7 @@ export const listReportingPeriods = async (params: {
 }): Promise<ReportingPeriodOption[]> => {
   try {
     const response = await httpClient.get('/admin/reporting-periods', {
-      headers: {
-        'X-User-Role': 'admin',
-        'X-User-Id': params.adminId,
-        'X-User-Programme': params.adminProgrammes.join(','),
-      },
+      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes),
     })
     const rows = Array.isArray(response.data) ? response.data : []
     return rows
