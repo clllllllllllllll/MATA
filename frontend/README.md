@@ -20,9 +20,9 @@ Create `frontend/.env` (or `frontend/.env.local`) with:
 
 ```bash
 VITE_API_BASE_URL=http://localhost:8000/api/v1
-VITE_DEMO_ADMIN_ID=00000000-0000-0000-0000-000000000001
-VITE_DEMO_ADMIN_PROGRAMMES=GRM,DR,FM,REH
-VITE_DEFAULT_PROGRAMME_CODE=GRM
+VITE_DEMO_ADMIN_USER_ID=5635c7b4-e0f1-4f59-88e1-f0b976b62d29
+VITE_DEMO_ADMIN_PROGRAMME_SCOPE=DR,GERI
+VITE_DEFAULT_PROGRAMME_CODE=DR
 VITE_DEFAULT_REPORTING_PERIOD_ID=
 ```
 
@@ -30,9 +30,12 @@ Notes:
 - `VITE_API_BASE_URL` defaults to `http://localhost:8000/api/v1` if not set.
 - Demo upload requests use Phase 1 stub headers:
   - `X-User-Role: admin`
-  - `X-User-Id: <VITE_DEMO_ADMIN_ID>`
-  - `X-User-Programme: <VITE_DEMO_ADMIN_PROGRAMMES>`
+  - `X-User-Id: <VITE_DEMO_ADMIN_USER_ID>`
+  - `X-User-Programme: <VITE_DEMO_ADMIN_PROGRAMME_SCOPE>`
 - TTF upload requires the selected `programme_code` to be inside `X-User-Programme`.
+- Backward-compatible fallbacks still supported:
+  - `VITE_DEMO_ADMIN_ID`
+  - `VITE_DEMO_ADMIN_PROGRAMMES`
 
 ### Backend connectivity
 

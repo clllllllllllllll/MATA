@@ -33,7 +33,6 @@ export const uploadWorkbook = async (
   try {
     const response = await httpClient.post(uploadPathByType[payload.uploadType], formData, {
       headers: {
-        'Content-Type': 'multipart/form-data',
         'X-User-Role': 'admin',
         'X-User-Id': payload.adminId,
         'X-User-Programme': payload.adminProgrammes.join(','),
