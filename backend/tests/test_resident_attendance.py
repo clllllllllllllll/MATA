@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import timedelta
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -137,7 +137,7 @@ def test_future_event_attendance_is_rejected() -> None:
 def test_inactive_posting_status_is_rejected_for_attendance() -> None:
     fake_db = FakeResidentSession()
     fake_db.resident_postings[0]["status"] = "loa_non_working"
-    fake_db.events[0]["event_date"] = date(2026, 5, 18)
+    fake_db.events[0]["event_date"] = fake_db.today - timedelta(days=1)
     client = _client(fake_db)
 
     response = client.post(

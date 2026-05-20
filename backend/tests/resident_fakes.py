@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
 
@@ -38,7 +38,18 @@ class FakeResult:
 
 class FakeResidentSession:
     def __init__(self) -> None:
-        self.now = datetime(2026, 5, 19, 9, 0, tzinfo=timezone.utc)
+        self.today = date.today()
+        self.now = datetime.combine(self.today, time(9, 0), tzinfo=timezone.utc)
+        posting_start = self.today - timedelta(days=30)
+        posting_end = self.today + timedelta(days=30)
+        period_start = self.today - timedelta(days=180)
+        period_end = self.today + timedelta(days=180)
+        recent_event_day = self.today - timedelta(days=1)
+        older_event_day = self.today - timedelta(days=2)
+        future_event_day = self.today + timedelta(days=7)
+        # derive a deterministic weekend date at or before today
+        weekend_offset = (self.today.weekday() - 5) % 7
+        weekend_event_day = self.today - timedelta(days=weekend_offset)
         self.period_id = str(uuid4())
         self.closed_period_id = str(uuid4())
         self.resident_id = str(uuid4())
@@ -137,8 +148,8 @@ class FakeResidentSession:
             {
                 "id": self.period_id,
                 "label": "Jan - June 2026",
-                "start_date": date(2026, 1, 1),
-                "end_date": date(2026, 6, 30),
+                "start_date": period_start,
+                "end_date": period_end,
                 "status": "open",
             }
         ]
@@ -148,8 +159,8 @@ class FakeResidentSession:
                 "reporting_period_id": self.period_id,
                 "posting_code": "TTSHCardio",
                 "r_year": "R2",
-                "start_date": date(2026, 5, 1),
-                "end_date": date(2026, 5, 31),
+                "start_date": posting_start,
+                "end_date": posting_end,
                 "status": "active",
             },
             {
@@ -157,8 +168,8 @@ class FakeResidentSession:
                 "reporting_period_id": self.period_id,
                 "posting_code": "TTSHNeuro",
                 "r_year": "R2",
-                "start_date": date(2026, 5, 1),
-                "end_date": date(2026, 5, 31),
+                "start_date": posting_start,
+                "end_date": posting_end,
                 "status": "active",
             },
         ]
@@ -174,13 +185,13 @@ class FakeResidentSession:
         ]
         self.weekend_exceptions: list[dict] = []
         self.events = [
-            self._event(self.event_id, "TTSHCardio", "Journal Club", date(2026, 5, 18)),
-            self._event(self.second_event_id, "TTSHCardio", "Journal Club", date(2026, 5, 17)),
-            self._event(self.future_event_id, "TTSHCardio", "Journal Club", date(2026, 5, 20)),
-            self._event(self.other_posting_event_id, "TTSHNeuro", "Skills Teaching", date(2026, 5, 18)),
-            self._event(self.invisible_event_id, "TTSHCardio", "Unmapped Teaching", date(2026, 5, 18)),
-            self._event(self.global_event_id, "TTSHCardio", "Department Meeting [1h]", date(2026, 5, 18)),
-            self._event(self.weekend_event_id, "TTSHCardio", "Journal Club", date(2026, 5, 16)),
+            self._event(self.event_id, "TTSHCardio", "Journal Club", recent_event_day),
+            self._event(self.second_event_id, "TTSHCardio", "Journal Club", older_event_day),
+            self._event(self.future_event_id, "TTSHCardio", "Journal Club", future_event_day),
+            self._event(self.other_posting_event_id, "TTSHNeuro", "Skills Teaching", recent_event_day),
+            self._event(self.invisible_event_id, "TTSHCardio", "Unmapped Teaching", recent_event_day),
+            self._event(self.global_event_id, "TTSHCardio", "Department Meeting [1h]", recent_event_day),
+            self._event(self.weekend_event_id, "TTSHCardio", "Journal Club", weekend_event_day),
         ]
         self.attendance = [
             {

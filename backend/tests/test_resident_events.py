@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -64,8 +64,8 @@ def test_events_support_multiple_current_postings_as_union() -> None:
             "reporting_period_id": fake_db.period_id,
             "posting_code": "TTSHNeuro",
             "r_year": "R2",
-            "start_date": date(2026, 5, 1),
-            "end_date": date(2026, 5, 31),
+            "start_date": fake_db.today - timedelta(days=10),
+            "end_date": fake_db.today + timedelta(days=10),
             "status": "active",
         }
     )
