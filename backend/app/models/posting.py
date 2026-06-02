@@ -144,6 +144,43 @@ class PostingGroup(UUIDTimestampMixin, Base):
     )
 
 
+class SecretaryProgrammePool(UUIDTimestampMixin, Base):
+    __tablename__ = "secretary_programme_pools"
+    __table_args__ = (
+        UniqueConstraint(
+            "posting_code",
+            "programme_code",
+            name="uq_secretary_programme_pools_posting_programme",
+        ),
+        Index(
+            "idx_secretary_programme_pools_posting_active",
+            "posting_code",
+            "is_active",
+        ),
+        Index(
+            "idx_secretary_programme_pools_programme_active",
+            "programme_code",
+            "is_active",
+        ),
+    )
+
+    posting_code: Mapped[str] = mapped_column(
+        String(50),
+        ForeignKey("posting_codes.code"),
+        nullable=False,
+    )
+    programme_code: Mapped[str] = mapped_column(
+        String(20),
+        ForeignKey("programmes.code"),
+        nullable=False,
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+    )
+
+
 class WeekendException(UUIDTimestampMixin, Base):
     __tablename__ = "weekend_exceptions"
     __table_args__ = (

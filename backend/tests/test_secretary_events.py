@@ -151,6 +151,18 @@ class FakeSecretarySession:
                 "is_active": False,
             },
         ]
+        self.secretary_programme_pools = [
+            {
+                "posting_code": "TTSHGerMed",
+                "programme_code": "GERI",
+                "is_active": True,
+            },
+            {
+                "posting_code": "TTSHGerMed",
+                "programme_code": "CARD",
+                "is_active": False,
+            },
+        ]
         self.residents = [
             {
                 "id": self.resident_id,
@@ -159,8 +171,8 @@ class FakeSecretarySession:
                 "programme_code": "CARD",
                 "r_year": "R2",
                 "posting_code": "TTSHCardio",
-                "start_date": date(2026, 5, 1),
-                "end_date": date(2026, 5, 31),
+                "start_date": date(2026, 1, 1),
+                "end_date": date(2026, 12, 31),
                 "status": "active",
             },
             {
@@ -170,8 +182,8 @@ class FakeSecretarySession:
                 "programme_code": "NEURO",
                 "r_year": "R1",
                 "posting_code": "TTSHNeuro",
-                "start_date": date(2026, 5, 1),
-                "end_date": date(2026, 5, 31),
+                "start_date": date(2026, 1, 1),
+                "end_date": date(2026, 12, 31),
                 "status": "active",
             },
         ]
@@ -212,6 +224,24 @@ class FakeSecretarySession:
                 end_time=time(11, 0),
                 session_type_id=self.other_session_type_id,
             ),
+            {
+                "id": str(uuid4()),
+                "posting_code": "TTSHCardio",
+                "teaching_name": "Journal Club",
+                "event_date": date(2026, 5, 9),
+                "start_time": time(9, 0),
+                "end_time": time(10, 0),
+                "duration_hours": Decimal("1.0"),
+                "session_type_id": self.session_type_id,
+                "session_type": "Department Teaching [1h]",
+                "series_id": None,
+                "cme_points_awarded": False,
+                "smc_event_code": None,
+                "is_adhoc": True,
+                "created_by_role": "resident",
+                "created_at": self.now,
+                "updated_at": self.now,
+            },
         ]
         self.series = [
             {
@@ -280,7 +310,8 @@ class FakeSecretarySession:
             return _FakeResult(rows=[holiday] if holiday else [], scalar=1 if holiday else None)
 
         if "FROM teaching_name_catalogue" in sql and "JOIN session_types" in sql:
-            use_programme_pool = payload.get("programme_code") is not None
+            programme_codes = payload.get("programme_codes") or []
+            use_programme_pool = bool(programme_codes)
             rows = [
                 {
                     "keyword": row["keyword"],
@@ -293,14 +324,22 @@ class FakeSecretarySession:
                 }
                 for row in self.catalogue
                 if (
-                    row["programme_code"] == payload["programme_code"]
+                    row["programme_code"] in set(programme_codes)
                     if use_programme_pool
                     else row["posting_code"] == payload["posting_code"]
                 )
                 and (
-                    "teaching_name" not in payload
-                    or row["keyword"] == payload["teaching_name"]
+                    payload.get("teaching_name") in {None, ""}
+                    or row["keyword"] == payload.get("teaching_name")
                 )
+            ]
+            return _FakeResult(rows=rows)
+
+        if "FROM secretary_programme_pools" in sql:
+            rows = [
+                row
+                for row in self.secretary_programme_pools
+                if row["posting_code"] == payload["posting_code"] and row["is_active"]
             ]
             return _FakeResult(rows=rows)
 
@@ -336,25 +375,26 @@ class FakeSecretarySession:
             return _FakeResult(rowcount=1)
 
         if "FROM teaching_events" in sql and "COUNT(*)" in sql and "GROUP BY" in sql:
+            scoped_rows = [row for row in self.events if row["posting_code"] == payload["posting_code"]]
+            if "created_by_role = 'secretary'" in sql:
+                scoped_rows = [row for row in scoped_rows if row["created_by_role"] == "secretary"]
+            if "is_adhoc = false" in sql:
+                scoped_rows = [row for row in scoped_rows if not row["is_adhoc"]]
             rows = [
                 {
-                    "total_events": len(
-                        [row for row in self.events if row["posting_code"] == payload["posting_code"]]
-                    ),
+                    "total_events": len(scoped_rows),
                     "cme_events": len(
                         [
                             row
-                            for row in self.events
-                            if row["posting_code"] == payload["posting_code"]
-                            and row["cme_points_awarded"]
+                            for row in scoped_rows
+                            if row["cme_points_awarded"]
                         ]
                     ),
                     "with_smc_code": len(
                         [
                             row
-                            for row in self.events
-                            if row["posting_code"] == payload["posting_code"]
-                            and row["smc_event_code"]
+                            for row in scoped_rows
+                            if row["smc_event_code"]
                         ]
                     ),
                 }
@@ -407,6 +447,10 @@ class FakeSecretarySession:
 
         if "FROM teaching_events" in sql:
             rows = [row for row in self.events if row["posting_code"] == payload["posting_code"]]
+            if "created_by_role = 'secretary'" in sql:
+                rows = [row for row in rows if row["created_by_role"] == "secretary"]
+            if "is_adhoc = false" in sql:
+                rows = [row for row in rows if not row["is_adhoc"]]
             if "date_from" in payload:
                 rows = [row for row in rows if row["event_date"] >= payload["date_from"]]
             if "date_to" in payload:
@@ -585,6 +629,8 @@ def test_list_endpoint_only_returns_secretary_posting_events() -> None:
     payload = response.json()
     assert {row["posting_code"] for row in payload["events"]} == {"TTSHCardio"}
     assert fake_db.other_event_id not in {row["id"] for row in payload["events"]}
+    assert all(row["created_by_role"] == "secretary" for row in payload["events"])
+    assert all(not row["is_adhoc"] for row in payload["events"])
     assert payload["events"][0]["session_type"] == "Department Teaching [1h]"
 
 
@@ -629,6 +675,63 @@ def test_teaching_name_options_use_programme_pool_and_include_active_globals() -
     row10_index = keywords.index("GERI Demo Row 10")
     row11_index = keywords.index("GERI Demo Row 11")
     assert row2_index < row10_index < row11_index
+
+
+def test_create_event_accepts_keyword_from_mapped_programme_pool() -> None:
+    fake_db = FakeSecretarySession()
+    client = _client(fake_db)
+
+    response = client.post(
+        "/secretary/teaching-events",
+        headers=_headers(fake_db, site="TTSHGerMed"),
+        json={
+            "teaching_name": "GERI Demo Row 22",
+            "event_date": "2026-05-18",
+            "start_time": "10:00",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["posting_code"] == "TTSHGerMed"
+    assert payload["teaching_name"] == "GERI Demo Row 22"
+
+
+def test_teaching_name_options_fall_back_to_exact_posting_when_unmapped() -> None:
+    fake_db = FakeSecretarySession()
+    client = _client(fake_db)
+
+    response = client.get(
+        "/secretary/teaching-name-options",
+        headers=_headers(fake_db, site="TTSHCardio"),
+    )
+
+    assert response.status_code == 200
+    keywords = [row["keyword"] for row in response.json()["options"]]
+    assert "Journal Club" in keywords
+    assert "GERI Demo Row 22" not in keywords
+
+
+def test_teaching_name_options_ignore_inactive_programme_pool_mapping() -> None:
+    fake_db = FakeSecretarySession()
+    fake_db.secretary_programme_pools.append(
+        {
+            "posting_code": "TTSHCardio",
+            "programme_code": "GERI",
+            "is_active": False,
+        }
+    )
+    client = _client(fake_db)
+
+    response = client.get(
+        "/secretary/teaching-name-options",
+        headers=_headers(fake_db, site="TTSHCardio"),
+    )
+
+    assert response.status_code == 200
+    keywords = [row["keyword"] for row in response.json()["options"]]
+    assert "Journal Club" in keywords
+    assert "GERI Demo Row 22" not in keywords
 
 
 def test_residents_endpoint_lists_only_current_own_posting_residents() -> None:

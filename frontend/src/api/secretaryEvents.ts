@@ -15,6 +15,7 @@ export interface SecretaryTeachingEvent {
   cmePointsAwarded: boolean
   smcEventCode?: string
   isAdhoc: boolean
+  hasAttendance?: boolean
   createdByRole?: string
   createdAt?: string
   updatedAt?: string
@@ -62,6 +63,7 @@ const toTeachingEvent = (value: Record<string, unknown>): SecretaryTeachingEvent
   cmePointsAwarded: Boolean(value.cme_points_awarded),
   smcEventCode: value.smc_event_code ? String(value.smc_event_code) : undefined,
   isAdhoc: Boolean(value.is_adhoc),
+  hasAttendance: Boolean(value.has_attendance),
   createdByRole: value.created_by_role ? String(value.created_by_role) : undefined,
   createdAt: value.created_at ? String(value.created_at) : undefined,
   updatedAt: value.updated_at ? String(value.updated_at) : undefined,
@@ -146,6 +148,42 @@ export const createSecretaryTeachingEvent = async (
   try {
     const response = await httpClient.post(
       '/secretary/teaching-events',
+      {
+        teaching_name: payload.teachingName,
+        event_date: payload.eventDate,
+        start_time: payload.startTime,
+        cme_points_awarded: payload.cmePointsAwarded,
+        smc_event_code: payload.smcEventCode ?? null,
+      },
+      {
+        headers: buildSecretaryDemoHeaders(),
+      },
+    )
+    const row =
+      typeof response.data === 'object' && response.data !== null
+        ? (response.data as Record<string, unknown>)
+        : {}
+    return toTeachingEvent(row)
+  } catch (error) {
+    throw toApiRequestError(error)
+  }
+}
+
+export interface UpdateSecretaryTeachingEventRequest {
+  teachingName: string
+  eventDate: string
+  startTime: string
+  cmePointsAwarded: boolean
+  smcEventCode?: string
+}
+
+export const updateSecretaryTeachingEvent = async (
+  eventId: string,
+  payload: UpdateSecretaryTeachingEventRequest,
+): Promise<SecretaryTeachingEvent> => {
+  try {
+    const response = await httpClient.put(
+      `/secretary/teaching-events/${eventId}`,
       {
         teaching_name: payload.teachingName,
         event_date: payload.eventDate,

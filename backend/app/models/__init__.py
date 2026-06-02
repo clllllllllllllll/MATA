@@ -5,6 +5,7 @@ from app.models.posting import (
     PostingCode,
     PostingGroup,
     PublicHoliday,
+    SecretaryProgrammePool,
     WeekendException,
 )
 from app.models.programme import Programme
@@ -48,6 +49,7 @@ __all__ = [
     "ReportingPeriod",
     "Resident",
     "ResidentPosting",
+    "SecretaryProgrammePool",
     "SessionType",
     "SurplusLedger",
     "TeachingEvent",

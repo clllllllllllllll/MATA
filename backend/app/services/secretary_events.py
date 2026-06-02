@@ -24,12 +24,6 @@ DAY_INDEX = {
     "sun": 6,
 }
 
-# Temporary pilot mapping for secretary site -> native programme teaching pool.
-# TODO: Replace with data-driven posting/programme configuration once available.
-SECRETARY_SITE_PROGRAMME_POOL: dict[str, str] = {
-    "TTSHGerMed": "GERI",
-}
-
 
 def invalidate_secretary_event_caches(posting_code: str) -> None:
     cache.invalidate_prefix(f"secretary_events|posting_code={posting_code}")
@@ -52,6 +46,7 @@ def _event_row(row: dict[str, Any]) -> dict[str, Any]:
         "smc_event_code": row.get("smc_event_code"),
         "is_adhoc": row.get("is_adhoc", False),
         "created_by_role": row.get("created_by_role"),
+        "has_attendance": row.get("has_attendance", False),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
@@ -80,8 +75,118 @@ async def _public_holiday_name(db: AsyncSession, event_date: date) -> str | None
     return row.get("name") or "Public holiday"
 
 
-def _resolve_secretary_programme_pool(posting_code: str) -> str | None:
-    return SECRETARY_SITE_PROGRAMME_POOL.get(posting_code)
+async def _resolve_secretary_programme_pool(
+    db: AsyncSession,
+    posting_code: str,
+) -> list[str]:
+    result = await db.execute(
+        text(
+            """
+            SELECT programme_code
+            FROM secretary_programme_pools
+            WHERE posting_code = :posting_code
+              AND is_active = true
+            ORDER BY programme_code ASC
+            """
+        ),
+        {"posting_code": posting_code},
+    )
+    return [str(row["programme_code"]) for row in result.mappings().all()]
+
+
+async def _catalogue_rows_for_secretary_posting(
+    db: AsyncSession,
+    *,
+    posting_code: str,
+    teaching_name: str | None = None,
+) -> list[dict[str, Any]]:
+    programme_codes = await _resolve_secretary_programme_pool(db, posting_code)
+    if programme_codes:
+        if teaching_name is None:
+            result = await db.execute(
+                text(
+                    """
+                    SELECT
+                        tnc.keyword,
+                        tnc.session_type_id,
+                        st.name AS session_type,
+                        tnc.duration_hours,
+                        tnc.is_tracked,
+                        false AS is_global,
+                        tnc.posting_code
+                    FROM teaching_name_catalogue tnc
+                    JOIN session_types st ON st.id = tnc.session_type_id
+                    WHERE tnc.programme_code = ANY(:programme_codes)
+                    ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
+                    """
+                ),
+                {"programme_codes": programme_codes},
+            )
+        else:
+            result = await db.execute(
+                text(
+                    """
+                    SELECT
+                        tnc.keyword,
+                        tnc.session_type_id,
+                        st.name AS session_type,
+                        tnc.duration_hours,
+                        tnc.is_tracked,
+                        false AS is_global,
+                        tnc.posting_code
+                    FROM teaching_name_catalogue tnc
+                    JOIN session_types st ON st.id = tnc.session_type_id
+                    WHERE tnc.programme_code = ANY(:programme_codes)
+                      AND tnc.keyword = :teaching_name
+                    ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
+                    """
+                ),
+                {"programme_codes": programme_codes, "teaching_name": teaching_name},
+            )
+        return [dict(row) for row in result.mappings().all()]
+
+    if teaching_name is None:
+        result = await db.execute(
+            text(
+                """
+                SELECT
+                    tnc.keyword,
+                    tnc.session_type_id,
+                    st.name AS session_type,
+                    tnc.duration_hours,
+                    tnc.is_tracked,
+                    false AS is_global,
+                    tnc.posting_code
+                FROM teaching_name_catalogue tnc
+                JOIN session_types st ON st.id = tnc.session_type_id
+                WHERE tnc.posting_code = :posting_code
+                ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
+                """
+            ),
+            {"posting_code": posting_code},
+        )
+    else:
+        result = await db.execute(
+            text(
+                """
+                SELECT
+                    tnc.keyword,
+                    tnc.session_type_id,
+                    st.name AS session_type,
+                    tnc.duration_hours,
+                    tnc.is_tracked,
+                    false AS is_global,
+                    tnc.posting_code
+                FROM teaching_name_catalogue tnc
+                JOIN session_types st ON st.id = tnc.session_type_id
+                WHERE tnc.posting_code = :posting_code
+                  AND tnc.keyword = :teaching_name
+                ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
+                """
+            ),
+            {"posting_code": posting_code, "teaching_name": teaching_name},
+        )
+    return [dict(row) for row in result.mappings().all()]
 
 
 def _natural_sort_key(value: str) -> tuple[str | int, ...]:
@@ -115,48 +220,6 @@ async def resolve_teaching_name(
     posting_code: str,
     teaching_name: str,
 ) -> dict[str, Any]:
-    programme_code = _resolve_secretary_programme_pool(posting_code)
-    if programme_code is None:
-        catalogue_sql = """
-            SELECT
-                tnc.keyword,
-                tnc.session_type_id,
-                st.name AS session_type,
-                tnc.duration_hours,
-                tnc.is_tracked,
-                false AS is_global,
-                tnc.posting_code
-            FROM teaching_name_catalogue tnc
-            JOIN session_types st ON st.id = tnc.session_type_id
-            WHERE tnc.posting_code = :posting_code
-              AND tnc.keyword = :teaching_name
-            ORDER BY tnc.duration_hours DESC, st.name ASC
-        """
-        catalogue_params = {
-            "posting_code": posting_code,
-            "teaching_name": teaching_name,
-        }
-    else:
-        catalogue_sql = """
-            SELECT
-                tnc.keyword,
-                tnc.session_type_id,
-                st.name AS session_type,
-                tnc.duration_hours,
-                tnc.is_tracked,
-                false AS is_global,
-                tnc.posting_code
-            FROM teaching_name_catalogue tnc
-            JOIN session_types st ON st.id = tnc.session_type_id
-            WHERE tnc.programme_code = :programme_code
-              AND tnc.keyword = :teaching_name
-            ORDER BY tnc.duration_hours DESC, st.name ASC
-        """
-        catalogue_params = {
-            "programme_code": programme_code,
-            "teaching_name": teaching_name,
-        }
-
     global_result = await db.execute(
         text(
             """
@@ -178,11 +241,11 @@ async def resolve_teaching_name(
     if global_row is not None:
         return dict(global_row)
 
-    result = await db.execute(
-        text(catalogue_sql),
-        catalogue_params,
+    rows = await _catalogue_rows_for_secretary_posting(
+        db,
+        posting_code=posting_code,
+        teaching_name=teaching_name,
     )
-    rows = [dict(row) for row in result.mappings().all()]
     if not rows:
         raise ApiError(
             status_code=422,
@@ -201,7 +264,11 @@ async def list_teaching_events(
     session_type_id: UUID | None,
 ) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"posting_code": posting_code}
-    where = ["posting_code = :posting_code"]
+    where = [
+        "posting_code = :posting_code",
+        "created_by_role = 'secretary'",
+        "is_adhoc = false",
+    ]
     if date_from is not None:
         params["date_from"] = date_from
         where.append("event_date >= :date_from")
@@ -230,6 +297,12 @@ async def list_teaching_events(
                 te.smc_event_code,
                 te.is_adhoc,
                 te.created_by_role,
+                EXISTS (
+                    SELECT 1
+                    FROM attendance_records ar
+                    WHERE ar.teaching_event_id = te.id
+                    LIMIT 1
+                ) AS has_attendance,
                 te.created_at,
                 te.updated_at
             FROM teaching_events te
@@ -427,6 +500,104 @@ async def duplicate_teaching_event(
     return event
 
 
+async def update_teaching_event(
+    db: AsyncSession,
+    *,
+    posting_code: str,
+    event_id: UUID,
+    teaching_name: str,
+    event_date: date,
+    start_time: time,
+    cme_points_awarded: bool,
+    smc_event_code: str | None,
+) -> dict[str, Any]:
+    source = await _get_event_for_posting(
+        db,
+        event_id=event_id,
+        posting_code=posting_code,
+    )
+    if source.get("created_by_role") != "secretary" or source.get("is_adhoc"):
+        raise ApiError(
+            status_code=409,
+            detail="Teaching event cannot be edited because it is not a secretary-managed teaching event",
+            error_code=ErrorCode.CONFLICT.value,
+        )
+    if await _has_attendance(db, event_ids=[str(event_id)]):
+        raise ApiError(
+            status_code=409,
+            detail="Teaching event cannot be edited because attendance exists",
+            error_code=ErrorCode.CONFLICT.value,
+        )
+
+    await _ensure_not_public_holiday(db, event_date)
+    resolved = await resolve_teaching_name(
+        db,
+        posting_code=posting_code,
+        teaching_name=teaching_name,
+    )
+    duration_hours = resolved["duration_hours"]
+    end_time = _compute_end_time(event_date, start_time, duration_hours)
+    result = await db.execute(
+        text(
+            """
+            UPDATE teaching_events
+            SET
+                teaching_name = :teaching_name,
+                event_date = :event_date,
+                start_time = :start_time,
+                end_time = :end_time,
+                duration_hours = :duration_hours,
+                session_type_id = :session_type_id,
+                cme_points_awarded = :cme_points_awarded,
+                smc_event_code = :smc_event_code,
+                updated_at = now()
+            WHERE id = :event_id
+              AND posting_code = :posting_code
+              AND created_by_role = 'secretary'
+              AND is_adhoc = false
+            RETURNING
+                id,
+                posting_code,
+                teaching_name,
+                event_date,
+                start_time,
+                end_time,
+                duration_hours,
+                session_type_id,
+                series_id,
+                cme_points_awarded,
+                smc_event_code,
+                is_adhoc,
+                created_by_role,
+                created_at,
+                updated_at
+            """
+        ),
+        {
+            "teaching_name": teaching_name,
+            "event_date": event_date,
+            "start_time": start_time,
+            "end_time": end_time,
+            "duration_hours": duration_hours,
+            "session_type_id": resolved.get("session_type_id"),
+            "cme_points_awarded": cme_points_awarded,
+            "smc_event_code": smc_event_code,
+            "event_id": str(event_id),
+            "posting_code": posting_code,
+        },
+    )
+    event = result.mappings().one_or_none()
+    if event is None:
+        raise ApiError(
+            status_code=409,
+            detail="Teaching event could not be updated",
+            error_code=ErrorCode.CONFLICT.value,
+        )
+    await db.commit()
+    invalidate_secretary_event_caches(posting_code)
+    return _event_row(dict(event))
+
+
 async def _has_attendance(
     db: AsyncSession,
     *,
@@ -483,43 +654,9 @@ async def teaching_name_options(
     *,
     posting_code: str,
 ) -> list[dict[str, Any]]:
-    programme_code = _resolve_secretary_programme_pool(posting_code)
-    if programme_code is None:
-        catalogue_sql = """
-            SELECT
-                tnc.keyword,
-                tnc.session_type_id,
-                st.name AS session_type,
-                tnc.duration_hours,
-                tnc.is_tracked,
-                false AS is_global,
-                tnc.posting_code
-            FROM teaching_name_catalogue tnc
-            JOIN session_types st ON st.id = tnc.session_type_id
-            WHERE tnc.posting_code = :posting_code
-            ORDER BY tnc.keyword ASC, tnc.duration_hours DESC
-        """
-        catalogue_params = {"posting_code": posting_code}
-    else:
-        catalogue_sql = """
-            SELECT
-                tnc.keyword,
-                tnc.session_type_id,
-                st.name AS session_type,
-                tnc.duration_hours,
-                tnc.is_tracked,
-                false AS is_global,
-                tnc.posting_code
-            FROM teaching_name_catalogue tnc
-            JOIN session_types st ON st.id = tnc.session_type_id
-            WHERE tnc.programme_code = :programme_code
-            ORDER BY tnc.keyword ASC, tnc.duration_hours DESC
-        """
-        catalogue_params = {"programme_code": programme_code}
-
-    catalogue_result = await db.execute(
-        text(catalogue_sql),
-        catalogue_params,
+    catalogue_rows = await _catalogue_rows_for_secretary_posting(
+        db,
+        posting_code=posting_code,
     )
     global_result = await db.execute(
         text(
@@ -538,7 +675,6 @@ async def teaching_name_options(
         )
     )
 
-    catalogue_rows = [dict(row) for row in catalogue_result.mappings().all()]
     options_by_keyword: dict[str, dict[str, Any]] = {}
 
     for row in catalogue_rows:
@@ -941,6 +1077,8 @@ async def cme_dashboard(
                 COUNT(*) FILTER (WHERE smc_event_code IS NOT NULL) AS with_smc_code
             FROM teaching_events
             WHERE posting_code = :posting_code
+              AND created_by_role = 'secretary'
+              AND is_adhoc = false
             GROUP BY posting_code
             """
         ),

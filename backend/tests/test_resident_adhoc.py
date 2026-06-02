@@ -102,6 +102,24 @@ def test_adhoc_teaching_rejects_multiple_matching_postings_without_disambiguatio
     assert "posting disambiguation" in response.json()["detail"].lower()
 
 
+def test_adhoc_teaching_rejects_when_no_posting_exists_for_date() -> None:
+    fake_db = FakeResidentSession()
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "date": "2030-01-15",
+            "start_time": "10:00",
+            "teaching_name": "Journal Club",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "no active resident posting" in response.json()["detail"].lower()
+
+
 def test_adhoc_weekend_non_exception_returns_warning() -> None:
     fake_db = FakeResidentSession()
     client = _client(fake_db)

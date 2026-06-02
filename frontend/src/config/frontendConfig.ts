@@ -32,6 +32,16 @@ const defaultSecretarySite = import.meta.env.VITE_DEMO_SECRETARY_SITE ?? 'TTSHGe
 const defaultSecretaryScopeLabel =
   import.meta.env.VITE_DEMO_SECRETARY_SCOPE_LABEL ?? 'TTSH Geriatric Medicine'
 
+const defaultResidentId =
+  import.meta.env.VITE_DEMO_RESIDENT_USER_ID ??
+  '00000000-0000-0000-0000-0000000000bb'
+
+const defaultResidentMcr = import.meta.env.VITE_DEMO_RESIDENT_MCR ?? 'M00001A'
+const defaultResidentProgramme = import.meta.env.VITE_DEMO_RESIDENT_PROGRAMME ?? 'GERI'
+const defaultResidentScopeLabel =
+  import.meta.env.VITE_DEMO_RESIDENT_SCOPE_LABEL ??
+  `TTSH Geriatric Medicine - MCR ${defaultResidentMcr}`
+
 export const frontendConfig = {
   apiBaseUrl: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1',
   defaultRole: 'master_admin' as const,
@@ -42,6 +52,10 @@ export const frontendConfig = {
   demoSecretaryId: defaultSecretaryId,
   demoSecretarySite: defaultSecretarySite,
   demoSecretaryScopeLabel: defaultSecretaryScopeLabel,
+  demoResidentId: defaultResidentId,
+  demoResidentMcr: defaultResidentMcr,
+  demoResidentProgramme: defaultResidentProgramme,
+  demoResidentScopeLabel: defaultResidentScopeLabel,
 }
 
 export const uploadLabels: Record<UploadType, string> = {

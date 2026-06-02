@@ -23,8 +23,8 @@ export const roleOptions: RoleOption[] = [
   {
     id: 'resident',
     label: 'Native Resident',
-    scopeLabel: 'TTSH Geriatric Medicine - MCR M00001A',
-    defaultPath: '/resident',
+    scopeLabel: frontendConfig.demoResidentScopeLabel,
+    defaultPath: '/resident/submissions',
   },
   {
     id: 'external_resident',
@@ -73,7 +73,7 @@ export const navItems: NavItem[] = [
   },
   {
     label: 'Submission Portal',
-    path: '/resident',
+    path: '/resident/submissions',
     roles: ['resident'],
     icon: 'send',
   },
@@ -94,5 +94,6 @@ export const breadcrumbMap: Record<string, string[]> = {
   '/secretary': ['Secretary', 'Teaching Schedule'],
   '/secretary/events': ['Secretary', 'Teaching Schedule'],
   '/resident': ['Native Resident', 'Submission Portal'],
+  '/resident/submissions': ['Native Resident', 'Submission Portal'],
   '/external': ['External Resident', 'Submission Portal'],
 }

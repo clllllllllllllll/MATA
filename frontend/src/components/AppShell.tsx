@@ -80,6 +80,9 @@ export const AppShell = () => {
     if (path === '/secretary/events') {
       return currentPath === '/secretary' || currentPath === '/secretary/events'
     }
+    if (path === '/resident/submissions') {
+      return currentPath === '/resident' || currentPath === '/resident/submissions'
+    }
     return currentPath === path
   }
 

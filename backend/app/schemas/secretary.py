@@ -24,6 +24,24 @@ class SecretaryTeachingEventCreateRequest(BaseModel):
         return trimmed or None
 
 
+class SecretaryTeachingEventUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    teaching_name: str = Field(min_length=1, max_length=200)
+    event_date: date
+    start_time: time
+    cme_points_awarded: bool = False
+    smc_event_code: str | None = Field(default=None, max_length=50)
+
+    @field_validator("teaching_name", "smc_event_code")
+    @classmethod
+    def _trim_strings(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
+
+
 class SecretaryTeachingEventDuplicateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

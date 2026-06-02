@@ -45,3 +45,9 @@ From backend directory:
 ```bash
 python scripts/smoke_phase5a_resident_flow.py
 ```
+
+## 7. Run Phase 5B native resident UI smoke verification
+
+Follow the browser checklist at:
+
+`docs/manual_smoke_phase5b_native_resident_ui.md`

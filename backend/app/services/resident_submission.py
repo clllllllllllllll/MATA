@@ -39,6 +39,27 @@ def _event_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _available_event_row(
+    event: dict[str, Any],
+    *,
+    resolved: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "id": event["id"],
+        "teaching_name": event["teaching_name"],
+        "event_date": event["event_date"],
+        "start_time": event["start_time"],
+        "end_time": event.get("end_time"),
+        "posting_code": event["posting_code"],
+        "session_type": resolved.get("session_type"),
+        "session_type_name": resolved.get("session_type"),
+        "duration_hours": event.get("duration_hours") or resolved.get("duration_hours"),
+        "is_global": bool(resolved.get("is_global")),
+        "is_adhoc": bool(event.get("is_adhoc", False)),
+        "already_submitted": False,
+    }
+
+
 def _attendance_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -186,6 +207,38 @@ async def _posting_contexts(
             "resident_id": str(resident_id),
             "reporting_period_id": str(reporting_period_id),
             "on_date": on_date,
+        },
+    )
+    return [dict(row) for row in result.mappings().all()]
+
+
+async def _posting_contexts_for_period(
+    db: AsyncSession,
+    *,
+    resident_id: UUID,
+    reporting_period_id: UUID | str,
+) -> list[dict[str, Any]]:
+    result = await db.execute(
+        text(
+            """
+            SELECT
+                resident_id,
+                reporting_period_id,
+                posting_code,
+                r_year,
+                start_date,
+                end_date,
+                status
+            FROM resident_postings
+            WHERE resident_id = :resident_id
+              AND reporting_period_id = :reporting_period_id
+              AND status IN ('active', 'loa_working')
+            ORDER BY start_date DESC
+            """
+        ),
+        {
+            "resident_id": str(resident_id),
+            "reporting_period_id": str(reporting_period_id),
         },
     )
     return [dict(row) for row in result.mappings().all()]
@@ -346,12 +399,37 @@ async def _posting_supports_secretary_events(
     return bool(row["supports_secretary_events"])
 
 
+async def _posting_capabilities(
+    db: AsyncSession,
+    *,
+    posting_codes: set[str],
+) -> dict[str, bool]:
+    if not posting_codes:
+        return {}
+    result = await db.execute(
+        text(
+            """
+            SELECT code, supports_secretary_events
+            FROM posting_codes
+            WHERE code = ANY(:posting_codes)
+            """
+        ),
+        {"posting_codes": sorted(posting_codes)},
+    )
+    return {
+        str(row["code"]): bool(row["supports_secretary_events"])
+        for row in result.mappings().all()
+    }
+
+
 async def _events_for_postings(
     db: AsyncSession,
     *,
     resident_id: UUID,
     posting_codes: set[str],
     today: date,
+    period_start: date,
+    period_end: date,
     date_from: date | None,
     date_to: date | None,
 ) -> list[dict[str, Any]]:
@@ -359,10 +437,15 @@ async def _events_for_postings(
         "resident_id": str(resident_id),
         "posting_codes": sorted(posting_codes),
         "today": today,
+        "period_start": period_start,
+        "period_end": period_end,
     }
     where = [
         "posting_code = ANY(:posting_codes)",
         "event_date <= :today",
+        "event_date >= :period_start",
+        "event_date <= :period_end",
+        "created_by_role = 'secretary'",
         """NOT EXISTS (
               SELECT 1
               FROM attendance_records ar
@@ -477,6 +560,23 @@ def _matching_context(
     return next((row for row in contexts if row["posting_code"] == posting_code), None)
 
 
+def _matching_context_for_event(
+    contexts: list[dict[str, Any]],
+    *,
+    posting_code: str,
+    event_date: date,
+) -> dict[str, Any] | None:
+    return next(
+        (
+            row
+            for row in contexts
+            if row["posting_code"] == posting_code
+            and row["start_date"] <= event_date <= row["end_date"]
+        ),
+        None,
+    )
+
+
 async def list_available_events(
     db: AsyncSession,
     *,
@@ -519,30 +619,51 @@ async def list_available_events(
     resident = await _resident(db, resident_id)
     period = await _open_reporting_period(db)
     if period is None:
-        return {"events": [], "reason": "reporting_period_unavailable"}
+        return {
+            "events": [],
+            "reason": "reporting_period_unavailable",
+            "ad_hoc_allowed": False,
+            "message": "No open reporting period is available yet.",
+            "posting_capabilities": [],
+        }
 
-    contexts = await _posting_contexts(
+    contexts = await _posting_contexts_for_period(
         db,
         resident_id=resident_id,
         reporting_period_id=period["id"],
-        on_date=today,
     )
     if not contexts:
-        return {"events": [], "reason": "posting_schedule_unavailable"}
+        return {
+            "events": [],
+            "reason": "posting_schedule_unavailable",
+            "ad_hoc_allowed": False,
+            "message": (
+                "Your posting schedule is not available yet. "
+                "Please contact your programme coordinator after RDB upload."
+            ),
+            "posting_capabilities": [],
+        }
 
     posting_codes = {row["posting_code"] for row in contexts if row.get("posting_code")}
+    posting_capabilities = await _posting_capabilities(db, posting_codes=posting_codes)
     raw_events = await _events_for_postings(
         db,
         resident_id=resident_id,
         posting_codes=posting_codes,
         today=today,
+        period_start=period["start_date"],
+        period_end=period["end_date"],
         date_from=date_from,
         date_to=date_to,
     )
 
     events: list[dict[str, Any]] = []
     for event in raw_events:
-        context = _matching_context(contexts, posting_code=event["posting_code"])
+        context = _matching_context_for_event(
+            contexts,
+            posting_code=event["posting_code"],
+            event_date=event["event_date"],
+        )
         if context is None:
             continue
         resolved = await _resolve_teaching_name(
@@ -554,8 +675,39 @@ async def list_available_events(
             teaching_name=event["teaching_name"],
         )
         if resolved is not None:
-            events.append(_event_row(event))
-    return {"events": events}
+            events.append(_available_event_row(event, resolved=resolved))
+
+    capabilities = [
+        {
+            "posting_code": posting_code,
+            "supports_secretary_events": posting_capabilities.get(posting_code, False),
+        }
+        for posting_code in sorted(posting_codes)
+    ]
+    if events:
+        return {
+            "events": events,
+            "reason": None,
+            "ad_hoc_allowed": True,
+            "message": None,
+            "posting_capabilities": capabilities,
+        }
+
+    has_secretary_support_hint = any(item["supports_secretary_events"] for item in capabilities)
+    return {
+        "events": [],
+        "reason": "no_eligible_scheduled_events",
+        "ad_hoc_allowed": True,
+        "message": (
+            "No scheduled teaching events available. You can submit ad-hoc teaching."
+            if has_secretary_support_hint
+            else (
+                "No eligible scheduled teaching events are currently available for your posting. "
+                "You can submit ad-hoc teaching."
+            )
+        ),
+        "posting_capabilities": capabilities,
+    }
 
 
 async def _duplicate_attendance_exists(
@@ -794,6 +946,7 @@ async def submit_attendance(
         resident = await _external_resident(db, external_resident_id)
         posting_code = resident["current_nhg_posting_code"]
         submitted = 0
+        submitted_events: list[dict[str, Any]] = []
         weekend_warning_count = 0
         touched_postings: set[str] = set()
         for event_id in event_ids:
@@ -837,6 +990,7 @@ async def submit_attendance(
                 posting_code=event["posting_code"],
             )
             submitted += 1
+            submitted_events.append(_event_row(event))
             touched_postings.add(event["posting_code"])
             accepted = await _weekend_is_accepted(
                 db,
@@ -854,6 +1008,7 @@ async def submit_attendance(
         )
         return {
             "submitted": submitted,
+            "submitted_events": submitted_events,
             "errors": [],
             "compliance_warning": (
                 WEEKEND_WARNING.format(count=weekend_warning_count)
@@ -878,6 +1033,7 @@ async def submit_attendance(
         )
 
     submitted = 0
+    submitted_events: list[dict[str, Any]] = []
     weekend_warning_count = 0
     touched_postings: set[str] = set()
     for event_id in event_ids:
@@ -886,6 +1042,12 @@ async def submit_attendance(
             raise ApiError(
                 status_code=422,
                 detail="Future teaching events cannot be submitted",
+                error_code=ErrorCode.VALIDATION_FAILED.value,
+            )
+        if event.get("created_by_role") != "secretary":
+            raise ApiError(
+                status_code=422,
+                detail="Only secretary-created teaching events can be submitted from this endpoint",
                 error_code=ErrorCode.VALIDATION_FAILED.value,
             )
         contexts = await _posting_contexts(
@@ -929,6 +1091,7 @@ async def submit_attendance(
             posting_code=event["posting_code"],
         )
         submitted += 1
+        submitted_events.append(_available_event_row(event, resolved=resolved))
         touched_postings.add(event["posting_code"])
         accepted = await _weekend_is_accepted(
             db,
@@ -943,6 +1106,7 @@ async def submit_attendance(
     invalidate_resident_caches(resident_id=resident_id, posting_codes=touched_postings)
     return {
         "submitted": submitted,
+        "submitted_events": submitted_events,
         "errors": [],
         "compliance_warning": (
             WEEKEND_WARNING.format(count=weekend_warning_count)
@@ -1268,6 +1432,7 @@ async def list_attendance_history(
                 attendance.id AS attendance_id,
                 attendance.teaching_event_id,
                 events.teaching_name,
+                events.is_adhoc,
                 events.event_date,
                 events.start_time,
                 events.end_time,

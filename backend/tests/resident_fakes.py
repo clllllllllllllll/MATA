@@ -326,6 +326,11 @@ class FakeResidentSession:
             )
             return FakeResult(rows=[posting] if posting else [])
 
+        if "SELECT code, supports_secretary_events" in sql and "FROM posting_codes" in sql:
+            codes = set(payload.get("posting_codes") or [])
+            rows = [row for row in self.posting_codes if row["code"] in codes]
+            return FakeResult(rows=rows)
+
         if "SELECT 1" in sql and "FROM posting_codes" in sql:
             exists = any(row for row in self.posting_codes if row["code"] == payload.get("posting_code"))
             return FakeResult(scalar=1 if exists else None)
@@ -341,8 +346,11 @@ class FakeResidentSession:
                 for row in self.resident_postings
                 if row["resident_id"] == str(payload.get("resident_id"))
                 and row["reporting_period_id"] == str(payload.get("reporting_period_id"))
-                and row["start_date"] <= lookup_date <= row["end_date"]
                 and row["status"] in {"active", "loa_working"}
+                and (
+                    lookup_date is None
+                    or row["start_date"] <= lookup_date <= row["end_date"]
+                )
             ]
             rows.sort(key=lambda row: row["start_date"], reverse=True)
             return FakeResult(rows=rows)
@@ -446,7 +454,10 @@ class FakeResidentSession:
                 for row in self.events
                 if row["posting_code"] in posting_codes
                 and row["event_date"] <= today
+                and row["event_date"] >= payload.get("period_start", date.min)
+                and row["event_date"] <= payload.get("period_end", date.max)
                 and row["id"] not in submitted
+                and row.get("created_by_role") == "secretary"
             ]
             if "date_from" in payload and payload["date_from"] is not None:
                 rows = [row for row in rows if row["event_date"] >= payload["date_from"]]

@@ -9,6 +9,7 @@ import { ApiRequestError } from '../../api/http'
 import {
   createSecretaryTeachingEvent,
   deleteSecretaryTeachingEvent,
+  updateSecretaryTeachingEvent,
   listSecretaryTeachingEvents,
   listSecretaryTeachingNameOptions,
   type SecretaryTeachingEvent,
@@ -103,7 +104,10 @@ const normaliseApiError = (error: ApiRequestError, mode: 'list' | 'create' | 'op
     return error.message || 'Validation failed. Please review the form fields.'
   }
   if (error.status === 409) {
-    return error.message || 'This teaching event conflicts with existing records.'
+    if (/attendance exists/i.test(error.message)) {
+      return 'Teaching event cannot be edited or deleted because attendance exists.'
+    }
+    return error.message || 'Teaching event cannot be edited or deleted because attendance exists.'
   }
   if (error.isNetworkError) {
     return 'Cannot reach backend API. Verify frontend proxy and backend server are running.'
@@ -185,6 +189,7 @@ export const SecretaryTeachingSchedulePage = () => {
 
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerMode, setDrawerMode] = useState<DrawerMode>('create')
+  const [sourceEvent, setSourceEvent] = useState<SecretaryTeachingEvent | null>(null)
   const [formState, setFormState] = useState<TeachingFormState>(INITIAL_FORM)
   const [formErrors, setFormErrors] = useState<Partial<Record<keyof TeachingFormState, string>>>({})
   const [submitState, setSubmitState] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle')
@@ -220,6 +225,10 @@ export const SecretaryTeachingSchedulePage = () => {
         setSupportsEventListEndpoint(true)
         setEvents(response)
         setSelectedIds(new Set())
+        setSubmitState('idle')
+        setSubmitMessage(null)
+        setSubmitErrorDetails(null)
+        setSubmitErrorDetailsOpen(false)
       } catch (error) {
         if (!active) {
           return
@@ -307,22 +316,51 @@ export const SecretaryTeachingSchedulePage = () => {
       }
       return next
     })
+    setSubmitMessage(null)
+    setSubmitState('idle')
+    setSubmitErrorDetails(null)
+    setSubmitErrorDetailsOpen(false)
   }
 
-  const visibleSelectedCount = useMemo(() => {
-    const visibleIds = new Set(visibleEvents.map((event) => event.id))
-    return [...selectedIds].filter((id) => visibleIds.has(id)).length
+  const selectedRows = useMemo(() => {
+    return visibleEvents.filter((event) => selectedIds.has(event.id))
   }, [selectedIds, visibleEvents])
+  const selectedCount = selectedRows.length
+  const selectedWithAttendanceCount = selectedRows.filter((event) => event.hasAttendance).length
+  const allSelectedHaveAttendance = selectedCount > 0 && selectedWithAttendanceCount === selectedCount
+  const anySelectedHaveAttendance = selectedWithAttendanceCount > 0
+  const deletableRows = selectedRows.filter((event) => !event.hasAttendance)
+  const canEditSelected = selectedCount === 1 && !selectedRows[0]?.hasAttendance
+  const canDuplicateSelected = selectedCount === 1
+  const canDeleteSelected = selectedCount > 0 && !allSelectedHaveAttendance
+  const showEditButton = canEditSelected
+  const showDeleteButton = canDeleteSelected
+  const showDuplicateButton = canDuplicateSelected
   const singleSelectedEvent = useMemo(() => {
-    if (visibleSelectedCount !== 1) {
+    if (selectedCount !== 1) {
       return null
     }
-    const selectedId = [...selectedIds].find((id) => visibleEvents.some((event) => event.id === id))
-    if (!selectedId) {
+    return selectedRows[0] ?? null
+  }, [selectedCount, selectedRows])
+  const selectedActionMessage = useMemo(() => {
+    if (selectedCount === 0) {
       return null
     }
-    return visibleEvents.find((event) => event.id === selectedId) ?? null
-  }, [selectedIds, visibleEvents, visibleSelectedCount])
+    if (selectedCount === 1) {
+      if (singleSelectedEvent?.hasAttendance) {
+        return 'Editing and deleting are disabled because attendance has been submitted for this event.'
+      }
+      return null
+    }
+    if (allSelectedHaveAttendance) {
+      return 'Editing and deleting are disabled because attendance has been submitted for the selected events.'
+    }
+    if (anySelectedHaveAttendance) {
+      return 'Some selected events cannot be edited or deleted because attendance has been submitted.'
+    }
+    return null
+  }, [selectedCount, singleSelectedEvent, allSelectedHaveAttendance, anySelectedHaveAttendance])
+  const showSelectionActionMessage = submitState === 'idle' && submitMessage === null && selectedActionMessage !== null
 
   const resetForm = () => {
     setFormState(INITIAL_FORM)
@@ -331,6 +369,7 @@ export const SecretaryTeachingSchedulePage = () => {
     setSubmitMessage(null)
     setSubmitErrorDetails(null)
     setSubmitErrorDetailsOpen(false)
+    setSourceEvent(null)
   }
 
   const closeDrawer = () => {
@@ -351,12 +390,17 @@ export const SecretaryTeachingSchedulePage = () => {
 
   const clearSelection = () => {
     setSelectedIds(() => new Set())
+    setSubmitMessage(null)
+    setSubmitState('idle')
+    setSubmitErrorDetails(null)
+    setSubmitErrorDetailsOpen(false)
   }
 
   const handleOpenDuplicate = () => {
     if (!singleSelectedEvent) {
       return
     }
+    setSourceEvent(singleSelectedEvent)
     setDrawerMode('duplicate')
     setFormState({
       teachingName: singleSelectedEvent.teachingName,
@@ -381,6 +425,12 @@ export const SecretaryTeachingSchedulePage = () => {
     if (!singleSelectedEvent) {
       return
     }
+    if (singleSelectedEvent.hasAttendance) {
+      setSubmitState('error')
+      setSubmitMessage('Editing and deleting are disabled because attendance has been submitted for this event.')
+      return
+    }
+    setSourceEvent(singleSelectedEvent)
     setDrawerMode('edit')
     setFormState({
       teachingName: singleSelectedEvent.teachingName,
@@ -391,7 +441,7 @@ export const SecretaryTeachingSchedulePage = () => {
     })
     setFormErrors({})
     setSubmitState('idle')
-    setSubmitMessage('Edit is not available yet. Use Duplicate to create a modified copy.')
+    setSubmitMessage(null)
     setSubmitErrorDetails(null)
     setSubmitErrorDetailsOpen(false)
     setDrawerOpen(true)
@@ -402,38 +452,123 @@ export const SecretaryTeachingSchedulePage = () => {
   }
 
   const handleDeleteSelected = async () => {
-    const idsToDelete = visibleEvents.map((event) => event.id).filter((id) => selectedIds.has(id))
+    if (allSelectedHaveAttendance) {
+      setSubmitState('error')
+      setSubmitMessage(`${selectedCount} teaching event(s) cannot be deleted because attendance exists.`)
+      return
+    }
+
+    const idsToDelete = deletableRows.map((event) => event.id)
+    const attendanceProtectedIds = selectedRows.filter((event) => event.hasAttendance).map((event) => event.id)
+    const attendanceProtectedCount = attendanceProtectedIds.length
+
     if (idsToDelete.length === 0) {
+      setSubmitState('error')
+      setSubmitMessage(
+        `${attendanceProtectedCount} teaching event(s) cannot be deleted because attendance exists.`,
+      )
       return
     }
     setSubmitState('submitting')
     setSubmitMessage(null)
-    try {
-      await Promise.all(idsToDelete.map((id) => deleteSecretaryTeachingEvent(id)))
+
+    const deleteAttempts = await Promise.allSettled(idsToDelete.map((id) => deleteSecretaryTeachingEvent(id)))
+    const deletedIds: string[] = []
+    const errorIds: string[] = []
+    for (let index = 0; index < deleteAttempts.length; index++) {
+      const id = idsToDelete[index]
+      const result = deleteAttempts[index]
+      if (result && result.status === 'fulfilled' && id) {
+        deletedIds.push(id)
+      } else if (id) {
+        errorIds.push(id)
+      }
+    }
+
+    if (deletedIds.length > 0) {
       if (supportsEventListEndpoint) {
         const refreshed = await loadEvents()
         setEvents(refreshed)
       } else {
         setRecentCreatedEvents((previous) => previous.filter((event) => !idsToDelete.includes(event.id)))
       }
+    }
+    if (errorIds.length === 0) {
+      if (attendanceProtectedCount > 0) {
+        setSelectedIds(new Set(attendanceProtectedIds))
+        setSubmitState('success')
+        setSubmitMessage(
+          `Deleted ${deletedIds.length} teaching event(s). ${attendanceProtectedCount} could not be deleted because attendance exists.`,
+        )
+        return
+      }
       setSelectedIds(() => new Set())
-      setSubmitState('idle')
-      setSubmitMessage(null)
-    } catch (error) {
-      const message =
-        error instanceof ApiRequestError
-          ? normaliseApiError(error, 'create')
-          : 'Unable to delete teaching event right now. Please try again.'
-      setSubmitState('error')
-      setSubmitMessage(message)
+      setSubmitState('success')
+      setSubmitMessage(`Deleted ${deletedIds.length} teaching event(s).`)
+      return
+    }
+
+    const failedDelete = deleteAttempts.find((result) => result.status === 'rejected')
+    const firstFailure = failedDelete && failedDelete.status === 'rejected' ? failedDelete.reason : null
+    const nonDeletableCount = attendanceProtectedCount + errorIds.length
+    const allFailureIds = [...attendanceProtectedIds, ...errorIds]
+    setSelectedIds(new Set(allFailureIds))
+    setSubmitState('error')
+    if (attendanceProtectedCount > 0) {
+      setSubmitMessage(
+        deletedIds.length > 0
+          ? `Deleted ${deletedIds.length} teaching event(s). ${nonDeletableCount} could not be deleted because attendance exists.`
+          : `${nonDeletableCount} teaching event(s) could not be deleted because attendance exists.`,
+      )
+    } else if (failedDelete) {
+      setSubmitMessage(
+        firstFailure instanceof ApiRequestError
+          ? normaliseApiError(firstFailure, 'create')
+          : 'Unable to delete teaching event right now. Please try again.',
+      )
+    } else {
+      setSubmitMessage('Unable to delete teaching event right now. Please try again.')
+    }
+    if (firstFailure instanceof ApiRequestError) {
+      setSubmitErrorDetails(firstFailure.details)
     }
   }
 
   const handleCreate = async () => {
-    if (drawerMode === 'edit') {
+    if (drawerMode === 'edit' && !sourceEvent) {
       setSubmitState('error')
-      setSubmitMessage('Edit is not available yet. Use Duplicate to create a modified copy.')
+      setSubmitMessage('Please select an event to edit first.')
       return
+    }
+    if (drawerMode === 'edit' && !sourceEvent?.id) {
+      setSubmitState('error')
+      setSubmitMessage('Please select an event to edit first.')
+      return
+    }
+    if (drawerMode === 'edit' && sourceEvent?.hasAttendance) {
+      setSubmitState('error')
+      setSubmitMessage('Editing and deleting are disabled because attendance has been submitted for this event.')
+      return
+    }
+    if (drawerMode === 'duplicate' && sourceEvent) {
+      const sourceName = sourceEvent.teachingName.trim()
+      const targetName = formState.teachingName.trim()
+      const sourceStartTime = toTimeInputValue(sourceEvent.startTime)
+      const targetStartTime = formState.startTime
+      const sourceDate = sourceEvent.eventDate
+      const sourceCmeCode = sourceEvent.cmePointsAwarded ? sourceEvent.smcEventCode ?? '' : ''
+      const targetCmeCode = formState.cmePointsAwarded ? formState.smcEventCode.trim() : ''
+      const sourceSame =
+        sourceName === targetName &&
+        sourceDate === formState.eventDate &&
+        sourceStartTime === targetStartTime &&
+        sourceEvent.cmePointsAwarded === formState.cmePointsAwarded &&
+        sourceCmeCode === targetCmeCode
+      if (sourceSame) {
+        setSubmitState('error')
+        setSubmitMessage('Duplicate has no changes. Update date/time or another field before saving.')
+        return
+      }
     }
     const nextErrors: Partial<Record<keyof TeachingFormState, string>> = {}
     if (!formState.teachingName.trim()) {
@@ -460,35 +595,45 @@ export const SecretaryTeachingSchedulePage = () => {
     setSubmitState('submitting')
     setSubmitMessage(null)
     setSubmitErrorDetails(null)
+    const payload = {
+      teachingName: formState.teachingName.trim(),
+      eventDate: formState.eventDate,
+      startTime: formState.startTime,
+      cmePointsAwarded: formState.cmePointsAwarded,
+      smcEventCode: formState.cmePointsAwarded ? formState.smcEventCode.trim() || undefined : undefined,
+    }
     try {
-      const createdEvent = await createSecretaryTeachingEvent({
-        teachingName: formState.teachingName.trim(),
-        eventDate: formState.eventDate,
-        startTime: formState.startTime,
-        cmePointsAwarded: formState.cmePointsAwarded,
-        smcEventCode: formState.cmePointsAwarded ? formState.smcEventCode.trim() || undefined : undefined,
-      })
+      const savedEvent =
+        drawerMode === 'edit' && sourceEvent
+          ? await updateSecretaryTeachingEvent(sourceEvent.id, payload)
+          : await createSecretaryTeachingEvent(payload)
 
       if (supportsEventListEndpoint) {
         const refreshed = await loadEvents()
-        if (refreshed.some((event) => event.id === createdEvent.id)) {
+        if (refreshed.some((event) => event.id === savedEvent.id)) {
           setEvents(refreshed)
         } else {
-          setEvents([createdEvent, ...refreshed.filter((event) => event.id !== createdEvent.id)])
+          setEvents([savedEvent, ...refreshed.filter((event) => event.id !== savedEvent.id)])
         }
       } else {
-        setRecentCreatedEvents((previous) => [createdEvent, ...previous])
+        setRecentCreatedEvents((previous) => [savedEvent, ...previous])
       }
 
       setSubmitState('success')
-      setSubmitMessage('Teaching event created successfully.')
+      setSubmitMessage(
+        drawerMode === 'edit'
+          ? 'Teaching event updated successfully.'
+          : drawerMode === 'duplicate'
+            ? 'Teaching event duplicated successfully.'
+            : 'Teaching event created successfully.',
+      )
       setSelectedIds(new Set())
       closeDrawer()
     } catch (error) {
       const message =
         error instanceof ApiRequestError
           ? normaliseApiError(error, 'create')
-          : 'Unable to create teaching event right now.'
+          : 'Unable to save teaching event right now.'
       setSubmitState('error')
       setSubmitMessage(message)
       if (error instanceof ApiRequestError) {
@@ -562,34 +707,43 @@ export const SecretaryTeachingSchedulePage = () => {
       <section className="card secretary-table-card">
         <div className="section-header secretary-table-header">
           <h2>Teaching schedule</h2>
-          {visibleSelectedCount > 0 ? (
+          {selectedCount > 0 ? (
             <div className="secretary-selection-toolbar">
-              <span className="inline-muted">{visibleSelectedCount} selected</span>
-              <button
-                type="button"
-                className="button button-ghost"
-                onClick={handleOpenEdit}
-                disabled={visibleSelectedCount !== 1}
-                title={visibleSelectedCount !== 1 ? 'Select exactly one row to edit.' : 'Edit endpoint is not available yet.'}
-              >
-                Edit
-              </button>
-              <button
-                type="button"
-                className="button button-secondary"
-                onClick={handleOpenDuplicate}
-                disabled={visibleSelectedCount !== 1}
-                title={visibleSelectedCount !== 1 ? 'Select exactly one row to duplicate.' : undefined}
-              >
-                Duplicate
-              </button>
-              <button
-                type="button"
-                className="button button-ghost danger"
-                onClick={() => void handleDeleteSelected()}
-              >
-                Delete
-              </button>
+              <span className="inline-muted">{selectedCount} selected</span>
+              {showEditButton ? (
+                <button
+                  type="button"
+                  className="button button-ghost"
+                  onClick={handleOpenEdit}
+                  title="Edit selected teaching event."
+                >
+                  Edit
+                </button>
+              ) : null}
+              {showDuplicateButton ? (
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={handleOpenDuplicate}
+                  title={
+                    selectedCount === 1
+                      ? 'Create a duplicate of the selected teaching event.'
+                      : 'Select exactly one row to duplicate.'
+                  }
+                >
+                  Duplicate
+                </button>
+              ) : null}
+              {showDeleteButton ? (
+                <button
+                  type="button"
+                  className="button button-ghost danger"
+                  onClick={() => void handleDeleteSelected()}
+                  title="Delete selected teaching event(s)."
+                >
+                  Delete
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="button button-ghost"
@@ -606,6 +760,12 @@ export const SecretaryTeachingSchedulePage = () => {
             <span className="inline-muted">Select rows to review details</span>
           )}
         </div>
+
+        {showSelectionActionMessage ? (
+          <div className="inline-callout callout-warning secretary-inline-callout">
+            <span>{selectedActionMessage}</span>
+          </div>
+        ) : null}
 
         {submitState === 'success' && submitMessage ? (
           <div className="inline-callout callout-success secretary-inline-callout">
@@ -696,17 +856,35 @@ export const SecretaryTeachingSchedulePage = () => {
         onClose={closeDrawer}
         footer={
           <>
-            <button type="button" className="button button-ghost" onClick={closeDrawer}>
+          <button type="button" className="button button-ghost" onClick={closeDrawer}>
               Cancel
             </button>
               <button
                 type="button"
                 className="button button-primary"
                 onClick={() => void handleCreate()}
-                disabled={drawerMode === 'edit' || !!selectedPeriodDateError}
-                title={drawerMode === 'edit' ? 'Edit endpoint is not available yet.' : undefined}
+                disabled={
+                  submitState === 'submitting' ||
+                  !!selectedPeriodDateError ||
+                  (drawerMode === 'edit' && (!sourceEvent || sourceEvent.hasAttendance))
+                }
+                title={
+                  selectedPeriodDateError
+                    ? 'Event date must be within the selected reporting period.'
+                    : drawerMode === 'edit' && sourceEvent?.hasAttendance
+                      ? 'Editing and deleting are disabled because attendance has been submitted for this event.'
+                      : drawerMode === 'edit'
+                        ? 'Save changes to the selected teaching event.'
+                        : drawerMode === 'duplicate'
+                          ? 'Create a duplicate teaching event with the selected event values.'
+                          : 'Create this teaching event.'
+                }
               >
-              {drawerMode === 'duplicate' ? 'Create duplicate' : drawerMode === 'edit' ? 'Edit unavailable' : 'Create teaching'}
+              {drawerMode === 'duplicate'
+                ? 'Create duplicate'
+                : drawerMode === 'edit'
+                  ? 'Save changes'
+                  : 'Create teaching'}
             </button>
           </>
         }

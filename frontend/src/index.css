@@ -1564,6 +1564,121 @@ tr:last-child td {
   width: 100%;
 }
 
+.resident-page {
+  gap: 14px;
+}
+
+.resident-hero-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.button-resident-submit {
+  background: var(--green);
+  color: #fff;
+  border-radius: 999px;
+  padding: 9px 18px;
+}
+
+.button-resident-submit:hover {
+  background: var(--green-hover);
+}
+
+.button-resident-submit:disabled {
+  background: var(--ink-5);
+  cursor: not-allowed;
+}
+
+.resident-events-card {
+  overflow: hidden;
+}
+
+.resident-table-wrap {
+  border-radius: 0;
+  border-inline: none;
+  border-bottom: none;
+  box-shadow: none;
+}
+
+.resident-table-wrap .table {
+  min-width: 980px;
+}
+
+.resident-row-selected td {
+  background: var(--purple-tint-2);
+}
+
+.resident-teaching-name {
+  font-weight: 500;
+}
+
+.resident-empty {
+  padding: 18px 22px 20px;
+  color: var(--ink-3);
+}
+
+.resident-empty-title {
+  margin: 0 0 6px;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.resident-empty p {
+  margin: 0;
+}
+
+.resident-panels-grid {
+  grid-template-columns: 1.3fr 1fr;
+  gap: 14px;
+}
+
+.resident-adhoc-card,
+.resident-history-card {
+  padding-bottom: 14px;
+}
+
+.resident-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 0 22px 6px;
+}
+
+.resident-form-grid label:last-child {
+  grid-column: 1 / -1;
+}
+
+.resident-adhoc-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 22px;
+}
+
+.resident-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 22px;
+}
+
+.resident-history-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.resident-history-title {
+  margin: 0 0 3px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
 @media (max-width: 1280px) {
   .app,
   .app-root {
@@ -1641,7 +1756,16 @@ tr:last-child td {
     align-items: flex-start;
   }
 
+  .resident-hero-actions {
+    align-items: flex-start;
+  }
+
   .secretary-form-row {
+    grid-template-columns: 1fr;
+  }
+
+  .resident-form-grid,
+  .resident-panels-grid {
     grid-template-columns: 1fr;
   }
 }

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.errors import ApiError, ErrorCode
 from app.schemas.secretary import (
     SecretaryTeachingEventCreateRequest,
+    SecretaryTeachingEventUpdateRequest,
     SecretaryTeachingEventDuplicateRequest,
     SecretaryTeachingEventSeriesCreateRequest,
 )
@@ -119,6 +120,25 @@ async def duplicate_teaching_event(
         event_date=request.event_date,
         start_time=request.start_time,
         teaching_name=request.teaching_name,
+    )
+
+
+@router.put("/teaching-events/{event_id}")
+async def update_teaching_event(
+    event_id: UUID,
+    request: SecretaryTeachingEventUpdateRequest,
+    secretary_context: SecretaryContext = Depends(require_secretary_context),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict:
+    return await secretary_events.update_teaching_event(
+        db,
+        posting_code=secretary_context.posting_code,
+        event_id=event_id,
+        teaching_name=request.teaching_name,
+        event_date=request.event_date,
+        start_time=request.start_time,
+        cme_points_awarded=request.cme_points_awarded,
+        smc_event_code=request.smc_event_code,
     )
 
 

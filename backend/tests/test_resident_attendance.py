@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -48,6 +49,29 @@ def test_attendance_submission_creates_attendance_record() -> None:
         and row["posting_code"] == "TTSHCardio"
         for row in fake_db.attendance
     )
+    inserted = next(
+        row
+        for row in fake_db.attendance
+        if row["resident_id"] == fake_db.resident_id and row["teaching_event_id"] == fake_db.event_id
+    )
+    assert "session_type_id" not in inserted
+
+
+def test_submitted_event_no_longer_appears_in_available_events() -> None:
+    fake_db = FakeResidentSession()
+    client = _client(fake_db)
+
+    submit_response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [fake_db.event_id]},
+    )
+    events_response = client.get("/resident/events", headers=_headers(fake_db))
+
+    assert submit_response.status_code == 200
+    assert events_response.status_code == 200
+    event_ids = {row["id"] for row in events_response.json()["events"]}
+    assert fake_db.event_id not in event_ids
 
 
 def test_duplicate_attendance_is_rejected() -> None:
@@ -74,6 +98,45 @@ def test_attendance_outside_posting_window_is_rejected() -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_attendance_accepts_valid_secretary_event_even_when_supports_flag_is_false() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.resident_postings[0]["posting_code"] = "KTPHGerMed"
+    fake_db.catalogue.append(
+        {
+            "keyword": "KTPH Teaching",
+            "posting_code": "KTPHGerMed",
+            "programme_code": "GRM",
+            "r_year": "R2",
+            "reporting_period_id": fake_db.period_id,
+            "session_type_id": fake_db.session_type_id,
+            "session_type": "KTPH Teaching [1.0h]",
+            "duration_hours": 1.0,
+            "is_tracked": True,
+        }
+    )
+    ktph_event = fake_db._event(  # noqa: SLF001
+        str(uuid4()),
+        "KTPHGerMed",
+        "KTPH Teaching",
+        fake_db.today - timedelta(days=1),
+    )
+    fake_db.events.append(ktph_event)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [ktph_event["id"]]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["submitted"] == 1
+    assert any(
+        row["resident_id"] == fake_db.resident_id and row["teaching_event_id"] == ktph_event["id"]
+        for row in fake_db.attendance
+    )
 
 
 def test_weekend_non_exception_attendance_is_stored_with_warning() -> None:

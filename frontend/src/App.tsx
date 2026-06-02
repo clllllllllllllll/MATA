@@ -4,6 +4,7 @@ import { AdminHomePage } from './pages/admin/AdminHomePage'
 import { AdminMultiPostingPage } from './pages/admin/AdminMultiPostingPage'
 import { AdminUploadPage } from './pages/admin/AdminUploadPage'
 import { AdminWarningsPage } from './pages/admin/AdminWarningsPage'
+import { ResidentSubmissionPage } from './pages/resident/ResidentSubmissionPage'
 import { SecretaryTeachingSchedulePage } from './pages/secretary/SecretaryTeachingSchedulePage'
 import { StubPage } from './pages/StubPage'
 
@@ -35,12 +36,11 @@ function App() {
         />
         <Route
           path="/resident"
-          element={
-            <StubPage
-              title="Native Resident Portal"
-              subtitle="Optional visual stub. Resident flow backend integration is deferred."
-            />
-          }
+          element={<Navigate to="/resident/submissions" replace />}
+        />
+        <Route
+          path="/resident/submissions"
+          element={<ResidentSubmissionPage />}
         />
         <Route
           path="/external"

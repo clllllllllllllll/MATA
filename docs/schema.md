@@ -122,11 +122,11 @@ Canonical registry of all posting sites. Seeded from both RDB (active sites) and
 | department | VARCHAR(50) | | e.g. `Anaes`, `GerMed`, `DiagRd` |
 | billing_dept | VARCHAR(50) | | For clawback (Phase 10) |
 | is_emergency | BOOLEAN | DEFAULT false | Emergency postings accept weekend AND public holiday teachings |
-| supports_secretary_events | BOOLEAN | DEFAULT false | Posting capability flag. If true, residents/external residents at this posting may see secretary-created event lists. If false, the posting is ad-hoc-only for resident submission unless a future pilot explicitly enables it. |
+| supports_secretary_events | BOOLEAN | DEFAULT false | Posting capability hint for secretary-event onboarding. For native residents, visibility/submission remains data-driven by posting context + teaching_name_catalogue/global matching; this flag is not a hard authorization clamp. External flow may apply additional controls. |
 
 **Important:** Posting codes are NOT derivable by regex from institution+department. Real codes like `MOHHGTG1`, `AICAIC`, `RenCiCommHosp`, `NHGPlyNHGPly` break any uniform pattern. This table is the source of truth — no string parsing.
 
-**Secretary-event visibility capability:** `supports_secretary_events` is the scalable pilot/onboarding switch. Current TTSH pilot postings can be seeded/set to `true`; future hospitals such as KTPH can be enabled by data/config update, not service-code hardcoding. Resident event visibility must check this flag instead of hardcoding institution names.
+**Secretary-event visibility capability:** `supports_secretary_events` is a scalable onboarding/capability signal and useful UI metadata. Native resident event visibility must stay data-driven (current posting context + valid events/catalogue/global matching) and must not be hardcoded to institution names.
 
 ---
 

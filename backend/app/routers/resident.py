@@ -30,22 +30,18 @@ class ResidentContext:
     role: str
     subject_id: UUID
     programme_code: str | None
-    mcr: str | None
-    home_cluster: str | None
 
 
 async def require_resident_context(
     x_user_role: Annotated[str | None, Header(alias="X-User-Role")] = None,
     x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     x_user_programme: Annotated[str | None, Header(alias="X-User-Programme")] = None,
-    x_user_mcr: Annotated[str | None, Header(alias="X-User-MCR")] = None,
-    x_user_home_cluster: Annotated[str | None, Header(alias="X-User-Home-Cluster")] = None,
 ) -> ResidentContext:
     role = (x_user_role or "").strip().lower()
     if role not in {"resident", "external_resident"}:
         raise ApiError(
             status_code=403,
-            detail="Forbidden - resident or external_resident role required",
+            detail="Forbidden - resident role required",
             error_code=ErrorCode.FORBIDDEN.value,
         )
     if not x_user_id:
@@ -65,9 +61,7 @@ async def require_resident_context(
     return ResidentContext(
         role=role,
         subject_id=resident_id,
-        programme_code=((x_user_programme or "").strip() or None) if role == "resident" else None,
-        mcr=(x_user_mcr or "").strip() or None,
-        home_cluster=(x_user_home_cluster or "").strip() or None,
+        programme_code=(x_user_programme or "").strip() or None,
     )
 
 
@@ -78,13 +72,18 @@ async def list_events(
     resident_context: ResidentContext = Depends(require_resident_context),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
+    if resident_context.role == "external_resident":
+        return await resident_submission.list_available_events(
+            db,
+            role="external_resident",
+            external_resident_id=resident_context.subject_id,
+            date_from=date_from,
+            date_to=date_to,
+        )
     return await resident_submission.list_available_events(
         db,
-        role=resident_context.role,
-        resident_id=resident_context.subject_id if resident_context.role == "resident" else None,
-        external_resident_id=(
-            resident_context.subject_id if resident_context.role == "external_resident" else None
-        ),
+        role="resident",
+        resident_id=resident_context.subject_id,
         date_from=date_from,
         date_to=date_to,
     )
@@ -96,13 +95,17 @@ async def submit_attendance(
     resident_context: ResidentContext = Depends(require_resident_context),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
+    if resident_context.role == "external_resident":
+        return await resident_submission.submit_attendance(
+            db,
+            role="external_resident",
+            external_resident_id=resident_context.subject_id,
+            event_ids=request.event_ids,
+        )
     return await resident_submission.submit_attendance(
         db,
-        role=resident_context.role,
-        resident_id=resident_context.subject_id if resident_context.role == "resident" else None,
-        external_resident_id=(
-            resident_context.subject_id if resident_context.role == "external_resident" else None
-        ),
+        role="resident",
+        resident_id=resident_context.subject_id,
         event_ids=request.event_ids,
     )
 
@@ -113,10 +116,10 @@ async def delete_attendance(
     resident_context: ResidentContext = Depends(require_resident_context),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    if resident_context.role != "resident":
+    if resident_context.role == "external_resident":
         raise ApiError(
             status_code=403,
-            detail="Forbidden - resident role required",
+            detail="Forbidden - native resident role required",
             error_code=ErrorCode.FORBIDDEN.value,
         )
     return await resident_submission.remove_attendance(
@@ -132,13 +135,19 @@ async def submit_adhoc_teaching(
     resident_context: ResidentContext = Depends(require_resident_context),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
+    if resident_context.role == "external_resident":
+        return await resident_submission.submit_adhoc_teaching(
+            db,
+            role="external_resident",
+            external_resident_id=resident_context.subject_id,
+            event_date=request.date,
+            start_time=request.start_time,
+            teaching_name=request.teaching_name,
+        )
     return await resident_submission.submit_adhoc_teaching(
         db,
-        role=resident_context.role,
-        resident_id=resident_context.subject_id if resident_context.role == "resident" else None,
-        external_resident_id=(
-            resident_context.subject_id if resident_context.role == "external_resident" else None
-        ),
+        role="resident",
+        resident_id=resident_context.subject_id,
         event_date=request.date,
         start_time=request.start_time,
         teaching_name=request.teaching_name,
@@ -153,13 +162,19 @@ async def attendance_history(
     resident_context: ResidentContext = Depends(require_resident_context),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
+    if resident_context.role == "external_resident":
+        return await resident_submission.list_attendance_history(
+            db,
+            role="external_resident",
+            external_resident_id=resident_context.subject_id,
+            date_from=date_from,
+            date_to=date_to,
+            status=status,
+        )
     return await resident_submission.list_attendance_history(
         db,
-        role=resident_context.role,
-        resident_id=resident_context.subject_id if resident_context.role == "resident" else None,
-        external_resident_id=(
-            resident_context.subject_id if resident_context.role == "external_resident" else None
-        ),
+        role="resident",
+        resident_id=resident_context.subject_id,
         date_from=date_from,
         date_to=date_to,
         status=status,
@@ -171,11 +186,14 @@ async def dashboard(
     resident_context: ResidentContext = Depends(require_resident_context),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
+    if resident_context.role == "external_resident":
+        return await resident_submission.dashboard_placeholder(
+            db,
+            role="external_resident",
+            external_resident_id=resident_context.subject_id,
+        )
     return await resident_submission.dashboard_placeholder(
         db,
-        role=resident_context.role,
-        resident_id=resident_context.subject_id if resident_context.role == "resident" else None,
-        external_resident_id=(
-            resident_context.subject_id if resident_context.role == "external_resident" else None
-        ),
+        role="resident",
+        resident_id=resident_context.subject_id,
     )
