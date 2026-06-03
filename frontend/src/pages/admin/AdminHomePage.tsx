@@ -1,4 +1,6 @@
-﻿import { useNavigate } from 'react-router-dom'
+import { useCallback, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { listUploadLogs, type UploadLogEntry } from '../../api/uploadLogs'
 import {
   IconCalendar,
   IconDatabase,
@@ -9,7 +11,9 @@ import {
   IconUpload,
 } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
+import { uploadLabels } from '../../config/frontendConfig'
 import { useAppState } from '../../context/useAppState'
+import type { UploadType } from '../../types/app'
 
 const workspaceTiles = [
   {
@@ -30,7 +34,7 @@ const workspaceTiles = [
     title: 'Upload Logs',
     path: '/admin/upload-logs',
     description: 'Audit every parser run with status and timestamps.',
-    stat: 'Pending endpoint',
+    stat: 'Latest logs available',
     icon: <IconFile size={18} />,
   },
   {
@@ -64,13 +68,90 @@ const formatDateTime = (iso?: string) =>
       })
     : 'Not uploaded'
 
+const getUploadLabel = (uploadType: string) => {
+  if (uploadType in uploadLabels) {
+    return uploadLabels[uploadType as UploadType]
+  }
+  return uploadType || 'Upload'
+}
+
+const getWarningsCount = (summary: Record<string, unknown>): number | null => {
+  if (Array.isArray(summary.warnings)) {
+    return summary.warnings.length
+  }
+  const count = summary.warnings_count ?? summary.warningsCount
+  return typeof count === 'number' && Number.isFinite(count) ? count : null
+}
+
+const formatWarningsStatus = (log: UploadLogEntry) => {
+  const warningsCount = getWarningsCount(log.summary)
+  if (warningsCount !== null) {
+    return String(warningsCount)
+  }
+  return log.status ? `${log.status} / warnings —` : '—'
+}
+
 export const AdminHomePage = () => {
   const navigate = useNavigate()
-  const { uploadHistory, warnings } = useAppState()
+  const { demoAdminId, demoAdminProgrammes, warnings } = useAppState()
+  const [uploadLogs, setUploadLogs] = useState<UploadLogEntry[]>([])
+  const [uploadLogsLoading, setUploadLogsLoading] = useState(true)
+  const [uploadLogsError, setUploadLogsError] = useState<string | null>(null)
+
+  const fetchUploadLogs = useCallback(
+    () =>
+      listUploadLogs({
+        adminId: demoAdminId,
+        adminProgrammes: demoAdminProgrammes,
+        limit: 6,
+      }),
+    [demoAdminId, demoAdminProgrammes],
+  )
+
+  const refreshUploadLogs = useCallback(async () => {
+    setUploadLogsLoading(true)
+    setUploadLogsError(null)
+    try {
+      const rows = await fetchUploadLogs()
+      setUploadLogs(rows)
+    } catch (error) {
+      setUploadLogs([])
+      setUploadLogsError(error instanceof Error ? error.message : 'Unable to load upload logs.')
+    } finally {
+      setUploadLogsLoading(false)
+    }
+  }, [fetchUploadLogs])
+
+  useEffect(() => {
+    let active = true
+    ;(async () => {
+      try {
+        const rows = await fetchUploadLogs()
+        if (!active) {
+          return
+        }
+        setUploadLogs(rows)
+        setUploadLogsError(null)
+      } catch (error) {
+        if (!active) {
+          return
+        }
+        setUploadLogs([])
+        setUploadLogsError(error instanceof Error ? error.message : 'Unable to load upload logs.')
+      } finally {
+        if (active) {
+          setUploadLogsLoading(false)
+        }
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [fetchUploadLogs])
 
   const unresolvedWarnings = warnings.filter((item) => item.status === 'unresolved')
-  const lastSyncText = uploadHistory[0]
-    ? formatDateTime(uploadHistory[0].uploadedAtIso)
+  const lastSyncText = uploadLogs[0]
+    ? formatDateTime(uploadLogs[0].uploadedAtIso)
     : 'No uploads yet'
   const unresolvedWarningsText = `${unresolvedWarnings.length} unresolved warnings`
 
@@ -82,9 +163,14 @@ export const AdminHomePage = () => {
         metaInline={[`Last full sync - ${lastSyncText}`, unresolvedWarningsText]}
         actions={
           <div className="hero-action-row">
-            <button type="button" className="button button-secondary" onClick={() => window.location.reload()}>
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => void refreshUploadLogs()}
+              disabled={uploadLogsLoading}
+            >
               <IconRefresh size={14} />
-              Refresh
+              {uploadLogsLoading ? 'Refreshing' : 'Refresh'}
             </button>
           </div>
         }
@@ -121,21 +207,29 @@ export const AdminHomePage = () => {
                   <th>Source</th>
                   <th>When</th>
                   <th>Programme</th>
-                  <th>Warnings</th>
+                  <th>Warnings / status</th>
                 </tr>
               </thead>
               <tbody>
-                {uploadHistory.length === 0 ? (
+                {uploadLogsLoading ? (
                   <tr>
-                    <td colSpan={4}>No uploads yet. Start with Academic Calendar / Public Holidays.</td>
+                    <td colSpan={4}>Loading upload logs...</td>
+                  </tr>
+                ) : uploadLogsError ? (
+                  <tr>
+                    <td colSpan={4}>Upload logs could not be loaded: {uploadLogsError}</td>
+                  </tr>
+                ) : uploadLogs.length === 0 ? (
+                  <tr>
+                    <td colSpan={4}>No upload logs yet. Completed uploads will appear here.</td>
                   </tr>
                 ) : (
-                  uploadHistory.slice(0, 6).map((entry) => (
+                  uploadLogs.map((entry) => (
                     <tr key={entry.id}>
-                      <td>{entry.uploadLabel}</td>
+                      <td>{getUploadLabel(entry.uploadType)}</td>
                       <td>{formatDateTime(entry.uploadedAtIso)}</td>
                       <td>{entry.programmeCode ?? 'All'}</td>
-                      <td>{entry.warningsCount}</td>
+                      <td>{formatWarningsStatus(entry)}</td>
                     </tr>
                   ))
                 )}
