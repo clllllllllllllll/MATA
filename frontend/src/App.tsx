@@ -1,5 +1,6 @@
 ﻿import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
+import { AdminConfigPage } from './pages/admin/AdminConfigPage'
 import { AdminHomePage } from './pages/admin/AdminHomePage'
 import { AdminMultiPostingPage } from './pages/admin/AdminMultiPostingPage'
 import { AdminPlaceholderPage } from './pages/admin/AdminPlaceholderPage'
@@ -17,18 +18,7 @@ function App() {
         <Route path="/admin" element={<AdminHomePage />} />
         <Route path="/admin/upload" element={<AdminUploadPage />} />
         <Route path="/admin/upload/warnings" element={<AdminWarningsPage />} />
-        <Route
-          path="/admin/config"
-          element={
-            <AdminPlaceholderPage
-              title="Configuration"
-              subtitle="Master Admin - Configuration"
-              note="The all-in-one Configuration CRUD workspace is pending implementation. Multi-Posting Rules remains available as the current deep-link target."
-              actionLabel="Open Multi-Posting Rules"
-              actionPath="/admin/config/multi"
-            />
-          }
-        />
+        <Route path="/admin/config" element={<AdminConfigPage />} />
         <Route path="/admin/config/multi" element={<AdminMultiPostingPage />} />
         <Route
           path="/admin/upload-logs"
@@ -99,3 +89,6 @@ function App() {
 }
 
 export default App
+
+
+
