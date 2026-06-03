@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+﻿import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { PageHero } from '../../components/PageHero'
@@ -49,8 +49,7 @@ export const AdminWarningsPage = () => {
       const byUploadType = uploadTypeFilter === 'all' || warning.uploadType === uploadTypeFilter
       const bySeverity = severityFilter === 'all' || warning.severity === severityFilter
       const byStatus = statusFilter === 'all' || warning.status === statusFilter
-      const byProgramme =
-        programmeFilter === 'all' || warning.programmeCode === programmeFilter
+      const byProgramme = programmeFilter === 'all' || warning.programmeCode === programmeFilter
       const bySearch =
         searchTerm.trim().length === 0 ||
         [
@@ -107,10 +106,7 @@ export const AdminWarningsPage = () => {
       <section className="card filter-bar">
         <label>
           Upload type
-          <select
-            value={uploadTypeFilter}
-            onChange={(event) => setUploadTypeFilter(event.target.value)}
-          >
+          <select value={uploadTypeFilter} onChange={(event) => setUploadTypeFilter(event.target.value)}>
             <option value="all">All</option>
             <option value="public_holidays">Public Holidays</option>
             <option value="rdb">RDB</option>
@@ -138,10 +134,7 @@ export const AdminWarningsPage = () => {
         </label>
         <label>
           Programme
-          <select
-            value={programmeFilter}
-            onChange={(event) => setProgrammeFilter(event.target.value)}
-          >
+          <select value={programmeFilter} onChange={(event) => setProgrammeFilter(event.target.value)}>
             <option value="all">All</option>
             {programmeOptions.map((programmeCode) => (
               <option key={programmeCode} value={programmeCode}>
@@ -152,12 +145,12 @@ export const AdminWarningsPage = () => {
         </label>
         <label>
           Warning search
-            <input
-              type="search"
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
-              placeholder="Type, resident, MCR, message..."
-            />
+          <input
+            type="search"
+            value={searchTerm}
+            onChange={(event) => setSearchTerm(event.target.value)}
+            placeholder="Type, resident, MCR, message..."
+          />
         </label>
         <button type="button" className="button button-ghost" onClick={clearFilters}>
           Clear filters
@@ -166,71 +159,64 @@ export const AdminWarningsPage = () => {
 
       <section className="table-wrap">
         <div className="table-scroll">
-        <table className="table warnings-table">
-          <colgroup>
-            <col className="col-severity" />
-            <col className="col-type" />
-            <col className="col-upload" />
-            <col className="col-resident" />
-            <col className="col-mcr" />
-            <col className="col-programme" />
-            <col className="col-month" />
-            <col className="col-source" />
-            <col className="col-message" />
-            <col className="col-status" />
-          </colgroup>
-          <thead>
-            <tr>
-              <th>Severity</th>
-              <th>Type</th>
-              <th>Upload</th>
-              <th>Resident</th>
-              <th>MCR</th>
-              <th>Programme</th>
-              <th>Month</th>
-              <th>Source</th>
-              <th>Message</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredWarnings.length === 0 ? (
+          <table className="table warnings-table">
+            <colgroup>
+              <col className="col-severity" />
+              <col className="col-type" />
+              <col className="col-upload" />
+              <col className="col-resident" />
+              <col className="col-mcr" />
+              <col className="col-programme" />
+              <col className="col-month" />
+              <col className="col-source" />
+              <col className="col-message" />
+              <col className="col-status" />
+            </colgroup>
+            <thead>
               <tr>
-                <td colSpan={10}>
-                  {warnings.length === 0 ? 'No warnings to review.' : 'No warnings match the selected filters.'}
-                </td>
+                <th>Severity</th>
+                <th>Type</th>
+                <th>Upload</th>
+                <th>Resident</th>
+                <th>MCR</th>
+                <th>Programme</th>
+                <th>Month</th>
+                <th>Source</th>
+                <th>Message</th>
+                <th>Status</th>
               </tr>
-            ) : (
-              filteredWarnings.map((warning) => (
-                <tr
-                  key={warning.id}
-                  className="table-clickable-row"
-                  onClick={() => setSelectedWarning(warning)}
-                >
-                  <td className="cell-severity">
-                    <StatusBadge
-                      label={warning.severity.toUpperCase()}
-                      tone={warningTone(warning.severity)}
-                    />
+            </thead>
+            <tbody>
+              {filteredWarnings.length === 0 ? (
+                <tr>
+                  <td colSpan={10}>
+                    {warnings.length === 0 ? 'No warnings to review.' : 'No warnings match the selected filters.'}
                   </td>
-                  <td className="cell-type">{warning.type}</td>
-                  <td className="cell-upload">{warning.uploadLabel}</td>
-                  <td className="cell-resident">{warning.residentName ?? '-'}</td>
-                  <td className="cell-mcr">{warning.mcr ?? '-'}</td>
-                  <td className="cell-programme">{warning.programmeCode ?? '-'}</td>
-                  <td className="cell-month">{warning.monthLabel ?? '-'}</td>
-                  <td className="cell-source">
-                    {warning.sheetName || warning.rowNumber || warning.cellRef
-                      ? `${warning.sheetName ?? '-'} / ${warning.rowNumber ?? '-'} / ${warning.cellRef ?? '-'}`
-                      : '-'}
-                  </td>
-                  <td className="cell-message">{warning.message}</td>
-                  <td className="cell-status">{warning.status}</td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+              ) : (
+                filteredWarnings.map((warning) => (
+                  <tr key={warning.id} className="table-clickable-row" onClick={() => setSelectedWarning(warning)}>
+                    <td className="cell-severity">
+                      <StatusBadge label={warning.severity.toUpperCase()} tone={warningTone(warning.severity)} />
+                    </td>
+                    <td className="cell-type">{warning.type}</td>
+                    <td className="cell-upload">{warning.uploadLabel}</td>
+                    <td className="cell-resident">{warning.residentName ?? '-'}</td>
+                    <td className="cell-mcr">{warning.mcr ?? '-'}</td>
+                    <td className="cell-programme">{warning.programmeCode ?? '-'}</td>
+                    <td className="cell-month">{warning.monthLabel ?? '-'}</td>
+                    <td className="cell-source">
+                      {warning.sheetName || warning.rowNumber || warning.cellRef
+                        ? `${warning.sheetName ?? '-'} / ${warning.rowNumber ?? '-'} / ${warning.cellRef ?? '-'}`
+                        : '-'}
+                    </td>
+                    <td className="cell-message">{warning.message}</td>
+                    <td className="cell-status">{warning.status}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
         </div>
       </section>
 
@@ -242,12 +228,8 @@ export const AdminWarningsPage = () => {
           selectedWarning ? (
             <>
               {selectedWarning.type === 'unmatched_multi_posting' ? (
-                <button
-                  type="button"
-                  className="button button-secondary"
-                  onClick={() => openRelatedConfig(selectedWarning)}
-                >
-                  Open Multi-Posting Rules →
+                <button type="button" className="button button-secondary" onClick={() => openRelatedConfig(selectedWarning)}>
+                  Open Multi-Posting Rules {'->'}
                 </button>
               ) : null}
               {selectedWarning.status !== 'resolved' ? (

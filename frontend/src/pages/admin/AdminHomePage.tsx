@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom'
+﻿import { useNavigate } from 'react-router-dom'
 import {
   IconCalendar,
   IconDatabase,
@@ -21,37 +21,37 @@ const workspaceTiles = [
   },
   {
     title: 'Configuration',
-    path: '/admin/config/multi',
+    path: '/admin/config',
     description: 'Manage reporting periods, posting rules, and mappings.',
     stat: '8 sections',
     icon: <IconSettings size={18} />,
   },
   {
     title: 'Upload Logs',
-    path: '#',
+    path: '/admin/upload-logs',
     description: 'Audit every parser run with status and timestamps.',
-    stat: '47 runs',
+    stat: 'Pending endpoint',
     icon: <IconFile size={18} />,
   },
   {
     title: 'Parsed Data',
-    path: '#',
+    path: '/admin/parsed',
     description: 'Review parser outputs and source-level entities.',
-    stat: '8 tables',
+    stat: 'Pending endpoint',
     icon: <IconDatabase size={18} />,
   },
   {
     title: 'Secretary Events',
-    path: '#',
+    path: '/admin/secretary-events',
     description: 'View teaching events created across postings.',
-    stat: '127 events',
+    stat: 'Pending endpoint',
     icon: <IconCalendar size={18} />,
   },
   {
     title: 'Resident Submissions',
-    path: '#',
+    path: '/admin/submissions',
     description: 'Submitted attendance records across programmes.',
-    stat: '243 submitted',
+    stat: 'Pending endpoint',
     icon: <IconGrid size={18} />,
   },
 ]
@@ -79,49 +79,34 @@ export const AdminHomePage = () => {
       <PageHero
         title="Welcome back, Demo Admin"
         subtitle="Master Admin - All programmes - System overview"
-        metaInline={[`Last full sync · ${lastSyncText}`, unresolvedWarningsText]}
+        metaInline={[`Last full sync - ${lastSyncText}`, unresolvedWarningsText]}
         actions={
           <div className="hero-action-row">
             <button type="button" className="button button-secondary" onClick={() => window.location.reload()}>
               <IconRefresh size={14} />
               Refresh
             </button>
-            <button type="button" className="button button-primary" onClick={() => navigate('/admin/upload')}>
-              <IconUpload size={14} />
-              Upload files
-            </button>
           </div>
         }
       />
 
       <section className="grid grid-3">
-        {workspaceTiles.map((tile) =>
-          tile.path === '#' ? (
-            <article key={tile.title} className="tile">
-              <div className="icon-wrap">{tile.icon}</div>
-              <div className="t-title">{tile.title}</div>
-              <div className="t-desc">{tile.description}</div>
-              <div className="t-foot">
-                <strong>{tile.stat}</strong>
-              </div>
-            </article>
-          ) : (
-            <button
-              key={tile.title}
-              type="button"
-              className="tile tile-button"
-              onClick={() => navigate(tile.path)}
-              aria-label={`${tile.title}. ${tile.description}`}
-            >
-              <div className="icon-wrap">{tile.icon}</div>
-              <div className="t-title">{tile.title}</div>
-              <div className="t-desc">{tile.description}</div>
-              <div className="t-foot">
-                <strong>{tile.stat}</strong>
-              </div>
-            </button>
-          ),
-        )}
+        {workspaceTiles.map((tile) => (
+          <button
+            key={tile.title}
+            type="button"
+            className="tile tile-button"
+            onClick={() => navigate(tile.path)}
+            aria-label={`${tile.title}. ${tile.description}`}
+          >
+            <div className="icon-wrap">{tile.icon}</div>
+            <div className="t-title">{tile.title}</div>
+            <div className="t-desc">{tile.description}</div>
+            <div className="t-foot">
+              <strong>{tile.stat}</strong>
+            </div>
+          </button>
+        ))}
       </section>
 
       <section className="bottom-split">
@@ -169,12 +154,12 @@ export const AdminHomePage = () => {
           <ul className="warning-list">
             {unresolvedWarnings.slice(0, 5).map((warning) => (
               <li key={warning.id}>
-                  <span className={`dot dot-${warning.severity}`} />
-                  <div>
-                    <strong>{warning.type}</strong>
-                    <p>{warning.message}</p>
-                  </div>
-                </li>
+                <span className={`dot dot-${warning.severity}`} />
+                <div>
+                  <strong>{warning.type}</strong>
+                  <p>{warning.message}</p>
+                </div>
+              </li>
             ))}
             {unresolvedWarnings.length === 0 ? <li>No unresolved warnings.</li> : null}
           </ul>

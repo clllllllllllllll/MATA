@@ -1,4 +1,4 @@
-import type { SVGProps } from 'react'
+﻿import type { SVGProps } from 'react'
 
 type IconProps = SVGProps<SVGSVGElement> & { size?: number }
 
@@ -146,6 +146,14 @@ export const IconDownload = (props: IconProps) => (
   </SvgIcon>
 )
 
+export const IconLogOut = (props: IconProps) => (
+  <SvgIcon {...props}>
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+    <path d="M16 17l5-5-5-5" />
+    <path d="M21 12H9" />
+  </SvgIcon>
+)
+
 interface NamedIconProps extends IconProps {
   name: string
 }
@@ -172,6 +180,8 @@ export const NamedIcon = ({ name, ...props }: NamedIconProps) => {
       return <IconDatabase {...props} />
     case 'grid':
       return <IconGrid {...props} />
+    case 'logout':
+      return <IconLogOut {...props} />
     default:
       return <IconSettings {...props} />
   }

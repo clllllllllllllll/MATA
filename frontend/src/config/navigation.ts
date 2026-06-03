@@ -1,4 +1,4 @@
-import type { NavItem, RoleOption } from '../types/app'
+﻿import type { NavItem, RoleOption } from '../types/app'
 import { frontendConfig } from './frontendConfig'
 
 export const roleOptions: RoleOption[] = [
@@ -55,9 +55,33 @@ export const navItems: NavItem[] = [
   },
   {
     label: 'Configuration',
-    path: '/admin/config/multi',
+    path: '/admin/config',
     roles: ['master_admin'],
     icon: 'settings',
+  },
+  {
+    label: 'Upload Logs',
+    path: '/admin/upload-logs',
+    roles: ['master_admin'],
+    icon: 'file',
+  },
+  {
+    label: 'Parsed Data',
+    path: '/admin/parsed',
+    roles: ['master_admin'],
+    icon: 'database',
+  },
+  {
+    label: 'Secretary Events',
+    path: '/admin/secretary-events',
+    roles: ['master_admin'],
+    icon: 'calendar',
+  },
+  {
+    label: 'Resident Submissions',
+    path: '/admin/submissions',
+    roles: ['master_admin'],
+    icon: 'grid',
   },
   {
     label: 'Upload TTF',
@@ -89,7 +113,12 @@ export const breadcrumbMap: Record<string, string[]> = {
   '/admin': ['Master Admin', 'Home'],
   '/admin/upload': ['Master Admin', 'Upload Files'],
   '/admin/upload/warnings': ['Master Admin', 'Warning Review'],
-  '/admin/config/multi': ['Master Admin', 'Multi-Posting Rules'],
+  '/admin/config': ['Master Admin', 'Configuration'],
+  '/admin/config/multi': ['Master Admin', 'Configuration', 'Multi-Posting Rules'],
+  '/admin/upload-logs': ['Master Admin', 'Upload Logs'],
+  '/admin/parsed': ['Master Admin', 'Parsed Data'],
+  '/admin/secretary-events': ['Master Admin', 'Secretary Events'],
+  '/admin/submissions': ['Master Admin', 'Resident Submissions'],
   '/pc/upload-ttf': ['Programme PC', 'Upload TTF'],
   '/secretary': ['Secretary', 'Teaching Schedule'],
   '/secretary/events': ['Secretary', 'Teaching Schedule'],

@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+﻿@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 :root {
   --ink: #10121f;
@@ -253,7 +253,7 @@ a {
 }
 
 .role-switcher-note::after {
-  content: 'Demo aid only — not in production.';
+  content: 'Demo aid only â€” not in production.';
   color: #908ab2;
   font-size: 10.5px;
 }
@@ -357,22 +357,40 @@ a {
   margin-top: 12px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .sidebar-footer-links button {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 12px;
+  width: 100%;
+  padding: 7px 10px;
   border-radius: 8px;
   color: var(--sidebar-muted);
   text-align: left;
+  font-size: 12.5px;
+  font-weight: 500;
+  border: 1px solid transparent;
+}
+
+.sidebar-footer-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
 }
 
 .sidebar-footer-links button:hover {
   background: rgba(255, 255, 255, 0.04);
-  color: #fff;
+  color: var(--sidebar-text);
+}
+
+.sidebar-footer-links button:focus-visible {
+  outline: 2px solid rgba(164, 126, 247, 0.65);
+  outline-offset: 1px;
 }
 
 .workspace,
@@ -1769,3 +1787,294 @@ tr:last-child td {
     grid-template-columns: 1fr;
   }
 }
+
+
+.appbar-search {
+  margin-left: auto;
+  width: 300px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 14px;
+  color: var(--ink-4);
+}
+
+.appbar-search input {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+  font-size: 13px;
+}
+
+.appbar-search input:focus {
+  box-shadow: none;
+  border: none;
+}
+
+.appbar-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.appbar-bell {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--ink-3);
+}
+
+.appbar-bell::after {
+  content: '';
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--purple);
+  border: 2px solid var(--bg);
+}
+
+.draft-stamp {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: var(--ink-4);
+  padding-left: 16px;
+  border-left: 2px solid var(--purple);
+  font-weight: 500;
+}
+
+.source-status-grid,
+.admin-workspace-grid {
+  margin-bottom: 18px;
+}
+
+.admin-source-card .status-badge {
+  white-space: nowrap;
+}
+
+.admin-panel-card {
+  overflow: hidden;
+}
+
+.admin-home-table-wrap {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.empty-state {
+  padding: 44px 24px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-3);
+}
+
+.empty-state .icon-wrap,
+.configuration-empty-note .icon-wrap,
+.config-card-header .icon-wrap {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--purple-tint);
+  color: var(--purple-deep);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.empty-state h3,
+.configuration-empty-note h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.empty-state p,
+.configuration-empty-note p {
+  margin: 0;
+  max-width: 360px;
+}
+
+.compact-empty {
+  padding: 30px 22px;
+}
+
+.admin-warning-list {
+  padding-top: 0;
+}
+
+.warning-filter-card {
+  padding: 18px 24px 22px;
+}
+
+.filter-title {
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 12px;
+}
+
+.warning-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.warning-search-field {
+  grid-column: span 3;
+}
+
+.warning-clear-button {
+  justify-self: end;
+}
+
+.warning-group-card {
+  overflow: hidden;
+}
+
+.warning-group-header {
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+}
+
+.grouped-warnings-table {
+  min-width: 1040px;
+}
+
+.grouped-warnings-table .cell-type {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.warning-type-tag {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+.cell-open {
+  color: var(--ink-4);
+  font-size: 20px;
+  text-align: right;
+}
+
+.warning-empty-state {
+  min-height: 260px;
+  justify-content: center;
+}
+
+.admin-config-shell {
+  align-items: start;
+}
+
+.config-nav-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+}
+
+.config-nav-count {
+  color: var(--ink-4);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.config-nav-item.active .config-nav-count {
+  color: var(--purple);
+}
+
+.config-content-card {
+  overflow: hidden;
+}
+
+.config-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 22px;
+}
+
+.config-card-header h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.config-card-header p {
+  margin: 3px 0 0;
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
+.admin-config-toolbar {
+  justify-content: space-between;
+}
+
+.admin-search-field {
+  max-width: 360px;
+  width: 100%;
+}
+
+.config-table-wrap {
+  border-inline: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.configuration-empty-note {
+  margin: 18px 22px 22px;
+  border: 1px dashed var(--line-2);
+  border-radius: 14px;
+  padding: 18px;
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+button:disabled,
+.button:disabled,
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+@media (max-width: 1280px) {
+  .appbar-search,
+  .appbar-right {
+    display: none;
+  }
+}
+
+@media (max-width: 1080px) {
+  .warning-filter-grid,
+  .config-shell,
+  .admin-config-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .warning-search-field {
+    grid-column: auto;
+  }
+}
+

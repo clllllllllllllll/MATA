@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+﻿import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { breadcrumbMap, navItems, roleOptions } from '../config/navigation'
 import { useAppState } from '../context/useAppState'
@@ -7,6 +7,8 @@ import {
   IconCheck,
   IconChevDown,
   IconChevRight,
+  IconLogOut,
+  IconSettings,
   NamedIcon,
 } from './icons'
 
@@ -59,23 +61,8 @@ export const AppShell = () => {
     if (path === '/admin/upload') {
       return currentPath === '/admin/upload'
     }
-    if (path === '/admin/upload/warnings') {
-      return currentPath === '/admin/upload/warnings'
-    }
-    if (path === '/admin/config/multi') {
-      return currentPath === '/admin/config/multi' || currentPath.startsWith('/admin/config/')
-    }
-    if (path === '/admin/upload-logs') {
-      return currentPath === '/admin/upload-logs'
-    }
-    if (path === '/admin/parsed-data') {
-      return currentPath === '/admin/parsed-data'
-    }
-    if (path === '/admin/secretary-events') {
-      return currentPath === '/admin/secretary-events'
-    }
-    if (path === '/admin/submissions') {
-      return currentPath === '/admin/submissions'
+    if (path === '/admin/config') {
+      return currentPath === '/admin/config' || currentPath.startsWith('/admin/config/')
     }
     if (path === '/secretary/events') {
       return currentPath === '/secretary' || currentPath === '/secretary/events'
@@ -83,7 +70,7 @@ export const AppShell = () => {
     if (path === '/resident/submissions') {
       return currentPath === '/resident' || currentPath === '/resident/submissions'
     }
-    return currentPath === path
+    return currentPath === path || currentPath.startsWith(`${path}/`)
   }
 
   useEffect(() => {
@@ -115,56 +102,56 @@ export const AppShell = () => {
     <div className="app app-root">
       <aside className="sidebar">
         <div className="sidebar-user-wrap" ref={roleMenuRef}>
-        <button
-          type="button"
-          className="sidebar-user"
-          onClick={() => setRoleMenuOpen((prev) => !prev)}
-          aria-haspopup="menu"
-          aria-expanded={isRoleMenuOpen}
-        >
-          <div className="avatar">{roleNameById[activeRole].slice(0, 2).toUpperCase()}</div>
-          <div className="sidebar-user-details">
-            <strong>{roleNameById[activeRole]}</strong>
-            <p>{currentRoleOption.label}</p>
-          </div>
-          <span className={`sidebar-user-chevron ${isRoleMenuOpen ? 'is-open' : ''}`} aria-hidden="true">
-            <IconChevDown size={16} />
-          </span>
-        </button>
-
-        {isRoleMenuOpen ? (
-          <div className="role-switcher-popover" role="menu" aria-label="Role Switcher">
-            <p className="role-switcher-title">SWITCH ROLE (DEMO AID)</p>
-            <div className="role-switcher-list">
-              {roleOptions.map((option) => {
-                const isCurrent = option.id === activeRole
-                return (
-                  <button
-                    key={option.id}
-                    type="button"
-                    className={`role-switcher-option ${isCurrent ? 'is-current' : ''}`}
-                    onClick={() => {
-                      setRole(option.id)
-                      setRoleMenuOpen(false)
-                      navigate(option.defaultPath)
-                    }}
-                    role="menuitemradio"
-                    aria-checked={isCurrent}
-                  >
-                    <span className="role-switcher-option-main">{option.label}</span>
-                    <span className="role-switcher-option-scope">{option.scopeLabel}</span>
-                    {isCurrent ? (
-                      <span className="role-switcher-check" aria-hidden="true">
-                        <IconCheck size={14} />
-                      </span>
-                    ) : null}
-                  </button>
-                )
-              })}
+          <button
+            type="button"
+            className="sidebar-user"
+            onClick={() => setRoleMenuOpen((prev) => !prev)}
+            aria-haspopup="menu"
+            aria-expanded={isRoleMenuOpen}
+          >
+            <div className="avatar">{roleNameById[activeRole].slice(0, 2).toUpperCase()}</div>
+            <div className="sidebar-user-details">
+              <strong>{roleNameById[activeRole]}</strong>
+              <p>{currentRoleOption.label}</p>
             </div>
-            <p className="role-switcher-note">Demo aid only — not in production.</p>
-          </div>
-        ) : null}
+            <span className={`sidebar-user-chevron ${isRoleMenuOpen ? 'is-open' : ''}`} aria-hidden="true">
+              <IconChevDown size={16} />
+            </span>
+          </button>
+
+          {isRoleMenuOpen ? (
+            <div className="role-switcher-popover" role="menu" aria-label="Role Switcher">
+              <p className="role-switcher-title">SWITCH ROLE (DEMO AID)</p>
+              <div className="role-switcher-list">
+                {roleOptions.map((option) => {
+                  const isCurrent = option.id === activeRole
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className={`role-switcher-option ${isCurrent ? 'is-current' : ''}`}
+                      onClick={() => {
+                        setRole(option.id)
+                        setRoleMenuOpen(false)
+                        navigate(option.defaultPath)
+                      }}
+                      role="menuitemradio"
+                      aria-checked={isCurrent}
+                    >
+                      <span className="role-switcher-option-main">{option.label}</span>
+                      <span className="role-switcher-option-scope">{option.scopeLabel}</span>
+                      {isCurrent ? (
+                        <span className="role-switcher-check" aria-hidden="true">
+                          <IconCheck size={14} />
+                        </span>
+                      ) : null}
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="role-switcher-note">Demo aid only - not in production.</p>
+            </div>
+          ) : null}
         </div>
 
         <nav className="sidebar-nav">
@@ -191,8 +178,18 @@ export const AppShell = () => {
         </div>
 
         <div className="sidebar-footer-links">
-          <button type="button">Settings</button>
-          <button type="button">Log out</button>
+          <button type="button">
+            <span className="sidebar-footer-icon" aria-hidden="true">
+              <IconSettings size={16} />
+            </span>
+            <span>Settings</span>
+          </button>
+          <button type="button">
+            <span className="sidebar-footer-icon" aria-hidden="true">
+              <IconLogOut size={16} />
+            </span>
+            <span>Log out</span>
+          </button>
         </div>
       </aside>
 
@@ -223,3 +220,9 @@ export const AppShell = () => {
     </div>
   )
 }
+
+
+
+
+
+
