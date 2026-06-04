@@ -542,10 +542,13 @@ async def list_public_holidays(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> list[PublicHolidayResponse]:
-    del admin_context  # role guard is enforced by dependency
     if db is None:
         return []
-    rows = await admin_config.list_public_holidays(db, year=year)
+    rows = await admin_config.list_public_holidays(
+        db,
+        programme_scope=admin_context.programme_scope,
+        year=year,
+    )
     return [PublicHolidayResponse.model_validate(row) for row in rows]
 
 
@@ -555,7 +558,6 @@ async def upsert_public_holiday(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> PublicHolidayResponse:
-    del admin_context  # role guard is enforced by dependency
     if db is None:
         raise ApiError(
             status_code=500,
@@ -564,6 +566,32 @@ async def upsert_public_holiday(
         )
     row = await admin_config.upsert_public_holiday(
         db,
+        programme_scope=admin_context.programme_scope,
+        holiday_date=payload.holiday_date,
+        name=payload.name,
+        day_of_week=payload.day_of_week,
+        year=payload.year,
+    )
+    return PublicHolidayResponse.model_validate(row)
+
+
+@router.put("/public-holidays/{holiday_id}", response_model=PublicHolidayResponse)
+async def update_public_holiday(
+    holiday_id: UUID,
+    payload: PublicHolidayUpsertRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> PublicHolidayResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    row = await admin_config.update_public_holiday(
+        db,
+        programme_scope=admin_context.programme_scope,
+        holiday_id=holiday_id,
         holiday_date=payload.holiday_date,
         name=payload.name,
         day_of_week=payload.day_of_week,
@@ -578,14 +606,17 @@ async def delete_public_holiday(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> None:
-    del admin_context  # role guard is enforced by dependency
     if db is None:
         raise ApiError(
             status_code=500,
             detail="Database unavailable",
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
-    await admin_config.delete_public_holiday(db, holiday_id=holiday_id)
+    await admin_config.delete_public_holiday(
+        db,
+        programme_scope=admin_context.programme_scope,
+        holiday_id=holiday_id,
+    )
 
 
 @router.get("/programmes", response_model=list[ProgrammeResponse])

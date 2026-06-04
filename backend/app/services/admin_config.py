@@ -21,6 +21,27 @@ def _invalidate_admin_config_cache() -> None:
     cache.invalidate_prefix("admin_config")
 
 
+def _require_non_empty_admin_scope(programme_scope: set[str]) -> None:
+    if not programme_scope:
+        raise ApiError(
+            status_code=403,
+            detail="Forbidden - admin programme scope is empty",
+            error_code=ErrorCode.FORBIDDEN.value,
+        )
+
+
+def _derive_public_holiday_values(
+    holiday_date: date,
+    *,
+    day_of_week: str | None,
+    year: int | None,
+) -> tuple[str, int]:
+    # Manual CRUD treats the date as authoritative. Uploaded workbook parsing keeps its own
+    # warning path for day-name mismatches in public_holiday_parser.py.
+    del day_of_week, year
+    return holiday_date.strftime("%A"), holiday_date.year
+
+
 def _validate_programme_filter(
     *,
     programme_scope: set[str],
@@ -93,8 +114,11 @@ async def list_reporting_periods(
 async def list_public_holidays(
     db: AsyncSession,
     *,
+    programme_scope: set[str],
     year: int | None,
 ) -> list[dict[str, Any]]:
+    if not programme_scope:
+        return []
     params: dict[str, Any] = {}
     where_clauses: list[str] = []
     if year is not None:
@@ -1236,11 +1260,18 @@ async def _reporting_period_dependency_counts(
 async def upsert_public_holiday(
     db: AsyncSession,
     *,
+    programme_scope: set[str],
     holiday_date: date,
-    name: str | None,
+    name: str,
     day_of_week: str | None,
     year: int | None,
 ) -> dict[str, Any]:
+    _require_non_empty_admin_scope(programme_scope)
+    computed_day_of_week, computed_year = _derive_public_holiday_values(
+        holiday_date,
+        day_of_week=day_of_week,
+        year=year,
+    )
     result = await db.execute(
         text(
             """
@@ -1258,8 +1289,8 @@ async def upsert_public_holiday(
         {
             "holiday_date": holiday_date,
             "name": name,
-            "day_of_week": day_of_week,
-            "year": year,
+            "day_of_week": computed_day_of_week,
+            "year": computed_year,
         },
     )
     await db.commit()
@@ -1268,11 +1299,69 @@ async def upsert_public_holiday(
     return dict(row)
 
 
+async def update_public_holiday(
+    db: AsyncSession,
+    *,
+    programme_scope: set[str],
+    holiday_id: UUID,
+    holiday_date: date,
+    name: str,
+    day_of_week: str | None,
+    year: int | None,
+) -> dict[str, Any]:
+    _require_non_empty_admin_scope(programme_scope)
+    computed_day_of_week, computed_year = _derive_public_holiday_values(
+        holiday_date,
+        day_of_week=day_of_week,
+        year=year,
+    )
+    try:
+        result = await db.execute(
+            text(
+                """
+                UPDATE public_holidays
+                SET
+                    holiday_date = :holiday_date,
+                    name = :name,
+                    day_of_week = :day_of_week,
+                    year = :year,
+                    updated_at = now()
+                WHERE id = :id
+                RETURNING id, holiday_date, name, day_of_week, year, created_at, updated_at
+                """
+            ),
+            {
+                "id": str(holiday_id),
+                "holiday_date": holiday_date,
+                "name": name,
+                "day_of_week": computed_day_of_week,
+                "year": computed_year,
+            },
+        )
+    except IntegrityError as exc:
+        await db.rollback()
+        raise ApiError(
+            status_code=409,
+            detail="Public holiday date already exists",
+            error_code=ErrorCode.CONFLICT.value,
+        ) from exc
+
+    row = result.mappings().one_or_none()
+    if row is None:
+        await db.rollback()
+        _raise_not_found("Public holiday not found")
+    await db.commit()
+    _invalidate_admin_config_cache()
+    return dict(row)
+
+
 async def delete_public_holiday(
     db: AsyncSession,
     *,
+    programme_scope: set[str],
     holiday_id: UUID,
 ) -> None:
+    _require_non_empty_admin_scope(programme_scope)
     result = await db.execute(
         text("DELETE FROM public_holidays WHERE id = :id"),
         {"id": str(holiday_id)},

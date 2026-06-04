@@ -1,5 +1,12 @@
-import { Fragment, type FormEvent, useMemo, useState } from 'react'
+import { Fragment, type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import {
+  createPublicHoliday,
+  deletePublicHoliday,
+  listPublicHolidays,
+  updatePublicHoliday,
+  type PublicHoliday,
+} from '../../api/publicHolidays'
 import {
   createReportingPeriod,
   deleteReportingPeriod,
@@ -49,6 +56,11 @@ interface ReportingPeriodFormState {
   status: 'open' | 'closed'
 }
 
+interface PublicHolidayFormState {
+  holidayDate: string
+  name: string
+}
+
 type Feedback = {
   tone: 'success' | 'error'
   message: string
@@ -66,6 +78,11 @@ const emptyReportingPeriodForm: ReportingPeriodFormState = {
   startDate: '',
   endDate: '',
   status: 'open',
+}
+
+const emptyPublicHolidayForm: PublicHolidayFormState = {
+  holidayDate: '',
+  name: '',
 }
 
 const configSections: ConfigSection[] = [
@@ -294,6 +311,20 @@ const formatDate = (value?: string) => {
   }).format(parsed)
 }
 
+const deriveDatePreview = (value: string) => {
+  if (!value) {
+    return { dayOfWeek: '-', year: '-' }
+  }
+  const parsed = new Date(value)
+  if (!Number.isFinite(parsed.getTime())) {
+    return { dayOfWeek: '-', year: '-' }
+  }
+  return {
+    dayOfWeek: new Intl.DateTimeFormat('en-SG', { weekday: 'long' }).format(parsed),
+    year: String(parsed.getFullYear()),
+  }
+}
+
 const dependencyLabels: Record<string, string> = {
   upload_logs: 'upload logs',
   resident_postings: 'resident postings',
@@ -370,6 +401,34 @@ const toFormState = (period: ReportingPeriodOption): ReportingPeriodFormState =>
   endDate: period.endDate,
   status: period.status.toLowerCase() === 'closed' ? 'closed' : 'open',
 })
+
+const toPublicHolidayFormState = (holiday: PublicHoliday): PublicHolidayFormState => ({
+  holidayDate: holiday.holidayDate,
+  name: holiday.name,
+})
+
+const describePublicHolidayError = (
+  error: unknown,
+  fallbackMessage: string,
+): NonNullable<Feedback> => {
+  if (!(error instanceof ApiRequestError)) {
+    return {
+      tone: 'error',
+      message: fallbackMessage,
+    }
+  }
+  if (error.status === 409) {
+    return {
+      tone: 'error',
+      message: fallbackMessage,
+      description: 'That holiday date may already exist. Use edit on the existing row instead.',
+    }
+  }
+  return {
+    tone: 'error',
+    message: error.message || fallbackMessage,
+  }
+}
 
 const ReportingPeriodsSection = () => {
   const {
@@ -774,6 +833,372 @@ const ReportingPeriodsSection = () => {
   )
 }
 
+const PublicHolidaysSection = () => {
+  const { demoAdminId, demoAdminProgrammes } = useAppState()
+  const [publicHolidays, setPublicHolidays] = useState<PublicHoliday[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [drawerMode, setDrawerMode] = useState<'create' | 'edit'>('create')
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [selectedHoliday, setSelectedHoliday] = useState<PublicHoliday | null>(null)
+  const [formState, setFormState] = useState<PublicHolidayFormState>(emptyPublicHolidayForm)
+  const [submitState, setSubmitState] = useState<'idle' | 'submitting' | 'error'>('idle')
+  const [feedback, setFeedback] = useState<Feedback>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [confirmingDeleteHoliday, setConfirmingDeleteHoliday] = useState<PublicHoliday | null>(null)
+
+  const sortedHolidays = useMemo(
+    () =>
+      [...publicHolidays].sort((left, right) => {
+        const leftDate = new Date(left.holidayDate).getTime()
+        const rightDate = new Date(right.holidayDate).getTime()
+        return leftDate - rightDate
+      }),
+    [publicHolidays],
+  )
+
+  const datePreview = deriveDatePreview(formState.holidayDate)
+
+  const reloadPublicHolidays = useCallback(async () => {
+    setLoading(true)
+    setLoadError(null)
+    try {
+      const rows = await listPublicHolidays({
+        adminId: demoAdminId,
+        adminProgrammes: demoAdminProgrammes,
+      })
+      setPublicHolidays(rows)
+    } catch (error) {
+      const message =
+        error instanceof ApiRequestError ? error.message : 'Unable to load public holidays.'
+      setLoadError(message)
+      setPublicHolidays([])
+    } finally {
+      setLoading(false)
+    }
+  }, [demoAdminId, demoAdminProgrammes])
+
+  useEffect(() => {
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        void reloadPublicHolidays()
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [reloadPublicHolidays])
+
+  const dismissFeedback = () => setFeedback(null)
+
+  const openCreateDrawer = () => {
+    setDrawerMode('create')
+    setSelectedHoliday(null)
+    setFormState(emptyPublicHolidayForm)
+    setSubmitState('idle')
+    setFeedback(null)
+    setConfirmingDeleteHoliday(null)
+    setDrawerOpen(true)
+  }
+
+  const openEditDrawer = (holiday: PublicHoliday) => {
+    setDrawerMode('edit')
+    setSelectedHoliday(holiday)
+    setFormState(toPublicHolidayFormState(holiday))
+    setSubmitState('idle')
+    setFeedback(null)
+    setConfirmingDeleteHoliday(null)
+    setDrawerOpen(true)
+  }
+
+  const closeDrawer = () => {
+    if (submitState === 'submitting') {
+      return
+    }
+    setDrawerOpen(false)
+    setSelectedHoliday(null)
+    setFormState(emptyPublicHolidayForm)
+    setSubmitState('idle')
+  }
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setSubmitState('submitting')
+    setFeedback(null)
+    try {
+      if (drawerMode === 'edit' && selectedHoliday) {
+        await updatePublicHoliday({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          id: selectedHoliday.id,
+          payload: formState,
+        })
+        setFeedback({ tone: 'success', message: 'Public holiday updated.' })
+      } else {
+        await createPublicHoliday({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          payload: formState,
+        })
+        setFeedback({ tone: 'success', message: 'Public holiday created.' })
+      }
+      await reloadPublicHolidays()
+      setDrawerOpen(false)
+      setSelectedHoliday(null)
+      setFormState(emptyPublicHolidayForm)
+      setSubmitState('idle')
+    } catch (error) {
+      setSubmitState('error')
+      setFeedback(describePublicHolidayError(error, 'Unable to save public holiday.'))
+    }
+  }
+
+  const requestDelete = (holiday: PublicHoliday) => {
+    setFeedback(null)
+    setConfirmingDeleteHoliday(holiday)
+  }
+
+  const handleDelete = async (holiday: PublicHoliday) => {
+    setDeletingId(holiday.id)
+    setFeedback(null)
+    try {
+      await deletePublicHoliday({
+        adminId: demoAdminId,
+        adminProgrammes: demoAdminProgrammes,
+        id: holiday.id,
+      })
+      setFeedback({ tone: 'success', message: 'Public holiday deleted.' })
+      await reloadPublicHolidays()
+      setConfirmingDeleteHoliday(null)
+    } catch (error) {
+      setConfirmingDeleteHoliday(null)
+      setFeedback(describePublicHolidayError(error, 'Unable to delete public holiday.'))
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  return (
+    <>
+      <header className="admin-config-content-header">
+        <div>
+          <div className="admin-config-title-row">
+            <h2>Public Holidays</h2>
+          </div>
+          <p>Manage dates that block secretary event creation and resident ad-hoc teaching.</p>
+        </div>
+        <div className="admin-config-actions">
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => void reloadPublicHolidays()}
+            disabled={loading}
+          >
+            <IconRefresh size={14} />
+            Retry
+          </button>
+          <button type="button" className="button button-primary" onClick={openCreateDrawer}>
+            <IconPlus size={14} />
+            New Holiday
+          </button>
+        </div>
+      </header>
+
+      {feedback ? (
+        <div
+          className={`inline-callout ${feedback.tone === 'error' ? 'callout-error' : 'callout-success'} admin-config-feedback`}
+          role="status"
+        >
+          <div className="admin-config-feedback-content">
+            <strong>{feedback.message}</strong>
+            {feedback.description ? <p>{feedback.description}</p> : null}
+          </div>
+          <button
+            type="button"
+            className="admin-config-feedback-dismiss"
+            onClick={dismissFeedback}
+            aria-label="Dismiss feedback"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
+      {loading ? (
+        <div className="configuration-empty-note">Loading public holidays...</div>
+      ) : loadError ? (
+        <div className="configuration-empty-note">
+          <div>
+            <h3>Unable to load public holidays</h3>
+            <p>{loadError}</p>
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => void reloadPublicHolidays()}
+            >
+              <IconRefresh size={14} />
+              Retry
+            </button>
+          </div>
+        </div>
+      ) : sortedHolidays.length === 0 ? (
+        <div className="configuration-empty-note">
+          <div>
+            <h3>No public holidays configured yet.</h3>
+            <p>Use this table for manual corrections after the Academic Calendar upload.</p>
+          </div>
+        </div>
+      ) : (
+        <div className="admin-config-table-wrap">
+          <table className="admin-config-table public-holidays-table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Day</th>
+                <th>Holiday Name</th>
+                <th>Year</th>
+                <th>Updated</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedHolidays.map((holiday) => (
+                <Fragment key={holiday.id}>
+                  <tr>
+                    <td>{formatDate(holiday.holidayDate)}</td>
+                    <td>{holiday.dayOfWeek ?? '-'}</td>
+                    <td>{holiday.name || '-'}</td>
+                    <td>{holiday.year ?? '-'}</td>
+                    <td>{formatDate(holiday.updatedAt)}</td>
+                    <td>
+                      <div className="admin-config-row-actions">
+                        <button
+                          type="button"
+                          className="button button-secondary"
+                          onClick={() => openEditDrawer(holiday)}
+                          disabled={deletingId === holiday.id}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="button button-ghost danger"
+                          onClick={() => requestDelete(holiday)}
+                          disabled={deletingId === holiday.id}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {confirmingDeleteHoliday?.id === holiday.id ? (
+                    <tr className="admin-config-confirm-row">
+                      <td colSpan={6}>
+                        <div
+                          className="admin-config-inline-confirm"
+                          role="group"
+                          aria-label={`Delete public holiday ${holiday.name}`}
+                        >
+                          <div>
+                            <strong>
+                              {`Delete public holiday "${holiday.name}" on ${holiday.holidayDate}?`}
+                            </strong>
+                            <p>
+                              This removes the date from the manual holiday list. It does not delete
+                              uploaded files or teaching records.
+                            </p>
+                          </div>
+                          <div className="admin-config-confirm-actions">
+                            <button
+                              type="button"
+                              className="button button-secondary"
+                              onClick={() => setConfirmingDeleteHoliday(null)}
+                              disabled={deletingId === holiday.id}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              className="button button-ghost danger"
+                              onClick={() => void handleDelete(holiday)}
+                              disabled={deletingId === holiday.id}
+                            >
+                              {deletingId === holiday.id ? 'Deleting...' : 'Delete holiday'}
+                            </button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <DetailDrawer
+        title={drawerMode === 'edit' ? 'Edit Public Holiday' : 'New Public Holiday'}
+        open={drawerOpen}
+        onClose={closeDrawer}
+        footer={
+          <>
+            <button type="button" className="button button-secondary" onClick={closeDrawer}>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              form="public-holiday-form"
+              className="button button-primary"
+              disabled={submitState === 'submitting'}
+            >
+              {submitState === 'submitting' ? 'Saving...' : 'Save'}
+            </button>
+          </>
+        }
+      >
+        <form id="public-holiday-form" className="secretary-form-grid" onSubmit={handleSubmit}>
+          <label>
+            Holiday date
+            <input
+              type="date"
+              value={formState.holidayDate}
+              onChange={(event) =>
+                setFormState((prev) => ({ ...prev, holidayDate: event.target.value }))
+              }
+              required
+            />
+          </label>
+          <label>
+            Holiday name
+            <input
+              type="text"
+              value={formState.name}
+              onChange={(event) => setFormState((prev) => ({ ...prev, name: event.target.value }))}
+              required
+              maxLength={100}
+            />
+          </label>
+          <div className="secretary-form-row">
+            <label>
+              Day
+              <input type="text" value={datePreview.dayOfWeek} readOnly />
+            </label>
+            <label>
+              Year
+              <input type="text" value={datePreview.year} readOnly />
+            </label>
+          </div>
+          {submitState === 'error' && feedback ? (
+            <div className="inline-callout callout-error">{feedback.message}</div>
+          ) : null}
+        </form>
+      </DetailDrawer>
+    </>
+  )
+}
+
 const PlaceholderConfigSection = ({
   activeSection,
   onNavigate,
@@ -865,6 +1290,8 @@ export const AdminConfigPage = () => {
         <article className="card admin-config-content-card">
           {activeSection.key === 'reporting-periods' ? (
             <ReportingPeriodsSection />
+          ) : activeSection.key === 'public-holidays' ? (
+            <PublicHolidaysSection />
           ) : (
             <PlaceholderConfigSection
               activeSection={activeSection}

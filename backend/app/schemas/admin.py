@@ -282,17 +282,17 @@ class PublicHolidayUpsertRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     holiday_date: date
-    name: str | None = Field(default=None, max_length=100)
+    name: str = Field(min_length=1, max_length=100)
     day_of_week: str | None = Field(default=None, max_length=10)
     year: int | None = None
 
     @field_validator("name")
     @classmethod
-    def _trim_name(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
+    def _trim_name(cls, value: str) -> str:
         trimmed = value.strip()
-        return trimmed or None
+        if not trimmed:
+            raise ValueError("name is required")
+        return trimmed
 
     @field_validator("day_of_week")
     @classmethod

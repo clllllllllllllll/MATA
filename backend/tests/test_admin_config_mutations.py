@@ -243,6 +243,26 @@ class FakeMutationSession:
                 existing["updated_at"] = self.now
             return _FakeMutationResult(rows=[existing])
 
+        if "UPDATE public_holidays" in sql:
+            existing = next(
+                (row for row in self.public_holidays if row["id"] == payload["id"]),
+                None,
+            )
+            if existing is None:
+                return _FakeMutationResult(rows=[])
+            duplicate = any(
+                row["holiday_date"] == payload["holiday_date"] and row["id"] != existing["id"]
+                for row in self.public_holidays
+            )
+            if duplicate:
+                raise IntegrityError("update public_holidays", payload, None)
+            existing["holiday_date"] = payload["holiday_date"]
+            existing["name"] = payload["name"]
+            existing["day_of_week"] = payload["day_of_week"]
+            existing["year"] = payload["year"]
+            existing["updated_at"] = self.now
+            return _FakeMutationResult(rows=[existing])
+
         if "DELETE FROM public_holidays" in sql:
             before = len(self.public_holidays)
             self.public_holidays = [r for r in self.public_holidays if r["id"] != payload["id"]]
@@ -551,6 +571,7 @@ def test_all_phase3_mutation_endpoints_reject_non_admin() -> None:
         ("PUT", f"/admin/reporting-periods/{period_id}", {"status": "closed"}),
         ("DELETE", f"/admin/reporting-periods/{period_id}", None),
         ("POST", "/admin/public-holidays", {"holiday_date": "2026-08-09", "name": "National Day", "day_of_week": "Sunday", "year": 2026}),
+        ("PUT", f"/admin/public-holidays/{uuid4()}", {"holiday_date": "2026-08-09", "name": "National Day", "day_of_week": "Sunday", "year": 2026}),
         ("DELETE", f"/admin/public-holidays/{uuid4()}", None),
         ("PUT", "/admin/programmes/DR", {"r_year_required": True}),
         ("POST", "/admin/loa-types", {"code": "Study Leave", "description": "x"}),
@@ -714,6 +735,71 @@ def test_public_holiday_upsert_is_idempotent() -> None:
     assert second.status_code == 200
     assert second.json()["id"] == first_id
     assert second.json()["name"] == "National Day Updated"
+    assert second.json()["day_of_week"] == "Sunday"
+    assert second.json()["year"] == 2026
+
+
+def test_public_holiday_update_recomputes_day_and_year() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+    created = client.post(
+        "/admin/public-holidays",
+        headers=_admin_headers("DR"),
+        json={
+            "holiday_date": "2026-08-09",
+            "name": "National Day",
+            "day_of_week": "Wrong",
+            "year": 1999,
+        },
+    )
+    assert created.status_code == 200
+    holiday_id = created.json()["id"]
+    assert created.json()["day_of_week"] == "Sunday"
+    assert created.json()["year"] == 2026
+
+    updated = client.put(
+        f"/admin/public-holidays/{holiday_id}",
+        headers=_admin_headers("DR"),
+        json={
+            "holiday_date": "2026-08-10",
+            "name": "National Day observed",
+            "day_of_week": "Wrong",
+            "year": 1999,
+        },
+    )
+
+    assert updated.status_code == 200
+    body = updated.json()
+    assert body["name"] == "National Day observed"
+    assert body["holiday_date"] == "2026-08-10"
+    assert body["day_of_week"] == "Monday"
+    assert body["year"] == 2026
+
+
+def test_public_holiday_delete_succeeds() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+    created = client.post(
+        "/admin/public-holidays",
+        headers=_admin_headers("DR"),
+        json={"holiday_date": "2026-08-09", "name": "National Day"},
+    )
+    assert created.status_code == 200
+
+    deleted = client.delete(
+        f"/admin/public-holidays/{created.json()['id']}",
+        headers=_admin_headers("DR"),
+    )
+
+    assert deleted.status_code == 204
+
+
+def test_null_scope_cannot_mutate_public_holidays() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+    response = client.post(
+        "/admin/public-holidays",
+        headers=_admin_headers(scope=None),
+        json={"holiday_date": "2026-08-09", "name": "National Day"},
+    )
+    assert response.status_code == 403
 
 
 def test_programme_locked_fields_return_422() -> None:

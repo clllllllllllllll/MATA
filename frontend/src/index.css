@@ -2357,30 +2357,41 @@ button:disabled,
   font-weight: 600;
 }
 
-.reporting-periods-table {
+.reporting-periods-table,
+.public-holidays-table {
   table-layout: fixed;
 }
 
-.reporting-periods-table th {
+.reporting-periods-table th,
+.public-holidays-table th {
   text-align: center;
 }
 
-.reporting-periods-table th:first-child,
-.reporting-periods-table td:first-child {
+.public-holidays-table th:nth-child(3),
+.public-holidays-table td:nth-child(3) {
   text-align: left;
 }
 
-.reporting-periods-table td {
+.reporting-periods-table td,
+.public-holidays-table td {
   padding-block: 14px;
   text-align: center;
   vertical-align: middle;
 }
 
-.reporting-periods-table td:first-child {
+.reporting-periods-table td:first-child,
+.public-holidays-table td:first-child {
   width: auto;
 }
 
-.reporting-periods-table .admin-config-row-actions {
+.reporting-periods-table th:first-child,
+.reporting-periods-table td:first-child {
+  width: 150px;
+  text-align: center;
+}
+
+.reporting-periods-table .admin-config-row-actions,
+.public-holidays-table .admin-config-row-actions {
   justify-content: center;
   min-width: 0;
   flex-wrap: nowrap;
@@ -2388,7 +2399,9 @@ button:disabled,
 }
 
 .reporting-periods-table th:last-child,
-.reporting-periods-table tr:not(.admin-config-confirm-row) td:last-child {
+.reporting-periods-table tr:not(.admin-config-confirm-row) td:last-child,
+.public-holidays-table th:last-child,
+.public-holidays-table tr:not(.admin-config-confirm-row) td:last-child {
   width: 180px;
 }
 
