@@ -414,17 +414,20 @@ def test_programme_scope_null_returns_no_scoped_data() -> None:
     groups = client.get("/admin/posting-groups", headers=headers)
     logs = client.get("/admin/upload-logs", headers=headers)
     weekend = client.get("/admin/weekend-exceptions", headers=headers)
+    periods = client.get("/admin/reporting-periods", headers=headers)
 
     assert programmes.status_code == 200
     assert rules.status_code == 200
     assert groups.status_code == 200
     assert logs.status_code == 200
     assert weekend.status_code == 200
+    assert periods.status_code == 200
     assert programmes.json() == []
     assert rules.json() == []
     assert groups.json() == []
     assert logs.json() == []
     assert weekend.json() == []
+    assert periods.json() == []
 
 
 def test_programme_filter_must_be_in_scope() -> None:

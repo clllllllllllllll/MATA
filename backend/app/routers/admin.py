@@ -460,11 +460,11 @@ async def list_reporting_periods(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> list[ReportingPeriodResponse]:
-    del admin_context  # role guard is enforced by dependency
     if db is None:
         return []
     rows = await admin_config.list_reporting_periods(
         db,
+        programme_scope=admin_context.programme_scope,
         reporting_period_id=reporting_period_id,
     )
     return [ReportingPeriodResponse.model_validate(row) for row in rows]
@@ -476,7 +476,6 @@ async def create_reporting_period(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> ReportingPeriodResponse:
-    del admin_context  # role guard is enforced by dependency
     if db is None:
         raise ApiError(
             status_code=500,
@@ -485,6 +484,7 @@ async def create_reporting_period(
         )
     row = await admin_config.create_reporting_period(
         db,
+        programme_scope=admin_context.programme_scope,
         label=payload.label,
         start_date=payload.start_date,
         end_date=payload.end_date,
@@ -499,7 +499,6 @@ async def update_reporting_period(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> ReportingPeriodResponse:
-    del admin_context  # role guard is enforced by dependency
     if db is None:
         raise ApiError(
             status_code=500,
@@ -508,6 +507,7 @@ async def update_reporting_period(
         )
     row = await admin_config.update_reporting_period(
         db,
+        programme_scope=admin_context.programme_scope,
         reporting_period_id=reporting_period_id,
         label=payload.label,
         start_date=payload.start_date,
@@ -523,7 +523,6 @@ async def delete_reporting_period(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> None:
-    del admin_context  # role guard is enforced by dependency
     if db is None:
         raise ApiError(
             status_code=500,
@@ -532,6 +531,7 @@ async def delete_reporting_period(
         )
     await admin_config.delete_reporting_period(
         db,
+        programme_scope=admin_context.programme_scope,
         reporting_period_id=reporting_period_id,
     )
 

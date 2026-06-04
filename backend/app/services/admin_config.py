@@ -68,8 +68,11 @@ def _scope_or_clause(
 async def list_reporting_periods(
     db: AsyncSession,
     *,
+    programme_scope: set[str],
     reporting_period_id: UUID | None,
 ) -> list[dict[str, Any]]:
+    if not programme_scope:
+        return []
     params: dict[str, Any] = {}
     where_clauses: list[str] = []
     if reporting_period_id is not None:
@@ -1010,13 +1013,24 @@ def _raise_validation(detail: str) -> None:
     )
 
 
+def _raise_dependency_conflict(dependencies: dict[str, int]) -> None:
+    raise ApiError(
+        status_code=409,
+        detail="Reporting period is in use and cannot be deleted",
+        error_code=ErrorCode.CONFLICT.value,
+        metadata={"dependencies": dependencies},
+    )
+
+
 async def create_reporting_period(
     db: AsyncSession,
     *,
+    programme_scope: set[str],
     label: str,
     start_date: date,
     end_date: date,
 ) -> dict[str, Any]:
+    _validate_programme_scope_for_write(programme_scope)
     if start_date > end_date:
         _raise_validation("start_date must be on or before end_date")
     try:
@@ -1046,12 +1060,14 @@ async def create_reporting_period(
 async def update_reporting_period(
     db: AsyncSession,
     *,
+    programme_scope: set[str],
     reporting_period_id: UUID,
     label: str | None,
     start_date: date | None,
     end_date: date | None,
     status: str | None,
 ) -> dict[str, Any]:
+    _validate_programme_scope_for_write(programme_scope)
     existing = await db.execute(
         text(
             """
@@ -1107,8 +1123,27 @@ async def update_reporting_period(
 async def delete_reporting_period(
     db: AsyncSession,
     *,
+    programme_scope: set[str],
     reporting_period_id: UUID,
 ) -> None:
+    _validate_programme_scope_for_write(programme_scope)
+    existing = await db.execute(
+        text("SELECT id FROM reporting_periods WHERE id = :id"),
+        {"id": str(reporting_period_id)},
+    )
+    if existing.mappings().one_or_none() is None:
+        _raise_not_found("Reporting period not found")
+
+    dependencies = await _reporting_period_dependency_counts(
+        db,
+        reporting_period_id=reporting_period_id,
+    )
+    blocking_dependencies = {
+        table_name: count for table_name, count in dependencies.items() if count > 0
+    }
+    if blocking_dependencies:
+        _raise_dependency_conflict(blocking_dependencies)
+
     try:
         result = await db.execute(
             text("DELETE FROM reporting_periods WHERE id = :id"),
@@ -1122,6 +1157,80 @@ async def delete_reporting_period(
         await db.rollback()
         _raise_conflict("Reporting period is in use and cannot be deleted")
     _invalidate_admin_config_cache()
+
+
+async def _count_reporting_period_dependency(
+    db: AsyncSession,
+    *,
+    reporting_period_id: UUID,
+    sql: str,
+) -> int:
+    result = await db.execute(text(sql), {"id": str(reporting_period_id)})
+    row = result.mappings().one()
+    return int(row["count"] or 0)
+
+
+async def _reporting_period_dependency_counts(
+    db: AsyncSession,
+    *,
+    reporting_period_id: UUID,
+) -> dict[str, int]:
+    checks = {
+        "upload_logs": """
+            SELECT COUNT(*) AS count
+            FROM upload_logs
+            WHERE reporting_period_id = :id
+        """,
+        "resident_postings": """
+            SELECT COUNT(*) AS count
+            FROM resident_postings
+            WHERE reporting_period_id = :id
+        """,
+        "teaching_targets": """
+            SELECT COUNT(*) AS count
+            FROM teaching_targets
+            WHERE reporting_period_id = :id
+        """,
+        "teaching_name_catalogue": """
+            SELECT COUNT(*) AS count
+            FROM teaching_name_catalogue
+            WHERE reporting_period_id = :id
+        """,
+        "form_f1_records": """
+            SELECT COUNT(*) AS count
+            FROM form_f1_records
+            WHERE reporting_period_id = :id
+        """,
+        "academic_month_boundaries": """
+            SELECT COUNT(*) AS count
+            FROM academic_month_boundaries amb
+            JOIN upload_logs ul ON ul.id = amb.upload_id
+            WHERE ul.reporting_period_id = :id
+        """,
+        "period_snapshots": """
+            SELECT COUNT(*) AS count
+            FROM period_snapshots
+            WHERE reporting_period_id = :id
+        """,
+        "clawback_records": """
+            SELECT COUNT(*) AS count
+            FROM clawback_records
+            WHERE reporting_period_id = :id
+        """,
+        "surplus_ledger": """
+            SELECT COUNT(*) AS count
+            FROM surplus_ledger
+            WHERE reporting_period_id = :id
+        """,
+    }
+    return {
+        name: await _count_reporting_period_dependency(
+            db,
+            reporting_period_id=reporting_period_id,
+            sql=sql,
+        )
+        for name, sql in checks.items()
+    }
 
 
 async def upsert_public_holiday(

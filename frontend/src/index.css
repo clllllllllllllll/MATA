@@ -2193,6 +2193,102 @@ button:disabled,
   font-size: 13px;
 }
 
+.admin-config-actions,
+.admin-config-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.admin-config-row-actions {
+  min-width: 150px;
+}
+
+.admin-config-feedback {
+  margin: 0 22px 14px;
+  justify-content: space-between;
+}
+
+.admin-config-feedback-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.admin-config-feedback-content p {
+  margin: 0;
+}
+
+.admin-config-details-toggle {
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.admin-config-feedback-dismiss {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.55);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 9px;
+}
+
+.admin-config-feedback-dismiss:hover {
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.admin-config-feedback-dismiss:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.admin-config-feedback-details {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(160, 90, 86, 0.22);
+}
+
+.admin-config-dependency-list {
+  display: grid;
+  grid-template-columns: minmax(180px, max-content) max-content;
+  gap: 5px 18px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.admin-config-dependency-list dt {
+  color: inherit;
+  font-weight: 500;
+}
+
+.admin-config-dependency-list dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  text-align: right;
+}
+
+.admin-config-raw-error {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
 .admin-config-status-chip {
   display: inline-flex;
   align-items: center;
@@ -2261,8 +2357,90 @@ button:disabled,
   font-weight: 600;
 }
 
+.reporting-periods-table {
+  table-layout: fixed;
+}
+
+.reporting-periods-table th {
+  text-align: center;
+}
+
+.reporting-periods-table th:first-child,
+.reporting-periods-table td:first-child {
+  text-align: left;
+}
+
+.reporting-periods-table td {
+  padding-block: 14px;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.reporting-periods-table td:first-child {
+  width: auto;
+}
+
+.reporting-periods-table .admin-config-row-actions {
+  justify-content: center;
+  min-width: 0;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.reporting-periods-table th:last-child,
+.reporting-periods-table tr:not(.admin-config-confirm-row) td:last-child {
+  width: 180px;
+}
+
+.admin-config-confirm-row td {
+  background: #fff;
+  padding: 0 14px 14px;
+}
+
+.admin-config-confirm-row td:first-child {
+  font-weight: 400;
+  width: auto;
+}
+
+.admin-config-inline-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid #f0d3ce;
+  border-radius: 12px;
+  background: #fff8f7;
+  color: var(--red, #b42318);
+  padding: 12px 14px;
+  text-align: left;
+}
+
+.admin-config-inline-confirm strong {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 3px;
+}
+
+.admin-config-inline-confirm p {
+  margin: 0;
+  color: #7a3a34;
+  font-size: 12.5px;
+}
+
+.admin-config-confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
 @media (max-width: 900px) {
   .admin-config-shell {
     grid-template-columns: 1fr;
+  }
+
+  .admin-config-inline-confirm {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

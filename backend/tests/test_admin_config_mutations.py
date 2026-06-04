@@ -58,6 +58,7 @@ class FakeMutationSession:
                 "updated_at": self.now,
             }
         ]
+        self.reporting_period_dependencies: dict[str, dict[str, int]] = {}
         self.public_holidays: list[dict] = []
         self.programmes: list[dict] = [
             {
@@ -166,6 +167,49 @@ class FakeMutationSession:
                 period["status"] = payload["status"]
             period["updated_at"] = self.now
             return _FakeMutationResult(rows=[period])
+
+        if "SELECT id FROM reporting_periods" in sql:
+            period = next(
+                (row for row in self.reporting_periods if row["id"] == payload["id"]),
+                None,
+            )
+            return _FakeMutationResult(rows=[{"id": period["id"]}] if period else [])
+
+        if "FROM upload_logs" in sql and "reporting_period_id = :id" in sql:
+            period_counts = self.reporting_period_dependencies.get(payload["id"], {})
+            return _FakeMutationResult(rows=[{"count": period_counts.get("upload_logs", 0)}])
+
+        if "FROM resident_postings" in sql and "reporting_period_id = :id" in sql:
+            period_counts = self.reporting_period_dependencies.get(payload["id"], {})
+            return _FakeMutationResult(rows=[{"count": period_counts.get("resident_postings", 0)}])
+
+        if "FROM teaching_targets" in sql and "reporting_period_id = :id" in sql:
+            period_counts = self.reporting_period_dependencies.get(payload["id"], {})
+            return _FakeMutationResult(rows=[{"count": period_counts.get("teaching_targets", 0)}])
+
+        if "FROM teaching_name_catalogue" in sql and "reporting_period_id = :id" in sql:
+            period_counts = self.reporting_period_dependencies.get(payload["id"], {})
+            return _FakeMutationResult(rows=[{"count": period_counts.get("teaching_name_catalogue", 0)}])
+
+        if "FROM form_f1_records" in sql and "reporting_period_id = :id" in sql:
+            period_counts = self.reporting_period_dependencies.get(payload["id"], {})
+            return _FakeMutationResult(rows=[{"count": period_counts.get("form_f1_records", 0)}])
+
+        if "FROM academic_month_boundaries" in sql and "reporting_period_id = :id" in sql:
+            period_counts = self.reporting_period_dependencies.get(payload["id"], {})
+            return _FakeMutationResult(rows=[{"count": period_counts.get("academic_month_boundaries", 0)}])
+
+        if "FROM period_snapshots" in sql and "reporting_period_id = :id" in sql:
+            period_counts = self.reporting_period_dependencies.get(payload["id"], {})
+            return _FakeMutationResult(rows=[{"count": period_counts.get("period_snapshots", 0)}])
+
+        if "FROM clawback_records" in sql and "reporting_period_id = :id" in sql:
+            period_counts = self.reporting_period_dependencies.get(payload["id"], {})
+            return _FakeMutationResult(rows=[{"count": period_counts.get("clawback_records", 0)}])
+
+        if "FROM surplus_ledger" in sql and "reporting_period_id = :id" in sql:
+            period_counts = self.reporting_period_dependencies.get(payload["id"], {})
+            return _FakeMutationResult(rows=[{"count": period_counts.get("surplus_ledger", 0)}])
 
         if "DELETE FROM reporting_periods" in sql:
             before = len(self.reporting_periods)
@@ -566,6 +610,91 @@ def test_null_scope_cannot_mutate_scoped_resources() -> None:
         },
     )
     assert response.status_code == 403
+
+
+def test_null_scope_cannot_mutate_reporting_periods() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+    response = client.post(
+        "/admin/reporting-periods",
+        headers=_admin_headers(scope=None),
+        json={
+            "label": "Jul - Dec 2026",
+            "start_date": "2026-07-01",
+            "end_date": "2026-12-31",
+        },
+    )
+    assert response.status_code == 403
+
+
+def test_reporting_period_create_update_delete_crud() -> None:
+    session = FakeMutationSession()
+    client = _build_client_with_session(session)
+    created = client.post(
+        "/admin/reporting-periods",
+        headers=_admin_headers("DR"),
+        json={
+            "label": "Jul - Dec 2026",
+            "start_date": "2026-07-01",
+            "end_date": "2026-12-31",
+        },
+    )
+    assert created.status_code == 200
+    body = created.json()
+    assert body["label"] == "Jul - Dec 2026"
+    assert body["status"] == "open"
+
+    duplicate = client.post(
+        "/admin/reporting-periods",
+        headers=_admin_headers("DR"),
+        json={
+            "label": "Jul - Dec 2026",
+            "start_date": "2026-07-01",
+            "end_date": "2026-12-31",
+        },
+    )
+    assert duplicate.status_code == 409
+
+    updated = client.put(
+        f"/admin/reporting-periods/{body['id']}",
+        headers=_admin_headers("DR"),
+        json={"label": "H2 2026", "status": "closed"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["label"] == "H2 2026"
+    assert updated.json()["status"] == "closed"
+
+    deleted = client.delete(
+        f"/admin/reporting-periods/{body['id']}",
+        headers=_admin_headers("DR"),
+    )
+    assert deleted.status_code == 204
+
+
+def test_reporting_period_delete_returns_dependency_counts() -> None:
+    session = FakeMutationSession()
+    period_id = session.reporting_periods[0]["id"]
+    session.reporting_period_dependencies[period_id] = {
+        "upload_logs": 2,
+        "resident_postings": 3,
+        "teaching_targets": 1,
+        "academic_month_boundaries": 4,
+    }
+    client = _build_client_with_session(session)
+
+    response = client.delete(
+        f"/admin/reporting-periods/{period_id}",
+        headers=_admin_headers("DR"),
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["detail"] == "Reporting period is in use and cannot be deleted"
+    assert body["metadata"]["dependencies"] == {
+        "upload_logs": 2,
+        "resident_postings": 3,
+        "teaching_targets": 1,
+        "academic_month_boundaries": 4,
+    }
 
 
 def test_public_holiday_upsert_is_idempotent() -> None:

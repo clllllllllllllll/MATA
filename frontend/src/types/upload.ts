@@ -9,6 +9,8 @@ export interface ReportingPeriodOption {
   startDate: string
   endDate: string
   status: 'open' | 'closed' | string
+  createdAt?: string
+  updatedAt?: string
 }
 
 export interface UploadCardState {

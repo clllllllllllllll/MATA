@@ -237,7 +237,10 @@ class ReportingPeriodCreateRequest(BaseModel):
     @field_validator("label")
     @classmethod
     def _trim_label(cls, value: str) -> str:
-        return value.strip()
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("label is required")
+        return trimmed
 
     @model_validator(mode="after")
     def _validate_date_range(self) -> "ReportingPeriodCreateRequest":
@@ -259,7 +262,10 @@ class ReportingPeriodUpdateRequest(BaseModel):
     def _trim_label(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        return value.strip()
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("label is required")
+        return trimmed
 
     @field_validator("status")
     @classmethod
