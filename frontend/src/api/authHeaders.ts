@@ -1,10 +1,25 @@
 import { frontendConfig } from '../config/frontendConfig'
 
-export const buildAdminDemoHeaders = (adminId: string, adminProgrammes: string[]): Record<string, string> => ({
-  'X-User-Role': 'admin',
-  'X-User-Id': adminId,
-  'X-User-Programme': adminProgrammes.join(','),
-})
+export type AdminDemoLevel = 'master' | 'programme'
+
+const defaultAdminDemoLevel: AdminDemoLevel =
+  frontendConfig.defaultRole === 'master_admin' ? 'master' : 'programme'
+
+export const buildAdminDemoHeaders = (
+  adminId: string,
+  adminProgrammes: string[],
+  adminLevel: AdminDemoLevel = defaultAdminDemoLevel,
+): Record<string, string> => {
+  const headers: Record<string, string> = {
+    'X-User-Role': 'admin',
+    'X-User-Id': adminId,
+    'X-User-Programme': adminProgrammes.join(','),
+  }
+  if (adminLevel === 'master') {
+    headers['X-Admin-Level'] = 'master'
+  }
+  return headers
+}
 
 export const buildSecretaryDemoHeaders = (overrides?: {
   secretaryId?: string

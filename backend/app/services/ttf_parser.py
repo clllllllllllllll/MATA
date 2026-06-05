@@ -5,7 +5,7 @@ from decimal import Decimal
 from hashlib import blake2b
 from dataclasses import asdict, dataclass
 from io import BytesIO
-from typing import Any
+from typing import Any, Mapping
 from uuid import UUID
 
 from sqlalchemy import text
@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.parser_common import ParserResult
 
-_DEFAULT_PROGRAMMES = {
+_PARSER_ONLY_FALLBACK_PROGRAMME_CODES = {
     "AIM",
     "ANAES",
     "CARDIO",
@@ -43,7 +43,7 @@ _DEFAULT_PROGRAMMES = {
     "MICROB",
     "PALLMED",
 }
-_R_YEAR_NOT_REQUIRED = {
+_PARSER_ONLY_FALLBACK_R_YEAR_NOT_REQUIRED = {
     "AIM",
     "CARDIO",
     "EM",
@@ -67,6 +67,7 @@ _R_YEAR_NOT_REQUIRED = {
     "MICROB",
     "PALLMED",
 }
+_PARSER_ONLY_FALLBACK_SUBSPECIALTY_PROGRAMMES = {"SPORTSMED", "PALLMED"}
 _SUBSPECIALTY_R_YEAR_MAP = {"R4": "SS1", "R5": "SS2", "R6": "SS3"}
 _TTF_HEADERS = {
     1: "reporting_period",
@@ -99,6 +100,13 @@ _HEADER_ALIASES: dict[int, tuple[tuple[str, ...], ...]] = {
     10: (("tag",),),
     11: (("details", "training"), ("detail", "training")),
 }
+
+
+@dataclass(slots=True, frozen=True)
+class ProgrammeConfig:
+    code: str
+    r_year_required: bool
+    is_subspecialty: bool
 
 
 @dataclass(slots=True, frozen=True)
@@ -234,13 +242,84 @@ def parse_bool_cell(value: str, *, true_values: set[str]) -> bool:
     return value.strip().casefold() in {entry.casefold() for entry in true_values}
 
 
-def explode_r_years(raw_r_year: str, programme_code: str) -> list[str]:
-    if programme_code in _R_YEAR_NOT_REQUIRED:
+def _normalise_programme_code(value: str) -> str:
+    return value.strip().upper()
+
+
+def _normalise_programme_config(value: ProgrammeConfig | Mapping[str, Any]) -> ProgrammeConfig:
+    if isinstance(value, ProgrammeConfig):
+        return ProgrammeConfig(
+            code=_normalise_programme_code(value.code),
+            r_year_required=value.r_year_required,
+            is_subspecialty=value.is_subspecialty,
+        )
+    return ProgrammeConfig(
+        code=_normalise_programme_code(str(value.get("code", ""))),
+        r_year_required=bool(value.get("r_year_required", True)),
+        is_subspecialty=bool(value.get("is_subspecialty", False)),
+    )
+
+
+def _parser_only_fallback_programme_configs(
+    known_programmes: set[str] | None,
+) -> dict[str, ProgrammeConfig]:
+    programme_codes = known_programmes or _PARSER_ONLY_FALLBACK_PROGRAMME_CODES
+    configs: dict[str, ProgrammeConfig] = {}
+    for code in programme_codes:
+        normalised_code = _normalise_programme_code(code)
+        configs[normalised_code] = ProgrammeConfig(
+            code=normalised_code,
+            r_year_required=normalised_code not in _PARSER_ONLY_FALLBACK_R_YEAR_NOT_REQUIRED,
+            is_subspecialty=normalised_code
+            in _PARSER_ONLY_FALLBACK_SUBSPECIALTY_PROGRAMMES,
+        )
+    return configs
+
+
+def _explicit_programme_configs(
+    programme_configs: Mapping[str, ProgrammeConfig | Mapping[str, Any]],
+) -> dict[str, ProgrammeConfig]:
+    configs: dict[str, ProgrammeConfig] = {}
+    for key, value in programme_configs.items():
+        config = _normalise_programme_config(value)
+        code = config.code or _normalise_programme_code(str(key))
+        configs[code] = ProgrammeConfig(
+            code=code,
+            r_year_required=config.r_year_required,
+            is_subspecialty=config.is_subspecialty,
+        )
+    return configs
+
+
+async def _load_programme_configs(
+    db_session: AsyncSession,
+) -> dict[str, ProgrammeConfig]:
+    result = await db_session.execute(
+        text(
+            """
+            SELECT code, r_year_required, is_subspecialty
+            FROM programmes
+            """
+        )
+    )
+    configs: dict[str, ProgrammeConfig] = {}
+    for row in result.mappings().all():
+        code = _normalise_programme_code(str(row["code"]))
+        configs[code] = ProgrammeConfig(
+            code=code,
+            r_year_required=bool(row["r_year_required"]),
+            is_subspecialty=bool(row["is_subspecialty"]),
+        )
+    return configs
+
+
+def explode_r_years(raw_r_year: str, programme: ProgrammeConfig) -> list[str]:
+    if not programme.r_year_required:
         return ["ALL"]
     tokens = [token.strip() for token in raw_r_year.split(",") if token.strip()]
     if not tokens:
         return []
-    if programme_code in {"SPORTSMED", "PALLMED"}:
+    if programme.is_subspecialty:
         return [_SUBSPECIALTY_R_YEAR_MAP.get(token, token) for token in tokens]
     return tokens
 
@@ -520,6 +599,7 @@ async def parse_ttf_upload(
     reporting_period_id: UUID | None,
     programme_code: str | None = None,
     known_programmes: set[str] | None = None,
+    programme_configs: Mapping[str, ProgrammeConfig | Mapping[str, Any]] | None = None,
     db_session: AsyncSession | None = None,
 ) -> ParserResult:
     metadata: dict[str, Any] = {
@@ -548,7 +628,14 @@ async def parse_ttf_upload(
             metadata={**metadata, "exception": str(exc)},
         )
 
-    known = known_programmes or _DEFAULT_PROGRAMMES
+    if db_session is not None:
+        programme_config_by_code = await _load_programme_configs(db_session)
+    elif programme_configs is not None:
+        programme_config_by_code = _explicit_programme_configs(programme_configs)
+    else:
+        programme_config_by_code = _parser_only_fallback_programme_configs(
+            known_programmes
+        )
     warnings: list[Any] = []
     errors: list[Any] = []
     teaching_targets: list[ParsedTeachingTargetRow] = []
@@ -576,7 +663,8 @@ async def parse_ttf_upload(
         if not row_programme:
             errors.append({"row": row_idx, "message": "Programme code is required in column B."})
             continue
-        if row_programme not in known:
+        row_programme_config = programme_config_by_code.get(row_programme)
+        if row_programme_config is None:
             errors.append({"row": row_idx, "message": f"Unknown programme code: {row_programme}"})
             continue
         if programme_code and row_programme != programme_code:
@@ -618,7 +706,7 @@ async def parse_ttf_upload(
             errors.append({"row": row_idx, "message": "Monthly target must be positive."})
             continue
 
-        exploded_years = explode_r_years(raw_r_year, row_programme)
+        exploded_years = explode_r_years(raw_r_year, row_programme_config)
         if not exploded_years:
             errors.append({"row": row_idx, "message": "Column C r_year is required."})
             continue

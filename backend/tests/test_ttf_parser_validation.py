@@ -57,6 +57,18 @@ async def _parse_for_programme(rows: list[list[object]], programme_code: str):
     )
 
 
+async def _parse_for_programme_config(
+    rows: list[list[object]], programme_code: str, programme_config: dict[str, object]
+):
+    return await parse_ttf_upload(
+        file_bytes=_make_ttf_bytes(rows=rows),
+        original_filename=f"Teaching_Target_File_{programme_code}.xlsx",
+        reporting_period_id=uuid4(),
+        programme_code=programme_code,
+        programme_configs={programme_code: programme_config},
+    )
+
+
 def _base_row(**overrides: object) -> list[object]:
     row = [
         "Jan - June",
@@ -506,6 +518,35 @@ async def test_r_year_required_false_groups_under_all() -> None:
     assert result.errors == []
     assert [target["r_year"] for target in result.metadata["targets"]] == ["ALL", "ALL"]
     assert [row["r_year"] for row in result.metadata["catalogue_rows"]] == ["ALL", "ALL"]
+
+
+@pytest.mark.asyncio
+async def test_custom_programme_config_r_year_required_false_maps_targets_and_catalogue_to_all() -> None:
+    result = await _parse_for_programme_config(
+        [_base_row(programme="XALL", r_year="R2,R3", details="Config Topic")],
+        "XALL",
+        {"code": "XALL", "r_year_required": False, "is_subspecialty": False},
+    )
+
+    assert result.errors == []
+    assert [target["r_year"] for target in result.metadata["targets"]] == ["ALL"]
+    assert [row["r_year"] for row in result.metadata["catalogue_rows"]] == ["ALL"]
+
+
+@pytest.mark.asyncio
+async def test_custom_programme_config_subspecialty_remaps_r_years() -> None:
+    result = await _parse_for_programme_config(
+        [_base_row(programme="XSS", r_year="R4, R5, R6", details="Config Topic")],
+        "XSS",
+        {"code": "XSS", "r_year_required": True, "is_subspecialty": True},
+    )
+
+    assert result.errors == []
+    assert [target["r_year"] for target in result.metadata["targets"]] == [
+        "SS1",
+        "SS2",
+        "SS3",
+    ]
 
 
 @pytest.mark.asyncio

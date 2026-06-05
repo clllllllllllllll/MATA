@@ -1,12 +1,20 @@
 import { Fragment, type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
+  createLoaType,
+  deleteLoaType,
+  listLoaTypes,
+  updateLoaType,
+  type LoaType,
+} from '../../api/loaTypes'
+import {
   createPublicHoliday,
   deletePublicHoliday,
   listPublicHolidays,
   updatePublicHoliday,
   type PublicHoliday,
 } from '../../api/publicHolidays'
+import { listProgrammes, updateProgramme, type Programme } from '../../api/programmes'
 import {
   createReportingPeriod,
   deleteReportingPeriod,
@@ -61,6 +69,17 @@ interface PublicHolidayFormState {
   name: string
 }
 
+interface ProgrammeFormState {
+  rYearRequired: boolean
+  isSubspecialty: boolean
+  rdbAlias: string
+}
+
+interface LoaTypeFormState {
+  code: string
+  description: string
+}
+
 type Feedback = {
   tone: 'success' | 'error'
   message: string
@@ -84,6 +103,26 @@ const emptyPublicHolidayForm: PublicHolidayFormState = {
   holidayDate: '',
   name: '',
 }
+
+const emptyProgrammeForm: ProgrammeFormState = {
+  rYearRequired: false,
+  isSubspecialty: false,
+  rdbAlias: '',
+}
+
+const emptyLoaTypeForm: LoaTypeFormState = {
+  code: '',
+  description: '',
+}
+
+const programmePcConfigSections: ConfigSectionKey[] = ['multi-posting-rules', 'posting-groups']
+
+const ayCategoryLabels: Record<string, string> = {
+  im_subspec: 'IM Subspec',
+  non_im_subspec: 'Non IM Subspec',
+}
+
+const formatAyCategory = (value: string) => ayCategoryLabels[value] ?? value
 
 const configSections: ConfigSection[] = [
   {
@@ -132,9 +171,9 @@ const configSections: ConfigSection[] = [
     icon: 'database',
     status: 'Seeded',
     title: 'Programmes',
-    description: 'Programme definitions are seeded in the database and later CRUD-manageable.',
-    stateLabel: 'Read-only preview pending',
-    nextStep: 'Future CRUD should preserve programme scope and source-of-truth rules before edits are enabled.',
+    description: 'Programme definitions are seeded in the database and editable for parser configuration flags.',
+    stateLabel: 'Live list/edit',
+    nextStep: 'Future uploads use the saved flags. Existing parsed data is not recalculated by this page.',
     rows: [
       {
         field: 'Seed source',
@@ -159,9 +198,9 @@ const configSections: ConfigSection[] = [
     icon: 'file',
     status: 'Seeded',
     title: 'LOA Types',
-    description: 'LOA types are seeded and later CRUD-manageable.',
-    stateLabel: 'CRUD wiring pending',
-    nextStep: 'Expose maintenance controls only after validation and audit rules are confirmed.',
+    description: 'LOA types are seeded validation-catalogue rows for RDB parser warnings.',
+    stateLabel: 'Live CRUD',
+    nextStep: 'Manual changes affect future validation only. Existing uploaded records are not changed.',
     rows: [
       {
         field: 'Seeded list',
@@ -407,6 +446,19 @@ const toPublicHolidayFormState = (holiday: PublicHoliday): PublicHolidayFormStat
   name: holiday.name,
 })
 
+const toProgrammeFormState = (programme: Programme): ProgrammeFormState => ({
+  rYearRequired: programme.rYearRequired,
+  isSubspecialty: programme.isSubspecialty,
+  rdbAlias: programme.rdbAlias ?? '',
+})
+
+const toLoaTypeFormState = (loaType: LoaType): LoaTypeFormState => ({
+  code: loaType.code,
+  description: loaType.description ?? '',
+})
+
+const booleanTone = (value: boolean): 'success' | 'neutral' => (value ? 'success' : 'neutral')
+
 const describePublicHolidayError = (
   error: unknown,
   fallbackMessage: string,
@@ -422,6 +474,30 @@ const describePublicHolidayError = (
       tone: 'error',
       message: fallbackMessage,
       description: 'That holiday date may already exist. Use edit on the existing row instead.',
+    }
+  }
+  return {
+    tone: 'error',
+    message: error.message || fallbackMessage,
+  }
+}
+
+const describeGenericConfigError = (
+  error: unknown,
+  fallbackMessage: string,
+  conflictDescription?: string,
+): NonNullable<Feedback> => {
+  if (!(error instanceof ApiRequestError)) {
+    return {
+      tone: 'error',
+      message: fallbackMessage,
+    }
+  }
+  if (error.status === 409 && conflictDescription) {
+    return {
+      tone: 'error',
+      message: fallbackMessage,
+      description: conflictDescription,
     }
   }
   return {
@@ -1199,6 +1275,658 @@ const PublicHolidaysSection = () => {
   )
 }
 
+const ProgrammesSection = () => {
+  const { demoAdminId, demoAdminProgrammes, role } = useAppState()
+  const adminLevel = role === 'master_admin' ? 'master' : 'programme'
+  const [programmes, setProgrammes] = useState<Programme[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [selectedProgramme, setSelectedProgramme] = useState<Programme | null>(null)
+  const [formState, setFormState] = useState<ProgrammeFormState>(emptyProgrammeForm)
+  const [submitState, setSubmitState] = useState<'idle' | 'submitting' | 'error'>('idle')
+  const [feedback, setFeedback] = useState<Feedback>(null)
+
+  const sortedProgrammes = useMemo(
+    () => [...programmes].sort((left, right) => left.code.localeCompare(right.code)),
+    [programmes],
+  )
+
+  const reloadProgrammes = useCallback(async () => {
+    setLoading(true)
+    setLoadError(null)
+    try {
+      const rows = await listProgrammes({
+        adminId: demoAdminId,
+        adminProgrammes: demoAdminProgrammes,
+        adminLevel,
+      })
+      setProgrammes(rows)
+    } catch (error) {
+      const message = error instanceof ApiRequestError ? error.message : 'Unable to load programmes.'
+      setLoadError(message)
+      setProgrammes([])
+    } finally {
+      setLoading(false)
+    }
+  }, [adminLevel, demoAdminId, demoAdminProgrammes])
+
+  useEffect(() => {
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        void reloadProgrammes()
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [reloadProgrammes])
+
+  const dismissFeedback = () => setFeedback(null)
+
+  const openEditDrawer = (programme: Programme) => {
+    setSelectedProgramme(programme)
+    setFormState(toProgrammeFormState(programme))
+    setSubmitState('idle')
+    setFeedback(null)
+    setDrawerOpen(true)
+  }
+
+  const closeDrawer = () => {
+    if (submitState === 'submitting') {
+      return
+    }
+    setDrawerOpen(false)
+    setSelectedProgramme(null)
+    setFormState(emptyProgrammeForm)
+    setSubmitState('idle')
+  }
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!selectedProgramme) {
+      return
+    }
+    setSubmitState('submitting')
+    setFeedback(null)
+    try {
+      await updateProgramme({
+        adminId: demoAdminId,
+        adminProgrammes: demoAdminProgrammes,
+        adminLevel,
+        code: selectedProgramme.code,
+        payload: {
+          rYearRequired: formState.rYearRequired,
+          isSubspecialty: formState.isSubspecialty,
+          rdbAlias: formState.rdbAlias.trim() || null,
+        },
+      })
+      setFeedback({ tone: 'success', message: 'Programme updated.' })
+      await reloadProgrammes()
+      setDrawerOpen(false)
+      setSelectedProgramme(null)
+      setFormState(emptyProgrammeForm)
+      setSubmitState('idle')
+    } catch (error) {
+      setSubmitState('error')
+      setFeedback(describeGenericConfigError(error, 'Unable to update programme.'))
+    }
+  }
+
+  return (
+    <>
+      <header className="admin-config-content-header">
+        <div>
+          <div className="admin-config-title-row">
+            <h2>Programmes</h2>
+          </div>
+          <p>Review seeded programmes and edit only parser-facing configuration flags.</p>
+        </div>
+        <div className="admin-config-actions">
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => void reloadProgrammes()}
+            disabled={loading}
+          >
+            <IconRefresh size={14} />
+            Retry
+          </button>
+        </div>
+      </header>
+
+      {feedback ? (
+        <div
+          className={`inline-callout ${feedback.tone === 'error' ? 'callout-error' : 'callout-success'} admin-config-feedback`}
+          role="status"
+        >
+          <div className="admin-config-feedback-content">
+            <strong>{feedback.message}</strong>
+            {feedback.description ? <p>{feedback.description}</p> : null}
+          </div>
+          <button
+            type="button"
+            className="admin-config-feedback-dismiss"
+            onClick={dismissFeedback}
+            aria-label="Dismiss feedback"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
+      {loading ? (
+        <div className="configuration-empty-note">Loading programmes...</div>
+      ) : loadError ? (
+        <div className="configuration-empty-note">
+          <div>
+            <h3>Unable to load programmes</h3>
+            <p>{loadError}</p>
+            <button type="button" className="button button-secondary" onClick={() => void reloadProgrammes()}>
+              <IconRefresh size={14} />
+              Retry
+            </button>
+          </div>
+        </div>
+      ) : sortedProgrammes.length === 0 ? (
+        <div className="configuration-empty-note">
+          <div>
+            <h3>No programmes available for this admin scope.</h3>
+            <p>Programme scope is enforced by the backend. Empty scope does not grant all-programme access.</p>
+          </div>
+        </div>
+      ) : (
+        <div className="admin-config-table-wrap">
+          <table className="admin-config-table programmes-table">
+            <thead>
+              <tr>
+                <th>Code</th>
+                <th>Name</th>
+                <th>AY Category</th>
+                <th>R-Year Required</th>
+                <th>Subspecialty</th>
+                <th>RDB Alias</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedProgrammes.map((programme) => (
+                <tr key={programme.id}>
+                  <td className="mono">{programme.code}</td>
+                  <td>{programme.name}</td>
+                  <td>{formatAyCategory(programme.ayDateCategory)}</td>
+                  <td>
+                    <StatusBadge
+                      label={programme.rYearRequired ? 'Yes' : 'No'}
+                      tone={booleanTone(programme.rYearRequired)}
+                    />
+                  </td>
+                  <td>
+                    <StatusBadge
+                      label={programme.isSubspecialty ? 'Yes' : 'No'}
+                      tone={booleanTone(programme.isSubspecialty)}
+                    />
+                  </td>
+                  <td>{programme.rdbAlias ?? '-'}</td>
+                  <td>
+                    <div className="admin-config-row-actions">
+                      <button
+                        type="button"
+                        className="button button-secondary"
+                        onClick={() => openEditDrawer(programme)}
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <DetailDrawer
+        title="Edit Programme"
+        open={drawerOpen}
+        onClose={closeDrawer}
+        footer={
+          <>
+            <button type="button" className="button button-secondary" onClick={closeDrawer}>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              form="programme-form"
+              className="button button-primary"
+              disabled={submitState === 'submitting'}
+            >
+              {submitState === 'submitting' ? 'Saving...' : 'Save'}
+            </button>
+          </>
+        }
+      >
+        <form id="programme-form" className="secretary-form-grid" onSubmit={handleSubmit}>
+          <div className="secretary-form-row">
+            <label>
+              Code
+              <input type="text" value={selectedProgramme?.code ?? ''} readOnly />
+            </label>
+            <label>
+              Classification
+              <input type="text" value={selectedProgramme?.classification ?? '-'} readOnly />
+            </label>
+          </div>
+          <label>
+            Name
+            <input type="text" value={selectedProgramme?.name ?? ''} readOnly />
+          </label>
+          <label>
+            AY category
+            <input
+              type="text"
+              value={selectedProgramme ? formatAyCategory(selectedProgramme.ayDateCategory) : ''}
+              readOnly
+            />
+          </label>
+          <label className="admin-config-checkbox-row">
+            <input
+              type="checkbox"
+              checked={formState.rYearRequired}
+              onChange={(event) =>
+                setFormState((prev) => ({ ...prev, rYearRequired: event.target.checked }))
+              }
+            />
+            R-year required
+          </label>
+          <label className="admin-config-checkbox-row">
+            <input
+              type="checkbox"
+              checked={formState.isSubspecialty}
+              onChange={(event) =>
+                setFormState((prev) => ({ ...prev, isSubspecialty: event.target.checked }))
+              }
+            />
+            Subspecialty R-year remapping
+          </label>
+          <label>
+            RDB alias
+            <input
+              type="text"
+              value={formState.rdbAlias}
+              onChange={(event) =>
+                setFormState((prev) => ({ ...prev, rdbAlias: event.target.value }))
+              }
+              maxLength={100}
+              placeholder="Leave blank when no alias is needed"
+            />
+          </label>
+          <div className="inline-callout callout-neutral">
+            Changes affect future parsing/uploads only. Existing parsed postings and targets are not recalculated.
+          </div>
+          {submitState === 'error' && feedback ? (
+            <div className="inline-callout callout-error">{feedback.message}</div>
+          ) : null}
+        </form>
+      </DetailDrawer>
+    </>
+  )
+}
+
+const LoaTypesSection = () => {
+  const { demoAdminId, demoAdminProgrammes, role } = useAppState()
+  const adminLevel = role === 'master_admin' ? 'master' : 'programme'
+  const [loaTypes, setLoaTypes] = useState<LoaType[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [drawerMode, setDrawerMode] = useState<'create' | 'edit'>('create')
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [selectedLoaType, setSelectedLoaType] = useState<LoaType | null>(null)
+  const [formState, setFormState] = useState<LoaTypeFormState>(emptyLoaTypeForm)
+  const [submitState, setSubmitState] = useState<'idle' | 'submitting' | 'error'>('idle')
+  const [feedback, setFeedback] = useState<Feedback>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [confirmingDeleteLoaType, setConfirmingDeleteLoaType] = useState<LoaType | null>(null)
+
+  const sortedLoaTypes = useMemo(
+    () => [...loaTypes].sort((left, right) => left.code.localeCompare(right.code)),
+    [loaTypes],
+  )
+
+  const reloadLoaTypes = useCallback(async () => {
+    setLoading(true)
+    setLoadError(null)
+    try {
+      const rows = await listLoaTypes({
+        adminId: demoAdminId,
+        adminProgrammes: demoAdminProgrammes,
+        adminLevel,
+      })
+      setLoaTypes(rows)
+    } catch (error) {
+      const message = error instanceof ApiRequestError ? error.message : 'Unable to load LOA types.'
+      setLoadError(message)
+      setLoaTypes([])
+    } finally {
+      setLoading(false)
+    }
+  }, [adminLevel, demoAdminId, demoAdminProgrammes])
+
+  useEffect(() => {
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        void reloadLoaTypes()
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [reloadLoaTypes])
+
+  const dismissFeedback = () => setFeedback(null)
+
+  const openCreateDrawer = () => {
+    setDrawerMode('create')
+    setSelectedLoaType(null)
+    setFormState(emptyLoaTypeForm)
+    setSubmitState('idle')
+    setFeedback(null)
+    setConfirmingDeleteLoaType(null)
+    setDrawerOpen(true)
+  }
+
+  const openEditDrawer = (loaType: LoaType) => {
+    setDrawerMode('edit')
+    setSelectedLoaType(loaType)
+    setFormState(toLoaTypeFormState(loaType))
+    setSubmitState('idle')
+    setFeedback(null)
+    setConfirmingDeleteLoaType(null)
+    setDrawerOpen(true)
+  }
+
+  const closeDrawer = () => {
+    if (submitState === 'submitting') {
+      return
+    }
+    setDrawerOpen(false)
+    setSelectedLoaType(null)
+    setFormState(emptyLoaTypeForm)
+    setSubmitState('idle')
+  }
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setSubmitState('submitting')
+    setFeedback(null)
+    const payload = {
+      code: formState.code.trim(),
+      description: formState.description.trim() || null,
+    }
+    try {
+      if (drawerMode === 'edit' && selectedLoaType) {
+        await updateLoaType({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+          id: selectedLoaType.id,
+          payload,
+        })
+        setFeedback({ tone: 'success', message: 'LOA type updated.' })
+      } else {
+        await createLoaType({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+          payload,
+        })
+        setFeedback({ tone: 'success', message: 'LOA type created.' })
+      }
+      await reloadLoaTypes()
+      setDrawerOpen(false)
+      setSelectedLoaType(null)
+      setFormState(emptyLoaTypeForm)
+      setSubmitState('idle')
+    } catch (error) {
+      setSubmitState('error')
+      setFeedback(
+        describeGenericConfigError(
+          error,
+          'Unable to save LOA type.',
+          'That LOA type code may already exist. Use edit on the existing row instead.',
+        ),
+      )
+    }
+  }
+
+  const requestDelete = (loaType: LoaType) => {
+    setFeedback(null)
+    setConfirmingDeleteLoaType(loaType)
+  }
+
+  const handleDelete = async (loaType: LoaType) => {
+    setDeletingId(loaType.id)
+    setFeedback(null)
+    try {
+      await deleteLoaType({
+        adminId: demoAdminId,
+        adminProgrammes: demoAdminProgrammes,
+        adminLevel,
+        id: loaType.id,
+      })
+      setFeedback({ tone: 'success', message: 'LOA type deleted.' })
+      await reloadLoaTypes()
+      setConfirmingDeleteLoaType(null)
+    } catch (error) {
+      setConfirmingDeleteLoaType(null)
+      setFeedback(describeGenericConfigError(error, 'Unable to delete LOA type.'))
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  return (
+    <>
+      <header className="admin-config-content-header">
+        <div>
+          <div className="admin-config-title-row">
+            <h2>LOA Types</h2>
+          </div>
+          <p>Maintain the validation catalogue used by future RDB uploads.</p>
+        </div>
+        <div className="admin-config-actions">
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => void reloadLoaTypes()}
+            disabled={loading}
+          >
+            <IconRefresh size={14} />
+            Retry
+          </button>
+          <button type="button" className="button button-primary" onClick={openCreateDrawer}>
+            <IconPlus size={14} />
+            New LOA Type
+          </button>
+        </div>
+      </header>
+
+      {feedback ? (
+        <div
+          className={`inline-callout ${feedback.tone === 'error' ? 'callout-error' : 'callout-success'} admin-config-feedback`}
+          role="status"
+        >
+          <div className="admin-config-feedback-content">
+            <strong>{feedback.message}</strong>
+            {feedback.description ? <p>{feedback.description}</p> : null}
+          </div>
+          <button
+            type="button"
+            className="admin-config-feedback-dismiss"
+            onClick={dismissFeedback}
+            aria-label="Dismiss feedback"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
+      {loading ? (
+        <div className="configuration-empty-note">Loading LOA types...</div>
+      ) : loadError ? (
+        <div className="configuration-empty-note">
+          <div>
+            <h3>Unable to load LOA types</h3>
+            <p>{loadError}</p>
+            <button type="button" className="button button-secondary" onClick={() => void reloadLoaTypes()}>
+              <IconRefresh size={14} />
+              Retry
+            </button>
+          </div>
+        </div>
+      ) : sortedLoaTypes.length === 0 ? (
+        <div className="configuration-empty-note">
+          <div>
+            <h3>No LOA types configured yet.</h3>
+            <p>Add catalogue rows for future RDB validation. Existing uploaded records are not changed.</p>
+          </div>
+        </div>
+      ) : (
+        <div className="admin-config-table-wrap">
+          <table className="admin-config-table loa-types-table">
+            <thead>
+              <tr>
+                <th>Code</th>
+                <th>Description</th>
+                <th>Updated</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedLoaTypes.map((loaType) => (
+                <Fragment key={loaType.id}>
+                  <tr>
+                    <td>{loaType.code}</td>
+                    <td>{loaType.description ?? '-'}</td>
+                    <td>{formatDate(loaType.updatedAt ?? loaType.createdAt)}</td>
+                    <td>
+                      <div className="admin-config-row-actions">
+                        <button
+                          type="button"
+                          className="button button-secondary"
+                          onClick={() => openEditDrawer(loaType)}
+                          disabled={deletingId === loaType.id}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="button button-ghost danger"
+                          onClick={() => requestDelete(loaType)}
+                          disabled={deletingId === loaType.id}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {confirmingDeleteLoaType?.id === loaType.id ? (
+                    <tr className="admin-config-confirm-row">
+                      <td colSpan={4}>
+                        <div
+                          className="admin-config-inline-confirm"
+                          role="group"
+                          aria-label={`Delete LOA type ${loaType.code}`}
+                        >
+                          <div>
+                            <strong>{`Delete LOA type "${loaType.code}"?`}</strong>
+                            <p>
+                              This removes it from the validation catalogue. Existing uploaded records
+                              are not changed.
+                            </p>
+                          </div>
+                          <div className="admin-config-confirm-actions">
+                            <button
+                              type="button"
+                              className="button button-secondary"
+                              onClick={() => setConfirmingDeleteLoaType(null)}
+                              disabled={deletingId === loaType.id}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              className="button button-ghost danger"
+                              onClick={() => void handleDelete(loaType)}
+                              disabled={deletingId === loaType.id}
+                            >
+                              {deletingId === loaType.id ? 'Deleting...' : 'Delete LOA type'}
+                            </button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <DetailDrawer
+        title={drawerMode === 'edit' ? 'Edit LOA Type' : 'New LOA Type'}
+        open={drawerOpen}
+        onClose={closeDrawer}
+        footer={
+          <>
+            <button type="button" className="button button-secondary" onClick={closeDrawer}>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              form="loa-type-form"
+              className="button button-primary"
+              disabled={submitState === 'submitting'}
+            >
+              {submitState === 'submitting' ? 'Saving...' : 'Save'}
+            </button>
+          </>
+        }
+      >
+        <form id="loa-type-form" className="secretary-form-grid" onSubmit={handleSubmit}>
+          <label>
+            Code
+            <input
+              type="text"
+              value={formState.code}
+              onChange={(event) => setFormState((prev) => ({ ...prev, code: event.target.value }))}
+              required
+              maxLength={50}
+            />
+          </label>
+          <label>
+            Description
+            <textarea
+              value={formState.description}
+              onChange={(event) =>
+                setFormState((prev) => ({ ...prev, description: event.target.value }))
+              }
+              maxLength={100}
+              rows={3}
+            />
+          </label>
+          {submitState === 'error' && feedback ? (
+            <div className="inline-callout callout-error">{feedback.message}</div>
+          ) : null}
+        </form>
+      </DetailDrawer>
+    </>
+  )
+}
+
 const PlaceholderConfigSection = ({
   activeSection,
   onNavigate,
@@ -1257,17 +1985,43 @@ const PlaceholderConfigSection = ({
 
 export const AdminConfigPage = () => {
   const navigate = useNavigate()
+  const { demoAdminProgrammes, role } = useAppState()
   const [activeSectionKey, setActiveSectionKey] = useState<ConfigSectionKey>('reporting-periods')
+  const visibleConfigSections = useMemo(
+    () =>
+      role === 'programme_pc'
+        ? configSections.filter((section) => programmePcConfigSections.includes(section.key))
+        : configSections,
+    [role],
+  )
   const activeSection =
-    configSections.find((section) => section.key === activeSectionKey) ?? configSections[0]
+    visibleConfigSections.find((section) => section.key === activeSectionKey) ??
+    visibleConfigSections[0] ??
+    configSections[0]
+  const subtitle =
+    role === 'programme_pc'
+      ? `Programme PC - ${demoAdminProgrammes.join(', ')}`
+      : 'Master Admin - All programmes'
+
+  useEffect(() => {
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled && !visibleConfigSections.some((section) => section.key === activeSectionKey)) {
+        setActiveSectionKey(visibleConfigSections[0]?.key ?? 'reporting-periods')
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [activeSectionKey, visibleConfigSections])
 
   return (
     <div className="page admin-config-page">
-      <PageHero title="Configuration" subtitle="Master Admin - All programmes" />
+      <PageHero title="Configuration" subtitle={subtitle} />
 
       <section className="admin-config-shell" aria-label="Configuration sections">
         <nav className="admin-config-nav-card" aria-label="Configuration navigation">
-          {configSections.map((section) => {
+          {visibleConfigSections.map((section) => {
             const isActive = section.key === activeSection.key
             return (
               <button
@@ -1292,6 +2046,10 @@ export const AdminConfigPage = () => {
             <ReportingPeriodsSection />
           ) : activeSection.key === 'public-holidays' ? (
             <PublicHolidaysSection />
+          ) : activeSection.key === 'programmes' ? (
+            <ProgrammesSection />
+          ) : activeSection.key === 'loa-types' ? (
+            <LoaTypesSection />
           ) : (
             <PlaceholderConfigSection
               activeSection={activeSection}

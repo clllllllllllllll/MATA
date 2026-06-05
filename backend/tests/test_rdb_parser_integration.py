@@ -1420,6 +1420,38 @@ def test_loa_refresher_unknown_loa_and_working_days_are_persisted() -> None:
     assert any("Unknown LOA type: Exam Leave" in str(item) for item in result.warnings)
 
 
+def test_custom_seeded_loa_type_is_accepted_without_unknown_warning() -> None:
+    session = FakeRDBSession()
+    session.loa_types.append({"code": "Exam Leave"})
+    period_id = uuid4()
+    file_bytes = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Pure LOA",
+                mcr="M11111A",
+                r_year="R2",
+                programme="DR",
+                jul="LOA (Exam Leave from 10-Jul-2025 to 12-Jul-2025 )",
+            ),
+        ]
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="rdb.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert session.resident_postings[0]["loa_type"] == "Exam Leave"
+    assert result.metadata["unknown_loa_types"] == []
+    assert not any("Unknown LOA type: Exam Leave" in str(item) for item in result.warnings)
+
+
 def test_ay25_spaced_hybrid_loa_working_cell_persists_without_unknown_loa_warning() -> None:
     session = FakeRDBSession()
     period_id = uuid4()

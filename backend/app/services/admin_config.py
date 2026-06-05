@@ -141,21 +141,29 @@ async def list_programmes(
     *,
     programme_scope: set[str],
     programme_code: str | None,
+    master_admin: bool = False,
 ) -> list[dict[str, Any]]:
-    codes = _scoped_programmes(
-        programme_scope=programme_scope,
-        programme_code=programme_code,
-    )
-    if not codes:
-        return []
-
     params: dict[str, Any] = {}
-    scope_clause = _scope_or_clause(
-        field_name="code",
-        values=codes,
-        params=params,
-        param_prefix="programme_code",
-    )
+    where_clauses: list[str] = []
+    if master_admin:
+        if programme_code is not None:
+            params["programme_code"] = programme_code
+            where_clauses.append("code = :programme_code")
+    else:
+        codes = _scoped_programmes(
+            programme_scope=programme_scope,
+            programme_code=programme_code,
+        )
+        if not codes:
+            return []
+        where_clauses.append(
+            _scope_or_clause(
+                field_name="code",
+                values=codes,
+                params=params,
+                param_prefix="programme_code",
+            )
+        )
     sql = f"""
         SELECT
             id,
@@ -169,14 +177,22 @@ async def list_programmes(
             created_at,
             updated_at
         FROM programmes
-        WHERE {scope_clause}
-        ORDER BY code ASC
     """
+    if where_clauses:
+        sql += " WHERE " + " AND ".join(where_clauses)
+    sql += " ORDER BY code ASC"
     result = await db.execute(text(sql), params)
     return list(result.mappings().all())
 
 
-async def list_loa_types(db: AsyncSession) -> list[dict[str, Any]]:
+async def list_loa_types(
+    db: AsyncSession,
+    *,
+    programme_scope: set[str],
+) -> list[dict[str, Any]]:
+    if not programme_scope:
+        return []
+
     result = await db.execute(
         text(
             """
@@ -281,12 +297,14 @@ async def list_weekend_exceptions(
     programme_scope: set[str],
     programme_code: str | None,
     posting_code: str | None,
+    master_admin: bool = False,
 ) -> list[dict[str, Any]]:
-    _validate_programme_filter(
-        programme_scope=programme_scope,
-        programme_code=programme_code,
-    )
-    if programme_code is None and not programme_scope:
+    if not master_admin:
+        _validate_programme_filter(
+            programme_scope=programme_scope,
+            programme_code=programme_code,
+        )
+    if programme_code is None and not programme_scope and not master_admin:
         return []
     params: dict[str, Any] = {}
     where_clauses: list[str] = []
@@ -294,7 +312,7 @@ async def list_weekend_exceptions(
     if programme_code is not None:
         params["programme_code"] = programme_code
         where_clauses.append("programme_code = :programme_code")
-    elif programme_scope:
+    elif programme_scope and not master_admin:
         scoped_codes = sorted(programme_scope)
         scope_clause = _scope_or_clause(
             field_name="programme_code",
@@ -1381,6 +1399,7 @@ async def update_programme(
     r_year_required: bool | None,
     is_subspecialty: bool | None,
     rdb_alias: str | None,
+    rdb_alias_is_set: bool = False,
 ) -> dict[str, Any]:
     _require_programme_in_scope_for_write(
         programme_scope=programme_scope,
@@ -1416,7 +1435,7 @@ async def update_programme(
             "programme_code": programme_code,
             "r_year_required": r_year_required,
             "is_subspecialty": is_subspecialty,
-            "rdb_alias_is_set": rdb_alias is not None,
+            "rdb_alias_is_set": rdb_alias_is_set,
             "rdb_alias": rdb_alias,
         },
     )
@@ -1432,9 +1451,11 @@ async def update_programme(
 async def create_loa_type(
     db: AsyncSession,
     *,
+    programme_scope: set[str],
     code: str,
     description: str | None,
 ) -> dict[str, Any]:
+    _require_non_empty_admin_scope(programme_scope)
     try:
         result = await db.execute(
             text(
@@ -1458,10 +1479,12 @@ async def create_loa_type(
 async def update_loa_type(
     db: AsyncSession,
     *,
+    programme_scope: set[str],
     loa_type_id: UUID,
-    code: str | None,
+    code: str,
     description: str | None,
 ) -> dict[str, Any]:
+    _require_non_empty_admin_scope(programme_scope)
     try:
         result = await db.execute(
             text(
@@ -1469,10 +1492,7 @@ async def update_loa_type(
                 UPDATE loa_types
                 SET
                     code = COALESCE(:code, code),
-                    description = CASE
-                        WHEN :description_is_set THEN :description
-                        ELSE description
-                    END,
+                    description = :description,
                     updated_at = now()
                 WHERE id = :id
                 RETURNING id, code, description, created_at, updated_at
@@ -1481,7 +1501,6 @@ async def update_loa_type(
             {
                 "id": str(loa_type_id),
                 "code": code,
-                "description_is_set": description is not None,
                 "description": description,
             },
         )
@@ -1500,8 +1519,10 @@ async def update_loa_type(
 async def delete_loa_type(
     db: AsyncSession,
     *,
+    programme_scope: set[str],
     loa_type_id: UUID,
 ) -> None:
+    _require_non_empty_admin_scope(programme_scope)
     result = await db.execute(
         text("DELETE FROM loa_types WHERE id = :id"),
         {"id": str(loa_type_id)},
@@ -1965,13 +1986,14 @@ async def create_weekend_exception(
     session_name_pattern: str | None,
     mutates_to_session_type_id: UUID | None,
     adjusted_duration_hours: Decimal | None,
+    master_admin: bool = False,
 ) -> dict[str, Any]:
-    if programme_code is not None:
+    if not master_admin and programme_code is not None:
         _require_programme_in_scope_for_write(
             programme_scope=programme_scope,
             programme_code=programme_code,
         )
-    else:
+    elif not master_admin:
         _validate_programme_scope_for_write(programme_scope)
     if posting_code and not await _posting_code_exists(db, posting_code):
         _raise_validation(f"Unknown posting code: {posting_code}")
@@ -2053,6 +2075,7 @@ async def update_weekend_exception(
     session_name_pattern: str | None,
     mutates_to_session_type_id: UUID | None,
     adjusted_duration_hours: Decimal | None,
+    master_admin: bool = False,
 ) -> dict[str, Any]:
     existing = await db.execute(
         text("SELECT id, programme_code FROM weekend_exceptions WHERE id = :id"),
@@ -2061,14 +2084,14 @@ async def update_weekend_exception(
     row = existing.mappings().one_or_none()
     if row is None:
         _raise_not_found("Weekend exception not found")
-    if row["programme_code"] is not None:
+    if not master_admin and row["programme_code"] is not None:
         _require_programme_in_scope_for_write(
             programme_scope=programme_scope,
             programme_code=row["programme_code"],
         )
-    else:
+    elif not master_admin:
         _validate_programme_scope_for_write(programme_scope)
-    if programme_code is not None:
+    if not master_admin and programme_code is not None:
         _require_programme_in_scope_for_write(
             programme_scope=programme_scope,
             programme_code=programme_code,
@@ -2136,6 +2159,7 @@ async def delete_weekend_exception(
     *,
     programme_scope: set[str],
     weekend_exception_id: UUID,
+    master_admin: bool = False,
 ) -> None:
     existing = await db.execute(
         text("SELECT id, programme_code FROM weekend_exceptions WHERE id = :id"),
@@ -2144,12 +2168,12 @@ async def delete_weekend_exception(
     row = existing.mappings().one_or_none()
     if row is None:
         _raise_not_found("Weekend exception not found")
-    if row["programme_code"] is not None:
+    if not master_admin and row["programme_code"] is not None:
         _require_programme_in_scope_for_write(
             programme_scope=programme_scope,
             programme_code=row["programme_code"],
         )
-    else:
+    elif not master_admin:
         _validate_programme_scope_for_write(programme_scope)
     await db.execute(
         text("DELETE FROM weekend_exceptions WHERE id = :id"),

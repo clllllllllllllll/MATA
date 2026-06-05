@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -18,6 +19,19 @@ from app.errors import (
 logger = logging.getLogger(__name__)
 
 
+def _to_json_safe_validation_error(value: Any) -> Any:
+    if isinstance(value, BaseException):
+        return str(value)
+    if isinstance(value, dict):
+        return {
+            str(key): _to_json_safe_validation_error(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_to_json_safe_validation_error(item) for item in value]
+    return value
+
+
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
     async def api_error_handler(_: Request, exc: ApiError) -> JSONResponse:
@@ -28,7 +42,9 @@ def install_error_handlers(app: FastAPI) -> None:
         _: Request,
         exc: RequestValidationError,
     ) -> JSONResponse:
-        validation_errors = exc.errors()
+        validation_errors = [
+            _to_json_safe_validation_error(item) for item in exc.errors()
+        ]
         readable_errors: list[str] = []
         for item in validation_errors:
             location = ".".join(str(part) for part in item.get("loc", []))

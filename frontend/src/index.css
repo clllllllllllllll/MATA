@@ -2358,29 +2358,41 @@ button:disabled,
 }
 
 .reporting-periods-table,
-.public-holidays-table {
+.public-holidays-table,
+.programmes-table,
+.loa-types-table {
   table-layout: fixed;
 }
 
 .reporting-periods-table th,
-.public-holidays-table th {
+.public-holidays-table th,
+.programmes-table th,
+.loa-types-table th {
   text-align: center;
 }
 
 .public-holidays-table th:nth-child(3),
-.public-holidays-table td:nth-child(3) {
+.public-holidays-table td:nth-child(3),
+.programmes-table th:nth-child(2),
+.programmes-table td:nth-child(2),
+.loa-types-table th:nth-child(2),
+.loa-types-table td:nth-child(2) {
   text-align: left;
 }
 
 .reporting-periods-table td,
-.public-holidays-table td {
+.public-holidays-table td,
+.programmes-table td,
+.loa-types-table td {
   padding-block: 14px;
   text-align: center;
   vertical-align: middle;
 }
 
 .reporting-periods-table td:first-child,
-.public-holidays-table td:first-child {
+.public-holidays-table td:first-child,
+.programmes-table td:first-child,
+.loa-types-table td:first-child {
   width: auto;
 }
 
@@ -2391,7 +2403,9 @@ button:disabled,
 }
 
 .reporting-periods-table .admin-config-row-actions,
-.public-holidays-table .admin-config-row-actions {
+.public-holidays-table .admin-config-row-actions,
+.programmes-table .admin-config-row-actions,
+.loa-types-table .admin-config-row-actions {
   justify-content: center;
   min-width: 0;
   flex-wrap: nowrap;
@@ -2401,8 +2415,54 @@ button:disabled,
 .reporting-periods-table th:last-child,
 .reporting-periods-table tr:not(.admin-config-confirm-row) td:last-child,
 .public-holidays-table th:last-child,
-.public-holidays-table tr:not(.admin-config-confirm-row) td:last-child {
+.public-holidays-table tr:not(.admin-config-confirm-row) td:last-child,
+.programmes-table th:last-child,
+.programmes-table tr:not(.admin-config-confirm-row) td:last-child,
+.loa-types-table th:last-child,
+.loa-types-table tr:not(.admin-config-confirm-row) td:last-child {
   width: 180px;
+}
+
+.programmes-table th:first-child,
+.programmes-table td:first-child {
+  width: 86px;
+}
+
+.programmes-table th:nth-child(3),
+.programmes-table td:nth-child(3) {
+  width: 150px;
+}
+
+.programmes-table th:nth-child(4),
+.programmes-table td:nth-child(4),
+.programmes-table th:nth-child(5),
+.programmes-table td:nth-child(5) {
+  width: 126px;
+}
+
+.loa-types-table th:first-child,
+.loa-types-table td:first-child {
+  width: 220px;
+  text-align: left;
+}
+
+.loa-types-table th:nth-child(3),
+.loa-types-table td:nth-child(3) {
+  width: 150px;
+}
+
+.admin-config-checkbox-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.admin-config-checkbox-row input {
+  width: 16px;
+  height: 16px;
 }
 
 .admin-config-confirm-row td {

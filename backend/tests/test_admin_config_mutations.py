@@ -308,8 +308,7 @@ class FakeMutationSession:
                 raise IntegrityError("update loa_types", payload, None)
             if payload.get("code") is not None:
                 row["code"] = payload["code"]
-            if payload.get("description_is_set"):
-                row["description"] = payload.get("description")
+            row["description"] = payload.get("description")
             row["updated_at"] = self.now
             return _FakeMutationResult(rows=[row])
 
@@ -544,6 +543,12 @@ def _admin_headers(scope: str | None = "DR,GRM") -> dict[str, str]:
     return headers
 
 
+def _master_admin_headers(scope: str | None = "DR,GRM") -> dict[str, str]:
+    headers = _admin_headers(scope)
+    headers["X-Admin-Level"] = "master"
+    return headers
+
+
 def test_admin_only_mutation_access_rejects_non_admin() -> None:
     client = _build_client_with_session(FakeMutationSession())
     response = client.post(
@@ -575,7 +580,7 @@ def test_all_phase3_mutation_endpoints_reject_non_admin() -> None:
         ("DELETE", f"/admin/public-holidays/{uuid4()}", None),
         ("PUT", "/admin/programmes/DR", {"r_year_required": True}),
         ("POST", "/admin/loa-types", {"code": "Study Leave", "description": "x"}),
-        ("PUT", f"/admin/loa-types/{uuid4()}", {"description": "x"}),
+        ("PUT", f"/admin/loa-types/{uuid4()}", {"code": "Study Leave", "description": "x"}),
         ("DELETE", f"/admin/loa-types/{uuid4()}", None),
         ("POST", "/admin/multi-posting-rules", {"programme_code": "DR", "posting_code_1": "TTSHDR", "posting_code_2": "KTPHDR", "rule_type": "combine", "combined_label": "TTSHDR & KTPHDR"}),
         ("PUT", f"/admin/multi-posting-rules/{uuid4()}", {"programme_code": "DR", "posting_code_1": "TTSHDR", "posting_code_2": "KTPHDR", "rule_type": "combine", "combined_label": "TTSHDR & KTPHDR"}),
@@ -652,7 +657,7 @@ def test_reporting_period_create_update_delete_crud() -> None:
     client = _build_client_with_session(session)
     created = client.post(
         "/admin/reporting-periods",
-        headers=_admin_headers("DR"),
+        headers=_master_admin_headers("DR"),
         json={
             "label": "Jul - Dec 2026",
             "start_date": "2026-07-01",
@@ -666,7 +671,7 @@ def test_reporting_period_create_update_delete_crud() -> None:
 
     duplicate = client.post(
         "/admin/reporting-periods",
-        headers=_admin_headers("DR"),
+        headers=_master_admin_headers("DR"),
         json={
             "label": "Jul - Dec 2026",
             "start_date": "2026-07-01",
@@ -677,7 +682,7 @@ def test_reporting_period_create_update_delete_crud() -> None:
 
     updated = client.put(
         f"/admin/reporting-periods/{body['id']}",
-        headers=_admin_headers("DR"),
+        headers=_master_admin_headers("DR"),
         json={"label": "H2 2026", "status": "closed"},
     )
     assert updated.status_code == 200
@@ -686,7 +691,7 @@ def test_reporting_period_create_update_delete_crud() -> None:
 
     deleted = client.delete(
         f"/admin/reporting-periods/{body['id']}",
-        headers=_admin_headers("DR"),
+        headers=_master_admin_headers("DR"),
     )
     assert deleted.status_code == 204
 
@@ -704,7 +709,7 @@ def test_reporting_period_delete_returns_dependency_counts() -> None:
 
     response = client.delete(
         f"/admin/reporting-periods/{period_id}",
-        headers=_admin_headers("DR"),
+        headers=_master_admin_headers("DR"),
     )
 
     assert response.status_code == 409
@@ -726,12 +731,12 @@ def test_public_holiday_upsert_is_idempotent() -> None:
         "day_of_week": "Sunday",
         "year": 2026,
     }
-    first = client.post("/admin/public-holidays", headers=_admin_headers("DR"), json=payload)
+    first = client.post("/admin/public-holidays", headers=_master_admin_headers("DR"), json=payload)
     assert first.status_code == 200
     first_id = first.json()["id"]
 
     payload["name"] = "National Day Updated"
-    second = client.post("/admin/public-holidays", headers=_admin_headers("DR"), json=payload)
+    second = client.post("/admin/public-holidays", headers=_master_admin_headers("DR"), json=payload)
     assert second.status_code == 200
     assert second.json()["id"] == first_id
     assert second.json()["name"] == "National Day Updated"
@@ -743,7 +748,7 @@ def test_public_holiday_update_recomputes_day_and_year() -> None:
     client = _build_client_with_session(FakeMutationSession())
     created = client.post(
         "/admin/public-holidays",
-        headers=_admin_headers("DR"),
+        headers=_master_admin_headers("DR"),
         json={
             "holiday_date": "2026-08-09",
             "name": "National Day",
@@ -758,7 +763,7 @@ def test_public_holiday_update_recomputes_day_and_year() -> None:
 
     updated = client.put(
         f"/admin/public-holidays/{holiday_id}",
-        headers=_admin_headers("DR"),
+        headers=_master_admin_headers("DR"),
         json={
             "holiday_date": "2026-08-10",
             "name": "National Day observed",
@@ -775,18 +780,29 @@ def test_public_holiday_update_recomputes_day_and_year() -> None:
     assert body["year"] == 2026
 
 
+def test_public_holiday_empty_name_rejected() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+    response = client.post(
+        "/admin/public-holidays",
+        headers=_master_admin_headers("DR"),
+        json={"holiday_date": "2026-08-09", "name": "   "},
+    )
+
+    assert response.status_code == 422
+
+
 def test_public_holiday_delete_succeeds() -> None:
     client = _build_client_with_session(FakeMutationSession())
     created = client.post(
         "/admin/public-holidays",
-        headers=_admin_headers("DR"),
+        headers=_master_admin_headers("DR"),
         json={"holiday_date": "2026-08-09", "name": "National Day"},
     )
     assert created.status_code == 200
 
     deleted = client.delete(
         f"/admin/public-holidays/{created.json()['id']}",
-        headers=_admin_headers("DR"),
+        headers=_master_admin_headers("DR"),
     )
 
     assert deleted.status_code == 204
@@ -802,13 +818,222 @@ def test_null_scope_cannot_mutate_public_holidays() -> None:
     assert response.status_code == 403
 
 
+def test_null_scope_cannot_mutate_loa_types() -> None:
+    session = FakeMutationSession()
+    client = _build_client_with_session(session)
+    loa_id = str(uuid4())
+
+    create_response = client.post(
+        "/admin/loa-types",
+        headers=_admin_headers(scope=None),
+        json={"code": "Study Leave", "description": "Academic study leave"},
+    )
+    update_response = client.put(
+        f"/admin/loa-types/{loa_id}",
+        headers=_admin_headers(scope=None),
+        json={"code": "Study Leave", "description": "Academic study leave"},
+    )
+    delete_response = client.delete(
+        f"/admin/loa-types/{loa_id}",
+        headers=_admin_headers(scope=None),
+    )
+
+    assert create_response.status_code == 403
+    assert update_response.status_code == 403
+    assert delete_response.status_code == 403
+
+
+def test_programme_pc_cannot_mutate_global_config_endpoints() -> None:
+    session = FakeMutationSession()
+    client = _build_client_with_session(session)
+    period_id = session.reporting_periods[0]["id"]
+    global_type_id = session.global_session_types[0]["id"]
+
+    attempts = [
+        client.post(
+            "/admin/reporting-periods",
+            headers=_admin_headers("DR"),
+            json={"label": "Jul - Dec 2026", "start_date": "2026-07-01", "end_date": "2026-12-31"},
+        ),
+        client.post(
+            "/admin/public-holidays",
+            headers=_admin_headers("DR"),
+            json={"holiday_date": "2026-08-09", "name": "National Day"},
+        ),
+        client.put(
+            "/admin/programmes/DR",
+            headers=_admin_headers("DR"),
+            json={"r_year_required": False},
+        ),
+        client.post(
+            "/admin/loa-types",
+            headers=_admin_headers("DR"),
+            json={"code": "Study Leave", "description": "Academic study leave"},
+        ),
+        client.post(
+            "/admin/weekend-exceptions",
+            headers=_admin_headers("DR"),
+            json={"programme_code": "DR", "posting_code": "TTSHDR", "day_type": "sat"},
+        ),
+        client.put(
+            f"/admin/global-session-types/{global_type_id}",
+            headers=_admin_headers("DR"),
+            json={"is_active": False},
+        ),
+        client.delete(f"/admin/reporting-periods/{period_id}", headers=_admin_headers("DR")),
+    ]
+
+    assert [response.status_code for response in attempts] == [403, 403, 403, 403, 403, 403, 403]
+
+
+def test_programme_update_respects_scope_and_editable_fields() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+    response = client.put(
+        "/admin/programmes/DR",
+        headers=_master_admin_headers("DR"),
+        json={
+            "r_year_required": False,
+            "is_subspecialty": True,
+            "rdb_alias": "Diagnostic Radiology Alias",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["code"] == "DR"
+    assert body["name"] == "Diagnostic Radiology"
+    assert body["classification"] == "senior"
+    assert body["ay_date_category"] == "non_im_subspec"
+    assert body["r_year_required"] is False
+    assert body["is_subspecialty"] is True
+    assert body["rdb_alias"] == "Diagnostic Radiology Alias"
+
+
+def test_programme_update_can_clear_rdb_alias_and_persist_false_booleans() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+    set_response = client.put(
+        "/admin/programmes/DR",
+        headers=_master_admin_headers("DR"),
+        json={
+            "r_year_required": False,
+            "is_subspecialty": True,
+            "rdb_alias": "Diagnostic Radiology Alias",
+        },
+    )
+    assert set_response.status_code == 200
+    assert set_response.json()["rdb_alias"] == "Diagnostic Radiology Alias"
+
+    clear_response = client.put(
+        "/admin/programmes/DR",
+        headers=_master_admin_headers("DR"),
+        json={
+            "r_year_required": False,
+            "is_subspecialty": False,
+            "rdb_alias": None,
+        },
+    )
+    assert clear_response.status_code == 200
+    body = clear_response.json()
+    assert body["rdb_alias"] is None
+    assert body["r_year_required"] is False
+    assert body["is_subspecialty"] is False
+
+    set_again = client.put(
+        "/admin/programmes/DR",
+        headers=_master_admin_headers("DR"),
+        json={"rdb_alias": "Alias to trim"},
+    )
+    assert set_again.status_code == 200
+
+    whitespace_clear = client.put(
+        "/admin/programmes/DR",
+        headers=_master_admin_headers("DR"),
+        json={"rdb_alias": "   "},
+    )
+    assert whitespace_clear.status_code == 200
+    assert whitespace_clear.json()["rdb_alias"] is None
+
+
+def test_programme_update_out_of_scope_rejected() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+    response = client.put(
+        "/admin/programmes/GRM",
+        headers=_admin_headers("DR"),
+        json={"r_year_required": True},
+    )
+
+    assert response.status_code == 403
+
+
 def test_programme_locked_fields_return_422() -> None:
     client = _build_client_with_session(FakeMutationSession())
     response = client.put(
         "/admin/programmes/DR",
-        headers=_admin_headers("DR"),
+        headers=_master_admin_headers("DR"),
         json={"code": "X", "r_year_required": False},
     )
+    assert response.status_code == 422
+
+
+def test_reporting_period_update_rejects_empty_required_values() -> None:
+    session = FakeMutationSession()
+    client = _build_client_with_session(session)
+    period_id = session.reporting_periods[0]["id"]
+
+    label_response = client.put(
+        f"/admin/reporting-periods/{period_id}",
+        headers=_master_admin_headers("DR"),
+        json={"label": "   "},
+    )
+    assert label_response.status_code == 422
+
+    status_response = client.put(
+        f"/admin/reporting-periods/{period_id}",
+        headers=_master_admin_headers("DR"),
+        json={"status": "paused"},
+    )
+    assert status_response.status_code == 422
+
+
+def test_loa_type_crud_and_duplicate_conflict() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+
+    created = client.post(
+        "/admin/loa-types",
+        headers=_master_admin_headers("DR"),
+        json={"code": "Study Leave", "description": "Academic study leave"},
+    )
+    duplicate = client.post(
+        "/admin/loa-types",
+        headers=_master_admin_headers("DR"),
+        json={"code": "Study Leave", "description": "Duplicate"},
+    )
+
+    assert created.status_code == 200
+    assert duplicate.status_code == 409
+
+    loa_id = created.json()["id"]
+    updated = client.put(
+        f"/admin/loa-types/{loa_id}",
+        headers=_master_admin_headers("DR"),
+        json={"code": "Exam Leave", "description": ""},
+    )
+    deleted = client.delete(f"/admin/loa-types/{loa_id}", headers=_master_admin_headers("DR"))
+
+    assert updated.status_code == 200
+    assert updated.json()["code"] == "Exam Leave"
+    assert updated.json()["description"] is None
+    assert deleted.status_code == 204
+
+
+def test_loa_type_empty_code_rejected() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+    response = client.post(
+        "/admin/loa-types",
+        headers=_master_admin_headers("DR"),
+        json={"code": "   ", "description": "Blank code should fail"},
+    )
+
     assert response.status_code == 422
 
 
@@ -907,7 +1132,7 @@ def test_global_session_type_delete_returns_409_when_referenced() -> None:
     target_id = session.global_session_types[0]["id"]
     response = client.delete(
         f"/admin/global-session-types/{target_id}",
-        headers=_admin_headers("DR"),
+        headers=_master_admin_headers("DR"),
     )
     assert response.status_code == 409
 
@@ -939,7 +1164,7 @@ def test_cache_invalidation_called_after_successful_mutation(monkeypatch) -> Non
     client = _build_client_with_session(FakeMutationSession())
     response = client.post(
         "/admin/loa-types",
-        headers=_admin_headers("DR"),
+        headers=_master_admin_headers("DR"),
         json={"code": "Study Leave", "description": "Academic study leave"},
     )
     assert response.status_code == 200
@@ -957,7 +1182,7 @@ def test_mutation_responses_are_not_cached(monkeypatch) -> None:
     client = _build_client_with_session(FakeMutationSession())
     response = client.post(
         "/admin/loa-types",
-        headers=_admin_headers("DR"),
+        headers=_master_admin_headers("DR"),
         json={"code": "Family Care Leave", "description": "Family care leave"},
     )
     assert response.status_code == 200

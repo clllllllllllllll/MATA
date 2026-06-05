@@ -21,6 +21,9 @@ const roleNameById: Record<AppRole, string> = {
 }
 
 const roleFromPathname = (pathname: string): AppRole | null => {
+  if (pathname === '/admin/config' || pathname.startsWith('/admin/config/')) {
+    return null
+  }
   if (pathname.startsWith('/secretary')) {
     return 'secretary'
   }
@@ -49,7 +52,12 @@ export const AppShell = () => {
   const activeRole = forcedRole ?? role
 
   const currentRoleOption = roleOptions.find((option) => option.id === activeRole) ?? roleOptions[0]
-  const breadcrumbs = breadcrumbMap[location.pathname] ?? [currentRoleOption.label]
+  const breadcrumbs =
+    activeRole === 'programme_pc' && location.pathname.startsWith('/admin/config')
+      ? location.pathname === '/admin/config/multi'
+        ? ['Programme PC', 'Configuration', 'Multi-Posting Rules']
+        : ['Programme PC', 'Configuration']
+      : breadcrumbMap[location.pathname] ?? [currentRoleOption.label]
   const unresolvedWarningsCount = warnings.filter((warning) => warning.status === 'unresolved').length
   const visibleNavItems = navItems.filter((item) => item.roles.includes(activeRole))
 

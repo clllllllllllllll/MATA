@@ -325,9 +325,17 @@ class LoaTypeCreateRequest(BaseModel):
     code: str = Field(min_length=1, max_length=50)
     description: str | None = Field(default=None, max_length=100)
 
-    @field_validator("code", "description")
+    @field_validator("code")
     @classmethod
-    def _trim_string(cls, value: str | None) -> str | None:
+    def _trim_code(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("Code is required")
+        return trimmed
+
+    @field_validator("description")
+    @classmethod
+    def _trim_description(cls, value: str | None) -> str | None:
         if value is None:
             return None
         trimmed = value.strip()
@@ -337,12 +345,20 @@ class LoaTypeCreateRequest(BaseModel):
 class LoaTypeUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    code: str | None = Field(default=None, min_length=1, max_length=50)
+    code: str = Field(min_length=1, max_length=50)
     description: str | None = Field(default=None, max_length=100)
 
-    @field_validator("code", "description")
+    @field_validator("code")
     @classmethod
-    def _trim_string(cls, value: str | None) -> str | None:
+    def _trim_code(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("Code is required")
+        return trimmed
+
+    @field_validator("description")
+    @classmethod
+    def _trim_description(cls, value: str | None) -> str | None:
         if value is None:
             return None
         trimmed = value.strip()

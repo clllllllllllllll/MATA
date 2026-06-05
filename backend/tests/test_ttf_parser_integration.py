@@ -42,6 +42,28 @@ class _FakeMappingResult:
 class FakeTTFSession:
     def __init__(self) -> None:
         self.lock_available = True
+        self.programmes: list[dict] = [
+            {
+                "code": "DR",
+                "r_year_required": True,
+                "is_subspecialty": False,
+            },
+            {
+                "code": "GERI",
+                "r_year_required": False,
+                "is_subspecialty": False,
+            },
+            {
+                "code": "XALL",
+                "r_year_required": False,
+                "is_subspecialty": False,
+            },
+            {
+                "code": "XSS",
+                "r_year_required": True,
+                "is_subspecialty": True,
+            },
+        ]
         self.session_types: dict[str, dict] = {}
         self.posting_codes: dict[str, dict] = {}
         self.teaching_targets: list[dict] = []
@@ -59,6 +81,9 @@ class FakeTTFSession:
 
         if "pg_try_advisory_xact_lock" in sql:
             return _FakeScalarResult(self.lock_available)
+
+        if "FROM programmes" in sql:
+            return _FakeMappingResult(self.programmes)
 
         if "INSERT INTO session_types" in sql:
             name = params["name"]
@@ -283,6 +308,45 @@ def test_valid_sample_persists_targets_session_types_posting_codes_and_catalogue
     assert "Department Learning Events [1h]" in session.session_types
     assert "DormantCode123" in session.posting_codes
     assert "DormantCode123" in result.metadata["posting_codes_added"]
+
+
+def test_db_programme_config_drives_all_and_subspecialty_years_for_custom_programmes() -> None:
+    session = FakeTTFSession()
+    period_id = uuid4()
+    all_result = _run(
+        parse_ttf_upload(
+            file_bytes=_ttf_bytes(
+                [_base_row(programme="XALL", r_year="R2,R3", details="All Topic")]
+            ),
+            original_filename="xall.xlsx",
+            reporting_period_id=period_id,
+            programme_code="XALL",
+            db_session=session,
+        )
+    )
+    ss_result = _run(
+        parse_ttf_upload(
+            file_bytes=_ttf_bytes(
+                [_base_row(programme="XSS", r_year="R4, R5, R6", details="SS Topic")]
+            ),
+            original_filename="xss.xlsx",
+            reporting_period_id=period_id,
+            programme_code="XSS",
+            db_session=session,
+        )
+    )
+
+    assert all_result.errors == []
+    assert ss_result.errors == []
+    assert [
+        row["r_year"] for row in session.teaching_targets if row["programme_code"] == "XALL"
+    ] == ["ALL"]
+    assert [
+        row["r_year"] for row in session.catalogue_rows if row["programme_code"] == "XALL"
+    ] == ["ALL"]
+    assert [
+        row["r_year"] for row in session.teaching_targets if row["programme_code"] == "XSS"
+    ] == ["SS1", "SS2", "SS3"]
 
 
 def test_reupload_replaces_only_selected_programme_period_scope() -> None:

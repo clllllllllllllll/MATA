@@ -68,12 +68,14 @@ except Exception:
 class AdminContext:
     user_id: UUID
     programme_scope: set[str]
+    is_master_admin: bool
 
 
 async def require_admin_context(
     x_user_role: Annotated[str | None, Header(alias="X-User-Role")] = None,
     x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     x_user_programme: Annotated[str | None, Header(alias="X-User-Programme")] = None,
+    x_admin_level: Annotated[str | None, Header(alias="X-Admin-Level")] = None,
 ) -> AdminContext:
     if x_user_role != "admin":
         raise ApiError(
@@ -97,9 +99,25 @@ async def require_admin_context(
             error_code=ErrorCode.UNAUTHORIZED.value,
         ) from exc
 
+    admin_level = (x_admin_level or "").strip().lower()
     return AdminContext(
-        user_id=user_id, programme_scope=normalise_scope_values(x_user_programme)
+        user_id=user_id,
+        programme_scope=normalise_scope_values(x_user_programme),
+        is_master_admin=admin_level in {"master", "master_admin"},
     )
+
+
+def _require_master_admin(admin_context: AdminContext) -> None:
+    if not admin_context.is_master_admin:
+        raise ApiError(
+            status_code=403,
+            detail="Forbidden - master admin access required",
+            error_code=ErrorCode.FORBIDDEN.value,
+        )
+
+
+def _global_config_scope(admin_context: AdminContext) -> set[str]:
+    return admin_context.programme_scope or {"__master_admin__"}
 
 
 def _require_programme_in_scope(admin_context: AdminContext, programme_code: str) -> None:
@@ -460,11 +478,12 @@ async def list_reporting_periods(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> list[ReportingPeriodResponse]:
+    _require_master_admin(admin_context)
     if db is None:
         return []
     rows = await admin_config.list_reporting_periods(
         db,
-        programme_scope=admin_context.programme_scope,
+        programme_scope=_global_config_scope(admin_context),
         reporting_period_id=reporting_period_id,
     )
     return [ReportingPeriodResponse.model_validate(row) for row in rows]
@@ -476,6 +495,7 @@ async def create_reporting_period(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> ReportingPeriodResponse:
+    _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
             status_code=500,
@@ -484,7 +504,7 @@ async def create_reporting_period(
         )
     row = await admin_config.create_reporting_period(
         db,
-        programme_scope=admin_context.programme_scope,
+        programme_scope=_global_config_scope(admin_context),
         label=payload.label,
         start_date=payload.start_date,
         end_date=payload.end_date,
@@ -499,6 +519,7 @@ async def update_reporting_period(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> ReportingPeriodResponse:
+    _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
             status_code=500,
@@ -507,7 +528,7 @@ async def update_reporting_period(
         )
     row = await admin_config.update_reporting_period(
         db,
-        programme_scope=admin_context.programme_scope,
+        programme_scope=_global_config_scope(admin_context),
         reporting_period_id=reporting_period_id,
         label=payload.label,
         start_date=payload.start_date,
@@ -523,6 +544,7 @@ async def delete_reporting_period(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> None:
+    _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
             status_code=500,
@@ -531,7 +553,7 @@ async def delete_reporting_period(
         )
     await admin_config.delete_reporting_period(
         db,
-        programme_scope=admin_context.programme_scope,
+        programme_scope=_global_config_scope(admin_context),
         reporting_period_id=reporting_period_id,
     )
 
@@ -542,11 +564,12 @@ async def list_public_holidays(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> list[PublicHolidayResponse]:
+    _require_master_admin(admin_context)
     if db is None:
         return []
     rows = await admin_config.list_public_holidays(
         db,
-        programme_scope=admin_context.programme_scope,
+        programme_scope=_global_config_scope(admin_context),
         year=year,
     )
     return [PublicHolidayResponse.model_validate(row) for row in rows]
@@ -558,6 +581,7 @@ async def upsert_public_holiday(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> PublicHolidayResponse:
+    _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
             status_code=500,
@@ -566,7 +590,7 @@ async def upsert_public_holiday(
         )
     row = await admin_config.upsert_public_holiday(
         db,
-        programme_scope=admin_context.programme_scope,
+        programme_scope=_global_config_scope(admin_context),
         holiday_date=payload.holiday_date,
         name=payload.name,
         day_of_week=payload.day_of_week,
@@ -582,6 +606,7 @@ async def update_public_holiday(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> PublicHolidayResponse:
+    _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
             status_code=500,
@@ -590,7 +615,7 @@ async def update_public_holiday(
         )
     row = await admin_config.update_public_holiday(
         db,
-        programme_scope=admin_context.programme_scope,
+        programme_scope=_global_config_scope(admin_context),
         holiday_id=holiday_id,
         holiday_date=payload.holiday_date,
         name=payload.name,
@@ -606,6 +631,7 @@ async def delete_public_holiday(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> None:
+    _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
             status_code=500,
@@ -614,7 +640,7 @@ async def delete_public_holiday(
         )
     await admin_config.delete_public_holiday(
         db,
-        programme_scope=admin_context.programme_scope,
+        programme_scope=_global_config_scope(admin_context),
         holiday_id=holiday_id,
     )
 
@@ -625,12 +651,14 @@ async def list_programmes(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> list[ProgrammeResponse]:
+    _require_master_admin(admin_context)
     if db is None:
         return []
     rows = await admin_config.list_programmes(
         db,
         programme_scope=admin_context.programme_scope,
         programme_code=programme_code,
+        master_admin=admin_context.is_master_admin,
     )
     return [ProgrammeResponse.model_validate(row) for row in rows]
 
@@ -642,6 +670,7 @@ async def update_programme(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> ProgrammeResponse:
+    _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
             status_code=500,
@@ -650,11 +679,12 @@ async def update_programme(
         )
     row = await admin_config.update_programme(
         db,
-        programme_scope=admin_context.programme_scope,
+        programme_scope={programme_code.strip()},
         programme_code=programme_code.strip(),
         r_year_required=payload.r_year_required,
         is_subspecialty=payload.is_subspecialty,
         rdb_alias=payload.rdb_alias,
+        rdb_alias_is_set="rdb_alias" in payload.model_fields_set,
     )
     return ProgrammeResponse.model_validate(row)
 
@@ -664,10 +694,13 @@ async def list_loa_types(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> list[LoaTypeResponse]:
-    del admin_context  # role guard is enforced by dependency
+    _require_master_admin(admin_context)
     if db is None:
         return []
-    rows = await admin_config.list_loa_types(db)
+    rows = await admin_config.list_loa_types(
+        db,
+        programme_scope=_global_config_scope(admin_context),
+    )
     return [LoaTypeResponse.model_validate(row) for row in rows]
 
 
@@ -677,7 +710,7 @@ async def create_loa_type(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> LoaTypeResponse:
-    del admin_context  # role guard is enforced by dependency
+    _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
             status_code=500,
@@ -686,6 +719,7 @@ async def create_loa_type(
         )
     row = await admin_config.create_loa_type(
         db,
+        programme_scope=_global_config_scope(admin_context),
         code=payload.code,
         description=payload.description,
     )
@@ -699,7 +733,7 @@ async def update_loa_type(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> LoaTypeResponse:
-    del admin_context  # role guard is enforced by dependency
+    _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
             status_code=500,
@@ -708,6 +742,7 @@ async def update_loa_type(
         )
     row = await admin_config.update_loa_type(
         db,
+        programme_scope=_global_config_scope(admin_context),
         loa_type_id=loa_type_id,
         code=payload.code,
         description=payload.description,
@@ -721,14 +756,18 @@ async def delete_loa_type(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> None:
-    del admin_context  # role guard is enforced by dependency
+    _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
             status_code=500,
             detail="Database unavailable",
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
-    await admin_config.delete_loa_type(db, loa_type_id=loa_type_id)
+    await admin_config.delete_loa_type(
+        db,
+        programme_scope=_global_config_scope(admin_context),
+        loa_type_id=loa_type_id,
+    )
 
 
 @router.get("/multi-posting-rules", response_model=list[MultiPostingRuleResponse])
@@ -912,6 +951,7 @@ async def list_weekend_exceptions(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> list[WeekendExceptionResponse]:
+    _require_master_admin(admin_context)
     if db is None:
         return []
     rows = await admin_config.list_weekend_exceptions(
@@ -919,6 +959,7 @@ async def list_weekend_exceptions(
         programme_scope=admin_context.programme_scope,
         programme_code=programme_code,
         posting_code=posting_code,
+        master_admin=admin_context.is_master_admin,
     )
     return [WeekendExceptionResponse.model_validate(row) for row in rows]
 
@@ -929,6 +970,7 @@ async def create_weekend_exception(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> WeekendExceptionResponse:
+    _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
             status_code=500,
@@ -947,6 +989,7 @@ async def create_weekend_exception(
         session_name_pattern=payload.session_name_pattern,
         mutates_to_session_type_id=payload.mutates_to_session_type_id,
         adjusted_duration_hours=payload.adjusted_duration_hours,
+        master_admin=admin_context.is_master_admin,
     )
     return WeekendExceptionResponse.model_validate(row)
 
@@ -958,6 +1001,7 @@ async def update_weekend_exception(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> WeekendExceptionResponse:
+    _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
             status_code=500,
@@ -977,6 +1021,7 @@ async def update_weekend_exception(
         session_name_pattern=payload.session_name_pattern,
         mutates_to_session_type_id=payload.mutates_to_session_type_id,
         adjusted_duration_hours=payload.adjusted_duration_hours,
+        master_admin=admin_context.is_master_admin,
     )
     return WeekendExceptionResponse.model_validate(row)
 
@@ -987,6 +1032,7 @@ async def delete_weekend_exception(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> None:
+    _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
             status_code=500,
@@ -997,6 +1043,7 @@ async def delete_weekend_exception(
         db,
         programme_scope=admin_context.programme_scope,
         weekend_exception_id=weekend_exception_id,
+        master_admin=admin_context.is_master_admin,
     )
 
 
@@ -1006,7 +1053,7 @@ async def list_global_session_types(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> list[GlobalSessionTypeResponse]:
-    del admin_context  # role guard is enforced by dependency
+    _require_master_admin(admin_context)
     if db is None:
         return []
     rows = await admin_config.list_global_session_types(db, is_active=is_active)
@@ -1019,6 +1066,7 @@ async def create_global_session_type(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> GlobalSessionTypeResponse:
+    _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
             status_code=500,
@@ -1027,7 +1075,7 @@ async def create_global_session_type(
         )
     row = await admin_config.create_global_session_type(
         db,
-        programme_scope=admin_context.programme_scope,
+        programme_scope=_global_config_scope(admin_context),
         name=payload.name,
         duration_hours=payload.duration_hours,
         is_active=payload.is_active,
@@ -1042,6 +1090,7 @@ async def update_global_session_type(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> GlobalSessionTypeResponse:
+    _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
             status_code=500,
@@ -1050,7 +1099,7 @@ async def update_global_session_type(
         )
     row = await admin_config.update_global_session_type(
         db,
-        programme_scope=admin_context.programme_scope,
+        programme_scope=_global_config_scope(admin_context),
         global_session_type_id=global_session_type_id,
         name=payload.name,
         duration_hours=payload.duration_hours,
@@ -1065,6 +1114,7 @@ async def delete_global_session_type(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> None:
+    _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
             status_code=500,
@@ -1073,7 +1123,7 @@ async def delete_global_session_type(
         )
     await admin_config.delete_global_session_type(
         db,
-        programme_scope=admin_context.programme_scope,
+        programme_scope=_global_config_scope(admin_context),
         global_session_type_id=global_session_type_id,
     )
 

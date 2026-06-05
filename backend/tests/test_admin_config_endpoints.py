@@ -190,7 +190,13 @@ class FakeAdminConfigSession:
             scope_codes = {
                 value for key, value in payload.items() if key.startswith("programme_code_")
             }
-            rows = [row for row in self.programmes if row["code"] in scope_codes]
+            rows = (
+                [row for row in self.programmes if row["code"] in scope_codes]
+                if scope_codes
+                else list(self.programmes)
+            )
+            if "programme_code" in payload:
+                rows = [row for row in rows if row["code"] == payload["programme_code"]]
             return _FakeMappingResult(rows)
 
         if "FROM multi_posting_rules" in sql:
@@ -353,6 +359,12 @@ def _admin_headers(scope: str | None = "DR,GRM") -> dict[str, str]:
     return headers
 
 
+def _master_admin_headers(scope: str | None = "DR,GRM") -> dict[str, str]:
+    headers = _admin_headers(scope)
+    headers["X-Admin-Level"] = "master"
+    return headers
+
+
 def test_admin_only_access_rejects_non_admin() -> None:
     client = _build_client_with_session(FakeAdminConfigSession())
     response = client.get(
@@ -397,12 +409,18 @@ def test_all_phase3_read_endpoints_reject_non_admin() -> None:
         assert response.status_code == 403
 
 
-def test_programme_scope_filters_programmes() -> None:
+def test_master_admin_lists_all_programmes() -> None:
     client = _build_client_with_session(FakeAdminConfigSession())
-    response = client.get("/admin/programmes", headers=_admin_headers("DR"))
+    response = client.get("/admin/programmes", headers=_master_admin_headers("DR"))
     assert response.status_code == 200
     body = response.json()
-    assert [row["code"] for row in body] == ["DR"]
+    assert [row["code"] for row in body] == ["DR", "GRM"]
+
+
+def test_programme_pc_cannot_read_global_programmes_config() -> None:
+    client = _build_client_with_session(FakeAdminConfigSession())
+    response = client.get("/admin/programmes", headers=_admin_headers("DR"))
+    assert response.status_code == 403
 
 
 def test_programme_scope_null_returns_no_scoped_data() -> None:
@@ -416,21 +434,21 @@ def test_programme_scope_null_returns_no_scoped_data() -> None:
     weekend = client.get("/admin/weekend-exceptions", headers=headers)
     periods = client.get("/admin/reporting-periods", headers=headers)
     holidays = client.get("/admin/public-holidays", headers=headers)
+    loa_types = client.get("/admin/loa-types", headers=headers)
+    global_types = client.get("/admin/global-session-types", headers=headers)
 
-    assert programmes.status_code == 200
+    assert programmes.status_code == 403
     assert rules.status_code == 200
     assert groups.status_code == 200
     assert logs.status_code == 200
-    assert weekend.status_code == 200
-    assert periods.status_code == 200
-    assert holidays.status_code == 200
-    assert programmes.json() == []
+    assert weekend.status_code == 403
+    assert periods.status_code == 403
+    assert holidays.status_code == 403
+    assert loa_types.status_code == 403
+    assert global_types.status_code == 403
     assert rules.json() == []
     assert groups.json() == []
     assert logs.json() == []
-    assert weekend.json() == []
-    assert periods.json() == []
-    assert holidays.json() == []
 
 
 def test_programme_filter_must_be_in_scope() -> None:

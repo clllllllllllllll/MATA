@@ -90,6 +90,12 @@ export const navItems: NavItem[] = [
     icon: 'upload',
   },
   {
+    label: 'Configuration',
+    path: '/admin/config',
+    roles: ['programme_pc'],
+    icon: 'settings',
+  },
+  {
     label: 'Teaching Schedule',
     path: '/secretary/events',
     roles: ['secretary'],
