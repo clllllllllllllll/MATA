@@ -21,9 +21,6 @@ const roleNameById: Record<AppRole, string> = {
 }
 
 const roleFromPathname = (pathname: string): AppRole | null => {
-  if (pathname === '/admin/config' || pathname.startsWith('/admin/config/')) {
-    return null
-  }
   if (pathname.startsWith('/secretary')) {
     return 'secretary'
   }
@@ -52,12 +49,7 @@ export const AppShell = () => {
   const activeRole = forcedRole ?? role
 
   const currentRoleOption = roleOptions.find((option) => option.id === activeRole) ?? roleOptions[0]
-  const breadcrumbs =
-    activeRole === 'programme_pc' && location.pathname.startsWith('/admin/config')
-      ? location.pathname === '/admin/config/multi'
-        ? ['Programme PC', 'Configuration', 'Multi-Posting Rules']
-        : ['Programme PC', 'Configuration']
-      : breadcrumbMap[location.pathname] ?? [currentRoleOption.label]
+  const breadcrumbs = breadcrumbMap[location.pathname] ?? [currentRoleOption.label]
   const unresolvedWarningsCount = warnings.filter((warning) => warning.status === 'unresolved').length
   const visibleNavItems = navItems.filter((item) => item.roles.includes(activeRole))
 
@@ -71,6 +63,9 @@ export const AppShell = () => {
     }
     if (path === '/admin/config') {
       return currentPath === '/admin/config' || currentPath.startsWith('/admin/config/')
+    }
+    if (path === '/pc/config') {
+      return currentPath === '/pc/config'
     }
     if (path === '/secretary/events') {
       return currentPath === '/secretary' || currentPath === '/secretary/events'
@@ -139,9 +134,19 @@ export const AppShell = () => {
                       type="button"
                       className={`role-switcher-option ${isCurrent ? 'is-current' : ''}`}
                       onClick={() => {
+                        const nextPath =
+                          location.pathname === '/admin/config' ||
+                          location.pathname.startsWith('/admin/config/') ||
+                          location.pathname === '/pc/config'
+                            ? option.id === 'programme_pc'
+                              ? '/pc/config'
+                              : option.id === 'master_admin'
+                                ? '/admin/config'
+                                : option.defaultPath
+                            : option.defaultPath
                         setRole(option.id)
                         setRoleMenuOpen(false)
-                        navigate(option.defaultPath)
+                        navigate(nextPath)
                       }}
                       role="menuitemradio"
                       aria-checked={isCurrent}

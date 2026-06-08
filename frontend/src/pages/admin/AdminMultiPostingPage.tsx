@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
 import {
   createMultiPostingRule,
@@ -19,6 +19,7 @@ import type { NormalizedWarning } from '../../types/upload'
 import { loadWarningContext } from '../../utils/storage'
 
 type RuleTab = MultiPostingRuleType
+type ConfigViewRole = 'master_admin' | 'programme_pc'
 
 interface MultiPostingFormState {
   programmeCode: string
@@ -44,6 +45,8 @@ const outputColumnLabel: Record<RuleTab, string> = {
   combine: 'Combined Posting',
   half_month: 'Half Month Posting',
 }
+
+const multiPostingTableColumnCount = 6
 
 const drawerTitle: Record<RuleTab, { create: string; edit: string }> = {
   main_posting: {
@@ -104,9 +107,113 @@ const postingOptionLabel = (postingCode: PostingCodeOption): string => {
   return display ? `${postingCode.code} - ${display}` : postingCode.code
 }
 
-export const MultiPostingRulesSection = () => {
+const ProgrammeScopeText = ({ programmeCodes }: { programmeCodes: string[] }) => {
+  if (programmeCodes.length === 0) {
+    return <>Rules for your accessible programmes will appear here once created.</>
+  }
+
+  return (
+    <>
+      Rules for{' '}
+      {programmeCodes.map((programmeCode, index) => (
+        <Fragment key={programmeCode}>
+          {index > 0 ? (index === programmeCodes.length - 1 ? ' and ' : ', ') : null}
+          <strong>{programmeCode}</strong>
+        </Fragment>
+      ))}{' '}
+      will appear here once created.
+    </>
+  )
+}
+
+const emptyBannerCopy = (
+  activeTab: RuleTab,
+  viewRole: ConfigViewRole,
+  programmeCodes: string[],
+): { title: string; body: ReactNode; hint: string } => {
+  if (activeTab === 'combine') {
+    return {
+      title: viewRole === 'master_admin' ? 'No combined posting rules yet' : 'No combined posting rules for your programmes',
+      body:
+        viewRole === 'master_admin'
+          ? 'Combined posting rules will appear here once created.'
+          : 'Combined posting rules for your accessible programmes will appear here once created.',
+      hint: 'Changes apply on the next RDB re-upload',
+    }
+  }
+
+  if (activeTab === 'half_month') {
+    return {
+      title: viewRole === 'master_admin' ? 'No half month posting rules yet' : 'No half month posting rules for your programmes',
+      body:
+        viewRole === 'master_admin'
+          ? 'Half month posting rules will appear here once created.'
+          : 'Half month posting rules for your accessible programmes will appear here once created.',
+      hint: 'Changes apply on the next RDB re-upload',
+    }
+  }
+
+  return {
+    title: viewRole === 'master_admin' ? 'No main posting rules yet' : 'No main posting rules for your programmes',
+    body:
+      viewRole === 'programme_pc' ? (
+        <ProgrammeScopeText programmeCodes={programmeCodes} />
+      ) : (
+        'Rules will appear here once created.'
+      ),
+    hint: 'Changes apply on the next RDB re-upload',
+  }
+}
+
+const EmptyBanner = ({
+  title,
+  body,
+  hint,
+}: {
+  title: string
+  body: ReactNode
+  hint?: string
+}) => (
+  <div className="multi-posting-empty-banner-wrap">
+    <div className="multi-posting-empty-banner">
+      <div className="multi-posting-empty-banner-content">
+        <div className="multi-posting-empty-banner-title">{title}</div>
+        <div className="multi-posting-empty-banner-body">{body}</div>
+        {hint ? (
+          <div className="multi-posting-empty-banner-hint">
+            <span aria-hidden="true">i</span>
+            {hint}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  </div>
+)
+
+const MultiPostingEmptyRow = ({
+  title,
+  body,
+  hint,
+}: {
+  title: string
+  body: ReactNode
+  hint?: string
+}) => (
+  <tr className="multi-posting-empty-row">
+    <td className="multi-posting-empty-cell" colSpan={multiPostingTableColumnCount}>
+      <EmptyBanner title={title} body={body} hint={hint} />
+    </td>
+  </tr>
+)
+
+interface MultiPostingRulesSectionProps {
+  configViewRole?: ConfigViewRole
+}
+
+export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSectionProps) => {
   const location = useLocation()
   const { demoAdminId, demoAdminProgrammes, role } = useAppState()
+  const viewRole = configViewRole ?? (role === 'programme_pc' ? 'programme_pc' : 'master_admin')
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
   const [activeTab, setActiveTab] = useState<RuleTab>('main_posting')
   const [rules, setRules] = useState<MultiPostingRule[]>([])
@@ -181,6 +288,7 @@ export const MultiPostingRulesSection = () => {
       ),
     [rules],
   )
+  const emptyStateCopy = emptyBannerCopy(activeTab, viewRole, demoAdminProgrammes)
 
   const reloadRules = useCallback(async () => {
     setLoading(true)
@@ -460,16 +568,11 @@ export const MultiPostingRulesSection = () => {
               </thead>
               <tbody>
                 {ruleRows.length === 0 ? (
-                  <tr>
-                    <td colSpan={6}>
-                      <div className="configuration-empty-note">
-                        <div>
-                          <h3>No rules configured yet</h3>
-                          <p>Create a rule when this RDB parsing case is confirmed.</p>
-                        </div>
-                      </div>
-                    </td>
-                  </tr>
+                  <MultiPostingEmptyRow
+                    title={emptyStateCopy.title}
+                    body={emptyStateCopy.body}
+                    hint={emptyStateCopy.hint}
+                  />
                 ) : (
                   ruleRows.map((rule) => (
                     <tr key={rule.id}>

@@ -18,7 +18,7 @@ function App() {
         <Route path="/admin" element={<AdminHomePage />} />
         <Route path="/admin/upload" element={<AdminUploadPage />} />
         <Route path="/admin/upload/warnings" element={<AdminWarningsPage />} />
-        <Route path="/admin/config" element={<AdminConfigPage />} />
+        <Route path="/admin/config" element={<AdminConfigPage configViewRole="master_admin" />} />
         <Route path="/admin/config/multi" element={<AdminMultiPostingPage />} />
         <Route
           path="/admin/upload-logs"
@@ -69,6 +69,7 @@ function App() {
             />
           }
         />
+        <Route path="/pc/config" element={<AdminConfigPage configViewRole="programme_pc" />} />
         <Route path="/secretary" element={<Navigate to="/secretary/events" replace />} />
         <Route path="/secretary/events" element={<SecretaryTeachingSchedulePage />} />
         <Route path="/resident" element={<Navigate to="/resident/submissions" replace />} />

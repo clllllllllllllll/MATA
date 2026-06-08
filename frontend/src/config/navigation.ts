@@ -91,7 +91,7 @@ export const navItems: NavItem[] = [
   },
   {
     label: 'Configuration',
-    path: '/admin/config',
+    path: '/pc/config',
     roles: ['programme_pc'],
     icon: 'settings',
   },
@@ -126,6 +126,7 @@ export const breadcrumbMap: Record<string, string[]> = {
   '/admin/secretary-events': ['Master Admin', 'Secretary Events'],
   '/admin/submissions': ['Master Admin', 'Resident Submissions'],
   '/pc/upload-ttf': ['Programme PC', 'Upload TTF'],
+  '/pc/config': ['Programme PC', 'Configuration'],
   '/secretary': ['Secretary', 'Teaching Schedule'],
   '/secretary/events': ['Secretary', 'Teaching Schedule'],
   '/resident': ['Native Resident', 'Submission Portal'],

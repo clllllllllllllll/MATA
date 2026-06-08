@@ -3659,28 +3659,37 @@ const PlaceholderConfigSection = ({
   </>
 )
 
-export const AdminConfigPage = () => {
+type ConfigViewRole = 'master_admin' | 'programme_pc'
+
+interface AdminConfigPageProps {
+  configViewRole?: ConfigViewRole
+}
+
+export const AdminConfigPage = ({ configViewRole }: AdminConfigPageProps) => {
   const location = useLocation()
   const { demoAdminProgrammes, role } = useAppState()
+  const configRole: ConfigViewRole = configViewRole ?? (role === 'programme_pc' ? 'programme_pc' : 'master_admin')
+  const defaultSectionKey: ConfigSectionKey =
+    configRole === 'programme_pc' ? 'multi-posting-rules' : 'reporting-periods'
   const requestedSection = (location.state as { configSection?: ConfigSectionKey } | null)?.configSection
   const requestedSectionKey = requestedSection ? `${location.key}:${requestedSection}` : null
   const lastHandledRequestedSection = useRef<string | null>(null)
   const [activeSectionKey, setActiveSectionKey] = useState<ConfigSectionKey>(
-    requestedSection ?? 'reporting-periods',
+    requestedSection ?? defaultSectionKey,
   )
   const visibleConfigSections = useMemo(
     () =>
-      role === 'programme_pc'
+      configRole === 'programme_pc'
         ? configSections.filter((section) => programmePcConfigSections.includes(section.key))
         : configSections,
-    [role],
+    [configRole],
   )
   const activeSection =
     visibleConfigSections.find((section) => section.key === activeSectionKey) ??
     visibleConfigSections[0] ??
     configSections[0]
   const subtitle =
-    role === 'programme_pc'
+    configRole === 'programme_pc'
       ? `Programme PC - ${demoAdminProgrammes.join(', ')}`
       : 'Master Admin - All programmes'
 
@@ -3700,13 +3709,13 @@ export const AdminConfigPage = () => {
         return
       }
       if (!visibleConfigSections.some((section) => section.key === activeSectionKey)) {
-        setActiveSectionKey(visibleConfigSections[0]?.key ?? 'reporting-periods')
+        setActiveSectionKey(visibleConfigSections[0]?.key ?? defaultSectionKey)
       }
     })
     return () => {
       cancelled = true
     }
-  }, [activeSectionKey, requestedSection, requestedSectionKey, visibleConfigSections])
+  }, [activeSectionKey, defaultSectionKey, requestedSection, requestedSectionKey, visibleConfigSections])
 
   return (
     <div className="page admin-config-page">
@@ -3743,7 +3752,7 @@ export const AdminConfigPage = () => {
           ) : activeSection.key === 'loa-types' ? (
             <LoaTypesSection />
           ) : activeSection.key === 'multi-posting-rules' ? (
-            <MultiPostingRulesSection />
+            <MultiPostingRulesSection configViewRole={configRole} />
           ) : activeSection.key === 'posting-groups' ? (
             <PostingGroupsSection />
           ) : activeSection.key === 'weekend-exceptions' ? (
