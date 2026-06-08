@@ -1,4 +1,4 @@
-import { Fragment, type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import {
   createLoaType,
@@ -66,7 +66,6 @@ interface ConfigSection {
   key: ConfigSectionKey
   label: string
   icon: string
-  status: string
   title: string
   description: string
   stateLabel: string
@@ -201,7 +200,6 @@ const configSections: ConfigSection[] = [
     key: 'reporting-periods',
     label: 'Reporting Periods',
     icon: 'calendar',
-    status: 'Live',
     title: 'Reporting Periods',
     description: 'Reporting periods are required before RDB, TTF, and FormF1 uploads can be safely scoped.',
     stateLabel: 'Live CRUD',
@@ -213,7 +211,6 @@ const configSections: ConfigSection[] = [
     key: 'public-holidays',
     label: 'Public Holidays',
     icon: 'calendar',
-    status: 'Upload',
     title: 'Public Holidays',
     description: 'Holiday and AY boundary data is currently upload-driven from the Academic Calendar / Public Holiday workbook.',
     stateLabel: 'Upload-driven data; manual CRUD pending',
@@ -241,7 +238,6 @@ const configSections: ConfigSection[] = [
     key: 'programmes',
     label: 'Programmes',
     icon: 'database',
-    status: 'Seeded',
     title: 'Programmes',
     description: 'Programme definitions are seeded in the database and editable for parser configuration flags.',
     stateLabel: 'Live list/edit',
@@ -268,7 +264,6 @@ const configSections: ConfigSection[] = [
     key: 'loa-types',
     label: 'LOA Types',
     icon: 'file',
-    status: 'Seeded',
     title: 'LOA Types',
     description: 'LOA types are seeded validation-catalogue rows for RDB parser warnings.',
     stateLabel: 'Live CRUD',
@@ -295,7 +290,6 @@ const configSections: ConfigSection[] = [
     key: 'multi-posting-rules',
     label: 'Multi-Posting Rules',
     icon: 'settings',
-    status: 'Live',
     title: 'Multi-Posting Rules',
     description: 'Multi-Posting Rules affect RDB parsing. Posting Groups affect compliance aggregation.',
     stateLabel: 'Live CRUD',
@@ -323,7 +317,6 @@ const configSections: ConfigSection[] = [
     key: 'posting-groups',
     label: 'Posting Groups',
     icon: 'grid',
-    status: 'Live',
     title: 'Posting Groups',
     description: 'Posting groups pool related posting codes for compliance aggregation and are separate from multi-posting rules.',
     stateLabel: 'Live CRUD',
@@ -351,7 +344,6 @@ const configSections: ConfigSection[] = [
     key: 'weekend-exceptions',
     label: 'Weekend Exceptions',
     icon: 'calendar',
-    status: 'Seeded',
     title: 'Weekend Exceptions',
     description: 'Weekend exceptions are seeded and later CRUD-manageable.',
     stateLabel: 'CRUD wiring pending',
@@ -378,7 +370,6 @@ const configSections: ConfigSection[] = [
     key: 'global-session-types',
     label: 'Global Session Types',
     icon: 'settings',
-    status: 'Pending',
     title: 'Global Session Types',
     description: 'Global session types are compliance-exempt teaching names and later CRUD-manageable.',
     stateLabel: 'CRUD wiring pending',
@@ -3672,6 +3663,8 @@ export const AdminConfigPage = () => {
   const location = useLocation()
   const { demoAdminProgrammes, role } = useAppState()
   const requestedSection = (location.state as { configSection?: ConfigSectionKey } | null)?.configSection
+  const requestedSectionKey = requestedSection ? `${location.key}:${requestedSection}` : null
+  const lastHandledRequestedSection = useRef<string | null>(null)
   const [activeSectionKey, setActiveSectionKey] = useState<ConfigSectionKey>(
     requestedSection ?? 'reporting-periods',
   )
@@ -3699,9 +3692,10 @@ export const AdminConfigPage = () => {
       }
       if (
         requestedSection &&
-        requestedSection !== activeSectionKey &&
+        requestedSectionKey !== lastHandledRequestedSection.current &&
         visibleConfigSections.some((section) => section.key === requestedSection)
       ) {
+        lastHandledRequestedSection.current = requestedSectionKey
         setActiveSectionKey(requestedSection)
         return
       }
@@ -3712,7 +3706,7 @@ export const AdminConfigPage = () => {
     return () => {
       cancelled = true
     }
-  }, [activeSectionKey, requestedSection, visibleConfigSections])
+  }, [activeSectionKey, requestedSection, requestedSectionKey, visibleConfigSections])
 
   return (
     <div className="page admin-config-page">
@@ -3734,7 +3728,6 @@ export const AdminConfigPage = () => {
                   <NamedIcon name={section.icon} size={14} />
                   <span>{section.label}</span>
                 </span>
-                <span className="admin-config-nav-chip">{section.status}</span>
               </button>
             )
           })}
