@@ -217,7 +217,11 @@ class FakeAdminConfigSession:
             scope_codes = {
                 value for key, value in payload.items() if key.startswith("programme_code_")
             }
-            rows = [row for row in self.posting_groups if row["programme_code"] in scope_codes]
+            rows = (
+                [row for row in self.posting_groups if row["programme_code"] in scope_codes]
+                if scope_codes
+                else list(self.posting_groups)
+            )
             if "group_code" in payload:
                 rows = [row for row in rows if row["group_code"] == payload["group_code"]]
             return _FakeMappingResult(rows)
@@ -418,6 +422,13 @@ def test_master_admin_lists_all_programmes() -> None:
     assert response.status_code == 200
     body = response.json()
     assert [row["code"] for row in body] == ["DR", "GRM"]
+
+
+def test_master_admin_lists_all_posting_groups_without_scope_inference() -> None:
+    client = _build_client_with_session(FakeAdminConfigSession())
+    response = client.get("/admin/posting-groups", headers=_master_admin_headers(scope=None))
+    assert response.status_code == 200
+    assert {row["programme_code"] for row in response.json()} == {"DR", "GRM"}
 
 
 def test_programme_pc_cannot_read_global_programmes_config() -> None:

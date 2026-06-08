@@ -2201,6 +2201,43 @@ button:disabled,
   flex-wrap: wrap;
 }
 
+.posting-groups-header {
+  align-items: center;
+  flex-wrap: nowrap;
+}
+
+.posting-groups-header > div:first-child {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 520px;
+}
+
+.posting-groups-header .admin-config-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  align-self: center;
+  white-space: nowrap;
+}
+
+.posting-groups-header .admin-config-actions .button {
+  flex: 0 0 auto;
+}
+
+.posting-groups-header p {
+  line-height: 1.35;
+}
+
+.posting-groups-helper {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+}
+
 .admin-config-row-actions {
   min-width: 150px;
 }
@@ -2414,6 +2451,7 @@ button:disabled,
 .public-holidays-table .admin-config-row-actions,
 .programmes-table .admin-config-row-actions,
 .loa-types-table .admin-config-row-actions,
+.posting-groups-table .admin-config-row-actions,
 .weekend-exceptions-table .admin-config-row-actions,
 .global-session-types-table .admin-config-row-actions {
   justify-content: center;
@@ -2430,6 +2468,8 @@ button:disabled,
 .programmes-table tr:not(.admin-config-confirm-row) td:last-child,
 .loa-types-table th:last-child,
 .loa-types-table tr:not(.admin-config-confirm-row) td:last-child,
+.posting-groups-table th:last-child,
+.posting-groups-table tr:not(.admin-config-confirm-row) td:last-child,
 .weekend-exceptions-table th:last-child,
 .weekend-exceptions-table tr:not(.admin-config-confirm-row) td:last-child,
 .global-session-types-table th:last-child,
@@ -2491,6 +2531,78 @@ button:disabled,
   width: 170px;
 }
 
+.posting-groups-table th:first-child,
+.posting-groups-table td:first-child,
+.posting-groups-table th:nth-child(2),
+.posting-groups-table td:nth-child(2),
+.posting-groups-table th:nth-child(3),
+.posting-groups-table td:nth-child(3),
+.posting-groups-table th:nth-child(4),
+.posting-groups-table td:nth-child(4) {
+  text-align: center;
+  white-space: nowrap;
+}
+
+.posting-groups-table {
+  table-layout: fixed;
+}
+
+.posting-groups-table th,
+.posting-groups-table td {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.posting-groups-table th:first-child,
+.posting-groups-table td:first-child {
+  width: 24%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.posting-groups-table th:nth-child(2),
+.posting-groups-table td:nth-child(2) {
+  width: 22%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.posting-groups-table th:nth-child(3),
+.posting-groups-table td:nth-child(3) {
+  width: 22%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.posting-groups-table th:nth-child(4),
+.posting-groups-table td:nth-child(4) {
+  width: 16%;
+}
+
+.posting-groups-table th:nth-child(5),
+.posting-groups-table tr:not(.admin-config-confirm-row) td:nth-child(5) {
+  width: 16%;
+}
+
+@media (max-width: 860px) {
+  .posting-groups-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .posting-groups-header > div:first-child {
+    max-width: none;
+  }
+
+  .posting-groups-header .admin-config-actions {
+    flex-wrap: wrap;
+  }
+}
+
+.posting-group-form-section,
 .weekend-exception-form-section {
   display: grid;
   gap: 12px;
@@ -2500,12 +2612,14 @@ button:disabled,
   background: #fafafd;
 }
 
+.posting-group-form-section h3,
 .weekend-exception-form-section h3 {
   margin: 0 0 4px;
   font-size: 13px;
   color: var(--ink, #10121f);
 }
 
+.posting-group-form-section p,
 .weekend-exception-form-section p {
   margin: 0;
   color: var(--ink-3, #5b5f73);

@@ -15,6 +15,13 @@ import {
   type GlobalSessionType,
 } from '../../api/globalSessionTypes'
 import {
+  createPostingGroup,
+  deletePostingGroup,
+  listPostingGroups,
+  updatePostingGroup,
+  type PostingGroup,
+} from '../../api/postingGroups'
+import {
   createPublicHoliday,
   deletePublicHoliday,
   listPublicHolidays,
@@ -96,6 +103,12 @@ interface LoaTypeFormState {
   description: string
 }
 
+interface PostingGroupFormState {
+  programmeCode: string
+  postingCode: string
+  groupCode: string
+}
+
 interface WeekendExceptionFormState {
   programmeCode: string
   postingCode: string
@@ -147,6 +160,12 @@ const emptyProgrammeForm: ProgrammeFormState = {
 const emptyLoaTypeForm: LoaTypeFormState = {
   code: '',
   description: '',
+}
+
+const emptyPostingGroupForm: PostingGroupFormState = {
+  programmeCode: '',
+  postingCode: '',
+  groupCode: '',
 }
 
 const emptyWeekendExceptionForm: WeekendExceptionFormState = {
@@ -306,17 +325,17 @@ const configSections: ConfigSection[] = [
     key: 'posting-groups',
     label: 'Posting Groups',
     icon: 'grid',
-    status: 'Pending',
+    status: 'Live',
     title: 'Posting Groups',
     description: 'Posting groups pool related posting codes for compliance aggregation and are separate from multi-posting rules.',
-    stateLabel: 'Manual CRUD wiring pending',
+    stateLabel: 'Live CRUD',
     nextStep:
-      'Groups are seeded from TTF Column E. Manual CRUD should keep grouped posting aggregation distinct from multi-posting parse rules.',
+      'Groups are seeded from TTF Column E. Manual CRUD keeps grouped posting aggregation distinct from multi-posting parse rules.',
     rows: [
       {
         field: 'Use case',
         current: 'Pool related posting codes so compliance can aggregate across a group.',
-        next: 'Expose group maintenance after CRUD endpoints and validation are ready.',
+        next: 'Maintain operational corrections without changing RDB parsing behavior.',
       },
       {
         field: 'Seed source',
@@ -509,6 +528,12 @@ const toLoaTypeFormState = (loaType: LoaType): LoaTypeFormState => ({
   description: loaType.description ?? '',
 })
 
+const toPostingGroupFormState = (postingGroup: PostingGroup): PostingGroupFormState => ({
+  programmeCode: postingGroup.programmeCode,
+  postingCode: postingGroup.postingCode,
+  groupCode: postingGroup.groupCode,
+})
+
 const toWeekendExceptionFormState = (
   weekendException: WeekendException,
 ): WeekendExceptionFormState => ({
@@ -599,6 +624,16 @@ const programmeOptionLabel = (programme: Programme) =>
 
 const postingCodeOptionLabel = (postingCode: PostingCodeOption) =>
   postingCode.displayName ? `${postingCode.code} - ${postingCode.displayName}` : postingCode.code
+
+const formatProgrammeCode = (programmeCode: string, programmeMap: Map<string, Programme>) => {
+  const programme = programmeMap.get(programmeCode)
+  return programme ? programmeOptionLabel(programme) : programmeCode
+}
+
+const formatPostingCode = (postingCode: string, postingCodeMap: Map<string, PostingCodeOption>) => {
+  const posting = postingCodeMap.get(postingCode)
+  return posting ? postingCodeOptionLabel(posting) : postingCode
+}
 
 const describeWeekendExceptionError = (
   error: unknown,
@@ -805,7 +840,7 @@ const ReportingPeriodsSection = () => {
 
   return (
     <>
-      <header className="admin-config-content-header">
+      <header className="admin-config-content-header posting-groups-header">
         <div>
           <div className="admin-config-title-row">
             <h2>Reporting Periods</h2>
@@ -2090,6 +2125,496 @@ const LoaTypesSection = () => {
   )
 }
 
+const PostingGroupsSection = () => {
+  const { demoAdminId, demoAdminProgrammes, role } = useAppState()
+  const adminLevel = role === 'master_admin' ? 'master' : 'programme'
+  const [postingGroups, setPostingGroups] = useState<PostingGroup[]>([])
+  const [programmeOptions, setProgrammeOptions] = useState<Programme[]>([])
+  const [postingCodeOptions, setPostingCodeOptions] = useState<PostingCodeOption[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [drawerMode, setDrawerMode] = useState<'create' | 'edit'>('create')
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [selectedPostingGroup, setSelectedPostingGroup] = useState<PostingGroup | null>(null)
+  const [formState, setFormState] = useState<PostingGroupFormState>(emptyPostingGroupForm)
+  const [submitState, setSubmitState] = useState<'idle' | 'submitting' | 'error'>('idle')
+  const [feedback, setFeedback] = useState<Feedback>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [confirmingDeleteGroup, setConfirmingDeleteGroup] = useState<PostingGroup | null>(null)
+
+  const sortedGroups = useMemo(
+    () =>
+      [...postingGroups].sort(
+        (left, right) =>
+          left.programmeCode.localeCompare(right.programmeCode) ||
+          left.groupCode.localeCompare(right.groupCode) ||
+          left.postingCode.localeCompare(right.postingCode),
+      ),
+    [postingGroups],
+  )
+
+  const sortedProgrammeOptions = useMemo(
+    () => [...programmeOptions].sort((left, right) => left.code.localeCompare(right.code)),
+    [programmeOptions],
+  )
+
+  const sortedPostingCodeOptions = useMemo(
+    () => [...postingCodeOptions].sort((left, right) => left.code.localeCompare(right.code)),
+    [postingCodeOptions],
+  )
+
+  const programmeMap = useMemo(
+    () => new Map(programmeOptions.map((programme) => [programme.code, programme])),
+    [programmeOptions],
+  )
+
+  const postingCodeMap = useMemo(
+    () => new Map(postingCodeOptions.map((postingCode) => [postingCode.code, postingCode])),
+    [postingCodeOptions],
+  )
+
+  const reloadPostingGroups = useCallback(async () => {
+    setLoading(true)
+    setLoadError(null)
+    try {
+      const [groupRows, postingRows, programmeRows] = await Promise.all([
+        listPostingGroups({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+        }),
+        listPostingCodes({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+        }),
+        role === 'master_admin'
+          ? listProgrammes({
+              adminId: demoAdminId,
+              adminProgrammes: demoAdminProgrammes,
+              adminLevel,
+            })
+          : Promise.resolve(
+              demoAdminProgrammes.map((code) => ({
+                id: code,
+                code,
+                name: '',
+                ayDateCategory: '',
+                rYearRequired: false,
+                isSubspecialty: false,
+              })),
+            ),
+      ])
+      setPostingGroups(groupRows)
+      setPostingCodeOptions(postingRows)
+      setProgrammeOptions(programmeRows)
+    } catch (error) {
+      const message =
+        error instanceof ApiRequestError ? error.message : 'Unable to load posting groups.'
+      setLoadError(message)
+      setPostingGroups([])
+      setPostingCodeOptions([])
+      setProgrammeOptions([])
+    } finally {
+      setLoading(false)
+    }
+  }, [adminLevel, demoAdminId, demoAdminProgrammes, role])
+
+  useEffect(() => {
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        void reloadPostingGroups()
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [reloadPostingGroups])
+
+  const dismissFeedback = () => setFeedback(null)
+
+  const openCreateDrawer = () => {
+    setDrawerMode('create')
+    setSelectedPostingGroup(null)
+    setFormState({
+      ...emptyPostingGroupForm,
+      programmeCode: sortedProgrammeOptions[0]?.code ?? '',
+      postingCode: sortedPostingCodeOptions[0]?.code ?? '',
+    })
+    setSubmitState('idle')
+    setFeedback(null)
+    setConfirmingDeleteGroup(null)
+    setDrawerOpen(true)
+  }
+
+  const openEditDrawer = (postingGroup: PostingGroup) => {
+    setDrawerMode('edit')
+    setSelectedPostingGroup(postingGroup)
+    setFormState(toPostingGroupFormState(postingGroup))
+    setSubmitState('idle')
+    setFeedback(null)
+    setConfirmingDeleteGroup(null)
+    setDrawerOpen(true)
+  }
+
+  const closeDrawer = () => {
+    if (submitState === 'submitting') {
+      return
+    }
+    setDrawerOpen(false)
+    setSelectedPostingGroup(null)
+    setFormState(emptyPostingGroupForm)
+    setSubmitState('idle')
+  }
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setSubmitState('submitting')
+    setFeedback(null)
+    const payload = {
+      programmeCode: formState.programmeCode.trim(),
+      postingCode: formState.postingCode.trim(),
+      groupCode: formState.groupCode.trim(),
+    }
+    try {
+      if (drawerMode === 'edit' && selectedPostingGroup) {
+        await updatePostingGroup({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+          id: selectedPostingGroup.id,
+          payload,
+        })
+        setFeedback({ tone: 'success', message: 'Posting group updated.' })
+      } else {
+        await createPostingGroup({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+          payload,
+        })
+        setFeedback({ tone: 'success', message: 'Posting group created.' })
+      }
+      await reloadPostingGroups()
+      setDrawerOpen(false)
+      setSelectedPostingGroup(null)
+      setFormState(emptyPostingGroupForm)
+      setSubmitState('idle')
+    } catch (error) {
+      setSubmitState('error')
+      setFeedback(
+        describeGenericConfigError(
+          error,
+          'Unable to save posting group.',
+          'A posting can belong to only one posting group per programme.',
+        ),
+      )
+    }
+  }
+
+  const requestDelete = (postingGroup: PostingGroup) => {
+    setFeedback(null)
+    setConfirmingDeleteGroup(postingGroup)
+  }
+
+  const handleDelete = async (postingGroup: PostingGroup) => {
+    setDeletingId(postingGroup.id)
+    setFeedback(null)
+    try {
+      await deletePostingGroup({
+        adminId: demoAdminId,
+        adminProgrammes: demoAdminProgrammes,
+        adminLevel,
+        id: postingGroup.id,
+      })
+      setFeedback({ tone: 'success', message: 'Posting group deleted.' })
+      await reloadPostingGroups()
+      setConfirmingDeleteGroup(null)
+    } catch (error) {
+      setConfirmingDeleteGroup(null)
+      setFeedback(
+        describeGenericConfigError(
+          error,
+          'Unable to delete posting group.',
+          'This posting group may be protected by related configuration. Existing uploaded records are not changed.',
+        ),
+      )
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  return (
+    <>
+      <header className="admin-config-content-header posting-groups-header">
+        <div>
+          <div className="admin-config-title-row">
+            <h2>Posting Groups</h2>
+          </div>
+          <p>
+            Manage posting-code groups used for compliance aggregation.
+            <span className="posting-groups-helper">
+              Separate from Multi-Posting Rules, which affect RDB parsing.
+            </span>
+          </p>
+        </div>
+        <div className="admin-config-actions">
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => void reloadPostingGroups()}
+            disabled={loading}
+          >
+            <IconRefresh size={14} />
+            Retry
+          </button>
+          <button type="button" className="button button-primary" onClick={openCreateDrawer}>
+            <IconPlus size={14} />
+            New Posting Group
+          </button>
+        </div>
+      </header>
+
+      {feedback ? (
+        <div
+          className={`inline-callout ${feedback.tone === 'error' ? 'callout-error' : 'callout-success'} admin-config-feedback`}
+          role="status"
+        >
+          <div className="admin-config-feedback-content">
+            <strong>{feedback.message}</strong>
+            {feedback.description ? <p>{feedback.description}</p> : null}
+          </div>
+          <button
+            type="button"
+            className="admin-config-feedback-dismiss"
+            onClick={dismissFeedback}
+            aria-label="Dismiss feedback"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
+      {loading ? (
+        <div className="configuration-empty-note">Loading posting groups...</div>
+      ) : loadError ? (
+        <div className="configuration-empty-note">
+          <div>
+            <h3>Unable to load posting groups</h3>
+            <p>{loadError}</p>
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => void reloadPostingGroups()}
+            >
+              <IconRefresh size={14} />
+              Retry
+            </button>
+          </div>
+        </div>
+      ) : sortedGroups.length === 0 ? (
+        <div className="configuration-empty-note">
+          <div>
+            <h3>No posting groups configured yet.</h3>
+            <p>Add groups only when related posting codes should be pooled for compliance.</p>
+          </div>
+        </div>
+      ) : (
+        <div className="admin-config-table-wrap">
+          <table className="admin-config-table posting-groups-table">
+            <thead>
+              <tr>
+                <th>Programme</th>
+                <th>Group Code</th>
+                <th>Posting</th>
+                <th>Updated</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedGroups.map((postingGroup) => (
+                <Fragment key={postingGroup.id}>
+                  <tr>
+                    <td title={formatProgrammeCode(postingGroup.programmeCode, programmeMap)}>
+                      {formatProgrammeCode(postingGroup.programmeCode, programmeMap)}
+                    </td>
+                    <td title={postingGroup.groupCode}>{postingGroup.groupCode}</td>
+                    <td title={formatPostingCode(postingGroup.postingCode, postingCodeMap)}>
+                      {formatPostingCode(postingGroup.postingCode, postingCodeMap)}
+                    </td>
+                    <td>{formatDate(postingGroup.updatedAt ?? postingGroup.createdAt)}</td>
+                    <td>
+                      <div className="admin-config-row-actions">
+                        <button
+                          type="button"
+                          className="button button-secondary"
+                          onClick={() => openEditDrawer(postingGroup)}
+                          disabled={deletingId === postingGroup.id}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="button button-ghost danger"
+                          onClick={() => requestDelete(postingGroup)}
+                          disabled={deletingId === postingGroup.id}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {confirmingDeleteGroup?.id === postingGroup.id ? (
+                    <tr className="admin-config-confirm-row">
+                      <td colSpan={5}>
+                        <div
+                          className="admin-config-inline-confirm"
+                          role="group"
+                          aria-label="Delete posting group"
+                        >
+                          <div>
+                            <strong>Delete posting group?</strong>
+                            <p>
+                              This removes the compliance aggregation link. Existing uploaded
+                              records are not changed.
+                            </p>
+                          </div>
+                          <div className="admin-config-confirm-actions">
+                            <button
+                              type="button"
+                              className="button button-secondary"
+                              onClick={() => setConfirmingDeleteGroup(null)}
+                              disabled={deletingId === postingGroup.id}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              className="button button-ghost danger"
+                              onClick={() => void handleDelete(postingGroup)}
+                              disabled={deletingId === postingGroup.id}
+                            >
+                              {deletingId === postingGroup.id
+                                ? 'Deleting...'
+                                : 'Delete posting group'}
+                            </button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <DetailDrawer
+        title={drawerMode === 'edit' ? 'Edit Posting Group' : 'New Posting Group'}
+        open={drawerOpen}
+        onClose={closeDrawer}
+        footer={
+          <>
+            <button type="button" className="button button-secondary" onClick={closeDrawer}>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              form="posting-group-form"
+              className="button button-primary"
+              disabled={submitState === 'submitting'}
+            >
+              {submitState === 'submitting' ? 'Saving...' : 'Save'}
+            </button>
+          </>
+        }
+      >
+        <form id="posting-group-form" className="secretary-form-grid" onSubmit={handleSubmit}>
+          <section className="posting-group-form-section">
+            <div>
+              <h3>Group details</h3>
+              <p>
+                Posting groups affect compliance aggregation. They do not change RDB parsing or
+                existing posting records.
+              </p>
+            </div>
+            <div className="secretary-form-row">
+              <label>
+                Programme
+                <select
+                  value={formState.programmeCode}
+                  onChange={(event) =>
+                    setFormState((prev) => ({ ...prev, programmeCode: event.target.value }))
+                  }
+                  required
+                >
+                  <option value="" disabled>
+                    Select programme
+                  </option>
+                  {formState.programmeCode &&
+                  !sortedProgrammeOptions.some((option) => option.code === formState.programmeCode) ? (
+                    <option value={formState.programmeCode}>
+                      Current programme no longer exists
+                    </option>
+                  ) : null}
+                  {sortedProgrammeOptions.map((programme) => (
+                    <option key={programme.code} value={programme.code}>
+                      {programmeOptionLabel(programme)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Posting
+                <select
+                  value={formState.postingCode}
+                  onChange={(event) =>
+                    setFormState((prev) => ({ ...prev, postingCode: event.target.value }))
+                  }
+                  required
+                >
+                  <option value="" disabled>
+                    Select posting
+                  </option>
+                  {formState.postingCode &&
+                  !sortedPostingCodeOptions.some((option) => option.code === formState.postingCode) ? (
+                    <option value={formState.postingCode}>Current posting no longer exists</option>
+                  ) : null}
+                  {sortedPostingCodeOptions.map((postingCode) => (
+                    <option key={postingCode.code} value={postingCode.code}>
+                      {postingCodeOptionLabel(postingCode)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <label>
+              Group code
+              <input
+                type="text"
+                value={formState.groupCode}
+                onChange={(event) =>
+                  setFormState((prev) => ({ ...prev, groupCode: event.target.value }))
+                }
+                required
+                maxLength={100}
+              />
+              <span className="form-helper">
+                Posting codes with the same group code are aggregated together during compliance.
+              </span>
+            </label>
+          </section>
+          {submitState === 'error' && feedback ? (
+            <div className="inline-callout callout-error">{feedback.message}</div>
+          ) : null}
+        </form>
+      </DetailDrawer>
+    </>
+  )
+}
+
 const WeekendExceptionsSection = () => {
   const { demoAdminId, demoAdminProgrammes, role } = useAppState()
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
@@ -3224,6 +3749,8 @@ export const AdminConfigPage = () => {
             <ProgrammesSection />
           ) : activeSection.key === 'loa-types' ? (
             <LoaTypesSection />
+          ) : activeSection.key === 'posting-groups' ? (
+            <PostingGroupsSection />
           ) : activeSection.key === 'weekend-exceptions' ? (
             <WeekendExceptionsSection />
           ) : activeSection.key === 'global-session-types' ? (

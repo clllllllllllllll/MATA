@@ -875,6 +875,7 @@ async def list_posting_groups(
         programme_scope=admin_context.programme_scope,
         programme_code=programme_code,
         group_code=group_code,
+        master_admin=admin_context.is_master_admin,
     )
     return [PostingGroupResponse.model_validate(row) for row in rows]
 
@@ -897,6 +898,7 @@ async def create_posting_group(
         group_code=payload.group_code,
         posting_code=payload.posting_code,
         programme_code=payload.programme_code,
+        master_admin=admin_context.is_master_admin,
     )
     return PostingGroupResponse.model_validate(row)
 
@@ -921,6 +923,7 @@ async def update_posting_group(
         group_code=payload.group_code,
         posting_code=payload.posting_code,
         programme_code=payload.programme_code,
+        master_admin=admin_context.is_master_admin,
     )
     return PostingGroupResponse.model_validate(row)
 
@@ -941,6 +944,7 @@ async def delete_posting_group(
         db,
         programme_scope=admin_context.programme_scope,
         posting_group_id=posting_group_id,
+        master_admin=admin_context.is_master_admin,
     )
 
 

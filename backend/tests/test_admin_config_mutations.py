@@ -642,6 +642,40 @@ def test_null_scope_cannot_mutate_scoped_resources() -> None:
     assert response.status_code == 403
 
 
+def test_master_admin_can_mutate_posting_groups_without_programme_scope() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+    created = client.post(
+        "/admin/posting-groups",
+        headers=_master_admin_headers(scope=None),
+        json={
+            "group_code": "DR-GROUP",
+            "posting_code": "TTSHRespi",
+            "programme_code": "DR",
+        },
+    )
+    assert created.status_code == 200
+    posting_group_id = created.json()["id"]
+
+    updated = client.put(
+        f"/admin/posting-groups/{posting_group_id}",
+        headers=_master_admin_headers(scope=None),
+        json={
+            "group_code": "DR-GROUP-UPDATED",
+            "posting_code": "TTSHRespi(MICU)",
+            "programme_code": "DR",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["group_code"] == "DR-GROUP-UPDATED"
+    assert updated.json()["posting_code"] == "TTSHRespi(MICU)"
+
+    deleted = client.delete(
+        f"/admin/posting-groups/{posting_group_id}",
+        headers=_master_admin_headers(scope=None),
+    )
+    assert deleted.status_code == 204
+
+
 def test_null_scope_cannot_mutate_reporting_periods() -> None:
     client = _build_client_with_session(FakeMutationSession())
     response = client.post(

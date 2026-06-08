@@ -259,23 +259,29 @@ async def list_posting_groups(
     programme_scope: set[str],
     programme_code: str | None,
     group_code: str | None,
+    master_admin: bool = False,
 ) -> list[dict[str, Any]]:
-    codes = _scoped_programmes(
-        programme_scope=programme_scope,
-        programme_code=programme_code,
-    )
-    if not codes:
-        return []
-
     params: dict[str, Any] = {}
-    where_clauses: list[str] = [
-        _scope_or_clause(
-            field_name="programme_code",
-            values=codes,
-            params=params,
-            param_prefix="programme_code",
+    where_clauses: list[str] = []
+    if master_admin:
+        if programme_code is not None:
+            params["programme_code"] = programme_code
+            where_clauses.append("programme_code = :programme_code")
+    else:
+        codes = _scoped_programmes(
+            programme_scope=programme_scope,
+            programme_code=programme_code,
         )
-    ]
+        if not codes:
+            return []
+        where_clauses.append(
+            _scope_or_clause(
+                field_name="programme_code",
+                values=codes,
+                params=params,
+                param_prefix="programme_code",
+            )
+        )
     if group_code is not None:
         params["group_code"] = group_code
         where_clauses.append("group_code = :group_code")
@@ -283,9 +289,9 @@ async def list_posting_groups(
     sql = """
         SELECT id, group_code, posting_code, programme_code, created_at, updated_at
         FROM posting_groups
-        WHERE
     """
-    sql += " AND ".join(where_clauses)
+    if where_clauses:
+        sql += " WHERE " + " AND ".join(where_clauses)
     sql += " ORDER BY programme_code ASC, group_code ASC, posting_code ASC"
     result = await db.execute(text(sql), params)
     return list(result.mappings().all())
@@ -1877,11 +1883,15 @@ async def create_posting_group(
     group_code: str,
     posting_code: str,
     programme_code: str,
+    master_admin: bool = False,
 ) -> dict[str, Any]:
-    _require_programme_in_scope_for_write(
-        programme_scope=programme_scope,
-        programme_code=programme_code,
-    )
+    if not master_admin:
+        _require_programme_in_scope_for_write(
+            programme_scope=programme_scope,
+            programme_code=programme_code,
+        )
+    if not await _programme_code_exists(db, programme_code):
+        _raise_validation(f"Unknown programme code: {programme_code}")
     if not await _posting_code_exists(db, posting_code):
         _raise_validation(f"Unknown posting code: {posting_code}")
     try:
@@ -1915,6 +1925,7 @@ async def update_posting_group(
     group_code: str,
     posting_code: str,
     programme_code: str,
+    master_admin: bool = False,
 ) -> dict[str, Any]:
     existing = await db.execute(
         text("SELECT id, programme_code FROM posting_groups WHERE id = :id"),
@@ -1923,14 +1934,17 @@ async def update_posting_group(
     row = existing.mappings().one_or_none()
     if row is None:
         _raise_not_found("Posting group not found")
-    _require_programme_in_scope_for_write(
-        programme_scope=programme_scope,
-        programme_code=row["programme_code"],
-    )
-    _require_programme_in_scope_for_write(
-        programme_scope=programme_scope,
-        programme_code=programme_code,
-    )
+    if not master_admin:
+        _require_programme_in_scope_for_write(
+            programme_scope=programme_scope,
+            programme_code=row["programme_code"],
+        )
+        _require_programme_in_scope_for_write(
+            programme_scope=programme_scope,
+            programme_code=programme_code,
+        )
+    if not await _programme_code_exists(db, programme_code):
+        _raise_validation(f"Unknown programme code: {programme_code}")
     if not await _posting_code_exists(db, posting_code):
         _raise_validation(f"Unknown posting code: {posting_code}")
     try:
@@ -1967,6 +1981,7 @@ async def delete_posting_group(
     *,
     programme_scope: set[str],
     posting_group_id: UUID,
+    master_admin: bool = False,
 ) -> None:
     existing = await db.execute(
         text("SELECT id, programme_code FROM posting_groups WHERE id = :id"),
@@ -1975,10 +1990,11 @@ async def delete_posting_group(
     row = existing.mappings().one_or_none()
     if row is None:
         _raise_not_found("Posting group not found")
-    _require_programme_in_scope_for_write(
-        programme_scope=programme_scope,
-        programme_code=row["programme_code"],
-    )
+    if not master_admin:
+        _require_programme_in_scope_for_write(
+            programme_scope=programme_scope,
+            programme_code=row["programme_code"],
+        )
     await db.execute(
         text("DELETE FROM posting_groups WHERE id = :id"),
         {"id": str(posting_group_id)},
