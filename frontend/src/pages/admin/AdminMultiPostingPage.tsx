@@ -575,23 +575,55 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
                   />
                 ) : (
                   ruleRows.map((rule) => (
-                    <tr key={rule.id}>
-                      <td>{rule.programmeCode}</td>
-                      <td title={rule.postingCode1}>{rule.postingCode1}</td>
-                      <td title={rule.postingCode2 ?? 'No second posting'}>{rule.postingCode2 ?? '-'}</td>
-                      <td title={rule.combinedLabel ?? rule.mainPostingCode ?? ''}>{renderOutput(rule)}</td>
-                      <td>{formatDate(rule.updatedAt)}</td>
-                      <td>
-                        <div className="admin-config-row-actions">
-                          <button type="button" className="button button-secondary" onClick={() => openEditDrawer(rule)}>
-                            Edit
-                          </button>
+                    <Fragment key={rule.id}>
+                      <tr>
+                        <td>{rule.programmeCode}</td>
+                        <td title={rule.postingCode1}>{rule.postingCode1}</td>
+                        <td title={rule.postingCode2 ?? 'No second posting'}>{rule.postingCode2 ?? '-'}</td>
+                        <td title={rule.combinedLabel ?? rule.mainPostingCode ?? ''}>{renderOutput(rule)}</td>
+                        <td>{formatDate(rule.updatedAt)}</td>
+                        <td>
+                          <div className="admin-config-row-actions">
+                            <button type="button" className="button button-secondary" onClick={() => openEditDrawer(rule)}>
+                              Edit
+                            </button>
                             <button type="button" className="button button-ghost danger" onClick={() => setConfirmingDeleteRule(rule)}>
                               Delete
                             </button>
-                        </div>
-                      </td>
-                    </tr>
+                          </div>
+                        </td>
+                      </tr>
+                      {confirmingDeleteRule?.id === rule.id ? (
+                        <tr className="admin-config-confirm-row">
+                          <td colSpan={multiPostingTableColumnCount}>
+                            <div className="admin-config-inline-confirm" role="group" aria-label="Confirm delete multi-posting rule">
+                              <div>
+                                <strong>Delete multi-posting rule?</strong>
+                                <p>This affects future RDB parsing only. Existing parsed posting rows are not changed.</p>
+                              </div>
+                              <div className="admin-config-confirm-actions">
+                                <button
+                                  type="button"
+                                  className="button button-secondary"
+                                  onClick={() => setConfirmingDeleteRule(null)}
+                                  disabled={deletingId === rule.id}
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  className="button button-ghost danger"
+                                  onClick={() => void handleDelete(rule)}
+                                  disabled={deletingId === rule.id}
+                                >
+                                  {deletingId === rule.id ? 'Deleting...' : 'Delete rule'}
+                                </button>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
                   ))
                 )}
               </tbody>
@@ -599,33 +631,6 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
           </div>
         )}
       </section>
-
-      {confirmingDeleteRule ? (
-        <section className="inline-callout callout-warning admin-config-feedback" role="status">
-          <div className="admin-config-feedback-content">
-            <strong>Delete multi-posting rule?</strong>
-            <p>This affects future RDB parsing only. Existing parsed posting rows are not changed.</p>
-          </div>
-          <div className="admin-config-confirm-actions">
-            <button
-              type="button"
-              className="button button-secondary"
-              onClick={() => setConfirmingDeleteRule(null)}
-              disabled={deletingId === confirmingDeleteRule.id}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="button button-ghost danger"
-              onClick={() => void handleDelete(confirmingDeleteRule)}
-              disabled={deletingId === confirmingDeleteRule.id}
-            >
-              {deletingId === confirmingDeleteRule.id ? 'Deleting...' : 'Delete rule'}
-            </button>
-          </div>
-        </section>
-      ) : null}
 
       <DetailDrawer
         title={drawerMode === 'edit' ? drawerTitle[activeTab].edit : drawerTitle[activeTab].create}
