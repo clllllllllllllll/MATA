@@ -209,25 +209,31 @@ async def list_multi_posting_rules(
     db: AsyncSession,
     *,
     programme_scope: set[str],
+    master_admin: bool = False,
     programme_code: str | None,
     rule_type: str | None,
 ) -> list[dict[str, Any]]:
-    codes = _scoped_programmes(
-        programme_scope=programme_scope,
-        programme_code=programme_code,
-    )
-    if not codes:
-        return []
-
     params: dict[str, Any] = {}
-    where_clauses: list[str] = [
-        _scope_or_clause(
-            field_name="programme_code",
-            values=codes,
-            params=params,
-            param_prefix="programme_code",
+    where_clauses: list[str] = []
+    if master_admin:
+        if programme_code is not None:
+            params["programme_code"] = programme_code
+            where_clauses.append("programme_code = :programme_code")
+    else:
+        codes = _scoped_programmes(
+            programme_scope=programme_scope,
+            programme_code=programme_code,
         )
-    ]
+        if not codes:
+            return []
+        where_clauses.append(
+            _scope_or_clause(
+                field_name="programme_code",
+                values=codes,
+                params=params,
+                param_prefix="programme_code",
+            )
+        )
     if rule_type is not None:
         params["rule_type"] = rule_type
         where_clauses.append("rule_type = :rule_type")
@@ -245,9 +251,9 @@ async def list_multi_posting_rules(
             created_at,
             updated_at
         FROM multi_posting_rules
-        WHERE
     """
-    sql += " AND ".join(where_clauses)
+    if where_clauses:
+        sql += " WHERE " + " AND ".join(where_clauses)
     sql += " ORDER BY programme_code ASC, rule_type ASC, posting_code_1 ASC, posting_code_2 ASC"
     result = await db.execute(text(sql), params)
     return list(result.mappings().all())
@@ -1569,14 +1575,14 @@ def _validate_multi_posting_rule_payload(
             _raise_validation("combine rules require posting_code_2")
         if not combined_label:
             _raise_validation("combine rules require combined_label")
+        if main_posting_code is not None or exclusion_code is not None:
+            _raise_validation("combine rules must not set main_posting_code or exclusion_code")
     elif rule_type == "half_month":
         if not posting_code_2:
             _raise_validation("half_month rules require posting_code_2")
         if any([combined_label, main_posting_code, exclusion_code]):
             _raise_validation("half_month rules must not set output fields")
     elif rule_type == "main_posting":
-        if posting_code_2 is not None:
-            _raise_validation("main_posting rules must not set posting_code_2")
         if not main_posting_code:
             _raise_validation("main_posting rules require main_posting_code")
         if combined_label is not None:
@@ -1594,6 +1600,21 @@ async def _validate_multi_posting_codes_exist(
     for posting_code in [posting_code_1, posting_code_2, main_posting_code, exclusion_code]:
         if posting_code and not await _posting_code_exists(db, posting_code):
             _raise_validation(f"Unknown posting code: {posting_code}")
+
+
+async def _ensure_posting_code_exists(db: AsyncSession, posting_code: str | None) -> None:
+    if not posting_code:
+        return
+    await db.execute(
+        text(
+            """
+            INSERT INTO posting_codes (code, display_name)
+            VALUES (:code, NULL)
+            ON CONFLICT (code) DO NOTHING
+            """
+        ),
+        {"code": posting_code},
+    )
 
 
 async def _multi_posting_rule_conflict_exists(
@@ -1662,6 +1683,7 @@ async def create_multi_posting_rule(
     db: AsyncSession,
     *,
     programme_scope: set[str],
+    master_admin: bool = False,
     programme_code: str,
     posting_code_1: str,
     posting_code_2: str | None,
@@ -1670,10 +1692,11 @@ async def create_multi_posting_rule(
     main_posting_code: str | None,
     exclusion_code: str | None,
 ) -> dict[str, Any]:
-    _require_programme_in_scope_for_write(
-        programme_scope=programme_scope,
-        programme_code=programme_code,
-    )
+    if not master_admin:
+        _require_programme_in_scope_for_write(
+            programme_scope=programme_scope,
+            programme_code=programme_code,
+        )
     _validate_multi_posting_rule_payload(
         rule_type=rule_type,
         posting_code_2=posting_code_2,
@@ -1681,6 +1704,9 @@ async def create_multi_posting_rule(
         main_posting_code=main_posting_code,
         exclusion_code=exclusion_code,
     )
+    if not await _programme_code_exists(db, programme_code):
+        _raise_validation("Unknown programme code")
+    await _ensure_posting_code_exists(db, combined_label)
     await _validate_multi_posting_codes_exist(
         db,
         posting_code_1=posting_code_1,
@@ -1754,6 +1780,7 @@ async def update_multi_posting_rule(
     db: AsyncSession,
     *,
     programme_scope: set[str],
+    master_admin: bool = False,
     rule_id: UUID,
     programme_code: str,
     posting_code_1: str,
@@ -1771,14 +1798,15 @@ async def update_multi_posting_rule(
     if existing_row is None:
         _raise_not_found("Multi-posting rule not found")
 
-    _require_programme_in_scope_for_write(
-        programme_scope=programme_scope,
-        programme_code=existing_row["programme_code"],
-    )
-    _require_programme_in_scope_for_write(
-        programme_scope=programme_scope,
-        programme_code=programme_code,
-    )
+    if not master_admin:
+        _require_programme_in_scope_for_write(
+            programme_scope=programme_scope,
+            programme_code=existing_row["programme_code"],
+        )
+        _require_programme_in_scope_for_write(
+            programme_scope=programme_scope,
+            programme_code=programme_code,
+        )
 
     _validate_multi_posting_rule_payload(
         rule_type=rule_type,
@@ -1787,6 +1815,9 @@ async def update_multi_posting_rule(
         main_posting_code=main_posting_code,
         exclusion_code=exclusion_code,
     )
+    if not await _programme_code_exists(db, programme_code):
+        _raise_validation("Unknown programme code")
+    await _ensure_posting_code_exists(db, combined_label)
     await _validate_multi_posting_codes_exist(
         db,
         posting_code_1=posting_code_1,
@@ -1855,6 +1886,7 @@ async def delete_multi_posting_rule(
     db: AsyncSession,
     *,
     programme_scope: set[str],
+    master_admin: bool = False,
     rule_id: UUID,
 ) -> None:
     existing = await db.execute(
@@ -1864,10 +1896,11 @@ async def delete_multi_posting_rule(
     row = existing.mappings().one_or_none()
     if row is None:
         _raise_not_found("Multi-posting rule not found")
-    _require_programme_in_scope_for_write(
-        programme_scope=programme_scope,
-        programme_code=row["programme_code"],
-    )
+    if not master_admin:
+        _require_programme_in_scope_for_write(
+            programme_scope=programme_scope,
+            programme_code=row["programme_code"],
+        )
     await db.execute(
         text("DELETE FROM multi_posting_rules WHERE id = :id"),
         {"id": str(rule_id)},

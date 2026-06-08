@@ -118,6 +118,10 @@ class FakeMutationSession:
             code = payload["code"]
             return _FakeMutationResult(scalar=1 if code in self.posting_codes else None)
 
+        if "INSERT INTO posting_codes" in sql:
+            self.posting_codes.add(payload["code"])
+            return _FakeMutationResult()
+
         if "SELECT 1 FROM programmes" in sql:
             code = payload["code"]
             return _FakeMutationResult(scalar=1 if code in {row["code"] for row in self.programmes} else None)
@@ -1272,6 +1276,65 @@ def test_multi_posting_rule_duplicate_and_reverse_conflict_returns_409() -> None
     reverse_payload["posting_code_2"] = payload["posting_code_1"]
     reverse = client.post("/admin/multi-posting-rules", headers=_admin_headers("DR"), json=reverse_payload)
     assert reverse.status_code == 409
+
+
+def test_master_admin_can_create_multi_posting_rule_without_scope() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+    response = client.post(
+        "/admin/multi-posting-rules",
+        headers=_master_admin_headers(scope=None),
+        json={
+            "programme_code": "DR",
+            "posting_code_1": "TTSHDR",
+            "posting_code_2": "KTPHDR",
+            "rule_type": "combine",
+            "combined_label": "TTSHDR-KTPHDR",
+            "main_posting_code": None,
+            "exclusion_code": None,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["combined_label"] == "TTSHDR-KTPHDR"
+
+
+def test_multi_posting_main_posting_allows_explicit_second_posting() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+    response = client.post(
+        "/admin/multi-posting-rules",
+        headers=_admin_headers("DR"),
+        json={
+            "programme_code": "DR",
+            "posting_code_1": "TTSHDR",
+            "posting_code_2": "KTPHDR",
+            "rule_type": "main_posting",
+            "combined_label": None,
+            "main_posting_code": "TTSHDR",
+            "exclusion_code": "KTPHDR",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["posting_code_2"] == "KTPHDR"
+
+
+def test_multi_posting_combine_rejects_main_posting_outputs() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+    response = client.post(
+        "/admin/multi-posting-rules",
+        headers=_admin_headers("DR"),
+        json={
+            "programme_code": "DR",
+            "posting_code_1": "TTSHDR",
+            "posting_code_2": "KTPHDR",
+            "rule_type": "combine",
+            "combined_label": "TTSHDR-KTPHDR",
+            "main_posting_code": "TTSHDR",
+            "exclusion_code": None,
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_multi_posting_rule_update_scope_safety() -> None:

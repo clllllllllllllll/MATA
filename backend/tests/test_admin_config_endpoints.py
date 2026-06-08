@@ -206,9 +206,13 @@ class FakeAdminConfigSession:
             scope_codes = {
                 value for key, value in payload.items() if key.startswith("programme_code_")
             }
-            rows = [
-                row for row in self.multi_posting_rules if row["programme_code"] in scope_codes
-            ]
+            rows = (
+                [row for row in self.multi_posting_rules if row["programme_code"] in scope_codes]
+                if scope_codes
+                else list(self.multi_posting_rules)
+            )
+            if "programme_code" in payload:
+                rows = [row for row in rows if row["programme_code"] == payload["programme_code"]]
             if "rule_type" in payload:
                 rows = [row for row in rows if row["rule_type"] == payload["rule_type"]]
             return _FakeMappingResult(rows)
@@ -427,6 +431,13 @@ def test_master_admin_lists_all_programmes() -> None:
 def test_master_admin_lists_all_posting_groups_without_scope_inference() -> None:
     client = _build_client_with_session(FakeAdminConfigSession())
     response = client.get("/admin/posting-groups", headers=_master_admin_headers(scope=None))
+    assert response.status_code == 200
+    assert {row["programme_code"] for row in response.json()} == {"DR", "GRM"}
+
+
+def test_master_admin_lists_all_multi_posting_rules_without_scope_inference() -> None:
+    client = _build_client_with_session(FakeAdminConfigSession())
+    response = client.get("/admin/multi-posting-rules", headers=_master_admin_headers(scope=None))
     assert response.status_code == 200
     assert {row["programme_code"] for row in response.json()} == {"DR", "GRM"}
 

@@ -1,5 +1,5 @@
 import { Fragment, type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation } from 'react-router-dom'
 import {
   createLoaType,
   deleteLoaType,
@@ -46,10 +46,11 @@ import {
 import { ApiRequestError } from '../../api/http'
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { StatusBadge } from '../../components/StatusBadge'
-import { IconChevRight, IconPlus, IconRefresh, NamedIcon } from '../../components/icons'
+import { IconPlus, IconRefresh, NamedIcon } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
 import { useAppState } from '../../context/useAppState'
 import type { ReportingPeriodOption } from '../../types/upload'
+import { MultiPostingRulesSection } from './AdminMultiPostingPage'
 
 type ConfigSectionKey =
   | 'reporting-periods'
@@ -294,30 +295,27 @@ const configSections: ConfigSection[] = [
     key: 'multi-posting-rules',
     label: 'Multi-Posting Rules',
     icon: 'settings',
-    status: 'Linked',
+    status: 'Live',
     title: 'Multi-Posting Rules',
-    description: 'Rules are seeded and managed through the dedicated Multi-Posting Rules page.',
-    stateLabel: 'Manage via dedicated Multi-Posting Rules page',
+    description: 'Multi-Posting Rules affect RDB parsing. Posting Groups affect compliance aggregation.',
+    stateLabel: 'Live CRUD',
     nextStep:
-      'Warning re-evaluation is a future backend task and is not implemented in this shell.',
-    actionLabel: 'Open Multi-Posting Rules',
-    actionPath: '/admin/config/multi',
+      'Maintain parse-time RDB collapse and split rules without changing Posting Groups compliance aggregation.',
     rows: [
       {
-        field: 'Dedicated page',
-        current: '/admin/config/multi',
-        next: 'Open the existing deep-link page for the current multi-posting workflow.',
-        mono: true,
+        field: 'Main Posting',
+        current: 'Collapse matching RDB cell postings to a main posting.',
+        next: 'Used for FM one-posting rows and explicit two-posting cases.',
       },
       {
-        field: 'Parser impact',
-        current: 'Rules apply when RDB parsing resolves combined or split posting cells.',
-        next: 'Changes should apply on next RDB re-upload.',
+        field: 'To Combine Posting',
+        current: 'Collapse two RDB posting cells to one combined posting.',
+        next: 'Existing parsed rows are unchanged until the next RDB upload.',
       },
       {
-        field: 'Warning handling',
-        current: 'This shell does not re-evaluate existing warnings.',
-        next: 'Backend warning re-evaluation remains future work.',
+        field: 'Half Month Posting',
+        current: 'Split active month weight 50/50 between two postings.',
+        next: 'Posting Groups remain a separate config section.',
       },
     ],
   },
@@ -3628,10 +3626,8 @@ const GlobalSessionTypesSection = () => {
 
 const PlaceholderConfigSection = ({
   activeSection,
-  onNavigate,
 }: {
   activeSection: ConfigSection
-  onNavigate: (path: string) => void
 }) => (
   <>
     <header className="admin-config-content-header">
@@ -3642,16 +3638,6 @@ const PlaceholderConfigSection = ({
         </div>
         <p>{activeSection.description}</p>
       </div>
-      {activeSection.actionLabel && activeSection.actionPath ? (
-        <button
-          type="button"
-          className="button button-primary"
-          onClick={() => onNavigate(activeSection.actionPath ?? '/admin/config/multi')}
-        >
-          {activeSection.actionLabel}
-          <IconChevRight size={14} />
-        </button>
-      ) : null}
     </header>
 
     <div className="admin-config-callout">
@@ -3683,9 +3669,12 @@ const PlaceholderConfigSection = ({
 )
 
 export const AdminConfigPage = () => {
-  const navigate = useNavigate()
+  const location = useLocation()
   const { demoAdminProgrammes, role } = useAppState()
-  const [activeSectionKey, setActiveSectionKey] = useState<ConfigSectionKey>('reporting-periods')
+  const requestedSection = (location.state as { configSection?: ConfigSectionKey } | null)?.configSection
+  const [activeSectionKey, setActiveSectionKey] = useState<ConfigSectionKey>(
+    requestedSection ?? 'reporting-periods',
+  )
   const visibleConfigSections = useMemo(
     () =>
       role === 'programme_pc'
@@ -3705,14 +3694,25 @@ export const AdminConfigPage = () => {
   useEffect(() => {
     let cancelled = false
     queueMicrotask(() => {
-      if (!cancelled && !visibleConfigSections.some((section) => section.key === activeSectionKey)) {
+      if (cancelled) {
+        return
+      }
+      if (
+        requestedSection &&
+        requestedSection !== activeSectionKey &&
+        visibleConfigSections.some((section) => section.key === requestedSection)
+      ) {
+        setActiveSectionKey(requestedSection)
+        return
+      }
+      if (!visibleConfigSections.some((section) => section.key === activeSectionKey)) {
         setActiveSectionKey(visibleConfigSections[0]?.key ?? 'reporting-periods')
       }
     })
     return () => {
       cancelled = true
     }
-  }, [activeSectionKey, visibleConfigSections])
+  }, [activeSectionKey, requestedSection, visibleConfigSections])
 
   return (
     <div className="page admin-config-page">
@@ -3749,6 +3749,8 @@ export const AdminConfigPage = () => {
             <ProgrammesSection />
           ) : activeSection.key === 'loa-types' ? (
             <LoaTypesSection />
+          ) : activeSection.key === 'multi-posting-rules' ? (
+            <MultiPostingRulesSection />
           ) : activeSection.key === 'posting-groups' ? (
             <PostingGroupsSection />
           ) : activeSection.key === 'weekend-exceptions' ? (
@@ -3756,10 +3758,7 @@ export const AdminConfigPage = () => {
           ) : activeSection.key === 'global-session-types' ? (
             <GlobalSessionTypesSection />
           ) : (
-            <PlaceholderConfigSection
-              activeSection={activeSection}
-              onNavigate={(path) => navigate(path)}
-            />
+            <PlaceholderConfigSection activeSection={activeSection} />
           )}
         </article>
       </section>

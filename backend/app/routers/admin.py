@@ -782,6 +782,7 @@ async def list_multi_posting_rules(
     rows = await admin_config.list_multi_posting_rules(
         db,
         programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
         programme_code=programme_code,
         rule_type=rule_type,
     )
@@ -803,6 +804,7 @@ async def create_multi_posting_rule(
     row = await admin_config.create_multi_posting_rule(
         db,
         programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
         programme_code=payload.programme_code,
         posting_code_1=payload.posting_code_1,
         posting_code_2=payload.posting_code_2,
@@ -830,6 +832,7 @@ async def update_multi_posting_rule(
     row = await admin_config.update_multi_posting_rule(
         db,
         programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
         rule_id=rule_id,
         programme_code=payload.programme_code,
         posting_code_1=payload.posting_code_1,
@@ -857,6 +860,7 @@ async def delete_multi_posting_rule(
     await admin_config.delete_multi_posting_rule(
         db,
         programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
         rule_id=rule_id,
     )
 

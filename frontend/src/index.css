@@ -2602,6 +2602,84 @@ button:disabled,
   }
 }
 
+.multi-posting-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.multi-posting-tabs {
+  margin-bottom: 18px;
+}
+
+.multi-posting-table {
+  table-layout: fixed;
+}
+
+.multi-posting-table th,
+.multi-posting-table td {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.multi-posting-table td {
+  padding-block: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.multi-posting-table th:first-child,
+.multi-posting-table td:first-child {
+  width: 13%;
+}
+
+.multi-posting-table th:nth-child(2),
+.multi-posting-table td:nth-child(2),
+.multi-posting-table th:nth-child(3),
+.multi-posting-table td:nth-child(3) {
+  width: 17%;
+}
+
+.multi-posting-table th:nth-child(4),
+.multi-posting-table td:nth-child(4) {
+  width: 25%;
+}
+
+.multi-posting-table th:nth-child(5),
+.multi-posting-table td:nth-child(5) {
+  width: 12%;
+}
+
+.multi-posting-table th:nth-child(6),
+.multi-posting-table td:nth-child(6) {
+  width: 16%;
+}
+
+.multi-posting-table .admin-config-row-actions {
+  justify-content: center;
+  min-width: 0;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.multi-posting-output-stack {
+  display: inline-grid;
+  gap: 2px;
+  max-width: 100%;
+}
+
+.multi-posting-output-stack small {
+  color: var(--ink-3, #5b5f73);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .posting-group-form-section,
 .weekend-exception-form-section {
   display: grid;
@@ -2617,6 +2695,50 @@ button:disabled,
   margin: 0 0 4px;
   font-size: 13px;
   color: var(--ink, #10121f);
+}
+
+.multi-posting-form-card {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--line, #ecedf2);
+  border-radius: 18px;
+  background: #fafafd;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+#multi-posting-form {
+  grid-template-columns: 1fr;
+  width: 100%;
+}
+
+.multi-posting-form-card > label {
+  min-width: 0;
+}
+
+.multi-posting-form-group {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line, #ecedf2);
+}
+
+.multi-posting-form-group h3 {
+  grid-column: 1 / -1;
+  margin: 0 0 2px;
+  font-size: 13px;
+  color: var(--ink, #10121f);
+}
+
+.multi-posting-form-group label {
+  min-width: 0;
+}
+
+.multi-posting-form-group .admin-config-helper,
+.multi-posting-field-wide {
+  grid-column: 1 / -1;
 }
 
 .posting-group-form-section p,
