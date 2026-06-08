@@ -8,6 +8,13 @@ import {
   type LoaType,
 } from '../../api/loaTypes'
 import {
+  createGlobalSessionType,
+  deleteGlobalSessionType,
+  listGlobalSessionTypes,
+  updateGlobalSessionType,
+  type GlobalSessionType,
+} from '../../api/globalSessionTypes'
+import {
   createPublicHoliday,
   deletePublicHoliday,
   listPublicHolidays,
@@ -15,11 +22,20 @@ import {
   type PublicHoliday,
 } from '../../api/publicHolidays'
 import { listProgrammes, updateProgramme, type Programme } from '../../api/programmes'
+import { listPostingCodes, type PostingCodeOption } from '../../api/postingCodes'
 import {
   createReportingPeriod,
   deleteReportingPeriod,
   updateReportingPeriod,
 } from '../../api/reportingPeriods'
+import { listSessionTypes, type SessionTypeOption } from '../../api/sessionTypes'
+import {
+  createWeekendException,
+  deleteWeekendException,
+  listWeekendExceptions,
+  updateWeekendException,
+  type WeekendException,
+} from '../../api/weekendExceptions'
 import { ApiRequestError } from '../../api/http'
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -80,6 +96,24 @@ interface LoaTypeFormState {
   description: string
 }
 
+interface WeekendExceptionFormState {
+  programmeCode: string
+  postingCode: string
+  dayType: 'sat' | 'sun' | 'both'
+  startTimeMin: string
+  endTimeMax: string
+  sessionTypeId: string
+  sessionNamePattern: string
+  mutatesToSessionTypeId: string
+  adjustedDurationHours: string
+}
+
+interface GlobalSessionTypeFormState {
+  name: string
+  durationHours: string
+  isActive: boolean
+}
+
 type Feedback = {
   tone: 'success' | 'error'
   message: string
@@ -113,6 +147,24 @@ const emptyProgrammeForm: ProgrammeFormState = {
 const emptyLoaTypeForm: LoaTypeFormState = {
   code: '',
   description: '',
+}
+
+const emptyWeekendExceptionForm: WeekendExceptionFormState = {
+  programmeCode: '',
+  postingCode: '',
+  dayType: 'sat',
+  startTimeMin: '',
+  endTimeMax: '',
+  sessionTypeId: '',
+  sessionNamePattern: '',
+  mutatesToSessionTypeId: '',
+  adjustedDurationHours: '',
+}
+
+const emptyGlobalSessionTypeForm: GlobalSessionTypeFormState = {
+  name: '',
+  durationHours: '1.0',
+  isActive: true,
 }
 
 const programmePcConfigSections: ConfigSectionKey[] = ['multi-posting-rules', 'posting-groups']
@@ -457,7 +509,118 @@ const toLoaTypeFormState = (loaType: LoaType): LoaTypeFormState => ({
   description: loaType.description ?? '',
 })
 
+const toWeekendExceptionFormState = (
+  weekendException: WeekendException,
+): WeekendExceptionFormState => ({
+  programmeCode: weekendException.programmeCode ?? '',
+  postingCode: weekendException.postingCode ?? '',
+  dayType: weekendException.dayType,
+  startTimeMin: normaliseTimeForInput(weekendException.startTimeMin),
+  endTimeMax: normaliseTimeForInput(weekendException.endTimeMax),
+  sessionTypeId: weekendException.sessionTypeId ?? '',
+  sessionNamePattern: weekendException.sessionNamePattern ?? '',
+  mutatesToSessionTypeId: weekendException.mutatesToSessionTypeId ?? '',
+  adjustedDurationHours: weekendException.adjustedDurationHours ?? '',
+})
+
+const toGlobalSessionTypeFormState = (
+  globalSessionType: GlobalSessionType,
+): GlobalSessionTypeFormState => ({
+  name: globalSessionType.name,
+  durationHours: globalSessionType.durationHours,
+  isActive: globalSessionType.isActive,
+})
+
 const booleanTone = (value: boolean): 'success' | 'neutral' => (value ? 'success' : 'neutral')
+
+const normaliseOptionalText = (value: string): string | null => value.trim() || null
+
+const normaliseTimeForInput = (value?: string): string => (value ? value.slice(0, 5) : '')
+
+const dayTypeLabels: Record<WeekendException['dayType'], string> = {
+  sat: 'Saturday',
+  sun: 'Sunday',
+  both: 'Saturday and Sunday',
+}
+
+const formatWeekendScope = (weekendException: WeekendException) => {
+  const programme = weekendException.programmeCode ?? 'All programmes'
+  const posting = weekendException.postingCode ?? 'All postings'
+  return `${programme} / ${posting}`
+}
+
+const formatTimeWindow = (weekendException: WeekendException) => {
+  if (!weekendException.startTimeMin && !weekendException.endTimeMax) {
+    return 'Any time'
+  }
+  return `${normaliseTimeForInput(weekendException.startTimeMin) || 'Any'} - ${
+    normaliseTimeForInput(weekendException.endTimeMax) || 'Any'
+  }`
+}
+
+const formatHourValue = (value?: string) => {
+  if (!value) {
+    return ''
+  }
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) {
+    return `${value}h`
+  }
+  return `${numeric.toFixed(2)}h`
+}
+
+const formatWeekendMatch = (weekendException: WeekendException) => {
+  if (weekendException.sessionNamePattern) {
+    return `Teaching name contains: ${weekendException.sessionNamePattern}`
+  }
+  if (weekendException.sessionTypeId) {
+    return weekendException.sessionTypeName
+      ? `Session type: ${weekendException.sessionTypeName}`
+      : 'Session type: Configured session type'
+  }
+  return 'Any session'
+}
+
+const formatWeekendCountsAs = (weekendException: WeekendException) => {
+  if (!weekendException.mutatesToSessionTypeId && !weekendException.adjustedDurationHours) {
+    return 'Submitted session'
+  }
+  const target = weekendException.mutatesToSessionTypeId
+    ? (weekendException.mutatesToSessionTypeName ?? 'Configured mapped session')
+    : 'Configured mapped session'
+  const duration = formatHourValue(weekendException.adjustedDurationHours)
+  return duration ? `${target} / ${duration}` : target
+}
+
+const sessionTypeOptionLabel = (option: SessionTypeOption) => option.name
+
+const programmeOptionLabel = (programme: Programme) =>
+  programme.name ? `${programme.code} - ${programme.name}` : programme.code
+
+const postingCodeOptionLabel = (postingCode: PostingCodeOption) =>
+  postingCode.displayName ? `${postingCode.code} - ${postingCode.displayName}` : postingCode.code
+
+const describeWeekendExceptionError = (
+  error: unknown,
+  fallbackMessage: string,
+): NonNullable<Feedback> => {
+  if (!(error instanceof ApiRequestError)) {
+    return { tone: 'error', message: fallbackMessage }
+  }
+  const lowerMessage = error.message.toLowerCase()
+  if (lowerMessage.includes('session_type_id') || lowerMessage.includes('mutates_to_session_type_id')) {
+    return {
+      tone: 'error',
+      message: fallbackMessage,
+      description:
+        'One selected session type could not be found. Choose an existing session type or clear the selection.',
+    }
+  }
+  return {
+    tone: 'error',
+    message: error.message || fallbackMessage,
+  }
+}
 
 const describePublicHolidayError = (
   error: unknown,
@@ -1927,6 +2090,1017 @@ const LoaTypesSection = () => {
   )
 }
 
+const WeekendExceptionsSection = () => {
+  const { demoAdminId, demoAdminProgrammes, role } = useAppState()
+  const adminLevel = role === 'master_admin' ? 'master' : 'programme'
+  const [weekendExceptions, setWeekendExceptions] = useState<WeekendException[]>([])
+  const [sessionTypeOptions, setSessionTypeOptions] = useState<SessionTypeOption[]>([])
+  const [programmeOptions, setProgrammeOptions] = useState<Programme[]>([])
+  const [postingCodeOptions, setPostingCodeOptions] = useState<PostingCodeOption[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [drawerMode, setDrawerMode] = useState<'create' | 'edit'>('create')
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [selectedException, setSelectedException] = useState<WeekendException | null>(null)
+  const [formState, setFormState] = useState<WeekendExceptionFormState>(emptyWeekendExceptionForm)
+  const [submitState, setSubmitState] = useState<'idle' | 'submitting' | 'error'>('idle')
+  const [feedback, setFeedback] = useState<Feedback>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [confirmingDeleteException, setConfirmingDeleteException] =
+    useState<WeekendException | null>(null)
+
+  const sortedExceptions = useMemo(
+    () =>
+      [...weekendExceptions].sort((left, right) =>
+        formatWeekendScope(left).localeCompare(formatWeekendScope(right)) ||
+        left.dayType.localeCompare(right.dayType),
+      ),
+    [weekendExceptions],
+  )
+
+  const sortedSessionTypeOptions = useMemo(
+    () => [...sessionTypeOptions].sort((left, right) => left.name.localeCompare(right.name)),
+    [sessionTypeOptions],
+  )
+
+  const sortedProgrammeOptions = useMemo(
+    () => [...programmeOptions].sort((left, right) => left.code.localeCompare(right.code)),
+    [programmeOptions],
+  )
+
+  const sortedPostingCodeOptions = useMemo(
+    () => [...postingCodeOptions].sort((left, right) => left.code.localeCompare(right.code)),
+    [postingCodeOptions],
+  )
+
+  const reloadWeekendExceptions = useCallback(async () => {
+    setLoading(true)
+    setLoadError(null)
+    try {
+      const [exceptionRows, sessionTypeRows, programmeRows, postingRows] = await Promise.all([
+        listWeekendExceptions({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+        }),
+        listSessionTypes({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+          limit: 500,
+        }),
+        listProgrammes({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+        }),
+        listPostingCodes({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+        }),
+      ])
+      setWeekendExceptions(exceptionRows)
+      setSessionTypeOptions(sessionTypeRows)
+      setProgrammeOptions(programmeRows)
+      setPostingCodeOptions(postingRows)
+    } catch (error) {
+      const message =
+        error instanceof ApiRequestError
+          ? error.message
+          : 'Unable to load weekend exceptions or selector options.'
+      setLoadError(message)
+      setWeekendExceptions([])
+      setSessionTypeOptions([])
+      setProgrammeOptions([])
+      setPostingCodeOptions([])
+    } finally {
+      setLoading(false)
+    }
+  }, [adminLevel, demoAdminId, demoAdminProgrammes])
+
+  useEffect(() => {
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        void reloadWeekendExceptions()
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [reloadWeekendExceptions])
+
+  const dismissFeedback = () => setFeedback(null)
+
+  const openCreateDrawer = () => {
+    setDrawerMode('create')
+    setSelectedException(null)
+    setFormState(emptyWeekendExceptionForm)
+    setSubmitState('idle')
+    setFeedback(null)
+    setConfirmingDeleteException(null)
+    setDrawerOpen(true)
+  }
+
+  const openEditDrawer = (weekendException: WeekendException) => {
+    setDrawerMode('edit')
+    setSelectedException(weekendException)
+    setFormState(toWeekendExceptionFormState(weekendException))
+    setSubmitState('idle')
+    setFeedback(null)
+    setConfirmingDeleteException(null)
+    setDrawerOpen(true)
+  }
+
+  const closeDrawer = () => {
+    if (submitState === 'submitting') {
+      return
+    }
+    setDrawerOpen(false)
+    setSelectedException(null)
+    setFormState(emptyWeekendExceptionForm)
+    setSubmitState('idle')
+  }
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setSubmitState('submitting')
+    setFeedback(null)
+    const payload = {
+      programmeCode: normaliseOptionalText(formState.programmeCode),
+      postingCode: normaliseOptionalText(formState.postingCode),
+      dayType: formState.dayType,
+      startTimeMin: normaliseOptionalText(formState.startTimeMin),
+      endTimeMax: normaliseOptionalText(formState.endTimeMax),
+      sessionTypeId: normaliseOptionalText(formState.sessionTypeId),
+      sessionNamePattern: normaliseOptionalText(formState.sessionNamePattern),
+      mutatesToSessionTypeId: normaliseOptionalText(formState.mutatesToSessionTypeId),
+      adjustedDurationHours: normaliseOptionalText(formState.adjustedDurationHours),
+    }
+    try {
+      if (drawerMode === 'edit' && selectedException) {
+        await updateWeekendException({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+          id: selectedException.id,
+          payload,
+        })
+        setFeedback({ tone: 'success', message: 'Weekend exception updated.' })
+      } else {
+        await createWeekendException({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+          payload,
+        })
+        setFeedback({ tone: 'success', message: 'Weekend exception created.' })
+      }
+      await reloadWeekendExceptions()
+      setDrawerOpen(false)
+      setSelectedException(null)
+      setFormState(emptyWeekendExceptionForm)
+      setSubmitState('idle')
+    } catch (error) {
+      setSubmitState('error')
+      setFeedback(describeWeekendExceptionError(error, 'Unable to save weekend exception.'))
+    }
+  }
+
+  const requestDelete = (weekendException: WeekendException) => {
+    setFeedback(null)
+    setConfirmingDeleteException(weekendException)
+  }
+
+  const handleDelete = async (weekendException: WeekendException) => {
+    setDeletingId(weekendException.id)
+    setFeedback(null)
+    try {
+      await deleteWeekendException({
+        adminId: demoAdminId,
+        adminProgrammes: demoAdminProgrammes,
+        adminLevel,
+        id: weekendException.id,
+      })
+      setFeedback({ tone: 'success', message: 'Weekend exception deleted.' })
+      await reloadWeekendExceptions()
+      setConfirmingDeleteException(null)
+    } catch (error) {
+      setConfirmingDeleteException(null)
+      setFeedback(describeWeekendExceptionError(error, 'Unable to delete weekend exception.'))
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  return (
+    <>
+      <header className="admin-config-content-header">
+        <div>
+          <div className="admin-config-title-row">
+            <h2>Weekend Exceptions</h2>
+          </div>
+          <p>Configure which weekend teachings are accepted and how they should count for compliance.</p>
+        </div>
+        <div className="admin-config-actions">
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => void reloadWeekendExceptions()}
+            disabled={loading}
+          >
+            <IconRefresh size={14} />
+            Retry
+          </button>
+          <button type="button" className="button button-primary" onClick={openCreateDrawer}>
+            <IconPlus size={14} />
+            New Weekend Exception
+          </button>
+        </div>
+      </header>
+
+      {feedback ? (
+        <div
+          className={`inline-callout ${feedback.tone === 'error' ? 'callout-error' : 'callout-success'} admin-config-feedback`}
+          role="status"
+        >
+          <div className="admin-config-feedback-content">
+            <strong>{feedback.message}</strong>
+            {feedback.description ? <p>{feedback.description}</p> : null}
+          </div>
+          <button
+            type="button"
+            className="admin-config-feedback-dismiss"
+            onClick={dismissFeedback}
+            aria-label="Dismiss feedback"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
+      {loading ? (
+        <div className="configuration-empty-note">Loading weekend exceptions...</div>
+      ) : loadError ? (
+        <div className="configuration-empty-note">
+          <div>
+            <h3>Unable to load weekend exceptions</h3>
+            <p>{loadError}</p>
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => void reloadWeekendExceptions()}
+            >
+              <IconRefresh size={14} />
+              Retry
+            </button>
+          </div>
+        </div>
+      ) : sortedExceptions.length === 0 ? (
+        <div className="configuration-empty-note">
+          <div>
+            <h3>No weekend exceptions configured yet.</h3>
+            <p>Add only confirmed weekend rules. Raw attendance remains unchanged.</p>
+          </div>
+        </div>
+      ) : (
+        <div className="admin-config-table-wrap">
+          <table className="admin-config-table weekend-exceptions-table">
+            <thead>
+              <tr>
+                <th>Scope</th>
+                <th>Day</th>
+                <th>Time Window</th>
+                <th>Applies To</th>
+                <th>Counts As</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedExceptions.map((weekendException) => (
+                <Fragment key={weekendException.id}>
+                  <tr>
+                    <td title={formatWeekendScope(weekendException)}>
+                      {formatWeekendScope(weekendException)}
+                    </td>
+                    <td>{dayTypeLabels[weekendException.dayType]}</td>
+                    <td>{formatTimeWindow(weekendException)}</td>
+                    <td title={formatWeekendMatch(weekendException)}>
+                      {formatWeekendMatch(weekendException)}
+                    </td>
+                    <td title={formatWeekendCountsAs(weekendException)}>
+                      {formatWeekendCountsAs(weekendException)}
+                    </td>
+                    <td>
+                      <div className="admin-config-row-actions">
+                        <button
+                          type="button"
+                          className="button button-secondary"
+                          onClick={() => openEditDrawer(weekendException)}
+                          disabled={deletingId === weekendException.id}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="button button-ghost danger"
+                          onClick={() => requestDelete(weekendException)}
+                          disabled={deletingId === weekendException.id}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {confirmingDeleteException?.id === weekendException.id ? (
+                    <tr className="admin-config-confirm-row">
+                      <td colSpan={6}>
+                        <div
+                          className="admin-config-inline-confirm"
+                          role="group"
+                          aria-label="Delete weekend exception"
+                        >
+                          <div>
+                            <strong>Delete this weekend exception?</strong>
+                            <p>
+                              This removes the exception rule. It does not mutate attendance records
+                              or recalculate historical submissions.
+                            </p>
+                          </div>
+                          <div className="admin-config-confirm-actions">
+                            <button
+                              type="button"
+                              className="button button-secondary"
+                              onClick={() => setConfirmingDeleteException(null)}
+                              disabled={deletingId === weekendException.id}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              className="button button-ghost danger"
+                              onClick={() => void handleDelete(weekendException)}
+                              disabled={deletingId === weekendException.id}
+                            >
+                              {deletingId === weekendException.id
+                                ? 'Deleting...'
+                                : 'Delete exception'}
+                            </button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <DetailDrawer
+        title={drawerMode === 'edit' ? 'Edit Weekend Exception' : 'New Weekend Exception'}
+        open={drawerOpen}
+        onClose={closeDrawer}
+        footer={
+          <>
+            <button type="button" className="button button-secondary" onClick={closeDrawer}>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              form="weekend-exception-form"
+              className="button button-primary"
+              disabled={submitState === 'submitting'}
+            >
+              {submitState === 'submitting' ? 'Saving...' : 'Save'}
+            </button>
+          </>
+        }
+      >
+        <form id="weekend-exception-form" className="secretary-form-grid" onSubmit={handleSubmit}>
+          <section className="weekend-exception-form-section">
+            <div>
+              <h3>Scope</h3>
+              <p>
+                Choose where this weekend exception applies. Leave posting blank to apply to all
+                postings in the programme.
+              </p>
+            </div>
+            <div className="secretary-form-row">
+              <label>
+                Programme
+                <select
+                  value={formState.programmeCode}
+                  onChange={(event) =>
+                    setFormState((prev) => ({ ...prev, programmeCode: event.target.value }))
+                  }
+                >
+                  <option value="">All programmes</option>
+                  {formState.programmeCode &&
+                  !sortedProgrammeOptions.some((option) => option.code === formState.programmeCode) ? (
+                    <option value={formState.programmeCode}>
+                      Current programme no longer exists
+                    </option>
+                  ) : null}
+                  {sortedProgrammeOptions.map((programme) => (
+                    <option key={programme.code} value={programme.code}>
+                      {programmeOptionLabel(programme)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Posting, optional
+                <select
+                  value={formState.postingCode}
+                  onChange={(event) =>
+                    setFormState((prev) => ({ ...prev, postingCode: event.target.value }))
+                  }
+                >
+                  <option value="">All postings</option>
+                  {formState.postingCode &&
+                  !sortedPostingCodeOptions.some((option) => option.code === formState.postingCode) ? (
+                    <option value={formState.postingCode}>Current posting no longer exists</option>
+                  ) : null}
+                  {sortedPostingCodeOptions.map((postingCode) => (
+                    <option key={postingCode.code} value={postingCode.code}>
+                      {postingCodeOptionLabel(postingCode)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section className="weekend-exception-form-section">
+            <div>
+              <h3>Weekend window</h3>
+              <p>Choose the weekend day and optional time range that should be accepted.</p>
+            </div>
+            <div className="secretary-form-row">
+              <label>
+                Weekend day
+                <select
+                  value={formState.dayType}
+                  onChange={(event) =>
+                    setFormState((prev) => ({
+                      ...prev,
+                      dayType:
+                        event.target.value === 'sun' || event.target.value === 'both'
+                          ? event.target.value
+                          : 'sat',
+                    }))
+                  }
+                >
+                  <option value="sat">Saturday</option>
+                  <option value="sun">Sunday</option>
+                  <option value="both">Saturday and Sunday</option>
+                </select>
+              </label>
+              <label>
+                Start time, optional
+                <input
+                  type="time"
+                  value={formState.startTimeMin}
+                  onChange={(event) =>
+                    setFormState((prev) => ({ ...prev, startTimeMin: event.target.value }))
+                  }
+                />
+              </label>
+              <label>
+                End time, optional
+                <input
+                  type="time"
+                  value={formState.endTimeMax}
+                  onChange={(event) =>
+                    setFormState((prev) => ({ ...prev, endTimeMax: event.target.value }))
+                  }
+                />
+              </label>
+            </div>
+          </section>
+
+          <section className="weekend-exception-form-section">
+            <div>
+              <h3>Matching sessions</h3>
+              <p>
+                Choose which sessions this exception applies to. Use either a teaching-name text
+                match or an uploaded TTF session type. Leave both blank to accept any session in
+                the selected weekend window.
+              </p>
+            </div>
+            <label>
+              Teaching name text match
+              <input
+                type="text"
+                value={formState.sessionNamePattern}
+                onChange={(event) =>
+                  setFormState((prev) => ({ ...prev, sessionNamePattern: event.target.value }))
+                }
+                maxLength={100}
+                placeholder="e.g. Urology National Teaching (Sat)"
+              />
+              <span className="form-helper">
+                Optional free-text substring match against the teaching event name. Use this only
+                when the rule depends on specific wording.
+              </span>
+            </label>
+            <label>
+              Session type is
+              <select
+                value={formState.sessionTypeId}
+                onChange={(event) =>
+                  setFormState((prev) => ({ ...prev, sessionTypeId: event.target.value }))
+                }
+              >
+                <option value="">Any session type</option>
+                {formState.sessionTypeId &&
+                !sortedSessionTypeOptions.some((option) => option.id === formState.sessionTypeId) ? (
+                  <option value={formState.sessionTypeId}>Current session type no longer exists</option>
+                ) : null}
+                {sortedSessionTypeOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {sessionTypeOptionLabel(option)}
+                  </option>
+                ))}
+              </select>
+              <span className="form-helper">
+                Optional. Restricts this rule to one uploaded TTF session type.
+              </span>
+              <span className="form-helper">
+                Session type options come from uploaded TTF files. Upload additional TTFs to make
+                more session types available.
+              </span>
+            </label>
+          </section>
+
+          <section className="weekend-exception-form-section">
+            <div>
+              <h3>Compliance counting</h3>
+              <p>
+                Usually leave this unchanged. Use a mapping only when the session should count as a
+                different session type for compliance.
+              </p>
+            </div>
+            <label>
+              Count as session type
+              <select
+                value={formState.mutatesToSessionTypeId}
+                onChange={(event) =>
+                  setFormState((prev) => ({
+                    ...prev,
+                    mutatesToSessionTypeId: event.target.value,
+                  }))
+                }
+              >
+                <option value="">Count as submitted session</option>
+                {formState.mutatesToSessionTypeId &&
+                !sortedSessionTypeOptions.some(
+                  (option) => option.id === formState.mutatesToSessionTypeId,
+                ) ? (
+                  <option value={formState.mutatesToSessionTypeId}>
+                    Current session type no longer exists
+                  </option>
+                ) : null}
+                {sortedSessionTypeOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {sessionTypeOptionLabel(option)}
+                  </option>
+                ))}
+              </select>
+              <span className="form-helper">
+                Optional. Used for special cases such as ORTHO.
+              </span>
+              <span className="form-helper">
+                Session type options come from uploaded TTF files. Upload additional TTFs to make
+                more session types available.
+              </span>
+            </label>
+            <label>
+              Counted duration hours
+              <input
+                type="number"
+                min="0.25"
+                step="0.25"
+                value={formState.adjustedDurationHours}
+                onChange={(event) =>
+                  setFormState((prev) => ({ ...prev, adjustedDurationHours: event.target.value }))
+                }
+                placeholder="e.g. 1.00"
+              />
+              <span className="form-helper">
+                Enter hours as a decimal, e.g. 0.25, 1.00, 1.75. Required only when "Count as
+                session type" is selected.
+              </span>
+            </label>
+          </section>
+          <div className="inline-callout callout-neutral">
+            Weekend exceptions affect future submission warnings and compliance reads. Raw
+            attendance records are not changed.
+          </div>
+          {submitState === 'error' && feedback ? (
+            <div className="inline-callout callout-error">{feedback.message}</div>
+          ) : null}
+        </form>
+      </DetailDrawer>
+    </>
+  )
+}
+
+const GlobalSessionTypesSection = () => {
+  const { demoAdminId, demoAdminProgrammes, role } = useAppState()
+  const adminLevel = role === 'master_admin' ? 'master' : 'programme'
+  const [globalSessionTypes, setGlobalSessionTypes] = useState<GlobalSessionType[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [drawerMode, setDrawerMode] = useState<'create' | 'edit'>('create')
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [selectedGlobalType, setSelectedGlobalType] = useState<GlobalSessionType | null>(null)
+  const [formState, setFormState] =
+    useState<GlobalSessionTypeFormState>(emptyGlobalSessionTypeForm)
+  const [submitState, setSubmitState] = useState<'idle' | 'submitting' | 'error'>('idle')
+  const [feedback, setFeedback] = useState<Feedback>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [confirmingDeleteGlobalType, setConfirmingDeleteGlobalType] =
+    useState<GlobalSessionType | null>(null)
+
+  const sortedGlobalTypes = useMemo(
+    () => [...globalSessionTypes].sort((left, right) => left.name.localeCompare(right.name)),
+    [globalSessionTypes],
+  )
+
+  const reloadGlobalSessionTypes = useCallback(async () => {
+    setLoading(true)
+    setLoadError(null)
+    try {
+      const rows = await listGlobalSessionTypes({
+        adminId: demoAdminId,
+        adminProgrammes: demoAdminProgrammes,
+        adminLevel,
+      })
+      setGlobalSessionTypes(rows)
+    } catch (error) {
+      const message =
+        error instanceof ApiRequestError ? error.message : 'Unable to load global session types.'
+      setLoadError(message)
+      setGlobalSessionTypes([])
+    } finally {
+      setLoading(false)
+    }
+  }, [adminLevel, demoAdminId, demoAdminProgrammes])
+
+  useEffect(() => {
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        void reloadGlobalSessionTypes()
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [reloadGlobalSessionTypes])
+
+  const dismissFeedback = () => setFeedback(null)
+
+  const openCreateDrawer = () => {
+    setDrawerMode('create')
+    setSelectedGlobalType(null)
+    setFormState(emptyGlobalSessionTypeForm)
+    setSubmitState('idle')
+    setFeedback(null)
+    setConfirmingDeleteGlobalType(null)
+    setDrawerOpen(true)
+  }
+
+  const openEditDrawer = (globalSessionType: GlobalSessionType) => {
+    setDrawerMode('edit')
+    setSelectedGlobalType(globalSessionType)
+    setFormState(toGlobalSessionTypeFormState(globalSessionType))
+    setSubmitState('idle')
+    setFeedback(null)
+    setConfirmingDeleteGlobalType(null)
+    setDrawerOpen(true)
+  }
+
+  const closeDrawer = () => {
+    if (submitState === 'submitting') {
+      return
+    }
+    setDrawerOpen(false)
+    setSelectedGlobalType(null)
+    setFormState(emptyGlobalSessionTypeForm)
+    setSubmitState('idle')
+  }
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setSubmitState('submitting')
+    setFeedback(null)
+    const payload = {
+      name: formState.name.trim(),
+      durationHours: formState.durationHours.trim(),
+      isActive: formState.isActive,
+    }
+    try {
+      if (drawerMode === 'edit' && selectedGlobalType) {
+        await updateGlobalSessionType({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+          id: selectedGlobalType.id,
+          payload,
+        })
+        setFeedback({ tone: 'success', message: 'Global session type updated.' })
+      } else {
+        await createGlobalSessionType({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+          payload,
+        })
+        setFeedback({ tone: 'success', message: 'Global session type created.' })
+      }
+      await reloadGlobalSessionTypes()
+      setDrawerOpen(false)
+      setSelectedGlobalType(null)
+      setFormState(emptyGlobalSessionTypeForm)
+      setSubmitState('idle')
+    } catch (error) {
+      setSubmitState('error')
+      setFeedback(
+        describeGenericConfigError(
+          error,
+          'Unable to save global session type.',
+          'That global session type may already exist. Use edit on the existing row instead.',
+        ),
+      )
+    }
+  }
+
+  const requestDelete = (globalSessionType: GlobalSessionType) => {
+    setFeedback(null)
+    setConfirmingDeleteGlobalType(globalSessionType)
+  }
+
+  const handleDelete = async (globalSessionType: GlobalSessionType) => {
+    setDeletingId(globalSessionType.id)
+    setFeedback(null)
+    try {
+      await deleteGlobalSessionType({
+        adminId: demoAdminId,
+        adminProgrammes: demoAdminProgrammes,
+        adminLevel,
+        id: globalSessionType.id,
+      })
+      setFeedback({ tone: 'success', message: 'Global session type deleted.' })
+      await reloadGlobalSessionTypes()
+      setConfirmingDeleteGlobalType(null)
+    } catch (error) {
+      setConfirmingDeleteGlobalType(null)
+      setFeedback(
+        describeGenericConfigError(
+          error,
+          'Unable to delete global session type.',
+          'This global session type is already used by teaching events. Deactivate it instead.',
+        ),
+      )
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  return (
+    <>
+      <header className="admin-config-content-header">
+        <div>
+          <div className="admin-config-title-row">
+            <h2>Global Session Types</h2>
+          </div>
+          <p>Manage compliance-exempt session names that remain selectable for teaching events.</p>
+        </div>
+        <div className="admin-config-actions">
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => void reloadGlobalSessionTypes()}
+            disabled={loading}
+          >
+            <IconRefresh size={14} />
+            Retry
+          </button>
+          <button type="button" className="button button-primary" onClick={openCreateDrawer}>
+            <IconPlus size={14} />
+            New Global Session Type
+          </button>
+        </div>
+      </header>
+
+      {feedback ? (
+        <div
+          className={`inline-callout ${feedback.tone === 'error' ? 'callout-error' : 'callout-success'} admin-config-feedback`}
+          role="status"
+        >
+          <div className="admin-config-feedback-content">
+            <strong>{feedback.message}</strong>
+            {feedback.description ? <p>{feedback.description}</p> : null}
+          </div>
+          <button
+            type="button"
+            className="admin-config-feedback-dismiss"
+            onClick={dismissFeedback}
+            aria-label="Dismiss feedback"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
+      {loading ? (
+        <div className="configuration-empty-note">Loading global session types...</div>
+      ) : loadError ? (
+        <div className="configuration-empty-note">
+          <div>
+            <h3>Unable to load global session types</h3>
+            <p>{loadError}</p>
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => void reloadGlobalSessionTypes()}
+            >
+              <IconRefresh size={14} />
+              Retry
+            </button>
+          </div>
+        </div>
+      ) : sortedGlobalTypes.length === 0 ? (
+        <div className="configuration-empty-note">
+          <div>
+            <h3>No global session types configured yet.</h3>
+            <p>Add compliance-exempt teaching names only when they are confirmed.</p>
+          </div>
+        </div>
+      ) : (
+        <div className="admin-config-table-wrap">
+          <table className="admin-config-table global-session-types-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Duration</th>
+                <th>Status</th>
+                <th>Updated</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedGlobalTypes.map((globalSessionType) => (
+                <Fragment key={globalSessionType.id}>
+                  <tr>
+                    <td title={globalSessionType.name}>{globalSessionType.name}</td>
+                    <td>{formatHourValue(globalSessionType.durationHours)}</td>
+                    <td>
+                      <StatusBadge
+                        label={globalSessionType.isActive ? 'Active' : 'Inactive'}
+                        tone={booleanTone(globalSessionType.isActive)}
+                      />
+                    </td>
+                    <td>{formatDate(globalSessionType.updatedAt ?? globalSessionType.createdAt)}</td>
+                    <td>
+                      <div className="admin-config-row-actions">
+                        <button
+                          type="button"
+                          className="button button-secondary"
+                          onClick={() => openEditDrawer(globalSessionType)}
+                          disabled={deletingId === globalSessionType.id}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="button button-ghost danger"
+                          onClick={() => requestDelete(globalSessionType)}
+                          disabled={deletingId === globalSessionType.id}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {confirmingDeleteGlobalType?.id === globalSessionType.id ? (
+                    <tr className="admin-config-confirm-row">
+                      <td colSpan={5}>
+                        <div
+                          className="admin-config-inline-confirm"
+                          role="group"
+                          aria-label={`Delete global session type ${globalSessionType.name}`}
+                        >
+                          <div>
+                            <strong>{`Delete global session type "${globalSessionType.name}"?`}</strong>
+                            <p>
+                              This only succeeds when no teaching events use this name. If it is in
+                              use, deactivate it instead.
+                            </p>
+                          </div>
+                          <div className="admin-config-confirm-actions">
+                            <button
+                              type="button"
+                              className="button button-secondary"
+                              onClick={() => setConfirmingDeleteGlobalType(null)}
+                              disabled={deletingId === globalSessionType.id}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              className="button button-ghost danger"
+                              onClick={() => void handleDelete(globalSessionType)}
+                              disabled={deletingId === globalSessionType.id}
+                            >
+                              {deletingId === globalSessionType.id
+                                ? 'Deleting...'
+                                : 'Delete global type'}
+                            </button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <DetailDrawer
+        title={drawerMode === 'edit' ? 'Edit Global Session Type' : 'New Global Session Type'}
+        open={drawerOpen}
+        onClose={closeDrawer}
+        footer={
+          <>
+            <button type="button" className="button button-secondary" onClick={closeDrawer}>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              form="global-session-type-form"
+              className="button button-primary"
+              disabled={submitState === 'submitting'}
+            >
+              {submitState === 'submitting' ? 'Saving...' : 'Save'}
+            </button>
+          </>
+        }
+      >
+        <form id="global-session-type-form" className="secretary-form-grid" onSubmit={handleSubmit}>
+          <label>
+            Name
+            <input
+              type="text"
+              value={formState.name}
+              onChange={(event) => setFormState((prev) => ({ ...prev, name: event.target.value }))}
+              required
+              maxLength={100}
+            />
+          </label>
+          <label>
+            Duration hours
+            <input
+              type="number"
+              min="0.25"
+              step="0.25"
+              value={formState.durationHours}
+              onChange={(event) =>
+                setFormState((prev) => ({ ...prev, durationHours: event.target.value }))
+              }
+              required
+            />
+          </label>
+          <label className="admin-config-checkbox-row">
+            <input
+              type="checkbox"
+              checked={formState.isActive}
+              onChange={(event) =>
+                setFormState((prev) => ({ ...prev, isActive: event.target.checked }))
+              }
+            />
+            Active and selectable
+          </label>
+          <div className="inline-callout callout-neutral">
+            Active global session types remain selectable and are excluded from PTT compliance by
+            server-side read logic.
+          </div>
+          {submitState === 'error' && feedback ? (
+            <div className="inline-callout callout-error">{feedback.message}</div>
+          ) : null}
+        </form>
+      </DetailDrawer>
+    </>
+  )
+}
+
 const PlaceholderConfigSection = ({
   activeSection,
   onNavigate,
@@ -2050,6 +3224,10 @@ export const AdminConfigPage = () => {
             <ProgrammesSection />
           ) : activeSection.key === 'loa-types' ? (
             <LoaTypesSection />
+          ) : activeSection.key === 'weekend-exceptions' ? (
+            <WeekendExceptionsSection />
+          ) : activeSection.key === 'global-session-types' ? (
+            <GlobalSessionTypesSection />
           ) : (
             <PlaceholderConfigSection
               activeSection={activeSection}

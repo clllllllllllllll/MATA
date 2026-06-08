@@ -327,23 +327,27 @@ async def list_weekend_exceptions(
 
     sql = """
         SELECT
-            id,
-            programme_code,
-            posting_code,
-            day_type,
-            start_time_min,
-            end_time_max,
-            session_type_id,
-            session_name_pattern,
-            mutates_to_session_type_id,
-            adjusted_duration_hours,
-            created_at,
-            updated_at
-        FROM weekend_exceptions
+            we.id,
+            we.programme_code,
+            we.posting_code,
+            we.day_type,
+            we.start_time_min,
+            we.end_time_max,
+            we.session_type_id,
+            st.name AS session_type_name,
+            we.session_name_pattern,
+            we.mutates_to_session_type_id,
+            mst.name AS mutates_to_session_type_name,
+            we.adjusted_duration_hours,
+            we.created_at,
+            we.updated_at
+        FROM weekend_exceptions we
+        LEFT JOIN session_types st ON st.id = we.session_type_id
+        LEFT JOIN session_types mst ON mst.id = we.mutates_to_session_type_id
     """
     if where_clauses:
         sql += " WHERE " + " AND ".join(where_clauses)
-    sql += " ORDER BY programme_code ASC NULLS FIRST, posting_code ASC NULLS FIRST, day_type ASC"
+    sql += " ORDER BY we.programme_code ASC NULLS FIRST, we.posting_code ASC NULLS FIRST, we.day_type ASC"
     result = await db.execute(text(sql), params)
     return list(result.mappings().all())
 
@@ -1016,6 +1020,16 @@ async def _posting_code_exists(db: AsyncSession, code: str | None) -> bool:
         return True
     result = await db.execute(
         text("SELECT 1 FROM posting_codes WHERE code = :code LIMIT 1"),
+        {"code": code},
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def _programme_code_exists(db: AsyncSession, code: str | None) -> bool:
+    if code is None:
+        return True
+    result = await db.execute(
+        text("SELECT 1 FROM programmes WHERE code = :code LIMIT 1"),
         {"code": code},
     )
     return result.scalar_one_or_none() is not None
@@ -1995,6 +2009,8 @@ async def create_weekend_exception(
         )
     elif not master_admin:
         _validate_programme_scope_for_write(programme_scope)
+    if programme_code and not await _programme_code_exists(db, programme_code):
+        _raise_validation(f"Unknown programme code: {programme_code}")
     if posting_code and not await _posting_code_exists(db, posting_code):
         _raise_validation(f"Unknown posting code: {posting_code}")
     if not await _session_type_exists(db, session_type_id):
@@ -2096,6 +2112,8 @@ async def update_weekend_exception(
             programme_scope=programme_scope,
             programme_code=programme_code,
         )
+    if programme_code and not await _programme_code_exists(db, programme_code):
+        _raise_validation(f"Unknown programme code: {programme_code}")
     if posting_code and not await _posting_code_exists(db, posting_code):
         _raise_validation(f"Unknown posting code: {posting_code}")
     if not await _session_type_exists(db, session_type_id):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timezone
+from decimal import Decimal
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -173,10 +174,12 @@ class FakeAdminConfigSession:
                 "day_type": "sat",
                 "start_time_min": time(8, 30),
                 "end_time_max": time(10, 30),
-                "session_type_id": None,
+                "session_type_id": str(uuid4()),
+                "session_type_name": "Urology Teaching [1h]",
                 "session_name_pattern": None,
-                "mutates_to_session_type_id": None,
-                "adjusted_duration_hours": None,
+                "mutates_to_session_type_id": str(uuid4()),
+                "mutates_to_session_type_name": "National Didactics & Department Teaching [1h]",
+                "adjusted_duration_hours": Decimal("1.00"),
                 "created_at": now,
                 "updated_at": now,
             }
@@ -478,6 +481,21 @@ def test_upload_logs_list_works_with_scope() -> None:
     assert len(body) == 1
     assert body[0]["upload_type"] == "ttf"
     assert body[0]["programme_code"] == "DR"
+
+
+def test_weekend_exceptions_list_includes_session_type_display_names() -> None:
+    client = _build_client_with_session(FakeAdminConfigSession())
+    response = client.get("/admin/weekend-exceptions", headers=_master_admin_headers("DR"))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["session_type_id"]
+    assert body[0]["session_type_name"] == "Urology Teaching [1h]"
+    assert body[0]["mutates_to_session_type_id"]
+    assert body[0]["mutates_to_session_type_name"] == (
+        "National Didactics & Department Teaching [1h]"
+    )
+    assert body[0]["adjusted_duration_hours"] == "1.00"
 
 
 def test_form_f1_records_list_works_with_scope_and_filters() -> None:

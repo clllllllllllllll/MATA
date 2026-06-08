@@ -118,6 +118,10 @@ class FakeMutationSession:
             code = payload["code"]
             return _FakeMutationResult(scalar=1 if code in self.posting_codes else None)
 
+        if "SELECT 1 FROM programmes" in sql:
+            code = payload["code"]
+            return _FakeMutationResult(scalar=1 if code in {row["code"] for row in self.programmes} else None)
+
         if "SELECT 1 FROM session_types" in sql:
             sid = payload["session_type_id"]
             return _FakeMutationResult(scalar=1 if sid in self.session_type_ids else None)
@@ -884,6 +888,163 @@ def test_programme_pc_cannot_mutate_global_config_endpoints() -> None:
     ]
 
     assert [response.status_code for response in attempts] == [403, 403, 403, 403, 403, 403, 403]
+
+
+def test_weekend_exception_crud_allows_nullable_clears_and_both_day_type() -> None:
+    session = FakeMutationSession()
+    client = _build_client_with_session(session)
+    session_type_id = next(iter(session.session_type_ids))
+
+    created = client.post(
+        "/admin/weekend-exceptions",
+        headers=_master_admin_headers("DR"),
+        json={
+            "programme_code": "DR",
+            "posting_code": "TTSHDR",
+            "day_type": "both",
+            "start_time_min": "08:30:00",
+            "end_time_max": "10:30:00",
+            "session_type_id": session_type_id,
+            "session_name_pattern": "Weekend Teaching",
+            "mutates_to_session_type_id": session_type_id,
+            "adjusted_duration_hours": "1.0",
+        },
+    )
+    assert created.status_code == 200
+    body = created.json()
+    assert body["day_type"] == "both"
+    assert body["session_name_pattern"] == "Weekend Teaching"
+
+    updated = client.put(
+        f"/admin/weekend-exceptions/{body['id']}",
+        headers=_master_admin_headers("DR"),
+        json={
+            "programme_code": None,
+            "posting_code": None,
+            "day_type": "sun",
+            "start_time_min": None,
+            "end_time_max": None,
+            "session_type_id": None,
+            "session_name_pattern": "   ",
+            "mutates_to_session_type_id": None,
+            "adjusted_duration_hours": None,
+        },
+    )
+    assert updated.status_code == 200
+    cleared = updated.json()
+    assert cleared["programme_code"] is None
+    assert cleared["posting_code"] is None
+    assert cleared["session_name_pattern"] is None
+    assert cleared["session_type_id"] is None
+    assert cleared["mutates_to_session_type_id"] is None
+    assert cleared["adjusted_duration_hours"] is None
+
+    deleted = client.delete(
+        f"/admin/weekend-exceptions/{body['id']}",
+        headers=_master_admin_headers("DR"),
+    )
+    assert deleted.status_code == 204
+    assert session.weekend_exceptions == []
+
+
+def test_weekend_exception_validation_rejects_bad_references_and_mutation_shape() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+
+    bad_day = client.post(
+        "/admin/weekend-exceptions",
+        headers=_master_admin_headers("DR"),
+        json={"programme_code": "DR", "posting_code": "TTSHDR", "day_type": "fri"},
+    )
+    bad_programme = client.post(
+        "/admin/weekend-exceptions",
+        headers=_master_admin_headers("DR"),
+        json={"programme_code": "NOPE", "posting_code": "TTSHDR", "day_type": "sat"},
+    )
+    bad_posting = client.post(
+        "/admin/weekend-exceptions",
+        headers=_master_admin_headers("DR"),
+        json={"programme_code": "DR", "posting_code": "UNKNOWN", "day_type": "sat"},
+    )
+    missing_mutation_target = client.post(
+        "/admin/weekend-exceptions",
+        headers=_master_admin_headers("DR"),
+        json={
+            "programme_code": "DR",
+            "posting_code": "TTSHDR",
+            "day_type": "sat",
+            "adjusted_duration_hours": "1.0",
+        },
+    )
+
+    assert bad_day.status_code == 422
+    assert bad_programme.status_code == 422
+    assert bad_posting.status_code == 422
+    assert missing_mutation_target.status_code == 422
+
+
+def test_global_session_type_crud_duplicate_delete_guard_and_inactive_update() -> None:
+    session = FakeMutationSession()
+    client = _build_client_with_session(session)
+
+    created = client.post(
+        "/admin/global-session-types",
+        headers=_master_admin_headers("DR"),
+        json={"name": "Smoke Global Teaching [1h]", "duration_hours": "1.0", "is_active": True},
+    )
+    assert created.status_code == 200
+    body = created.json()
+    assert body["name"] == "Smoke Global Teaching [1h]"
+    assert body["is_active"] is True
+
+    duplicate = client.post(
+        "/admin/global-session-types",
+        headers=_master_admin_headers("DR"),
+        json={"name": "Smoke Global Teaching [1h]", "duration_hours": "1.0", "is_active": True},
+    )
+    assert duplicate.status_code == 409
+
+    updated = client.put(
+        f"/admin/global-session-types/{body['id']}",
+        headers=_master_admin_headers("DR"),
+        json={"duration_hours": "1.5", "is_active": False},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["duration_hours"] == "1.5"
+    assert updated.json()["is_active"] is False
+
+    session.teaching_events.append({"teaching_name": "Smoke Global Teaching [1h]"})
+    blocked = client.delete(
+        f"/admin/global-session-types/{body['id']}",
+        headers=_master_admin_headers("DR"),
+    )
+    assert blocked.status_code == 409
+
+    session.teaching_events = [
+        row for row in session.teaching_events if row["teaching_name"] != "Smoke Global Teaching [1h]"
+    ]
+    deleted = client.delete(
+        f"/admin/global-session-types/{body['id']}",
+        headers=_master_admin_headers("DR"),
+    )
+    assert deleted.status_code == 204
+
+
+def test_global_session_type_rejects_blank_name_and_invalid_duration() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+
+    blank_name = client.post(
+        "/admin/global-session-types",
+        headers=_master_admin_headers("DR"),
+        json={"name": "   ", "duration_hours": "1.0", "is_active": True},
+    )
+    invalid_duration = client.post(
+        "/admin/global-session-types",
+        headers=_master_admin_headers("DR"),
+        json={"name": "Smoke Global Teaching [1h]", "duration_hours": "0", "is_active": True},
+    )
+
+    assert blank_name.status_code == 422
+    assert invalid_duration.status_code == 422
 
 
 def test_programme_update_respects_scope_and_editable_fields() -> None:

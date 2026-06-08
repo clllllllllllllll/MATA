@@ -2360,14 +2360,18 @@ button:disabled,
 .reporting-periods-table,
 .public-holidays-table,
 .programmes-table,
-.loa-types-table {
+.loa-types-table,
+.weekend-exceptions-table,
+.global-session-types-table {
   table-layout: fixed;
 }
 
 .reporting-periods-table th,
 .public-holidays-table th,
 .programmes-table th,
-.loa-types-table th {
+.loa-types-table th,
+.weekend-exceptions-table th,
+.global-session-types-table th {
   text-align: center;
 }
 
@@ -2383,7 +2387,9 @@ button:disabled,
 .reporting-periods-table td,
 .public-holidays-table td,
 .programmes-table td,
-.loa-types-table td {
+.loa-types-table td,
+.weekend-exceptions-table td,
+.global-session-types-table td {
   padding-block: 14px;
   text-align: center;
   vertical-align: middle;
@@ -2392,7 +2398,9 @@ button:disabled,
 .reporting-periods-table td:first-child,
 .public-holidays-table td:first-child,
 .programmes-table td:first-child,
-.loa-types-table td:first-child {
+.loa-types-table td:first-child,
+.weekend-exceptions-table td:first-child,
+.global-session-types-table td:first-child {
   width: auto;
 }
 
@@ -2405,7 +2413,9 @@ button:disabled,
 .reporting-periods-table .admin-config-row-actions,
 .public-holidays-table .admin-config-row-actions,
 .programmes-table .admin-config-row-actions,
-.loa-types-table .admin-config-row-actions {
+.loa-types-table .admin-config-row-actions,
+.weekend-exceptions-table .admin-config-row-actions,
+.global-session-types-table .admin-config-row-actions {
   justify-content: center;
   min-width: 0;
   flex-wrap: nowrap;
@@ -2419,8 +2429,88 @@ button:disabled,
 .programmes-table th:last-child,
 .programmes-table tr:not(.admin-config-confirm-row) td:last-child,
 .loa-types-table th:last-child,
-.loa-types-table tr:not(.admin-config-confirm-row) td:last-child {
+.loa-types-table tr:not(.admin-config-confirm-row) td:last-child,
+.weekend-exceptions-table th:last-child,
+.weekend-exceptions-table tr:not(.admin-config-confirm-row) td:last-child,
+.global-session-types-table th:last-child,
+.global-session-types-table tr:not(.admin-config-confirm-row) td:last-child {
   width: 180px;
+}
+
+.weekend-exceptions-table th:first-child,
+.weekend-exceptions-table td:first-child {
+  width: 150px;
+}
+
+.weekend-exceptions-table th:nth-child(2),
+.weekend-exceptions-table td:nth-child(2) {
+  width: 148px;
+}
+
+.weekend-exceptions-table th:nth-child(3),
+.weekend-exceptions-table td:nth-child(3) {
+  width: 118px;
+}
+
+.weekend-exceptions-table th:nth-child(4),
+.weekend-exceptions-table td:nth-child(4),
+.weekend-exceptions-table th:nth-child(5),
+.weekend-exceptions-table td:nth-child(5),
+.global-session-types-table th:first-child,
+.global-session-types-table td:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.weekend-exceptions-table th:nth-child(4),
+.weekend-exceptions-table td:nth-child(4),
+.weekend-exceptions-table th:nth-child(5),
+.weekend-exceptions-table td:nth-child(5) {
+  text-align: left;
+}
+
+.global-session-types-table th:first-child,
+.global-session-types-table td:first-child {
+  width: 260px;
+  text-align: center;
+}
+
+.global-session-types-table th:nth-child(2),
+.global-session-types-table td:nth-child(2),
+.global-session-types-table th:nth-child(3),
+.global-session-types-table td:nth-child(3),
+.global-session-types-table th:nth-child(4),
+.global-session-types-table td:nth-child(4) {
+  width: 130px;
+  white-space: nowrap;
+}
+
+.global-session-types-table th:nth-child(5),
+.global-session-types-table tr:not(.admin-config-confirm-row) td:nth-child(5) {
+  width: 170px;
+}
+
+.weekend-exception-form-section {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line, #ecedf2);
+  border-radius: 14px;
+  background: #fafafd;
+}
+
+.weekend-exception-form-section h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--ink, #10121f);
+}
+
+.weekend-exception-form-section p {
+  margin: 0;
+  color: var(--ink-3, #5b5f73);
+  font-size: 12.5px;
+  line-height: 1.45;
 }
 
 .programmes-table th:first-child,

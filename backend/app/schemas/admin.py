@@ -78,8 +78,10 @@ class WeekendExceptionResponse(BaseModel):
     start_time_min: time | None
     end_time_max: time | None
     session_type_id: UUID | None
+    session_type_name: str | None = None
     session_name_pattern: str | None
     mutates_to_session_type_id: UUID | None
+    mutates_to_session_type_name: str | None = None
     adjusted_duration_hours: Decimal | None
     created_at: datetime
     updated_at: datetime
@@ -411,13 +413,13 @@ class WeekendExceptionMutationRequest(BaseModel):
 
     programme_code: str | None = Field(default=None, max_length=20)
     posting_code: str | None = Field(default=None, max_length=50)
-    day_type: str = Field(min_length=1, max_length=3)
+    day_type: str = Field(min_length=1, max_length=4)
     start_time_min: time | None = None
     end_time_max: time | None = None
     session_type_id: UUID | None = None
     session_name_pattern: str | None = Field(default=None, max_length=100)
     mutates_to_session_type_id: UUID | None = None
-    adjusted_duration_hours: Decimal | None = Field(default=None, ge=0)
+    adjusted_duration_hours: Decimal | None = Field(default=None, gt=0)
 
     @field_validator("programme_code", "posting_code", "session_name_pattern")
     @classmethod
@@ -431,9 +433,18 @@ class WeekendExceptionMutationRequest(BaseModel):
     @classmethod
     def _normalise_day_type(cls, value: str) -> str:
         lowered = value.strip().lower()
-        if lowered not in {"sat", "sun"}:
-            raise ValueError("day_type must be one of: sat, sun")
+        if lowered not in {"sat", "sun", "both"}:
+            raise ValueError("day_type must be one of: sat, sun, both")
         return lowered
+
+    @model_validator(mode="after")
+    def _validate_exception_shape(self) -> "WeekendExceptionMutationRequest":
+        if self.start_time_min is not None and self.end_time_max is not None:
+            if self.start_time_min > self.end_time_max:
+                raise ValueError("start_time_min must be before or equal to end_time_max")
+        if self.adjusted_duration_hours is not None and self.mutates_to_session_type_id is None:
+            raise ValueError("mutates_to_session_type_id is required when adjusted_duration_hours is set")
+        return self
 
 
 class GlobalSessionTypeCreateRequest(BaseModel):
@@ -446,7 +457,10 @@ class GlobalSessionTypeCreateRequest(BaseModel):
     @field_validator("name")
     @classmethod
     def _trim_name(cls, value: str) -> str:
-        return value.strip()
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("name cannot be blank")
+        return trimmed
 
 
 class GlobalSessionTypeUpdateRequest(BaseModel):
@@ -461,4 +475,7 @@ class GlobalSessionTypeUpdateRequest(BaseModel):
     def _trim_name(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        return value.strip()
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("name cannot be blank")
+        return trimmed

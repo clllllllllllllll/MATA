@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
@@ -29,7 +30,7 @@ def _to_json_safe_validation_error(value: Any) -> Any:
         }
     if isinstance(value, (list, tuple)):
         return [_to_json_safe_validation_error(item) for item in value]
-    return value
+    return jsonable_encoder(value)
 
 
 def install_error_handlers(app: FastAPI) -> None:
