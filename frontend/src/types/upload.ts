@@ -1,7 +1,6 @@
 import type { UploadType } from './app'
 
 export type WarningSeverity = 'critical' | 'warning' | 'info'
-export type WarningStatus = 'unresolved' | 'resolved' | 'dismissed'
 
 export interface ReportingPeriodOption {
   id: string
@@ -54,7 +53,35 @@ export interface NormalizedWarning {
   postingCodes?: string[]
   source?: string
   raw: unknown
-  status: WarningStatus
   uploadMetaId: string
   suggestedAction?: string
+}
+
+export interface UploadWarning {
+  warningId: string
+  dedupeKey: string
+  uploadLogId: string
+  uploadType: UploadType
+  uploadedAt: string
+  uploadedBy?: string | null
+  reportingPeriodId?: string | null
+  programmeCode?: string | null
+  warningType: string
+  severity: WarningSeverity
+  message: string
+  residentName?: string | null
+  mcr?: string | null
+  monthLabel?: string | null
+  sheetName?: string | null
+  rowNumber?: number | null
+  cellRef?: string | null
+  postingCodes: string[]
+  sessionType?: string | null
+  count?: number | null
+  sourceLabel?: string | null
+  rawPayload?: unknown
+  seenCount: number
+  firstSeenAt: string
+  lastSeenAt: string
+  uploadLogIds: string[]
 }

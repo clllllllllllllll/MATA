@@ -25,6 +25,7 @@ from app.schemas.admin import (
     TeachingNameCatalogueResponse,
     TeachingTargetResponse,
     UploadLogResponse,
+    UploadWarningResponse,
     WeekendExceptionMutationRequest,
     WeekendExceptionResponse,
 )
@@ -59,6 +60,7 @@ __all__ = [
     "TeachingNameCatalogueResponse",
     "TeachingTargetResponse",
     "UploadLogResponse",
+    "UploadWarningResponse",
     "WeekendExceptionMutationRequest",
     "WeekendExceptionResponse",
 ]

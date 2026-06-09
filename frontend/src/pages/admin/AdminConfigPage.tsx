@@ -3671,7 +3671,9 @@ export const AdminConfigPage = ({ configViewRole }: AdminConfigPageProps) => {
   const configRole: ConfigViewRole = configViewRole ?? (role === 'programme_pc' ? 'programme_pc' : 'master_admin')
   const defaultSectionKey: ConfigSectionKey =
     configRole === 'programme_pc' ? 'multi-posting-rules' : 'reporting-periods'
-  const requestedSection = (location.state as { configSection?: ConfigSectionKey } | null)?.configSection
+  const querySection = new URLSearchParams(location.search).get('section') as ConfigSectionKey | null
+  const requestedSection =
+    (location.state as { configSection?: ConfigSectionKey } | null)?.configSection ?? querySection
   const requestedSectionKey = requestedSection ? `${location.key}:${requestedSection}` : null
   const lastHandledRequestedSection = useRef<string | null>(null)
   const [activeSectionKey, setActiveSectionKey] = useState<ConfigSectionKey>(

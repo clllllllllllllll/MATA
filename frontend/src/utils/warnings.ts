@@ -176,7 +176,6 @@ const objectWarningToItem = (
     source: toStringValue(warning.source),
     postingCodes,
     raw: warning,
-    status: 'unresolved',
     uploadMetaId: uploadMeta.id,
     suggestedAction:
       warningType === 'unmatched_multi_posting'
@@ -212,7 +211,6 @@ const scalarWarningToItem = (
   reportingPeriodLabel: uploadMeta.reportingPeriodLabel,
   programmeCode: uploadMeta.programmeCode,
   raw: warning,
-  status: 'unresolved',
   uploadMetaId: uploadMeta.id,
   suggestedAction:
     warningType === 'unmatched_multi_posting'

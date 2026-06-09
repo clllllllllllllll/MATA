@@ -40,7 +40,7 @@ const roleFromPathname = (pathname: string): AppRole | null => {
 }
 
 export const AppShell = () => {
-  const { role, setRole, warnings } = useAppState()
+  const { role, setRole } = useAppState()
   const location = useLocation()
   const navigate = useNavigate()
   const [isRoleMenuOpen, setRoleMenuOpen] = useState(false)
@@ -50,7 +50,6 @@ export const AppShell = () => {
 
   const currentRoleOption = roleOptions.find((option) => option.id === activeRole) ?? roleOptions[0]
   const breadcrumbs = breadcrumbMap[location.pathname] ?? [currentRoleOption.label]
-  const unresolvedWarningsCount = warnings.filter((warning) => warning.status === 'unresolved').length
   const visibleNavItems = navItems.filter((item) => item.roles.includes(activeRole))
 
   const isNavActive = (path: string) => {
@@ -178,9 +177,6 @@ export const AppShell = () => {
                 <NamedIcon name={item.icon} size={18} />
               </span>
               <span className="nav-label">{item.label}</span>
-              {item.path === '/admin/upload/warnings' && unresolvedWarningsCount > 0 ? (
-                <span className="nav-count">{unresolvedWarningsCount}</span>
-              ) : null}
             </NavLink>
           ))}
         </nav>

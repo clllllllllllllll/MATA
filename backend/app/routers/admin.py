@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Annotated, Any, AsyncIterator
+from typing import Annotated, Any, AsyncIterator, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile
@@ -37,10 +37,12 @@ from app.schemas import (
     TeachingNameCatalogueResponse,
     TeachingTargetResponse,
     UploadLogResponse,
+    UploadWarningResponse,
     WeekendExceptionMutationRequest,
     WeekendExceptionResponse,
 )
 from app.services import admin_config
+from app.services.upload_warnings import list_upload_warnings
 from app.services.parser_common import (
     ParserResult,
     UploadValidationError,
@@ -1156,6 +1158,35 @@ async def list_upload_logs(
         limit=limit,
     )
     return [UploadLogResponse.model_validate(row) for row in rows]
+
+
+@router.get("/upload-warnings", response_model=list[UploadWarningResponse])
+async def get_upload_warnings(
+    upload_type: str | None = Query(default=None),
+    severity: str | None = Query(default=None),
+    programme_code: str | None = Query(default=None),
+    warning_type: str | None = Query(default=None),
+    reporting_period_id: UUID | None = Query(default=None),
+    search: str | None = Query(default=None),
+    mode: Literal["active", "history"] = Query(default="active"),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> list[UploadWarningResponse]:
+    if db is None:
+        return []
+    rows = await list_upload_warnings(
+        db,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+        upload_type=upload_type,
+        severity=severity,
+        programme_code=programme_code,
+        warning_type=warning_type,
+        reporting_period_id=reporting_period_id,
+        search=search,
+        mode=mode,
+    )
+    return [UploadWarningResponse.model_validate(row) for row in rows]
 
 
 @router.get("/form-f1-records", response_model=list[FormF1RecordResponse])

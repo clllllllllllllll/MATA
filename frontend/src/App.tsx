@@ -70,6 +70,7 @@ function App() {
           }
         />
         <Route path="/pc/config" element={<AdminConfigPage configViewRole="programme_pc" />} />
+        <Route path="/pc/warnings" element={<AdminWarningsPage />} />
         <Route path="/secretary" element={<Navigate to="/secretary/events" replace />} />
         <Route path="/secretary/events" element={<SecretaryTeachingSchedulePage />} />
         <Route path="/resident" element={<Navigate to="/resident/submissions" replace />} />

@@ -7,7 +7,7 @@ import {
 } from 'react'
 import { frontendConfig } from '../config/frontendConfig'
 import type { AppRole } from '../types/app'
-import type { NormalizedWarning, ReportingPeriodOption, UploadMeta, WarningStatus } from '../types/upload'
+import type { ReportingPeriodOption, UploadMeta } from '../types/upload'
 import {
   AppStateContext,
   type AppStateContextValue,
@@ -15,14 +15,10 @@ import {
 } from './appStateContext'
 import {
   loadUploadHistory,
-  loadWarningsByScope,
   saveUploadHistory,
-  saveWarningsByScope,
 } from '../utils/storage'
 import {
   makeUploadMeta,
-  makeUploadScopeKey,
-  normalizeWarningsFromUploadResponse,
 } from '../utils/warnings'
 import { listReportingPeriods } from '../api/reportingPeriods'
 import { ApiRequestError } from '../api/http'
@@ -39,7 +35,6 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
   const [reportingPeriodsLoading, setReportingPeriodsLoading] = useState(true)
   const [reportingPeriodsError, setReportingPeriodsError] = useState<string | null>(null)
   const [uploadHistory, setUploadHistory] = useState<UploadMeta[]>(loadUploadHistory)
-  const [warningsByScope, setWarningsByScope] = useState<Record<string, NormalizedWarning[]>>(loadWarningsByScope)
 
   const selectDefaultReportingPeriod = useCallback((periods: ReportingPeriodOption[]) => {
     if (periods.length === 0) {
@@ -134,12 +129,6 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
       reportingPeriodLabel: input.reportingPeriodLabel,
       programmeCode: input.programmeCode,
     })
-    const newWarnings = normalizeWarningsFromUploadResponse(uploadMeta)
-    const scopeKey = makeUploadScopeKey({
-      uploadType: uploadMeta.uploadType,
-      reportingPeriodId: uploadMeta.reportingPeriodId,
-      programmeCode: uploadMeta.programmeCode,
-    })
 
     setUploadHistory((prev) => {
       const next = [uploadMeta, ...prev].slice(0, 40)
@@ -147,48 +136,8 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
       return next
     })
 
-    setWarningsByScope((prev) => {
-      const next: Record<string, NormalizedWarning[]> = { ...prev }
-      if (newWarnings.length === 0) {
-        delete next[scopeKey]
-        saveWarningsByScope(next)
-        return next
-      }
-
-      const previousScopeWarnings = prev[scopeKey] ?? []
-      const previousStatusById = new Map(previousScopeWarnings.map((warning) => [warning.id, warning.status]))
-      const dedupedById = new Map<string, NormalizedWarning>()
-
-      newWarnings.forEach((warning) => {
-        const previousStatus = previousStatusById.get(warning.id)
-        dedupedById.set(warning.id, {
-          ...warning,
-          status: previousStatus ?? warning.status,
-        })
-      })
-
-      next[scopeKey] = Array.from(dedupedById.values())
-      saveWarningsByScope(next)
-      return next
-    })
-
     return uploadMeta
   }, [])
-
-  const updateWarningStatus = useCallback((warningId: string, status: WarningStatus) => {
-    setWarningsByScope((prev) => {
-      const next: Record<string, NormalizedWarning[]> = {}
-      Object.entries(prev).forEach(([scopeKey, warnings]) => {
-        next[scopeKey] = warnings.map((warning) =>
-          warning.id === warningId ? { ...warning, status } : warning,
-        )
-      })
-      saveWarningsByScope(next)
-      return next
-    })
-  }, [])
-
-  const warnings = useMemo(() => Object.values(warningsByScope).flat(), [warningsByScope])
 
   const value = useMemo<AppStateContextValue>(
     () => ({
@@ -206,9 +155,7 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
       demoAdminId: frontendConfig.demoAdminId,
       demoAdminProgrammes: frontendConfig.demoAdminProgrammes,
       uploadHistory,
-      warnings,
       addUploadResult,
-      updateWarningStatus,
     }),
     [
       role,
@@ -220,9 +167,7 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
       reportingPeriodsError,
       reloadReportingPeriods,
       uploadHistory,
-      warnings,
       addUploadResult,
-      updateWarningStatus,
     ],
   )
 

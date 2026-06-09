@@ -1,46 +1,145 @@
-﻿import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { listUploadWarnings } from '../../api/uploadWarnings'
 import { DetailDrawer } from '../../components/DetailDrawer'
+import { IconChevRight, IconRefresh } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
-import { StatusBadge } from '../../components/StatusBadge'
 import { useAppState } from '../../context/useAppState'
-import { saveWarningContext } from '../../utils/storage'
-import type { NormalizedWarning } from '../../types/upload'
+import type { UploadType } from '../../types/app'
+import type { UploadWarning, WarningSeverity } from '../../types/upload'
 
-const warningTone = (severity: NormalizedWarning['severity']) => {
-  if (severity === 'critical') {
-    return 'critical' as const
+type WarningReviewMode = 'active' | 'history'
+
+const uploadTypeLabels: Record<UploadType, string> = {
+  rdb: 'RDB Posting Schedule',
+  form_f1: 'FormF1',
+  ttf: 'Teaching Target File',
+  public_holidays: 'Public Holidays / AY Dates',
+}
+
+const uploadTypeOrder: UploadType[] = ['rdb', 'form_f1', 'ttf', 'public_holidays']
+
+const formatDateTime = (iso?: string | null) =>
+  iso
+    ? new Date(iso).toLocaleString(undefined, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      })
+    : '-'
+
+const reviewLabel = 'Review needed'
+
+const modeDescriptions: Record<WarningReviewMode, string> = {
+  active: 'Latest warning state from the most recent upload per source/scope.',
+  history: 'Deduped warning history across previous upload logs.',
+}
+
+const matchesSearch = (warning: UploadWarning, rawSearch: string): boolean => {
+  const search = rawSearch.trim().toLowerCase()
+  if (!search) {
+    return true
   }
-  if (severity === 'warning') {
-    return 'warning' as const
+  return [
+    warning.warningType,
+    warning.residentName,
+    warning.mcr,
+    warning.programmeCode,
+    warning.monthLabel,
+    warning.sheetName,
+    warning.cellRef,
+    warning.message,
+    warning.sourceLabel,
+    warning.postingCodes.join(' '),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+    .includes(search)
+}
+
+const fieldValue = (value?: string | number | null) => {
+  if (value === null || value === undefined || value === '') {
+    return '-'
   }
-  return 'info' as const
+  return String(value)
 }
 
 export const AdminWarningsPage = () => {
   const navigate = useNavigate()
-  const { warnings, updateWarningStatus, demoAdminProgrammes } = useAppState()
-  const [selectedWarning, setSelectedWarning] = useState<NormalizedWarning | null>(null)
-  const [uploadTypeFilter, setUploadTypeFilter] = useState<string>('all')
-  const [severityFilter, setSeverityFilter] = useState<string>('all')
-  const [statusFilter, setStatusFilter] = useState<string>('unresolved')
+  const location = useLocation()
+  const { demoAdminId, demoAdminProgrammes, role } = useAppState()
+  const adminLevel = role === 'master_admin' ? 'master' : 'programme'
+  const isProgrammePc = location.pathname.startsWith('/pc') || role === 'programme_pc'
+  const [warnings, setWarnings] = useState<UploadWarning[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [selectedWarning, setSelectedWarning] = useState<UploadWarning | null>(null)
+  const [uploadTypeFilter, setUploadTypeFilter] = useState<UploadType | 'all'>('all')
+  const [severityFilter, setSeverityFilter] = useState<WarningSeverity | 'all'>('all')
   const [programmeFilter, setProgrammeFilter] = useState<string>('all')
   const [searchTerm, setSearchTerm] = useState('')
+  const [warningMode, setWarningMode] = useState<WarningReviewMode>('active')
+
+  const fetchWarnings = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    setSelectedWarning(null)
+    try {
+      const rows = await listUploadWarnings({
+        adminId: demoAdminId,
+        adminProgrammes: demoAdminProgrammes,
+        adminLevel,
+        mode: warningMode,
+      })
+      setWarnings(rows)
+    } catch (fetchError) {
+      setWarnings([])
+      setError(fetchError instanceof Error ? fetchError.message : 'Unable to load upload warnings.')
+    } finally {
+      setLoading(false)
+    }
+  }, [adminLevel, demoAdminId, demoAdminProgrammes, warningMode])
+
+  useEffect(() => {
+    let active = true
+    ;(async () => {
+      setLoading(true)
+      setError(null)
+      try {
+        const rows = await listUploadWarnings({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+          mode: warningMode,
+        })
+        if (active) {
+          setWarnings(rows)
+        }
+      } catch (fetchError) {
+        if (active) {
+          setWarnings([])
+          setError(fetchError instanceof Error ? fetchError.message : 'Unable to load upload warnings.')
+        }
+      } finally {
+        if (active) {
+          setLoading(false)
+        }
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [adminLevel, demoAdminId, demoAdminProgrammes, warningMode])
 
   const programmeOptions = useMemo(
     () =>
       Array.from(
         new Set(
-          [...demoAdminProgrammes, ...warnings
+          warnings
             .map((warning) => warning.programmeCode)
-            .filter((item): item is string => Boolean(item && item.trim()))],
+            .filter((item): item is string => Boolean(item && item.trim())),
         ),
       ).sort(),
-    [warnings, demoAdminProgrammes],
-  )
-
-  const unresolvedCount = useMemo(
-    () => warnings.filter((item) => item.status === 'unresolved').length,
     [warnings],
   )
 
@@ -48,94 +147,116 @@ export const AdminWarningsPage = () => {
     return warnings.filter((warning) => {
       const byUploadType = uploadTypeFilter === 'all' || warning.uploadType === uploadTypeFilter
       const bySeverity = severityFilter === 'all' || warning.severity === severityFilter
-      const byStatus = statusFilter === 'all' || warning.status === statusFilter
       const byProgramme = programmeFilter === 'all' || warning.programmeCode === programmeFilter
-      const bySearch =
-        searchTerm.trim().length === 0 ||
-        [
-          warning.type,
-          warning.message,
-          warning.residentName,
-          warning.mcr,
-          warning.monthLabel,
-          warning.sheetName,
-          warning.filename,
-          warning.reportingPeriodLabel,
-        ]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase()
-          .includes(searchTerm.toLowerCase())
-
-      return byUploadType && bySeverity && byStatus && byProgramme && bySearch
+      return byUploadType && bySeverity && byProgramme && matchesSearch(warning, searchTerm)
     })
-  }, [warnings, uploadTypeFilter, severityFilter, statusFilter, programmeFilter, searchTerm])
+  }, [programmeFilter, searchTerm, severityFilter, uploadTypeFilter, warnings])
+
+  const groupedWarnings = useMemo(
+    () =>
+      uploadTypeOrder
+        .map((uploadType) => ({
+          uploadType,
+          warnings: filteredWarnings.filter((warning) => warning.uploadType === uploadType),
+        }))
+        .filter((group) => group.warnings.length > 0),
+    [filteredWarnings],
+  )
 
   const clearFilters = () => {
     setUploadTypeFilter('all')
     setSeverityFilter('all')
-    setStatusFilter('unresolved')
     setProgrammeFilter('all')
     setSearchTerm('')
   }
 
-  const openRelatedConfig = (warning: NormalizedWarning) => {
-    saveWarningContext(warning)
-    const params = new URLSearchParams({
-      warningId: warning.id,
-      warningType: warning.type,
-      mcr: warning.mcr ?? '',
-      month: warning.monthLabel ?? '',
-      postingCodes: warning.postingCodes?.join(',') ?? '',
+  const openMultiPostingRules = () => {
+    const basePath = isProgrammePc ? '/pc/config' : '/admin/config'
+    navigate(`${basePath}?section=multi-posting-rules`, {
+      state: { configSection: 'multi-posting-rules' },
     })
-    navigate(`/admin/config/multi?${params.toString()}`, { state: { warningId: warning.id } })
   }
+
+  const pageSubtitle = loading
+    ? 'Loading persisted warnings'
+    : `${filteredWarnings.length} ${warningMode === 'active' ? 'active ' : 'historical '}warning${filteredWarnings.length === 1 ? '' : 's'} from upload logs`
 
   return (
     <div className="page">
       <PageHero
         title="Warnings"
-        subtitle={`${unresolvedCount} unresolved warning${unresolvedCount === 1 ? '' : 's'}`}
-        meta={[{ label: 'Rows', value: String(filteredWarnings.length) }]}
+        subtitle={pageSubtitle}
+        actions={
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => void fetchWarnings()}
+            disabled={loading}
+          >
+            <IconRefresh size={14} />
+            {loading ? 'Refreshing' : 'Refresh'}
+          </button>
+        }
       />
 
-      <section className="inline-callout callout-info">
-        Showing current warnings from the latest upload for each upload slot in this browser session.
+      <section className="warning-mode-panel">
+        <div className="warning-mode-copy">
+          <span className="warning-group-kicker">Review mode</span>
+          <p>{modeDescriptions[warningMode]}</p>
+        </div>
+        <div className="warning-mode-toggle" role="tablist" aria-label="Warning review mode">
+          <button
+            type="button"
+            className={warningMode === 'active' ? 'is-active' : ''}
+            role="tab"
+            aria-selected={warningMode === 'active'}
+            onClick={() => setWarningMode('active')}
+          >
+            Active warnings
+          </button>
+          <button
+            type="button"
+            className={warningMode === 'history' ? 'is-active' : ''}
+            role="tab"
+            aria-selected={warningMode === 'history'}
+            onClick={() => setWarningMode('history')}
+          >
+            History
+          </button>
+        </div>
       </section>
 
-      <section className="card filter-bar">
+      {warningMode === 'history' ? (
+        <section className="warning-history-banner">
+          History mode shows warnings from previous uploads. These may have been superseded by newer uploads and are shown for audit review only.
+        </section>
+      ) : null}
+
+      <section className="card filter-bar warning-filter-card">
         <label>
           Upload type
-          <select value={uploadTypeFilter} onChange={(event) => setUploadTypeFilter(event.target.value)}>
-            <option value="all">All</option>
-            <option value="public_holidays">Public Holidays</option>
-            <option value="rdb">RDB</option>
-            <option value="ttf">TTF</option>
-            <option value="form_f1">FormF1</option>
+          <select value={uploadTypeFilter} onChange={(event) => setUploadTypeFilter(event.target.value as UploadType | 'all')}>
+            <option value="all">All uploads</option>
+            {uploadTypeOrder.map((uploadType) => (
+              <option key={uploadType} value={uploadType}>
+                {uploadTypeLabels[uploadType]}
+              </option>
+            ))}
           </select>
         </label>
         <label>
           Severity
-          <select value={severityFilter} onChange={(event) => setSeverityFilter(event.target.value)}>
-            <option value="all">All</option>
+          <select value={severityFilter} onChange={(event) => setSeverityFilter(event.target.value as WarningSeverity | 'all')}>
+            <option value="all">All severities</option>
             <option value="critical">Critical</option>
             <option value="warning">Warning</option>
             <option value="info">Info</option>
           </select>
         </label>
         <label>
-          Status
-          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-            <option value="unresolved">Unresolved</option>
-            <option value="resolved">Resolved</option>
-            <option value="dismissed">Dismissed</option>
-            <option value="all">All</option>
-          </select>
-        </label>
-        <label>
           Programme
           <select value={programmeFilter} onChange={(event) => setProgrammeFilter(event.target.value)}>
-            <option value="all">All</option>
+            <option value="all">All programmes</option>
             {programmeOptions.map((programmeCode) => (
               <option key={programmeCode} value={programmeCode}>
                 {programmeCode}
@@ -144,12 +265,12 @@ export const AdminWarningsPage = () => {
           </select>
         </label>
         <label>
-          Warning search
+          Search
           <input
             type="search"
             value={searchTerm}
             onChange={(event) => setSearchTerm(event.target.value)}
-            placeholder="Type, resident, MCR, message..."
+            placeholder="Type, resident, MCR, source, message..."
           />
         </label>
         <button type="button" className="button button-ghost" onClick={clearFilters}>
@@ -157,118 +278,99 @@ export const AdminWarningsPage = () => {
         </button>
       </section>
 
-      <section className="table-wrap">
-        <div className="table-scroll">
-          <table className="table warnings-table">
-            <colgroup>
-              <col className="col-severity" />
-              <col className="col-type" />
-              <col className="col-upload" />
-              <col className="col-resident" />
-              <col className="col-mcr" />
-              <col className="col-programme" />
-              <col className="col-month" />
-              <col className="col-source" />
-              <col className="col-message" />
-              <col className="col-status" />
-            </colgroup>
-            <thead>
-              <tr>
-                <th>Severity</th>
-                <th>Type</th>
-                <th>Upload</th>
-                <th>Resident</th>
-                <th>MCR</th>
-                <th>Programme</th>
-                <th>Month</th>
-                <th>Source</th>
-                <th>Message</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredWarnings.length === 0 ? (
-                <tr>
-                  <td colSpan={10}>
-                    {warnings.length === 0 ? 'No warnings to review.' : 'No warnings match the selected filters.'}
-                  </td>
-                </tr>
-              ) : (
-                filteredWarnings.map((warning) => (
-                  <tr key={warning.id} className="table-clickable-row" onClick={() => setSelectedWarning(warning)}>
-                    <td className="cell-severity">
-                      <StatusBadge label={warning.severity.toUpperCase()} tone={warningTone(warning.severity)} />
-                    </td>
-                    <td className="cell-type">{warning.type}</td>
-                    <td className="cell-upload">{warning.uploadLabel}</td>
-                    <td className="cell-resident">{warning.residentName ?? '-'}</td>
-                    <td className="cell-mcr">{warning.mcr ?? '-'}</td>
-                    <td className="cell-programme">{warning.programmeCode ?? '-'}</td>
-                    <td className="cell-month">{warning.monthLabel ?? '-'}</td>
-                    <td className="cell-source">
-                      {warning.sheetName || warning.rowNumber || warning.cellRef
-                        ? `${warning.sheetName ?? '-'} / ${warning.rowNumber ?? '-'} / ${warning.cellRef ?? '-'}`
-                        : '-'}
-                    </td>
-                    <td className="cell-message">{warning.message}</td>
-                    <td className="cell-status">{warning.status}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+      {loading ? (
+        <section className="card warning-state-card">Loading persisted upload warnings...</section>
+      ) : error ? (
+        <section className="card warning-state-card">
+          <strong>Warnings could not be loaded.</strong>
+          <p>{error}</p>
+          <button type="button" className="button button-secondary" onClick={() => void fetchWarnings()}>
+            Retry
+          </button>
+        </section>
+      ) : warnings.length === 0 ? (
+        <section className="card warning-state-card">
+          <strong>No persisted warnings found.</strong>
+          <p>Upload warnings will appear here after parser summaries are written to upload logs.</p>
+        </section>
+      ) : groupedWarnings.length === 0 ? (
+        <section className="card warning-state-card">
+          <strong>No warnings match the selected filters.</strong>
+          <p>Clear filters or adjust the search to review persisted upload warnings.</p>
+        </section>
+      ) : (
+        <div className="warning-groups">
+          {groupedWarnings.map((group) => (
+            <section key={group.uploadType} className="warning-group-card">
+              <div className="warning-group-header">
+                <div>
+                  <span className="warning-group-kicker">Upload source</span>
+                  <h2>{uploadTypeLabels[group.uploadType]}</h2>
+                </div>
+                <span className="warning-count-pill">
+                  {group.warnings.length} warning{group.warnings.length === 1 ? '' : 's'}
+                </span>
+              </div>
+              <div className="table-scroll">
+                <table className="table grouped-warnings-table">
+                  <thead>
+                    <tr>
+                      <th>Type</th>
+                      <th>Resident</th>
+                      <th>MCR</th>
+                      <th>Programme</th>
+                      <th>Month</th>
+                      <th>Source</th>
+                      <th>Status</th>
+                      <th aria-label="Open detail" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {group.warnings.map((warning) => (
+                      <tr
+                        key={warning.warningId}
+                        className="table-clickable-row"
+                        onClick={() => setSelectedWarning(warning)}
+                      >
+                        <td className="cell-type">
+                          <span className={`severity-dot severity-dot-${warning.severity}`} />
+                          <span className="mono-chip">{warning.warningType}</span>
+                        </td>
+                        <td>{fieldValue(warning.residentName)}</td>
+                        <td className="mono-cell">{fieldValue(warning.mcr)}</td>
+                        <td>{fieldValue(warning.programmeCode)}</td>
+                        <td>{fieldValue(warning.monthLabel)}</td>
+                        <td className="mono-cell">{fieldValue(warning.sourceLabel)}</td>
+                        <td>
+                          <span className="warning-status-stack">
+                            <span className="review-marker">{reviewLabel}</span>
+                            {warning.seenCount > 1 ? (
+                              <span className="warning-seen-pill">Seen in {warning.seenCount} uploads</span>
+                            ) : null}
+                          </span>
+                        </td>
+                        <td className="cell-chevron">
+                          <IconChevRight size={14} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          ))}
         </div>
-      </section>
+      )}
 
       <DetailDrawer
-        title={selectedWarning ? `Warning: ${selectedWarning.type}` : 'Warning detail'}
+        title={selectedWarning ? selectedWarning.warningType : 'Warning detail'}
         open={Boolean(selectedWarning)}
         onClose={() => setSelectedWarning(null)}
         footer={
-          selectedWarning ? (
-            <>
-              {selectedWarning.type === 'unmatched_multi_posting' ? (
-                <button type="button" className="button button-secondary" onClick={() => openRelatedConfig(selectedWarning)}>
-                  Open Multi-Posting Rules {'->'}
-                </button>
-              ) : null}
-              {selectedWarning.status !== 'resolved' ? (
-                <button
-                  type="button"
-                  className="button button-primary"
-                  onClick={() => {
-                    updateWarningStatus(selectedWarning.id, 'resolved')
-                    setSelectedWarning({ ...selectedWarning, status: 'resolved' })
-                  }}
-                >
-                  Mark resolved
-                </button>
-              ) : null}
-              {selectedWarning.status !== 'dismissed' ? (
-                <button
-                  type="button"
-                  className="button button-secondary"
-                  onClick={() => {
-                    updateWarningStatus(selectedWarning.id, 'dismissed')
-                    setSelectedWarning({ ...selectedWarning, status: 'dismissed' })
-                  }}
-                >
-                  Dismiss
-                </button>
-              ) : null}
-              {selectedWarning.status !== 'unresolved' ? (
-                <button
-                  type="button"
-                  className="button button-ghost"
-                  onClick={() => {
-                    updateWarningStatus(selectedWarning.id, 'unresolved')
-                    setSelectedWarning({ ...selectedWarning, status: 'unresolved' })
-                  }}
-                >
-                  Reopen
-                </button>
-              ) : null}
-            </>
+          selectedWarning?.warningType === 'unmatched_multi_posting' ? (
+            <button type="button" className="button button-primary" onClick={openMultiPostingRules}>
+              Open Multi-Posting Rules
+            </button>
           ) : null
         }
       >
@@ -277,32 +379,46 @@ export const AdminWarningsPage = () => {
             <div className="detail-block">
               <h3>Summary</h3>
               <p>{selectedWarning.message}</p>
+              <p>
+                <span className={`severity-dot severity-dot-${selectedWarning.severity}`} />
+                {selectedWarning.severity} - {reviewLabel}
+              </p>
+            </div>
+            <div className="detail-block">
+              <h3>Upload</h3>
+              <p>Source: {uploadTypeLabels[selectedWarning.uploadType]}</p>
+              <p>Latest upload: {formatDateTime(selectedWarning.uploadedAt)}</p>
+              <p>First seen: {formatDateTime(selectedWarning.firstSeenAt)}</p>
+              <p>Last seen: {formatDateTime(selectedWarning.lastSeenAt)}</p>
+              <p>Seen count: {selectedWarning.seenCount}</p>
+              <p>Uploaded by: {fieldValue(selectedWarning.uploadedBy)}</p>
+              <p>Upload log: {selectedWarning.uploadLogId}</p>
+              <p>
+                Upload logs:{' '}
+                {selectedWarning.uploadLogIds.length > 0 ? selectedWarning.uploadLogIds.join(', ') : '-'}
+              </p>
+              <p>Reporting period: {fieldValue(selectedWarning.reportingPeriodId)}</p>
             </div>
             <div className="detail-block">
               <h3>Subject</h3>
-              <p>resident_name: {selectedWarning.residentName ?? '-'}</p>
-              <p>mcr: {selectedWarning.mcr ?? '-'}</p>
-              <p>programme_code: {selectedWarning.programmeCode ?? '-'}</p>
-              <p>month: {selectedWarning.monthLabel ?? '-'}</p>
-              <p>reporting_period: {selectedWarning.reportingPeriodLabel ?? selectedWarning.reportingPeriodId ?? '-'}</p>
-              <p>file: {selectedWarning.filename ?? '-'}</p>
+              <p>Resident: {fieldValue(selectedWarning.residentName)}</p>
+              <p>MCR: {fieldValue(selectedWarning.mcr)}</p>
+              <p>Programme: {fieldValue(selectedWarning.programmeCode)}</p>
+              <p>Month: {fieldValue(selectedWarning.monthLabel)}</p>
+              <p>Session type: {fieldValue(selectedWarning.sessionType)}</p>
+              <p>Count: {fieldValue(selectedWarning.count)}</p>
             </div>
             <div className="detail-block">
-              <h3>Source traceability</h3>
-              <p>sheet_name: {selectedWarning.sheetName ?? '-'}</p>
-              <p>row_number: {selectedWarning.rowNumber ?? '-'}</p>
-              <p>cell_ref: {selectedWarning.cellRef ?? '-'}</p>
-              <p>upload_type: {selectedWarning.uploadType}</p>
+              <h3>Traceability</h3>
+              <p>Sheet: {fieldValue(selectedWarning.sheetName)}</p>
+              <p>Row: {fieldValue(selectedWarning.rowNumber)}</p>
+              <p>Cell: {fieldValue(selectedWarning.cellRef)}</p>
+              <p>Posting codes: {selectedWarning.postingCodes.length > 0 ? selectedWarning.postingCodes.join(', ') : '-'}</p>
+              <p>Source: {fieldValue(selectedWarning.sourceLabel)}</p>
             </div>
-            {selectedWarning.suggestedAction ? (
-              <div className="detail-block">
-                <h3>Suggested action</h3>
-                <p>{selectedWarning.suggestedAction}</p>
-              </div>
-            ) : null}
             <div className="detail-block">
-              <h3>Developer details</h3>
-              <pre className="raw-json">{JSON.stringify(selectedWarning.raw, null, 2)}</pre>
+              <h3>Raw payload</h3>
+              <pre className="raw-json">{JSON.stringify(selectedWarning.rawPayload, null, 2)}</pre>
             </div>
           </div>
         ) : null}

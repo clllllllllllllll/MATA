@@ -1,6 +1,6 @@
 import { createContext } from 'react'
 import type { AppRole } from '../types/app'
-import type { NormalizedWarning, ReportingPeriodOption, UploadMeta, WarningStatus } from '../types/upload'
+import type { ReportingPeriodOption, UploadMeta } from '../types/upload'
 
 export interface UploadResultInput {
   uploadType: UploadMeta['uploadType']
@@ -26,9 +26,7 @@ export interface AppStateContextValue {
   demoAdminId: string
   demoAdminProgrammes: string[]
   uploadHistory: UploadMeta[]
-  warnings: NormalizedWarning[]
   addUploadResult: (input: UploadResultInput) => UploadMeta
-  updateWarningStatus: (warningId: string, status: WarningStatus) => void
 }
 
 export const AppStateContext = createContext<AppStateContextValue | undefined>(undefined)

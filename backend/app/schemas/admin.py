@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -107,6 +108,35 @@ class UploadLogResponse(BaseModel):
     summary: dict
     created_at: datetime
     updated_at: datetime
+
+
+class UploadWarningResponse(BaseModel):
+    warning_id: str
+    dedupe_key: str
+    upload_log_id: str
+    upload_type: str
+    uploaded_at: datetime
+    uploaded_by: str | None = None
+    reporting_period_id: str | None = None
+    programme_code: str | None = None
+    warning_type: str
+    severity: str
+    message: str
+    resident_name: str | None = None
+    mcr: str | None = None
+    month_label: str | None = None
+    sheet_name: str | None = None
+    row_number: int | None = None
+    cell_ref: str | None = None
+    posting_codes: list[str] = Field(default_factory=list)
+    session_type: str | None = None
+    count: int | None = None
+    source_label: str | None = None
+    raw_payload: Any = None
+    seen_count: int = 1
+    first_seen_at: datetime
+    last_seen_at: datetime
+    upload_log_ids: list[str] = Field(default_factory=list)
 
 
 class ResidentResponse(BaseModel):

@@ -93,7 +93,7 @@ const formatWarningsStatus = (log: UploadLogEntry) => {
 
 export const AdminHomePage = () => {
   const navigate = useNavigate()
-  const { demoAdminId, demoAdminProgrammes, warnings } = useAppState()
+  const { demoAdminId, demoAdminProgrammes } = useAppState()
   const [uploadLogs, setUploadLogs] = useState<UploadLogEntry[]>([])
   const [uploadLogsLoading, setUploadLogsLoading] = useState(true)
   const [uploadLogsError, setUploadLogsError] = useState<string | null>(null)
@@ -149,18 +149,16 @@ export const AdminHomePage = () => {
     }
   }, [fetchUploadLogs])
 
-  const unresolvedWarnings = warnings.filter((item) => item.status === 'unresolved')
   const lastSyncText = uploadLogs[0]
     ? formatDateTime(uploadLogs[0].uploadedAtIso)
     : 'No uploads yet'
-  const unresolvedWarningsText = `${unresolvedWarnings.length} unresolved warnings`
 
   return (
     <div className="page">
       <PageHero
         title="Welcome back, Demo Admin"
         subtitle="Master Admin - All programmes - System overview"
-        metaInline={[`Last full sync - ${lastSyncText}`, unresolvedWarningsText]}
+        metaInline={[`Last full sync - ${lastSyncText}`, 'Persisted warning review']}
         actions={
           <div className="hero-action-row">
             <button
@@ -240,22 +238,13 @@ export const AdminHomePage = () => {
 
         <article className="card">
           <div className="section-header">
-            <h2>Unresolved warnings</h2>
+            <h2>Warning review</h2>
             <button type="button" className="button button-ghost" onClick={() => navigate('/admin/upload/warnings')}>
               All warnings {'->'}
             </button>
           </div>
           <ul className="warning-list">
-            {unresolvedWarnings.slice(0, 5).map((warning) => (
-              <li key={warning.id}>
-                <span className={`dot dot-${warning.severity}`} />
-                <div>
-                  <strong>{warning.type}</strong>
-                  <p>{warning.message}</p>
-                </div>
-              </li>
-            ))}
-            {unresolvedWarnings.length === 0 ? <li>No unresolved warnings.</li> : null}
+            <li>Warnings are now read from persisted upload logs. Open the review page to load current rows.</li>
           </ul>
         </article>
       </section>

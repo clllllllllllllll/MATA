@@ -15,11 +15,16 @@ import { ApiRequestError } from '../../api/http'
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconPlus, IconRefresh } from '../../components/icons'
 import { useAppState } from '../../context/useAppState'
-import type { NormalizedWarning } from '../../types/upload'
-import { loadWarningContext } from '../../utils/storage'
 
 type RuleTab = MultiPostingRuleType
 type ConfigViewRole = 'master_admin' | 'programme_pc'
+
+interface WarningContext {
+  type: string
+  mcr?: string
+  monthLabel?: string
+  residentName?: string
+}
 
 interface MultiPostingFormState {
   programmeCode: string
@@ -230,16 +235,18 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
   const [confirmingDeleteRule, setConfirmingDeleteRule] = useState<MultiPostingRule | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
-  const warningContext = useMemo<NormalizedWarning | null>(() => {
-    const stored = loadWarningContext()
-    if (!stored) {
+  const warningContext = useMemo<WarningContext | null>(() => {
+    const params = new URLSearchParams(location.search)
+    const type = params.get('warningType') ?? ''
+    if (type !== 'unmatched_multi_posting') {
       return null
     }
-    if ('warningId' in (location.state ?? {})) {
-      return stored
+    return {
+      type,
+      mcr: params.get('mcr') ?? undefined,
+      monthLabel: params.get('month') ?? undefined,
     }
-    return stored.type === 'unmatched_multi_posting' ? stored : null
-  }, [location.state])
+  }, [location.search])
 
   const sortedProgrammeOptions = useMemo(
     () => {
