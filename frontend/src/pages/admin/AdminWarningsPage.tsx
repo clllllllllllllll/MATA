@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { listUploadWarnings } from '../../api/uploadWarnings'
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconChevRight, IconRefresh } from '../../components/icons'
@@ -32,6 +32,17 @@ const reviewLabel = 'Review needed'
 const modeDescriptions: Record<WarningReviewMode, string> = {
   active: 'Latest warning state from the most recent upload per source/scope.',
   history: 'Deduped warning history across previous upload logs.',
+}
+
+const toWarningMode = (value: string | null): WarningReviewMode => {
+  return value === 'history' ? 'history' : 'active'
+}
+
+const toUploadTypeFilter = (value: string | null): UploadType | 'all' => {
+  if (value === 'rdb' || value === 'ttf' || value === 'form_f1' || value === 'public_holidays') {
+    return value
+  }
+  return 'all'
 }
 
 const matchesSearch = (warning: UploadWarning, rawSearch: string): boolean => {
@@ -67,6 +78,7 @@ const fieldValue = (value?: string | number | null) => {
 export const AdminWarningsPage = () => {
   const navigate = useNavigate()
   const location = useLocation()
+  const [searchParams] = useSearchParams()
   const { demoAdminId, demoAdminProgrammes, role } = useAppState()
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
   const isProgrammePc = location.pathname.startsWith('/pc') || role === 'programme_pc'
@@ -74,11 +86,15 @@ export const AdminWarningsPage = () => {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedWarning, setSelectedWarning] = useState<UploadWarning | null>(null)
-  const [uploadTypeFilter, setUploadTypeFilter] = useState<UploadType | 'all'>('all')
+  const [uploadTypeFilter, setUploadTypeFilter] = useState<UploadType | 'all'>(
+    toUploadTypeFilter(searchParams.get('upload_type')),
+  )
   const [severityFilter, setSeverityFilter] = useState<WarningSeverity | 'all'>('all')
   const [programmeFilter, setProgrammeFilter] = useState<string>('all')
   const [searchTerm, setSearchTerm] = useState('')
-  const [warningMode, setWarningMode] = useState<WarningReviewMode>('active')
+  const [warningMode, setWarningMode] = useState<WarningReviewMode>(
+    toWarningMode(searchParams.get('mode')),
+  )
 
   const fetchWarnings = useCallback(async () => {
     setLoading(true)

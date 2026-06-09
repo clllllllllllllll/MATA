@@ -1,6 +1,7 @@
 import type { UploadType } from './app'
 
 export type WarningSeverity = 'critical' | 'warning' | 'info'
+export type UploadLogStatus = 'success' | 'partial' | 'failed'
 
 export interface ReportingPeriodOption {
   id: string
@@ -84,4 +85,31 @@ export interface UploadWarning {
   firstSeenAt: string
   lastSeenAt: string
   uploadLogIds: string[]
+}
+
+export interface UploadLogListItem {
+  id: string
+  upload_type: UploadType
+  uploaded_at: string
+  uploaded_by?: string | null
+  uploaded_by_name?: string | null
+  status: UploadLogStatus
+  reporting_period_id?: string | null
+  reporting_period_label?: string | null
+  programme_code?: string | null
+  warning_count: number
+  error_count: number
+  summary_counts: Record<string, number>
+}
+
+export interface UploadLogListResponse {
+  items: UploadLogListItem[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface UploadLogDetail extends UploadLogListItem {
+  summary: unknown
+  original_filename?: string | null
 }

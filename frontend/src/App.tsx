@@ -4,6 +4,7 @@ import { AdminConfigPage } from './pages/admin/AdminConfigPage'
 import { AdminHomePage } from './pages/admin/AdminHomePage'
 import { AdminMultiPostingPage } from './pages/admin/AdminMultiPostingPage'
 import { AdminPlaceholderPage } from './pages/admin/AdminPlaceholderPage'
+import { AdminUploadLogsPage } from './pages/admin/AdminUploadLogsPage'
 import { AdminUploadPage } from './pages/admin/AdminUploadPage'
 import { AdminWarningsPage } from './pages/admin/AdminWarningsPage'
 import { ResidentSubmissionPage } from './pages/resident/ResidentSubmissionPage'
@@ -20,16 +21,7 @@ function App() {
         <Route path="/admin/upload/warnings" element={<AdminWarningsPage />} />
         <Route path="/admin/config" element={<AdminConfigPage configViewRole="master_admin" />} />
         <Route path="/admin/config/multi" element={<AdminMultiPostingPage />} />
-        <Route
-          path="/admin/upload-logs"
-          element={
-            <AdminPlaceholderPage
-              title="Upload Logs"
-              subtitle="Master Admin - Upload audit trail"
-              note="Upload log viewing is pending backend endpoint support for persisted upload_logs records."
-            />
-          }
-        />
+        <Route path="/admin/upload-logs" element={<AdminUploadLogsPage />} />
         <Route
           path="/admin/parsed"
           element={

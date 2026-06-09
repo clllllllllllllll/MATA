@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { listUploadLogs, type UploadLogEntry } from '../../api/uploadLogs'
+import { listUploadLogs } from '../../api/uploadLogs'
 import {
   IconCalendar,
   IconDatabase,
@@ -14,6 +14,7 @@ import { PageHero } from '../../components/PageHero'
 import { uploadLabels } from '../../config/frontendConfig'
 import { useAppState } from '../../context/useAppState'
 import type { UploadType } from '../../types/app'
+import type { UploadLogListItem } from '../../types/upload'
 
 const workspaceTiles = [
   {
@@ -75,26 +76,17 @@ const getUploadLabel = (uploadType: string) => {
   return uploadType || 'Upload'
 }
 
-const getWarningsCount = (summary: Record<string, unknown>): number | null => {
-  if (Array.isArray(summary.warnings)) {
-    return summary.warnings.length
+const formatWarningsStatus = (log: UploadLogListItem) => {
+  if (log.warning_count > 0) {
+    return String(log.warning_count)
   }
-  const count = summary.warnings_count ?? summary.warningsCount
-  return typeof count === 'number' && Number.isFinite(count) ? count : null
-}
-
-const formatWarningsStatus = (log: UploadLogEntry) => {
-  const warningsCount = getWarningsCount(log.summary)
-  if (warningsCount !== null) {
-    return String(warningsCount)
-  }
-  return log.status ? `${log.status} / warnings —` : '—'
+  return log.status ? `${log.status} / warnings 0` : '0'
 }
 
 export const AdminHomePage = () => {
   const navigate = useNavigate()
   const { demoAdminId, demoAdminProgrammes } = useAppState()
-  const [uploadLogs, setUploadLogs] = useState<UploadLogEntry[]>([])
+  const [uploadLogs, setUploadLogs] = useState<UploadLogListItem[]>([])
   const [uploadLogsLoading, setUploadLogsLoading] = useState(true)
   const [uploadLogsError, setUploadLogsError] = useState<string | null>(null)
 
@@ -103,8 +95,9 @@ export const AdminHomePage = () => {
       listUploadLogs({
         adminId: demoAdminId,
         adminProgrammes: demoAdminProgrammes,
+        adminLevel: 'master',
         limit: 6,
-      }),
+      }).then((response) => response.items),
     [demoAdminId, demoAdminProgrammes],
   )
 
@@ -150,7 +143,7 @@ export const AdminHomePage = () => {
   }, [fetchUploadLogs])
 
   const lastSyncText = uploadLogs[0]
-    ? formatDateTime(uploadLogs[0].uploadedAtIso)
+    ? formatDateTime(uploadLogs[0].uploaded_at)
     : 'No uploads yet'
 
   return (
@@ -224,9 +217,9 @@ export const AdminHomePage = () => {
                 ) : (
                   uploadLogs.map((entry) => (
                     <tr key={entry.id}>
-                      <td>{getUploadLabel(entry.uploadType)}</td>
-                      <td>{formatDateTime(entry.uploadedAtIso)}</td>
-                      <td>{entry.programmeCode ?? 'All'}</td>
+                      <td>{getUploadLabel(entry.upload_type)}</td>
+                      <td>{formatDateTime(entry.uploaded_at)}</td>
+                      <td>{entry.programme_code ?? 'All'}</td>
                       <td>{formatWarningsStatus(entry)}</td>
                     </tr>
                   ))
