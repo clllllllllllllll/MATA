@@ -21,6 +21,13 @@ from app.schemas import (
     LoaTypeUpdateRequest,
     MultiPostingRuleMutationRequest,
     MultiPostingRuleResponse,
+    ParsedAcademicMonthBoundaryListResponse,
+    ParsedFormF1RecordListResponse,
+    ParsedPublicHolidayListResponse,
+    ParsedResidentListResponse,
+    ParsedResidentPostingListResponse,
+    ParsedTeachingNameCatalogueListResponse,
+    ParsedTeachingTargetListResponse,
     PostingGroupMutationRequest,
     PostingGroupResponse,
     PostingCodeResponse,
@@ -42,7 +49,7 @@ from app.schemas import (
     WeekendExceptionMutationRequest,
     WeekendExceptionResponse,
 )
-from app.services import admin_config
+from app.services import admin_config, parsed_data
 from app.services.upload_logs import (
     get_upload_log as get_upload_log_read_model,
     list_upload_logs as list_upload_logs_read_model,
@@ -1220,6 +1227,215 @@ async def get_upload_warnings(
         mode=mode,
     )
     return [UploadWarningResponse.model_validate(row) for row in rows]
+
+
+@router.get("/parsed-data/residents", response_model=ParsedResidentListResponse)
+async def list_parsed_residents(
+    programme_code: str | None = Query(default=None),
+    mcr: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ParsedResidentListResponse:
+    if db is None:
+        return ParsedResidentListResponse(items=[], total=0, limit=limit, offset=offset)
+    payload = await parsed_data.list_residents(
+        db,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+        programme_code=programme_code,
+        mcr=mcr,
+        search=search,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+    return ParsedResidentListResponse.model_validate(payload)
+
+
+@router.get("/parsed-data/resident-postings", response_model=ParsedResidentPostingListResponse)
+async def list_parsed_resident_postings(
+    reporting_period_id: UUID | None = Query(default=None),
+    programme_code: str | None = Query(default=None),
+    posting_code: str | None = Query(default=None),
+    mcr: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    month_label: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ParsedResidentPostingListResponse:
+    if db is None:
+        return ParsedResidentPostingListResponse(items=[], total=0, limit=limit, offset=offset)
+    payload = await parsed_data.list_resident_postings(
+        db,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        posting_code=posting_code,
+        mcr=mcr,
+        status=status,
+        month_label=month_label,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    return ParsedResidentPostingListResponse.model_validate(payload)
+
+
+@router.get("/parsed-data/teaching-targets", response_model=ParsedTeachingTargetListResponse)
+async def list_parsed_teaching_targets(
+    reporting_period_id: UUID | None = Query(default=None),
+    programme_code: str | None = Query(default=None),
+    posting_code: str | None = Query(default=None),
+    r_year: str | None = Query(default=None),
+    session_type: str | None = Query(default=None),
+    is_tracked: bool | None = Query(default=None),
+    search: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ParsedTeachingTargetListResponse:
+    if db is None:
+        return ParsedTeachingTargetListResponse(items=[], total=0, limit=limit, offset=offset)
+    payload = await parsed_data.list_teaching_targets(
+        db,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        posting_code=posting_code,
+        r_year=r_year,
+        session_type=session_type,
+        is_tracked=is_tracked,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    return ParsedTeachingTargetListResponse.model_validate(payload)
+
+
+@router.get(
+    "/parsed-data/teaching-name-catalogue",
+    response_model=ParsedTeachingNameCatalogueListResponse,
+)
+async def list_parsed_teaching_name_catalogue(
+    reporting_period_id: UUID | None = Query(default=None),
+    programme_code: str | None = Query(default=None),
+    posting_code: str | None = Query(default=None),
+    r_year: str | None = Query(default=None),
+    keyword: str | None = Query(default=None),
+    is_tracked: bool | None = Query(default=None),
+    search: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ParsedTeachingNameCatalogueListResponse:
+    if db is None:
+        return ParsedTeachingNameCatalogueListResponse(items=[], total=0, limit=limit, offset=offset)
+    payload = await parsed_data.list_teaching_name_catalogue(
+        db,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        posting_code=posting_code,
+        r_year=r_year,
+        keyword=keyword,
+        is_tracked=is_tracked,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    return ParsedTeachingNameCatalogueListResponse.model_validate(payload)
+
+
+@router.get("/parsed-data/form-f1-records", response_model=ParsedFormF1RecordListResponse)
+async def list_parsed_form_f1_records(
+    reporting_period_id: UUID | None = Query(default=None),
+    programme_code: str | None = Query(default=None),
+    mcr: str | None = Query(default=None),
+    month_label: str | None = Query(default=None),
+    is_active: bool | None = Query(default=None),
+    search: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ParsedFormF1RecordListResponse:
+    if db is None:
+        return ParsedFormF1RecordListResponse(items=[], total=0, limit=limit, offset=offset)
+    payload = await parsed_data.list_form_f1_records(
+        db,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        mcr=mcr,
+        month_label=month_label,
+        is_active=is_active,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    return ParsedFormF1RecordListResponse.model_validate(payload)
+
+
+@router.get("/parsed-data/public-holidays", response_model=ParsedPublicHolidayListResponse)
+async def list_parsed_public_holidays(
+    year: int | None = Query(default=None),
+    search: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ParsedPublicHolidayListResponse:
+    _require_master_admin(admin_context)
+    if db is None:
+        return ParsedPublicHolidayListResponse(items=[], total=0, limit=limit, offset=offset)
+    payload = await parsed_data.list_public_holidays(
+        db,
+        year=year,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    return ParsedPublicHolidayListResponse.model_validate(payload)
+
+
+@router.get(
+    "/parsed-data/academic-month-boundaries",
+    response_model=ParsedAcademicMonthBoundaryListResponse,
+)
+async def list_parsed_academic_month_boundaries(
+    academic_year_label: str | None = Query(default=None),
+    ay_date_category: str | None = Query(default=None),
+    month_label: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ParsedAcademicMonthBoundaryListResponse:
+    _require_master_admin(admin_context)
+    if db is None:
+        return ParsedAcademicMonthBoundaryListResponse(items=[], total=0, limit=limit, offset=offset)
+    payload = await parsed_data.list_academic_month_boundaries(
+        db,
+        academic_year_label=academic_year_label,
+        ay_date_category=ay_date_category,
+        month_label=month_label,
+        limit=limit,
+        offset=offset,
+    )
+    return ParsedAcademicMonthBoundaryListResponse.model_validate(payload)
 
 
 @router.get("/form-f1-records", response_model=list[FormF1RecordResponse])

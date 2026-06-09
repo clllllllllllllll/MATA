@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -164,6 +164,154 @@ class UploadWarningResponse(BaseModel):
     first_seen_at: datetime
     last_seen_at: datetime
     upload_log_ids: list[str] = Field(default_factory=list)
+
+
+class ParsedResidentRow(BaseModel):
+    id: UUID
+    employee_code: str | None = None
+    name: str
+    mcr: str
+    programme_code: str | None = None
+    r_year: str | None = None
+    classification: str | None = None
+    reg_type: str | None = None
+    base_institution: str | None = None
+    employer_tag: str | None = None
+    status: str | None = None
+
+
+class ParsedResidentListResponse(BaseModel):
+    items: list[ParsedResidentRow]
+    total: int
+    limit: int
+    offset: int
+
+
+class ParsedResidentPostingRow(BaseModel):
+    id: UUID
+    resident_id: UUID
+    resident_name: str | None = None
+    mcr: str | None = None
+    programme_code: str | None = None
+    posting_code: str | None = None
+    reporting_period_id: UUID
+    reporting_period_label: str | None = None
+    start_date: date
+    end_date: date
+    month_label: str | None = None
+    r_year: str
+    status: str
+    loa_type: str | None = None
+    loa_start_date: date | None = None
+    loa_end_date: date | None = None
+    refresher_training_type: str | None = None
+    active_months_weight: Decimal | None = None
+    working_days_in_month: int | None = None
+
+
+class ParsedResidentPostingListResponse(BaseModel):
+    items: list[ParsedResidentPostingRow]
+    total: int
+    limit: int
+    offset: int
+
+
+class ParsedTeachingTargetRow(BaseModel):
+    id: UUID
+    reporting_period_id: UUID
+    reporting_period_label: str | None = None
+    programme_code: str
+    r_year: str
+    posting_code: str
+    session_type_id: UUID
+    session_type_name: str | None = None
+    duration_hours: Decimal | None = None
+    monthly_target: int
+    is_tracked: bool
+    is_reallocatable: bool
+    tag: str | None = None
+    details_of_training: str | None = None
+
+
+class ParsedTeachingTargetListResponse(BaseModel):
+    items: list[ParsedTeachingTargetRow]
+    total: int
+    limit: int
+    offset: int
+
+
+class ParsedTeachingNameCatalogueRow(BaseModel):
+    id: UUID
+    keyword: str
+    programme_code: str
+    posting_code: str
+    r_year: str
+    reporting_period_id: UUID
+    reporting_period_label: str | None = None
+    session_type_id: UUID
+    session_type_name: str | None = None
+    duration_hours: Decimal
+    is_tracked: bool
+
+
+class ParsedTeachingNameCatalogueListResponse(BaseModel):
+    items: list[ParsedTeachingNameCatalogueRow]
+    total: int
+    limit: int
+    offset: int
+
+
+class ParsedFormF1RecordRow(BaseModel):
+    id: UUID
+    reporting_period_id: UUID
+    reporting_period_label: str | None = None
+    mcr: str
+    resident_name: str | None = None
+    programme_code: str | None = None
+    month_label: str
+    status_raw: str
+    is_active: bool
+    promotion_date: date | None = None
+    upload_id: UUID | None = None
+
+
+class ParsedFormF1RecordListResponse(BaseModel):
+    items: list[ParsedFormF1RecordRow]
+    total: int
+    limit: int
+    offset: int
+
+
+class ParsedPublicHolidayRow(BaseModel):
+    id: UUID
+    holiday_date: date
+    name: str | None = None
+    day_of_week: str | None = None
+    year: int | None = None
+
+
+class ParsedPublicHolidayListResponse(BaseModel):
+    items: list[ParsedPublicHolidayRow]
+    total: int
+    limit: int
+    offset: int
+
+
+class ParsedAcademicMonthBoundaryRow(BaseModel):
+    id: UUID
+    academic_year_label: str
+    ay_date_category: Literal["im_subspec", "non_im_subspec"]
+    month_label: str
+    start_date: date
+    end_date: date
+    upload_id: UUID | None = None
+
+
+class ParsedAcademicMonthBoundaryListResponse(BaseModel):
+    items: list[ParsedAcademicMonthBoundaryRow]
+    total: int
+    limit: int
+    offset: int
 
 
 class ResidentResponse(BaseModel):
