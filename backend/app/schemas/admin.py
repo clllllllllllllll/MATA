@@ -97,6 +97,33 @@ class GlobalSessionTypeResponse(BaseModel):
     updated_at: datetime
 
 
+class UploadLogListItem(BaseModel):
+    id: UUID
+    upload_type: str
+    uploaded_at: datetime
+    uploaded_by: UUID | None = None
+    uploaded_by_name: str | None = None
+    status: str
+    reporting_period_id: UUID | None = None
+    reporting_period_label: str | None = None
+    programme_code: str | None = None
+    warning_count: int
+    error_count: int
+    summary_counts: dict[str, int]
+
+
+class UploadLogListResponse(BaseModel):
+    items: list[UploadLogListItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class UploadLogDetailResponse(UploadLogListItem):
+    summary: Any
+    original_filename: str | None = None
+
+
 class UploadLogResponse(BaseModel):
     id: UUID
     upload_type: str

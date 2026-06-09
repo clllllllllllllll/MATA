@@ -36,12 +36,17 @@ from app.schemas import (
     SessionTypeResponse,
     TeachingNameCatalogueResponse,
     TeachingTargetResponse,
-    UploadLogResponse,
+    UploadLogDetailResponse,
+    UploadLogListResponse,
     UploadWarningResponse,
     WeekendExceptionMutationRequest,
     WeekendExceptionResponse,
 )
 from app.services import admin_config
+from app.services.upload_logs import (
+    get_upload_log as get_upload_log_read_model,
+    list_upload_logs as list_upload_logs_read_model,
+)
 from app.services.upload_warnings import list_upload_warnings
 from app.services.parser_common import (
     ParserResult,
@@ -1138,26 +1143,54 @@ async def delete_global_session_type(
     )
 
 
-@router.get("/upload-logs", response_model=list[UploadLogResponse])
+@router.get("/upload-logs", response_model=UploadLogListResponse)
 async def list_upload_logs(
     upload_type: str | None = Query(default=None),
+    status: str | None = Query(default=None),
     programme_code: str | None = Query(default=None),
     reporting_period_id: UUID | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    search: str | None = Query(default=None),
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
-) -> list[UploadLogResponse]:
+) -> UploadLogListResponse:
     if db is None:
-        return []
-    rows = await admin_config.list_upload_logs(
+        return UploadLogListResponse(items=[], total=0, limit=limit, offset=offset)
+    payload = await list_upload_logs_read_model(
         db,
         programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
         upload_type=upload_type,
+        status=status,
         programme_code=programme_code,
         reporting_period_id=reporting_period_id,
         limit=limit,
+        offset=offset,
+        search=search,
     )
-    return [UploadLogResponse.model_validate(row) for row in rows]
+    return UploadLogListResponse.model_validate(payload)
+
+
+@router.get("/upload-logs/{upload_log_id}", response_model=UploadLogDetailResponse)
+async def get_upload_log_detail(
+    upload_log_id: UUID,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> UploadLogDetailResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    payload = await get_upload_log_read_model(
+        db,
+        upload_log_id=upload_log_id,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+    )
+    return UploadLogDetailResponse.model_validate(payload)
 
 
 @router.get("/upload-warnings", response_model=list[UploadWarningResponse])

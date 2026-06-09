@@ -22,6 +22,14 @@ class _FakeMappingResult:
         return self._rows
 
 
+class _FakeScalarResult:
+    def __init__(self, value: int) -> None:
+        self._value = value
+
+    def scalar_one(self) -> int:
+        return self._value
+
+
 class FakeAdminConfigSession:
     def __init__(self) -> None:
         now = datetime(2026, 5, 1, 8, 0, tzinfo=timezone.utc)
@@ -231,6 +239,10 @@ class FakeAdminConfigSession:
             return _FakeMappingResult(rows)
 
         if "FROM upload_logs" in sql:
+            if "1 = 0" in sql:
+                if "COUNT(*)" in sql:
+                    return _FakeScalarResult(0)
+                return _FakeMappingResult([])
             rows = list(self.upload_logs)
             if "upload_type" in payload:
                 rows = [row for row in rows if row["upload_type"] == payload["upload_type"]]
@@ -246,18 +258,22 @@ class FakeAdminConfigSession:
                 scope_codes = {
                     value
                     for key, value in payload.items()
-                    if key.startswith("programme_code_")
+                    if key.startswith("scope_programme_code_")
                 }
                 if scope_codes:
                     rows = [
                         row
                         for row in rows
-                        if row["programme_code"] is None or row["programme_code"] in scope_codes
+                        if row["upload_type"] == "ttf"
+                        and row["programme_code"] in scope_codes
                     ]
                 else:
-                    rows = [row for row in rows if row["programme_code"] is None]
+                    rows = []
+            if "COUNT(*)" in sql:
+                return _FakeScalarResult(len(rows))
             limit = int(payload.get("limit", 20))
-            return _FakeMappingResult(rows[:limit])
+            offset = int(payload.get("offset", 0))
+            return _FakeMappingResult(rows[offset : offset + limit])
 
         if "FROM form_f1_records f" in sql:
             rows = list(self.form_f1_records)
@@ -473,7 +489,8 @@ def test_programme_scope_null_returns_no_scoped_data() -> None:
     assert global_types.status_code == 403
     assert rules.json() == []
     assert groups.json() == []
-    assert logs.json() == []
+    assert logs.json()["items"] == []
+    assert logs.json()["total"] == 0
 
 
 def test_programme_filter_must_be_in_scope() -> None:
@@ -500,9 +517,10 @@ def test_upload_logs_list_works_with_scope() -> None:
     )
     assert response.status_code == 200
     body = response.json()
-    assert len(body) == 1
-    assert body[0]["upload_type"] == "ttf"
-    assert body[0]["programme_code"] == "DR"
+    assert body["total"] == 1
+    assert len(body["items"]) == 1
+    assert body["items"][0]["upload_type"] == "ttf"
+    assert body["items"][0]["programme_code"] == "DR"
 
 
 def test_weekend_exceptions_list_includes_session_type_display_names() -> None:
