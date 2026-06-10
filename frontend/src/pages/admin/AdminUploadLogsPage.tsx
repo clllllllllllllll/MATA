@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getUploadLog, listUploadLogs } from '../../api/uploadLogs'
 import { DetailDrawer } from '../../components/DetailDrawer'
@@ -19,6 +19,7 @@ const uploadTypeLabels: Record<UploadType, string> = {
 const uploadTypeOrder: UploadType[] = ['rdb', 'form_f1', 'ttf', 'public_holidays']
 const statusOptions: UploadLogStatus[] = ['success', 'partial', 'failed']
 const pageSize = 10
+const searchDebounceMs = 300
 
 const formatDateTime = (iso?: string | null) =>
   iso
@@ -87,81 +88,100 @@ export const AdminUploadLogsPage = () => {
   const [logs, setLogs] = useState<UploadLogListItem[]>([])
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
-  const [loading, setLoading] = useState(true)
+  const hasLoadedLogsRef = useRef(false)
+  const [isInitialLoading, setIsInitialLoading] = useState(true)
+  const [isRefetching, setIsRefetching] = useState(false)
+  const [isManualRefreshing, setIsManualRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [uploadTypeFilter, setUploadTypeFilter] = useState<UploadType | 'all'>('all')
   const [statusFilter, setStatusFilter] = useState<UploadLogStatus | 'all'>('all')
   const [programmeFilter, setProgrammeFilter] = useState<string>('all')
   const [searchTerm, setSearchTerm] = useState('')
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('')
   const [selectedLogId, setSelectedLogId] = useState<string | null>(null)
   const [selectedDetail, setSelectedDetail] = useState<UploadLogDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
 
-  const fetchLogs = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const response = await listUploadLogs({
-        adminId: demoAdminId,
-        adminProgrammes: demoAdminProgrammes,
-        adminLevel: 'master',
-        uploadType: uploadTypeFilter,
-        status: statusFilter,
-        programmeCode: programmeFilter,
-        search: searchTerm,
-        limit: pageSize,
-        offset,
-      })
-      setLogs(response.items)
-      setTotal(response.total)
-    } catch (fetchError) {
-      setLogs([])
-      setTotal(0)
-      setError(fetchError instanceof Error ? fetchError.message : 'Unable to load upload logs.')
-    } finally {
-      setLoading(false)
-    }
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearchTerm((previous) => (previous === searchTerm ? previous : searchTerm))
+    }, searchDebounceMs)
+    return () => window.clearTimeout(timer)
+  }, [searchTerm])
+
+  const loadLogs = useCallback(async (querySearch: string) => {
+    return listUploadLogs({
+      adminId: demoAdminId,
+      adminProgrammes: demoAdminProgrammes,
+      adminLevel: 'master',
+      uploadType: uploadTypeFilter,
+      status: statusFilter,
+      programmeCode: programmeFilter,
+      search: querySearch,
+      limit: pageSize,
+      offset,
+    })
   }, [
     demoAdminId,
     demoAdminProgrammes,
     offset,
     programmeFilter,
-    searchTerm,
     statusFilter,
     uploadTypeFilter,
   ])
 
+  const fetchLogs = useCallback(async () => {
+    setIsManualRefreshing(true)
+    setError(null)
+    try {
+      const response = await loadLogs(searchTerm)
+      setDebouncedSearchTerm((previous) => (previous === searchTerm ? previous : searchTerm))
+      setLogs(response.items)
+      setTotal(response.total)
+      hasLoadedLogsRef.current = true
+    } catch (fetchError) {
+      setLogs([])
+      setTotal(0)
+      hasLoadedLogsRef.current = true
+      setError(fetchError instanceof Error ? fetchError.message : 'Unable to load upload logs.')
+    } finally {
+      setIsManualRefreshing(false)
+      setIsInitialLoading(false)
+      setIsRefetching(false)
+    }
+  }, [loadLogs, searchTerm])
+
   useEffect(() => {
     let active = true
     ;(async () => {
-      setLoading(true)
+      const isBackgroundRefetch = hasLoadedLogsRef.current
+      if (isBackgroundRefetch) {
+        setIsRefetching(true)
+      } else {
+        setIsInitialLoading(true)
+      }
       setError(null)
       try {
-        const response = await listUploadLogs({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
-          adminLevel: 'master',
-          uploadType: uploadTypeFilter,
-          status: statusFilter,
-          programmeCode: programmeFilter,
-          search: searchTerm,
-          limit: pageSize,
-          offset,
-        })
+        const response = await loadLogs(debouncedSearchTerm)
         if (active) {
           setLogs(response.items)
           setTotal(response.total)
+          hasLoadedLogsRef.current = true
         }
       } catch (fetchError) {
         if (active) {
-          setLogs([])
-          setTotal(0)
+          if (!isBackgroundRefetch) {
+            setLogs([])
+            setTotal(0)
+          }
+          hasLoadedLogsRef.current = true
           setError(fetchError instanceof Error ? fetchError.message : 'Unable to load upload logs.')
         }
       } finally {
         if (active) {
-          setLoading(false)
+          setIsInitialLoading(false)
+          setIsRefetching(false)
         }
       }
     })()
@@ -169,13 +189,8 @@ export const AdminUploadLogsPage = () => {
       active = false
     }
   }, [
-    demoAdminId,
-    demoAdminProgrammes,
-    offset,
-    programmeFilter,
-    searchTerm,
-    statusFilter,
-    uploadTypeFilter,
+    debouncedSearchTerm,
+    loadLogs,
   ])
 
   const programmeOptions = useMemo(() => {
@@ -240,7 +255,7 @@ export const AdminUploadLogsPage = () => {
   const canGoPrevious = offset > 0
   const canGoNext = offset + pageSize < total
 
-  const pageSubtitle = loading
+  const pageSubtitle = isInitialLoading
     ? 'Audit history of uploaded source files'
     : `${total} persisted upload log${total === 1 ? '' : 's'}`
 
@@ -255,10 +270,10 @@ export const AdminUploadLogsPage = () => {
             type="button"
             className="button button-secondary"
             onClick={() => void fetchLogs()}
-            disabled={loading}
+            disabled={isManualRefreshing || isInitialLoading}
           >
             <IconRefresh size={14} />
-            {loading ? 'Refreshing' : 'Refresh'}
+            {isManualRefreshing ? 'Refreshing' : 'Refresh'}
           </button>
         }
       />
@@ -332,9 +347,15 @@ export const AdminUploadLogsPage = () => {
         </button>
       </section>
 
-      {loading ? (
+      {error && logs.length > 0 ? (
+        <section className="inline-callout callout-warning upload-log-inline-error">
+          <span>{error}</span>
+        </section>
+      ) : null}
+
+      {isInitialLoading ? (
         <section className="card warning-state-card">Loading upload logs...</section>
-      ) : error ? (
+      ) : error && logs.length === 0 ? (
         <section className="card warning-state-card">
           <strong>Upload logs could not be loaded.</strong>
           <p>{error}</p>
@@ -352,15 +373,18 @@ export const AdminUploadLogsPage = () => {
           </p>
         </section>
       ) : (
-        <section className="warning-group-card upload-log-table-card">
+        <section className={`warning-group-card upload-log-table-card ${isRefetching ? 'is-refetching' : ''}`}>
           <div className="warning-group-header">
             <div>
               <span className="warning-group-kicker">Audit trail</span>
               <h2>Persisted upload logs</h2>
             </div>
-            <span className="warning-count-pill">
-              {firstItem}-{lastItem} of {total}
-            </span>
+            <div className="parsed-data-count-status">
+              {isRefetching ? <span className="parsed-data-updating">Updating...</span> : null}
+              <span className="warning-count-pill">
+                {firstItem}-{lastItem} of {total}
+              </span>
+            </div>
           </div>
           <div className="table-scroll">
             <table className="table upload-logs-table">

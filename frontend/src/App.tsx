@@ -3,6 +3,7 @@ import { AppShell } from './components/AppShell'
 import { AdminConfigPage } from './pages/admin/AdminConfigPage'
 import { AdminHomePage } from './pages/admin/AdminHomePage'
 import { AdminMultiPostingPage } from './pages/admin/AdminMultiPostingPage'
+import { AdminParsedDataPage } from './pages/admin/AdminParsedDataPage'
 import { AdminPlaceholderPage } from './pages/admin/AdminPlaceholderPage'
 import { AdminUploadLogsPage } from './pages/admin/AdminUploadLogsPage'
 import { AdminUploadPage } from './pages/admin/AdminUploadPage'
@@ -22,16 +23,7 @@ function App() {
         <Route path="/admin/config" element={<AdminConfigPage configViewRole="master_admin" />} />
         <Route path="/admin/config/multi" element={<AdminMultiPostingPage />} />
         <Route path="/admin/upload-logs" element={<AdminUploadLogsPage />} />
-        <Route
-          path="/admin/parsed"
-          element={
-            <AdminPlaceholderPage
-              title="Parsed Data"
-              subtitle="Master Admin - Parser output review"
-              note="Parsed data review tables are pending implementation and should be wired only after the related backend read endpoints are available."
-            />
-          }
-        />
+        <Route path="/admin/parsed-data" element={<AdminParsedDataPage />} />
         <Route
           path="/admin/secretary-events"
           element={

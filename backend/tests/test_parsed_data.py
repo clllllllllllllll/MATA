@@ -333,6 +333,7 @@ class FakeParsedDataSession:
                 "updated_at": now,
             },
         ]
+        self.executed_sql: list[str] = []
         self._original_state = self._state_snapshot()
 
     def _state_snapshot(self) -> dict[str, list[dict]]:
@@ -351,6 +352,7 @@ class FakeParsedDataSession:
 
     async def execute(self, statement, params=None):
         sql = str(statement)
+        self.executed_sql.append(sql)
         payload = dict(params or {})
         rows = self._rows_for_sql(sql, payload)
         if "COUNT(*)" in sql:
@@ -406,7 +408,7 @@ class FakeParsedDataSession:
         if scope_codes:
             rows = [row for row in rows if row["programme_code"] in scope_codes]
         rows = self._filter_programme(rows, payload, key="programme_code")
-        rows = self._filter_exact(rows, payload, "mcr", normalise=str.upper)
+        rows = self._filter_partial(rows, payload, "mcr")
         rows = self._filter_exact(rows, payload, "status", normalise=str.lower)
         rows = self._filter_search(
             rows,
@@ -434,9 +436,9 @@ class FakeParsedDataSession:
             rows = [row for row in rows if row["programme_code"] in scope_codes]
         rows = self._filter_programme(rows, payload, key="programme_code")
         rows = self._filter_exact(rows, payload, "reporting_period_id")
-        rows = self._filter_exact(rows, payload, "posting_code")
-        rows = self._filter_exact(rows, payload, "mcr", normalise=str.upper)
-        rows = self._filter_exact(rows, payload, "month_label")
+        rows = self._filter_partial(rows, payload, "posting_code")
+        rows = self._filter_partial(rows, payload, "mcr")
+        rows = self._filter_partial(rows, payload, "month_label")
         rows = self._filter_exact(rows, payload, "status", normalise=str.lower)
         rows = self._filter_search(rows, payload, fields=("resident_name", "mcr", "posting_code"))
         return sorted(
@@ -467,8 +469,8 @@ class FakeParsedDataSession:
             rows = [row for row in rows if row["programme_code"] in scope_codes]
         rows = self._filter_programme(rows, payload, key="programme_code")
         rows = self._filter_exact(rows, payload, "reporting_period_id")
-        rows = self._filter_exact(rows, payload, "posting_code")
-        rows = self._filter_exact(rows, payload, "r_year", normalise=str.upper)
+        rows = self._filter_partial(rows, payload, "posting_code")
+        rows = self._filter_partial(rows, payload, "r_year")
         if "is_tracked" in payload:
             rows = [row for row in rows if row["is_tracked"] == payload["is_tracked"]]
         if "session_type" in payload:
@@ -510,8 +512,8 @@ class FakeParsedDataSession:
             rows = [row for row in rows if row["programme_code"] in scope_codes]
         rows = self._filter_programme(rows, payload, key="programme_code")
         rows = self._filter_exact(rows, payload, "reporting_period_id")
-        rows = self._filter_exact(rows, payload, "posting_code")
-        rows = self._filter_exact(rows, payload, "r_year", normalise=str.upper)
+        rows = self._filter_partial(rows, payload, "posting_code")
+        rows = self._filter_partial(rows, payload, "r_year")
         if "keyword" in payload:
             token = payload["keyword"].strip("%").lower()
             rows = [row for row in rows if token in row["keyword"].lower()]
@@ -550,8 +552,8 @@ class FakeParsedDataSession:
             rows = [row for row in rows if row["programme_code"] in scope_codes]
         rows = self._filter_programme(rows, payload, key="programme_code")
         rows = self._filter_exact(rows, payload, "reporting_period_id")
-        rows = self._filter_exact(rows, payload, "mcr", normalise=str.upper)
-        rows = self._filter_exact(rows, payload, "month_label")
+        rows = self._filter_partial(rows, payload, "mcr")
+        rows = self._filter_partial(rows, payload, "month_label")
         if "is_active" in payload:
             rows = [row for row in rows if row["is_active"] == payload["is_active"]]
         rows = self._filter_search(
@@ -572,14 +574,19 @@ class FakeParsedDataSession:
         rows = list(self.public_holidays)
         if "year" in payload:
             rows = [row for row in rows if row["year"] == payload["year"]]
-        rows = self._filter_search(rows, payload, fields=("name", "day_of_week"))
+        rows = self._filter_search(rows, payload, fields=("name", "day_of_week", "holiday_date", "year"))
         return sorted(rows, key=lambda row: (row["holiday_date"], row["id"]))
 
     def _academic_boundary_rows(self, payload: dict) -> list[dict]:
         rows = list(self.academic_month_boundaries)
-        rows = self._filter_exact(rows, payload, "academic_year_label")
+        rows = self._filter_partial(rows, payload, "academic_year_label")
         rows = self._filter_exact(rows, payload, "ay_date_category", normalise=str.lower)
-        rows = self._filter_exact(rows, payload, "month_label")
+        rows = self._filter_partial(rows, payload, "month_label")
+        rows = self._filter_search(
+            rows,
+            payload,
+            fields=("academic_year_label", "ay_date_category", "month_label", "start_date", "end_date"),
+        )
         return sorted(
             rows,
             key=lambda row: (
@@ -593,7 +600,21 @@ class FakeParsedDataSession:
     def _filter_programme(self, rows: list[dict], payload: dict, *, key: str) -> list[dict]:
         if "programme_code" not in payload:
             return rows
-        return [row for row in rows if row.get(key) == payload["programme_code"]]
+        token = str(payload["programme_code"]).strip("%").lower()
+        return [row for row in rows if token in str(row.get(key) or "").lower()]
+
+    def _filter_partial(
+        self,
+        rows: list[dict],
+        payload: dict,
+        field: str,
+    ) -> list[dict]:
+        if field not in payload:
+            return rows
+        token = str(payload[field]).strip("%").lower()
+        if not token:
+            return rows
+        return [row for row in rows if token in str(row.get(field) or "").lower()]
 
     def _filter_exact(
         self,
@@ -866,6 +887,75 @@ def test_filters_work_for_programme_period_mcr_posting_and_active_status() -> No
     assert form_f1.status_code == 200
     assert form_f1.json()["total"] == 1
     assert form_f1.json()["items"][0]["is_active"] is False
+
+
+def test_parsed_data_text_filters_are_partial_and_case_insensitive() -> None:
+    session = FakeParsedDataSession()
+    client = _build_client_with_session(session)
+    headers = _admin_headers(scope=None, master=True)
+
+    residents = client.get(
+        "/admin/parsed-data/residents",
+        headers=headers,
+        params={"programme_code": "ge", "mcr": "111"},
+    )
+    postings = client.get(
+        "/admin/parsed-data/resident-postings",
+        headers=headers,
+        params={"posting_code": "ttsh", "mcr": "111", "month_label": "jan"},
+    )
+    targets = client.get(
+        "/admin/parsed-data/teaching-targets",
+        headers=headers,
+        params={"programme_code": "ge", "posting_code": "ttsh", "r_year": "al"},
+    )
+    catalogue = client.get(
+        "/admin/parsed-data/teaching-name-catalogue",
+        headers=headers,
+        params={"programme_code": "d", "posting_code": "ktph", "r_year": "r2", "keyword": "x-ray"},
+    )
+    form_f1 = client.get(
+        "/admin/parsed-data/form-f1-records",
+        headers=headers,
+        params={"mcr": "222", "month_label": "jan"},
+    )
+    holidays = client.get(
+        "/admin/parsed-data/public-holidays",
+        headers=headers,
+        params={"search": "2026"},
+    )
+    boundaries = client.get(
+        "/admin/parsed-data/academic-month-boundaries",
+        headers=headers,
+        params={"academic_year_label": "ay20", "month_label": "jan", "search": "im"},
+    )
+
+    assert residents.status_code == 200
+    assert [item["programme_code"] for item in residents.json()["items"]] == ["GERI"]
+    assert postings.status_code == 200
+    assert postings.json()["total"] == 1
+    assert postings.json()["items"][0]["posting_code"] == "TTSHGerMed"
+    assert targets.status_code == 200
+    assert targets.json()["total"] == 1
+    assert targets.json()["items"][0]["programme_code"] == "GERI"
+    assert catalogue.status_code == 200
+    assert catalogue.json()["total"] == 1
+    assert catalogue.json()["items"][0]["programme_code"] == "DR"
+    assert form_f1.status_code == 200
+    assert form_f1.json()["total"] == 1
+    assert form_f1.json()["items"][0]["mcr"] == "M22222B"
+    assert holidays.status_code == 200
+    assert holidays.json()["total"] == 2
+    assert boundaries.status_code == 200
+    assert boundaries.json()["total"] == 2
+    executed_sql = "\n".join(session.executed_sql)
+    assert "LOWER(COALESCE(r.programme_code, '')) LIKE :programme_code" in executed_sql
+    assert "LOWER(COALESCE(rp.posting_code, '')) LIKE :posting_code" in executed_sql
+    assert "LOWER(COALESCE(tt.r_year, '')) LIKE :r_year" in executed_sql
+    assert "LOWER(COALESCE(tnc.posting_code, '')) LIKE :posting_code" in executed_sql
+    assert "LOWER(COALESCE(f.mcr, '')) LIKE :mcr" in executed_sql
+    assert "CAST(COALESCE(ph.year, EXTRACT(YEAR FROM ph.holiday_date)::int) AS TEXT)" in executed_sql
+    assert "LOWER(COALESCE(amb.academic_year_label, '')) LIKE :academic_year_label" in executed_sql
 
 
 def test_pagination_returns_items_total_limit_and_offset() -> None:

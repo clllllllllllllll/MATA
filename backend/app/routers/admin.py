@@ -1419,6 +1419,7 @@ async def list_parsed_academic_month_boundaries(
     academic_year_label: str | None = Query(default=None),
     ay_date_category: str | None = Query(default=None),
     month_label: str | None = Query(default=None),
+    search: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     admin_context: AdminContext = Depends(require_admin_context),
@@ -1432,6 +1433,7 @@ async def list_parsed_academic_month_boundaries(
         academic_year_label=academic_year_label,
         ay_date_category=ay_date_category,
         month_label=month_label,
+        search=search,
         limit=limit,
         offset=offset,
     )

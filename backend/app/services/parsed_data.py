@@ -15,9 +15,10 @@ def _validate_programme_filter(
     master_admin: bool,
     programme_code: str | None,
 ) -> None:
-    if master_admin or programme_code is None:
+    if master_admin or programme_code is None or not programme_code.strip():
         return
-    if not programme_scope or programme_code not in programme_scope:
+    token = programme_code.strip().lower()
+    if not programme_scope or not any(token in code.lower() for code in programme_scope):
         raise ApiError(
             status_code=403,
             detail="Forbidden - programme not in admin scope",
@@ -55,8 +56,21 @@ def _add_programme_scope_filter(
     )
 
     if programme_code:
-        params["programme_code"] = programme_code
-        where_clauses.append(f"{column_sql} = :programme_code")
+        _add_partial_text_filter(
+            where_clauses,
+            params,
+            key="programme_code",
+            column_sql=column_sql,
+            value=programme_code,
+        )
+        if not master_admin and programme_scope:
+            where_clauses.append(
+                _scope_or_clause(
+                    column_sql=column_sql,
+                    values=sorted(programme_scope),
+                    params=params,
+                )
+            )
         return
 
     if master_admin:
@@ -94,6 +108,20 @@ def _add_search_filter(
     where_clauses.append(
         "(" + " OR ".join(f"LOWER(COALESCE({column}, '')) LIKE :search" for column in columns_sql) + ")"
     )
+
+
+def _add_partial_text_filter(
+    where_clauses: list[str],
+    params: dict[str, Any],
+    *,
+    key: str,
+    column_sql: str,
+    value: str | None,
+) -> None:
+    if not value or not value.strip():
+        return
+    params[key] = f"%{value.strip().lower()}%"
+    where_clauses.append(f"LOWER(COALESCE({column_sql}, '')) LIKE :{key}")
 
 
 async def _page(
@@ -166,8 +194,7 @@ async def list_residents(
         programme_code=programme_code,
     )
     if mcr:
-        params["mcr"] = mcr.strip().upper()
-        where_clauses.append("UPPER(r.mcr) = :mcr")
+        _add_partial_text_filter(where_clauses, params, key="mcr", column_sql="r.mcr", value=mcr)
     if status:
         params["status"] = status.strip().lower()
         where_clauses.append("LOWER(r.status) = :status")
@@ -239,17 +266,26 @@ async def list_resident_postings(
         params["reporting_period_id"] = str(reporting_period_id)
         where_clauses.append("rp.reporting_period_id = :reporting_period_id")
     if posting_code:
-        params["posting_code"] = posting_code.strip()
-        where_clauses.append("rp.posting_code = :posting_code")
+        _add_partial_text_filter(
+            where_clauses,
+            params,
+            key="posting_code",
+            column_sql="rp.posting_code",
+            value=posting_code,
+        )
     if mcr:
-        params["mcr"] = mcr.strip().upper()
-        where_clauses.append("UPPER(r.mcr) = :mcr")
+        _add_partial_text_filter(where_clauses, params, key="mcr", column_sql="r.mcr", value=mcr)
     if status:
         params["status"] = status.strip().lower()
         where_clauses.append("LOWER(rp.status) = :status")
     if month_label:
-        params["month_label"] = month_label.strip()
-        where_clauses.append("rp.month_label = :month_label")
+        _add_partial_text_filter(
+            where_clauses,
+            params,
+            key="month_label",
+            column_sql="rp.month_label",
+            value=month_label,
+        )
     _add_search_filter(
         where_clauses,
         params,
@@ -330,11 +366,15 @@ async def list_teaching_targets(
         params["reporting_period_id"] = str(reporting_period_id)
         where_clauses.append("tt.reporting_period_id = :reporting_period_id")
     if posting_code:
-        params["posting_code"] = posting_code.strip()
-        where_clauses.append("tt.posting_code = :posting_code")
+        _add_partial_text_filter(
+            where_clauses,
+            params,
+            key="posting_code",
+            column_sql="tt.posting_code",
+            value=posting_code,
+        )
     if r_year:
-        params["r_year"] = r_year.strip().upper()
-        where_clauses.append("UPPER(tt.r_year) = :r_year")
+        _add_partial_text_filter(where_clauses, params, key="r_year", column_sql="tt.r_year", value=r_year)
     if session_type:
         params["session_type"] = f"%{session_type.strip()}%"
         where_clauses.append("st.name ILIKE :session_type")
@@ -345,7 +385,7 @@ async def list_teaching_targets(
         where_clauses,
         params,
         search=search,
-        columns_sql=["tt.programme_code", "tt.posting_code", "tt.r_year", "st.name", "tt.details_of_training"],
+        columns_sql=["tt.programme_code", "tt.posting_code", "tt.r_year", "st.name", "tt.tag", "tt.details_of_training"],
     )
     return await _page(
         db,
@@ -416,11 +456,15 @@ async def list_teaching_name_catalogue(
         params["reporting_period_id"] = str(reporting_period_id)
         where_clauses.append("tnc.reporting_period_id = :reporting_period_id")
     if posting_code:
-        params["posting_code"] = posting_code.strip()
-        where_clauses.append("tnc.posting_code = :posting_code")
+        _add_partial_text_filter(
+            where_clauses,
+            params,
+            key="posting_code",
+            column_sql="tnc.posting_code",
+            value=posting_code,
+        )
     if r_year:
-        params["r_year"] = r_year.strip().upper()
-        where_clauses.append("UPPER(tnc.r_year) = :r_year")
+        _add_partial_text_filter(where_clauses, params, key="r_year", column_sql="tnc.r_year", value=r_year)
     if keyword:
         params["keyword"] = f"%{keyword.strip()}%"
         where_clauses.append("tnc.keyword ILIKE :keyword")
@@ -498,11 +542,9 @@ async def list_form_f1_records(
         params["reporting_period_id"] = str(reporting_period_id)
         where_clauses.append("f.reporting_period_id = :reporting_period_id")
     if mcr:
-        params["mcr"] = mcr.strip().upper()
-        where_clauses.append("UPPER(f.mcr) = :mcr")
+        _add_partial_text_filter(where_clauses, params, key="mcr", column_sql="f.mcr", value=mcr)
     if month_label:
-        params["month_label"] = month_label.strip()
-        where_clauses.append("f.month_label = :month_label")
+        _add_partial_text_filter(where_clauses, params, key="month_label", column_sql="f.month_label", value=month_label)
     if is_active is not None:
         params["is_active"] = is_active
         where_clauses.append("f.is_active = :is_active")
@@ -564,7 +606,12 @@ async def list_public_holidays(
         where_clauses,
         params,
         search=search,
-        columns_sql=["ph.name", "ph.day_of_week"],
+        columns_sql=[
+            "ph.name",
+            "ph.day_of_week",
+            "CAST(ph.holiday_date AS TEXT)",
+            "CAST(COALESCE(ph.year, EXTRACT(YEAR FROM ph.holiday_date)::int) AS TEXT)",
+        ],
     )
     return await _page(
         db,
@@ -591,20 +638,43 @@ async def list_academic_month_boundaries(
     academic_year_label: str | None = None,
     ay_date_category: str | None = None,
     month_label: str | None = None,
+    search: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
     params: dict[str, Any] = {}
     where_clauses: list[str] = []
     if academic_year_label:
-        params["academic_year_label"] = academic_year_label.strip()
-        where_clauses.append("amb.academic_year_label = :academic_year_label")
+        _add_partial_text_filter(
+            where_clauses,
+            params,
+            key="academic_year_label",
+            column_sql="amb.academic_year_label",
+            value=academic_year_label,
+        )
     if ay_date_category:
         params["ay_date_category"] = ay_date_category.strip().lower()
         where_clauses.append("amb.ay_date_category = :ay_date_category")
     if month_label:
-        params["month_label"] = month_label.strip()
-        where_clauses.append("amb.month_label = :month_label")
+        _add_partial_text_filter(
+            where_clauses,
+            params,
+            key="month_label",
+            column_sql="amb.month_label",
+            value=month_label,
+        )
+    _add_search_filter(
+        where_clauses,
+        params,
+        search=search,
+        columns_sql=[
+            "amb.academic_year_label",
+            "amb.ay_date_category",
+            "amb.month_label",
+            "CAST(amb.start_date AS TEXT)",
+            "CAST(amb.end_date AS TEXT)",
+        ],
+    )
     return await _page(
         db,
         select_sql="""
