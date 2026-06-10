@@ -1,3 +1,4 @@
+from app.models.audit import AuditLog
 from app.models.attendance import AttendanceRecord, ExternalAttendanceRecord, SurplusLedger
 from app.models.base import Base
 from app.models.posting import (
@@ -30,6 +31,7 @@ from app.models.teaching import (
 
 __all__ = [
     "AttendanceRecord",
+    "AuditLog",
     "ExternalAttendanceRecord",
     "ExternalResident",
     "ExternalResidentPosting",
