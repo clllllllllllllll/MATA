@@ -25,6 +25,9 @@ class _FakeScalarResult:
     def mappings(self) -> "_FakeScalarResult":
         return self
 
+    def one(self):
+        return self._value
+
     def all(self) -> list[dict]:
         return []
 
@@ -46,6 +49,7 @@ class FakeFormF1Session:
         self.residents: set[str] = set()
         self.form_f1_records: list[dict] = []
         self.upload_logs: list[dict] = []
+        self.audit_logs: list[dict] = []
         self.commits = 0
         self.rollbacks = 0
 
@@ -89,6 +93,10 @@ class FakeFormF1Session:
         if "INSERT INTO upload_logs" in sql:
             self.upload_logs.append(dict(params))
             return _FakeScalarResult()
+
+        if "INSERT INTO audit_logs" in sql:
+            self.audit_logs.append(dict(params))
+            return _FakeScalarResult(dict(params))
 
         raise AssertionError(f"Unhandled SQL in fake FormF1 session: {sql}")
 
@@ -140,6 +148,7 @@ def _headers_admin() -> dict[str, str]:
         "X-User-Role": "admin",
         "X-User-Id": str(uuid4()),
         "X-User-Programme": "DR,GERI",
+        "X-Actor-Name": "Dr Lee",
     }
 
 

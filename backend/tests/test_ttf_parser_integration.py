@@ -24,6 +24,9 @@ class _FakeScalarResult:
     def mappings(self):
         return self
 
+    def one(self):
+        return self._value
+
     def all(self):
         return []
 
@@ -72,6 +75,7 @@ class FakeTTFSession:
         self.teaching_events: dict[str, dict] = {}
         self.attendance_records: list[dict] = []
         self.upload_logs: list[dict] = []
+        self.audit_logs: list[dict] = []
         self.commits = 0
         self.rollbacks = 0
 
@@ -198,6 +202,10 @@ class FakeTTFSession:
         if "INSERT INTO upload_logs" in sql:
             self.upload_logs.append(dict(params))
             return _FakeScalarResult()
+
+        if "INSERT INTO audit_logs" in sql:
+            self.audit_logs.append(dict(params))
+            return _FakeScalarResult(dict(params))
 
         raise AssertionError(f"Unhandled SQL: {sql}")
 
@@ -502,6 +510,7 @@ def test_upload_route_uses_db_session_writes_upload_log_and_maps_lock_to_409() -
             "X-User-Role": "admin",
             "X-User-Id": str(uuid4()),
             "X-User-Programme": "DR",
+            "X-Actor-Name": "Dr Lee",
         },
         data={"reporting_period_id": str(period_id), "programme_code": "DR"},
         files={
@@ -525,6 +534,7 @@ def test_upload_route_uses_db_session_writes_upload_log_and_maps_lock_to_409() -
             "X-User-Role": "admin",
             "X-User-Id": str(uuid4()),
             "X-User-Programme": "DR",
+            "X-Actor-Name": "Dr Lee",
         },
         data={"reporting_period_id": str(period_id), "programme_code": "DR"},
         files={

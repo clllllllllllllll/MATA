@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dependencies.staff_actor import StaffActorContext, require_staff_actor
 from app.errors import ApiError, ErrorCode, UploadValidationApiError
 from app.schemas import (
     AcademicMonthBoundaryResponse,
@@ -50,9 +51,13 @@ from app.schemas import (
     WeekendExceptionResponse,
 )
 from app.services import admin_config, parsed_data
+from app.services.audit import write_audit_log
 from app.services.upload_logs import (
+    error_count,
     get_upload_log as get_upload_log_read_model,
     list_upload_logs as list_upload_logs_read_model,
+    summary_counts,
+    warning_count,
 )
 from app.services.upload_warnings import list_upload_warnings
 from app.services.parser_common import (
@@ -271,32 +276,92 @@ def _raise_upload_validation_error_if_needed(
     )
 
 
-async def _write_upload_log_safely(
+_UPLOAD_AUDIT_ACTIONS = {
+    "rdb": "admin.upload.rdb",
+    "ttf": "admin.upload.ttf",
+    "form_f1": "admin.upload.form_f1",
+    "public_holidays": "admin.upload.public_holidays",
+}
+
+
+def _upload_log_audit_payload(
+    *,
+    upload_log: dict[str, Any],
+    parser_result: ParserResult,
+    original_filename: str,
+    reporting_period_id: UUID | None = None,
+    programme_code: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    summary = parser_result.to_summary()
+    summary["original_filename"] = original_filename
+    counts = summary_counts(summary)
+    warnings = warning_count(summary)
+    errors = error_count(summary)
+    common = {
+        "upload_type": parser_result.upload_type,
+        "original_filename": original_filename,
+        "reporting_period_id": str(reporting_period_id) if reporting_period_id else None,
+        "programme_code": programme_code,
+        "status": parser_result.status,
+        "warning_count": warnings,
+        "error_count": errors,
+        "summary_counts": counts,
+    }
+    after = {
+        "id": str(upload_log["id"]),
+        "upload_type": parser_result.upload_type,
+        "uploaded_by": str(upload_log["uploaded_by"]) if upload_log.get("uploaded_by") else None,
+        "reporting_period_id": common["reporting_period_id"],
+        "programme_code": programme_code,
+        "status": parser_result.status,
+        "warning_count": warnings,
+        "error_count": errors,
+        "summary_counts": counts,
+    }
+    return after, common
+
+
+async def _write_upload_log_and_audit(
     *,
     db: AsyncSession | None,
     parser_result: ParserResult,
     original_filename: str,
     uploaded_by: UUID,
+    actor: StaffActorContext,
     reporting_period_id: UUID | None = None,
     programme_code: str | None = None,
 ) -> None:
     if db is None:
         return
 
-    try:
-        await write_upload_log(
-            db,
-            upload_type=parser_result.upload_type,
-            original_filename=original_filename,
-            status=parser_result.status,
-            summary=parser_result.to_summary(),
-            uploaded_by=uploaded_by,
-            reporting_period_id=reporting_period_id,
-            programme_code=programme_code,
-        )
-    except Exception:
-        # Upload log writing should never leak internal DB errors to API callers.
-        return
+    upload_log = await write_upload_log(
+        db,
+        upload_type=parser_result.upload_type,
+        original_filename=original_filename,
+        status=parser_result.status,
+        summary=parser_result.to_summary(),
+        uploaded_by=uploaded_by,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+    )
+    after, metadata = _upload_log_audit_payload(
+        upload_log=upload_log,
+        parser_result=parser_result,
+        original_filename=original_filename,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+    )
+    await write_audit_log(
+        db,
+        actor=actor,
+        action=_UPLOAD_AUDIT_ACTIONS[parser_result.upload_type],
+        entity_type="upload_log",
+        entity_id=upload_log["id"],
+        before=None,
+        after=after,
+        metadata=metadata,
+    )
+    await db.commit()
 
 
 @router.post("/upload/rdb")
@@ -304,6 +369,7 @@ async def upload_rdb(
     file: UploadFile = File(...),
     reporting_period_id: UUID = Form(...),
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> dict[str, Any]:
     file_bytes = await file.read()
@@ -330,11 +396,12 @@ async def upload_rdb(
         db_session=db,
     )
 
-    await _write_upload_log_safely(
+    await _write_upload_log_and_audit(
         db=db,
         parser_result=parser_result,
         original_filename=validated.original_filename,
         uploaded_by=admin_context.user_id,
+        actor=staff_actor,
         reporting_period_id=reporting_period_id,
     )
     _raise_upload_validation_error_if_needed(
@@ -351,6 +418,7 @@ async def upload_ttf(
     reporting_period_id: UUID = Form(...),
     programme_code: str = Form(...),
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> dict[str, Any]:
     _require_programme_in_scope(admin_context, programme_code)
@@ -386,11 +454,12 @@ async def upload_ttf(
             errors=[str(exc)],
         ) from exc
 
-    await _write_upload_log_safely(
+    await _write_upload_log_and_audit(
         db=db,
         parser_result=parser_result,
         original_filename=validated.original_filename,
         uploaded_by=admin_context.user_id,
+        actor=staff_actor,
         reporting_period_id=reporting_period_id,
         programme_code=programme_code,
     )
@@ -407,6 +476,7 @@ async def upload_formf1(
     file: UploadFile = File(...),
     reporting_period_id: UUID = Form(...),
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> dict[str, Any]:
     file_bytes = await file.read()
@@ -431,11 +501,12 @@ async def upload_formf1(
         db_session=db,
     )
 
-    await _write_upload_log_safely(
+    await _write_upload_log_and_audit(
         db=db,
         parser_result=parser_result,
         original_filename=validated.original_filename,
         uploaded_by=admin_context.user_id,
+        actor=staff_actor,
         reporting_period_id=reporting_period_id,
     )
     _raise_upload_validation_error_if_needed(
@@ -449,6 +520,7 @@ async def upload_formf1(
 async def upload_public_holidays(
     file: UploadFile = File(...),
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> dict[str, Any]:
     file_bytes = await file.read()
@@ -472,11 +544,12 @@ async def upload_public_holidays(
         db_session=db,
     )
 
-    await _write_upload_log_safely(
+    await _write_upload_log_and_audit(
         db=db,
         parser_result=parser_result,
         original_filename=validated.original_filename,
         uploaded_by=admin_context.user_id,
+        actor=staff_actor,
     )
     _raise_upload_validation_error_if_needed(
         upload_label="Public holiday upload",

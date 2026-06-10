@@ -5,7 +5,7 @@ import importlib.util
 import json
 from io import BytesIO
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -43,6 +43,7 @@ def _admin_headers() -> dict[str, str]:
         "X-User-Role": "admin",
         "X-User-Id": str(uuid4()),
         "X-User-Programme": "DR,GRM",
+        "X-Actor-Name": " Dr Lee ",
     }
 
 
@@ -85,8 +86,14 @@ def test_rdb_upload_route_passes_database_session_to_parser(monkeypatch) -> None
 
     monkeypatch.setattr("app.services.rdb_parser.parse_rdb_upload", _fake_rdb_parser)
 
+    session = _UploadAuditSession()
     app = FastAPI()
     install_error_handlers(app)
+
+    async def _db_override():
+        yield session
+
+    app.dependency_overrides[admin.get_db_session] = _db_override
     app.include_router(admin.router)
     client = TestClient(app)
     response = client.post(
@@ -103,7 +110,7 @@ def test_rdb_upload_route_passes_database_session_to_parser(monkeypatch) -> None
     )
 
     assert response.status_code == 200
-    assert captured["db_session"] is not None
+    assert captured["db_session"] is session
     assert "Database session is required for RDB upload persistence." not in response.text
 
 
@@ -190,7 +197,17 @@ def test_upload_logs_helper_can_write_row() -> None:
             self.rolled_back = False
 
         async def execute(self, statement, params):
-            self.statements.append((str(statement), dict(params)))
+            payload = dict(params)
+            self.statements.append((str(statement), payload))
+
+            class _Result:
+                def mappings(self):
+                    return self
+
+                def one(self):
+                    return {"id": payload.get("id", str(uuid4())), **payload}
+
+            return _Result()
 
         async def commit(self):
             self.committed = True
@@ -200,7 +217,7 @@ def test_upload_logs_helper_can_write_row() -> None:
 
     async def _exercise() -> None:
         session = _FakeAsyncSession()
-        await write_upload_log(
+        row = await write_upload_log(
             session,
             upload_type="rdb",
             original_filename="rdb.xlsx",
@@ -219,8 +236,256 @@ def test_upload_logs_helper_can_write_row() -> None:
         assert params["status"] == "success"
         summary = json.loads(params["summary"])
         assert summary["original_filename"] == "rdb.xlsx"
+        assert UUID(str(row["id"]))
 
     asyncio.run(_exercise())
+
+
+def test_upload_endpoints_require_actor_name(monkeypatch) -> None:
+    called = {"count": 0}
+
+    async def _fake_rdb_parser(**kwargs):
+        called["count"] += 1
+        return ParserResult(upload_type="rdb")
+
+    async def _fake_ttf_parser(**kwargs):
+        called["count"] += 1
+        return ParserResult(upload_type="ttf")
+
+    async def _fake_formf1_parser(**kwargs):
+        called["count"] += 1
+        return ParserResult(upload_type="form_f1")
+
+    async def _fake_public_holiday_parser(**kwargs):
+        called["count"] += 1
+        return ParserResult(upload_type="public_holidays")
+
+    monkeypatch.setattr("app.services.rdb_parser.parse_rdb_upload", _fake_rdb_parser)
+    monkeypatch.setattr("app.routers.admin.parse_ttf_upload", _fake_ttf_parser)
+    monkeypatch.setattr("app.routers.admin.parse_formf1_upload", _fake_formf1_parser)
+    monkeypatch.setattr("app.routers.admin.parse_public_holiday_upload", _fake_public_holiday_parser)
+
+    client = _build_client()
+    period_id = str(uuid4())
+    headers = _admin_headers()
+    headers.pop("X-Actor-Name")
+    files = {
+        "file": (
+            "upload.xlsx",
+            _make_valid_xlsx_bytes(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+
+    responses = [
+        client.post(
+            "/admin/upload/rdb",
+            headers=headers,
+            data={"reporting_period_id": period_id},
+            files=files,
+        ),
+        client.post(
+            "/admin/upload/ttf",
+            headers=headers,
+            data={"reporting_period_id": period_id, "programme_code": "DR"},
+            files=files,
+        ),
+        client.post(
+            "/admin/upload/form-f1",
+            headers=headers,
+            data={"reporting_period_id": period_id},
+            files=files,
+        ),
+        client.post(
+            "/admin/upload/public-holidays",
+            headers=headers,
+            files=files,
+        ),
+    ]
+
+    assert [response.status_code for response in responses] == [422, 422, 422, 422]
+    assert called["count"] == 0
+
+
+def test_upload_endpoint_rejects_blank_actor_name(monkeypatch) -> None:
+    called = {"count": 0}
+
+    async def _fake_rdb_parser(**kwargs):
+        called["count"] += 1
+        return ParserResult(upload_type="rdb")
+
+    monkeypatch.setattr("app.services.rdb_parser.parse_rdb_upload", _fake_rdb_parser)
+
+    client = _build_client()
+    headers = _admin_headers()
+    headers["X-Actor-Name"] = "   "
+
+    response = client.post(
+        "/admin/upload/rdb",
+        headers=headers,
+        data={"reporting_period_id": str(uuid4())},
+        files={
+            "file": (
+                "rdb.xlsx",
+                _make_valid_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    assert called["count"] == 0
+
+
+class _UploadAuditResult:
+    def __init__(self, row: dict) -> None:
+        self._row = row
+
+    def mappings(self):
+        return self
+
+    def one(self):
+        return self._row
+
+
+class _UploadAuditSession:
+    def __init__(self) -> None:
+        self.upload_logs: list[dict] = []
+        self.audit_logs: list[dict] = []
+        self.commits = 0
+
+    async def execute(self, statement, params):
+        sql = str(statement)
+        payload = dict(params)
+        if "INSERT INTO upload_logs" in sql:
+            row = {"id": str(uuid4()), **payload}
+            self.upload_logs.append(row)
+            return _UploadAuditResult(row)
+        if "INSERT INTO audit_logs" in sql:
+            row = {"id": payload["id"], **payload}
+            self.audit_logs.append(row)
+            return _UploadAuditResult(row)
+        raise AssertionError(f"Unhandled SQL: {sql}\nparams={payload}")
+
+    async def commit(self):
+        self.commits += 1
+
+
+def _build_upload_audit_client(session: _UploadAuditSession) -> TestClient:
+    app = FastAPI()
+    install_error_handlers(app)
+    app.include_router(admin.router)
+
+    async def _db_override():
+        yield session
+
+    app.dependency_overrides[admin.get_db_session] = _db_override
+    return TestClient(app)
+
+
+def test_successful_admin_uploads_write_audit_logs_linked_to_upload_logs(monkeypatch) -> None:
+    async def _fake_rdb_parser(**kwargs):
+        return ParserResult(
+            upload_type="rdb",
+            created_count=2,
+            warnings=["check one row"],
+            metadata={"residents_created": 2},
+        )
+
+    async def _fake_ttf_parser(**kwargs):
+        return ParserResult(
+            upload_type="ttf",
+            created_count=3,
+            metadata={"catalogue_rows_seeded": 3},
+        )
+
+    async def _fake_formf1_parser(**kwargs):
+        return ParserResult(
+            upload_type="form_f1",
+            updated_count=4,
+            metadata={"records_updated": 4},
+        )
+
+    async def _fake_public_holiday_parser(**kwargs):
+        return ParserResult(
+            upload_type="public_holidays",
+            created_count=5,
+            metadata={"public_holidays_created": 5},
+        )
+
+    monkeypatch.setattr("app.services.rdb_parser.parse_rdb_upload", _fake_rdb_parser)
+    monkeypatch.setattr("app.routers.admin.parse_ttf_upload", _fake_ttf_parser)
+    monkeypatch.setattr("app.routers.admin.parse_formf1_upload", _fake_formf1_parser)
+    monkeypatch.setattr("app.routers.admin.parse_public_holiday_upload", _fake_public_holiday_parser)
+
+    session = _UploadAuditSession()
+    client = _build_upload_audit_client(session)
+    headers = _admin_headers()
+    period_id = str(uuid4())
+    files = {
+        "file": (
+            "source.xlsx",
+            _make_valid_xlsx_bytes(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+
+    responses = [
+        client.post(
+            "/admin/upload/rdb",
+            headers=headers,
+            data={"reporting_period_id": period_id},
+            files=files,
+        ),
+        client.post(
+            "/admin/upload/ttf",
+            headers=headers,
+            data={"reporting_period_id": period_id, "programme_code": "DR"},
+            files=files,
+        ),
+        client.post(
+            "/admin/upload/form-f1",
+            headers=headers,
+            data={"reporting_period_id": period_id},
+            files=files,
+        ),
+        client.post(
+            "/admin/upload/public-holidays",
+            headers=headers,
+            files=files,
+        ),
+    ]
+
+    assert [response.status_code for response in responses] == [200, 200, 200, 200]
+    assert [row["upload_type"] for row in session.upload_logs] == [
+        "rdb",
+        "ttf",
+        "form_f1",
+        "public_holidays",
+    ]
+    assert [row["action"] for row in session.audit_logs] == [
+        "admin.upload.rdb",
+        "admin.upload.ttf",
+        "admin.upload.form_f1",
+        "admin.upload.public_holidays",
+    ]
+
+    for upload_log, audit_log in zip(session.upload_logs, session.audit_logs, strict=True):
+        metadata = json.loads(audit_log["metadata_json"])
+        after = json.loads(audit_log["after_json"])
+        assert audit_log["actor_name"] == "Dr Lee"
+        assert audit_log["entity_type"] == "upload_log"
+        assert audit_log["entity_id"] == upload_log["id"]
+        assert audit_log["before_json"] is None
+        assert metadata["upload_type"] == upload_log["upload_type"]
+        assert metadata["original_filename"] == "source.xlsx"
+        assert metadata["status"] == "success"
+        assert metadata["warning_count"] >= 0
+        assert metadata["error_count"] == 0
+        assert "summary_counts" in metadata
+        assert after["id"] == upload_log["id"]
+        assert after["upload_type"] == upload_log["upload_type"]
+        assert after["status"] == "success"
 
 
 def test_parser_signatures_importable() -> None:
@@ -256,6 +521,7 @@ def test_programme_scope_null_is_not_all_access_for_ttf() -> None:
     headers = {
         "X-User-Role": "admin",
         "X-User-Id": str(uuid4()),
+        "X-Actor-Name": "Dr Lee",
         # Missing X-User-Programme should be treated as empty scope.
     }
     response = client.post(

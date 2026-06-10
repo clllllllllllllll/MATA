@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import PurePath
 from typing import Any, Awaitable, Callable, Iterable, Literal, Mapping
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -168,11 +168,13 @@ async def write_upload_log(
     uploaded_by: UUID | str | None = None,
     reporting_period_id: UUID | str | None = None,
     programme_code: str | None = None,
-) -> None:
+) -> dict[str, Any]:
     summary_payload = dict(summary)
     summary_payload["original_filename"] = original_filename
+    upload_log_id = uuid4()
 
     params = {
+        "id": str(upload_log_id),
         "upload_type": upload_type,
         "uploaded_by": str(uploaded_by) if uploaded_by else None,
         "reporting_period_id": (
@@ -187,6 +189,7 @@ async def write_upload_log(
         text(
             """
             INSERT INTO upload_logs (
+                id,
                 upload_type,
                 uploaded_by,
                 reporting_period_id,
@@ -195,6 +198,7 @@ async def write_upload_log(
                 summary
             )
             VALUES (
+                :id,
                 :upload_type,
                 :uploaded_by,
                 :reporting_period_id,
@@ -207,6 +211,7 @@ async def write_upload_log(
         params,
     )
     await session.commit()
+    return params
 
 
 def normalise_scope_values(raw_scope: str | Iterable[str] | None) -> set[str]:

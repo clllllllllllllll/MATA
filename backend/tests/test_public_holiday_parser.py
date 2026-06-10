@@ -27,6 +27,9 @@ class _FakeScalarResult:
     def mappings(self) -> "_FakeScalarResult":
         return self
 
+    def one(self):
+        return self._value
+
     def all(self) -> list[dict]:
         return []
 
@@ -36,6 +39,7 @@ class FakePublicHolidaySession:
         self.public_holidays: dict[date, dict] = {}
         self.academic_month_boundaries: list[dict] = []
         self.upload_logs: list[dict] = []
+        self.audit_logs: list[dict] = []
         self.commits = 0
         self.rollbacks = 0
 
@@ -70,6 +74,10 @@ class FakePublicHolidaySession:
             self.upload_logs.append(dict(payload))
             return _FakeScalarResult()
 
+        if "INSERT INTO audit_logs" in sql:
+            self.audit_logs.append(dict(payload))
+            return _FakeScalarResult(dict(payload))
+
         raise AssertionError(f"Unhandled SQL in fake public-holiday session: {sql}")
 
     async def commit(self) -> None:
@@ -88,6 +96,7 @@ def _headers_admin() -> dict[str, str]:
         "X-User-Role": "admin",
         "X-User-Id": str(uuid4()),
         "X-User-Programme": "DR,GERI",
+        "X-Actor-Name": "Dr Lee",
     }
 
 

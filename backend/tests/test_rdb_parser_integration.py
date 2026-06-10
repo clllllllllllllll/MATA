@@ -30,6 +30,9 @@ class _FakeScalarResult:
     def mappings(self) -> "_FakeScalarResult":
         return self
 
+    def one(self) -> object:
+        return self._value
+
     def all(self) -> list[dict]:
         return []
 
@@ -190,6 +193,7 @@ class FakeRDBSession:
         self.residents: dict[str, dict] = {}
         self.resident_postings: list[dict] = []
         self.upload_logs: list[dict] = []
+        self.audit_logs: list[dict] = []
         self.surplus_ledger: list[dict] = []
         self.commits = 0
         self.rollbacks = 0
@@ -301,6 +305,10 @@ class FakeRDBSession:
         if "INSERT INTO upload_logs" in sql:
             self.upload_logs.append(dict(params))
             return _FakeScalarResult()
+
+        if "INSERT INTO audit_logs" in sql:
+            self.audit_logs.append(dict(params))
+            return _FakeScalarResult(dict(params))
 
         raise AssertionError(f"Unhandled SQL in fake session: {sql}")
 
@@ -509,6 +517,7 @@ def test_sample_upload_creates_residents_postings_posting_codes_and_upload_log()
             "X-User-Role": "admin",
             "X-User-Id": str(user_id),
             "X-User-Programme": "DR",
+            "X-Actor-Name": "Dr Lee",
         },
         data={"reporting_period_id": str(period_id)},
         files={
