@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 from app.middleware.errors import install_error_handlers
 from app.routers import secretary
@@ -56,6 +58,7 @@ class FakeSecretarySession:
         self.other_event_id = str(uuid4())
         self.deleted_event_ids: list[str] = []
         self.cache_mutation_count = 0
+        self.audit_logs: list[dict] = []
 
         self.public_holidays = [
             {
@@ -301,6 +304,46 @@ class FakeSecretarySession:
         sql = str(statement)
         payload = dict(params or {})
 
+        if "INSERT INTO audit_logs" in sql:
+            row = dict(payload)
+            row["created_at"] = self.now
+            self.audit_logs.append(row)
+            return _FakeResult(rows=[row])
+
+        if "/* audit_snapshot:secretary_event */" in sql:
+            event = next(
+                (
+                    row
+                    for row in self.events
+                    if row["id"] == str(payload["event_id"])
+                    and row["posting_code"] == payload["posting_code"]
+                ),
+                None,
+            )
+            return _FakeResult(rows=[dict(event)] if event else [])
+
+        if "/* audit_snapshot:secretary_series */" in sql:
+            series = next(
+                (
+                    row
+                    for row in self.series
+                    if row["id"] == str(payload["series_id"])
+                    and row["posting_code"] == payload["posting_code"]
+                ),
+                None,
+            )
+            return _FakeResult(rows=[dict(series)] if series else [])
+
+        if "/* audit_snapshot:secretary_series_events */" in sql:
+            rows = [
+                dict(row)
+                for row in self.events
+                if row["series_id"] == str(payload["series_id"])
+                and row["posting_code"] == payload["posting_code"]
+            ]
+            rows.sort(key=lambda row: (row["event_date"], row["start_time"]))
+            return _FakeResult(rows=rows)
+
         if "FROM public_holidays" in sql:
             holiday_date = payload["event_date"]
             holiday = next(
@@ -522,6 +565,37 @@ class FakeSecretarySession:
             self.events.append(row)
             return _FakeResult(rows=[row])
 
+        if "UPDATE teaching_events" in sql:
+            row = next(
+                (
+                    event
+                    for event in self.events
+                    if event["id"] == str(payload["event_id"])
+                    and event["posting_code"] == payload["posting_code"]
+                    and event["created_by_role"] == "secretary"
+                    and not event["is_adhoc"]
+                ),
+                None,
+            )
+            if row is None:
+                return _FakeResult(rows=[])
+            row.update(
+                {
+                    "teaching_name": payload["teaching_name"],
+                    "event_date": payload["event_date"],
+                    "start_time": payload["start_time"],
+                    "end_time": payload["end_time"],
+                    "duration_hours": payload["duration_hours"],
+                    "session_type_id": str(payload["session_type_id"])
+                    if payload.get("session_type_id")
+                    else None,
+                    "cme_points_awarded": payload["cme_points_awarded"],
+                    "smc_event_code": payload.get("smc_event_code"),
+                    "updated_at": self.now,
+                }
+            )
+            return _FakeResult(rows=[row])
+
         raise AssertionError(f"Unhandled SQL: {sql}\nparams={payload}")
 
 
@@ -542,7 +616,21 @@ def _headers(fake_db: FakeSecretarySession, *, role: str = "secretary", site: st
         "X-User-Role": role,
         "X-User-Id": fake_db.secretary_id if role == "secretary" else fake_db.admin_id,
         "X-User-Site": site,
+        "X-Actor-Name": " Dr Tan ",
     }
+
+
+def _without_actor(headers: dict[str, str]) -> dict[str, str]:
+    copy = dict(headers)
+    copy.pop("X-Actor-Name", None)
+    return copy
+
+
+def _audit_json(row: dict, field: str) -> dict | None:
+    value = row[field]
+    if value is None:
+        return None
+    return json.loads(value)
 
 
 def test_non_secretary_access_rejected() -> None:
@@ -552,6 +640,233 @@ def test_non_secretary_access_rejected() -> None:
     response = client.get("/secretary/teaching-events", headers=_headers(fake_db, role="admin"))
 
     assert response.status_code == 403
+
+
+def test_secretary_mutation_endpoints_require_actor_name() -> None:
+    fake_db = FakeSecretarySession()
+    client = _client(fake_db)
+    event_id = fake_db.events[1]["id"]
+    series_event_id = fake_db.events[2]["id"]
+    headers = _without_actor(_headers(fake_db))
+    paths_with_payloads = [
+        (
+            "POST",
+            "/secretary/teaching-events",
+            {"teaching_name": "Journal Club", "event_date": "2026-05-18", "start_time": "10:00"},
+            None,
+        ),
+        (
+            "POST",
+            "/secretary/teaching-events/duplicate",
+            {"source_event_id": fake_db.attended_event_id, "event_date": "2026-05-25"},
+            None,
+        ),
+        (
+            "PUT",
+            f"/secretary/teaching-events/{event_id}",
+            {"teaching_name": "Journal Club", "event_date": "2026-05-18", "start_time": "10:00"},
+            None,
+        ),
+        ("DELETE", f"/secretary/teaching-events/{event_id}", None, None),
+        (
+            "POST",
+            "/secretary/teaching-events/series",
+            {
+                "teaching_name": "Journal Club",
+                "start_date": "2026-04-24",
+                "start_time": "10:00",
+                "recurrence_pattern": "weekly",
+                "recurrence_interval": 1,
+                "days_of_week": ["fri"],
+                "end_type": "by_count",
+                "end_after_count": 2,
+            },
+            None,
+        ),
+        (
+            "DELETE",
+            f"/secretary/teaching-events/series/{fake_db.series_id}",
+            None,
+            {"scope": "single", "event_id": series_event_id},
+        ),
+    ]
+
+    for method, path, payload, params in paths_with_payloads:
+        if method == "POST":
+            response = client.post(path, headers=headers, json=payload or {})
+        elif method == "PUT":
+            response = client.put(path, headers=headers, json=payload or {})
+        else:
+            response = client.delete(path, headers=headers, params=params)
+        assert response.status_code == 422, f"{method} {path}"
+
+
+def test_secretary_mutation_endpoints_reject_blank_actor_name() -> None:
+    fake_db = FakeSecretarySession()
+    client = _client(fake_db)
+    headers = _headers(fake_db)
+    headers["X-Actor-Name"] = "   "
+
+    response = client.post(
+        "/secretary/teaching-events",
+        headers=headers,
+        json={"teaching_name": "Journal Club", "event_date": "2026-05-18", "start_time": "10:00"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_secretary_read_endpoints_do_not_require_actor_name() -> None:
+    fake_db = FakeSecretarySession()
+    client = _client(fake_db)
+    headers = _without_actor(_headers(fake_db))
+    paths = [
+        "/secretary/teaching-events",
+        "/secretary/cme-dashboard",
+        "/secretary/residents",
+        "/secretary/teaching-name-options",
+    ]
+
+    for path in paths:
+        response = client.get(path, headers=headers)
+        assert response.status_code == 200, path
+
+
+def test_secretary_teaching_event_mutations_write_audit_logs() -> None:
+    fake_db = FakeSecretarySession()
+    fake_db.attendance_event_ids = set()
+    client = _client(fake_db)
+    headers = _headers(fake_db)
+    source_event_id = fake_db.events[0]["id"]
+
+    created = client.post(
+        "/secretary/teaching-events",
+        headers=headers,
+        json={
+            "teaching_name": "Journal Club",
+            "event_date": "2026-05-18",
+            "start_time": "10:00",
+            "cme_points_awarded": True,
+            "smc_event_code": "SMC-1",
+        },
+    )
+    assert created.status_code == 200
+
+    duplicated = client.post(
+        "/secretary/teaching-events/duplicate",
+        headers=headers,
+        json={
+            "source_event_id": source_event_id,
+            "event_date": "2026-05-25",
+            "start_time": "10:00",
+        },
+    )
+    assert duplicated.status_code == 200
+    duplicated_id = duplicated.json()["id"]
+
+    updated = client.put(
+        f"/secretary/teaching-events/{duplicated_id}",
+        headers=headers,
+        json={
+            "teaching_name": "Journal Club",
+            "event_date": "2026-05-26",
+            "start_time": "11:00",
+            "cme_points_awarded": False,
+            "smc_event_code": "SMC-2",
+        },
+    )
+    assert updated.status_code == 200
+
+    deleted = client.delete(
+        f"/secretary/teaching-events/{duplicated_id}",
+        headers=headers,
+    )
+    assert deleted.status_code == 200
+
+    series_created = client.post(
+        "/secretary/teaching-events/series",
+        headers=headers,
+        json={
+            "teaching_name": "Journal Club",
+            "start_date": "2026-04-24",
+            "start_time": "10:00",
+            "recurrence_pattern": "weekly",
+            "recurrence_interval": 1,
+            "days_of_week": ["fri"],
+            "end_type": "by_count",
+            "end_after_count": 2,
+        },
+    )
+    assert series_created.status_code == 200
+
+    series_payload = series_created.json()
+    series_id = series_payload["series"]["id"]
+    series_event_id = series_payload["events"][0]["id"]
+    series_deleted = client.delete(
+        f"/secretary/teaching-events/series/{series_id}",
+        headers=headers,
+        params={"scope": "single", "event_id": series_event_id},
+    )
+    assert series_deleted.status_code == 200
+
+    assert [row["action"] for row in fake_db.audit_logs] == [
+        "secretary.teaching_event.create",
+        "secretary.teaching_event.duplicate",
+        "secretary.teaching_event.update",
+        "secretary.teaching_event.delete",
+        "secretary.teaching_event_series.create",
+        "secretary.teaching_event_series.delete_single",
+    ]
+    assert {row["actor_name"] for row in fake_db.audit_logs} == {"Dr Tan"}
+    assert fake_db.audit_logs[0]["entity_type"] == "teaching_event"
+    assert _audit_json(fake_db.audit_logs[0], "before_json") is None
+    assert _audit_json(fake_db.audit_logs[0], "after_json")["teaching_name"] == "Journal Club"
+    assert _audit_json(fake_db.audit_logs[1], "before_json")["id"] == source_event_id
+    assert _audit_json(fake_db.audit_logs[1], "after_json")["id"] == duplicated_id
+    assert _audit_json(fake_db.audit_logs[2], "before_json")["event_date"] == "2026-05-25"
+    assert _audit_json(fake_db.audit_logs[2], "after_json")["event_date"] == "2026-05-26"
+    assert _audit_json(fake_db.audit_logs[3], "before_json")["id"] == duplicated_id
+    assert _audit_json(fake_db.audit_logs[3], "after_json") is None
+    series_after = _audit_json(fake_db.audit_logs[4], "after_json")
+    series_metadata = _audit_json(fake_db.audit_logs[4], "metadata_json")
+    assert fake_db.audit_logs[4]["entity_type"] == "teaching_event_series"
+    assert series_after["created_count"] == 1
+    assert series_metadata["created_event_ids"] == [series_event_id]
+    delete_before = _audit_json(fake_db.audit_logs[5], "before_json")
+    delete_metadata = _audit_json(fake_db.audit_logs[5], "metadata_json")
+    assert delete_before["scope"] == "single"
+    assert delete_metadata["deleted_event_ids"] == [series_event_id]
+    assert delete_metadata["deleted_count"] == 1
+    assert delete_metadata["posting_code"] == "TTSHCardio"
+
+
+@pytest.mark.parametrize(
+    ("scope", "expected_action"),
+    [
+        ("single", "secretary.teaching_event_series.delete_single"),
+        ("following", "secretary.teaching_event_series.delete_following"),
+        ("all", "secretary.teaching_event_series.delete_all"),
+    ],
+)
+def test_secretary_series_delete_audit_action_matches_scope(
+    scope: str,
+    expected_action: str,
+) -> None:
+    fake_db = FakeSecretarySession()
+    fake_db.attendance_event_ids = set()
+    client = _client(fake_db)
+    params = {"scope": scope}
+    if scope in {"single", "following"}:
+        params["event_id"] = fake_db.events[1]["id"]
+
+    response = client.delete(
+        f"/secretary/teaching-events/series/{fake_db.series_id}",
+        headers=_headers(fake_db),
+        params=params,
+    )
+
+    assert response.status_code == 200
+    assert fake_db.audit_logs[-1]["action"] == expected_action
 
 
 def test_create_event_derives_posting_scope_and_computes_end_time() -> None:
