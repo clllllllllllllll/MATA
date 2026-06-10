@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from uuid import uuid4
@@ -103,6 +104,7 @@ class FakeMutationSession:
             }
         ]
         self.teaching_events: list[dict] = [{"teaching_name": "Department Meeting [1h]"}]
+        self.audit_logs: list[dict] = []
 
     async def commit(self) -> None:
         return None
@@ -130,6 +132,44 @@ class FakeMutationSession:
             sid = payload["session_type_id"]
             return _FakeMutationResult(scalar=1 if sid in self.session_type_ids else None)
 
+        if "INSERT INTO audit_logs" in sql:
+            row = dict(payload)
+            row["created_at"] = self.now
+            self.audit_logs.append(row)
+            return _FakeMutationResult(rows=[row])
+
+        if "/* audit_snapshot:reporting_period */" in sql:
+            row = next((r for r in self.reporting_periods if r["id"] == payload["id"]), None)
+            return _FakeMutationResult(rows=[dict(row)] if row else [])
+
+        if "/* audit_snapshot:public_holiday */" in sql:
+            row = next((r for r in self.public_holidays if r["id"] == payload["id"]), None)
+            return _FakeMutationResult(rows=[dict(row)] if row else [])
+
+        if "/* audit_snapshot:programme */" in sql:
+            row = next((r for r in self.programmes if r["code"] == payload["code"]), None)
+            return _FakeMutationResult(rows=[dict(row)] if row else [])
+
+        if "/* audit_snapshot:loa_type */" in sql:
+            row = next((r for r in self.loa_types if r["id"] == payload["id"]), None)
+            return _FakeMutationResult(rows=[dict(row)] if row else [])
+
+        if "/* audit_snapshot:multi_posting_rule */" in sql:
+            row = next((r for r in self.multi_posting_rules if r["id"] == payload["id"]), None)
+            return _FakeMutationResult(rows=[dict(row)] if row else [])
+
+        if "/* audit_snapshot:posting_group */" in sql:
+            row = next((r for r in self.posting_groups if r["id"] == payload["id"]), None)
+            return _FakeMutationResult(rows=[dict(row)] if row else [])
+
+        if "/* audit_snapshot:weekend_exception */" in sql:
+            row = next((r for r in self.weekend_exceptions if r["id"] == payload["id"]), None)
+            return _FakeMutationResult(rows=[dict(row)] if row else [])
+
+        if "/* audit_snapshot:global_session_type */" in sql:
+            row = next((r for r in self.global_session_types if r["id"] == payload["id"]), None)
+            return _FakeMutationResult(rows=[dict(row)] if row else [])
+
         if "INSERT INTO reporting_periods" in sql:
             if any(row["label"] == payload["label"] for row in self.reporting_periods):
                 raise IntegrityError("insert reporting_periods", payload, None)
@@ -145,12 +185,40 @@ class FakeMutationSession:
             self.reporting_periods.append(row)
             return _FakeMutationResult(rows=[row])
 
-        if "SELECT id, label, start_date, end_date, status, created_at, updated_at" in sql and "FROM reporting_periods" in sql:
+        if (
+            "SELECT id, label, start_date, end_date, status, created_at, updated_at" in sql
+            and "FROM reporting_periods" in sql
+            and "WHERE id = :id" in sql
+        ):
             period = next(
                 (row for row in self.reporting_periods if row["id"] == payload["id"]),
                 None,
             )
             return _FakeMutationResult(rows=[period] if period else [])
+
+        if "SELECT id, label, start_date, end_date, status, created_at, updated_at" in sql and "FROM reporting_periods" in sql:
+            return _FakeMutationResult(rows=list(self.reporting_periods))
+
+        if "SELECT id, holiday_date, name, day_of_week, year, created_at, updated_at" in sql and "FROM public_holidays" in sql:
+            return _FakeMutationResult(rows=list(self.public_holidays))
+
+        if "classification" in sql and "FROM programmes" in sql:
+            return _FakeMutationResult(rows=list(self.programmes))
+
+        if "SELECT id, code, description, created_at, updated_at" in sql and "FROM loa_types" in sql:
+            return _FakeMutationResult(rows=list(self.loa_types))
+
+        if "FROM multi_posting_rules" in sql and "ORDER BY programme_code ASC, rule_type ASC" in sql:
+            return _FakeMutationResult(rows=list(self.multi_posting_rules))
+
+        if "SELECT id, group_code, posting_code, programme_code, created_at, updated_at" in sql and "FROM posting_groups" in sql:
+            return _FakeMutationResult(rows=list(self.posting_groups))
+
+        if "FROM weekend_exceptions we" in sql:
+            return _FakeMutationResult(rows=list(self.weekend_exceptions))
+
+        if "SELECT id, name, duration_hours, is_active, created_at, updated_at" in sql and "FROM global_session_types" in sql:
+            return _FakeMutationResult(rows=list(self.global_session_types))
 
         if "UPDATE reporting_periods" in sql:
             period = next(
@@ -545,6 +613,7 @@ def _admin_headers(scope: str | None = "DR,GRM") -> dict[str, str]:
     headers = {
         "X-User-Role": "admin",
         "X-User-Id": str(uuid4()),
+        "X-Actor-Name": " Dr Lee ",
     }
     if scope is not None:
         headers["X-User-Programme"] = scope
@@ -555,6 +624,19 @@ def _master_admin_headers(scope: str | None = "DR,GRM") -> dict[str, str]:
     headers = _admin_headers(scope)
     headers["X-Admin-Level"] = "master"
     return headers
+
+
+def _without_actor(headers: dict[str, str]) -> dict[str, str]:
+    copy = dict(headers)
+    copy.pop("X-Actor-Name", None)
+    return copy
+
+
+def _audit_json(row: dict, field: str) -> dict | None:
+    value = row[field]
+    if value is None:
+        return None
+    return json.loads(value)
 
 
 def test_admin_only_mutation_access_rejects_non_admin() -> None:
@@ -612,6 +694,238 @@ def test_all_phase3_mutation_endpoints_reject_non_admin() -> None:
         else:
             response = client.delete(path, headers=headers)
         assert response.status_code == 403
+
+
+def test_config_mutation_endpoints_require_actor_name() -> None:
+    session = FakeMutationSession()
+    client = _build_client_with_session(session)
+    period_id = session.reporting_periods[0]["id"]
+    global_type_id = session.global_session_types[0]["id"]
+    missing_actor_headers = _without_actor(_master_admin_headers("DR"))
+    pc_missing_actor_headers = _without_actor(_admin_headers("DR"))
+    paths_with_payloads = [
+        ("POST", "/admin/reporting-periods", missing_actor_headers, {"label": "Jul - Dec 2026", "start_date": "2026-07-01", "end_date": "2026-12-31"}),
+        ("PUT", f"/admin/reporting-periods/{period_id}", missing_actor_headers, {"status": "closed"}),
+        ("DELETE", f"/admin/reporting-periods/{period_id}", missing_actor_headers, None),
+        ("POST", "/admin/public-holidays", missing_actor_headers, {"holiday_date": "2026-08-09", "name": "National Day", "day_of_week": "Sunday", "year": 2026}),
+        ("PUT", f"/admin/public-holidays/{uuid4()}", missing_actor_headers, {"holiday_date": "2026-08-09", "name": "National Day", "day_of_week": "Sunday", "year": 2026}),
+        ("DELETE", f"/admin/public-holidays/{uuid4()}", missing_actor_headers, None),
+        ("PUT", "/admin/programmes/DR", missing_actor_headers, {"r_year_required": True}),
+        ("POST", "/admin/loa-types", missing_actor_headers, {"code": "Study Leave", "description": "x"}),
+        ("PUT", f"/admin/loa-types/{uuid4()}", missing_actor_headers, {"code": "Study Leave", "description": "x"}),
+        ("DELETE", f"/admin/loa-types/{uuid4()}", missing_actor_headers, None),
+        ("POST", "/admin/multi-posting-rules", pc_missing_actor_headers, {"programme_code": "DR", "posting_code_1": "TTSHDR", "posting_code_2": "KTPHDR", "rule_type": "combine", "combined_label": "TTSHDR & KTPHDR"}),
+        ("PUT", f"/admin/multi-posting-rules/{uuid4()}", pc_missing_actor_headers, {"programme_code": "DR", "posting_code_1": "TTSHDR", "posting_code_2": "KTPHDR", "rule_type": "combine", "combined_label": "TTSHDR & KTPHDR"}),
+        ("DELETE", f"/admin/multi-posting-rules/{uuid4()}", pc_missing_actor_headers, None),
+        ("POST", "/admin/posting-groups", pc_missing_actor_headers, {"group_code": "DR-GROUP", "posting_code": "TTSHRespi", "programme_code": "DR"}),
+        ("PUT", f"/admin/posting-groups/{uuid4()}", pc_missing_actor_headers, {"group_code": "DR-GROUP", "posting_code": "TTSHRespi", "programme_code": "DR"}),
+        ("DELETE", f"/admin/posting-groups/{uuid4()}", pc_missing_actor_headers, None),
+        ("POST", "/admin/weekend-exceptions", missing_actor_headers, {"programme_code": "DR", "posting_code": "TTSHDR", "day_type": "sat"}),
+        ("PUT", f"/admin/weekend-exceptions/{uuid4()}", missing_actor_headers, {"programme_code": "DR", "posting_code": "TTSHDR", "day_type": "sat"}),
+        ("DELETE", f"/admin/weekend-exceptions/{uuid4()}", missing_actor_headers, None),
+        ("POST", "/admin/global-session-types", missing_actor_headers, {"name": "Dept Meeting [1h]", "duration_hours": 1.0, "is_active": True}),
+        ("PUT", f"/admin/global-session-types/{global_type_id}", missing_actor_headers, {"is_active": False}),
+        ("DELETE", f"/admin/global-session-types/{global_type_id}", missing_actor_headers, None),
+    ]
+
+    for method, path, headers, payload in paths_with_payloads:
+        if method == "POST":
+            response = client.post(path, headers=headers, json=payload or {})
+        elif method == "PUT":
+            response = client.put(path, headers=headers, json=payload or {})
+        else:
+            response = client.delete(path, headers=headers)
+        assert response.status_code == 422, f"{method} {path}"
+
+
+def test_config_mutation_endpoints_reject_blank_actor_name() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+    headers = _master_admin_headers("DR")
+    headers["X-Actor-Name"] = "   "
+
+    response = client.post(
+        "/admin/loa-types",
+        headers=headers,
+        json={"code": "Study Leave", "description": "Academic study leave"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_config_list_endpoints_do_not_require_actor_name() -> None:
+    client = _build_client_with_session(FakeMutationSession())
+    master_headers = _without_actor(_master_admin_headers("DR"))
+    pc_headers = _without_actor(_admin_headers("DR"))
+    paths_with_headers = [
+        ("/admin/reporting-periods", master_headers),
+        ("/admin/public-holidays", master_headers),
+        ("/admin/programmes", master_headers),
+        ("/admin/loa-types", master_headers),
+        ("/admin/multi-posting-rules", pc_headers),
+        ("/admin/posting-groups", pc_headers),
+        ("/admin/weekend-exceptions", master_headers),
+        ("/admin/global-session-types", master_headers),
+    ]
+
+    for path, headers in paths_with_headers:
+        response = client.get(path, headers=headers)
+        assert response.status_code == 200, path
+
+
+def test_admin_config_crud_mutations_write_audit_logs() -> None:
+    session = FakeMutationSession()
+    client = _build_client_with_session(session)
+    master_headers = _master_admin_headers("DR")
+    pc_headers = _admin_headers("DR")
+
+    reporting_period = client.post(
+        "/admin/reporting-periods",
+        headers=master_headers,
+        json={"label": "Jul - Dec 2026", "start_date": "2026-07-01", "end_date": "2026-12-31"},
+    )
+    assert reporting_period.status_code == 200
+    reporting_period_id = reporting_period.json()["id"]
+    assert client.put(
+        f"/admin/reporting-periods/{reporting_period_id}",
+        headers=master_headers,
+        json={"label": "H2 2026", "status": "closed"},
+    ).status_code == 200
+    assert client.delete(f"/admin/reporting-periods/{reporting_period_id}", headers=master_headers).status_code == 204
+
+    holiday = client.post(
+        "/admin/public-holidays",
+        headers=master_headers,
+        json={"holiday_date": "2026-08-09", "name": "National Day"},
+    )
+    assert holiday.status_code == 200
+    holiday_id = holiday.json()["id"]
+    assert client.put(
+        f"/admin/public-holidays/{holiday_id}",
+        headers=master_headers,
+        json={"holiday_date": "2026-08-10", "name": "National Day observed"},
+    ).status_code == 200
+    assert client.delete(f"/admin/public-holidays/{holiday_id}", headers=master_headers).status_code == 204
+
+    assert client.put(
+        "/admin/programmes/DR",
+        headers=master_headers,
+        json={"r_year_required": False, "is_subspecialty": True},
+    ).status_code == 200
+
+    loa_type = client.post(
+        "/admin/loa-types",
+        headers=master_headers,
+        json={"code": "Study Leave", "description": "Academic study leave"},
+    )
+    assert loa_type.status_code == 200
+    loa_type_id = loa_type.json()["id"]
+    assert client.put(
+        f"/admin/loa-types/{loa_type_id}",
+        headers=master_headers,
+        json={"code": "Exam Leave", "description": ""},
+    ).status_code == 200
+    assert client.delete(f"/admin/loa-types/{loa_type_id}", headers=master_headers).status_code == 204
+
+    multi_rule_payload = {
+        "programme_code": "DR",
+        "posting_code_1": "TTSHDR",
+        "posting_code_2": "KTPHDR",
+        "rule_type": "combine",
+        "combined_label": "TTSHDR & KTPHDR",
+        "main_posting_code": None,
+        "exclusion_code": None,
+    }
+    multi_rule = client.post("/admin/multi-posting-rules", headers=pc_headers, json=multi_rule_payload)
+    assert multi_rule.status_code == 200
+    multi_rule_id = multi_rule.json()["id"]
+    updated_multi_rule_payload = dict(multi_rule_payload)
+    updated_multi_rule_payload["combined_label"] = "TTSHDR-KTPHDR"
+    assert client.put(
+        f"/admin/multi-posting-rules/{multi_rule_id}",
+        headers=pc_headers,
+        json=updated_multi_rule_payload,
+    ).status_code == 200
+    assert client.delete(f"/admin/multi-posting-rules/{multi_rule_id}", headers=pc_headers).status_code == 204
+
+    posting_group = client.post(
+        "/admin/posting-groups",
+        headers=pc_headers,
+        json={"group_code": "DR-GROUP", "posting_code": "TTSHRespi", "programme_code": "DR"},
+    )
+    assert posting_group.status_code == 200
+    posting_group_id = posting_group.json()["id"]
+    assert client.put(
+        f"/admin/posting-groups/{posting_group_id}",
+        headers=pc_headers,
+        json={"group_code": "DR-GROUP-UPDATED", "posting_code": "TTSHRespi(MICU)", "programme_code": "DR"},
+    ).status_code == 200
+    assert client.delete(f"/admin/posting-groups/{posting_group_id}", headers=pc_headers).status_code == 204
+
+    weekend_exception = client.post(
+        "/admin/weekend-exceptions",
+        headers=master_headers,
+        json={"programme_code": "DR", "posting_code": "TTSHDR", "day_type": "sat"},
+    )
+    assert weekend_exception.status_code == 200
+    weekend_exception_id = weekend_exception.json()["id"]
+    assert client.put(
+        f"/admin/weekend-exceptions/{weekend_exception_id}",
+        headers=master_headers,
+        json={"programme_code": "DR", "posting_code": "TTSHDR", "day_type": "sun"},
+    ).status_code == 200
+    assert client.delete(f"/admin/weekend-exceptions/{weekend_exception_id}", headers=master_headers).status_code == 204
+
+    global_session_type = client.post(
+        "/admin/global-session-types",
+        headers=master_headers,
+        json={"name": "Smoke Global Teaching [1h]", "duration_hours": "1.0", "is_active": True},
+    )
+    assert global_session_type.status_code == 200
+    global_session_type_id = global_session_type.json()["id"]
+    assert client.put(
+        f"/admin/global-session-types/{global_session_type_id}",
+        headers=master_headers,
+        json={"duration_hours": "1.5", "is_active": False},
+    ).status_code == 200
+    assert client.delete(f"/admin/global-session-types/{global_session_type_id}", headers=master_headers).status_code == 204
+
+    assert [row["action"] for row in session.audit_logs] == [
+        "admin.config.reporting_period.create",
+        "admin.config.reporting_period.update",
+        "admin.config.reporting_period.delete",
+        "admin.config.public_holiday.create",
+        "admin.config.public_holiday.update",
+        "admin.config.public_holiday.delete",
+        "admin.config.programme.update",
+        "admin.config.loa_type.create",
+        "admin.config.loa_type.update",
+        "admin.config.loa_type.delete",
+        "admin.config.multi_posting_rule.create",
+        "admin.config.multi_posting_rule.update",
+        "admin.config.multi_posting_rule.delete",
+        "admin.config.posting_group.create",
+        "admin.config.posting_group.update",
+        "admin.config.posting_group.delete",
+        "admin.config.weekend_exception.create",
+        "admin.config.weekend_exception.update",
+        "admin.config.weekend_exception.delete",
+        "admin.config.global_session_type.create",
+        "admin.config.global_session_type.update",
+        "admin.config.global_session_type.delete",
+    ]
+    assert {row["actor_name"] for row in session.audit_logs} == {"Dr Lee"}
+    assert session.audit_logs[0]["entity_type"] == "reporting_period"
+    assert session.audit_logs[0]["entity_id"] == reporting_period_id
+    assert _audit_json(session.audit_logs[0], "before_json") is None
+    assert _audit_json(session.audit_logs[0], "after_json")["label"] == "Jul - Dec 2026"
+    assert _audit_json(session.audit_logs[1], "before_json")["status"] == "open"
+    assert _audit_json(session.audit_logs[1], "after_json")["status"] == "closed"
+    assert _audit_json(session.audit_logs[2], "before_json")["label"] == "H2 2026"
+    assert _audit_json(session.audit_logs[2], "after_json") is None
+    assert _audit_json(session.audit_logs[6], "metadata_json")["programme_code"] == "DR"
+    assert _audit_json(session.audit_logs[10], "metadata_json")["rule_type"] == "combine"
+    assert _audit_json(session.audit_logs[13], "metadata_json")["posting_code"] == "TTSHRespi"
+    assert _audit_json(session.audit_logs[16], "metadata_json")["posting_code"] == "TTSHDR"
 
 
 def test_programme_scope_enforced_for_scoped_mutations() -> None:

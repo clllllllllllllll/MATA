@@ -7,6 +7,7 @@ from typing import Annotated, Any, AsyncIterator, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.staff_actor import StaffActorContext, require_staff_actor
@@ -283,6 +284,114 @@ _UPLOAD_AUDIT_ACTIONS = {
     "public_holidays": "admin.upload.public_holidays",
 }
 
+_CONFIG_AUDIT_ACTIONS = {
+    ("reporting_period", "create"): "admin.config.reporting_period.create",
+    ("reporting_period", "update"): "admin.config.reporting_period.update",
+    ("reporting_period", "delete"): "admin.config.reporting_period.delete",
+    ("public_holiday", "create"): "admin.config.public_holiday.create",
+    ("public_holiday", "update"): "admin.config.public_holiday.update",
+    ("public_holiday", "delete"): "admin.config.public_holiday.delete",
+    ("programme", "update"): "admin.config.programme.update",
+    ("loa_type", "create"): "admin.config.loa_type.create",
+    ("loa_type", "update"): "admin.config.loa_type.update",
+    ("loa_type", "delete"): "admin.config.loa_type.delete",
+    ("multi_posting_rule", "create"): "admin.config.multi_posting_rule.create",
+    ("multi_posting_rule", "update"): "admin.config.multi_posting_rule.update",
+    ("multi_posting_rule", "delete"): "admin.config.multi_posting_rule.delete",
+    ("posting_group", "create"): "admin.config.posting_group.create",
+    ("posting_group", "update"): "admin.config.posting_group.update",
+    ("posting_group", "delete"): "admin.config.posting_group.delete",
+    ("weekend_exception", "create"): "admin.config.weekend_exception.create",
+    ("weekend_exception", "update"): "admin.config.weekend_exception.update",
+    ("weekend_exception", "delete"): "admin.config.weekend_exception.delete",
+    ("global_session_type", "create"): "admin.config.global_session_type.create",
+    ("global_session_type", "update"): "admin.config.global_session_type.update",
+    ("global_session_type", "delete"): "admin.config.global_session_type.delete",
+}
+
+_CONFIG_AUDIT_SNAPSHOT_SQL = {
+    "reporting_period": """
+        /* audit_snapshot:reporting_period */
+        SELECT id, label, start_date, end_date, status, created_at, updated_at
+        FROM reporting_periods
+        WHERE id = :id
+    """,
+    "public_holiday": """
+        /* audit_snapshot:public_holiday */
+        SELECT id, holiday_date, name, day_of_week, year, created_at, updated_at
+        FROM public_holidays
+        WHERE id = :id
+    """,
+    "programme": """
+        /* audit_snapshot:programme */
+        SELECT
+            id,
+            code,
+            name,
+            classification,
+            ay_date_category,
+            r_year_required,
+            is_subspecialty,
+            rdb_alias,
+            created_at,
+            updated_at
+        FROM programmes
+        WHERE code = :code
+    """,
+    "loa_type": """
+        /* audit_snapshot:loa_type */
+        SELECT id, code, description, created_at, updated_at
+        FROM loa_types
+        WHERE id = :id
+    """,
+    "multi_posting_rule": """
+        /* audit_snapshot:multi_posting_rule */
+        SELECT
+            id,
+            programme_code,
+            posting_code_1,
+            posting_code_2,
+            rule_type,
+            combined_label,
+            main_posting_code,
+            exclusion_code,
+            created_at,
+            updated_at
+        FROM multi_posting_rules
+        WHERE id = :id
+    """,
+    "posting_group": """
+        /* audit_snapshot:posting_group */
+        SELECT id, group_code, posting_code, programme_code, created_at, updated_at
+        FROM posting_groups
+        WHERE id = :id
+    """,
+    "weekend_exception": """
+        /* audit_snapshot:weekend_exception */
+        SELECT
+            id,
+            programme_code,
+            posting_code,
+            day_type,
+            start_time_min,
+            end_time_max,
+            session_type_id,
+            session_name_pattern,
+            mutates_to_session_type_id,
+            adjusted_duration_hours,
+            created_at,
+            updated_at
+        FROM weekend_exceptions
+        WHERE id = :id
+    """,
+    "global_session_type": """
+        /* audit_snapshot:global_session_type */
+        SELECT id, name, duration_hours, is_active, created_at, updated_at
+        FROM global_session_types
+        WHERE id = :id
+    """,
+}
+
 
 def _upload_log_audit_payload(
     *,
@@ -360,6 +469,83 @@ async def _write_upload_log_and_audit(
         before=None,
         after=after,
         metadata=metadata,
+    )
+    await db.commit()
+
+
+def _compact_snapshot(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {key: value for key, value in dict(row).items()}
+
+
+async def _read_config_audit_snapshot(
+    db: AsyncSession,
+    *,
+    entity_type: str,
+    entity_id: UUID | str,
+) -> dict[str, Any] | None:
+    sql = _CONFIG_AUDIT_SNAPSHOT_SQL[entity_type]
+    params = (
+        {"code": str(entity_id)}
+        if entity_type == "programme"
+        else {"id": str(entity_id)}
+    )
+    result = await db.execute(text(sql), params)
+    return _compact_snapshot(result.mappings().one_or_none())
+
+
+def _config_audit_metadata(
+    *,
+    entity_type: str,
+    action: str,
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+) -> dict[str, Any]:
+    snapshot = after or before or {}
+    metadata: dict[str, Any] = {
+        "route_context": "admin_config_crud",
+        "config_entity": entity_type,
+        "mutation": action,
+        "cache_invalidation_target": "admin_config",
+    }
+    if entity_type == "reporting_period" and snapshot.get("id") is not None:
+        metadata["reporting_period_id"] = str(snapshot["id"])
+    if snapshot.get("programme_code") is not None:
+        metadata["programme_code"] = snapshot["programme_code"]
+    if entity_type == "programme" and snapshot.get("code") is not None:
+        metadata["programme_code"] = snapshot["code"]
+    if snapshot.get("rule_type") is not None:
+        metadata["rule_type"] = snapshot["rule_type"]
+    if snapshot.get("posting_code") is not None:
+        metadata["posting_code"] = snapshot["posting_code"]
+    return metadata
+
+
+async def _write_config_audit(
+    db: AsyncSession,
+    *,
+    actor: StaffActorContext,
+    entity_type: str,
+    mutation: Literal["create", "update", "delete"],
+    entity_id: UUID | str | None,
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+) -> None:
+    await write_audit_log(
+        db,
+        actor=actor,
+        action=_CONFIG_AUDIT_ACTIONS[(entity_type, mutation)],
+        entity_type=entity_type,
+        entity_id=entity_id,
+        before=before,
+        after=after,
+        metadata=_config_audit_metadata(
+            entity_type=entity_type,
+            action=mutation,
+            before=before,
+            after=after,
+        ),
     )
     await db.commit()
 
@@ -580,6 +766,7 @@ async def list_reporting_periods(
 async def create_reporting_period(
     payload: ReportingPeriodCreateRequest,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> ReportingPeriodResponse:
     _require_master_admin(admin_context)
@@ -596,6 +783,15 @@ async def create_reporting_period(
         start_date=payload.start_date,
         end_date=payload.end_date,
     )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="reporting_period",
+        mutation="create",
+        entity_id=row["id"],
+        before=None,
+        after=_compact_snapshot(row),
+    )
     return ReportingPeriodResponse.model_validate(row)
 
 
@@ -604,6 +800,7 @@ async def update_reporting_period(
     reporting_period_id: UUID,
     payload: ReportingPeriodUpdateRequest,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> ReportingPeriodResponse:
     _require_master_admin(admin_context)
@@ -613,6 +810,11 @@ async def update_reporting_period(
             detail="Database unavailable",
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
+    before = await _read_config_audit_snapshot(
+        db,
+        entity_type="reporting_period",
+        entity_id=reporting_period_id,
+    )
     row = await admin_config.update_reporting_period(
         db,
         programme_scope=_global_config_scope(admin_context),
@@ -622,6 +824,15 @@ async def update_reporting_period(
         end_date=payload.end_date,
         status=payload.status,
     )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="reporting_period",
+        mutation="update",
+        entity_id=reporting_period_id,
+        before=before,
+        after=_compact_snapshot(row),
+    )
     return ReportingPeriodResponse.model_validate(row)
 
 
@@ -629,6 +840,7 @@ async def update_reporting_period(
 async def delete_reporting_period(
     reporting_period_id: UUID,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> None:
     _require_master_admin(admin_context)
@@ -638,10 +850,24 @@ async def delete_reporting_period(
             detail="Database unavailable",
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
+    before = await _read_config_audit_snapshot(
+        db,
+        entity_type="reporting_period",
+        entity_id=reporting_period_id,
+    )
     await admin_config.delete_reporting_period(
         db,
         programme_scope=_global_config_scope(admin_context),
         reporting_period_id=reporting_period_id,
+    )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="reporting_period",
+        mutation="delete",
+        entity_id=reporting_period_id,
+        before=before,
+        after=None,
     )
 
 
@@ -666,6 +892,7 @@ async def list_public_holidays(
 async def upsert_public_holiday(
     payload: PublicHolidayUpsertRequest,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> PublicHolidayResponse:
     _require_master_admin(admin_context)
@@ -683,6 +910,15 @@ async def upsert_public_holiday(
         day_of_week=payload.day_of_week,
         year=payload.year,
     )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="public_holiday",
+        mutation="create",
+        entity_id=row["id"],
+        before=None,
+        after=_compact_snapshot(row),
+    )
     return PublicHolidayResponse.model_validate(row)
 
 
@@ -691,6 +927,7 @@ async def update_public_holiday(
     holiday_id: UUID,
     payload: PublicHolidayUpsertRequest,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> PublicHolidayResponse:
     _require_master_admin(admin_context)
@@ -700,6 +937,11 @@ async def update_public_holiday(
             detail="Database unavailable",
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
+    before = await _read_config_audit_snapshot(
+        db,
+        entity_type="public_holiday",
+        entity_id=holiday_id,
+    )
     row = await admin_config.update_public_holiday(
         db,
         programme_scope=_global_config_scope(admin_context),
@@ -709,6 +951,15 @@ async def update_public_holiday(
         day_of_week=payload.day_of_week,
         year=payload.year,
     )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="public_holiday",
+        mutation="update",
+        entity_id=holiday_id,
+        before=before,
+        after=_compact_snapshot(row),
+    )
     return PublicHolidayResponse.model_validate(row)
 
 
@@ -716,6 +967,7 @@ async def update_public_holiday(
 async def delete_public_holiday(
     holiday_id: UUID,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> None:
     _require_master_admin(admin_context)
@@ -725,10 +977,24 @@ async def delete_public_holiday(
             detail="Database unavailable",
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
+    before = await _read_config_audit_snapshot(
+        db,
+        entity_type="public_holiday",
+        entity_id=holiday_id,
+    )
     await admin_config.delete_public_holiday(
         db,
         programme_scope=_global_config_scope(admin_context),
         holiday_id=holiday_id,
+    )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="public_holiday",
+        mutation="delete",
+        entity_id=holiday_id,
+        before=before,
+        after=None,
     )
 
 
@@ -755,6 +1021,7 @@ async def update_programme(
     programme_code: str,
     payload: ProgrammeUpdateRequest,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> ProgrammeResponse:
     _require_master_admin(admin_context)
@@ -764,14 +1031,29 @@ async def update_programme(
             detail="Database unavailable",
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
+    clean_programme_code = programme_code.strip()
+    before = await _read_config_audit_snapshot(
+        db,
+        entity_type="programme",
+        entity_id=clean_programme_code,
+    )
     row = await admin_config.update_programme(
         db,
-        programme_scope={programme_code.strip()},
-        programme_code=programme_code.strip(),
+        programme_scope={clean_programme_code},
+        programme_code=clean_programme_code,
         r_year_required=payload.r_year_required,
         is_subspecialty=payload.is_subspecialty,
         rdb_alias=payload.rdb_alias,
         rdb_alias_is_set="rdb_alias" in payload.model_fields_set,
+    )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="programme",
+        mutation="update",
+        entity_id=clean_programme_code,
+        before=before,
+        after=_compact_snapshot(row),
     )
     return ProgrammeResponse.model_validate(row)
 
@@ -795,6 +1077,7 @@ async def list_loa_types(
 async def create_loa_type(
     payload: LoaTypeCreateRequest,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> LoaTypeResponse:
     _require_master_admin(admin_context)
@@ -810,6 +1093,15 @@ async def create_loa_type(
         code=payload.code,
         description=payload.description,
     )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="loa_type",
+        mutation="create",
+        entity_id=row["id"],
+        before=None,
+        after=_compact_snapshot(row),
+    )
     return LoaTypeResponse.model_validate(row)
 
 
@@ -818,6 +1110,7 @@ async def update_loa_type(
     loa_type_id: UUID,
     payload: LoaTypeUpdateRequest,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> LoaTypeResponse:
     _require_master_admin(admin_context)
@@ -827,12 +1120,26 @@ async def update_loa_type(
             detail="Database unavailable",
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
+    before = await _read_config_audit_snapshot(
+        db,
+        entity_type="loa_type",
+        entity_id=loa_type_id,
+    )
     row = await admin_config.update_loa_type(
         db,
         programme_scope=_global_config_scope(admin_context),
         loa_type_id=loa_type_id,
         code=payload.code,
         description=payload.description,
+    )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="loa_type",
+        mutation="update",
+        entity_id=loa_type_id,
+        before=before,
+        after=_compact_snapshot(row),
     )
     return LoaTypeResponse.model_validate(row)
 
@@ -841,6 +1148,7 @@ async def update_loa_type(
 async def delete_loa_type(
     loa_type_id: UUID,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> None:
     _require_master_admin(admin_context)
@@ -850,10 +1158,24 @@ async def delete_loa_type(
             detail="Database unavailable",
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
+    before = await _read_config_audit_snapshot(
+        db,
+        entity_type="loa_type",
+        entity_id=loa_type_id,
+    )
     await admin_config.delete_loa_type(
         db,
         programme_scope=_global_config_scope(admin_context),
         loa_type_id=loa_type_id,
+    )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="loa_type",
+        mutation="delete",
+        entity_id=loa_type_id,
+        before=before,
+        after=None,
     )
 
 
@@ -880,6 +1202,7 @@ async def list_multi_posting_rules(
 async def create_multi_posting_rule(
     payload: MultiPostingRuleMutationRequest,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> MultiPostingRuleResponse:
     if db is None:
@@ -900,6 +1223,15 @@ async def create_multi_posting_rule(
         main_posting_code=payload.main_posting_code,
         exclusion_code=payload.exclusion_code,
     )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="multi_posting_rule",
+        mutation="create",
+        entity_id=row["id"],
+        before=None,
+        after=_compact_snapshot(row),
+    )
     return MultiPostingRuleResponse.model_validate(row)
 
 
@@ -908,6 +1240,7 @@ async def update_multi_posting_rule(
     rule_id: UUID,
     payload: MultiPostingRuleMutationRequest,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> MultiPostingRuleResponse:
     if db is None:
@@ -916,6 +1249,11 @@ async def update_multi_posting_rule(
             detail="Database unavailable",
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
+    before = await _read_config_audit_snapshot(
+        db,
+        entity_type="multi_posting_rule",
+        entity_id=rule_id,
+    )
     row = await admin_config.update_multi_posting_rule(
         db,
         programme_scope=admin_context.programme_scope,
@@ -929,6 +1267,15 @@ async def update_multi_posting_rule(
         main_posting_code=payload.main_posting_code,
         exclusion_code=payload.exclusion_code,
     )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="multi_posting_rule",
+        mutation="update",
+        entity_id=rule_id,
+        before=before,
+        after=_compact_snapshot(row),
+    )
     return MultiPostingRuleResponse.model_validate(row)
 
 
@@ -936,6 +1283,7 @@ async def update_multi_posting_rule(
 async def delete_multi_posting_rule(
     rule_id: UUID,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> None:
     if db is None:
@@ -944,11 +1292,25 @@ async def delete_multi_posting_rule(
             detail="Database unavailable",
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
+    before = await _read_config_audit_snapshot(
+        db,
+        entity_type="multi_posting_rule",
+        entity_id=rule_id,
+    )
     await admin_config.delete_multi_posting_rule(
         db,
         programme_scope=admin_context.programme_scope,
         master_admin=admin_context.is_master_admin,
         rule_id=rule_id,
+    )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="multi_posting_rule",
+        mutation="delete",
+        entity_id=rule_id,
+        before=before,
+        after=None,
     )
 
 
@@ -975,6 +1337,7 @@ async def list_posting_groups(
 async def create_posting_group(
     payload: PostingGroupMutationRequest,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> PostingGroupResponse:
     if db is None:
@@ -991,6 +1354,15 @@ async def create_posting_group(
         programme_code=payload.programme_code,
         master_admin=admin_context.is_master_admin,
     )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="posting_group",
+        mutation="create",
+        entity_id=row["id"],
+        before=None,
+        after=_compact_snapshot(row),
+    )
     return PostingGroupResponse.model_validate(row)
 
 
@@ -999,6 +1371,7 @@ async def update_posting_group(
     posting_group_id: UUID,
     payload: PostingGroupMutationRequest,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> PostingGroupResponse:
     if db is None:
@@ -1007,6 +1380,11 @@ async def update_posting_group(
             detail="Database unavailable",
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
+    before = await _read_config_audit_snapshot(
+        db,
+        entity_type="posting_group",
+        entity_id=posting_group_id,
+    )
     row = await admin_config.update_posting_group(
         db,
         programme_scope=admin_context.programme_scope,
@@ -1016,6 +1394,15 @@ async def update_posting_group(
         programme_code=payload.programme_code,
         master_admin=admin_context.is_master_admin,
     )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="posting_group",
+        mutation="update",
+        entity_id=posting_group_id,
+        before=before,
+        after=_compact_snapshot(row),
+    )
     return PostingGroupResponse.model_validate(row)
 
 
@@ -1023,6 +1410,7 @@ async def update_posting_group(
 async def delete_posting_group(
     posting_group_id: UUID,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> None:
     if db is None:
@@ -1031,11 +1419,25 @@ async def delete_posting_group(
             detail="Database unavailable",
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
+    before = await _read_config_audit_snapshot(
+        db,
+        entity_type="posting_group",
+        entity_id=posting_group_id,
+    )
     await admin_config.delete_posting_group(
         db,
         programme_scope=admin_context.programme_scope,
         posting_group_id=posting_group_id,
         master_admin=admin_context.is_master_admin,
+    )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="posting_group",
+        mutation="delete",
+        entity_id=posting_group_id,
+        before=before,
+        after=None,
     )
 
 
@@ -1063,6 +1465,7 @@ async def list_weekend_exceptions(
 async def create_weekend_exception(
     payload: WeekendExceptionMutationRequest,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> WeekendExceptionResponse:
     _require_master_admin(admin_context)
@@ -1086,6 +1489,15 @@ async def create_weekend_exception(
         adjusted_duration_hours=payload.adjusted_duration_hours,
         master_admin=admin_context.is_master_admin,
     )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="weekend_exception",
+        mutation="create",
+        entity_id=row["id"],
+        before=None,
+        after=_compact_snapshot(row),
+    )
     return WeekendExceptionResponse.model_validate(row)
 
 
@@ -1094,6 +1506,7 @@ async def update_weekend_exception(
     weekend_exception_id: UUID,
     payload: WeekendExceptionMutationRequest,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> WeekendExceptionResponse:
     _require_master_admin(admin_context)
@@ -1103,6 +1516,11 @@ async def update_weekend_exception(
             detail="Database unavailable",
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
+    before = await _read_config_audit_snapshot(
+        db,
+        entity_type="weekend_exception",
+        entity_id=weekend_exception_id,
+    )
     row = await admin_config.update_weekend_exception(
         db,
         programme_scope=admin_context.programme_scope,
@@ -1118,6 +1536,15 @@ async def update_weekend_exception(
         adjusted_duration_hours=payload.adjusted_duration_hours,
         master_admin=admin_context.is_master_admin,
     )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="weekend_exception",
+        mutation="update",
+        entity_id=weekend_exception_id,
+        before=before,
+        after=_compact_snapshot(row),
+    )
     return WeekendExceptionResponse.model_validate(row)
 
 
@@ -1125,6 +1552,7 @@ async def update_weekend_exception(
 async def delete_weekend_exception(
     weekend_exception_id: UUID,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> None:
     _require_master_admin(admin_context)
@@ -1134,11 +1562,25 @@ async def delete_weekend_exception(
             detail="Database unavailable",
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
+    before = await _read_config_audit_snapshot(
+        db,
+        entity_type="weekend_exception",
+        entity_id=weekend_exception_id,
+    )
     await admin_config.delete_weekend_exception(
         db,
         programme_scope=admin_context.programme_scope,
         weekend_exception_id=weekend_exception_id,
         master_admin=admin_context.is_master_admin,
+    )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="weekend_exception",
+        mutation="delete",
+        entity_id=weekend_exception_id,
+        before=before,
+        after=None,
     )
 
 
@@ -1159,6 +1601,7 @@ async def list_global_session_types(
 async def create_global_session_type(
     payload: GlobalSessionTypeCreateRequest,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> GlobalSessionTypeResponse:
     _require_master_admin(admin_context)
@@ -1175,6 +1618,15 @@ async def create_global_session_type(
         duration_hours=payload.duration_hours,
         is_active=payload.is_active,
     )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="global_session_type",
+        mutation="create",
+        entity_id=row["id"],
+        before=None,
+        after=_compact_snapshot(row),
+    )
     return GlobalSessionTypeResponse.model_validate(row)
 
 
@@ -1183,6 +1635,7 @@ async def update_global_session_type(
     global_session_type_id: UUID,
     payload: GlobalSessionTypeUpdateRequest,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> GlobalSessionTypeResponse:
     _require_master_admin(admin_context)
@@ -1192,6 +1645,11 @@ async def update_global_session_type(
             detail="Database unavailable",
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
+    before = await _read_config_audit_snapshot(
+        db,
+        entity_type="global_session_type",
+        entity_id=global_session_type_id,
+    )
     row = await admin_config.update_global_session_type(
         db,
         programme_scope=_global_config_scope(admin_context),
@@ -1200,6 +1658,15 @@ async def update_global_session_type(
         duration_hours=payload.duration_hours,
         is_active=payload.is_active,
     )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="global_session_type",
+        mutation="update",
+        entity_id=global_session_type_id,
+        before=before,
+        after=_compact_snapshot(row),
+    )
     return GlobalSessionTypeResponse.model_validate(row)
 
 
@@ -1207,6 +1674,7 @@ async def update_global_session_type(
 async def delete_global_session_type(
     global_session_type_id: UUID,
     admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> None:
     _require_master_admin(admin_context)
@@ -1216,10 +1684,24 @@ async def delete_global_session_type(
             detail="Database unavailable",
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
+    before = await _read_config_audit_snapshot(
+        db,
+        entity_type="global_session_type",
+        entity_id=global_session_type_id,
+    )
     await admin_config.delete_global_session_type(
         db,
         programme_scope=_global_config_scope(admin_context),
         global_session_type_id=global_session_type_id,
+    )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="global_session_type",
+        mutation="delete",
+        entity_id=global_session_type_id,
+        before=before,
+        after=None,
     )
 
 
