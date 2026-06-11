@@ -14,6 +14,7 @@ import { listProgrammes, type Programme } from '../../api/programmes'
 import { ApiRequestError } from '../../api/http'
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconPlus, IconRefresh } from '../../components/icons'
+import { STAFF_ACTOR_REQUIRED_MESSAGE } from '../../components/StaffActorNameField'
 import { useAppState } from '../../context/useAppState'
 
 type RuleTab = MultiPostingRuleType
@@ -86,8 +87,20 @@ const toProgrammeFallback = (code: string): Programme => ({
   isSubspecialty: false,
 })
 
-const describeError = (error: unknown, fallback: string): string =>
-  error instanceof ApiRequestError ? error.message : fallback
+const isStaffActorError = (error: ApiRequestError) =>
+  error.status === 422 &&
+  (/actor/i.test(error.message) ||
+    JSON.stringify(error.details ?? '').toLowerCase().includes('actor'))
+
+const describeError = (error: unknown, fallback: string): string => {
+  if (!(error instanceof ApiRequestError)) {
+    return fallback
+  }
+  if (isStaffActorError(error)) {
+    return STAFF_ACTOR_REQUIRED_MESSAGE
+  }
+  return error.message
+}
 
 const formatDate = (value?: string): string => {
   if (!value) {
@@ -217,7 +230,7 @@ interface MultiPostingRulesSectionProps {
 
 export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSectionProps) => {
   const location = useLocation()
-  const { demoAdminId, demoAdminProgrammes, role } = useAppState()
+  const { demoAdminId, demoAdminProgrammes, role, staffActorName } = useAppState()
   const viewRole = configViewRole ?? (role === 'programme_pc' ? 'programme_pc' : 'master_admin')
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
   const [activeTab, setActiveTab] = useState<RuleTab>('main_posting')
@@ -403,6 +416,12 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    const actorName = staffActorName.trim()
+    if (!actorName) {
+      setSubmitState('error')
+      setFeedback({ tone: 'error', message: STAFF_ACTOR_REQUIRED_MESSAGE })
+      return
+    }
     setSubmitState('submitting')
     setFeedback(null)
     try {
@@ -411,6 +430,7 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
+          actorName,
           id: selectedRule.id,
           payload: payloadFromForm(),
         })
@@ -420,6 +440,7 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
+          actorName,
           payload: payloadFromForm(),
         })
         setFeedback({ tone: 'success', message: 'Multi-posting rule created.' })
@@ -440,6 +461,12 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
   }
 
   const handleDelete = async (rule: MultiPostingRule) => {
+    const actorName = staffActorName.trim()
+    if (!actorName) {
+      setConfirmingDeleteRule(null)
+      setFeedback({ tone: 'error', message: STAFF_ACTOR_REQUIRED_MESSAGE })
+      return
+    }
     setDeletingId(rule.id)
     setFeedback(null)
     try {
@@ -447,6 +474,7 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
         adminId: demoAdminId,
         adminProgrammes: demoAdminProgrammes,
         adminLevel,
+        actorName,
         id: rule.id,
       })
       setFeedback({ tone: 'success', message: 'Multi-posting rule deleted.' })
@@ -648,7 +676,12 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
             <button type="button" className="button button-ghost" onClick={closeDrawer}>
               Cancel
             </button>
-            <button type="submit" className="button button-primary" form="multi-posting-form" disabled={submitState === 'submitting'}>
+            <button
+              type="submit"
+              className="button button-primary"
+              form="multi-posting-form"
+              disabled={submitState === 'submitting' || staffActorName.trim().length === 0}
+            >
               {submitState === 'submitting' ? 'Saving...' : 'Save Rule'}
             </button>
           </>

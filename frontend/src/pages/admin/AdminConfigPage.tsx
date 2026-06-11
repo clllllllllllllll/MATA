@@ -45,6 +45,10 @@ import {
 } from '../../api/weekendExceptions'
 import { ApiRequestError } from '../../api/http'
 import { DetailDrawer } from '../../components/DetailDrawer'
+import {
+  STAFF_ACTOR_REQUIRED_MESSAGE,
+  StaffActorNameField,
+} from '../../components/StaffActorNameField'
 import { StatusBadge } from '../../components/StatusBadge'
 import { IconPlus, IconRefresh, NamedIcon } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
@@ -464,6 +468,12 @@ const describeDeleteError = (error: unknown): NonNullable<Feedback> => {
       message: 'Unable to delete reporting period.',
     }
   }
+  if (isStaffActorError(error)) {
+    return {
+      tone: 'error',
+      message: STAFF_ACTOR_REQUIRED_MESSAGE,
+    }
+  }
   const metadata = (error.details as { metadata?: { dependencies?: Record<string, number> } } | undefined)
     ?.metadata
   const dependencyDetails = toDependencyDetails(metadata?.dependencies)
@@ -551,6 +561,23 @@ const normaliseOptionalText = (value: string): string | null => value.trim() || 
 
 const normaliseTimeForInput = (value?: string): string => (value ? value.slice(0, 5) : '')
 
+const isStaffActorError = (error: ApiRequestError) =>
+  error.status === 422 &&
+  (/actor/i.test(error.message) ||
+    JSON.stringify(error.details ?? '').toLowerCase().includes('actor'))
+
+const requireStaffActorName = (
+  actorName: string,
+  setFeedback: (feedback: Feedback) => void,
+) => {
+  const trimmedActorName = actorName.trim()
+  if (trimmedActorName.length > 0) {
+    return trimmedActorName
+  }
+  setFeedback({ tone: 'error', message: STAFF_ACTOR_REQUIRED_MESSAGE })
+  return null
+}
+
 const dayTypeLabels: Record<WeekendException['dayType'], string> = {
   sat: 'Saturday',
   sun: 'Sunday',
@@ -631,6 +658,9 @@ const describeWeekendExceptionError = (
   if (!(error instanceof ApiRequestError)) {
     return { tone: 'error', message: fallbackMessage }
   }
+  if (isStaffActorError(error)) {
+    return { tone: 'error', message: STAFF_ACTOR_REQUIRED_MESSAGE }
+  }
   const lowerMessage = error.message.toLowerCase()
   if (lowerMessage.includes('session_type_id') || lowerMessage.includes('mutates_to_session_type_id')) {
     return {
@@ -656,6 +686,9 @@ const describePublicHolidayError = (
       message: fallbackMessage,
     }
   }
+  if (isStaffActorError(error)) {
+    return { tone: 'error', message: STAFF_ACTOR_REQUIRED_MESSAGE }
+  }
   if (error.status === 409) {
     return {
       tone: 'error',
@@ -680,6 +713,9 @@ const describeGenericConfigError = (
       message: fallbackMessage,
     }
   }
+  if (isStaffActorError(error)) {
+    return { tone: 'error', message: STAFF_ACTOR_REQUIRED_MESSAGE }
+  }
   if (error.status === 409 && conflictDescription) {
     return {
       tone: 'error',
@@ -701,6 +737,7 @@ const ReportingPeriodsSection = () => {
     reloadReportingPeriods,
     demoAdminId,
     demoAdminProgrammes,
+    staffActorName,
   } = useAppState()
   const [drawerMode, setDrawerMode] = useState<'create' | 'edit'>('create')
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -757,6 +794,11 @@ const ReportingPeriodsSection = () => {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    const actorName = requireStaffActorName(staffActorName, setFeedback)
+    if (!actorName) {
+      setSubmitState('error')
+      return
+    }
     setSubmitState('submitting')
     setFeedback(null)
     setFeedbackDetailsOpen(false)
@@ -765,6 +807,7 @@ const ReportingPeriodsSection = () => {
         await updateReportingPeriod({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
+          actorName,
           id: selectedPeriod.id,
           payload: formState,
         })
@@ -773,6 +816,7 @@ const ReportingPeriodsSection = () => {
         await createReportingPeriod({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
+          actorName,
           payload: {
             label: formState.label,
             startDate: formState.startDate,
@@ -807,6 +851,11 @@ const ReportingPeriodsSection = () => {
   }
 
   const handleDelete = async (period: ReportingPeriodOption) => {
+    const actorName = requireStaffActorName(staffActorName, setFeedback)
+    if (!actorName) {
+      setConfirmingDeletePeriod(null)
+      return
+    }
     setDeletingId(period.id)
     setFeedback(null)
     setFeedbackDetailsOpen(false)
@@ -814,6 +863,7 @@ const ReportingPeriodsSection = () => {
       await deleteReportingPeriod({
         adminId: demoAdminId,
         adminProgrammes: demoAdminProgrammes,
+        actorName,
         id: period.id,
       })
       setFeedback({ tone: 'success', message: 'Reporting period deleted.' })
@@ -1028,7 +1078,7 @@ const ReportingPeriodsSection = () => {
               type="submit"
               form="reporting-period-form"
               className="button button-primary"
-              disabled={submitState === 'submitting'}
+              disabled={submitState === 'submitting' || staffActorName.trim().length === 0}
             >
               {submitState === 'submitting' ? 'Saving...' : 'Save'}
             </button>
@@ -1097,7 +1147,7 @@ const ReportingPeriodsSection = () => {
 }
 
 const PublicHolidaysSection = () => {
-  const { demoAdminId, demoAdminProgrammes } = useAppState()
+  const { demoAdminId, demoAdminProgrammes, staffActorName } = useAppState()
   const [publicHolidays, setPublicHolidays] = useState<PublicHoliday[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -1187,6 +1237,11 @@ const PublicHolidaysSection = () => {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    const actorName = requireStaffActorName(staffActorName, setFeedback)
+    if (!actorName) {
+      setSubmitState('error')
+      return
+    }
     setSubmitState('submitting')
     setFeedback(null)
     try {
@@ -1194,6 +1249,7 @@ const PublicHolidaysSection = () => {
         await updatePublicHoliday({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
+          actorName,
           id: selectedHoliday.id,
           payload: formState,
         })
@@ -1202,6 +1258,7 @@ const PublicHolidaysSection = () => {
         await createPublicHoliday({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
+          actorName,
           payload: formState,
         })
         setFeedback({ tone: 'success', message: 'Public holiday created.' })
@@ -1223,12 +1280,18 @@ const PublicHolidaysSection = () => {
   }
 
   const handleDelete = async (holiday: PublicHoliday) => {
+    const actorName = requireStaffActorName(staffActorName, setFeedback)
+    if (!actorName) {
+      setConfirmingDeleteHoliday(null)
+      return
+    }
     setDeletingId(holiday.id)
     setFeedback(null)
     try {
       await deletePublicHoliday({
         adminId: demoAdminId,
         adminProgrammes: demoAdminProgrammes,
+        actorName,
         id: holiday.id,
       })
       setFeedback({ tone: 'success', message: 'Public holiday deleted.' })
@@ -1414,7 +1477,7 @@ const PublicHolidaysSection = () => {
               type="submit"
               form="public-holiday-form"
               className="button button-primary"
-              disabled={submitState === 'submitting'}
+              disabled={submitState === 'submitting' || staffActorName.trim().length === 0}
             >
               {submitState === 'submitting' ? 'Saving...' : 'Save'}
             </button>
@@ -1463,7 +1526,7 @@ const PublicHolidaysSection = () => {
 }
 
 const ProgrammesSection = () => {
-  const { demoAdminId, demoAdminProgrammes, role } = useAppState()
+  const { demoAdminId, demoAdminProgrammes, role, staffActorName } = useAppState()
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
   const [programmes, setProgrammes] = useState<Programme[]>([])
   const [loading, setLoading] = useState(true)
@@ -1535,6 +1598,11 @@ const ProgrammesSection = () => {
     if (!selectedProgramme) {
       return
     }
+    const actorName = requireStaffActorName(staffActorName, setFeedback)
+    if (!actorName) {
+      setSubmitState('error')
+      return
+    }
     setSubmitState('submitting')
     setFeedback(null)
     try {
@@ -1542,6 +1610,7 @@ const ProgrammesSection = () => {
         adminId: demoAdminId,
         adminProgrammes: demoAdminProgrammes,
         adminLevel,
+        actorName,
         code: selectedProgramme.code,
         payload: {
           rYearRequired: formState.rYearRequired,
@@ -1687,7 +1756,7 @@ const ProgrammesSection = () => {
               type="submit"
               form="programme-form"
               className="button button-primary"
-              disabled={submitState === 'submitting'}
+              disabled={submitState === 'submitting' || staffActorName.trim().length === 0}
             >
               {submitState === 'submitting' ? 'Saving...' : 'Save'}
             </button>
@@ -1762,7 +1831,7 @@ const ProgrammesSection = () => {
 }
 
 const LoaTypesSection = () => {
-  const { demoAdminId, demoAdminProgrammes, role } = useAppState()
+  const { demoAdminId, demoAdminProgrammes, role, staffActorName } = useAppState()
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
   const [loaTypes, setLoaTypes] = useState<LoaType[]>([])
   const [loading, setLoading] = useState(true)
@@ -1846,6 +1915,11 @@ const LoaTypesSection = () => {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    const actorName = requireStaffActorName(staffActorName, setFeedback)
+    if (!actorName) {
+      setSubmitState('error')
+      return
+    }
     setSubmitState('submitting')
     setFeedback(null)
     const payload = {
@@ -1858,6 +1932,7 @@ const LoaTypesSection = () => {
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
+          actorName,
           id: selectedLoaType.id,
           payload,
         })
@@ -1867,6 +1942,7 @@ const LoaTypesSection = () => {
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
+          actorName,
           payload,
         })
         setFeedback({ tone: 'success', message: 'LOA type created.' })
@@ -1894,6 +1970,11 @@ const LoaTypesSection = () => {
   }
 
   const handleDelete = async (loaType: LoaType) => {
+    const actorName = requireStaffActorName(staffActorName, setFeedback)
+    if (!actorName) {
+      setConfirmingDeleteLoaType(null)
+      return
+    }
     setDeletingId(loaType.id)
     setFeedback(null)
     try {
@@ -1901,6 +1982,7 @@ const LoaTypesSection = () => {
         adminId: demoAdminId,
         adminProgrammes: demoAdminProgrammes,
         adminLevel,
+        actorName,
         id: loaType.id,
       })
       setFeedback({ tone: 'success', message: 'LOA type deleted.' })
@@ -2076,7 +2158,7 @@ const LoaTypesSection = () => {
               type="submit"
               form="loa-type-form"
               className="button button-primary"
-              disabled={submitState === 'submitting'}
+              disabled={submitState === 'submitting' || staffActorName.trim().length === 0}
             >
               {submitState === 'submitting' ? 'Saving...' : 'Save'}
             </button>
@@ -2115,7 +2197,7 @@ const LoaTypesSection = () => {
 }
 
 const PostingGroupsSection = () => {
-  const { demoAdminId, demoAdminProgrammes, role } = useAppState()
+  const { demoAdminId, demoAdminProgrammes, role, staffActorName } = useAppState()
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
   const [postingGroups, setPostingGroups] = useState<PostingGroup[]>([])
   const [programmeOptions, setProgrammeOptions] = useState<Programme[]>([])
@@ -2259,6 +2341,11 @@ const PostingGroupsSection = () => {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    const actorName = requireStaffActorName(staffActorName, setFeedback)
+    if (!actorName) {
+      setSubmitState('error')
+      return
+    }
     setSubmitState('submitting')
     setFeedback(null)
     const payload = {
@@ -2272,6 +2359,7 @@ const PostingGroupsSection = () => {
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
+          actorName,
           id: selectedPostingGroup.id,
           payload,
         })
@@ -2281,6 +2369,7 @@ const PostingGroupsSection = () => {
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
+          actorName,
           payload,
         })
         setFeedback({ tone: 'success', message: 'Posting group created.' })
@@ -2308,6 +2397,11 @@ const PostingGroupsSection = () => {
   }
 
   const handleDelete = async (postingGroup: PostingGroup) => {
+    const actorName = requireStaffActorName(staffActorName, setFeedback)
+    if (!actorName) {
+      setConfirmingDeleteGroup(null)
+      return
+    }
     setDeletingId(postingGroup.id)
     setFeedback(null)
     try {
@@ -2315,6 +2409,7 @@ const PostingGroupsSection = () => {
         adminId: demoAdminId,
         adminProgrammes: demoAdminProgrammes,
         adminLevel,
+        actorName,
         id: postingGroup.id,
       })
       setFeedback({ tone: 'success', message: 'Posting group deleted.' })
@@ -2513,7 +2608,7 @@ const PostingGroupsSection = () => {
               type="submit"
               form="posting-group-form"
               className="button button-primary"
-              disabled={submitState === 'submitting'}
+              disabled={submitState === 'submitting' || staffActorName.trim().length === 0}
             >
               {submitState === 'submitting' ? 'Saving...' : 'Save'}
             </button>
@@ -2605,7 +2700,7 @@ const PostingGroupsSection = () => {
 }
 
 const WeekendExceptionsSection = () => {
-  const { demoAdminId, demoAdminProgrammes, role } = useAppState()
+  const { demoAdminId, demoAdminProgrammes, role, staffActorName } = useAppState()
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
   const [weekendExceptions, setWeekendExceptions] = useState<WeekendException[]>([])
   const [sessionTypeOptions, setSessionTypeOptions] = useState<SessionTypeOption[]>([])
@@ -2739,6 +2834,11 @@ const WeekendExceptionsSection = () => {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    const actorName = requireStaffActorName(staffActorName, setFeedback)
+    if (!actorName) {
+      setSubmitState('error')
+      return
+    }
     setSubmitState('submitting')
     setFeedback(null)
     const payload = {
@@ -2758,6 +2858,7 @@ const WeekendExceptionsSection = () => {
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
+          actorName,
           id: selectedException.id,
           payload,
         })
@@ -2767,6 +2868,7 @@ const WeekendExceptionsSection = () => {
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
+          actorName,
           payload,
         })
         setFeedback({ tone: 'success', message: 'Weekend exception created.' })
@@ -2788,6 +2890,11 @@ const WeekendExceptionsSection = () => {
   }
 
   const handleDelete = async (weekendException: WeekendException) => {
+    const actorName = requireStaffActorName(staffActorName, setFeedback)
+    if (!actorName) {
+      setConfirmingDeleteException(null)
+      return
+    }
     setDeletingId(weekendException.id)
     setFeedback(null)
     try {
@@ -2795,6 +2902,7 @@ const WeekendExceptionsSection = () => {
         adminId: demoAdminId,
         adminProgrammes: demoAdminProgrammes,
         adminLevel,
+        actorName,
         id: weekendException.id,
       })
       setFeedback({ tone: 'success', message: 'Weekend exception deleted.' })
@@ -2986,7 +3094,7 @@ const WeekendExceptionsSection = () => {
               type="submit"
               form="weekend-exception-form"
               className="button button-primary"
-              disabled={submitState === 'submitting'}
+              disabled={submitState === 'submitting' || staffActorName.trim().length === 0}
             >
               {submitState === 'submitting' ? 'Saving...' : 'Save'}
             </button>
@@ -3224,7 +3332,7 @@ const WeekendExceptionsSection = () => {
 }
 
 const GlobalSessionTypesSection = () => {
-  const { demoAdminId, demoAdminProgrammes, role } = useAppState()
+  const { demoAdminId, demoAdminProgrammes, role, staffActorName } = useAppState()
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
   const [globalSessionTypes, setGlobalSessionTypes] = useState<GlobalSessionType[]>([])
   const [loading, setLoading] = useState(true)
@@ -3311,6 +3419,11 @@ const GlobalSessionTypesSection = () => {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    const actorName = requireStaffActorName(staffActorName, setFeedback)
+    if (!actorName) {
+      setSubmitState('error')
+      return
+    }
     setSubmitState('submitting')
     setFeedback(null)
     const payload = {
@@ -3324,6 +3437,7 @@ const GlobalSessionTypesSection = () => {
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
+          actorName,
           id: selectedGlobalType.id,
           payload,
         })
@@ -3333,6 +3447,7 @@ const GlobalSessionTypesSection = () => {
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
+          actorName,
           payload,
         })
         setFeedback({ tone: 'success', message: 'Global session type created.' })
@@ -3360,6 +3475,11 @@ const GlobalSessionTypesSection = () => {
   }
 
   const handleDelete = async (globalSessionType: GlobalSessionType) => {
+    const actorName = requireStaffActorName(staffActorName, setFeedback)
+    if (!actorName) {
+      setConfirmingDeleteGlobalType(null)
+      return
+    }
     setDeletingId(globalSessionType.id)
     setFeedback(null)
     try {
@@ -3367,6 +3487,7 @@ const GlobalSessionTypesSection = () => {
         adminId: demoAdminId,
         adminProgrammes: demoAdminProgrammes,
         adminLevel,
+        actorName,
         id: globalSessionType.id,
       })
       setFeedback({ tone: 'success', message: 'Global session type deleted.' })
@@ -3561,7 +3682,7 @@ const GlobalSessionTypesSection = () => {
               type="submit"
               form="global-session-type-form"
               className="button button-primary"
-              disabled={submitState === 'submitting'}
+              disabled={submitState === 'submitting' || staffActorName.trim().length === 0}
             >
               {submitState === 'submitting' ? 'Saving...' : 'Save'}
             </button>
@@ -3667,7 +3788,7 @@ interface AdminConfigPageProps {
 
 export const AdminConfigPage = ({ configViewRole }: AdminConfigPageProps) => {
   const location = useLocation()
-  const { demoAdminProgrammes, role } = useAppState()
+  const { demoAdminProgrammes, role, staffActorName, setStaffActorName } = useAppState()
   const configRole: ConfigViewRole = configViewRole ?? (role === 'programme_pc' ? 'programme_pc' : 'master_admin')
   const defaultSectionKey: ConfigSectionKey =
     configRole === 'programme_pc' ? 'multi-posting-rules' : 'reporting-periods'
@@ -3721,7 +3842,18 @@ export const AdminConfigPage = ({ configViewRole }: AdminConfigPageProps) => {
 
   return (
     <div className="page admin-config-page">
-      <PageHero title="Configuration" subtitle={subtitle} />
+      <PageHero
+        title="Configuration"
+        subtitle={subtitle}
+        actions={
+          <StaffActorNameField
+            value={staffActorName}
+            onChange={setStaffActorName}
+            className="staff-actor-field-compact"
+            showLabel={false}
+          />
+        }
+      />
 
       <section className="admin-config-shell" aria-label="Configuration sections">
         <nav className="admin-config-nav-card" aria-label="Configuration navigation">

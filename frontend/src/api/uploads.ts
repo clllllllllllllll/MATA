@@ -9,6 +9,7 @@ export interface UploadRequest {
   programmeCode?: string
   adminProgrammes: string[]
   adminId: string
+  actorName?: string
 }
 
 const uploadPathByType: Record<UploadType, string> = {
@@ -36,7 +37,7 @@ export const uploadWorkbook = async (
 
   try {
     const response = await httpClient.post(uploadPathByType[payload.uploadType], formData, {
-      headers: buildAdminDemoHeaders(payload.adminId, payload.adminProgrammes),
+      headers: buildAdminDemoHeaders(payload.adminId, payload.adminProgrammes, undefined, payload.actorName),
     })
 
     if (typeof response.data === 'object' && response.data !== null) {

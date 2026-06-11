@@ -14,6 +14,7 @@ interface PostingGroupRequestContext {
   adminId: string
   adminProgrammes: string[]
   adminLevel?: AdminDemoLevel
+  actorName?: string
 }
 
 export interface PostingGroupMutationPayload {
@@ -61,7 +62,7 @@ export const createPostingGroup = async (
 ): Promise<PostingGroup> => {
   try {
     const response = await httpClient.post('/admin/posting-groups', toApiPayload(params.payload), {
-      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel),
+      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
     })
     return toPostingGroup(response.data as Record<string, unknown>)
   } catch (error) {
@@ -80,7 +81,7 @@ export const updatePostingGroup = async (
       `/admin/posting-groups/${params.id}`,
       toApiPayload(params.payload),
       {
-        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel),
+        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
       },
     )
     return toPostingGroup(response.data as Record<string, unknown>)
@@ -94,7 +95,7 @@ export const deletePostingGroup = async (
 ): Promise<void> => {
   try {
     await httpClient.delete(`/admin/posting-groups/${params.id}`, {
-      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel),
+      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
     })
   } catch (error) {
     throw toApiRequestError(error)

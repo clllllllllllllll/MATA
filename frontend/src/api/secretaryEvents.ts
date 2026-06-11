@@ -144,6 +144,7 @@ export interface CreateSecretaryTeachingEventRequest {
 
 export const createSecretaryTeachingEvent = async (
   payload: CreateSecretaryTeachingEventRequest,
+  actorName?: string,
 ): Promise<SecretaryTeachingEvent> => {
   try {
     const response = await httpClient.post(
@@ -156,7 +157,7 @@ export const createSecretaryTeachingEvent = async (
         smc_event_code: payload.smcEventCode ?? null,
       },
       {
-        headers: buildSecretaryDemoHeaders(),
+        headers: buildSecretaryDemoHeaders({ actorName }),
       },
     )
     const row =
@@ -180,6 +181,7 @@ export interface UpdateSecretaryTeachingEventRequest {
 export const updateSecretaryTeachingEvent = async (
   eventId: string,
   payload: UpdateSecretaryTeachingEventRequest,
+  actorName?: string,
 ): Promise<SecretaryTeachingEvent> => {
   try {
     const response = await httpClient.put(
@@ -192,7 +194,7 @@ export const updateSecretaryTeachingEvent = async (
         smc_event_code: payload.smcEventCode ?? null,
       },
       {
-        headers: buildSecretaryDemoHeaders(),
+        headers: buildSecretaryDemoHeaders({ actorName }),
       },
     )
     const row =
@@ -205,10 +207,13 @@ export const updateSecretaryTeachingEvent = async (
   }
 }
 
-export const deleteSecretaryTeachingEvent = async (eventId: string): Promise<{ deletedCount: number }> => {
+export const deleteSecretaryTeachingEvent = async (
+  eventId: string,
+  actorName?: string,
+): Promise<{ deletedCount: number }> => {
   try {
     const response = await httpClient.delete(`/secretary/teaching-events/${eventId}`, {
-      headers: buildSecretaryDemoHeaders(),
+      headers: buildSecretaryDemoHeaders({ actorName }),
     })
     const row =
       typeof response.data === 'object' && response.data !== null

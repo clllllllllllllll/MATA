@@ -14,6 +14,7 @@ interface GlobalSessionTypeRequestContext {
   adminId: string
   adminProgrammes: string[]
   adminLevel?: AdminDemoLevel
+  actorName?: string
 }
 
 export interface GlobalSessionTypeMutationPayload {
@@ -64,7 +65,7 @@ export const createGlobalSessionType = async (
       '/admin/global-session-types',
       toApiPayload(params.payload),
       {
-        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel),
+        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
       },
     )
     return toGlobalSessionType(response.data as Record<string, unknown>)
@@ -84,7 +85,7 @@ export const updateGlobalSessionType = async (
       `/admin/global-session-types/${params.id}`,
       toApiPayload(params.payload),
       {
-        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel),
+        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
       },
     )
     return toGlobalSessionType(response.data as Record<string, unknown>)
@@ -98,7 +99,7 @@ export const deleteGlobalSessionType = async (
 ): Promise<void> => {
   try {
     await httpClient.delete(`/admin/global-session-types/${params.id}`, {
-      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel),
+      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
     })
   } catch (error) {
     throw toApiRequestError(error)

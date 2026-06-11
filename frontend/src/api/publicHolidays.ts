@@ -14,6 +14,7 @@ export interface PublicHoliday {
 interface PublicHolidayRequestContext {
   adminId: string
   adminProgrammes: string[]
+  actorName?: string
 }
 
 export interface PublicHolidayMutationPayload {
@@ -57,7 +58,7 @@ export const createPublicHoliday = async (
 ): Promise<PublicHoliday> => {
   try {
     const response = await httpClient.post('/admin/public-holidays', toApiPayload(params.payload), {
-      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes),
+      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, undefined, params.actorName),
     })
     return toPublicHoliday(response.data as Record<string, unknown>)
   } catch (error) {
@@ -76,7 +77,7 @@ export const updatePublicHoliday = async (
       `/admin/public-holidays/${params.id}`,
       toApiPayload(params.payload),
       {
-        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes),
+        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, undefined, params.actorName),
       },
     )
     return toPublicHoliday(response.data as Record<string, unknown>)
@@ -90,7 +91,7 @@ export const deletePublicHoliday = async (
 ): Promise<void> => {
   try {
     await httpClient.delete(`/admin/public-holidays/${params.id}`, {
-      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes),
+      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, undefined, params.actorName),
     })
   } catch (error) {
     throw toApiRequestError(error)

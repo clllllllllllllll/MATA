@@ -22,6 +22,7 @@ interface WeekendExceptionRequestContext {
   adminId: string
   adminProgrammes: string[]
   adminLevel?: AdminDemoLevel
+  actorName?: string
 }
 
 export interface WeekendExceptionMutationPayload {
@@ -92,7 +93,7 @@ export const createWeekendException = async (
       '/admin/weekend-exceptions',
       toApiPayload(params.payload),
       {
-        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel),
+        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
       },
     )
     return toWeekendException(response.data as Record<string, unknown>)
@@ -112,7 +113,7 @@ export const updateWeekendException = async (
       `/admin/weekend-exceptions/${params.id}`,
       toApiPayload(params.payload),
       {
-        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel),
+        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
       },
     )
     return toWeekendException(response.data as Record<string, unknown>)
@@ -126,7 +127,7 @@ export const deleteWeekendException = async (
 ): Promise<void> => {
   try {
     await httpClient.delete(`/admin/weekend-exceptions/${params.id}`, {
-      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel),
+      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
     })
   } catch (error) {
     throw toApiRequestError(error)

@@ -15,6 +15,7 @@ const toReportingPeriod = (value: Record<string, unknown>): ReportingPeriodOptio
 interface ReportingPeriodRequestContext {
   adminId: string
   adminProgrammes: string[]
+  actorName?: string
 }
 
 export interface ReportingPeriodMutationPayload {
@@ -64,7 +65,7 @@ export const createReportingPeriod = async (
 ): Promise<ReportingPeriodOption> => {
   try {
     const response = await httpClient.post('/admin/reporting-periods', toApiPayload(params.payload), {
-      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes),
+      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, undefined, params.actorName),
     })
     return toReportingPeriod(response.data as Record<string, unknown>)
   } catch (error) {
@@ -83,7 +84,7 @@ export const updateReportingPeriod = async (
       `/admin/reporting-periods/${params.id}`,
       toApiPayload(params.payload),
       {
-        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes),
+        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, undefined, params.actorName),
       },
     )
     return toReportingPeriod(response.data as Record<string, unknown>)
@@ -97,7 +98,7 @@ export const deleteReportingPeriod = async (
 ): Promise<void> => {
   try {
     await httpClient.delete(`/admin/reporting-periods/${params.id}`, {
-      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes),
+      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, undefined, params.actorName),
     })
   } catch (error) {
     throw toApiRequestError(error)

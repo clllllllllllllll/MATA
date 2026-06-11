@@ -18,6 +18,7 @@ interface ProgrammeRequestContext {
   adminId: string
   adminProgrammes: string[]
   adminLevel?: AdminDemoLevel
+  actorName?: string
 }
 
 export interface ProgrammeMutationPayload {
@@ -70,7 +71,12 @@ export const updateProgramme = async (
       `/admin/programmes/${params.code}`,
       toApiPayload(params.payload),
       {
-        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel),
+        headers: buildAdminDemoHeaders(
+          params.adminId,
+          params.adminProgrammes,
+          params.adminLevel,
+          params.actorName,
+        ),
       },
     )
     return toProgramme(response.data as Record<string, unknown>)

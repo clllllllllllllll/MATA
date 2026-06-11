@@ -30,6 +30,7 @@ interface MultiPostingRulesRequestContext {
   adminId: string
   adminProgrammes: string[]
   adminLevel?: AdminDemoLevel
+  actorName?: string
 }
 
 const toOptionalString = (value: unknown): string | undefined =>
@@ -83,7 +84,7 @@ export const createMultiPostingRule = async (
       '/admin/multi-posting-rules',
       toApiPayload(params.payload),
       {
-        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel),
+        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
       },
     )
     return toRule(response.data as Record<string, unknown>)
@@ -103,7 +104,7 @@ export const updateMultiPostingRule = async (
       `/admin/multi-posting-rules/${params.id}`,
       toApiPayload(params.payload),
       {
-        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel),
+        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
       },
     )
     return toRule(response.data as Record<string, unknown>)
@@ -117,7 +118,7 @@ export const deleteMultiPostingRule = async (
 ): Promise<void> => {
   try {
     await httpClient.delete(`/admin/multi-posting-rules/${params.id}`, {
-      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel),
+      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
     })
   } catch (error) {
     throw toApiRequestError(error)

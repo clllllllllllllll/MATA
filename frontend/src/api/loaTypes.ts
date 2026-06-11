@@ -13,6 +13,7 @@ interface LoaTypeRequestContext {
   adminId: string
   adminProgrammes: string[]
   adminLevel?: AdminDemoLevel
+  actorName?: string
 }
 
 export interface LoaTypeMutationPayload {
@@ -52,7 +53,7 @@ export const createLoaType = async (
 ): Promise<LoaType> => {
   try {
     const response = await httpClient.post('/admin/loa-types', toApiPayload(params.payload), {
-      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel),
+      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
     })
     return toLoaType(response.data as Record<string, unknown>)
   } catch (error) {
@@ -71,7 +72,7 @@ export const updateLoaType = async (
       `/admin/loa-types/${params.id}`,
       toApiPayload(params.payload),
       {
-        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel),
+        headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
       },
     )
     return toLoaType(response.data as Record<string, unknown>)
@@ -85,7 +86,7 @@ export const deleteLoaType = async (
 ): Promise<void> => {
   try {
     await httpClient.delete(`/admin/loa-types/${params.id}`, {
-      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel),
+      headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
     })
   } catch (error) {
     throw toApiRequestError(error)
