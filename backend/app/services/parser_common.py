@@ -36,6 +36,8 @@ class ParserResult:
             "errors": self.errors,
         }
         if self.metadata is not None:
+            for key, value in self.metadata.items():
+                summary.setdefault(key, value)
             summary["metadata"] = self.metadata
         return summary
 

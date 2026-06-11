@@ -29,8 +29,10 @@ export interface UploadMeta {
   reportingPeriodId?: string
   reportingPeriodLabel?: string
   programmeCode?: string
+  status: UploadLogStatus
   response: Record<string, unknown>
   warningsCount: number
+  errorsCount: number
 }
 
 export interface NormalizedWarning {

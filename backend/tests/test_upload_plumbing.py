@@ -114,6 +114,88 @@ def test_rdb_upload_route_passes_database_session_to_parser(monkeypatch) -> None
     assert "Database session is required for RDB upload persistence." not in response.text
 
 
+def test_rdb_upload_response_caps_raw_multi_posting_fragments_but_upload_log_keeps_full_list(
+    monkeypatch,
+) -> None:
+    raw_fragments = [
+        {
+            "mcr": "M12345A",
+            "resident_name": "Resident Name",
+            "programme_code": "FM",
+            "r_year": "R2",
+            "sheet_name": "Phase 1 & 2 (FM)",
+            "row_number": 42,
+            "cell_ref": "J42",
+            "month_label": "Jul-25",
+            "source_column_header": "08 Jul 25 - 03 Aug 25",
+            "source_cell_text": f"very large source text {index}",
+            "fragment_index": index,
+            "raw_posting_code": "NUHPaedia",
+            "normalized_posting_code": "NUHPaedia",
+            "fragment_start_date": "2025-07-10",
+            "fragment_end_date": "2025-07-10",
+            "day_part": "AM",
+            "decision": "collapsed_into_main",
+            "effective_posting_code": "NUHPaedia",
+            "rule_type": "main_posting",
+            "rule_id": None,
+            "warning_id": None,
+        }
+        for index in range(1, 61)
+    ]
+
+    async def _fake_rdb_parser(**kwargs):
+        return ParserResult(
+            upload_type="rdb",
+            metadata={
+                "residents_created": 1,
+                "residents_updated": 0,
+                "postings_created": 1,
+                "raw_multi_posting_fragment_count": len(raw_fragments),
+                "raw_multi_posting_fragments": raw_fragments,
+                "raw_multi_posting_fragments_truncated": False,
+            },
+        )
+
+    monkeypatch.setattr("app.services.rdb_parser.parse_rdb_upload", _fake_rdb_parser)
+
+    session = _UploadAuditSession()
+    app = FastAPI()
+    install_error_handlers(app)
+
+    async def _db_override():
+        yield session
+
+    app.dependency_overrides[admin.get_db_session] = _db_override
+    app.include_router(admin.router)
+    client = TestClient(app)
+    response = client.post(
+        "/admin/upload/rdb",
+        headers=_admin_headers(),
+        data={"reporting_period_id": str(uuid4())},
+        files={
+            "file": (
+                "rdb.xlsx",
+                _make_valid_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["raw_multi_posting_fragment_count"] == 60
+    assert len(body["raw_multi_posting_fragments"]) == 50
+    assert body["raw_multi_posting_fragments"][0]["fragment_index"] == 1
+    assert body["raw_multi_posting_fragments"][-1]["fragment_index"] == 50
+    assert body["raw_multi_posting_fragments_truncated"] is True
+    summary = json.loads(session.upload_logs[-1]["summary"])
+    assert summary["raw_multi_posting_fragment_count"] == 60
+    assert len(summary["raw_multi_posting_fragments"]) == 60
+    assert summary["raw_multi_posting_fragments"][-1]["fragment_index"] == 60
+    assert summary["raw_multi_posting_fragments_truncated"] is False
+
+
 def test_invalid_extension_returns_422() -> None:
     client = _build_client()
     response = client.post(

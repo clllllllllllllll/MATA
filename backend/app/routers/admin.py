@@ -74,6 +74,7 @@ from app.services.ttf_parser import TTFUploadLockError, parse_ttf_upload
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+RDB_RAW_MULTI_POSTING_FRAGMENT_RESPONSE_LIMIT = 50
 
 
 try:
@@ -157,6 +158,17 @@ def _require_programme_in_scope(admin_context: AdminContext, programme_code: str
 
 def _format_rdb_response(result: ParserResult) -> dict[str, Any]:
     metadata = result.metadata or {}
+    raw_fragments = metadata.get("raw_multi_posting_fragments", [])
+    if not isinstance(raw_fragments, list):
+        raw_fragments = []
+    raw_fragment_count = metadata.get(
+        "raw_multi_posting_fragment_count", len(raw_fragments)
+    )
+    if not isinstance(raw_fragment_count, int):
+        raw_fragment_count = len(raw_fragments)
+    response_raw_fragments = raw_fragments[
+        :RDB_RAW_MULTI_POSTING_FRAGMENT_RESPONSE_LIMIT
+    ]
     return {
         "residents_created": metadata.get("residents_created", result.created_count),
         "residents_updated": metadata.get("residents_updated", result.updated_count),
@@ -166,6 +178,10 @@ def _format_rdb_response(result: ParserResult) -> dict[str, Any]:
         "unknown_loa_types": metadata.get("unknown_loa_types", []),
         "employed_residents_flagged": metadata.get("employed_residents_flagged", 0),
         "multi_posting_rules_applied": metadata.get("multi_posting_rules_applied", 0),
+        "raw_multi_posting_fragment_count": raw_fragment_count,
+        "raw_multi_posting_fragments": response_raw_fragments,
+        "raw_multi_posting_fragments_truncated": raw_fragment_count
+        > len(response_raw_fragments),
         "rows_skipped": metadata.get("rows_skipped", 0),
         "skip_reasons": metadata.get("skip_reasons", []),
         "warnings": result.warnings,

@@ -443,6 +443,13 @@ def _distinct_warning_posting_codes(warning: dict) -> list[str]:
     return distinct_codes
 
 
+def _raw_multi_posting_fragments(result) -> list[dict]:
+    metadata = result.metadata or {}
+    fragments = metadata.get("raw_multi_posting_fragments")
+    assert isinstance(fragments, list)
+    return fragments
+
+
 def _assert_unmatched_warning_trace_fields(
     warning: dict,
     *,
@@ -927,6 +934,16 @@ def test_same_day_am_pm_multi_posting_does_not_generate_duplicate_phase_rows() -
         for item in result.warnings
     )
     assert all(row["r_year"] == "ALL" for row in session.resident_postings)
+    fragments = _raw_multi_posting_fragments(result)
+    assert result.metadata["raw_multi_posting_fragment_count"] == 3
+    assert [
+        (fragment["raw_posting_code"], fragment["day_part"], fragment["decision"])
+        for fragment in fragments
+    ] == [
+        ("TTSHCardio", "AM", "unmatched_warning"),
+        ("TTSHCardio", None, "unmatched_warning"),
+        ("NHCCardio", "PM", "unmatched_warning"),
+    ]
 
 
 def test_standard_sheet_stops_parsing_at_red_line_marker() -> None:
@@ -1149,6 +1166,34 @@ def test_true_multi_posting_without_rule_still_emits_unmatched_warning() -> None
         cell_ref="I3",
     )
     assert _distinct_warning_posting_codes(warnings[0]) == ["TTSHAnaes", "TTSHCardio"]
+    fragments = _raw_multi_posting_fragments(result)
+    assert result.metadata["raw_multi_posting_fragment_count"] == 2
+    assert result.metadata["raw_multi_posting_fragments_truncated"] is False
+    assert [
+        (fragment["raw_posting_code"], fragment["decision"], fragment["effective_posting_code"])
+        for fragment in fragments
+    ] == [
+        ("TTSHAnaes", "unmatched_warning", "TTSHAnaes"),
+        ("TTSHCardio", "unmatched_warning", "TTSHCardio"),
+    ]
+    first = fragments[0]
+    assert first["mcr"] == "M11111A"
+    assert first["resident_name"] == "True Unmatched Multi Posting"
+    assert first["programme_code"] == "ANAES"
+    assert first["r_year"] == "R2"
+    assert first["sheet_name"] == "Phase 1"
+    assert first["row_number"] == 3
+    assert first["cell_ref"] == "I3"
+    assert first["month_label"] == "Aug-25"
+    assert first["source_column_header"] == "04 Aug 25 - 31 Aug 25"
+    assert "TTSHAnaes" in first["source_cell_text"]
+    assert first["fragment_index"] == 1
+    assert first["fragment_start_date"] == "2025-08-04"
+    assert first["fragment_end_date"] == "2025-08-06"
+    assert first["day_part"] is None
+    assert first["rule_type"] is None
+    assert first["rule_id"] is None
+    assert first["warning_id"] is None
 
 
 def test_duplicate_same_start_same_day_part_is_suppressed_before_insert() -> None:
@@ -1896,6 +1941,18 @@ def test_fm_main_posting_exact_one_recognised_posting_collapses_without_warning(
     assert result.metadata["multi_posting_rules_applied"] == 1
     assert [row["posting_code"] for row in session.resident_postings] == ["NUHPaedia"]
     assert _unmatched_multi_posting_warnings(result) == []
+    fragments = _raw_multi_posting_fragments(result)
+    assert result.metadata["raw_multi_posting_fragment_count"] == 2
+    assert result.metadata["raw_multi_posting_fragments_truncated"] is False
+    assert {
+        (fragment["raw_posting_code"], fragment["decision"], fragment["effective_posting_code"])
+        for fragment in fragments
+    } == {
+        ("NUHPaedia", "collapsed_into_main", "NUHPaedia"),
+        ("NHGPlyNHGPly", "collapsed_into_main", "NUHPaedia"),
+    }
+    assert all(fragment["programme_code"] == "FM" for fragment in fragments)
+    assert all(fragment["rule_type"] == "main_posting" for fragment in fragments)
 
 
 def test_fm_main_posting_zero_recognised_postings_collapses_to_configured_exclusion() -> None:

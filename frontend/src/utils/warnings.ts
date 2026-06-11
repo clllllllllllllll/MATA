@@ -265,7 +265,14 @@ export const normalizeWarningsFromUploadResponse = (
 const countFromArrayKey = (response: Record<string, unknown>, key: string): number =>
   Array.isArray(response[key]) ? (response[key] as unknown[]).length : 0
 
+const countFromNumericKey = (response: Record<string, unknown>, key: string): number => {
+  const value = response[key]
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0
+}
+
 export const getWarningsCount = (response: Record<string, unknown>): number =>
+  countFromNumericKey(response, 'warning_count') +
+  countFromNumericKey(response, 'warnings_count') +
   countFromArrayKey(response, 'warnings') +
   countFromArrayKey(response, 'unknown_loa_types') +
   countFromArrayKey(response, 'unknown_loa_type') +
@@ -276,6 +283,12 @@ export const getWarningsCount = (response: Record<string, unknown>): number =>
   countFromArrayKey(response, 'orphaned_attendance') +
   countFromArrayKey(response, 'unmatched_multi_posting') +
   countFromArrayKey(response, 'errors')
+
+export const getErrorsCount = (response: Record<string, unknown>): number =>
+  countFromNumericKey(response, 'error_count') +
+  countFromNumericKey(response, 'errors_count') +
+  countFromArrayKey(response, 'errors') +
+  countFromArrayKey(response, 'duplicate_mcr_errors')
 
 const sumNumericByKeys = (
   response: Record<string, unknown>,
@@ -313,6 +326,76 @@ export const getSummaryCounts = (response: Record<string, unknown>) => {
   return { created, updated, warnings: getWarningsCount(response) }
 }
 
+const compactResponseKeys = [
+  'residents_created',
+  'residents_updated',
+  'postings_created',
+  'posting_codes_added_count',
+  'loa_records',
+  'unknown_loa_types_count',
+  'employed_residents_flagged',
+  'multi_posting_rules_applied',
+  'raw_multi_posting_fragment_count',
+  'raw_multi_posting_fragments_truncated',
+  'rows_skipped',
+  'targets_created',
+  'session_types_upserted',
+  'posting_codes_added',
+  'catalogue_rows_seeded',
+  'rows_exploded',
+  'records_created',
+  'records_updated',
+  'active_count',
+  'inactive_count',
+  'public_holidays_created',
+  'academic_month_boundaries_created',
+  'academic_year_label',
+  'upload_type',
+  'status',
+] as const
+
+const arrayCountKeys = [
+  'warnings',
+  'errors',
+  'unknown_loa_types',
+  'unknown_loa_type',
+  'mcr_not_found_warnings',
+  'skipped_mcr_warnings',
+  'duplicate_mcr_errors',
+  'promotion_date_warnings',
+  'orphaned_attendance',
+  'unmatched_multi_posting',
+] as const
+
+export const compactUploadResponseForHistory = (
+  response: Record<string, unknown>,
+): Record<string, unknown> => {
+  const compact: Record<string, unknown> = {}
+
+  compactResponseKeys.forEach((key) => {
+    const value = response[key]
+    if (
+      typeof value === 'number' ||
+      typeof value === 'boolean' ||
+      (typeof value === 'string' && value.trim().length > 0)
+    ) {
+      compact[key] = value
+    }
+  })
+
+  arrayCountKeys.forEach((key) => {
+    const value = response[key]
+    if (Array.isArray(value)) {
+      compact[`${key}_count`] = value.length
+    }
+  })
+
+  compact.warning_count = getWarningsCount(response)
+  compact.error_count = getErrorsCount(response)
+
+  return compact
+}
+
 export const makeUploadMeta = (params: {
   uploadType: UploadType
   response: Record<string, unknown>
@@ -323,6 +406,7 @@ export const makeUploadMeta = (params: {
 }): UploadMeta => {
   const uploadedAtIso = new Date().toISOString()
   const id = `${params.uploadType}-${uploadedAtIso}-${Math.random().toString(16).slice(2, 8)}`
+  const errorsCount = getErrorsCount(params.response)
 
   return {
     id,
@@ -333,7 +417,9 @@ export const makeUploadMeta = (params: {
     reportingPeriodId: params.reportingPeriodId,
     reportingPeriodLabel: params.reportingPeriodLabel,
     programmeCode: params.programmeCode,
-    response: params.response,
+    status: errorsCount > 0 ? 'partial' : 'success',
+    response: compactUploadResponseForHistory(params.response),
     warningsCount: getWarningsCount(params.response),
+    errorsCount,
   }
 }

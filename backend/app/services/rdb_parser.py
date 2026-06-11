@@ -22,6 +22,7 @@ class RDBParserError(ValueError):
 class PostingColumnHeader:
     column_index: int
     column_header_cell_ref: str
+    source_column_header: str
     month_label: str
     start_date: date
     end_date: date
@@ -109,6 +110,7 @@ class ResidentPostingWrite:
 
 @dataclass(slots=True, frozen=True)
 class MultiPostingRuleConfig:
+    id: str | None
     programme_code: str
     posting_code_1: str
     posting_code_2: str | None
@@ -130,6 +132,7 @@ class RDBParseAccumulator:
     loa_records: int
     employed_residents_flagged: set[str]
     multi_posting_rules_applied: int
+    raw_multi_posting_fragments: list[dict[str, Any]]
 
 
 _MCR_LIKE_PATTERN = re.compile(r"^[A-Za-z]\d+[A-Za-z]$")
@@ -295,6 +298,7 @@ def detect_posting_columns(sheet: Any) -> list[PostingColumnHeader]:
             PostingColumnHeader(
                 column_index=column_index,
                 column_header_cell_ref=sheet.cell(row=2, column=column_index).coordinate,
+                source_column_header=header,
                 month_label=month_label,
                 start_date=start_date,
                 end_date=end_date,
@@ -1110,6 +1114,7 @@ def _find_fm_main_posting_rule(
     if exclusion_code is None:
         return None
     return MultiPostingRuleConfig(
+        id=None,
         programme_code=programme_code,
         posting_code_1=exclusion_code,
         posting_code_2=None,
@@ -1149,6 +1154,55 @@ def _base_posting_from_cell(
     )
 
 
+def _append_raw_multi_posting_fragments(
+    *,
+    accumulator: RDBParseAccumulator,
+    resident_mcr: str,
+    resident_name: str,
+    programme_code: str,
+    r_year: str,
+    sheet_name: str,
+    row_number: int,
+    cell_ref: str,
+    header: PostingColumnHeader,
+    parsed_cell: ParsedPostingCell,
+    fragments: list[ParsedMultiPostingFragment],
+    decision: str,
+    effective_posting_by_fragment: Mapping[int, str | None],
+    rule: MultiPostingRuleConfig | None,
+    warning_id: str | None = None,
+) -> None:
+    source_cell_text = _to_cell_text(parsed_cell.raw_cell)
+    for fragment_index, fragment in enumerate(fragments, start=1):
+        accumulator.raw_multi_posting_fragments.append(
+            {
+                "mcr": resident_mcr,
+                "resident_name": resident_name,
+                "programme_code": programme_code,
+                "r_year": r_year,
+                "sheet_name": sheet_name,
+                "row_number": row_number,
+                "cell_ref": cell_ref,
+                "month_label": header.month_label,
+                "source_column_header": header.source_column_header,
+                "source_cell_text": source_cell_text,
+                "fragment_index": fragment_index,
+                "raw_posting_code": fragment.posting_code,
+                "normalized_posting_code": fragment.posting_code,
+                "fragment_start_date": fragment.start_date.isoformat(),
+                "fragment_end_date": fragment.end_date.isoformat(),
+                "day_part": fragment.day_part,
+                "decision": decision,
+                "effective_posting_code": effective_posting_by_fragment.get(
+                    fragment_index
+                ),
+                "rule_type": rule.rule_type if rule is not None else None,
+                "rule_id": rule.id if rule is not None else None,
+                "warning_id": warning_id,
+            }
+        )
+
+
 def _apply_multi_posting_cell(
     *,
     resident_mcr: str,
@@ -1169,6 +1223,25 @@ def _apply_multi_posting_cell(
     accumulator.posting_codes.update(codes)
 
     if len(codes) <= 1:
+        _append_raw_multi_posting_fragments(
+            accumulator=accumulator,
+            resident_mcr=resident_mcr,
+            resident_name=resident_name,
+            programme_code=programme_code,
+            r_year=r_year or "ALL",
+            sheet_name=sheet_name,
+            row_number=row_number,
+            cell_ref=cell_ref,
+            header=header,
+            parsed_cell=parsed_cell,
+            fragments=fragments,
+            decision="persisted_independent",
+            effective_posting_by_fragment={
+                index: fragment.posting_code
+                for index, fragment in enumerate(fragments, start=1)
+            },
+            rule=None,
+        )
         return [
             ResidentPostingWrite(
                 resident_mcr=resident_mcr,
@@ -1198,6 +1271,25 @@ def _apply_multi_posting_cell(
         )
 
     if rule is None:
+        _append_raw_multi_posting_fragments(
+            accumulator=accumulator,
+            resident_mcr=resident_mcr,
+            resident_name=resident_name,
+            programme_code=programme_code,
+            r_year=r_year or "ALL",
+            sheet_name=sheet_name,
+            row_number=row_number,
+            cell_ref=cell_ref,
+            header=header,
+            parsed_cell=parsed_cell,
+            fragments=fragments,
+            decision="unmatched_warning",
+            effective_posting_by_fragment={
+                index: fragment.posting_code
+                for index, fragment in enumerate(fragments, start=1)
+            },
+            rule=None,
+        )
         accumulator.warnings.append(
             {
                 "type": "unmatched_multi_posting",
@@ -1243,6 +1335,24 @@ def _apply_multi_posting_cell(
         combined_code = rule.combined_label or " & ".join(codes)
         accumulator.posting_codes.add(combined_code)
         start_date, end_date = _fragment_bounds(fragments)
+        _append_raw_multi_posting_fragments(
+            accumulator=accumulator,
+            resident_mcr=resident_mcr,
+            resident_name=resident_name,
+            programme_code=programme_code,
+            r_year=r_year or "ALL",
+            sheet_name=sheet_name,
+            row_number=row_number,
+            cell_ref=cell_ref,
+            header=header,
+            parsed_cell=parsed_cell,
+            fragments=fragments,
+            decision="combined",
+            effective_posting_by_fragment={
+                index: combined_code for index in range(1, len(fragments) + 1)
+            },
+            rule=rule,
+        )
         return [
             ResidentPostingWrite(
                 resident_mcr=resident_mcr,
@@ -1260,6 +1370,25 @@ def _apply_multi_posting_cell(
         ]
 
     if rule.rule_type == "half_month":
+        _append_raw_multi_posting_fragments(
+            accumulator=accumulator,
+            resident_mcr=resident_mcr,
+            resident_name=resident_name,
+            programme_code=programme_code,
+            r_year=r_year or "ALL",
+            sheet_name=sheet_name,
+            row_number=row_number,
+            cell_ref=cell_ref,
+            header=header,
+            parsed_cell=parsed_cell,
+            fragments=fragments,
+            decision="half_month",
+            effective_posting_by_fragment={
+                index: fragment.posting_code
+                for index, fragment in enumerate(fragments, start=1)
+            },
+            rule=rule,
+        )
         return [
             ResidentPostingWrite(
                 resident_mcr=resident_mcr,
@@ -1283,6 +1412,24 @@ def _apply_multi_posting_cell(
     collapsed_code = rule.main_posting_code or rule.exclusion_code or codes[0]
     accumulator.posting_codes.add(collapsed_code)
     start_date, end_date = _fragment_bounds(fragments)
+    _append_raw_multi_posting_fragments(
+        accumulator=accumulator,
+        resident_mcr=resident_mcr,
+        resident_name=resident_name,
+        programme_code=programme_code,
+        r_year=r_year or "ALL",
+        sheet_name=sheet_name,
+        row_number=row_number,
+        cell_ref=cell_ref,
+        header=header,
+        parsed_cell=parsed_cell,
+        fragments=fragments,
+        decision="collapsed_into_main",
+        effective_posting_by_fragment={
+            index: collapsed_code for index in range(1, len(fragments) + 1)
+        },
+        rule=rule,
+    )
     return [
         ResidentPostingWrite(
             resident_mcr=resident_mcr,
@@ -1342,6 +1489,7 @@ async def _load_multi_posting_rules(
         text(
             """
             SELECT programme_code,
+                   id,
                    posting_code_1,
                    posting_code_2,
                    rule_type,
@@ -1356,6 +1504,7 @@ async def _load_multi_posting_rules(
     )
     return [
         MultiPostingRuleConfig(
+            id=str(row["id"]) if row.get("id") else None,
             programme_code=str(row["programme_code"]),
             posting_code_1=str(row["posting_code_1"]),
             posting_code_2=str(row["posting_code_2"]) if row["posting_code_2"] else None,
@@ -1671,6 +1820,7 @@ async def _parse_workbook_to_accumulator(
             loa_records=0,
             employed_residents_flagged=set(),
             multi_posting_rules_applied=0,
+            raw_multi_posting_fragments=[],
         )
 
         detected_sheets = detect_rdb_sheets(workbook)
@@ -1955,6 +2105,9 @@ async def parse_rdb_upload(
         "unknown_loa_types": sorted(parsed.unknown_loa_types),
         "employed_residents_flagged": len(parsed.employed_residents_flagged),
         "multi_posting_rules_applied": parsed.multi_posting_rules_applied,
+        "raw_multi_posting_fragment_count": len(parsed.raw_multi_posting_fragments),
+        "raw_multi_posting_fragments": parsed.raw_multi_posting_fragments,
+        "raw_multi_posting_fragments_truncated": False,
         "rows_skipped": parsed.rows_skipped,
         "skip_reasons": parsed.skip_reasons,
     }
