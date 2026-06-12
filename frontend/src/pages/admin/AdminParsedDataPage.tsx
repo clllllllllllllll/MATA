@@ -2,10 +2,8 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type React
 import {
   listParsedAcademicMonthBoundaries,
   listParsedFormF1Records,
-  listParsedPublicHolidays,
   listParsedResidentPostings,
   listParsedResidents,
-  listParsedTeachingNameCatalogue,
   listParsedTeachingTargets,
 } from '../../api/parsedData'
 import { getUploadLog, listUploadLogs } from '../../api/uploadLogs'
@@ -20,10 +18,8 @@ import type {
   ParsedDataListResponse,
   ParsedDataRow,
   ParsedFormF1RecordRow,
-  ParsedPublicHolidayRow,
   ParsedResidentPostingRow,
   ParsedResidentRow,
-  ParsedTeachingNameCatalogueRow,
   ParsedTeachingTargetRow,
 } from '../../types/parsedData'
 import type { RawMultiPostingDecision, RawMultiPostingFragment, UploadLogDetail, UploadLogListItem } from '../../types/upload'
@@ -41,9 +37,7 @@ type ParsedDataTabId =
   | 'residents'
   | 'resident-postings'
   | 'teaching-targets'
-  | 'teaching-name-catalogue'
   | 'form-f1-records'
-  | 'public-holidays'
   | 'academic-month-boundaries'
 
 type FilterKey =
@@ -57,9 +51,7 @@ type FilterKey =
   | 'rYear'
   | 'sessionType'
   | 'isTracked'
-  | 'keyword'
   | 'isActive'
-  | 'year'
   | 'academicYearLabel'
   | 'ayDateCategory'
 
@@ -74,9 +66,7 @@ interface ParsedDataFilters {
   rYear: string
   sessionType: string
   isTracked: 'all' | 'true' | 'false'
-  keyword: string
   isActive: 'all' | 'true' | 'false'
-  year: string
   academicYearLabel: string
   ayDateCategory: 'all' | AyDateCategory
 }
@@ -134,9 +124,7 @@ const initialFilters: ParsedDataFilters = {
   rYear: '',
   sessionType: '',
   isTracked: 'all',
-  keyword: '',
   isActive: 'all',
-  year: '',
   academicYearLabel: '',
   ayDateCategory: 'all',
 }
@@ -709,44 +697,6 @@ const tabDefinitions: ParsedTabDefinition[] = [
     ],
   },
   {
-    id: 'teaching-name-catalogue',
-    label: 'Teaching Name Catalogue',
-    minWidth: 1240,
-    filters: [
-      { key: 'reportingPeriodId', label: 'Reporting period', type: 'select' },
-      { key: 'programmeCode', label: 'Programme', placeholder: 'GERI' },
-      { key: 'postingCode', label: 'Posting code', placeholder: 'TTSHGerMed' },
-      { key: 'rYear', label: 'R Year', placeholder: 'R1 or ALL' },
-      { key: 'keyword', label: 'Keyword', placeholder: 'Journal Club' },
-      { key: 'search', label: 'Search', type: 'search', placeholder: 'Keyword, session...' },
-      { key: 'isTracked', label: 'Tracked', type: 'select' },
-    ],
-    columns: [
-      { label: 'Keyword', value: (row) => formatValue((row as ParsedTeachingNameCatalogueRow).keyword) },
-      {
-        label: 'Programme',
-        className: 'mono-cell',
-        value: (row) => formatValue((row as ParsedTeachingNameCatalogueRow).programme_code),
-      },
-      {
-        label: 'Posting Code',
-        className: 'mono-cell',
-        value: (row) => formatValue((row as ParsedTeachingNameCatalogueRow).posting_code),
-      },
-      {
-        label: 'R Year',
-        className: 'mono-cell',
-        value: (row) => formatValue((row as ParsedTeachingNameCatalogueRow).r_year),
-      },
-      { label: 'Session Type', value: (row) => formatValue((row as ParsedTeachingNameCatalogueRow).session_type_name) },
-      { label: 'Duration', value: (row) => formatNumber((row as ParsedTeachingNameCatalogueRow).duration_hours) },
-      {
-        label: 'Tracked',
-        value: (row) => boolBadge((row as ParsedTeachingNameCatalogueRow).is_tracked, 'Tracked', 'Untracked'),
-      },
-    ],
-  },
-  {
     id: 'form-f1-records',
     label: 'FormF1 Records',
     minWidth: 980,
@@ -774,21 +724,6 @@ const tabDefinitions: ParsedTabDefinition[] = [
       { label: 'Status Raw', value: (row) => formatValue((row as ParsedFormF1RecordRow).status_raw) },
       { label: 'Active', value: (row) => boolBadge((row as ParsedFormF1RecordRow).is_active, 'Active', 'Inactive') },
       { label: 'Promotion Date', value: (row) => formatDate((row as ParsedFormF1RecordRow).promotion_date) },
-    ],
-  },
-  {
-    id: 'public-holidays',
-    label: 'Public Holidays',
-    minWidth: 760,
-    filters: [
-      { key: 'year', label: 'Year', placeholder: '2026' },
-      { key: 'search', label: 'Search', type: 'search', placeholder: 'Holiday name...' },
-    ],
-    columns: [
-      { label: 'Holiday Date', value: (row) => formatDate((row as ParsedPublicHolidayRow).holiday_date) },
-      { label: 'Name', value: (row) => formatValue((row as ParsedPublicHolidayRow).name) },
-      { label: 'Day of Week', value: (row) => formatValue((row as ParsedPublicHolidayRow).day_of_week) },
-      { label: 'Year', value: (row) => formatValue((row as ParsedPublicHolidayRow).year) },
     ],
   },
   {
@@ -985,17 +920,6 @@ export const AdminParsedDataPage = () => {
           isTracked: activeToBoolean(queryFilters.isTracked),
           search: queryFilters.search,
         })
-      case 'teaching-name-catalogue':
-        return listParsedTeachingNameCatalogue({
-          ...baseParams,
-          reportingPeriodId: queryFilters.reportingPeriodId,
-          programmeCode: queryFilters.programmeCode,
-          postingCode: queryFilters.postingCode,
-          rYear: queryFilters.rYear,
-          keyword: queryFilters.keyword,
-          isTracked: activeToBoolean(queryFilters.isTracked),
-          search: queryFilters.search,
-        })
       case 'form-f1-records':
         return listParsedFormF1Records({
           ...baseParams,
@@ -1004,12 +928,6 @@ export const AdminParsedDataPage = () => {
           mcr: queryFilters.mcr,
           monthLabel: queryFilters.monthLabel,
           isActive: activeToBoolean(queryFilters.isActive),
-          search: queryFilters.search,
-        })
-      case 'public-holidays':
-        return listParsedPublicHolidays({
-          ...baseParams,
-          year: queryFilters.year,
           search: queryFilters.search,
         })
       case 'academic-month-boundaries':
