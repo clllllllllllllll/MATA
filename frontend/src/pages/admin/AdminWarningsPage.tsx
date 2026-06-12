@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { listUploadWarnings } from '../../api/uploadWarnings'
 import { DetailDrawer } from '../../components/DetailDrawer'
@@ -7,6 +7,14 @@ import { PageHero } from '../../components/PageHero'
 import { useAppState } from '../../context/useAppState'
 import type { UploadType } from '../../types/app'
 import type { UploadWarning, WarningSeverity } from '../../types/upload'
+import {
+  clearMemoryCache,
+  getMemoryCache,
+  makeScopedCacheKey,
+  readThroughMemoryCache,
+  setMemoryCache,
+  type CacheScope,
+} from '../../utils/memoryReadCache'
 
 type WarningReviewMode = 'active' | 'history'
 
@@ -83,7 +91,10 @@ export const AdminWarningsPage = () => {
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
   const isProgrammePc = location.pathname.startsWith('/pc') || role === 'programme_pc'
   const [warnings, setWarnings] = useState<UploadWarning[]>([])
-  const [loading, setLoading] = useState(true)
+  const hasLoadedWarningsRef = useRef(false)
+  const [isInitialLoading, setIsInitialLoading] = useState(true)
+  const [isRefetching, setIsRefetching] = useState(false)
+  const [isManualRefreshing, setIsManualRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedWarning, setSelectedWarning] = useState<UploadWarning | null>(null)
   const [uploadTypeFilter, setUploadTypeFilter] = useState<UploadType | 'all'>(
@@ -96,67 +107,160 @@ export const AdminWarningsPage = () => {
     toWarningMode(searchParams.get('mode')),
   )
 
+  const cacheScope = useMemo<CacheScope>(() => ({
+    role,
+    userId: demoAdminId,
+    programmeScope: demoAdminProgrammes,
+  }), [demoAdminId, demoAdminProgrammes, role])
+
+  const warningCacheKey = useCallback((
+    mode: WarningReviewMode,
+    uploadType: UploadType | 'all',
+    severity: WarningSeverity | 'all',
+    programmeCode: string,
+    search: string,
+  ) => makeScopedCacheKey(cacheScope, 'admin.upload-warnings.list', {
+    adminLevel,
+    mode,
+    uploadType,
+    severity,
+    programmeCode,
+    search: search.trim(),
+  }), [adminLevel, cacheScope])
+
+  const loadWarnings = useCallback(() => listUploadWarnings({
+    adminId: demoAdminId,
+    adminProgrammes: demoAdminProgrammes,
+    adminLevel,
+    mode: warningMode,
+    uploadType: uploadTypeFilter,
+    severity: severityFilter,
+    programmeCode: programmeFilter,
+    search: searchTerm,
+  }), [
+    adminLevel,
+    demoAdminId,
+    demoAdminProgrammes,
+    programmeFilter,
+    searchTerm,
+    severityFilter,
+    uploadTypeFilter,
+    warningMode,
+  ])
+
   const fetchWarnings = useCallback(async () => {
-    setLoading(true)
+    setIsManualRefreshing(true)
+    setIsRefetching(warnings.length > 0)
     setError(null)
     setSelectedWarning(null)
+    const key = warningCacheKey(
+      warningMode,
+      uploadTypeFilter,
+      severityFilter,
+      programmeFilter,
+      searchTerm,
+    )
     try {
-      const rows = await listUploadWarnings({
-        adminId: demoAdminId,
-        adminProgrammes: demoAdminProgrammes,
-        adminLevel,
-        mode: warningMode,
-      })
+      clearMemoryCache((cacheKey) => cacheKey === key)
+      const rows = await loadWarnings()
+      setMemoryCache(key, rows)
       setWarnings(rows)
+      hasLoadedWarningsRef.current = true
     } catch (fetchError) {
-      setWarnings([])
+      if (!hasLoadedWarningsRef.current) {
+        setWarnings([])
+      }
+      hasLoadedWarningsRef.current = true
       setError(fetchError instanceof Error ? fetchError.message : 'Unable to load upload warnings.')
     } finally {
-      setLoading(false)
+      setIsManualRefreshing(false)
+      setIsInitialLoading(false)
+      setIsRefetching(false)
     }
-  }, [adminLevel, demoAdminId, demoAdminProgrammes, warningMode])
+  }, [
+    loadWarnings,
+    programmeFilter,
+    searchTerm,
+    severityFilter,
+    uploadTypeFilter,
+    warningCacheKey,
+    warningMode,
+    warnings.length,
+  ])
 
   useEffect(() => {
     let active = true
     ;(async () => {
-      setLoading(true)
+      const key = warningCacheKey(
+        warningMode,
+        uploadTypeFilter,
+        severityFilter,
+        programmeFilter,
+        searchTerm,
+      )
+      const cached = getMemoryCache<UploadWarning[]>(key)
+      if (cached) {
+        setWarnings(cached.data)
+        hasLoadedWarningsRef.current = true
+        setIsInitialLoading(false)
+      }
+
+      const isBackgroundRefetch = hasLoadedWarningsRef.current
+      if (isBackgroundRefetch) {
+        setIsRefetching(true)
+      } else {
+        setIsInitialLoading(true)
+      }
       setError(null)
       try {
-        const rows = await listUploadWarnings({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
-          adminLevel,
-          mode: warningMode,
-        })
+        const { data: rows } = await readThroughMemoryCache(
+          key,
+          loadWarnings,
+          { force: Boolean(cached) },
+        )
         if (active) {
           setWarnings(rows)
+          hasLoadedWarningsRef.current = true
         }
       } catch (fetchError) {
         if (active) {
-          setWarnings([])
+          if (!isBackgroundRefetch) {
+            setWarnings([])
+          }
+          hasLoadedWarningsRef.current = true
           setError(fetchError instanceof Error ? fetchError.message : 'Unable to load upload warnings.')
         }
       } finally {
         if (active) {
-          setLoading(false)
+          setIsInitialLoading(false)
+          setIsRefetching(false)
         }
       }
     })()
     return () => {
       active = false
     }
-  }, [adminLevel, demoAdminId, demoAdminProgrammes, warningMode])
+  }, [
+    loadWarnings,
+    programmeFilter,
+    searchTerm,
+    severityFilter,
+    uploadTypeFilter,
+    warningCacheKey,
+    warningMode,
+  ])
 
   const programmeOptions = useMemo(
     () =>
       Array.from(
         new Set(
-          warnings
-            .map((warning) => warning.programmeCode)
-            .filter((item): item is string => Boolean(item && item.trim())),
+          [
+            programmeFilter === 'all' ? null : programmeFilter,
+            ...warnings.map((warning) => warning.programmeCode),
+          ].filter((item): item is string => Boolean(item && item.trim())),
         ),
       ).sort(),
-    [warnings],
+    [programmeFilter, warnings],
   )
 
   const filteredWarnings = useMemo(() => {
@@ -193,7 +297,9 @@ export const AdminWarningsPage = () => {
     })
   }
 
-  const pageSubtitle = loading
+  const isShowingFirstLoad = isInitialLoading && warnings.length === 0
+
+  const pageSubtitle = isShowingFirstLoad
     ? 'Loading persisted warnings'
     : `${filteredWarnings.length} ${warningMode === 'active' ? 'active ' : 'historical '}warning${filteredWarnings.length === 1 ? '' : 's'} from upload logs`
 
@@ -207,10 +313,10 @@ export const AdminWarningsPage = () => {
             type="button"
             className="button button-secondary"
             onClick={() => void fetchWarnings()}
-            disabled={loading}
+            disabled={isManualRefreshing || isShowingFirstLoad}
           >
             <IconRefresh size={14} />
-            {loading ? 'Refreshing' : 'Refresh'}
+            {isManualRefreshing ? 'Refreshing' : 'Refresh'}
           </button>
         }
       />
@@ -294,28 +400,41 @@ export const AdminWarningsPage = () => {
         </button>
       </section>
 
-      {loading ? (
-        <section className="card warning-state-card">Loading persisted upload warnings...</section>
-      ) : error ? (
-        <section className="card warning-state-card">
-          <strong>Warnings could not be loaded.</strong>
-          <p>{error}</p>
-          <button type="button" className="button button-secondary" onClick={() => void fetchWarnings()}>
-            Retry
-          </button>
-        </section>
-      ) : warnings.length === 0 ? (
-        <section className="card warning-state-card">
-          <strong>No persisted warnings found.</strong>
-          <p>Upload warnings will appear here after parser summaries are written to upload logs.</p>
-        </section>
-      ) : groupedWarnings.length === 0 ? (
-        <section className="card warning-state-card">
-          <strong>No warnings match the selected filters.</strong>
-          <p>Clear filters or adjust the search to review persisted upload warnings.</p>
-        </section>
-      ) : (
-        <div className="warning-groups">
+      <section className={`warning-results-card ${isRefetching ? 'is-refetching' : ''}`}>
+        <div className="warning-results-header">
+          <div>
+            <span className="warning-group-kicker">Persisted upload warnings</span>
+            <h2>{warningMode === 'active' ? 'Active warnings' : 'Warning history'}</h2>
+          </div>
+          <div className="parsed-data-count-status">
+            {isRefetching ? <span className="parsed-data-updating">Refreshing...</span> : null}
+            <span className="warning-count-pill">
+              {filteredWarnings.length} warning{filteredWarnings.length === 1 ? '' : 's'}
+            </span>
+          </div>
+        </div>
+        {isShowingFirstLoad ? (
+          <div className="warning-state-card warning-results-state">Loading persisted upload warnings...</div>
+        ) : error && warnings.length === 0 ? (
+          <div className="warning-state-card warning-results-state">
+            <strong>Warnings could not be loaded.</strong>
+            <p>{error}</p>
+            <button type="button" className="button button-secondary" onClick={() => void fetchWarnings()}>
+              Retry
+            </button>
+          </div>
+        ) : warnings.length === 0 ? (
+          <div className="warning-state-card warning-results-state">
+            <strong>No persisted warnings found.</strong>
+            <p>Upload warnings will appear here after parser summaries are written to upload logs.</p>
+          </div>
+        ) : groupedWarnings.length === 0 ? (
+          <div className="warning-state-card warning-results-state">
+            <strong>No warnings match the selected filters.</strong>
+            <p>Clear filters or adjust the search to review persisted upload warnings.</p>
+          </div>
+        ) : (
+          <div className="warning-groups warning-groups-in-card">
           {groupedWarnings.map((group) => (
             <section key={group.uploadType} className="warning-group-card">
               <div className="warning-group-header">
@@ -375,8 +494,9 @@ export const AdminWarningsPage = () => {
               </div>
             </section>
           ))}
-        </div>
-      )}
+          </div>
+        )}
+      </section>
 
       <DetailDrawer
         title={selectedWarning ? selectedWarning.warningType : 'Warning detail'}

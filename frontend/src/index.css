@@ -326,7 +326,7 @@ a {
   margin-top: auto;
   padding: 14px;
   border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 12px;
+  border-radius: 8px;
   font-size: 12px;
   color: var(--sidebar-muted);
 }
@@ -958,7 +958,7 @@ small {
 .file-dropzone,
 .drop-zone {
   border: 1.5px dashed var(--line-2);
-  border-radius: 12px;
+  border-radius: 8px;
   padding: 24px 16px;
   display: flex;
   flex-direction: column;
@@ -2510,12 +2510,12 @@ tr:last-child td {
 }
 
 .parsed-data-table-card {
-  min-height: 360px;
+  min-height: 420px;
   overflow: hidden;
 }
 
 .parsed-data-state-card {
-  min-height: 260px;
+  min-height: 320px;
   align-content: center;
 }
 
@@ -2696,6 +2696,48 @@ tr:last-child td {
   color: var(--ink-3);
 }
 
+.warning-results-card {
+  min-height: 460px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+.warning-results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.warning-results-header h2 {
+  margin: 2px 0 0;
+  font-size: 16px;
+}
+
+.warning-results-card .table-scroll {
+  transition: opacity 140ms ease;
+}
+
+.warning-results-card.is-refetching .table-scroll {
+  opacity: 0.72;
+}
+
+.warning-results-state {
+  min-height: 360px;
+  align-content: center;
+  box-shadow: none;
+}
+
+.warning-groups-in-card {
+  padding: 16px;
+}
+
 .warning-filter-card {
   grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
 }
@@ -2764,6 +2806,7 @@ tr:last-child td {
 }
 
 .configuration-empty-note {
+  min-height: 340px;
   margin: 18px 22px 22px;
   border: 1px dashed var(--line-2);
   border-radius: 14px;
@@ -2944,6 +2987,7 @@ button:disabled,
 }
 
 .admin-config-content-card {
+  min-height: 560px;
   overflow: hidden;
 }
 
@@ -2960,6 +3004,12 @@ button:disabled,
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.admin-config-refreshing {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .admin-config-title-row h2 {
@@ -3136,8 +3186,10 @@ button:disabled,
 }
 
 .admin-config-table-wrap {
+  min-height: 360px;
   border-top: 1px solid var(--line, #ecedf2);
   overflow-x: auto;
+  transition: opacity 140ms ease;
 }
 
 .admin-config-table {

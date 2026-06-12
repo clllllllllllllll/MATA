@@ -1,4 +1,4 @@
-import { Fragment, type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, type FormEvent, type ReactNode, useCallback, useMemo, useState } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
 import {
   createMultiPostingRule,
@@ -16,6 +16,7 @@ import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconPlus, IconRefresh } from '../../components/icons'
 import { STAFF_ACTOR_REQUIRED_MESSAGE } from '../../components/StaffActorNameField'
 import { useAppState } from '../../context/useAppState'
+import { useAdminConfigReadCache } from '../../hooks/useAdminConfigReadCache'
 
 type RuleTab = MultiPostingRuleType
 type ConfigViewRole = 'master_admin' | 'programme_pc'
@@ -37,6 +38,18 @@ interface MultiPostingFormState {
 }
 
 type Feedback = { tone: 'success' | 'error'; message: string; description?: string } | null
+
+interface MultiPostingConfigData {
+  rules: MultiPostingRule[]
+  programmeOptions: Programme[]
+  postingCodeOptions: PostingCodeOption[]
+}
+
+const emptyMultiPostingConfigData: MultiPostingConfigData = {
+  rules: [],
+  programmeOptions: [],
+  postingCodeOptions: [],
+}
 
 const ruleTabs: RuleTab[] = ['main_posting', 'combine', 'half_month']
 
@@ -234,11 +247,6 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
   const viewRole = configViewRole ?? (role === 'programme_pc' ? 'programme_pc' : 'master_admin')
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
   const [activeTab, setActiveTab] = useState<RuleTab>('main_posting')
-  const [rules, setRules] = useState<MultiPostingRule[]>([])
-  const [programmeOptions, setProgrammeOptions] = useState<Programme[]>([])
-  const [postingCodeOptions, setPostingCodeOptions] = useState<PostingCodeOption[]>([])
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerMode, setDrawerMode] = useState<'create' | 'edit'>('create')
   const [selectedRule, setSelectedRule] = useState<MultiPostingRule | null>(null)
@@ -260,6 +268,49 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
       monthLabel: params.get('month') ?? undefined,
     }
   }, [location.search])
+
+  const fetchRules = useCallback(async (): Promise<MultiPostingConfigData> => {
+    const [ruleRows, postingRows, programmeRows] = await Promise.all([
+        listMultiPostingRules({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+          ruleType: activeTab,
+        }),
+        listPostingCodes({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+        }),
+        role === 'master_admin'
+          ? listProgrammes({
+              adminId: demoAdminId,
+              adminProgrammes: demoAdminProgrammes,
+              adminLevel,
+            })
+          : Promise.resolve(demoAdminProgrammes.map(toProgrammeFallback)),
+    ])
+    return {
+      rules: ruleRows,
+      postingCodeOptions: postingRows,
+      programmeOptions: programmeRows,
+    }
+  }, [activeTab, adminLevel, demoAdminId, demoAdminProgrammes, role])
+
+  const {
+    data: multiPostingData,
+    loading,
+    isRefreshing,
+    error: loadError,
+    reload: reloadRules,
+  } = useAdminConfigReadCache({
+    section: 'multi-posting-rules',
+    params: { adminLevel, ruleType: activeTab },
+    initialData: emptyMultiPostingConfigData,
+    fetcher: fetchRules,
+    errorMessage: 'Unable to load multi-posting rules.',
+  })
+  const { rules, programmeOptions, postingCodeOptions } = multiPostingData
 
   const sortedProgrammeOptions = useMemo(
     () => {
@@ -309,55 +360,6 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
     [rules],
   )
   const emptyStateCopy = emptyBannerCopy(activeTab, viewRole, demoAdminProgrammes)
-
-  const reloadRules = useCallback(async () => {
-    setLoading(true)
-    setLoadError(null)
-    try {
-      const [ruleRows, postingRows, programmeRows] = await Promise.all([
-        listMultiPostingRules({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
-          adminLevel,
-          ruleType: activeTab,
-        }),
-        listPostingCodes({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
-          adminLevel,
-        }),
-        role === 'master_admin'
-          ? listProgrammes({
-              adminId: demoAdminId,
-              adminProgrammes: demoAdminProgrammes,
-              adminLevel,
-            })
-          : Promise.resolve(demoAdminProgrammes.map(toProgrammeFallback)),
-      ])
-      setRules(ruleRows)
-      setPostingCodeOptions(postingRows)
-      setProgrammeOptions(programmeRows)
-    } catch (error) {
-      setLoadError(describeError(error, 'Unable to load multi-posting rules.'))
-      setRules([])
-      setPostingCodeOptions([])
-      setProgrammeOptions([])
-    } finally {
-      setLoading(false)
-    }
-  }, [activeTab, adminLevel, demoAdminId, demoAdminProgrammes, role])
-
-  useEffect(() => {
-    let cancelled = false
-    queueMicrotask(() => {
-      if (!cancelled) {
-        void reloadRules()
-      }
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [reloadRules])
 
   const openCreateDrawer = () => {
     setDrawerMode('create')
@@ -445,7 +447,7 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
         })
         setFeedback({ tone: 'success', message: 'Multi-posting rule created.' })
       }
-      await reloadRules()
+      await reloadRules({ force: true })
       setDrawerOpen(false)
       setSelectedRule(null)
       setFormState(emptyForm)
@@ -478,7 +480,7 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
         id: rule.id,
       })
       setFeedback({ tone: 'success', message: 'Multi-posting rule deleted.' })
-      await reloadRules()
+      await reloadRules({ force: true })
       setConfirmingDeleteRule(null)
     } catch (error) {
       setConfirmingDeleteRule(null)
@@ -513,6 +515,7 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
         <div>
           <div className="admin-config-title-row">
             <h2>Multi-Posting Rules</h2>
+            {isRefreshing ? <span className="admin-config-refreshing">Refreshing...</span> : null}
           </div>
           <p>Multi-Posting Rules affect RDB parsing. Posting Groups affect compliance aggregation.</p>
         </div>
@@ -520,11 +523,11 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
           <button
             type="button"
             className="button button-secondary"
-            onClick={() => void reloadRules()}
-            disabled={loading}
+            onClick={() => void reloadRules({ force: true })}
+            disabled={loading && rules.length === 0}
           >
             <IconRefresh size={14} />
-            Retry
+            {isRefreshing ? 'Refreshing' : 'Refresh'}
           </button>
           <button type="button" className="button button-primary" onClick={openCreateDrawer}>
             <IconPlus size={14} />
@@ -579,9 +582,9 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
           ))}
         </div>
 
-        {loading ? (
+        {loading && rules.length === 0 ? (
           <div className="configuration-empty-note">Loading multi-posting rules...</div>
-        ) : loadError ? (
+        ) : loadError && rules.length === 0 ? (
           <div className="configuration-empty-note">
             <div>
               <h3>Unable to load multi-posting rules</h3>

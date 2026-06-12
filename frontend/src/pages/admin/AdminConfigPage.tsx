@@ -53,6 +53,7 @@ import { StatusBadge } from '../../components/StatusBadge'
 import { IconPlus, IconRefresh, NamedIcon } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
 import { useAppState } from '../../context/useAppState'
+import { useAdminConfigReadCache } from '../../hooks/useAdminConfigReadCache'
 import type { ReportingPeriodOption } from '../../types/upload'
 import { MultiPostingRulesSection } from './AdminMultiPostingPage'
 
@@ -142,6 +143,38 @@ type Feedback = {
   }>
   rawMessage?: string
 } | null
+
+const emptyPublicHolidays: PublicHoliday[] = []
+const emptyProgrammes: Programme[] = []
+const emptyLoaTypes: LoaType[] = []
+
+interface PostingGroupsConfigData {
+  postingGroups: PostingGroup[]
+  programmeOptions: Programme[]
+  postingCodeOptions: PostingCodeOption[]
+}
+
+const emptyPostingGroupsConfigData: PostingGroupsConfigData = {
+  postingGroups: [],
+  programmeOptions: [],
+  postingCodeOptions: [],
+}
+
+interface WeekendExceptionsConfigData {
+  weekendExceptions: WeekendException[]
+  sessionTypeOptions: SessionTypeOption[]
+  programmeOptions: Programme[]
+  postingCodeOptions: PostingCodeOption[]
+}
+
+const emptyWeekendExceptionsConfigData: WeekendExceptionsConfigData = {
+  weekendExceptions: [],
+  sessionTypeOptions: [],
+  programmeOptions: [],
+  postingCodeOptions: [],
+}
+
+const emptyGlobalSessionTypes: GlobalSessionType[] = []
 
 const emptyReportingPeriodForm: ReportingPeriodFormState = {
   label: '',
@@ -759,6 +792,7 @@ const ReportingPeriodsSection = () => {
       }),
     [reportingPeriods],
   )
+  const reportingPeriodsRefreshing = reportingPeriodsLoading && sortedPeriods.length > 0
 
   const openCreateDrawer = () => {
     setDrawerMode('create')
@@ -883,6 +917,7 @@ const ReportingPeriodsSection = () => {
         <div>
           <div className="admin-config-title-row">
             <h2>Reporting Periods</h2>
+            {reportingPeriodsRefreshing ? <span className="admin-config-refreshing">Refreshing...</span> : null}
           </div>
           <p>Six-month windows used by uploads, attendance bucketing, snapshots, and surplus resets.</p>
         </div>
@@ -891,10 +926,10 @@ const ReportingPeriodsSection = () => {
             type="button"
             className="button button-secondary"
             onClick={() => void reloadReportingPeriods()}
-            disabled={reportingPeriodsLoading}
+            disabled={reportingPeriodsLoading && sortedPeriods.length === 0}
           >
             <IconRefresh size={14} />
-            Retry
+            {reportingPeriodsRefreshing ? 'Refreshing' : 'Refresh'}
           </button>
           <button type="button" className="button button-primary" onClick={openCreateDrawer}>
             <IconPlus size={14} />
@@ -952,9 +987,9 @@ const ReportingPeriodsSection = () => {
         </div>
       ) : null}
 
-      {reportingPeriodsLoading ? (
+      {reportingPeriodsLoading && sortedPeriods.length === 0 ? (
         <div className="configuration-empty-note">Loading reporting periods...</div>
-      ) : reportingPeriodsError ? (
+      ) : reportingPeriodsError && sortedPeriods.length === 0 ? (
         <div className="configuration-empty-note">
           <div>
             <h3>Unable to load reporting periods</h3>
@@ -1148,9 +1183,6 @@ const ReportingPeriodsSection = () => {
 
 const PublicHolidaysSection = () => {
   const { demoAdminId, demoAdminProgrammes, staffActorName } = useAppState()
-  const [publicHolidays, setPublicHolidays] = useState<PublicHoliday[]>([])
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
   const [drawerMode, setDrawerMode] = useState<'create' | 'edit'>('create')
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedHoliday, setSelectedHoliday] = useState<PublicHoliday | null>(null)
@@ -1159,6 +1191,26 @@ const PublicHolidaysSection = () => {
   const [feedback, setFeedback] = useState<Feedback>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [confirmingDeleteHoliday, setConfirmingDeleteHoliday] = useState<PublicHoliday | null>(null)
+
+  const datePreview = deriveDatePreview(formState.holidayDate)
+
+  const fetchPublicHolidays = useCallback(() => listPublicHolidays({
+    adminId: demoAdminId,
+    adminProgrammes: demoAdminProgrammes,
+  }), [demoAdminId, demoAdminProgrammes])
+
+  const {
+    data: publicHolidays,
+    loading,
+    isRefreshing,
+    error: loadError,
+    reload: reloadPublicHolidays,
+  } = useAdminConfigReadCache({
+    section: 'public-holidays',
+    initialData: emptyPublicHolidays,
+    fetcher: fetchPublicHolidays,
+    errorMessage: 'Unable to load public holidays.',
+  })
 
   const sortedHolidays = useMemo(
     () =>
@@ -1169,39 +1221,6 @@ const PublicHolidaysSection = () => {
       }),
     [publicHolidays],
   )
-
-  const datePreview = deriveDatePreview(formState.holidayDate)
-
-  const reloadPublicHolidays = useCallback(async () => {
-    setLoading(true)
-    setLoadError(null)
-    try {
-      const rows = await listPublicHolidays({
-        adminId: demoAdminId,
-        adminProgrammes: demoAdminProgrammes,
-      })
-      setPublicHolidays(rows)
-    } catch (error) {
-      const message =
-        error instanceof ApiRequestError ? error.message : 'Unable to load public holidays.'
-      setLoadError(message)
-      setPublicHolidays([])
-    } finally {
-      setLoading(false)
-    }
-  }, [demoAdminId, demoAdminProgrammes])
-
-  useEffect(() => {
-    let cancelled = false
-    queueMicrotask(() => {
-      if (!cancelled) {
-        void reloadPublicHolidays()
-      }
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [reloadPublicHolidays])
 
   const dismissFeedback = () => setFeedback(null)
 
@@ -1263,7 +1282,7 @@ const PublicHolidaysSection = () => {
         })
         setFeedback({ tone: 'success', message: 'Public holiday created.' })
       }
-      await reloadPublicHolidays()
+      await reloadPublicHolidays({ force: true })
       setDrawerOpen(false)
       setSelectedHoliday(null)
       setFormState(emptyPublicHolidayForm)
@@ -1295,7 +1314,7 @@ const PublicHolidaysSection = () => {
         id: holiday.id,
       })
       setFeedback({ tone: 'success', message: 'Public holiday deleted.' })
-      await reloadPublicHolidays()
+      await reloadPublicHolidays({ force: true })
       setConfirmingDeleteHoliday(null)
     } catch (error) {
       setConfirmingDeleteHoliday(null)
@@ -1311,6 +1330,7 @@ const PublicHolidaysSection = () => {
         <div>
           <div className="admin-config-title-row">
             <h2>Public Holidays</h2>
+            {isRefreshing ? <span className="admin-config-refreshing">Refreshing...</span> : null}
           </div>
           <p>Manage dates that block secretary event creation and resident ad-hoc teaching.</p>
         </div>
@@ -1318,11 +1338,11 @@ const PublicHolidaysSection = () => {
           <button
             type="button"
             className="button button-secondary"
-            onClick={() => void reloadPublicHolidays()}
-            disabled={loading}
+            onClick={() => void reloadPublicHolidays({ force: true })}
+            disabled={loading && publicHolidays.length === 0}
           >
             <IconRefresh size={14} />
-            Retry
+            {isRefreshing ? 'Refreshing' : 'Refresh'}
           </button>
           <button type="button" className="button button-primary" onClick={openCreateDrawer}>
             <IconPlus size={14} />
@@ -1351,9 +1371,9 @@ const PublicHolidaysSection = () => {
         </div>
       ) : null}
 
-      {loading ? (
+      {loading && publicHolidays.length === 0 ? (
         <div className="configuration-empty-note">Loading public holidays...</div>
-      ) : loadError ? (
+      ) : loadError && publicHolidays.length === 0 ? (
         <div className="configuration-empty-note">
           <div>
             <h3>Unable to load public holidays</h3>
@@ -1361,7 +1381,7 @@ const PublicHolidaysSection = () => {
             <button
               type="button"
               className="button button-secondary"
-              onClick={() => void reloadPublicHolidays()}
+              onClick={() => void reloadPublicHolidays({ force: true })}
             >
               <IconRefresh size={14} />
               Retry
@@ -1528,50 +1548,36 @@ const PublicHolidaysSection = () => {
 const ProgrammesSection = () => {
   const { demoAdminId, demoAdminProgrammes, role, staffActorName } = useAppState()
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
-  const [programmes, setProgrammes] = useState<Programme[]>([])
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedProgramme, setSelectedProgramme] = useState<Programme | null>(null)
   const [formState, setFormState] = useState<ProgrammeFormState>(emptyProgrammeForm)
   const [submitState, setSubmitState] = useState<'idle' | 'submitting' | 'error'>('idle')
   const [feedback, setFeedback] = useState<Feedback>(null)
 
+  const fetchProgrammes = useCallback(() => listProgrammes({
+    adminId: demoAdminId,
+    adminProgrammes: demoAdminProgrammes,
+    adminLevel,
+  }), [adminLevel, demoAdminId, demoAdminProgrammes])
+
+  const {
+    data: programmes,
+    loading,
+    isRefreshing,
+    error: loadError,
+    reload: reloadProgrammes,
+  } = useAdminConfigReadCache({
+    section: 'programmes',
+    params: { adminLevel },
+    initialData: emptyProgrammes,
+    fetcher: fetchProgrammes,
+    errorMessage: 'Unable to load programmes.',
+  })
+
   const sortedProgrammes = useMemo(
     () => [...programmes].sort((left, right) => left.code.localeCompare(right.code)),
     [programmes],
   )
-
-  const reloadProgrammes = useCallback(async () => {
-    setLoading(true)
-    setLoadError(null)
-    try {
-      const rows = await listProgrammes({
-        adminId: demoAdminId,
-        adminProgrammes: demoAdminProgrammes,
-        adminLevel,
-      })
-      setProgrammes(rows)
-    } catch (error) {
-      const message = error instanceof ApiRequestError ? error.message : 'Unable to load programmes.'
-      setLoadError(message)
-      setProgrammes([])
-    } finally {
-      setLoading(false)
-    }
-  }, [adminLevel, demoAdminId, demoAdminProgrammes])
-
-  useEffect(() => {
-    let cancelled = false
-    queueMicrotask(() => {
-      if (!cancelled) {
-        void reloadProgrammes()
-      }
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [reloadProgrammes])
 
   const dismissFeedback = () => setFeedback(null)
 
@@ -1619,7 +1625,7 @@ const ProgrammesSection = () => {
         },
       })
       setFeedback({ tone: 'success', message: 'Programme updated.' })
-      await reloadProgrammes()
+      await reloadProgrammes({ force: true })
       setDrawerOpen(false)
       setSelectedProgramme(null)
       setFormState(emptyProgrammeForm)
@@ -1636,6 +1642,7 @@ const ProgrammesSection = () => {
         <div>
           <div className="admin-config-title-row">
             <h2>Programmes</h2>
+            {isRefreshing ? <span className="admin-config-refreshing">Refreshing...</span> : null}
           </div>
           <p>Review seeded programmes and edit only parser-facing configuration flags.</p>
         </div>
@@ -1643,11 +1650,11 @@ const ProgrammesSection = () => {
           <button
             type="button"
             className="button button-secondary"
-            onClick={() => void reloadProgrammes()}
-            disabled={loading}
+            onClick={() => void reloadProgrammes({ force: true })}
+            disabled={loading && programmes.length === 0}
           >
             <IconRefresh size={14} />
-            Retry
+            {isRefreshing ? 'Refreshing' : 'Refresh'}
           </button>
         </div>
       </header>
@@ -1672,14 +1679,14 @@ const ProgrammesSection = () => {
         </div>
       ) : null}
 
-      {loading ? (
+      {loading && programmes.length === 0 ? (
         <div className="configuration-empty-note">Loading programmes...</div>
-      ) : loadError ? (
+      ) : loadError && programmes.length === 0 ? (
         <div className="configuration-empty-note">
           <div>
             <h3>Unable to load programmes</h3>
             <p>{loadError}</p>
-            <button type="button" className="button button-secondary" onClick={() => void reloadProgrammes()}>
+            <button type="button" className="button button-secondary" onClick={() => void reloadProgrammes({ force: true })}>
               <IconRefresh size={14} />
               Retry
             </button>
@@ -1833,9 +1840,6 @@ const ProgrammesSection = () => {
 const LoaTypesSection = () => {
   const { demoAdminId, demoAdminProgrammes, role, staffActorName } = useAppState()
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
-  const [loaTypes, setLoaTypes] = useState<LoaType[]>([])
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
   const [drawerMode, setDrawerMode] = useState<'create' | 'edit'>('create')
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedLoaType, setSelectedLoaType] = useState<LoaType | null>(null)
@@ -1845,41 +1849,30 @@ const LoaTypesSection = () => {
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [confirmingDeleteLoaType, setConfirmingDeleteLoaType] = useState<LoaType | null>(null)
 
+  const fetchLoaTypes = useCallback(() => listLoaTypes({
+    adminId: demoAdminId,
+    adminProgrammes: demoAdminProgrammes,
+    adminLevel,
+  }), [adminLevel, demoAdminId, demoAdminProgrammes])
+
+  const {
+    data: loaTypes,
+    loading,
+    isRefreshing,
+    error: loadError,
+    reload: reloadLoaTypes,
+  } = useAdminConfigReadCache({
+    section: 'loa-types',
+    params: { adminLevel },
+    initialData: emptyLoaTypes,
+    fetcher: fetchLoaTypes,
+    errorMessage: 'Unable to load LOA types.',
+  })
+
   const sortedLoaTypes = useMemo(
     () => [...loaTypes].sort((left, right) => left.code.localeCompare(right.code)),
     [loaTypes],
   )
-
-  const reloadLoaTypes = useCallback(async () => {
-    setLoading(true)
-    setLoadError(null)
-    try {
-      const rows = await listLoaTypes({
-        adminId: demoAdminId,
-        adminProgrammes: demoAdminProgrammes,
-        adminLevel,
-      })
-      setLoaTypes(rows)
-    } catch (error) {
-      const message = error instanceof ApiRequestError ? error.message : 'Unable to load LOA types.'
-      setLoadError(message)
-      setLoaTypes([])
-    } finally {
-      setLoading(false)
-    }
-  }, [adminLevel, demoAdminId, demoAdminProgrammes])
-
-  useEffect(() => {
-    let cancelled = false
-    queueMicrotask(() => {
-      if (!cancelled) {
-        void reloadLoaTypes()
-      }
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [reloadLoaTypes])
 
   const dismissFeedback = () => setFeedback(null)
 
@@ -1947,7 +1940,7 @@ const LoaTypesSection = () => {
         })
         setFeedback({ tone: 'success', message: 'LOA type created.' })
       }
-      await reloadLoaTypes()
+      await reloadLoaTypes({ force: true })
       setDrawerOpen(false)
       setSelectedLoaType(null)
       setFormState(emptyLoaTypeForm)
@@ -1986,7 +1979,7 @@ const LoaTypesSection = () => {
         id: loaType.id,
       })
       setFeedback({ tone: 'success', message: 'LOA type deleted.' })
-      await reloadLoaTypes()
+      await reloadLoaTypes({ force: true })
       setConfirmingDeleteLoaType(null)
     } catch (error) {
       setConfirmingDeleteLoaType(null)
@@ -2002,6 +1995,7 @@ const LoaTypesSection = () => {
         <div>
           <div className="admin-config-title-row">
             <h2>LOA Types</h2>
+            {isRefreshing ? <span className="admin-config-refreshing">Refreshing...</span> : null}
           </div>
           <p>Maintain the validation catalogue used by future RDB uploads.</p>
         </div>
@@ -2009,11 +2003,11 @@ const LoaTypesSection = () => {
           <button
             type="button"
             className="button button-secondary"
-            onClick={() => void reloadLoaTypes()}
-            disabled={loading}
+            onClick={() => void reloadLoaTypes({ force: true })}
+            disabled={loading && loaTypes.length === 0}
           >
             <IconRefresh size={14} />
-            Retry
+            {isRefreshing ? 'Refreshing' : 'Refresh'}
           </button>
           <button type="button" className="button button-primary" onClick={openCreateDrawer}>
             <IconPlus size={14} />
@@ -2042,14 +2036,14 @@ const LoaTypesSection = () => {
         </div>
       ) : null}
 
-      {loading ? (
+      {loading && loaTypes.length === 0 ? (
         <div className="configuration-empty-note">Loading LOA types...</div>
-      ) : loadError ? (
+      ) : loadError && loaTypes.length === 0 ? (
         <div className="configuration-empty-note">
           <div>
             <h3>Unable to load LOA types</h3>
             <p>{loadError}</p>
-            <button type="button" className="button button-secondary" onClick={() => void reloadLoaTypes()}>
+            <button type="button" className="button button-secondary" onClick={() => void reloadLoaTypes({ force: true })}>
               <IconRefresh size={14} />
               Retry
             </button>
@@ -2199,11 +2193,6 @@ const LoaTypesSection = () => {
 const PostingGroupsSection = () => {
   const { demoAdminId, demoAdminProgrammes, role, staffActorName } = useAppState()
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
-  const [postingGroups, setPostingGroups] = useState<PostingGroup[]>([])
-  const [programmeOptions, setProgrammeOptions] = useState<Programme[]>([])
-  const [postingCodeOptions, setPostingCodeOptions] = useState<PostingCodeOption[]>([])
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
   const [drawerMode, setDrawerMode] = useState<'create' | 'edit'>('create')
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedPostingGroup, setSelectedPostingGroup] = useState<PostingGroup | null>(null)
@@ -2212,6 +2201,57 @@ const PostingGroupsSection = () => {
   const [feedback, setFeedback] = useState<Feedback>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [confirmingDeleteGroup, setConfirmingDeleteGroup] = useState<PostingGroup | null>(null)
+
+  const fetchPostingGroups = useCallback(async (): Promise<PostingGroupsConfigData> => {
+    const [groupRows, postingRows, programmeRows] = await Promise.all([
+        listPostingGroups({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+        }),
+        listPostingCodes({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+        }),
+        role === 'master_admin'
+          ? listProgrammes({
+              adminId: demoAdminId,
+              adminProgrammes: demoAdminProgrammes,
+              adminLevel,
+            })
+          : Promise.resolve(
+              demoAdminProgrammes.map((code) => ({
+                id: code,
+                code,
+                name: '',
+                ayDateCategory: '',
+                rYearRequired: false,
+                isSubspecialty: false,
+              })),
+            ),
+    ])
+    return {
+      postingGroups: groupRows,
+      postingCodeOptions: postingRows,
+      programmeOptions: programmeRows,
+    }
+  }, [adminLevel, demoAdminId, demoAdminProgrammes, role])
+
+  const {
+    data: postingGroupData,
+    loading,
+    isRefreshing,
+    error: loadError,
+    reload: reloadPostingGroups,
+  } = useAdminConfigReadCache({
+    section: 'posting-groups',
+    params: { adminLevel },
+    initialData: emptyPostingGroupsConfigData,
+    fetcher: fetchPostingGroups,
+    errorMessage: 'Unable to load posting groups.',
+  })
+  const { postingGroups, programmeOptions, postingCodeOptions } = postingGroupData
 
   const sortedGroups = useMemo(
     () =>
@@ -2243,65 +2283,6 @@ const PostingGroupsSection = () => {
     () => new Map(postingCodeOptions.map((postingCode) => [postingCode.code, postingCode])),
     [postingCodeOptions],
   )
-
-  const reloadPostingGroups = useCallback(async () => {
-    setLoading(true)
-    setLoadError(null)
-    try {
-      const [groupRows, postingRows, programmeRows] = await Promise.all([
-        listPostingGroups({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
-          adminLevel,
-        }),
-        listPostingCodes({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
-          adminLevel,
-        }),
-        role === 'master_admin'
-          ? listProgrammes({
-              adminId: demoAdminId,
-              adminProgrammes: demoAdminProgrammes,
-              adminLevel,
-            })
-          : Promise.resolve(
-              demoAdminProgrammes.map((code) => ({
-                id: code,
-                code,
-                name: '',
-                ayDateCategory: '',
-                rYearRequired: false,
-                isSubspecialty: false,
-              })),
-            ),
-      ])
-      setPostingGroups(groupRows)
-      setPostingCodeOptions(postingRows)
-      setProgrammeOptions(programmeRows)
-    } catch (error) {
-      const message =
-        error instanceof ApiRequestError ? error.message : 'Unable to load posting groups.'
-      setLoadError(message)
-      setPostingGroups([])
-      setPostingCodeOptions([])
-      setProgrammeOptions([])
-    } finally {
-      setLoading(false)
-    }
-  }, [adminLevel, demoAdminId, demoAdminProgrammes, role])
-
-  useEffect(() => {
-    let cancelled = false
-    queueMicrotask(() => {
-      if (!cancelled) {
-        void reloadPostingGroups()
-      }
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [reloadPostingGroups])
 
   const dismissFeedback = () => setFeedback(null)
 
@@ -2374,7 +2355,7 @@ const PostingGroupsSection = () => {
         })
         setFeedback({ tone: 'success', message: 'Posting group created.' })
       }
-      await reloadPostingGroups()
+      await reloadPostingGroups({ force: true })
       setDrawerOpen(false)
       setSelectedPostingGroup(null)
       setFormState(emptyPostingGroupForm)
@@ -2413,7 +2394,7 @@ const PostingGroupsSection = () => {
         id: postingGroup.id,
       })
       setFeedback({ tone: 'success', message: 'Posting group deleted.' })
-      await reloadPostingGroups()
+      await reloadPostingGroups({ force: true })
       setConfirmingDeleteGroup(null)
     } catch (error) {
       setConfirmingDeleteGroup(null)
@@ -2435,6 +2416,7 @@ const PostingGroupsSection = () => {
         <div>
           <div className="admin-config-title-row">
             <h2>Posting Groups</h2>
+            {isRefreshing ? <span className="admin-config-refreshing">Refreshing...</span> : null}
           </div>
           <p>
             Manage posting-code groups used for compliance aggregation.
@@ -2447,11 +2429,11 @@ const PostingGroupsSection = () => {
           <button
             type="button"
             className="button button-secondary"
-            onClick={() => void reloadPostingGroups()}
-            disabled={loading}
+            onClick={() => void reloadPostingGroups({ force: true })}
+            disabled={loading && postingGroups.length === 0}
           >
             <IconRefresh size={14} />
-            Retry
+            {isRefreshing ? 'Refreshing' : 'Refresh'}
           </button>
           <button type="button" className="button button-primary" onClick={openCreateDrawer}>
             <IconPlus size={14} />
@@ -2480,9 +2462,9 @@ const PostingGroupsSection = () => {
         </div>
       ) : null}
 
-      {loading ? (
+      {loading && postingGroups.length === 0 ? (
         <div className="configuration-empty-note">Loading posting groups...</div>
-      ) : loadError ? (
+      ) : loadError && postingGroups.length === 0 ? (
         <div className="configuration-empty-note">
           <div>
             <h3>Unable to load posting groups</h3>
@@ -2490,7 +2472,7 @@ const PostingGroupsSection = () => {
             <button
               type="button"
               className="button button-secondary"
-              onClick={() => void reloadPostingGroups()}
+              onClick={() => void reloadPostingGroups({ force: true })}
             >
               <IconRefresh size={14} />
               Retry
@@ -2702,12 +2684,6 @@ const PostingGroupsSection = () => {
 const WeekendExceptionsSection = () => {
   const { demoAdminId, demoAdminProgrammes, role, staffActorName } = useAppState()
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
-  const [weekendExceptions, setWeekendExceptions] = useState<WeekendException[]>([])
-  const [sessionTypeOptions, setSessionTypeOptions] = useState<SessionTypeOption[]>([])
-  const [programmeOptions, setProgrammeOptions] = useState<Programme[]>([])
-  const [postingCodeOptions, setPostingCodeOptions] = useState<PostingCodeOption[]>([])
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
   const [drawerMode, setDrawerMode] = useState<'create' | 'edit'>('create')
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedException, setSelectedException] = useState<WeekendException | null>(null)
@@ -2717,6 +2693,58 @@ const WeekendExceptionsSection = () => {
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [confirmingDeleteException, setConfirmingDeleteException] =
     useState<WeekendException | null>(null)
+
+  const fetchWeekendExceptions = useCallback(async (): Promise<WeekendExceptionsConfigData> => {
+    const [exceptionRows, sessionTypeRows, programmeRows, postingRows] = await Promise.all([
+        listWeekendExceptions({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+        }),
+        listSessionTypes({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+          limit: 500,
+        }),
+        listProgrammes({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+        }),
+        listPostingCodes({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel,
+        }),
+    ])
+    return {
+      weekendExceptions: exceptionRows,
+      sessionTypeOptions: sessionTypeRows,
+      programmeOptions: programmeRows,
+      postingCodeOptions: postingRows,
+    }
+  }, [adminLevel, demoAdminId, demoAdminProgrammes])
+
+  const {
+    data: weekendExceptionData,
+    loading,
+    isRefreshing,
+    error: loadError,
+    reload: reloadWeekendExceptions,
+  } = useAdminConfigReadCache({
+    section: 'weekend-exceptions',
+    params: { adminLevel, sessionTypeLimit: 500 },
+    initialData: emptyWeekendExceptionsConfigData,
+    fetcher: fetchWeekendExceptions,
+    errorMessage: 'Unable to load weekend exceptions or selector options.',
+  })
+  const {
+    weekendExceptions,
+    sessionTypeOptions,
+    programmeOptions,
+    postingCodeOptions,
+  } = weekendExceptionData
 
   const sortedExceptions = useMemo(
     () =>
@@ -2741,64 +2769,6 @@ const WeekendExceptionsSection = () => {
     () => [...postingCodeOptions].sort((left, right) => left.code.localeCompare(right.code)),
     [postingCodeOptions],
   )
-
-  const reloadWeekendExceptions = useCallback(async () => {
-    setLoading(true)
-    setLoadError(null)
-    try {
-      const [exceptionRows, sessionTypeRows, programmeRows, postingRows] = await Promise.all([
-        listWeekendExceptions({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
-          adminLevel,
-        }),
-        listSessionTypes({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
-          adminLevel,
-          limit: 500,
-        }),
-        listProgrammes({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
-          adminLevel,
-        }),
-        listPostingCodes({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
-          adminLevel,
-        }),
-      ])
-      setWeekendExceptions(exceptionRows)
-      setSessionTypeOptions(sessionTypeRows)
-      setProgrammeOptions(programmeRows)
-      setPostingCodeOptions(postingRows)
-    } catch (error) {
-      const message =
-        error instanceof ApiRequestError
-          ? error.message
-          : 'Unable to load weekend exceptions or selector options.'
-      setLoadError(message)
-      setWeekendExceptions([])
-      setSessionTypeOptions([])
-      setProgrammeOptions([])
-      setPostingCodeOptions([])
-    } finally {
-      setLoading(false)
-    }
-  }, [adminLevel, demoAdminId, demoAdminProgrammes])
-
-  useEffect(() => {
-    let cancelled = false
-    queueMicrotask(() => {
-      if (!cancelled) {
-        void reloadWeekendExceptions()
-      }
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [reloadWeekendExceptions])
 
   const dismissFeedback = () => setFeedback(null)
 
@@ -2873,7 +2843,7 @@ const WeekendExceptionsSection = () => {
         })
         setFeedback({ tone: 'success', message: 'Weekend exception created.' })
       }
-      await reloadWeekendExceptions()
+      await reloadWeekendExceptions({ force: true })
       setDrawerOpen(false)
       setSelectedException(null)
       setFormState(emptyWeekendExceptionForm)
@@ -2906,7 +2876,7 @@ const WeekendExceptionsSection = () => {
         id: weekendException.id,
       })
       setFeedback({ tone: 'success', message: 'Weekend exception deleted.' })
-      await reloadWeekendExceptions()
+      await reloadWeekendExceptions({ force: true })
       setConfirmingDeleteException(null)
     } catch (error) {
       setConfirmingDeleteException(null)
@@ -2922,6 +2892,7 @@ const WeekendExceptionsSection = () => {
         <div>
           <div className="admin-config-title-row">
             <h2>Weekend Exceptions</h2>
+            {isRefreshing ? <span className="admin-config-refreshing">Refreshing...</span> : null}
           </div>
           <p>Configure which weekend teachings are accepted and how they should count for compliance.</p>
         </div>
@@ -2929,11 +2900,11 @@ const WeekendExceptionsSection = () => {
           <button
             type="button"
             className="button button-secondary"
-            onClick={() => void reloadWeekendExceptions()}
-            disabled={loading}
+            onClick={() => void reloadWeekendExceptions({ force: true })}
+            disabled={loading && weekendExceptions.length === 0}
           >
             <IconRefresh size={14} />
-            Retry
+            {isRefreshing ? 'Refreshing' : 'Refresh'}
           </button>
           <button type="button" className="button button-primary" onClick={openCreateDrawer}>
             <IconPlus size={14} />
@@ -2962,9 +2933,9 @@ const WeekendExceptionsSection = () => {
         </div>
       ) : null}
 
-      {loading ? (
+      {loading && weekendExceptions.length === 0 ? (
         <div className="configuration-empty-note">Loading weekend exceptions...</div>
-      ) : loadError ? (
+      ) : loadError && weekendExceptions.length === 0 ? (
         <div className="configuration-empty-note">
           <div>
             <h3>Unable to load weekend exceptions</h3>
@@ -2972,7 +2943,7 @@ const WeekendExceptionsSection = () => {
             <button
               type="button"
               className="button button-secondary"
-              onClick={() => void reloadWeekendExceptions()}
+              onClick={() => void reloadWeekendExceptions({ force: true })}
             >
               <IconRefresh size={14} />
               Retry
@@ -3334,9 +3305,6 @@ const WeekendExceptionsSection = () => {
 const GlobalSessionTypesSection = () => {
   const { demoAdminId, demoAdminProgrammes, role, staffActorName } = useAppState()
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
-  const [globalSessionTypes, setGlobalSessionTypes] = useState<GlobalSessionType[]>([])
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
   const [drawerMode, setDrawerMode] = useState<'create' | 'edit'>('create')
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedGlobalType, setSelectedGlobalType] = useState<GlobalSessionType | null>(null)
@@ -3348,42 +3316,30 @@ const GlobalSessionTypesSection = () => {
   const [confirmingDeleteGlobalType, setConfirmingDeleteGlobalType] =
     useState<GlobalSessionType | null>(null)
 
+  const fetchGlobalSessionTypes = useCallback(() => listGlobalSessionTypes({
+    adminId: demoAdminId,
+    adminProgrammes: demoAdminProgrammes,
+    adminLevel,
+  }), [adminLevel, demoAdminId, demoAdminProgrammes])
+
+  const {
+    data: globalSessionTypes,
+    loading,
+    isRefreshing,
+    error: loadError,
+    reload: reloadGlobalSessionTypes,
+  } = useAdminConfigReadCache({
+    section: 'global-session-types',
+    params: { adminLevel },
+    initialData: emptyGlobalSessionTypes,
+    fetcher: fetchGlobalSessionTypes,
+    errorMessage: 'Unable to load global session types.',
+  })
+
   const sortedGlobalTypes = useMemo(
     () => [...globalSessionTypes].sort((left, right) => left.name.localeCompare(right.name)),
     [globalSessionTypes],
   )
-
-  const reloadGlobalSessionTypes = useCallback(async () => {
-    setLoading(true)
-    setLoadError(null)
-    try {
-      const rows = await listGlobalSessionTypes({
-        adminId: demoAdminId,
-        adminProgrammes: demoAdminProgrammes,
-        adminLevel,
-      })
-      setGlobalSessionTypes(rows)
-    } catch (error) {
-      const message =
-        error instanceof ApiRequestError ? error.message : 'Unable to load global session types.'
-      setLoadError(message)
-      setGlobalSessionTypes([])
-    } finally {
-      setLoading(false)
-    }
-  }, [adminLevel, demoAdminId, demoAdminProgrammes])
-
-  useEffect(() => {
-    let cancelled = false
-    queueMicrotask(() => {
-      if (!cancelled) {
-        void reloadGlobalSessionTypes()
-      }
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [reloadGlobalSessionTypes])
 
   const dismissFeedback = () => setFeedback(null)
 
@@ -3452,7 +3408,7 @@ const GlobalSessionTypesSection = () => {
         })
         setFeedback({ tone: 'success', message: 'Global session type created.' })
       }
-      await reloadGlobalSessionTypes()
+      await reloadGlobalSessionTypes({ force: true })
       setDrawerOpen(false)
       setSelectedGlobalType(null)
       setFormState(emptyGlobalSessionTypeForm)
@@ -3491,7 +3447,7 @@ const GlobalSessionTypesSection = () => {
         id: globalSessionType.id,
       })
       setFeedback({ tone: 'success', message: 'Global session type deleted.' })
-      await reloadGlobalSessionTypes()
+      await reloadGlobalSessionTypes({ force: true })
       setConfirmingDeleteGlobalType(null)
     } catch (error) {
       setConfirmingDeleteGlobalType(null)
@@ -3513,6 +3469,7 @@ const GlobalSessionTypesSection = () => {
         <div>
           <div className="admin-config-title-row">
             <h2>Global Session Types</h2>
+            {isRefreshing ? <span className="admin-config-refreshing">Refreshing...</span> : null}
           </div>
           <p>Manage compliance-exempt session names that remain selectable for teaching events.</p>
         </div>
@@ -3520,11 +3477,11 @@ const GlobalSessionTypesSection = () => {
           <button
             type="button"
             className="button button-secondary"
-            onClick={() => void reloadGlobalSessionTypes()}
-            disabled={loading}
+            onClick={() => void reloadGlobalSessionTypes({ force: true })}
+            disabled={loading && globalSessionTypes.length === 0}
           >
             <IconRefresh size={14} />
-            Retry
+            {isRefreshing ? 'Refreshing' : 'Refresh'}
           </button>
           <button type="button" className="button button-primary" onClick={openCreateDrawer}>
             <IconPlus size={14} />
@@ -3553,9 +3510,9 @@ const GlobalSessionTypesSection = () => {
         </div>
       ) : null}
 
-      {loading ? (
+      {loading && globalSessionTypes.length === 0 ? (
         <div className="configuration-empty-note">Loading global session types...</div>
-      ) : loadError ? (
+      ) : loadError && globalSessionTypes.length === 0 ? (
         <div className="configuration-empty-note">
           <div>
             <h3>Unable to load global session types</h3>
@@ -3563,7 +3520,7 @@ const GlobalSessionTypesSection = () => {
             <button
               type="button"
               className="button button-secondary"
-              onClick={() => void reloadGlobalSessionTypes()}
+              onClick={() => void reloadGlobalSessionTypes({ force: true })}
             >
               <IconRefresh size={14} />
               Retry

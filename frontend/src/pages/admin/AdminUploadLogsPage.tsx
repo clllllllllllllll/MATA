@@ -8,6 +8,15 @@ import { StatusBadge } from '../../components/StatusBadge'
 import { useAppState } from '../../context/useAppState'
 import type { UploadType } from '../../types/app'
 import type { UploadLogDetail, UploadLogListItem, UploadLogStatus } from '../../types/upload'
+import {
+  clearMemoryCache,
+  clearMemoryCacheResource,
+  getMemoryCache,
+  makeScopedCacheKey,
+  readThroughMemoryCache,
+  setMemoryCache,
+  type CacheScope,
+} from '../../utils/memoryReadCache'
 
 const uploadTypeLabels: Record<UploadType, string> = {
   rdb: 'RDB Posting Schedule',
@@ -84,7 +93,7 @@ const SummaryCountChips = ({
 
 export const AdminUploadLogsPage = () => {
   const navigate = useNavigate()
-  const { demoAdminId, demoAdminProgrammes } = useAppState()
+  const { role, demoAdminId, demoAdminProgrammes } = useAppState()
   const [logs, setLogs] = useState<UploadLogListItem[]>([])
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
@@ -102,6 +111,25 @@ export const AdminUploadLogsPage = () => {
   const [selectedDetail, setSelectedDetail] = useState<UploadLogDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
+
+  const cacheScope = useMemo<CacheScope>(() => ({
+    role,
+    userId: demoAdminId,
+    programmeScope: demoAdminProgrammes,
+  }), [demoAdminId, demoAdminProgrammes, role])
+
+  const uploadLogsCacheKey = useCallback((querySearch: string) => makeScopedCacheKey(cacheScope, 'admin.upload-logs.list', {
+    uploadType: uploadTypeFilter,
+    status: statusFilter,
+    programmeCode: programmeFilter,
+    search: querySearch,
+    limit: pageSize,
+    offset,
+  }), [cacheScope, offset, programmeFilter, statusFilter, uploadTypeFilter])
+
+  const uploadLogDetailCacheKey = useCallback((uploadLogId: string) => makeScopedCacheKey(cacheScope, 'admin.upload-logs.detail', {
+    uploadLogId,
+  }), [cacheScope])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -135,7 +163,11 @@ export const AdminUploadLogsPage = () => {
     setIsManualRefreshing(true)
     setError(null)
     try {
+      const key = uploadLogsCacheKey(searchTerm)
+      clearMemoryCache((cacheKey) => cacheKey === key)
+      clearMemoryCacheResource('admin.upload-logs.detail')
       const response = await loadLogs(searchTerm)
+      setMemoryCache(key, response)
       setDebouncedSearchTerm((previous) => (previous === searchTerm ? previous : searchTerm))
       setLogs(response.items)
       setTotal(response.total)
@@ -150,11 +182,19 @@ export const AdminUploadLogsPage = () => {
       setIsInitialLoading(false)
       setIsRefetching(false)
     }
-  }, [loadLogs, searchTerm])
+  }, [loadLogs, searchTerm, uploadLogsCacheKey])
 
   useEffect(() => {
     let active = true
     ;(async () => {
+      const key = uploadLogsCacheKey(debouncedSearchTerm)
+      const cached = getMemoryCache<Awaited<ReturnType<typeof listUploadLogs>>>(key)
+      if (cached) {
+        setLogs(cached.data.items)
+        setTotal(cached.data.total)
+        hasLoadedLogsRef.current = true
+        setIsInitialLoading(false)
+      }
       const isBackgroundRefetch = hasLoadedLogsRef.current
       if (isBackgroundRefetch) {
         setIsRefetching(true)
@@ -163,7 +203,11 @@ export const AdminUploadLogsPage = () => {
       }
       setError(null)
       try {
-        const response = await loadLogs(debouncedSearchTerm)
+        const { data: response } = await readThroughMemoryCache(
+          key,
+          () => loadLogs(debouncedSearchTerm),
+          { force: Boolean(cached) },
+        )
         if (active) {
           setLogs(response.items)
           setTotal(response.total)
@@ -191,6 +235,7 @@ export const AdminUploadLogsPage = () => {
   }, [
     debouncedSearchTerm,
     loadLogs,
+    uploadLogsCacheKey,
   ])
 
   const programmeOptions = useMemo(() => {
@@ -223,12 +268,15 @@ export const AdminUploadLogsPage = () => {
     setDetailError(null)
     setDetailLoading(true)
     try {
-      const detail = await getUploadLog({
-        adminId: demoAdminId,
-        adminProgrammes: demoAdminProgrammes,
-        adminLevel: 'master',
-        uploadLogId,
-      })
+      const { data: detail } = await readThroughMemoryCache(
+        uploadLogDetailCacheKey(uploadLogId),
+        () => getUploadLog({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel: 'master',
+          uploadLogId,
+        }),
+      )
       setSelectedDetail(detail)
     } catch (fetchError) {
       setDetailError(fetchError instanceof Error ? fetchError.message : 'Unable to load upload log detail.')

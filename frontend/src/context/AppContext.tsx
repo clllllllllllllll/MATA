@@ -22,6 +22,12 @@ import {
 } from '../utils/warnings'
 import { listReportingPeriods } from '../api/reportingPeriods'
 import { ApiRequestError } from '../api/http'
+import {
+  clearMemoryCache,
+  makeScopedCacheKey,
+  readThroughMemoryCache,
+  type CacheScope,
+} from '../utils/memoryReadCache'
 
 export const AppStateProvider = ({ children }: PropsWithChildren) => {
   const [role, setRole] = useState<AppRole>(frontendConfig.defaultRole)
@@ -36,6 +42,22 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
   const [reportingPeriodsError, setReportingPeriodsError] = useState<string | null>(null)
   const [uploadHistory, setUploadHistory] = useState<UploadMeta[]>(loadUploadHistory)
   const [staffActorName, setStaffActorName] = useState('')
+
+  const adminCacheScope = useMemo<CacheScope>(() => ({
+    role,
+    userId: frontendConfig.demoAdminId,
+    programmeScope: frontendConfig.demoAdminProgrammes,
+  }), [role])
+
+  const updateRole = useCallback((nextRole: AppRole) => {
+    clearMemoryCache()
+    setRole(nextRole)
+  }, [])
+
+  const updateSelectedProgrammeCode = useCallback((programmeCode: string) => {
+    clearMemoryCache()
+    setSelectedProgrammeCode(programmeCode)
+  }, [])
 
   const selectDefaultReportingPeriod = useCallback((periods: ReportingPeriodOption[]) => {
     if (periods.length === 0) {
@@ -52,18 +74,24 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
   }, [])
 
   const fetchReportingPeriods = useCallback(
-    async () =>
-      listReportingPeriods({
-        adminId: frontendConfig.demoAdminId,
-        adminProgrammes: frontendConfig.demoAdminProgrammes,
-      }),
-    [],
+    async () => {
+      const { data } = await readThroughMemoryCache(
+        makeScopedCacheKey(adminCacheScope, 'admin.reporting-periods.list', {}),
+        () => listReportingPeriods({
+          adminId: frontendConfig.demoAdminId,
+          adminProgrammes: frontendConfig.demoAdminProgrammes,
+        }),
+      )
+      return data
+    },
+    [adminCacheScope],
   )
 
   const reloadReportingPeriods = useCallback(async () => {
     setReportingPeriodsLoading(true)
     setReportingPeriodsError(null)
     try {
+      clearMemoryCache((key) => key === makeScopedCacheKey(adminCacheScope, 'admin.reporting-periods.list', {}))
       const periods = await fetchReportingPeriods()
       setReportingPeriods(periods)
       setReportingPeriodId((prev) => {
@@ -80,7 +108,7 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
     } finally {
       setReportingPeriodsLoading(false)
     }
-  }, [fetchReportingPeriods, selectDefaultReportingPeriod])
+  }, [adminCacheScope, fetchReportingPeriods, selectDefaultReportingPeriod])
 
   useEffect(() => {
     let active = true
@@ -122,6 +150,7 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
   )
 
   const addUploadResult = useCallback((input: UploadResultInput): UploadMeta => {
+    clearMemoryCache()
     const uploadMeta = makeUploadMeta({
       uploadType: input.uploadType,
       response: input.response,
@@ -143,9 +172,9 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
   const value = useMemo<AppStateContextValue>(
     () => ({
       role,
-      setRole,
+      setRole: updateRole,
       selectedProgrammeCode,
-      setSelectedProgrammeCode,
+      setSelectedProgrammeCode: updateSelectedProgrammeCode,
       reportingPeriodId,
       setReportingPeriodId,
       reportingPeriodLabel,
@@ -172,6 +201,8 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
       staffActorName,
       uploadHistory,
       addUploadResult,
+      updateRole,
+      updateSelectedProgrammeCode,
     ],
   )
 

@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { breadcrumbMap, navItems, roleOptions } from '../config/navigation'
 import { useAppState } from '../context/useAppState'
 import type { AppRole } from '../types/app'
+import { clearMemoryCache } from '../utils/memoryReadCache'
 import {
   IconCheck,
   IconChevDown,
@@ -193,7 +194,7 @@ export const AppShell = () => {
             </span>
             <span>Settings</span>
           </button>
-          <button type="button">
+          <button type="button" onClick={() => clearMemoryCache()}>
             <span className="sidebar-footer-icon" aria-hidden="true">
               <IconLogOut size={16} />
             </span>

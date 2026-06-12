@@ -27,6 +27,15 @@ import type {
   ParsedTeachingTargetRow,
 } from '../../types/parsedData'
 import type { RawMultiPostingDecision, RawMultiPostingFragment, UploadLogDetail, UploadLogListItem } from '../../types/upload'
+import {
+  clearMemoryCache,
+  clearMemoryCacheResource,
+  getMemoryCache,
+  makeScopedCacheKey,
+  readThroughMemoryCache,
+  setMemoryCache,
+  type CacheScope,
+} from '../../utils/memoryReadCache'
 
 type ParsedDataTabId =
   | 'residents'
@@ -834,7 +843,7 @@ const statusOptionsByTab: Partial<Record<ParsedDataTabId, { value: string; label
 }
 
 export const AdminParsedDataPage = () => {
-  const { demoAdminId, demoAdminProgrammes, reportingPeriods } = useAppState()
+  const { role, demoAdminId, demoAdminProgrammes, reportingPeriods } = useAppState()
   const [activeTabId, setActiveTabId] = useState<ParsedDataTabId>('residents')
   const [filters, setFilters] = useState<ParsedDataFilters>({ ...initialFilters })
   const [debouncedFilters, setDebouncedFilters] = useState<ParsedDataFilters>({ ...initialFilters })
@@ -859,6 +868,34 @@ export const AdminParsedDataPage = () => {
     [activeTabId],
   )
 
+  const cacheScope = useMemo<CacheScope>(() => ({
+    role,
+    userId: demoAdminId,
+    programmeScope: demoAdminProgrammes,
+  }), [demoAdminId, demoAdminProgrammes, role])
+
+  const parsedDataCacheKey = useCallback((
+    tabId: ParsedDataTabId,
+    queryFilters: ParsedDataFilters,
+    queryOffset: number,
+  ) => makeScopedCacheKey(cacheScope, 'admin.parsed-data', {
+    view: tabId,
+    filters: queryFilters,
+    limit: pageSize,
+    offset: queryOffset,
+  }), [cacheScope])
+
+  const uploadLogListCacheKey = useCallback(() => makeScopedCacheKey(cacheScope, 'admin.upload-logs.rdb-source-list', {
+    uploadType: 'rdb',
+    limit: 50,
+  }), [cacheScope])
+
+  const uploadLogDetailCacheKey = useCallback((uploadLogId: string) => makeScopedCacheKey(
+    cacheScope,
+    'admin.upload-logs.rdb-source-detail',
+    { uploadLogId },
+  ), [cacheScope])
+
   const setFilter = (key: FilterKey, value: string) => {
     setFilters((prev) => ({ ...prev, [key]: value }))
     setOffset(0)
@@ -868,6 +905,25 @@ export const AdminParsedDataPage = () => {
     setFilters({ ...initialFilters })
     setOffset(0)
   }
+
+  const hydrateRowsFromCache = useCallback((
+    tabId: ParsedDataTabId,
+    queryFilters: ParsedDataFilters,
+    queryOffset: number,
+  ): boolean => {
+    const cached = getMemoryCache<ParsedDataListResponse<ParsedDataRow>>(
+      parsedDataCacheKey(tabId, queryFilters, queryOffset),
+    )
+    if (!cached) {
+      return false
+    }
+
+    setRows(sortParsedRowsForDisplay(tabId, cached.data.items))
+    setTotal(cached.data.total)
+    hasLoadedRowsRef.current = true
+    setIsInitialLoading(false)
+    return true
+  }, [parsedDataCacheKey])
 
   const hasFilters = useMemo(() => {
     return Object.entries(filters).some(([key, value]) => {
@@ -973,7 +1029,12 @@ export const AdminParsedDataPage = () => {
     setSelectedRow(null)
 
     try {
+      const key = parsedDataCacheKey(activeTabId, filters, offset)
+      clearMemoryCache((cacheKey) => cacheKey === key)
+      clearMemoryCacheResource('admin.upload-logs.rdb-source-list')
+      clearMemoryCacheResource('admin.upload-logs.rdb-source-detail')
       const response = await loadRows(activeTabId, filters, offset)
+      setMemoryCache(key, response)
       setDebouncedFilters((previous) => (areFiltersEqual(previous, filters) ? previous : filters))
       setRows(sortParsedRowsForDisplay(activeTabId, response.items))
       setTotal(response.total)
@@ -988,11 +1049,19 @@ export const AdminParsedDataPage = () => {
       setIsInitialLoading(false)
       setIsRefetching(false)
     }
-  }, [activeTabId, filters, loadRows, offset])
+  }, [activeTabId, filters, loadRows, offset, parsedDataCacheKey])
 
   useEffect(() => {
     let active = true
     ;(async () => {
+      const key = parsedDataCacheKey(activeTabId, debouncedFilters, offset)
+      const cached = getMemoryCache<ParsedDataListResponse<ParsedDataRow>>(key)
+      if (cached) {
+        setRows(sortParsedRowsForDisplay(activeTabId, cached.data.items))
+        setTotal(cached.data.total)
+        hasLoadedRowsRef.current = true
+        setIsInitialLoading(false)
+      }
       const isBackgroundRefetch = hasLoadedRowsRef.current
       if (isBackgroundRefetch) {
         setIsRefetching(true)
@@ -1003,7 +1072,11 @@ export const AdminParsedDataPage = () => {
       setSelectedRow(null)
 
       try {
-        const response = await loadRows(activeTabId, debouncedFilters, offset)
+        const { data: response } = await readThroughMemoryCache(
+          key,
+          () => loadRows(activeTabId, debouncedFilters, offset),
+          { force: Boolean(cached) },
+        )
         if (active) {
           setRows(sortParsedRowsForDisplay(activeTabId, response.items))
           setTotal(response.total)
@@ -1028,7 +1101,7 @@ export const AdminParsedDataPage = () => {
     return () => {
       active = false
     }
-  }, [activeTabId, debouncedFilters, loadRows, offset])
+  }, [activeTabId, debouncedFilters, loadRows, offset, parsedDataCacheKey])
 
   const loadRdbUploadLogs = useCallback(async () => {
     if (activeTabId !== 'resident-postings') {
@@ -1037,13 +1110,16 @@ export const AdminParsedDataPage = () => {
     setIsRawLogLoading(true)
     setRawFragmentError(null)
     try {
-      const response = await listUploadLogs({
-        adminId: demoAdminId,
-        adminProgrammes: demoAdminProgrammes,
-        adminLevel: 'master',
-        uploadType: 'rdb',
-        limit: 50,
-      })
+      const { data: response } = await readThroughMemoryCache(
+        uploadLogListCacheKey(),
+        () => listUploadLogs({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel: 'master',
+          uploadType: 'rdb',
+          limit: 50,
+        }),
+      )
       setRdbUploadLogs(response.items)
       setSelectedRdbUploadId((current) => {
         if (current && response.items.some((item) => item.id === current)) {
@@ -1062,7 +1138,7 @@ export const AdminParsedDataPage = () => {
     } finally {
       setIsRawLogLoading(false)
     }
-  }, [activeTabId, demoAdminId, demoAdminProgrammes])
+  }, [activeTabId, demoAdminId, demoAdminProgrammes, uploadLogListCacheKey])
 
   useEffect(() => {
     if (activeTabId === 'resident-postings') {
@@ -1082,12 +1158,15 @@ export const AdminParsedDataPage = () => {
       setIsRawDetailLoading(true)
       setRawFragmentError(null)
       try {
-        const detail = await getUploadLog({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
-          adminLevel: 'master',
-          uploadLogId: selectedRdbUploadId,
-        })
+        const { data: detail } = await readThroughMemoryCache(
+          uploadLogDetailCacheKey(selectedRdbUploadId),
+          () => getUploadLog({
+            adminId: demoAdminId,
+            adminProgrammes: demoAdminProgrammes,
+            adminLevel: 'master',
+            uploadLogId: selectedRdbUploadId,
+          }),
+        )
         if (active) {
           setSelectedRdbUploadDetail(detail)
         }
@@ -1106,7 +1185,7 @@ export const AdminParsedDataPage = () => {
     return () => {
       active = false
     }
-  }, [activeTabId, demoAdminId, demoAdminProgrammes, selectedRdbUploadId])
+  }, [activeTabId, demoAdminId, demoAdminProgrammes, selectedRdbUploadId, uploadLogDetailCacheKey])
 
   const firstItem = total === 0 ? 0 : offset + 1
   const lastItem = Math.min(offset + rows.length, total)
@@ -1276,17 +1355,23 @@ export const AdminParsedDataPage = () => {
               role="tab"
               aria-selected={activeTabId === tab.id}
               onClick={() => {
+                const nextFilters = { ...initialFilters }
                 setActiveTabId(tab.id)
-                setFilters({ ...initialFilters })
-                setDebouncedFilters({ ...initialFilters })
+                setFilters(nextFilters)
+                setDebouncedFilters(nextFilters)
                 setOffset(0)
-                setRows([])
-                setTotal(0)
                 setError(null)
                 setSelectedRow(null)
-                hasLoadedRowsRef.current = false
-                setIsInitialLoading(true)
-                setIsRefetching(false)
+                const hydrated = hydrateRowsFromCache(tab.id, nextFilters, 0)
+                if (hydrated) {
+                  setIsRefetching(true)
+                } else {
+                  setRows([])
+                  setTotal(0)
+                  hasLoadedRowsRef.current = false
+                  setIsInitialLoading(true)
+                  setIsRefetching(false)
+                }
               }}
             >
               {tab.label}
@@ -1337,117 +1422,119 @@ export const AdminParsedDataPage = () => {
         </section>
       ) : null}
 
-      {isInitialLoading ? (
-        <section className="card warning-state-card parsed-data-state-card">Loading parsed data...</section>
-      ) : error && rows.length === 0 ? (
-        <section className="card warning-state-card parsed-data-state-card">
-          <strong>Parsed data could not be loaded.</strong>
-          <p>{error}</p>
-          <button type="button" className="button button-secondary" onClick={() => void fetchRows()}>
-            Retry
-          </button>
-        </section>
-      ) : rows.length === 0 ? (
-        <section className="card warning-state-card parsed-data-state-card">
-          <strong>{hasFilters ? 'No parsed rows match these filters' : `No ${activeTab.label.toLowerCase()} rows found`}</strong>
-          <p>
-            {hasFilters
-              ? 'Clear filters or adjust the search to inspect persisted parser output.'
-              : 'Rows will appear here after the corresponding parser has persisted upload data.'}
-          </p>
-        </section>
-      ) : (
-        <section className={`warning-group-card parsed-data-table-card ${isRefetching ? 'is-refetching' : ''}`}>
-          <div className="warning-group-header">
-            <div>
-              <span className="warning-group-kicker">Persisted parser output</span>
-              <h2>{activeTab.label}</h2>
-            </div>
-            <div className="parsed-data-count-status">
-              {isRefetching ? <span className="parsed-data-updating">Updating...</span> : null}
-              <span className="warning-count-pill">
-                {firstItem}-{lastItem} of {total}
-              </span>
-            </div>
+      <section className={`warning-group-card parsed-data-table-card ${isRefetching ? 'is-refetching' : ''}`}>
+        <div className="warning-group-header">
+          <div>
+            <span className="warning-group-kicker">Persisted parser output</span>
+            <h2>{activeTab.label}</h2>
           </div>
-          <div className="table-scroll">
-            <table className="table parsed-data-table" style={{ minWidth: activeTab.minWidth }}>
-              <thead>
-                <tr>
-                  {activeTab.columns.map((column) => (
-                    <Fragment key={column.label}>
-                      <th>{column.label}</th>
-                      {activeTabId === 'resident-postings' && column.label === 'Posting Code' ? (
-                        <>
-                          <th>Raw Posting</th>
-                          <th>Parser Decision</th>
-                          <th>Source</th>
-                        </>
-                      ) : null}
-                    </Fragment>
-                  ))}
-                  <th aria-label="Open detail" />
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => {
-                  const rawMatches = activeTabId === 'resident-postings'
-                    ? rawFragmentsByPostingId.get((row as ParsedResidentPostingRow).id) ?? []
-                    : []
-                  return (
-                    <tr
-                      key={row.id}
-                      className="table-clickable-row"
-                      onClick={() => setSelectedRow(row)}
-                    >
-                      {activeTab.columns.map((column) => (
-                        <Fragment key={column.label}>
-                          <td className={column.className}>
-                            {column.value(row)}
-                          </td>
-                          {activeTabId === 'resident-postings' && column.label === 'Posting Code' ? (
-                            <>
-                              <td><RawPostingCell fragments={rawMatches} /></td>
-                              <td><ParserDecisionCell fragments={rawMatches} /></td>
-                              <td className="raw-source-cell"><RawSourceCell fragments={rawMatches} /></td>
-                            </>
-                          ) : null}
-                        </Fragment>
-                      ))}
-                      <td className="cell-chevron">
-                        <IconChevRight size={14} />
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div className="upload-log-pagination">
-            <span>
-              Showing {firstItem}-{lastItem} of {total}
+          <div className="parsed-data-count-status">
+            {isRefetching ? <span className="parsed-data-updating">Refreshing...</span> : null}
+            <span className="warning-count-pill">
+              {firstItem}-{lastItem} of {total}
             </span>
-            <div>
-              <button
-                type="button"
-                className="button button-secondary"
-                onClick={() => setOffset(Math.max(0, offset - pageSize))}
-                disabled={!canGoPrevious}
-              >
-                Previous
-              </button>
-              <button
-                type="button"
-                className="button button-secondary"
-                onClick={() => setOffset(offset + pageSize)}
-                disabled={!canGoNext}
-              >
-                Next
-              </button>
-            </div>
           </div>
-        </section>
-      )}
+        </div>
+        {isInitialLoading && rows.length === 0 ? (
+          <div className="warning-state-card parsed-data-state-card">Loading parsed data...</div>
+        ) : error && rows.length === 0 ? (
+          <div className="warning-state-card parsed-data-state-card">
+            <strong>Parsed data could not be loaded.</strong>
+            <p>{error}</p>
+            <button type="button" className="button button-secondary" onClick={() => void fetchRows()}>
+              Retry
+            </button>
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="warning-state-card parsed-data-state-card">
+            <strong>{hasFilters ? 'No parsed rows match these filters' : `No ${activeTab.label.toLowerCase()} rows found`}</strong>
+            <p>
+              {hasFilters
+                ? 'Clear filters or adjust the search to inspect persisted parser output.'
+                : 'Rows will appear here after the corresponding parser has persisted upload data.'}
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="table-scroll">
+              <table className="table parsed-data-table" style={{ minWidth: activeTab.minWidth }}>
+                <thead>
+                  <tr>
+                    {activeTab.columns.map((column) => (
+                      <Fragment key={column.label}>
+                        <th>{column.label}</th>
+                        {activeTabId === 'resident-postings' && column.label === 'Posting Code' ? (
+                          <>
+                            <th>Raw Posting</th>
+                            <th>Parser Decision</th>
+                            <th>Source</th>
+                          </>
+                        ) : null}
+                      </Fragment>
+                    ))}
+                    <th aria-label="Open detail" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => {
+                    const rawMatches = activeTabId === 'resident-postings'
+                      ? rawFragmentsByPostingId.get((row as ParsedResidentPostingRow).id) ?? []
+                      : []
+                    return (
+                      <tr
+                        key={row.id}
+                        className="table-clickable-row"
+                        onClick={() => setSelectedRow(row)}
+                      >
+                        {activeTab.columns.map((column) => (
+                          <Fragment key={column.label}>
+                            <td className={column.className}>
+                              {column.value(row)}
+                            </td>
+                            {activeTabId === 'resident-postings' && column.label === 'Posting Code' ? (
+                              <>
+                                <td><RawPostingCell fragments={rawMatches} /></td>
+                                <td><ParserDecisionCell fragments={rawMatches} /></td>
+                                <td className="raw-source-cell"><RawSourceCell fragments={rawMatches} /></td>
+                              </>
+                            ) : null}
+                          </Fragment>
+                        ))}
+                        <td className="cell-chevron">
+                          <IconChevRight size={14} />
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="upload-log-pagination">
+              <span>
+                Showing {firstItem}-{lastItem} of {total}
+              </span>
+              <div>
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={() => setOffset(Math.max(0, offset - pageSize))}
+                  disabled={!canGoPrevious}
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={() => setOffset(offset + pageSize)}
+                  disabled={!canGoNext}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </section>
 
       <DetailDrawer
         title={selectedRow ? `${activeTab.label} row` : 'Parsed data row'}

@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { frontendConfig } from '../config/frontendConfig'
+import { clearMemoryCache } from '../utils/memoryReadCache'
 
 export class ApiRequestError extends Error {
   status?: number
@@ -21,6 +22,14 @@ export class ApiRequestError extends Error {
 export const httpClient = axios.create({
   baseURL: frontendConfig.apiBaseUrl,
   timeout: 60000,
+})
+
+httpClient.interceptors.response.use((response) => {
+  const method = response.config.method?.toUpperCase()
+  if (method && method !== 'GET' && response.status >= 200 && response.status < 300) {
+    clearMemoryCache()
+  }
+  return response
 })
 
 export const toApiRequestError = (error: unknown): ApiRequestError => {
