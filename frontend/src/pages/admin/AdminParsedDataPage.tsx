@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   listParsedAcademicMonthBoundaries,
   listParsedFormF1Records,
@@ -8,6 +8,7 @@ import {
   listParsedTeachingNameCatalogue,
   listParsedTeachingTargets,
 } from '../../api/parsedData'
+import { getUploadLog, listUploadLogs } from '../../api/uploadLogs'
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconChevRight, IconRefresh } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
@@ -25,6 +26,7 @@ import type {
   ParsedTeachingNameCatalogueRow,
   ParsedTeachingTargetRow,
 } from '../../types/parsedData'
+import type { RawMultiPostingDecision, RawMultiPostingFragment, UploadLogDetail, UploadLogListItem } from '../../types/upload'
 
 type ParsedDataTabId =
   | 'residents'
@@ -91,6 +93,24 @@ interface ParsedTabDefinition {
   minWidth: number
 }
 
+interface RawFragmentPostingGroup {
+  key: string
+  rawPostingCode: string | null
+  normalizedPostingCode: string | null
+  decision: RawMultiPostingDecision | null
+  effectivePostingCode: string | null
+  ruleType: string | null
+  ruleId: string | null
+  warningId: string | null
+  fragments: RawMultiPostingFragment[]
+}
+
+interface RawFragmentSourceGroup {
+  key: string
+  sourceFragment: RawMultiPostingFragment
+  postingGroups: RawFragmentPostingGroup[]
+}
+
 const pageSize = 25
 const filterDebounceMs = 300
 
@@ -110,6 +130,15 @@ const initialFilters: ParsedDataFilters = {
   year: '',
   academicYearLabel: '',
   ayDateCategory: 'all',
+}
+
+const decisionLabels: Record<string, string> = {
+  collapsed_into_main: 'Collapsed into main',
+  persisted_independent: 'Persisted independent',
+  combined: 'Combined',
+  half_month: 'Half month',
+  unmatched_warning: 'Unmatched warning',
+  excluded: 'Excluded',
 }
 
 const filterKeys = Object.keys(initialFilters) as FilterKey[]
@@ -182,9 +211,362 @@ const statusTone = (value?: string | null): 'success' | 'warning' | 'critical' |
   return 'neutral'
 }
 
+const decisionTone = (decision?: string | null): 'success' | 'warning' | 'critical' | 'info' | 'neutral' => {
+  switch (decision) {
+    case 'collapsed_into_main':
+    case 'combined':
+      return 'success'
+    case 'half_month':
+    case 'persisted_independent':
+      return 'info'
+    case 'unmatched_warning':
+      return 'warning'
+    case 'excluded':
+      return 'neutral'
+    default:
+      return decision ? 'info' : 'neutral'
+  }
+}
+
+const formatDecisionLabel = (decision?: string | null) => {
+  if (!decision) {
+    return '-'
+  }
+  return decisionLabels[decision] ?? humanizeKey(decision)
+}
+
 const boolBadge = (value: boolean, trueLabel = 'Yes', falseLabel = 'No') => (
   <StatusBadge label={value ? trueLabel : falseLabel} tone={value ? 'success' : 'neutral'} />
 )
+
+const compareText = (left?: string | null, right?: string | null) =>
+  (left ?? '').localeCompare(right ?? '', 'en-SG', { sensitivity: 'base' })
+
+const dateSortKey = (value?: string | null) => {
+  if (!value) {
+    return Number.MAX_SAFE_INTEGER
+  }
+  const time = Date.parse(value)
+  return Number.isNaN(time) ? Number.MAX_SAFE_INTEGER : time
+}
+
+const sortParsedRowsForDisplay = (tabId: ParsedDataTabId, items: ParsedDataRow[]) => {
+  if (tabId !== 'resident-postings') {
+    return items
+  }
+  return [...items].sort((left, right) => {
+    const leftPosting = left as ParsedResidentPostingRow
+    const rightPosting = right as ParsedResidentPostingRow
+    return (
+      compareText(leftPosting.programme_code, rightPosting.programme_code) ||
+      compareText(leftPosting.resident_name, rightPosting.resident_name) ||
+      dateSortKey(leftPosting.start_date) - dateSortKey(rightPosting.start_date) ||
+      compareText(leftPosting.mcr, rightPosting.mcr) ||
+      compareText(leftPosting.id, rightPosting.id)
+    )
+  })
+}
+
+const formatSingaporeDateTime = (iso?: string | null) =>
+  iso
+    ? new Date(iso).toLocaleString('en-SG', {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        timeZone: 'Asia/Singapore',
+      })
+    : '-'
+
+const formatSource = (fragment: RawMultiPostingFragment) =>
+  [
+    fragment.sheet_name,
+    fragment.row_number === null ? null : `Row ${fragment.row_number}`,
+    fragment.cell_ref,
+  ]
+    .filter(Boolean)
+    .join(' \u00b7 ') || '-'
+
+const formatDateRange = (start?: string | null, end?: string | null) => {
+  if (!start && !end) {
+    return '-'
+  }
+  return `${start ?? '-'} to ${end ?? '-'}`
+}
+
+const formatDayPart = (dayPart?: string | null) => {
+  if (!dayPart) {
+    return 'Full day'
+  }
+  return dayPart
+}
+
+const optionalString = (value: unknown): string | null => {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed || null
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value)
+  }
+  return null
+}
+
+const optionalNumber = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) {
+    return Number(value)
+  }
+  return null
+}
+
+const summaryObject = (summary: unknown): Record<string, unknown> => {
+  if (typeof summary === 'object' && summary !== null && !Array.isArray(summary)) {
+    return summary as Record<string, unknown>
+  }
+  return {}
+}
+
+const summaryValue = (summary: unknown, key: string): unknown => {
+  const topLevel = summaryObject(summary)
+  if (key in topLevel) {
+    return topLevel[key]
+  }
+  const metadata = summaryObject(topLevel.metadata)
+  return metadata[key]
+}
+
+const summaryRawFragments = (uploadLog: UploadLogDetail | null): RawMultiPostingFragment[] => {
+  const rawValue = uploadLog ? summaryValue(uploadLog.summary, 'raw_multi_posting_fragments') : null
+  if (!Array.isArray(rawValue)) {
+    return []
+  }
+
+  return rawValue
+    .filter((value): value is Record<string, unknown> => typeof value === 'object' && value !== null)
+    .map((value, index) => {
+      const fragmentIndex = optionalNumber(value.fragment_index) ?? index + 1
+      const rowNumber = optionalNumber(value.row_number)
+      const mcr = optionalString(value.mcr)
+      const cellRef = optionalString(value.cell_ref)
+      return {
+        id: [
+          uploadLog?.id ?? 'rdb-upload',
+          optionalString(value.programme_code) ?? 'programme',
+          mcr ?? 'mcr',
+          rowNumber ?? 'row',
+          cellRef ?? 'cell',
+          fragmentIndex,
+        ].join(':'),
+        mcr,
+        resident_name: optionalString(value.resident_name),
+        programme_code: optionalString(value.programme_code),
+        r_year: optionalString(value.r_year),
+        sheet_name: optionalString(value.sheet_name),
+        row_number: rowNumber,
+        cell_ref: cellRef,
+        month_label: optionalString(value.month_label),
+        source_column_header: optionalString(value.source_column_header),
+        source_cell_text: optionalString(value.source_cell_text),
+        fragment_index: fragmentIndex,
+        raw_posting_code: optionalString(value.raw_posting_code),
+        normalized_posting_code: optionalString(value.normalized_posting_code),
+        fragment_start_date: optionalString(value.fragment_start_date),
+        fragment_end_date: optionalString(value.fragment_end_date),
+        day_part: optionalString(value.day_part),
+        decision: optionalString(value.decision) as RawMultiPostingDecision | null,
+        effective_posting_code: optionalString(value.effective_posting_code),
+        rule_type: optionalString(value.rule_type),
+        rule_id: optionalString(value.rule_id),
+        warning_id: optionalString(value.warning_id),
+      }
+    })
+}
+
+const sortRawFragments = (items: RawMultiPostingFragment[]) =>
+  [...items].sort((left, right) => (
+    compareText(left.programme_code, right.programme_code) ||
+    dateSortKey(left.fragment_start_date) - dateSortKey(right.fragment_start_date) ||
+    compareText(left.mcr, right.mcr) ||
+    left.fragment_index - right.fragment_index
+  ))
+
+const normalizedMatchValue = (value?: string | null) => value?.trim().toLowerCase() ?? ''
+
+const sameText = (left?: string | null, right?: string | null) =>
+  normalizedMatchValue(left) === normalizedMatchValue(right)
+
+const dateRangeOverlaps = (
+  leftStart?: string | null,
+  leftEnd?: string | null,
+  rightStart?: string | null,
+  rightEnd?: string | null,
+) => {
+  const leftStartTime = Date.parse(leftStart ?? '')
+  const leftEndTime = Date.parse(leftEnd ?? '')
+  const rightStartTime = Date.parse(rightStart ?? '')
+  const rightEndTime = Date.parse(rightEnd ?? '')
+  if (
+    Number.isNaN(leftStartTime) ||
+    Number.isNaN(leftEndTime) ||
+    Number.isNaN(rightStartTime) ||
+    Number.isNaN(rightEndTime)
+  ) {
+    return false
+  }
+  return rightStartTime <= leftEndTime && rightEndTime >= leftStartTime
+}
+
+const matchingRawFragmentsForPosting = (
+  row: ParsedResidentPostingRow,
+  fragments: RawMultiPostingFragment[],
+) =>
+  fragments.filter((fragment) => {
+    if (!sameText(fragment.mcr, row.mcr)) {
+      return false
+    }
+    if (!sameText(fragment.programme_code, row.programme_code)) {
+      return false
+    }
+    if (!sameText(fragment.r_year, row.r_year)) {
+      return false
+    }
+    if (!sameText(fragment.month_label, row.month_label)) {
+      return false
+    }
+    if (!sameText(fragment.effective_posting_code, row.posting_code)) {
+      return false
+    }
+    if (
+      fragment.fragment_start_date &&
+      fragment.fragment_end_date &&
+      row.start_date &&
+      row.end_date
+    ) {
+      return dateRangeOverlaps(row.start_date, row.end_date, fragment.fragment_start_date, fragment.fragment_end_date)
+    }
+    return true
+  })
+
+const uniqueFragmentValues = (
+  fragments: RawMultiPostingFragment[],
+  pickValue: (fragment: RawMultiPostingFragment) => string | null,
+) => Array.from(new Set(fragments.map(pickValue).filter((value): value is string => Boolean(value)))).sort(compareText)
+
+const RawPostingCell = ({ fragments }: { fragments: RawMultiPostingFragment[] }) => {
+  if (fragments.length === 0) {
+    return <span className="muted-text">-</span>
+  }
+  const rawPostings = uniqueFragmentValues(fragments, (fragment) => fragment.raw_posting_code)
+  if (fragments.length === 1 && rawPostings.length === 1) {
+    return <span className="mono-cell">{rawPostings[0]}</span>
+  }
+  return <span className="count-chip">{fragments.length} raw fragments</span>
+}
+
+const ParserDecisionCell = ({ fragments }: { fragments: RawMultiPostingFragment[] }) => {
+  if (fragments.length === 0) {
+    return <span className="muted-text">-</span>
+  }
+  const decisions = uniqueFragmentValues(fragments, (fragment) => fragment.decision)
+  if (decisions.length === 0) {
+    return <span className="muted-text">-</span>
+  }
+  if (decisions.length === 1) {
+    return <StatusBadge label={formatDecisionLabel(decisions[0])} tone={decisionTone(decisions[0])} />
+  }
+  return <span className="count-chip">{decisions.length} decisions</span>
+}
+
+const RawSourceCell = ({ fragments }: { fragments: RawMultiPostingFragment[] }) => {
+  if (fragments.length === 0) {
+    return <span className="muted-text">-</span>
+  }
+  if (fragments.length === 1) {
+    return <span>{formatSource(fragments[0])}</span>
+  }
+  return <span className="count-chip">{fragments.length} sources</span>
+}
+
+const rawGroupKeyPart = (value: string | number | null | undefined) => String(value ?? '-')
+
+const rawSourceGroupKey = (fragment: RawMultiPostingFragment) =>
+  [
+    fragment.source_cell_text,
+    fragment.sheet_name,
+    fragment.row_number,
+    fragment.cell_ref,
+    fragment.source_column_header,
+  ].map(rawGroupKeyPart).join('|')
+
+const rawPostingGroupKey = (fragment: RawMultiPostingFragment) =>
+  [
+    fragment.raw_posting_code,
+    fragment.normalized_posting_code,
+    fragment.effective_posting_code,
+    fragment.decision,
+    fragment.rule_type,
+    fragment.rule_id,
+    fragment.warning_id,
+  ].map(rawGroupKeyPart).join('|')
+
+const sortFragmentsByDateRange = (fragments: RawMultiPostingFragment[]) =>
+  [...fragments].sort((left, right) => (
+    dateSortKey(left.fragment_start_date) - dateSortKey(right.fragment_start_date) ||
+    dateSortKey(left.fragment_end_date) - dateSortKey(right.fragment_end_date) ||
+    left.fragment_index - right.fragment_index
+  ))
+
+const groupRawFragmentsForDrawer = (fragments: RawMultiPostingFragment[]): RawFragmentSourceGroup[] => {
+  const sourceGroups = new Map<string, RawFragmentSourceGroup>()
+
+  fragments.forEach((fragment) => {
+    const sourceKey = rawSourceGroupKey(fragment)
+    const sourceGroup = sourceGroups.get(sourceKey) ?? {
+      key: sourceKey,
+      sourceFragment: fragment,
+      postingGroups: [],
+    }
+    if (!sourceGroups.has(sourceKey)) {
+      sourceGroups.set(sourceKey, sourceGroup)
+    }
+
+    const postingKey = rawPostingGroupKey(fragment)
+    let postingGroup = sourceGroup.postingGroups.find((group) => group.key === postingKey)
+    if (!postingGroup) {
+      postingGroup = {
+        key: postingKey,
+        rawPostingCode: fragment.raw_posting_code,
+        normalizedPostingCode: fragment.normalized_posting_code,
+        decision: fragment.decision,
+        effectivePostingCode: fragment.effective_posting_code,
+        ruleType: fragment.rule_type,
+        ruleId: fragment.rule_id,
+        warningId: fragment.warning_id,
+        fragments: [],
+      }
+      sourceGroup.postingGroups.push(postingGroup)
+    }
+    postingGroup.fragments.push(fragment)
+  })
+
+  return Array.from(sourceGroups.values()).map((sourceGroup) => ({
+    ...sourceGroup,
+    postingGroups: sourceGroup.postingGroups
+      .map((postingGroup) => ({
+        ...postingGroup,
+        fragments: sortFragmentsByDateRange(postingGroup.fragments),
+      }))
+      .sort((left, right) => (
+        compareText(left.rawPostingCode, right.rawPostingCode) ||
+        compareText(left.normalizedPostingCode, right.normalizedPostingCode) ||
+        dateSortKey(left.fragments[0]?.fragment_start_date) - dateSortKey(right.fragments[0]?.fragment_start_date)
+      )),
+  }))
+}
+
+const formatFragmentDateRangeLine = (fragment: RawMultiPostingFragment) =>
+  `${formatDateRange(fragment.fragment_start_date, fragment.fragment_end_date)} - ${formatDayPart(fragment.day_part)}`
 
 const tabDefinitions: ParsedTabDefinition[] = [
   {
@@ -230,7 +612,7 @@ const tabDefinitions: ParsedTabDefinition[] = [
   {
     id: 'resident-postings',
     label: 'Resident Postings',
-    minWidth: 1420,
+    minWidth: 1680,
     filters: [
       { key: 'reportingPeriodId', label: 'Reporting period', type: 'select' },
       { key: 'programmeCode', label: 'Programme', placeholder: 'GERI' },
@@ -271,15 +653,6 @@ const tabDefinitions: ParsedTabDefinition[] = [
           const status = (row as ParsedResidentPostingRow).status
           return <StatusBadge label={formatValue(status)} tone={statusTone(status)} />
         },
-      },
-      { label: 'LOA Type', value: (row) => formatValue((row as ParsedResidentPostingRow).loa_type) },
-      {
-        label: 'Active Weight',
-        value: (row) => formatNumber((row as ParsedResidentPostingRow).active_months_weight),
-      },
-      {
-        label: 'Working Days',
-        value: (row) => formatNumber((row as ParsedResidentPostingRow).working_days_in_month),
       },
     ],
   },
@@ -474,6 +847,12 @@ export const AdminParsedDataPage = () => {
   const [isManualRefreshing, setIsManualRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedRow, setSelectedRow] = useState<ParsedDataRow | null>(null)
+  const [rdbUploadLogs, setRdbUploadLogs] = useState<UploadLogListItem[]>([])
+  const [selectedRdbUploadId, setSelectedRdbUploadId] = useState<string | null>(null)
+  const [selectedRdbUploadDetail, setSelectedRdbUploadDetail] = useState<UploadLogDetail | null>(null)
+  const [isRawLogLoading, setIsRawLogLoading] = useState(true)
+  const [isRawDetailLoading, setIsRawDetailLoading] = useState(false)
+  const [rawFragmentError, setRawFragmentError] = useState<string | null>(null)
 
   const activeTab = useMemo(
     () => tabDefinitions.find((tab) => tab.id === activeTabId) ?? tabDefinitions[0],
@@ -596,7 +975,7 @@ export const AdminParsedDataPage = () => {
     try {
       const response = await loadRows(activeTabId, filters, offset)
       setDebouncedFilters((previous) => (areFiltersEqual(previous, filters) ? previous : filters))
-      setRows(response.items)
+      setRows(sortParsedRowsForDisplay(activeTabId, response.items))
       setTotal(response.total)
       hasLoadedRowsRef.current = true
     } catch (fetchError) {
@@ -626,7 +1005,7 @@ export const AdminParsedDataPage = () => {
       try {
         const response = await loadRows(activeTabId, debouncedFilters, offset)
         if (active) {
-          setRows(response.items)
+          setRows(sortParsedRowsForDisplay(activeTabId, response.items))
           setTotal(response.total)
           hasLoadedRowsRef.current = true
         }
@@ -651,12 +1030,118 @@ export const AdminParsedDataPage = () => {
     }
   }, [activeTabId, debouncedFilters, loadRows, offset])
 
+  const loadRdbUploadLogs = useCallback(async () => {
+    if (activeTabId !== 'resident-postings') {
+      return
+    }
+    setIsRawLogLoading(true)
+    setRawFragmentError(null)
+    try {
+      const response = await listUploadLogs({
+        adminId: demoAdminId,
+        adminProgrammes: demoAdminProgrammes,
+        adminLevel: 'master',
+        uploadType: 'rdb',
+        limit: 50,
+      })
+      setRdbUploadLogs(response.items)
+      setSelectedRdbUploadId((current) => {
+        if (current && response.items.some((item) => item.id === current)) {
+          return current
+        }
+        return response.items[0]?.id ?? null
+      })
+      if (response.items.length === 0) {
+        setSelectedRdbUploadDetail(null)
+      }
+    } catch (fetchError) {
+      setRdbUploadLogs([])
+      setSelectedRdbUploadId(null)
+      setSelectedRdbUploadDetail(null)
+      setRawFragmentError(fetchError instanceof Error ? fetchError.message : 'Unable to load RDB upload logs.')
+    } finally {
+      setIsRawLogLoading(false)
+    }
+  }, [activeTabId, demoAdminId, demoAdminProgrammes])
+
+  useEffect(() => {
+    if (activeTabId === 'resident-postings') {
+      void loadRdbUploadLogs()
+    }
+  }, [activeTabId, loadRdbUploadLogs])
+
+  useEffect(() => {
+    if (activeTabId !== 'resident-postings' || !selectedRdbUploadId) {
+      setSelectedRdbUploadDetail(null)
+      setIsRawDetailLoading(false)
+      return
+    }
+
+    let active = true
+    ;(async () => {
+      setIsRawDetailLoading(true)
+      setRawFragmentError(null)
+      try {
+        const detail = await getUploadLog({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel: 'master',
+          uploadLogId: selectedRdbUploadId,
+        })
+        if (active) {
+          setSelectedRdbUploadDetail(detail)
+        }
+      } catch (fetchError) {
+        if (active) {
+          setSelectedRdbUploadDetail(null)
+          setRawFragmentError(fetchError instanceof Error ? fetchError.message : 'Unable to load RDB upload detail.')
+        }
+      } finally {
+        if (active) {
+          setIsRawDetailLoading(false)
+        }
+      }
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [activeTabId, demoAdminId, demoAdminProgrammes, selectedRdbUploadId])
+
   const firstItem = total === 0 ? 0 : offset + 1
   const lastItem = Math.min(offset + rows.length, total)
   const canGoPrevious = offset > 0
   const canGoNext = offset + pageSize < total
-    ? 'Read-only preview of persisted parser output'
-    : `${total} persisted row${total === 1 ? '' : 's'} in ${activeTab.label}`
+  const rawFragments = useMemo(
+    () => sortRawFragments(summaryRawFragments(selectedRdbUploadDetail)),
+    [selectedRdbUploadDetail],
+  )
+  const selectedRdbLogLabel = selectedRdbUploadDetail
+    ? [
+        formatSingaporeDateTime(selectedRdbUploadDetail.uploaded_at),
+        selectedRdbUploadDetail.reporting_period_label ?? selectedRdbUploadDetail.reporting_period_id,
+        selectedRdbUploadDetail.programme_code ?? 'Global',
+        selectedRdbUploadDetail.original_filename,
+      ].filter(Boolean).join(' | ')
+    : null
+  const rawFragmentsByPostingId = useMemo(() => {
+    const matches = new Map<string, RawMultiPostingFragment[]>()
+    if (activeTabId !== 'resident-postings') {
+      return matches
+    }
+    rows.forEach((row) => {
+      const postingRow = row as ParsedResidentPostingRow
+      matches.set(postingRow.id, matchingRawFragmentsForPosting(postingRow, rawFragments))
+    })
+    return matches
+  }, [activeTabId, rawFragments, rows])
+  const selectedRowRawFragments = selectedRow && activeTabId === 'resident-postings'
+    ? rawFragmentsByPostingId.get((selectedRow as ParsedResidentPostingRow).id) ?? []
+    : []
+  const selectedRowRawSourceGroups = useMemo(
+    () => groupRawFragmentsForDrawer(selectedRowRawFragments),
+    [selectedRowRawFragments],
+  )
 
   const renderFilter = (filter: FilterDefinition) => {
     if (filter.key === 'reportingPeriodId') {
@@ -812,6 +1297,27 @@ export const AdminParsedDataPage = () => {
 
       <section className="card filter-bar warning-filter-card parsed-data-filter-card">
         {activeTab.filters.map(renderFilter)}
+        {activeTabId === 'resident-postings' ? (
+          <label>
+            RDB upload source
+            <select
+              value={selectedRdbUploadId ?? ''}
+              onChange={(event) => {
+                setSelectedRdbUploadId(event.target.value || null)
+              }}
+              disabled={isRawLogLoading || rdbUploadLogs.length === 0}
+            >
+              {rdbUploadLogs.length === 0 ? (
+                <option value="">No RDB uploads</option>
+              ) : null}
+              {rdbUploadLogs.map((log) => (
+                <option key={log.id} value={log.id}>
+                  {formatSingaporeDateTime(log.uploaded_at)} | {log.reporting_period_label ?? log.reporting_period_id ?? 'No period'} | {log.programme_code ?? 'Global'}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <div className="parsed-data-clear-filter">
           <button type="button" className="button button-ghost" onClick={clearFilters}>
             Clear filters
@@ -822,6 +1328,12 @@ export const AdminParsedDataPage = () => {
       {error && rows.length > 0 ? (
         <section className="inline-callout callout-warning parsed-data-inline-error">
           <span>{error}</span>
+        </section>
+      ) : null}
+
+      {activeTabId === 'resident-postings' && rawFragmentError ? (
+        <section className="inline-callout callout-warning parsed-data-inline-error">
+          <span>{rawFragmentError}</span>
         </section>
       ) : null}
 
@@ -863,28 +1375,51 @@ export const AdminParsedDataPage = () => {
               <thead>
                 <tr>
                   {activeTab.columns.map((column) => (
-                    <th key={column.label}>{column.label}</th>
+                    <Fragment key={column.label}>
+                      <th>{column.label}</th>
+                      {activeTabId === 'resident-postings' && column.label === 'Posting Code' ? (
+                        <>
+                          <th>Raw Posting</th>
+                          <th>Parser Decision</th>
+                          <th>Source</th>
+                        </>
+                      ) : null}
+                    </Fragment>
                   ))}
                   <th aria-label="Open detail" />
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
-                  <tr
-                    key={row.id}
-                    className="table-clickable-row"
-                    onClick={() => setSelectedRow(row)}
-                  >
-                    {activeTab.columns.map((column) => (
-                      <td key={column.label} className={column.className}>
-                        {column.value(row)}
+                {rows.map((row) => {
+                  const rawMatches = activeTabId === 'resident-postings'
+                    ? rawFragmentsByPostingId.get((row as ParsedResidentPostingRow).id) ?? []
+                    : []
+                  return (
+                    <tr
+                      key={row.id}
+                      className="table-clickable-row"
+                      onClick={() => setSelectedRow(row)}
+                    >
+                      {activeTab.columns.map((column) => (
+                        <Fragment key={column.label}>
+                          <td className={column.className}>
+                            {column.value(row)}
+                          </td>
+                          {activeTabId === 'resident-postings' && column.label === 'Posting Code' ? (
+                            <>
+                              <td><RawPostingCell fragments={rawMatches} /></td>
+                              <td><ParserDecisionCell fragments={rawMatches} /></td>
+                              <td className="raw-source-cell"><RawSourceCell fragments={rawMatches} /></td>
+                            </>
+                          ) : null}
+                        </Fragment>
+                      ))}
+                      <td className="cell-chevron">
+                        <IconChevRight size={14} />
                       </td>
-                    ))}
-                    <td className="cell-chevron">
-                      <IconChevRight size={14} />
-                    </td>
-                  </tr>
-                ))}
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -939,6 +1474,95 @@ export const AdminParsedDataPage = () => {
                 </div>
               ))}
             </div>
+            {activeTabId === 'resident-postings' ? (
+              <div className="detail-block raw-fragment-list">
+                <h3>Raw source traceability</h3>
+                <p>RDB upload source: {selectedRdbLogLabel ?? '-'}</p>
+                {isRawLogLoading || isRawDetailLoading ? (
+                  <p>Loading raw source context...</p>
+                ) : selectedRowRawFragments.length === 0 ? (
+                  <p>No raw fragment mapped to this posting row.</p>
+                ) : (
+                  selectedRowRawSourceGroups.map((sourceGroup) => (
+                    <div key={sourceGroup.key} className="raw-fragment-detail-card">
+                      <div className="parsed-data-detail-grid raw-source-group-grid">
+                        <div className="parsed-data-detail-item">
+                          <span>Source</span>
+                          <strong>{formatSource(sourceGroup.sourceFragment)}</strong>
+                        </div>
+                        <div className="parsed-data-detail-item">
+                          <span>Source Column Header</span>
+                          <strong>{formatValue(sourceGroup.sourceFragment.source_column_header)}</strong>
+                        </div>
+                        <div className="parsed-data-detail-item">
+                          <span>Source Cell Text</span>
+                          <strong className="raw-fragment-source-text">{formatValue(sourceGroup.sourceFragment.source_cell_text)}</strong>
+                        </div>
+                      </div>
+                      {sourceGroup.postingGroups.map((postingGroup) => (
+                        <div key={postingGroup.key} className="raw-posting-group-card">
+                          <div className="parsed-data-detail-grid">
+                            <div className="parsed-data-detail-item">
+                              <span>Raw Posting Group</span>
+                              <strong className="mono-cell">{formatValue(postingGroup.rawPostingCode)}</strong>
+                            </div>
+                            <div className="parsed-data-detail-item">
+                              <span>Normalized Posting</span>
+                              <strong className="mono-cell">{formatValue(postingGroup.normalizedPostingCode)}</strong>
+                            </div>
+                            <div className="parsed-data-detail-item">
+                              <span>Parser Decision</span>
+                              <strong>
+                                <StatusBadge
+                                  label={formatDecisionLabel(postingGroup.decision)}
+                                  tone={decisionTone(postingGroup.decision)}
+                                />
+                              </strong>
+                            </div>
+                            <div className="parsed-data-detail-item">
+                              <span>Effective Posting</span>
+                              <strong className="mono-cell">{formatValue(postingGroup.effectivePostingCode)}</strong>
+                            </div>
+                            <div className="parsed-data-detail-item">
+                              <span>Rule Type</span>
+                              <strong>{formatValue(postingGroup.ruleType ? humanizeKey(postingGroup.ruleType) : null)}</strong>
+                            </div>
+                            <div className="parsed-data-detail-item">
+                              <span>Rule ID</span>
+                              <strong className="mono-cell">{formatValue(postingGroup.ruleId)}</strong>
+                            </div>
+                            <div className="parsed-data-detail-item">
+                              <span>Warning</span>
+                              <strong>
+                                {postingGroup.warningId ? (
+                                  <a
+                                    href={`/admin/upload/warnings?mode=history&upload_type=rdb&search=${encodeURIComponent(postingGroup.warningId)}`}
+                                  >
+                                    {postingGroup.warningId}
+                                  </a>
+                                ) : (
+                                  '-'
+                                )}
+                              </strong>
+                            </div>
+                            <div className="parsed-data-detail-item">
+                              <span>Fragment Date Ranges</span>
+                              <strong>
+                                <ul className="raw-date-range-list">
+                                  {postingGroup.fragments.map((fragment) => (
+                                    <li key={fragment.id}>{formatFragmentDateRangeLine(fragment)}</li>
+                                  ))}
+                                </ul>
+                              </strong>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </DetailDrawer>

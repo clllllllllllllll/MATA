@@ -115,3 +115,37 @@ export interface UploadLogDetail extends UploadLogListItem {
   summary: unknown
   original_filename?: string | null
 }
+
+export type RawMultiPostingDecision =
+  | 'collapsed_into_main'
+  | 'persisted_independent'
+  | 'combined'
+  | 'half_month'
+  | 'unmatched_warning'
+  | 'excluded'
+  | string
+
+export interface RawMultiPostingFragment {
+  id: string
+  mcr: string | null
+  resident_name: string | null
+  programme_code: string | null
+  r_year: string | null
+  sheet_name: string | null
+  row_number: number | null
+  cell_ref: string | null
+  month_label: string | null
+  source_column_header: string | null
+  source_cell_text: string | null
+  fragment_index: number
+  raw_posting_code: string | null
+  normalized_posting_code: string | null
+  fragment_start_date: string | null
+  fragment_end_date: string | null
+  day_part: string | null
+  decision: RawMultiPostingDecision | null
+  effective_posting_code: string | null
+  rule_type: string | null
+  rule_id: string | null
+  warning_id: string | null
+}

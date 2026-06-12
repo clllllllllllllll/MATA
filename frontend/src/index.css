@@ -2609,6 +2609,48 @@ tr:last-child td {
   color: var(--ink-3);
 }
 
+.raw-fragment-source-text {
+  white-space: pre-wrap;
+}
+
+.raw-source-cell {
+  max-width: 220px;
+}
+
+.raw-fragment-list {
+  margin-top: 18px;
+}
+
+.raw-fragment-detail-card {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.raw-source-group-grid {
+  margin-bottom: 10px;
+}
+
+.raw-posting-group-card {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fafafd;
+}
+
+.raw-date-range-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.raw-date-range-list li {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 .muted-text {
   color: var(--ink-4);
 }
