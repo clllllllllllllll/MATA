@@ -1,13 +1,20 @@
 import type {
   AyDateCategory,
   ParsedAcademicMonthBoundaryRow,
+  ParsedDataCorrectionHistoryListResponse,
+  ParsedDataCorrectionHistoryRow,
+  ParsedDataCorrectionRequest,
+  ParsedDataCorrectionResponse,
+  ParsedDataRow,
   ParsedDataListResponse,
   ParsedFormF1RecordRow,
   ParsedPublicHolidayRow,
   ParsedResidentPostingRow,
   ParsedResidentRow,
+  ParsedDataSourceCellReplaceResponse,
   ParsedTeachingNameCatalogueRow,
   ParsedTeachingTargetRow,
+  ResidentPostingSourceCellReplaceRequest,
 } from '../types/parsedData'
 import { buildAdminDemoHeaders, type AdminDemoLevel } from './authHeaders'
 import { httpClient, toApiRequestError } from './http'
@@ -76,6 +83,15 @@ export interface ListParsedAcademicMonthBoundariesParams extends AdminParsedData
   ayDateCategory?: AyDateCategory | 'all'
   monthLabel?: string
   search?: string
+}
+
+export interface ListParsedDataCorrectionsParams extends AdminParsedDataParams {
+  entityType?: string
+  entityId?: string
+  uploadLogId?: string
+  sheetName?: string
+  rowNumber?: number | null
+  cellRef?: string
 }
 
 type ApiRow = Record<string, unknown>
@@ -157,6 +173,55 @@ const listParsedData = async <T>(
   }
 }
 
+const correctParsedDataRow = async <T extends ParsedDataRow>(
+  path: string,
+  params: AdminParsedDataParams,
+  request: ParsedDataCorrectionRequest,
+  mapRow: (row: ApiRow) => T,
+): Promise<ParsedDataCorrectionResponse<T>> => {
+  try {
+    const response = await httpClient.patch(path, request, {
+      headers: headersFor(params.adminId, params.adminProgrammes, params.adminLevel),
+    })
+    const payload = response.data as Record<string, unknown>
+    const item = typeof payload.item === 'object' && payload.item !== null
+      ? mapRow(payload.item as ApiRow)
+      : mapRow({})
+    return {
+      item,
+      audit_log_id: requiredString(payload.audit_log_id),
+      entity_type: requiredString(payload.entity_type),
+      entity_id: optionalString(payload.entity_id),
+      updated_fields: Array.isArray(payload.updated_fields)
+        ? payload.updated_fields.map(requiredString)
+        : [],
+    }
+  } catch (error) {
+    throw toApiRequestError(error)
+  }
+}
+
+const toSourceCellReplaceResponse = (
+  payload: Record<string, unknown>,
+): ParsedDataSourceCellReplaceResponse => ({
+  before_rows: Array.isArray(payload.before_rows)
+    ? payload.before_rows
+      .filter((row): row is ApiRow => typeof row === 'object' && row !== null)
+      .map(toParsedResidentPosting)
+    : [],
+  after_rows: Array.isArray(payload.after_rows)
+    ? payload.after_rows
+      .filter((row): row is ApiRow => typeof row === 'object' && row !== null)
+      .map(toParsedResidentPosting)
+    : [],
+  audit_log_id: requiredString(payload.audit_log_id),
+  entity_type: requiredString(payload.entity_type),
+  entity_id: optionalString(payload.entity_id),
+  updated_fields: Array.isArray(payload.updated_fields)
+    ? payload.updated_fields.map(requiredString)
+    : [],
+})
+
 const toParsedResident = (value: ApiRow): ParsedResidentRow => ({
   id: requiredString(value.id),
   employee_code: optionalString(value.employee_code),
@@ -167,8 +232,11 @@ const toParsedResident = (value: ApiRow): ParsedResidentRow => ({
   classification: optionalString(value.classification),
   reg_type: optionalString(value.reg_type),
   base_institution: optionalString(value.base_institution),
+  email: optionalString(value.email),
+  phone: optionalString(value.phone),
   employer_tag: optionalString(value.employer_tag),
   status: optionalString(value.status),
+  updated_at: optionalString(value.updated_at),
 })
 
 const toParsedResidentPosting = (value: ApiRow): ParsedResidentPostingRow => ({
@@ -182,6 +250,7 @@ const toParsedResidentPosting = (value: ApiRow): ParsedResidentPostingRow => ({
   reporting_period_label: optionalString(value.reporting_period_label),
   start_date: requiredString(value.start_date),
   end_date: requiredString(value.end_date),
+  day_part: optionalString(value.day_part),
   month_label: optionalString(value.month_label),
   r_year: requiredString(value.r_year),
   status: requiredString(value.status),
@@ -189,8 +258,11 @@ const toParsedResidentPosting = (value: ApiRow): ParsedResidentPostingRow => ({
   loa_start_date: optionalString(value.loa_start_date),
   loa_end_date: optionalString(value.loa_end_date),
   refresher_training_type: optionalString(value.refresher_training_type),
+  refresher_training_start: optionalString(value.refresher_training_start),
+  refresher_training_end: optionalString(value.refresher_training_end),
   active_months_weight: optionalNumber(value.active_months_weight),
   working_days_in_month: optionalNumber(value.working_days_in_month),
+  updated_at: optionalString(value.updated_at),
 })
 
 const toParsedTeachingTarget = (value: ApiRow): ParsedTeachingTargetRow => ({
@@ -208,6 +280,7 @@ const toParsedTeachingTarget = (value: ApiRow): ParsedTeachingTargetRow => ({
   is_reallocatable: booleanValue(value.is_reallocatable),
   tag: optionalString(value.tag),
   details_of_training: optionalString(value.details_of_training),
+  updated_at: optionalString(value.updated_at),
 })
 
 const toParsedTeachingNameCatalogue = (
@@ -238,6 +311,7 @@ const toParsedFormF1Record = (value: ApiRow): ParsedFormF1RecordRow => ({
   is_active: booleanValue(value.is_active),
   promotion_date: optionalString(value.promotion_date),
   upload_id: optionalString(value.upload_id),
+  updated_at: optionalString(value.updated_at),
 })
 
 const toParsedPublicHoliday = (value: ApiRow): ParsedPublicHolidayRow => ({
@@ -262,6 +336,22 @@ const toParsedAcademicMonthBoundary = (
   start_date: requiredString(value.start_date),
   end_date: requiredString(value.end_date),
   upload_id: optionalString(value.upload_id),
+  updated_at: optionalString(value.updated_at),
+})
+
+const toParsedCorrectionHistoryRow = (value: ApiRow): ParsedDataCorrectionHistoryRow => ({
+  id: requiredString(value.id),
+  created_at: requiredString(value.created_at),
+  actor_user_id: optionalString(value.actor_user_id),
+  actor_role: requiredString(value.actor_role),
+  actor_name: requiredString(value.actor_name),
+  action: requiredString(value.action),
+  entity_type: requiredString(value.entity_type),
+  entity_id: optionalString(value.entity_id),
+  correction_reason: optionalString(value.correction_reason),
+  before_json: value.before_json,
+  after_json: value.after_json,
+  metadata_json: value.metadata_json,
 })
 
 export const listParsedResidents = (
@@ -390,5 +480,101 @@ export const listParsedAcademicMonthBoundaries = (
     params,
     queryParams,
     toParsedAcademicMonthBoundary,
+  )
+}
+
+export const updateParsedResident = (
+  params: AdminParsedDataParams,
+  residentId: string,
+  request: ParsedDataCorrectionRequest,
+): Promise<ParsedDataCorrectionResponse<ParsedResidentRow>> =>
+  correctParsedDataRow(
+    `/admin/parsed-data/residents/${encodeURIComponent(residentId)}`,
+    params,
+    request,
+    toParsedResident,
+  )
+
+export const updateParsedResidentPosting = (
+  params: AdminParsedDataParams,
+  residentPostingId: string,
+  request: ParsedDataCorrectionRequest,
+): Promise<ParsedDataCorrectionResponse<ParsedResidentPostingRow>> =>
+  correctParsedDataRow(
+    `/admin/parsed-data/resident-postings/${encodeURIComponent(residentPostingId)}`,
+    params,
+    request,
+    toParsedResidentPosting,
+  )
+
+export const updateParsedTeachingTarget = (
+  params: AdminParsedDataParams,
+  teachingTargetId: string,
+  request: ParsedDataCorrectionRequest,
+): Promise<ParsedDataCorrectionResponse<ParsedTeachingTargetRow>> =>
+  correctParsedDataRow(
+    `/admin/parsed-data/teaching-targets/${encodeURIComponent(teachingTargetId)}`,
+    params,
+    request,
+    toParsedTeachingTarget,
+  )
+
+export const updateParsedFormF1Record = (
+  params: AdminParsedDataParams,
+  formF1RecordId: string,
+  request: ParsedDataCorrectionRequest,
+): Promise<ParsedDataCorrectionResponse<ParsedFormF1RecordRow>> =>
+  correctParsedDataRow(
+    `/admin/parsed-data/form-f1-records/${encodeURIComponent(formF1RecordId)}`,
+    params,
+    request,
+    toParsedFormF1Record,
+  )
+
+export const updateParsedAcademicMonthBoundary = (
+  params: AdminParsedDataParams,
+  academicMonthBoundaryId: string,
+  request: ParsedDataCorrectionRequest,
+): Promise<ParsedDataCorrectionResponse<ParsedAcademicMonthBoundaryRow>> =>
+  correctParsedDataRow(
+    `/admin/parsed-data/academic-month-boundaries/${encodeURIComponent(academicMonthBoundaryId)}`,
+    params,
+    request,
+    toParsedAcademicMonthBoundary,
+  )
+
+export const replaceParsedResidentPostingSourceCell = async (
+  params: AdminParsedDataParams,
+  request: ResidentPostingSourceCellReplaceRequest,
+): Promise<ParsedDataSourceCellReplaceResponse> => {
+  try {
+    const response = await httpClient.post(
+      '/admin/parsed-data/resident-postings/source-cell-replace',
+      request,
+      { headers: headersFor(params.adminId, params.adminProgrammes, params.adminLevel) },
+    )
+    return toSourceCellReplaceResponse(response.data as Record<string, unknown>)
+  } catch (error) {
+    throw toApiRequestError(error)
+  }
+}
+
+export const listParsedDataCorrections = (
+  params: ListParsedDataCorrectionsParams,
+): Promise<ParsedDataCorrectionHistoryListResponse> => {
+  const queryParams: Record<string, string | number | boolean> = {}
+  addTextParam(queryParams, 'entity_type', params.entityType)
+  addTextParam(queryParams, 'entity_id', params.entityId)
+  addTextParam(queryParams, 'upload_log_id', params.uploadLogId)
+  addTextParam(queryParams, 'sheet_name', params.sheetName)
+  addTextParam(queryParams, 'cell_ref', params.cellRef)
+  if (params.rowNumber) {
+    queryParams.row_number = params.rowNumber
+  }
+  return listParsedData(
+    '/admin/parsed-data/corrections',
+    params,
+    queryParams,
+    toParsedCorrectionHistoryRow,
   )
 }

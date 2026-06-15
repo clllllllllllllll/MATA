@@ -39,10 +39,10 @@ const workspaceTiles = [
     icon: <IconFile size={18} />,
   },
   {
-    title: 'Parsed Data',
-    path: '/admin/parsed',
-    description: 'Review parser outputs and source-level entities.',
-    stat: 'Pending endpoint',
+    title: 'Live Data',
+    path: '/admin/parsed-data',
+    description: 'Review uploaded records, source evidence, and audited corrections.',
+    stat: 'Correction workflow',
     icon: <IconDatabase size={18} />,
   },
   {

@@ -66,7 +66,7 @@ export const navItems: NavItem[] = [
     icon: 'file',
   },
   {
-    label: 'Parsed Data',
+    label: 'Live Data',
     path: '/admin/parsed-data',
     roles: ['master_admin'],
     icon: 'database',
@@ -128,7 +128,7 @@ export const breadcrumbMap: Record<string, string[]> = {
   '/admin/config': ['Master Admin', 'Configuration'],
   '/admin/config/multi': ['Master Admin', 'Configuration', 'Multi-Posting Rules'],
   '/admin/upload-logs': ['Master Admin', 'Upload Logs'],
-  '/admin/parsed-data': ['Master Admin', 'Parsed Data'],
+  '/admin/parsed-data': ['Master Admin', 'Live Data'],
   '/admin/secretary-events': ['Master Admin', 'Secretary Events'],
   '/admin/submissions': ['Master Admin', 'Resident Submissions'],
   '/pc/upload-ttf': ['Programme PC', 'Upload TTF'],

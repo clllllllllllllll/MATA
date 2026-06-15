@@ -1,11 +1,18 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
+  listParsedDataCorrections,
   listParsedAcademicMonthBoundaries,
   listParsedFormF1Records,
   listParsedResidentPostings,
   listParsedResidents,
   listParsedTeachingTargets,
+  updateParsedAcademicMonthBoundary,
+  updateParsedFormF1Record,
+  updateParsedResident,
+  updateParsedResidentPosting,
+  updateParsedTeachingTarget,
 } from '../../api/parsedData'
+import { ApiRequestError } from '../../api/http'
 import { getUploadLog, listUploadLogs } from '../../api/uploadLogs'
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconChevRight, IconRefresh } from '../../components/icons'
@@ -14,10 +21,13 @@ import { StatusBadge } from '../../components/StatusBadge'
 import { useAppState } from '../../context/useAppState'
 import type {
   AyDateCategory,
+  ParsedDataCorrectionHistoryRow,
+  ParsedDataCorrectionValue,
   ParsedAcademicMonthBoundaryRow,
   ParsedDataListResponse,
   ParsedDataRow,
   ParsedFormF1RecordRow,
+  ParsedDataCorrectionRequest,
   ParsedResidentPostingRow,
   ParsedResidentRow,
   ParsedTeachingTargetRow,
@@ -108,6 +118,32 @@ interface RawFragmentSourceGroup {
   key: string
   sourceFragment: RawMultiPostingFragment
   postingGroups: RawFragmentPostingGroup[]
+}
+
+type CorrectionMode = 'none' | 'row'
+type CorrectionFieldType = 'text' | 'textarea' | 'number' | 'boolean' | 'date' | 'select'
+type FragmentDraftDayPart = '' | 'AM' | 'PM'
+
+interface CorrectionFieldDefinition {
+  key: string
+  label: string
+  type: CorrectionFieldType
+  options?: { value: string; label: string }[]
+  highRisk?: boolean
+  helper?: string
+}
+
+interface FragmentDraftRange {
+  id: string
+  fragment_start_date: string
+  fragment_end_date: string
+  day_part: FragmentDraftDayPart
+}
+
+interface FragmentDraftGroup {
+  id: string
+  posting_code: string
+  ranges: FragmentDraftRange[]
 }
 
 const pageSize = 25
@@ -565,6 +601,125 @@ const groupRawFragmentsForDrawer = (fragments: RawMultiPostingFragment[]): RawFr
 const formatFragmentDateRangeLine = (fragment: RawMultiPostingFragment) =>
   `${formatDateRange(fragment.fragment_start_date, fragment.fragment_end_date)} - ${formatDayPart(fragment.day_part)}`
 
+const draftId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+
+const toFragmentDayPart = (value?: string | null): FragmentDraftDayPart => (
+  value === 'AM' || value === 'PM' ? value : ''
+)
+
+const newDraftRange = (
+  startDate = '',
+  endDate = '',
+  dayPart?: string | null,
+): FragmentDraftRange => ({
+  id: draftId(),
+  fragment_start_date: startDate,
+  fragment_end_date: endDate,
+  day_part: toFragmentDayPart(dayPart),
+})
+
+const newDraftGroup = (
+  postingCode = '',
+  ranges: FragmentDraftRange[] = [newDraftRange()],
+): FragmentDraftGroup => ({
+  id: draftId(),
+  posting_code: postingCode,
+  ranges,
+})
+
+const buildFragmentDraftGroups = (
+  row: ParsedResidentPostingRow,
+  fragments: RawMultiPostingFragment[],
+): FragmentDraftGroup[] => {
+  if (fragments.length === 0) {
+    return [
+      newDraftGroup(
+        row.posting_code ?? '',
+        [newDraftRange(row.start_date, row.end_date, row.day_part)],
+      ),
+    ]
+  }
+
+  const groups = new Map<string, FragmentDraftGroup>()
+  sortFragmentsByDateRange(fragments).forEach((fragment) => {
+    const postingCode =
+      fragment.raw_posting_code ??
+      fragment.normalized_posting_code ??
+      fragment.effective_posting_code ??
+      row.posting_code ??
+      ''
+    const groupKey = postingCode || 'posting'
+    const existing = groups.get(groupKey)
+    const nextRange = newDraftRange(
+      fragment.fragment_start_date ?? row.start_date,
+      fragment.fragment_end_date ?? row.end_date,
+      fragment.day_part,
+    )
+    if (existing) {
+      existing.ranges.push(nextRange)
+    } else {
+      groups.set(groupKey, newDraftGroup(postingCode, [nextRange]))
+    }
+  })
+  return Array.from(groups.values())
+}
+
+const rdbDateMonths = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+const formatRdbDraftDate = (value: string) => {
+  const date = new Date(`${value}T00:00:00`)
+  if (Number.isNaN(date.getTime())) {
+    return value || '-'
+  }
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${day}-${rdbDateMonths[date.getMonth()]}-${date.getFullYear()}`
+}
+
+const formatDraftRangeLine = (range: FragmentDraftRange) => {
+  const dayPart = range.day_part ? ` ${range.day_part}` : ''
+  return `(from ${formatRdbDraftDate(range.fragment_start_date)} to ${formatRdbDraftDate(range.fragment_end_date)}${dayPart})`
+}
+
+const correctedSourceCellDraftText = (groups: FragmentDraftGroup[]) =>
+  groups
+    .map((group) => [
+      group.posting_code.trim() || '[Posting code required]',
+      ...group.ranges.map(formatDraftRangeLine),
+    ].join('\n'))
+    .join('\n')
+
+const fragmentDraftValidationErrors = (groups: FragmentDraftGroup[]) => {
+  const errors: string[] = []
+  if (groups.length === 0) {
+    errors.push('At least one posting group is required.')
+  }
+  groups.forEach((group, groupIndex) => {
+    const groupLabel = `Posting group ${groupIndex + 1}`
+    if (!group.posting_code.trim()) {
+      errors.push(`${groupLabel}: posting code is required.`)
+    }
+    if (group.ranges.length === 0) {
+      errors.push(`${groupLabel}: at least one date range is required.`)
+    }
+    group.ranges.forEach((range, rangeIndex) => {
+      const rangeLabel = `${groupLabel}, range ${rangeIndex + 1}`
+      if (!range.fragment_start_date) {
+        errors.push(`${rangeLabel}: start date is required.`)
+      }
+      if (!range.fragment_end_date) {
+        errors.push(`${rangeLabel}: end date is required.`)
+      }
+      if (range.fragment_start_date && range.fragment_end_date && range.fragment_start_date > range.fragment_end_date) {
+        errors.push(`${rangeLabel}: start date must be on or before end date.`)
+      }
+      if (!['', 'AM', 'PM'].includes(range.day_part)) {
+        errors.push(`${rangeLabel}: day part must be full day, AM, or PM.`)
+      }
+    })
+  })
+  return errors
+}
+
 const tabDefinitions: ParsedTabDefinition[] = [
   {
     id: 'residents',
@@ -764,6 +919,393 @@ const activeToBoolean = (value: 'all' | 'true' | 'false') => {
   return value === 'true'
 }
 
+const rowValue = (row: ParsedDataRow, key: string): unknown =>
+  (row as unknown as Record<string, unknown>)[key]
+
+const draftValueForField = (row: ParsedDataRow, field: CorrectionFieldDefinition) => {
+  const value = rowValue(row, field.key)
+  if (field.type === 'boolean') {
+    return value === true
+  }
+  return value === null || value === undefined ? '' : String(value)
+}
+
+const correctionValueForField = (
+  field: CorrectionFieldDefinition,
+  value: string | boolean,
+): ParsedDataCorrectionValue => {
+  if (field.type === 'boolean') {
+    return value === true
+  }
+  const text = String(value).trim()
+  if (!text) {
+    return null
+  }
+  if (field.type === 'number') {
+    const numeric = Number(text)
+    return Number.isFinite(numeric) ? numeric : text
+  }
+  return text
+}
+
+const comparableCorrectionValue = (value: unknown) => {
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null
+  }
+  if (typeof value === 'boolean') {
+    return value
+  }
+  return String(value)
+}
+
+const buildCorrectionChanges = (
+  row: ParsedDataRow,
+  fields: CorrectionFieldDefinition[],
+  draft: Record<string, string | boolean>,
+) => fields.reduce<Record<string, ParsedDataCorrectionValue>>((changes, field) => {
+  const nextValue = correctionValueForField(field, draft[field.key] ?? '')
+  if (comparableCorrectionValue(rowValue(row, field.key)) !== comparableCorrectionValue(nextValue)) {
+    changes[field.key] = nextValue
+  }
+  return changes
+}, {})
+
+const correctionErrorMessage = (error: unknown) => {
+  if (error instanceof ApiRequestError && error.status === 409) {
+    return 'This row changed since you opened it. Refresh and review the latest value before applying corrections.'
+  }
+  if (error instanceof ApiRequestError) {
+    if (error.status === 403) {
+      return 'You do not have permission to apply this correction.'
+    }
+    if (error.status === 404) {
+      return 'This row could not be found. Refresh and review the latest live data.'
+    }
+    if (error.status === 422) {
+      return error.message || 'The correction was rejected. Review the fields and try again.'
+    }
+    if (error.isNetworkError) {
+      return error.message
+    }
+  }
+  return error instanceof Error ? error.message : 'Unable to apply correction.'
+}
+
+const formatJsonPreview = (value: unknown) => {
+  if (value === null || value === undefined || value === '') {
+    return '-'
+  }
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return formatValue(value)
+  }
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const toRecord = (value: unknown): Record<string, unknown> => (
+  isRecord(value) ? value : {}
+)
+
+const arrayValue = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
+
+const correctionActionLabels: Record<string, string> = {
+  'admin.parsed_data.resident.update': 'Resident updated',
+  'admin.parsed_data.resident_posting.update': 'Resident posting updated',
+  'admin.parsed_data.teaching_target.update': 'Teaching target updated',
+  'admin.parsed_data.form_f1_record.update': 'FormF1 record updated',
+  'admin.parsed_data.academic_month_boundary.update': 'Academic month boundary updated',
+  'admin.parsed_data.resident_posting.source_cell_replace': 'Resident posting source-cell result replaced',
+}
+
+const correctionFieldLabels: Record<string, string> = {
+  employee_code: 'Employee Code',
+  name: 'Name',
+  mcr: 'MCR',
+  classification: 'Classification',
+  programme_code: 'Programme',
+  r_year: 'R Year',
+  reg_type: 'Registration Type',
+  base_institution: 'Base Institution',
+  email: 'Email',
+  phone: 'Phone',
+  status: 'Status',
+  employer_tag: 'Employer Tag',
+  posting_code: 'Posting Code',
+  start_date: 'Start Date',
+  end_date: 'End Date',
+  day_part: 'Day Part',
+  month_label: 'Month',
+  loa_type: 'LOA Type',
+  loa_start_date: 'LOA Start',
+  loa_end_date: 'LOA End',
+  refresher_training_type: 'Refresher Training Type',
+  refresher_training_start: 'Refresher Training Start',
+  refresher_training_end: 'Refresher Training End',
+  active_months_weight: 'Active Weight',
+  working_days_in_month: 'Working Days',
+  monthly_target: 'Monthly Target',
+  is_tracked: 'Tracked',
+  is_reallocatable: 'Reallocatable',
+  tag: 'Tag',
+  details_of_training: 'Details of Training',
+  status_raw: 'FormF1 Status',
+  is_active: 'Active',
+  promotion_date: 'Promotion Date',
+  academic_year_label: 'Academic Year',
+  ay_date_category: 'AY Date Category',
+}
+
+const hiddenCorrectionDiffFields = new Set([
+  'id',
+  'resident_id',
+  'reporting_period_id',
+  'reporting_period_label',
+  'session_type_id',
+  'upload_id',
+  'created_at',
+  'updated_at',
+])
+
+const formatCorrectionActionLabel = (action: string) =>
+  correctionActionLabels[action] ?? humanizeKey(action.replace(/^admin\.parsed_data\./, '').replace(/\./g, '_'))
+
+const formatCorrectionFieldLabel = (fieldKey: string) =>
+  correctionFieldLabels[fieldKey] ?? humanizeKey(fieldKey)
+
+const normalisedDiffValue = (value: unknown): unknown => {
+  if (value === undefined || value === null || value === '') {
+    return null
+  }
+  if (Array.isArray(value)) {
+    return value.map(normalisedDiffValue)
+  }
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, normalisedDiffValue(entry)]),
+    )
+  }
+  return value
+}
+
+const valuesAreEqual = (left: unknown, right: unknown) =>
+  JSON.stringify(normalisedDiffValue(left)) === JSON.stringify(normalisedDiffValue(right))
+
+const updatedFieldsFromMetadata = (metadata: unknown) => {
+  const fields = toRecord(metadata).updated_fields
+  return Array.isArray(fields)
+    ? fields.map((field) => String(field)).filter(Boolean)
+    : []
+}
+
+interface CorrectionFieldChange {
+  key: string
+  before: unknown
+  after: unknown
+}
+
+const getChangedFields = (
+  before: unknown,
+  after: unknown,
+  metadata: unknown,
+): CorrectionFieldChange[] => {
+  const beforeRow = toRecord(before)
+  const afterRow = toRecord(after)
+  const preferredFields = updatedFieldsFromMetadata(metadata)
+  const candidateFields = preferredFields.length > 0
+    ? preferredFields
+    : Array.from(new Set([...Object.keys(beforeRow), ...Object.keys(afterRow)]))
+      .filter((key) => !hiddenCorrectionDiffFields.has(key))
+  return candidateFields
+    .filter((key) => !hiddenCorrectionDiffFields.has(key))
+    .filter((key) => !valuesAreEqual(beforeRow[key], afterRow[key]))
+    .map((key) => ({ key, before: beforeRow[key], after: afterRow[key] }))
+}
+
+const looksLikeDateField = (fieldKey?: string) =>
+  Boolean(fieldKey && (fieldKey.endsWith('_date') || fieldKey === 'start_date' || fieldKey === 'end_date'))
+
+const formatPostingRowSummary = (value: unknown) => {
+  const row = toRecord(value)
+  const posting = optionalString(row.posting_code) ?? 'No posting code'
+  const start = optionalString(row.start_date) ?? '-'
+  const end = optionalString(row.end_date) ?? '-'
+  const dayPart = optionalString(row.day_part) ?? 'Full day'
+  const month = optionalString(row.month_label)
+  return [posting, `${start} to ${end}`, dayPart, month].filter(Boolean).join(' | ')
+}
+
+const formatCorrectionValue = (value: unknown, fieldKey?: string): string => {
+  if (value === null || value === undefined || value === '') {
+    return '-'
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'Yes' : 'No'
+  }
+  if (typeof value === 'number') {
+    return formatNumber(value)
+  }
+  if (typeof value === 'string') {
+    return looksLikeDateField(fieldKey) ? formatDate(value) : value
+  }
+  if (Array.isArray(value)) {
+    const formattedItems = value.map((item) => formatCorrectionValue(item, fieldKey)).filter((item) => item !== '-')
+    if (formattedItems.length <= 4) {
+      return formattedItems.join(', ') || '-'
+    }
+    return `${formattedItems.length} items: ${formattedItems.slice(0, 3).join(', ')}...`
+  }
+  if (isRecord(value)) {
+    if ('posting_code' in value || 'start_date' in value || 'end_date' in value) {
+      return formatPostingRowSummary(value)
+    }
+    const displayValue =
+      optionalString(value.name) ??
+      optionalString(value.resident_name) ??
+      optionalString(value.session_type_name) ??
+      optionalString(value.keyword) ??
+      optionalString(value.label)
+    return displayValue ?? `${Object.keys(value).length} fields`
+  }
+  return String(value)
+}
+
+const sourceFromMetadata = (metadata: unknown) => {
+  const details = toRecord(metadata)
+  const verified = details.verified_source_metadata
+  const source = details.source
+  const clientSource = details.client_selected_source_metadata
+  if (isRecord(verified)) {
+    return verified
+  }
+  if (isRecord(source)) {
+    return source
+  }
+  if (isRecord(clientSource)) {
+    return clientSource
+  }
+  return {}
+}
+
+const hasSourceSummary = (metadata: unknown) => {
+  const source = sourceFromMetadata(metadata)
+  return Boolean(source.sheet_name || source.row_number || source.cell_ref || source.source_metadata_verified)
+}
+
+const renderCorrectionDiff = (entry: ParsedDataCorrectionHistoryRow) => {
+  const changes = getChangedFields(entry.before_json, entry.after_json, entry.metadata_json)
+  if (changes.length === 0) {
+    return <p>No changed fields were recorded for this audit entry.</p>
+  }
+  if (changes.length === 1) {
+    const change = changes[0]
+    return (
+      <dl className="correction-summary-list">
+        <dt>Field</dt>
+        <dd>{formatCorrectionFieldLabel(change.key)}</dd>
+        <dt>Before</dt>
+        <dd>{formatCorrectionValue(change.before, change.key)}</dd>
+        <dt>After</dt>
+        <dd>{formatCorrectionValue(change.after, change.key)}</dd>
+      </dl>
+    )
+  }
+  return (
+    <div className="correction-diff-table" role="table" aria-label="Changed fields">
+      <div className="correction-diff-row correction-diff-header" role="row">
+        <span role="columnheader">Field</span>
+        <span role="columnheader">Before</span>
+        <span role="columnheader">After</span>
+      </div>
+      {changes.map((change) => (
+        <div key={change.key} className="correction-diff-row" role="row">
+          <span role="cell">{formatCorrectionFieldLabel(change.key)}</span>
+          <span role="cell">{formatCorrectionValue(change.before, change.key)}</span>
+          <span role="cell">{formatCorrectionValue(change.after, change.key)}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+const sourceRowsFromAudit = (payload: unknown, key: 'before_rows' | 'after_rows') => {
+  const record = toRecord(payload)
+  return arrayValue(record[key])
+}
+
+const renderSourceCellReplacementSummary = (entry: ParsedDataCorrectionHistoryRow) => {
+  const beforeRows = sourceRowsFromAudit(entry.before_json, 'before_rows')
+  const afterRows = sourceRowsFromAudit(entry.after_json, 'after_rows')
+  if (beforeRows.length === 0 && afterRows.length === 0) {
+    return null
+  }
+  return (
+    <div className="source-cell-history-summary">
+      <div>
+        <strong>Before</strong>
+        {beforeRows.length === 0 ? (
+          <p>-</p>
+        ) : (
+          <ul>
+            {beforeRows.map((row, index) => (
+              <li key={`before-${index}`}>{formatPostingRowSummary(row)}</li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div>
+        <strong>After</strong>
+        {afterRows.length === 0 ? (
+          <p>-</p>
+        ) : (
+          <ul>
+            {afterRows.map((row, index) => (
+              <li key={`after-${index}`}>{formatPostingRowSummary(row)}</li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
+const renderSourceSummary = (metadata: unknown) => {
+  if (!hasSourceSummary(metadata)) {
+    return null
+  }
+  const details = toRecord(metadata)
+  const source = sourceFromMetadata(metadata)
+  const sourceText = [
+    optionalString(source.sheet_name),
+    source.row_number ? `Row ${String(source.row_number)}` : null,
+    optionalString(source.cell_ref),
+  ].filter(Boolean).join(' | ') || '-'
+  const uploadedAt = optionalString(source.uploaded_at) ?? optionalString(details.uploaded_at)
+  const verified = details.source_metadata_verified === true
+  return (
+    <dl className="correction-summary-list correction-source-summary">
+      <dt>Source</dt>
+      <dd>{sourceText}</dd>
+      {uploadedAt ? (
+        <>
+          <dt>Upload</dt>
+          <dd>{formatSingaporeDateTime(uploadedAt)}</dd>
+        </>
+      ) : null}
+      <dt>Verified</dt>
+      <dd>{verified ? 'Yes' : 'No - source selection was provided by the user'}</dd>
+    </dl>
+  )
+}
+
 const statusOptionsByTab: Partial<Record<ParsedDataTabId, { value: string; label: string }[]>> = {
   residents: [
     { value: 'active', label: 'Active' },
@@ -775,6 +1317,96 @@ const statusOptionsByTab: Partial<Record<ParsedDataTabId, { value: string; label
     { value: 'inactive', label: 'Inactive' },
     { value: 'employed', label: 'Employed' },
   ],
+}
+
+const residentPostingStatusOptions = [
+  { value: 'active', label: 'Active' },
+  { value: 'loa', label: 'LOA' },
+  { value: 'loa_working', label: 'LOA, continue working' },
+  { value: 'employed', label: 'Employed' },
+]
+
+const dayPartOptions = [
+  { value: '', label: 'Full day' },
+  { value: 'AM', label: 'AM' },
+  { value: 'PM', label: 'PM' },
+]
+
+const formF1StatusOptions = [
+  { value: 'Active', label: 'Active' },
+  { value: 'Extension', label: 'Extension' },
+  { value: 'Inactive', label: 'Inactive' },
+]
+
+const ayDateCategoryOptions = [
+  { value: 'im_subspec', label: 'IM subspec' },
+  { value: 'non_im_subspec', label: 'Non-IM subspec' },
+]
+
+const correctionFieldsByTab: Partial<Record<ParsedDataTabId, CorrectionFieldDefinition[]>> = {
+  residents: [
+    { key: 'employee_code', label: 'Employee Code', type: 'text' },
+    { key: 'name', label: 'Name', type: 'text' },
+    { key: 'mcr', label: 'MCR', type: 'text', highRisk: true },
+    { key: 'classification', label: 'Classification', type: 'text' },
+    { key: 'programme_code', label: 'Programme Code', type: 'text', highRisk: true },
+    { key: 'r_year', label: 'R Year', type: 'text' },
+    { key: 'reg_type', label: 'Registration Type', type: 'text' },
+    { key: 'base_institution', label: 'Base Institution', type: 'text' },
+    { key: 'email', label: 'Email', type: 'text' },
+    { key: 'phone', label: 'Phone', type: 'text' },
+    { key: 'status', label: 'Status', type: 'text', highRisk: true },
+    { key: 'employer_tag', label: 'Employer Tag', type: 'text', highRisk: true },
+  ],
+  'resident-postings': [
+    { key: 'posting_code', label: 'Posting Code', type: 'text' },
+    { key: 'start_date', label: 'Start Date', type: 'date' },
+    { key: 'end_date', label: 'End Date', type: 'date' },
+    { key: 'day_part', label: 'Day Part', type: 'select', options: dayPartOptions },
+    { key: 'month_label', label: 'Month Label', type: 'text' },
+    { key: 'r_year', label: 'R Year', type: 'text' },
+    { key: 'status', label: 'Status', type: 'select', options: residentPostingStatusOptions },
+    { key: 'loa_type', label: 'LOA Type', type: 'text' },
+    { key: 'loa_start_date', label: 'LOA Start Date', type: 'date' },
+    { key: 'loa_end_date', label: 'LOA End Date', type: 'date' },
+    { key: 'refresher_training_type', label: 'Refresher Training Type', type: 'text' },
+    { key: 'refresher_training_start', label: 'Refresher Training Start', type: 'date' },
+    { key: 'refresher_training_end', label: 'Refresher Training End', type: 'date' },
+    { key: 'active_months_weight', label: 'Active Months Weight', type: 'number' },
+    { key: 'working_days_in_month', label: 'Working Days In Month', type: 'number' },
+  ],
+  'teaching-targets': [
+    { key: 'monthly_target', label: 'Monthly Target', type: 'number' },
+    { key: 'is_tracked', label: 'Tracked', type: 'boolean' },
+    { key: 'is_reallocatable', label: 'Reallocatable', type: 'boolean' },
+    { key: 'tag', label: 'Tag', type: 'text' },
+    {
+      key: 'details_of_training',
+      label: 'Details of Training',
+      type: 'textarea',
+      helper: 'Teaching names are derived from this box',
+    },
+  ],
+  'form-f1-records': [
+    { key: 'status_raw', label: 'Status Raw', type: 'select', options: formF1StatusOptions },
+    { key: 'is_active', label: 'Active', type: 'boolean' },
+    { key: 'promotion_date', label: 'Promotion Date', type: 'date' },
+  ],
+  'academic-month-boundaries': [
+    { key: 'academic_year_label', label: 'Academic Year Label', type: 'text' },
+    { key: 'ay_date_category', label: 'AY Date Category', type: 'select', options: ayDateCategoryOptions },
+    { key: 'month_label', label: 'Month Label', type: 'text' },
+    { key: 'start_date', label: 'Start Date', type: 'date' },
+    { key: 'end_date', label: 'End Date', type: 'date' },
+  ],
+}
+
+const entityTypeByTab: Record<ParsedDataTabId, string> = {
+  residents: 'resident',
+  'resident-postings': 'resident_posting',
+  'teaching-targets': 'teaching_target',
+  'form-f1-records': 'form_f1_record',
+  'academic-month-boundaries': 'academic_month_boundary',
 }
 
 export const AdminParsedDataPage = () => {
@@ -797,17 +1429,34 @@ export const AdminParsedDataPage = () => {
   const [isRawLogLoading, setIsRawLogLoading] = useState(true)
   const [isRawDetailLoading, setIsRawDetailLoading] = useState(false)
   const [rawFragmentError, setRawFragmentError] = useState<string | null>(null)
+  const [correctionMode, setCorrectionMode] = useState<CorrectionMode>('none')
+  const [correctionDraft, setCorrectionDraft] = useState<Record<string, string | boolean>>({})
+  const [fragmentDraftGroups, setFragmentDraftGroups] = useState<FragmentDraftGroup[]>([])
+  const [isFragmentCorrection, setIsFragmentCorrection] = useState(false)
+  const [correctionReason, setCorrectionReason] = useState('')
+  const [correctionError, setCorrectionError] = useState<string | null>(null)
+  const [correctionSuccess, setCorrectionSuccess] = useState<string | null>(null)
+  const [isCorrectionSubmitting, setIsCorrectionSubmitting] = useState(false)
+  const [correctionHistory, setCorrectionHistory] = useState<ParsedDataCorrectionHistoryRow[]>([])
+  const [isCorrectionHistoryLoading, setIsCorrectionHistoryLoading] = useState(false)
+  const [correctionHistoryError, setCorrectionHistoryError] = useState<string | null>(null)
 
   const activeTab = useMemo(
     () => tabDefinitions.find((tab) => tab.id === activeTabId) ?? tabDefinitions[0],
     [activeTabId],
   )
+  const correctionFields = correctionFieldsByTab[activeTabId] ?? []
 
   const cacheScope = useMemo<CacheScope>(() => ({
     role,
     userId: demoAdminId,
     programmeScope: demoAdminProgrammes,
   }), [demoAdminId, demoAdminProgrammes, role])
+  const adminRequestParams = useMemo(() => ({
+    adminId: demoAdminId,
+    adminProgrammes: demoAdminProgrammes,
+    adminLevel: 'master' as const,
+  }), [demoAdminId, demoAdminProgrammes])
 
   const parsedDataCacheKey = useCallback((
     tabId: ParsedDataTabId,
@@ -868,6 +1517,21 @@ export const AdminParsedDataPage = () => {
       return typeof value === 'string' && value.trim().length > 0
     })
   }, [filters])
+
+  useEffect(() => {
+    setCorrectionMode('none')
+    setCorrectionReason('')
+    setCorrectionError(null)
+    setCorrectionSuccess(null)
+    setCorrectionDraft(
+      selectedRow
+        ? correctionFields.reduce<Record<string, string | boolean>>((draft, field) => {
+          draft[field.key] = draftValueForField(selectedRow, field)
+          return draft
+        }, {})
+        : {},
+    )
+  }, [correctionFields, selectedRow])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -968,6 +1632,30 @@ export const AdminParsedDataPage = () => {
       setIsRefetching(false)
     }
   }, [activeTabId, filters, loadRows, offset, parsedDataCacheKey])
+
+  const refreshActiveRowsAfterMutation = useCallback(async (nextSelectedRow?: ParsedDataRow | null) => {
+    clearMemoryCacheResource('admin.parsed-data')
+    clearMemoryCacheResource('admin.upload-logs.rdb-source-detail')
+    setIsRefetching(true)
+    try {
+      const key = parsedDataCacheKey(activeTabId, debouncedFilters, offset)
+      const response = await loadRows(activeTabId, debouncedFilters, offset)
+      setMemoryCache(key, response)
+      setRows(sortParsedRowsForDisplay(activeTabId, response.items))
+      setTotal(response.total)
+      if (nextSelectedRow) {
+        const refreshedRow = response.items.find((item) => item.id === nextSelectedRow.id) ?? nextSelectedRow
+        setSelectedRow(refreshedRow)
+      }
+    } catch (fetchError) {
+      setError(fetchError instanceof Error ? fetchError.message : 'Unable to refresh live data.')
+      if (nextSelectedRow) {
+        setSelectedRow(nextSelectedRow)
+      }
+    } finally {
+      setIsRefetching(false)
+    }
+  }, [activeTabId, debouncedFilters, loadRows, offset, parsedDataCacheKey])
 
   useEffect(() => {
     let active = true
@@ -1105,6 +1793,45 @@ export const AdminParsedDataPage = () => {
     }
   }, [activeTabId, demoAdminId, demoAdminProgrammes, selectedRdbUploadId, uploadLogDetailCacheKey])
 
+  useEffect(() => {
+    if (!selectedRow) {
+      setCorrectionHistory([])
+      setCorrectionHistoryError(null)
+      setIsCorrectionHistoryLoading(false)
+      return
+    }
+
+    let active = true
+    ;(async () => {
+      setIsCorrectionHistoryLoading(true)
+      setCorrectionHistoryError(null)
+      try {
+        const response = await listParsedDataCorrections({
+          ...adminRequestParams,
+          entityType: activeTabId === 'resident-postings' ? undefined : entityTypeByTab[activeTabId],
+          entityId: selectedRow.id,
+          limit: 50,
+        })
+        if (active) {
+          setCorrectionHistory(response.items)
+        }
+      } catch (fetchError) {
+        if (active) {
+          setCorrectionHistory([])
+          setCorrectionHistoryError(fetchError instanceof Error ? fetchError.message : 'Unable to load correction history.')
+        }
+      } finally {
+        if (active) {
+          setIsCorrectionHistoryLoading(false)
+        }
+      }
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [activeTabId, adminRequestParams, selectedRow])
+
   const firstItem = total === 0 ? 0 : offset + 1
   const lastItem = Math.min(offset + rows.length, total)
   const canGoPrevious = offset > 0
@@ -1132,12 +1859,694 @@ export const AdminParsedDataPage = () => {
     })
     return matches
   }, [activeTabId, rawFragments, rows])
-  const selectedRowRawFragments = selectedRow && activeTabId === 'resident-postings'
-    ? rawFragmentsByPostingId.get((selectedRow as ParsedResidentPostingRow).id) ?? []
-    : []
+  const selectedRowRawFragments = useMemo(() => (
+    selectedRow && activeTabId === 'resident-postings'
+      ? rawFragmentsByPostingId.get((selectedRow as ParsedResidentPostingRow).id) ?? []
+      : []
+  ), [activeTabId, rawFragmentsByPostingId, selectedRow])
   const selectedRowRawSourceGroups = useMemo(
     () => groupRawFragmentsForDrawer(selectedRowRawFragments),
     [selectedRowRawFragments],
+  )
+  const selectedSourceFragment = selectedRowRawSourceGroups[0]?.sourceFragment ?? null
+  const hasResidentPostingSourceContext = Boolean(
+    activeTabId === 'resident-postings' &&
+    selectedRow &&
+    selectedRowRawFragments.length > 0,
+  )
+  useEffect(() => {
+    if (selectedRow && activeTabId === 'resident-postings') {
+      setFragmentDraftGroups(buildFragmentDraftGroups(
+        selectedRow as ParsedResidentPostingRow,
+        selectedRowRawFragments,
+      ))
+    } else {
+      setFragmentDraftGroups([])
+    }
+  }, [activeTabId, selectedRow, selectedRowRawFragments])
+  useEffect(() => {
+    if (correctionMode === 'none') {
+      setIsFragmentCorrection(hasResidentPostingSourceContext)
+    }
+  }, [correctionMode, hasResidentPostingSourceContext])
+  const changedCorrectionFields = selectedRow
+    ? correctionFields.filter((field) => field.key in buildCorrectionChanges(selectedRow, correctionFields, correctionDraft))
+    : []
+  const fragmentDraftErrors = fragmentDraftValidationErrors(fragmentDraftGroups)
+  const isTeachingTargetReallocatableDraft = activeTabId === 'teaching-targets' && correctionDraft.is_reallocatable === true
+
+  const resetCorrectionDraft = () => {
+    if (!selectedRow) {
+      setCorrectionDraft({})
+      setCorrectionReason('')
+      return
+    }
+    setCorrectionDraft(correctionFields.reduce<Record<string, string | boolean>>((draft, field) => {
+      draft[field.key] = draftValueForField(selectedRow, field)
+      return draft
+    }, {}))
+    if (activeTabId === 'resident-postings') {
+      setFragmentDraftGroups(buildFragmentDraftGroups(
+        selectedRow as ParsedResidentPostingRow,
+        selectedRowRawFragments,
+      ))
+      setIsFragmentCorrection(selectedRowRawFragments.length > 0)
+    } else {
+      setIsFragmentCorrection(false)
+    }
+    setCorrectionReason('')
+    setCorrectionError(null)
+  }
+
+  const setCorrectionDraftField = (field: CorrectionFieldDefinition, value: string | boolean) => {
+    setCorrectionDraft((prev) => {
+      const next = { ...prev, [field.key]: value }
+      if (activeTabId === 'form-f1-records' && field.key === 'status_raw') {
+        if (value === 'Active' || value === 'Extension') {
+          next.is_active = true
+        }
+        if (value === 'Inactive') {
+          next.is_active = false
+        }
+      }
+      if (activeTabId === 'teaching-targets' && field.key === 'is_reallocatable' && value !== true) {
+        next.tag = ''
+      }
+      return next
+    })
+    setCorrectionError(null)
+    setCorrectionSuccess(null)
+  }
+
+  const submitRowCorrection = async () => {
+    if (!selectedRow) {
+      return
+    }
+    const changes = buildCorrectionChanges(selectedRow, correctionFields, correctionDraft)
+    if (Object.keys(changes).length === 0) {
+      setCorrectionError('Change at least one field before applying a correction.')
+      return
+    }
+    if (!correctionReason.trim()) {
+      setCorrectionError('Correction reason is required.')
+      return
+    }
+
+    const request: ParsedDataCorrectionRequest = {
+      changes,
+      correction_reason: correctionReason.trim(),
+      last_seen_updated_at: optionalString(rowValue(selectedRow, 'updated_at')),
+    }
+
+    setIsCorrectionSubmitting(true)
+    setCorrectionError(null)
+    try {
+      let updatedRow: ParsedDataRow
+      switch (activeTabId) {
+        case 'residents':
+          updatedRow = (await updateParsedResident(adminRequestParams, selectedRow.id, request)).item
+          break
+        case 'resident-postings':
+          updatedRow = (await updateParsedResidentPosting(adminRequestParams, selectedRow.id, request)).item
+          break
+        case 'teaching-targets':
+          updatedRow = (await updateParsedTeachingTarget(adminRequestParams, selectedRow.id, request)).item
+          break
+        case 'form-f1-records':
+          updatedRow = (await updateParsedFormF1Record(adminRequestParams, selectedRow.id, request)).item
+          break
+        case 'academic-month-boundaries':
+          updatedRow = (await updateParsedAcademicMonthBoundary(adminRequestParams, selectedRow.id, request)).item
+          break
+      }
+      setCorrectionMode('none')
+      setCorrectionReason('')
+      setCorrectionSuccess('Correction applied and audit history updated.')
+      setRows((currentRows) => currentRows.map((row) => (row.id === updatedRow.id ? updatedRow : row)))
+      await refreshActiveRowsAfterMutation(updatedRow)
+    } catch (submitError) {
+      setCorrectionError(correctionErrorMessage(submitError))
+    } finally {
+      setIsCorrectionSubmitting(false)
+    }
+  }
+
+  const addFragmentPostingGroup = () => {
+    setFragmentDraftGroups((current) => [...current, newDraftGroup()])
+    setCorrectionError(null)
+    setCorrectionSuccess(null)
+  }
+
+  const updateFragmentPostingGroup = (groupId: string, postingCode: string) => {
+    setFragmentDraftGroups((current) => current.map((group) => (
+      group.id === groupId ? { ...group, posting_code: postingCode } : group
+    )))
+    setCorrectionError(null)
+    setCorrectionSuccess(null)
+  }
+
+  const removeFragmentPostingGroup = (groupId: string) => {
+    setFragmentDraftGroups((current) => current.filter((group) => group.id !== groupId))
+    setCorrectionError(null)
+    setCorrectionSuccess(null)
+  }
+
+  const addFragmentRange = (groupId: string) => {
+    setFragmentDraftGroups((current) => current.map((group) => {
+      if (group.id !== groupId) {
+        return group
+      }
+      const lastRange = group.ranges[group.ranges.length - 1]
+      return {
+        ...group,
+        ranges: [
+          ...group.ranges,
+          newDraftRange(lastRange?.fragment_start_date, lastRange?.fragment_end_date, lastRange?.day_part),
+        ],
+      }
+    }))
+    setCorrectionError(null)
+    setCorrectionSuccess(null)
+  }
+
+  const updateFragmentRange = (
+    groupId: string,
+    rangeId: string,
+    field: keyof Omit<FragmentDraftRange, 'id'>,
+    value: string,
+  ) => {
+    setFragmentDraftGroups((current) => current.map((group) => {
+      if (group.id !== groupId) {
+        return group
+      }
+      return {
+        ...group,
+        ranges: group.ranges.map((range) => (
+          range.id === rangeId
+            ? {
+                ...range,
+                [field]: field === 'day_part' ? toFragmentDayPart(value) : value,
+              }
+            : range
+        )),
+      }
+    }))
+    setCorrectionError(null)
+    setCorrectionSuccess(null)
+  }
+
+  const removeFragmentRange = (groupId: string, rangeId: string) => {
+    setFragmentDraftGroups((current) => current.map((group) => (
+      group.id === groupId
+        ? { ...group, ranges: group.ranges.filter((range) => range.id !== rangeId) }
+        : group
+    )))
+    setCorrectionError(null)
+    setCorrectionSuccess(null)
+  }
+
+  const duplicateFragmentRange = (groupId: string, range: FragmentDraftRange) => {
+    setFragmentDraftGroups((current) => current.map((group) => (
+      group.id === groupId
+        ? {
+            ...group,
+            ranges: [
+              ...group.ranges,
+              newDraftRange(range.fragment_start_date, range.fragment_end_date, range.day_part),
+            ],
+          }
+        : group
+    )))
+    setCorrectionError(null)
+    setCorrectionSuccess(null)
+  }
+
+  const buildFragmentReparsePayload = () => {
+    if (!selectedRow || activeTabId !== 'resident-postings') {
+      return null
+    }
+    const postingRow = selectedRow as ParsedResidentPostingRow
+
+    return {
+      affected_resident_posting_ids: [postingRow.id],
+      corrected_source_cell_text: correctedSourceCellDraftText(fragmentDraftGroups),
+      corrected_fragments: fragmentDraftGroups.flatMap((group) => group.ranges.map((range) => ({
+        posting_code: group.posting_code.trim(),
+        fragment_start_date: range.fragment_start_date,
+        fragment_end_date: range.fragment_end_date,
+        day_part: range.day_part || null,
+      }))),
+      source_metadata: selectedSourceFragment && selectedRdbUploadId
+        ? {
+            upload_log_id: selectedRdbUploadId,
+            sheet_name: selectedSourceFragment.sheet_name,
+            row_number: selectedSourceFragment.row_number,
+            cell_ref: selectedSourceFragment.cell_ref,
+            source_column_header: selectedSourceFragment.source_column_header,
+            source_cell_text: selectedSourceFragment.source_cell_text,
+          }
+        : null,
+      correction_reason: correctionReason.trim(),
+      last_seen_rows: postingRow.updated_at
+        ? [{ id: postingRow.id, updated_at: postingRow.updated_at }]
+        : [],
+    }
+  }
+
+  const renderFragmentCorrectionToggle = () => {
+    if (activeTabId !== 'resident-postings') {
+      return null
+    }
+
+    return (
+      <label className="fragment-correction-toggle">
+        <input
+          type="checkbox"
+          checked={isFragmentCorrection}
+          onChange={(event) => {
+            setIsFragmentCorrection(event.target.checked)
+            setCorrectionError(null)
+            setCorrectionSuccess(null)
+          }}
+        />
+        <span>
+          <strong>This correction changes source fragments or posting date ranges</strong>
+          <small>
+            Use this when changing a simple posting into multiple fragments, merging fragments, or correcting AM/PM/full-day date ranges.
+          </small>
+        </span>
+      </label>
+    )
+  }
+
+  const renderCorrectionField = (field: CorrectionFieldDefinition) => {
+    const value = correctionDraft[field.key] ?? (field.type === 'boolean' ? false : '')
+    return (
+      <label key={field.key} className="correction-field">
+        <span>
+          {field.label}
+          {field.highRisk ? <em>High-risk field</em> : null}
+        </span>
+        {field.type === 'boolean' ? (
+          <select
+            value={value === true ? 'true' : 'false'}
+            onChange={(event) => setCorrectionDraftField(field, event.target.value === 'true')}
+            disabled={isCorrectionSubmitting}
+          >
+            <option value="true">Yes</option>
+            <option value="false">No</option>
+          </select>
+        ) : field.type === 'select' ? (
+          <select
+            value={String(value)}
+            onChange={(event) => setCorrectionDraftField(field, event.target.value)}
+            disabled={isCorrectionSubmitting}
+          >
+            {field.options?.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        ) : field.type === 'textarea' ? (
+          <textarea
+            value={String(value)}
+            onChange={(event) => setCorrectionDraftField(field, event.target.value)}
+            rows={4}
+            disabled={isCorrectionSubmitting}
+          />
+        ) : (
+          <input
+            type={field.type === 'date' ? 'date' : field.type === 'number' ? 'number' : 'text'}
+            step={field.key === 'active_months_weight' ? '0.25' : undefined}
+            value={String(value)}
+            onChange={(event) => setCorrectionDraftField(field, event.target.value)}
+            disabled={isCorrectionSubmitting}
+          />
+        )}
+        {field.helper ? <small>{field.helper}</small> : null}
+      </label>
+    )
+  }
+
+  const renderTeachingTargetCorrectionFields = () => {
+    const fieldByKey = new Map(correctionFields.map((field) => [field.key, field]))
+    const monthlyTargetField = fieldByKey.get('monthly_target')
+    const trackedField = fieldByKey.get('is_tracked')
+    const reallocatableField = fieldByKey.get('is_reallocatable')
+    const tagField = fieldByKey.get('tag')
+    const detailsField = fieldByKey.get('details_of_training')
+
+    return (
+      <div className="correction-form-grid teaching-target-correction-grid">
+        {monthlyTargetField ? renderCorrectionField(monthlyTargetField) : null}
+        {trackedField ? renderCorrectionField(trackedField) : null}
+        {reallocatableField ? renderCorrectionField(reallocatableField) : null}
+        <div className={`teaching-target-details-row ${isTeachingTargetReallocatableDraft ? 'has-tag' : 'no-tag'}`}>
+          {isTeachingTargetReallocatableDraft && tagField ? renderCorrectionField(tagField) : null}
+          {detailsField ? renderCorrectionField(detailsField) : null}
+        </div>
+      </div>
+    )
+  }
+
+  const renderCorrectionFields = () => {
+    if (activeTabId === 'teaching-targets') {
+      return renderTeachingTargetCorrectionFields()
+    }
+    return (
+      <div className="correction-form-grid">
+        {correctionFields.map(renderCorrectionField)}
+      </div>
+    )
+  }
+
+  const renderFragmentCorrectionEditor = () => {
+    if (!selectedRow || activeTabId !== 'resident-postings') {
+      return null
+    }
+
+    const draftSourceText = correctedSourceCellDraftText(fragmentDraftGroups)
+    const futureReparsePayload = buildFragmentReparsePayload()
+
+    return (
+      <div className="fragment-source-editor">
+        <div className="inline-callout callout-warning">
+          <span>
+            Fragment corrections require backend reparse. This will later run the same RDB parsing, multi-posting rule resolution, FM semantics, and warning generation used during upload.
+          </span>
+        </div>
+        {selectedSourceFragment ? (
+          <div className="fragment-source-context">
+            <h4>Source context</h4>
+            <div className="parsed-data-detail-grid raw-source-group-grid">
+              <div className="parsed-data-detail-item">
+                <span>RDB Upload</span>
+                <strong>{selectedRdbLogLabel ?? '-'}</strong>
+              </div>
+              <div className="parsed-data-detail-item">
+                <span>Source</span>
+                <strong>{formatSource(selectedSourceFragment)}</strong>
+              </div>
+              <div className="parsed-data-detail-item">
+                <span>Source Column Header</span>
+                <strong>{formatValue(selectedSourceFragment.source_column_header)}</strong>
+              </div>
+              <div className="parsed-data-detail-item">
+                <span>Original Source Cell Text</span>
+                <strong className="raw-fragment-source-text">{formatValue(selectedSourceFragment.source_cell_text)}</strong>
+              </div>
+            </div>
+            {selectedRowRawSourceGroups.length > 0 ? (
+              <div className="fragment-existing-groups">
+                <h4>Existing raw fragment groups</h4>
+                {selectedRowRawSourceGroups.map((sourceGroup) => (
+                  <div key={sourceGroup.key} className="raw-posting-group-card">
+                    {sourceGroup.postingGroups.map((postingGroup) => (
+                      <div key={postingGroup.key} className="fragment-existing-group-row">
+                        <strong className="mono-cell">
+                          {formatValue(postingGroup.rawPostingCode ?? postingGroup.normalizedPostingCode)}
+                        </strong>
+                        <ul className="raw-date-range-list">
+                          {postingGroup.fragments.map((fragment) => (
+                            <li key={fragment.id}>{formatFragmentDateRangeLine(fragment)}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <div className="inline-callout callout-info">
+            <span>No uploaded source-cell trace is linked to this row. The draft is prefilled from the persisted final row.</span>
+          </div>
+        )}
+        <div className="fragment-draft-editor">
+          <div className="fragment-editor-header">
+            <div>
+              <h4>Corrected source fragments</h4>
+              <p>Add posting groups and date ranges to model a simple, split, merged, or AM/PM source-cell correction.</p>
+            </div>
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={addFragmentPostingGroup}
+            >
+              Add posting group
+            </button>
+          </div>
+          {fragmentDraftGroups.length === 0 ? (
+            <div className="inline-callout callout-warning">
+              <span>Add at least one posting group to draft corrected source fragments.</span>
+            </div>
+          ) : (
+            fragmentDraftGroups.map((group, groupIndex) => (
+              <div key={group.id} className="fragment-draft-group">
+                <div className="fragment-draft-group-header">
+                  <label className="correction-field">
+                    <span>Posting group {groupIndex + 1}</span>
+                    <input
+                      type="text"
+                      value={group.posting_code}
+                      onChange={(event) => updateFragmentPostingGroup(group.id, event.target.value)}
+                      placeholder="e.g. TTSHGenMed"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="button button-secondary"
+                    onClick={() => removeFragmentPostingGroup(group.id)}
+                  >
+                    Remove group
+                  </button>
+                </div>
+                <div className="fragment-draft-ranges">
+                  {group.ranges.map((range, rangeIndex) => (
+                    <div key={range.id} className="fragment-draft-range">
+                      <label className="correction-field">
+                        <span>Range {rangeIndex + 1} start</span>
+                        <input
+                          type="date"
+                          value={range.fragment_start_date}
+                          onChange={(event) => updateFragmentRange(
+                            group.id,
+                            range.id,
+                            'fragment_start_date',
+                            event.target.value,
+                          )}
+                        />
+                      </label>
+                      <label className="correction-field">
+                        <span>Range {rangeIndex + 1} end</span>
+                        <input
+                          type="date"
+                          value={range.fragment_end_date}
+                          onChange={(event) => updateFragmentRange(
+                            group.id,
+                            range.id,
+                            'fragment_end_date',
+                            event.target.value,
+                          )}
+                        />
+                      </label>
+                      <label className="correction-field">
+                        <span>Day part</span>
+                        <select
+                          value={range.day_part}
+                          onChange={(event) => updateFragmentRange(group.id, range.id, 'day_part', event.target.value)}
+                        >
+                          {dayPartOptions.map((option) => (
+                            <option key={option.value || 'full-day'} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="fragment-range-actions">
+                        <button
+                          type="button"
+                          className="button button-secondary"
+                          onClick={() => duplicateFragmentRange(group.id, range)}
+                        >
+                          Duplicate
+                        </button>
+                        <button
+                          type="button"
+                          className="button button-secondary"
+                          onClick={() => removeFragmentRange(group.id, range.id)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={() => addFragmentRange(group.id)}
+                >
+                  Add date range
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+        <label className="correction-reason">
+          Correction reason
+          <textarea
+            value={correctionReason}
+            onChange={(event) => {
+              setCorrectionReason(event.target.value)
+              setCorrectionError(null)
+            }}
+            rows={3}
+            maxLength={500}
+            required
+          />
+        </label>
+        <div className="fragment-draft-preview">
+          <h4>Corrected source-cell preview</h4>
+          <pre>{draftSourceText || 'Add posting groups and date ranges to preview corrected source-cell text.'}</pre>
+          <p>This is the source-cell input that will be sent for backend reparse once the endpoint is available.</p>
+          {futureReparsePayload ? (
+            <small>
+              Prepared {futureReparsePayload.corrected_fragments.length} corrected fragment row{futureReparsePayload.corrected_fragments.length === 1 ? '' : 's'} for future reparse.
+            </small>
+          ) : null}
+        </div>
+        {fragmentDraftErrors.length > 0 ? (
+          <div className="inline-callout callout-warning parsed-data-inline-error">
+            <span>{fragmentDraftErrors.join(' ')}</span>
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
+  const renderCorrectionPanel = () => {
+    if (!selectedRow || correctionMode === 'none') {
+      return null
+    }
+    const fragmentSaveBlocked = activeTabId === 'resident-postings' && isFragmentCorrection
+    return (
+      <div className="detail-block parsed-data-correction-panel">
+        <h3>Edit row</h3>
+        <p>Update the row directly, or enable source-fragment correction when the posting cell needs to be split, merged, or re-parsed.</p>
+        {renderFragmentCorrectionToggle()}
+        {fragmentSaveBlocked ? (
+          renderFragmentCorrectionEditor()
+        ) : (
+          renderCorrectionFields()
+        )}
+        <label className="correction-reason">
+          Correction reason
+          <textarea
+            value={correctionReason}
+            onChange={(event) => {
+              setCorrectionReason(event.target.value)
+              setCorrectionError(null)
+            }}
+            rows={3}
+            maxLength={500}
+            disabled={isCorrectionSubmitting}
+            required
+          />
+        </label>
+        <div className="correction-preview">
+          {!fragmentSaveBlocked ? (
+            <>
+              <h4>Before / after preview</h4>
+              {changedCorrectionFields.length === 0 ? (
+                <p>No field changes selected.</p>
+              ) : (
+                <div className="correction-preview-table">
+                  {changedCorrectionFields.map((field) => (
+                    <div key={field.key} className="correction-preview-row">
+                      <span>{field.label}</span>
+                      <strong>{formatJsonPreview(rowValue(selectedRow, field.key))}</strong>
+                      <strong>{formatJsonPreview(correctionValueForField(field, correctionDraft[field.key] ?? ''))}</strong>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : null}
+        </div>
+        {correctionError ? (
+          <div className="inline-callout callout-warning parsed-data-inline-error">
+            <span>{correctionError}</span>
+          </div>
+        ) : null}
+        {fragmentSaveBlocked ? (
+          <div className="inline-callout callout-warning parsed-data-inline-error">
+            <span>Backend reparse endpoint required</span>
+          </div>
+        ) : null}
+        <div className="correction-actions">
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => {
+              resetCorrectionDraft()
+              setCorrectionMode('none')
+            }}
+            disabled={isCorrectionSubmitting}
+          >
+            Back to inspection
+          </button>
+          <button
+            type="button"
+            className="button button-primary"
+            onClick={() => void submitRowCorrection()}
+            disabled={
+              isCorrectionSubmitting ||
+              !correctionReason.trim() ||
+              (fragmentSaveBlocked
+                ? true
+                : changedCorrectionFields.length === 0)
+            }
+            title={fragmentSaveBlocked ? 'Backend reparse endpoint required' : undefined}
+          >
+            {isCorrectionSubmitting ? 'Saving...' : 'Save correction'}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  const renderCorrectionHistory = () => (
+    <div className="detail-block parsed-data-correction-history">
+      <h3>Correction history</h3>
+      {isCorrectionHistoryLoading ? (
+        <p>Loading correction history...</p>
+      ) : correctionHistoryError ? (
+        <p>{correctionHistoryError}</p>
+      ) : correctionHistory.length === 0 ? (
+        <p>No corrections recorded for this row.</p>
+      ) : (
+        correctionHistory.map((entry) => (
+          <div key={entry.id} className="correction-history-entry">
+            <div className="correction-history-header">
+              <strong>{formatCorrectionActionLabel(entry.action)}</strong>
+              <span>{formatSingaporeDateTime(entry.created_at)}</span>
+            </div>
+            <p>{entry.correction_reason ?? 'No reason recorded.'}</p>
+            <dl className="correction-summary-list">
+              <dt>Entity</dt>
+              <dd>{formatCorrectionFieldLabel(entry.entity_type)}</dd>
+            </dl>
+            {entry.action === 'admin.parsed_data.resident_posting.source_cell_replace'
+              ? renderSourceCellReplacementSummary(entry)
+              : renderCorrectionDiff(entry)}
+            {renderSourceSummary(entry.metadata_json)}
+          </div>
+        ))
+      )}
+    </div>
   )
 
   const renderFilter = (filter: FilterDefinition) => {
@@ -1244,8 +2653,8 @@ export const AdminParsedDataPage = () => {
   return (
     <div className="page parsed-data-page">
       <PageHero
-        title="Parsed Data"
-        subtitle="Read-only preview of persisted parser output"
+        title="Live Data"
+        subtitle="Review uploaded records, inspect parser traceability, and apply audited corrections."
         actions={
           <button
             type="button"
@@ -1260,11 +2669,11 @@ export const AdminParsedDataPage = () => {
       />
 
       <section className="parsed-data-callout">
-        Parsed Data Preview is read-only. Small rectifications must be handled through source uploads or future controlled correction workflows.
+        Raw/source evidence remains read-only. Editable rows use audited corrections with before/after history.
       </section>
 
       <section className="card parsed-data-tab-card">
-        <div className="parsed-data-tabs" role="tablist" aria-label="Parsed data tables">
+        <div className="parsed-data-tabs" role="tablist" aria-label="Live data tables">
           {tabDefinitions.map((tab) => (
             <button
               key={tab.id}
@@ -1354,10 +2763,10 @@ export const AdminParsedDataPage = () => {
           </div>
         </div>
         {isInitialLoading && rows.length === 0 ? (
-          <div className="warning-state-card parsed-data-state-card">Loading parsed data...</div>
+          <div className="warning-state-card parsed-data-state-card">Loading live data...</div>
         ) : error && rows.length === 0 ? (
           <div className="warning-state-card parsed-data-state-card">
-            <strong>Parsed data could not be loaded.</strong>
+            <strong>Live data could not be loaded.</strong>
             <p>{error}</p>
             <button type="button" className="button button-secondary" onClick={() => void fetchRows()}>
               Retry
@@ -1365,10 +2774,10 @@ export const AdminParsedDataPage = () => {
           </div>
         ) : rows.length === 0 ? (
           <div className="warning-state-card parsed-data-state-card">
-            <strong>{hasFilters ? 'No parsed rows match these filters' : `No ${activeTab.label.toLowerCase()} rows found`}</strong>
+            <strong>{hasFilters ? 'No live rows match these filters' : `No ${activeTab.label.toLowerCase()} rows found`}</strong>
             <p>
               {hasFilters
-                ? 'Clear filters or adjust the search to inspect persisted parser output.'
+                ? 'Clear filters or adjust the search to inspect persisted upload data.'
                 : 'Rows will appear here after the corresponding parser has persisted upload data.'}
             </p>
           </div>
@@ -1455,119 +2864,148 @@ export const AdminParsedDataPage = () => {
       </section>
 
       <DetailDrawer
-        title={selectedRow ? `${activeTab.label} row` : 'Parsed data row'}
+        title={selectedRow ? `${activeTab.label} row` : 'Live data row'}
         open={Boolean(selectedRow)}
         onClose={() => setSelectedRow(null)}
       >
         {selectedRow ? (
           <div className="warning-detail parsed-data-detail">
-            <div className="detail-block">
-              <h3>Read-only row inspection</h3>
-              <p>This drawer shows the persisted parser row exactly as exposed by the preview read model.</p>
-            </div>
-            <div className="parsed-data-detail-grid">
-              {Object.entries(selectedRow).map(([key, value]) => (
-                <div key={key} className="parsed-data-detail-item">
-                  <span>{humanizeKey(key)}</span>
-                  <strong className={isMonoField(key) ? 'mono-cell' : undefined}>
-                    {typeof value === 'boolean'
-                      ? formatValue(value)
-                      : key.endsWith('_date') || key === 'holiday_date' || key === 'start_date' || key === 'end_date'
-                        ? formatDate(value as string | null)
-                        : formatValue(value as string | number | null)}
-                  </strong>
+            {correctionMode !== 'none' ? (
+              renderCorrectionPanel()
+            ) : (
+              <>
+                <div className="detail-block">
+                  <h3>Row inspection</h3>
+                  <p>This drawer shows the persisted upload row and read-only source evidence.</p>
+                  <div className="correction-actions">
+                    {correctionFields.length > 0 ? (
+                      <button
+                        type="button"
+                        className="button button-secondary"
+                        onClick={() => {
+                          resetCorrectionDraft()
+                          setCorrectionMode('row')
+                          setCorrectionError(null)
+                          setCorrectionSuccess(null)
+                        }}
+                        disabled={isCorrectionSubmitting}
+                      >
+                        Edit row
+                      </button>
+                    ) : null}
+                  </div>
+                  {correctionSuccess ? (
+                    <div className="inline-callout callout-success">
+                      <span>{correctionSuccess}</span>
+                    </div>
+                  ) : null}
                 </div>
-              ))}
-            </div>
-            {activeTabId === 'resident-postings' ? (
-              <div className="detail-block raw-fragment-list">
-                <h3>Raw source traceability</h3>
-                <p>RDB upload source: {selectedRdbLogLabel ?? '-'}</p>
-                {isRawLogLoading || isRawDetailLoading ? (
-                  <p>Loading raw source context...</p>
-                ) : selectedRowRawFragments.length === 0 ? (
-                  <p>No raw fragment mapped to this posting row.</p>
-                ) : (
-                  selectedRowRawSourceGroups.map((sourceGroup) => (
-                    <div key={sourceGroup.key} className="raw-fragment-detail-card">
-                      <div className="parsed-data-detail-grid raw-source-group-grid">
-                        <div className="parsed-data-detail-item">
-                          <span>Source</span>
-                          <strong>{formatSource(sourceGroup.sourceFragment)}</strong>
-                        </div>
-                        <div className="parsed-data-detail-item">
-                          <span>Source Column Header</span>
-                          <strong>{formatValue(sourceGroup.sourceFragment.source_column_header)}</strong>
-                        </div>
-                        <div className="parsed-data-detail-item">
-                          <span>Source Cell Text</span>
-                          <strong className="raw-fragment-source-text">{formatValue(sourceGroup.sourceFragment.source_cell_text)}</strong>
-                        </div>
-                      </div>
-                      {sourceGroup.postingGroups.map((postingGroup) => (
-                        <div key={postingGroup.key} className="raw-posting-group-card">
-                          <div className="parsed-data-detail-grid">
+                <div className="parsed-data-detail-grid">
+                  {Object.entries(selectedRow).map(([key, value]) => (
+                    <div key={key} className="parsed-data-detail-item">
+                      <span>{humanizeKey(key)}</span>
+                      <strong className={isMonoField(key) ? 'mono-cell' : undefined}>
+                        {typeof value === 'boolean'
+                          ? formatValue(value)
+                          : key.endsWith('_date') || key === 'holiday_date' || key === 'start_date' || key === 'end_date'
+                            ? formatDate(value as string | null)
+                            : formatValue(value as string | number | null)}
+                      </strong>
+                    </div>
+                  ))}
+                </div>
+                {activeTabId === 'resident-postings' ? (
+                  <div className="detail-block raw-fragment-list">
+                    <h3>Raw source traceability</h3>
+                    <p>RDB upload source: {selectedRdbLogLabel ?? '-'}</p>
+                    {isRawLogLoading || isRawDetailLoading ? (
+                      <p>Loading raw source context...</p>
+                    ) : selectedRowRawFragments.length === 0 ? (
+                      <p>No raw fragment mapped to this posting row.</p>
+                    ) : (
+                      selectedRowRawSourceGroups.map((sourceGroup) => (
+                        <div key={sourceGroup.key} className="raw-fragment-detail-card">
+                          <div className="parsed-data-detail-grid raw-source-group-grid">
                             <div className="parsed-data-detail-item">
-                              <span>Raw Posting Group</span>
-                              <strong className="mono-cell">{formatValue(postingGroup.rawPostingCode)}</strong>
+                              <span>Source</span>
+                              <strong>{formatSource(sourceGroup.sourceFragment)}</strong>
                             </div>
                             <div className="parsed-data-detail-item">
-                              <span>Normalized Posting</span>
-                              <strong className="mono-cell">{formatValue(postingGroup.normalizedPostingCode)}</strong>
+                              <span>Source Column Header</span>
+                              <strong>{formatValue(sourceGroup.sourceFragment.source_column_header)}</strong>
                             </div>
                             <div className="parsed-data-detail-item">
-                              <span>Parser Decision</span>
-                              <strong>
-                                <StatusBadge
-                                  label={formatDecisionLabel(postingGroup.decision)}
-                                  tone={decisionTone(postingGroup.decision)}
-                                />
-                              </strong>
-                            </div>
-                            <div className="parsed-data-detail-item">
-                              <span>Effective Posting</span>
-                              <strong className="mono-cell">{formatValue(postingGroup.effectivePostingCode)}</strong>
-                            </div>
-                            <div className="parsed-data-detail-item">
-                              <span>Rule Type</span>
-                              <strong>{formatValue(postingGroup.ruleType ? humanizeKey(postingGroup.ruleType) : null)}</strong>
-                            </div>
-                            <div className="parsed-data-detail-item">
-                              <span>Rule ID</span>
-                              <strong className="mono-cell">{formatValue(postingGroup.ruleId)}</strong>
-                            </div>
-                            <div className="parsed-data-detail-item">
-                              <span>Warning</span>
-                              <strong>
-                                {postingGroup.warningId ? (
-                                  <a
-                                    href={`/admin/upload/warnings?mode=history&upload_type=rdb&search=${encodeURIComponent(postingGroup.warningId)}`}
-                                  >
-                                    {postingGroup.warningId}
-                                  </a>
-                                ) : (
-                                  '-'
-                                )}
-                              </strong>
-                            </div>
-                            <div className="parsed-data-detail-item">
-                              <span>Fragment Date Ranges</span>
-                              <strong>
-                                <ul className="raw-date-range-list">
-                                  {postingGroup.fragments.map((fragment) => (
-                                    <li key={fragment.id}>{formatFragmentDateRangeLine(fragment)}</li>
-                                  ))}
-                                </ul>
-                              </strong>
+                              <span>Source Cell Text</span>
+                              <strong className="raw-fragment-source-text">{formatValue(sourceGroup.sourceFragment.source_cell_text)}</strong>
                             </div>
                           </div>
+                          {sourceGroup.postingGroups.map((postingGroup) => (
+                            <div key={postingGroup.key} className="raw-posting-group-card">
+                              <div className="parsed-data-detail-grid">
+                                <div className="parsed-data-detail-item">
+                                  <span>Raw Posting Group</span>
+                                  <strong className="mono-cell">{formatValue(postingGroup.rawPostingCode)}</strong>
+                                </div>
+                                <div className="parsed-data-detail-item">
+                                  <span>Normalized Posting</span>
+                                  <strong className="mono-cell">{formatValue(postingGroup.normalizedPostingCode)}</strong>
+                                </div>
+                                <div className="parsed-data-detail-item">
+                                  <span>Parser Decision</span>
+                                  <strong>
+                                    <StatusBadge
+                                      label={formatDecisionLabel(postingGroup.decision)}
+                                      tone={decisionTone(postingGroup.decision)}
+                                    />
+                                  </strong>
+                                </div>
+                                <div className="parsed-data-detail-item">
+                                  <span>Effective Posting</span>
+                                  <strong className="mono-cell">{formatValue(postingGroup.effectivePostingCode)}</strong>
+                                </div>
+                                <div className="parsed-data-detail-item">
+                                  <span>Rule Type</span>
+                                  <strong>{formatValue(postingGroup.ruleType ? humanizeKey(postingGroup.ruleType) : null)}</strong>
+                                </div>
+                                <div className="parsed-data-detail-item">
+                                  <span>Rule ID</span>
+                                  <strong className="mono-cell">{formatValue(postingGroup.ruleId)}</strong>
+                                </div>
+                                <div className="parsed-data-detail-item">
+                                  <span>Warning</span>
+                                  <strong>
+                                    {postingGroup.warningId ? (
+                                      <a
+                                        href={`/admin/upload/warnings?mode=history&upload_type=rdb&search=${encodeURIComponent(postingGroup.warningId)}`}
+                                      >
+                                        {postingGroup.warningId}
+                                      </a>
+                                    ) : (
+                                      '-'
+                                    )}
+                                  </strong>
+                                </div>
+                                <div className="parsed-data-detail-item">
+                                  <span>Fragment Date Ranges</span>
+                                  <strong>
+                                    <ul className="raw-date-range-list">
+                                      {postingGroup.fragments.map((fragment) => (
+                                        <li key={fragment.id}>{formatFragmentDateRangeLine(fragment)}</li>
+                                      ))}
+                                    </ul>
+                                  </strong>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
-                  ))
-                )}
-              </div>
-            ) : null}
+                      ))
+                    )}
+                  </div>
+                ) : null}
+                {renderCorrectionHistory()}
+              </>
+            )}
           </div>
         ) : null}
       </DetailDrawer>
