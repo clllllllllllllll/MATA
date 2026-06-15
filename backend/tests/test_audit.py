@@ -237,17 +237,30 @@ def test_staff_actor_dependency_trims_valid_actor_name() -> None:
     assert payload["raw_scope_metadata"]["programme_scope"] == ["DR", "GRM"]
 
 
-def test_staff_actor_dependency_rejects_missing_blank_overlong_and_control_actor_names() -> None:
+def test_staff_actor_dependency_uses_fallback_for_missing_and_blank_actor_names() -> None:
     client = _staff_actor_client()
 
     responses = [
         client.post("/test/staff-actor", headers=_staff_headers(actor_name=None)),
         client.post("/test/staff-actor", headers=_staff_headers(actor_name="   ")),
+    ]
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert [response.json()["actor_name"] for response in responses] == [
+        "Unknown actor",
+        "Unknown actor",
+    ]
+
+
+def test_staff_actor_dependency_rejects_malformed_explicit_actor_names() -> None:
+    client = _staff_actor_client()
+
+    responses = [
         client.post("/test/staff-actor", headers=_staff_headers(actor_name="A" * 121)),
         client.post("/test/staff-actor", headers=_staff_headers(actor_name="Dr\nLee")),
     ]
 
-    assert [response.status_code for response in responses] == [422, 422, 422, 422]
+    assert [response.status_code for response in responses] == [422, 422]
 
 
 def test_staff_actor_dependency_rejects_resident_and_external_resident_roles() -> None:

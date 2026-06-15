@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom'
 import { uploadWorkbook } from '../../api/uploads'
 import { IconCalendar, IconFile, IconGrid } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
-import { StaffActorNameField } from '../../components/StaffActorNameField'
 import { UploadCard } from '../../components/UploadCard'
 import { frontendConfig } from '../../config/frontendConfig'
 import { useAppState } from '../../context/useAppState'
@@ -62,8 +61,6 @@ export const AdminUploadPage = () => {
     setSelectedProgrammeCode,
     demoAdminId,
     demoAdminProgrammes,
-    staffActorName,
-    setStaffActorName,
     addUploadResult,
     uploadHistory,
   } = useAppState()
@@ -86,7 +83,6 @@ export const AdminUploadPage = () => {
       programmeCode: selectedProgrammeCode,
       adminId: demoAdminId,
       adminProgrammes: demoAdminProgrammes,
-      actorName: staffActorName.trim(),
     })
 
     addUploadResult({
@@ -191,7 +187,6 @@ export const AdminUploadPage = () => {
               programme at a time.
             </small>
           </label>
-          <StaffActorNameField value={staffActorName} onChange={setStaffActorName} />
         </div>
       </section>
 
@@ -202,8 +197,6 @@ export const AdminUploadPage = () => {
           sourceStatus={toDisplayStatus(latestByType.get('public_holidays')?.uploadedAtIso)}
           lastUploadedText={formatDateTime(latestByType.get('public_holidays')?.uploadedAtIso)}
           accept={acceptedByType.public_holidays}
-          requiresActorName
-          actorNameMissing={staffActorName.trim().length === 0}
           onUpload={(file) => uploadOne('public_holidays', file)}
           onReviewWarnings={() => reviewWarningsForUpload('public_holidays')}
         />
@@ -215,8 +208,6 @@ export const AdminUploadPage = () => {
           lastUploadedText={formatDateTime(latestByType.get('rdb')?.uploadedAtIso)}
           accept={acceptedByType.rdb}
           requiresReportingPeriod
-          requiresActorName
-          actorNameMissing={staffActorName.trim().length === 0}
           reportingPeriodId={reportingPeriodId}
           onUpload={(file) => uploadOne('rdb', file)}
           onReviewWarnings={() => reviewWarningsForUpload('rdb')}
@@ -230,8 +221,6 @@ export const AdminUploadPage = () => {
           accept={acceptedByType.ttf}
           requiresReportingPeriod
           requiresProgramme
-          requiresActorName
-          actorNameMissing={staffActorName.trim().length === 0}
           reportingPeriodId={reportingPeriodId}
           programmeCode={selectedProgrammeCode}
           onUpload={(file) => uploadOne('ttf', file)}
@@ -245,8 +234,6 @@ export const AdminUploadPage = () => {
           lastUploadedText={formatDateTime(latestByType.get('form_f1')?.uploadedAtIso)}
           accept={acceptedByType.form_f1}
           requiresReportingPeriod
-          requiresActorName
-          actorNameMissing={staffActorName.trim().length === 0}
           reportingPeriodId={reportingPeriodId}
           onUpload={(file) => uploadOne('form_f1', file)}
           onReviewWarnings={() => reviewWarningsForUpload('form_f1')}

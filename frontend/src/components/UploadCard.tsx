@@ -3,7 +3,6 @@ import { StatusBadge } from './StatusBadge'
 import { getSummaryCounts, getWarningsCount } from '../utils/warnings'
 import { ApiRequestError } from '../api/http'
 import { IconCheck, IconWarn } from './icons'
-import { STAFF_ACTOR_REQUIRED_MESSAGE } from './StaffActorNameField'
 
 interface UploadCardProps {
   icon: ReactNode
@@ -19,8 +18,6 @@ interface UploadCardProps {
   programmeCode?: string
   requiresReportingPeriod?: boolean
   requiresProgramme?: boolean
-  requiresActorName?: boolean
-  actorNameMissing?: boolean
   onUpload: (file: File) => Promise<Record<string, unknown>>
   onReviewWarnings?: () => void
 }
@@ -36,8 +33,6 @@ export const UploadCard = ({
   programmeCode,
   requiresReportingPeriod = false,
   requiresProgramme = false,
-  requiresActorName = false,
-  actorNameMissing = false,
   onUpload,
   onReviewWarnings,
 }: UploadCardProps) => {
@@ -58,8 +53,7 @@ export const UploadCard = ({
     status === 'uploading' ||
     status === 'parsing' ||
     (requiresReportingPeriod && !(reportingPeriodId && reportingPeriodId.trim().length > 0)) ||
-    (requiresProgramme && !(programmeCode && programmeCode.trim().length > 0)) ||
-    (requiresActorName && actorNameMissing)
+    (requiresProgramme && !(programmeCode && programmeCode.trim().length > 0))
 
   const summary = useMemo(() => (response ? getSummaryCounts(response) : null), [response])
   const warningsCount = response ? getWarningsCount(response) : 0
@@ -71,7 +65,6 @@ export const UploadCard = ({
     requiresReportingPeriod && !(reportingPeriodId && reportingPeriodId.trim().length > 0)
   const missingProgrammeCode =
     requiresProgramme && !(programmeCode && programmeCode.trim().length > 0)
-  const missingActorName = requiresActorName && actorNameMissing
 
   useEffect(() => {
     if (status !== 'uploading') {
@@ -184,12 +177,6 @@ export const UploadCard = ({
         details = error.details
         if (error.status === 401 || error.status === 403) {
           message = 'Upload was rejected because the demo admin is not authorised for this action.'
-        } else if (
-          error.status === 422 &&
-          (/actor/i.test(error.message) ||
-            JSON.stringify(error.details ?? '').toLowerCase().includes('actor'))
-        ) {
-          message = STAFF_ACTOR_REQUIRED_MESSAGE
         } else if (error.status === 422) {
           message =
             'Upload failed validation or parser checks. Check the workbook type, required fields, and reporting period.'
@@ -283,7 +270,7 @@ export const UploadCard = ({
             )}
           </label>
 
-          {missingReportingPeriod || missingProgrammeCode || missingActorName ? (
+          {missingReportingPeriod || missingProgrammeCode ? (
             <div className="upload-validation-slot" aria-live="polite">
               {missingReportingPeriod ? (
                 <small className="upload-validation-text">
@@ -294,9 +281,6 @@ export const UploadCard = ({
                 <small className="upload-validation-text">
                   Programme code is required for TTF and must be one programme within your configured scope.
                 </small>
-              ) : null}
-              {missingActorName ? (
-                <small className="upload-validation-text">{STAFF_ACTOR_REQUIRED_MESSAGE}</small>
               ) : null}
             </div>
           ) : null}

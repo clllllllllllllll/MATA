@@ -23,8 +23,6 @@ export interface AppStateContextValue {
   reportingPeriodsLoading: boolean
   reportingPeriodsError: string | null
   reloadReportingPeriods: () => Promise<void>
-  staffActorName: string
-  setStaffActorName: (actorName: string) => void
   demoAdminId: string
   demoAdminProgrammes: string[]
   uploadHistory: UploadMeta[]

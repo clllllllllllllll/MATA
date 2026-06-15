@@ -176,8 +176,11 @@ class ParsedResidentRow(BaseModel):
     classification: str | None = None
     reg_type: str | None = None
     base_institution: str | None = None
+    email: str | None = None
+    phone: str | None = None
     employer_tag: str | None = None
     status: str | None = None
+    updated_at: datetime | None = None
 
 
 class ParsedResidentListResponse(BaseModel):
@@ -198,6 +201,7 @@ class ParsedResidentPostingRow(BaseModel):
     reporting_period_label: str | None = None
     start_date: date
     end_date: date
+    day_part: str | None = None
     month_label: str | None = None
     r_year: str
     status: str
@@ -205,8 +209,11 @@ class ParsedResidentPostingRow(BaseModel):
     loa_start_date: date | None = None
     loa_end_date: date | None = None
     refresher_training_type: str | None = None
+    refresher_training_start: date | None = None
+    refresher_training_end: date | None = None
     active_months_weight: Decimal | None = None
     working_days_in_month: int | None = None
+    updated_at: datetime | None = None
 
 
 class ParsedResidentPostingListResponse(BaseModel):
@@ -231,6 +238,7 @@ class ParsedTeachingTargetRow(BaseModel):
     is_reallocatable: bool
     tag: str | None = None
     details_of_training: str | None = None
+    updated_at: datetime | None = None
 
 
 class ParsedTeachingTargetListResponse(BaseModel):
@@ -273,6 +281,7 @@ class ParsedFormF1RecordRow(BaseModel):
     is_active: bool
     promotion_date: date | None = None
     upload_id: UUID | None = None
+    updated_at: datetime | None = None
 
 
 class ParsedFormF1RecordListResponse(BaseModel):
@@ -305,6 +314,152 @@ class ParsedAcademicMonthBoundaryRow(BaseModel):
     start_date: date
     end_date: date
     upload_id: UUID | None = None
+    updated_at: datetime | None = None
+
+
+class ParsedDataCorrectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    changes: dict[str, Any]
+    correction_reason: str = Field(min_length=1, max_length=500)
+    last_seen_updated_at: datetime | None = None
+
+    @field_validator("correction_reason")
+    @classmethod
+    def _trim_reason(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("correction_reason is required")
+        return trimmed
+
+    @field_validator("changes")
+    @classmethod
+    def _require_changes(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if not value:
+            raise ValueError("changes must include at least one field")
+        return value
+
+
+class ParsedDataCorrectionResponse(BaseModel):
+    item: dict[str, Any]
+    audit_log_id: UUID
+    entity_type: str
+    entity_id: UUID | None = None
+    updated_fields: list[str]
+
+
+class ResidentPostingReplacementRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    resident_id: UUID
+    posting_code: str | None = None
+    reporting_period_id: UUID
+    start_date: date
+    end_date: date
+    day_part: Literal["AM", "PM"] | None = None
+    month_label: str | None = None
+    r_year: str
+    status: str
+    loa_type: str | None = None
+    loa_start_date: date | None = None
+    loa_end_date: date | None = None
+    refresher_training_type: str | None = None
+    refresher_training_start: date | None = None
+    refresher_training_end: date | None = None
+    active_months_weight: Decimal = Decimal("1.0")
+    working_days_in_month: int | None = None
+
+    @model_validator(mode="after")
+    def _validate_dates(self) -> "ResidentPostingReplacementRow":
+        if self.start_date > self.end_date:
+            raise ValueError("start_date must be on or before end_date")
+        return self
+
+
+class ParsedDataLastSeenRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    updated_at: datetime
+
+
+class ParsedDataSourceCellMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    upload_log_id: UUID | None = None
+    sheet_name: str | None = None
+    row_number: int | None = Field(default=None, ge=1)
+    cell_ref: str | None = None
+    source_column_header: str | None = None
+    source_cell_text: str | None = None
+
+
+class ResidentPostingSourceCellReplaceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    affected_resident_posting_ids: list[UUID]
+    replacement_rows: list[ResidentPostingReplacementRow]
+    correction_reason: str = Field(min_length=1, max_length=500)
+    source: ParsedDataSourceCellMetadata = Field(default_factory=ParsedDataSourceCellMetadata)
+    last_seen_rows: list[ParsedDataLastSeenRow]
+
+    @field_validator("correction_reason")
+    @classmethod
+    def _trim_reason(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("correction_reason is required")
+        return trimmed
+
+    @field_validator("affected_resident_posting_ids", "replacement_rows")
+    @classmethod
+    def _require_non_empty_list(cls, value):
+        if not value:
+            raise ValueError("must include at least one item")
+        return value
+
+    @model_validator(mode="after")
+    def _require_token_for_each_affected_row(self) -> "ResidentPostingSourceCellReplaceRequest":
+        affected = [str(row_id) for row_id in self.affected_resident_posting_ids]
+        tokens = [str(row.id) for row in self.last_seen_rows]
+        if len(set(affected)) != len(affected):
+            raise ValueError("affected_resident_posting_ids must not contain duplicates")
+        if len(set(tokens)) != len(tokens):
+            raise ValueError("last_seen_rows must not contain duplicate ids")
+        if set(affected) != set(tokens):
+            raise ValueError("last_seen_rows must include one token for every affected resident posting")
+        return self
+
+
+class ParsedDataSourceCellReplaceResponse(BaseModel):
+    before_rows: list[dict[str, Any]]
+    after_rows: list[dict[str, Any]]
+    audit_log_id: UUID
+    entity_type: str
+    entity_id: UUID | None = None
+    updated_fields: list[str]
+
+
+class ParsedDataCorrectionHistoryRow(BaseModel):
+    id: UUID
+    created_at: datetime
+    actor_user_id: UUID | None = None
+    actor_role: str
+    actor_name: str
+    action: str
+    entity_type: str
+    entity_id: UUID | None = None
+    correction_reason: str | None = None
+    before_json: Any = None
+    after_json: Any = None
+    metadata_json: Any = None
+
+
+class ParsedDataCorrectionHistoryListResponse(BaseModel):
+    items: list[ParsedDataCorrectionHistoryRow]
+    total: int
+    limit: int
+    offset: int
 
 
 class ParsedAcademicMonthBoundaryListResponse(BaseModel):

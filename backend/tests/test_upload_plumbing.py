@@ -323,7 +323,7 @@ def test_upload_logs_helper_can_write_row() -> None:
     asyncio.run(_exercise())
 
 
-def test_upload_endpoints_require_actor_name(monkeypatch) -> None:
+def test_upload_endpoints_allow_missing_actor_name(monkeypatch) -> None:
     called = {"count": 0}
 
     async def _fake_rdb_parser(**kwargs):
@@ -385,11 +385,11 @@ def test_upload_endpoints_require_actor_name(monkeypatch) -> None:
         ),
     ]
 
-    assert [response.status_code for response in responses] == [422, 422, 422, 422]
-    assert called["count"] == 0
+    assert [response.status_code for response in responses] == [200, 200, 200, 200]
+    assert called["count"] == 4
 
 
-def test_upload_endpoint_rejects_blank_actor_name(monkeypatch) -> None:
+def test_upload_endpoint_allows_blank_actor_name(monkeypatch) -> None:
     called = {"count": 0}
 
     async def _fake_rdb_parser(**kwargs):
@@ -415,8 +415,8 @@ def test_upload_endpoint_rejects_blank_actor_name(monkeypatch) -> None:
         },
     )
 
-    assert response.status_code == 422
-    assert called["count"] == 0
+    assert response.status_code == 200
+    assert called["count"] == 1
 
 
 class _UploadAuditResult:
@@ -430,6 +430,14 @@ class _UploadAuditResult:
         return self._row
 
 
+class _UploadScalarResult:
+    def __init__(self, value: int) -> None:
+        self._value = value
+
+    def scalar_one(self):
+        return self._value
+
+
 class _UploadAuditSession:
     def __init__(self) -> None:
         self.upload_logs: list[dict] = []
@@ -439,6 +447,8 @@ class _UploadAuditSession:
     async def execute(self, statement, params):
         sql = str(statement)
         payload = dict(params)
+        if "/* parsed_data_correction:corrected_resident_posting_reupload_count */" in sql:
+            return _UploadScalarResult(0)
         if "INSERT INTO upload_logs" in sql:
             row = {"id": str(uuid4()), **payload}
             self.upload_logs.append(row)
@@ -503,6 +513,7 @@ def test_successful_admin_uploads_write_audit_logs_linked_to_upload_logs(monkeyp
     session = _UploadAuditSession()
     client = _build_upload_audit_client(session)
     headers = _admin_headers()
+    headers.pop("X-Actor-Name")
     period_id = str(uuid4())
     files = {
         "file": (
@@ -555,7 +566,7 @@ def test_successful_admin_uploads_write_audit_logs_linked_to_upload_logs(monkeyp
     for upload_log, audit_log in zip(session.upload_logs, session.audit_logs, strict=True):
         metadata = json.loads(audit_log["metadata_json"])
         after = json.loads(audit_log["after_json"])
-        assert audit_log["actor_name"] == "Dr Lee"
+        assert audit_log["actor_name"] == "Unknown actor"
         assert audit_log["entity_type"] == "upload_log"
         assert audit_log["entity_id"] == upload_log["id"]
         assert audit_log["before_json"] is None

@@ -41,7 +41,6 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
   const [reportingPeriodsLoading, setReportingPeriodsLoading] = useState(true)
   const [reportingPeriodsError, setReportingPeriodsError] = useState<string | null>(null)
   const [uploadHistory, setUploadHistory] = useState<UploadMeta[]>(loadUploadHistory)
-  const [staffActorName, setStaffActorName] = useState('')
 
   const adminCacheScope = useMemo<CacheScope>(() => ({
     role,
@@ -182,8 +181,6 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
       reportingPeriodsLoading,
       reportingPeriodsError,
       reloadReportingPeriods,
-      staffActorName,
-      setStaffActorName,
       demoAdminId: frontendConfig.demoAdminId,
       demoAdminProgrammes: frontendConfig.demoAdminProgrammes,
       uploadHistory,
@@ -198,7 +195,6 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
       reportingPeriodsLoading,
       reportingPeriodsError,
       reloadReportingPeriods,
-      staffActorName,
       uploadHistory,
       addUploadResult,
       updateRole,

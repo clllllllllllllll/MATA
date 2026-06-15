@@ -8,6 +8,8 @@ from fastapi import Header
 
 from app.errors import ApiError, ErrorCode
 
+STAFF_ACTOR_FALLBACK_NAME = "Unknown actor"
+
 
 @dataclass(slots=True)
 class StaffActorContext:
@@ -50,11 +52,8 @@ def _parse_actor_user_id(raw_user_id: str | None) -> UUID | None:
 def _validate_actor_name(raw_actor_name: str | None) -> str:
     actor_name = _normalise_optional_header(raw_actor_name)
     if actor_name is None:
-        raise ApiError(
-            status_code=422,
-            detail="X-Actor-Name is required for staff write actions",
-            error_code=ErrorCode.VALIDATION_FAILED.value,
-        )
+        # TODO(StaffActor): Re-enable explicit staff actor name workflow when audit UX is finalized.
+        return STAFF_ACTOR_FALLBACK_NAME
     if len(actor_name) > 120:
         raise ApiError(
             status_code=422,

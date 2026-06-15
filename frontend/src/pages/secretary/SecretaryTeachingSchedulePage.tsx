@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconCalendar, IconDownload, IconPlus } from '../../components/icons'
-import {
-  STAFF_ACTOR_REQUIRED_MESSAGE,
-  StaffActorNameField,
-} from '../../components/StaffActorNameField'
 import { frontendConfig } from '../../config/frontendConfig'
 import { useAppState } from '../../context/useAppState'
 import type { ReportingPeriodOption } from '../../types/upload'
@@ -101,12 +97,6 @@ const normaliseApiError = (error: ApiRequestError, mode: 'list' | 'create' | 'op
     return 'Secretary authentication or posting scope is invalid. Check demo secretary headers.'
   }
   if (error.status === 422) {
-    if (
-      /actor/i.test(error.message) ||
-      JSON.stringify(error.details ?? '').toLowerCase().includes('actor')
-    ) {
-      return STAFF_ACTOR_REQUIRED_MESSAGE
-    }
     if (/public holiday/i.test(error.message)) {
       return 'Teaching events cannot be created on public holidays.'
     }
@@ -181,8 +171,6 @@ export const SecretaryTeachingSchedulePage = () => {
     reportingPeriods,
     reportingPeriodsLoading,
     reportingPeriodsError,
-    staffActorName,
-    setStaffActorName,
   } = useAppState()
 
   const [events, setEvents] = useState<SecretaryTeachingEvent[]>([])
@@ -372,8 +360,6 @@ export const SecretaryTeachingSchedulePage = () => {
     return null
   }, [selectedCount, singleSelectedEvent, allSelectedHaveAttendance, anySelectedHaveAttendance])
   const showSelectionActionMessage = submitState === 'idle' && submitMessage === null && selectedActionMessage !== null
-  const trimmedStaffActorName = staffActorName.trim()
-
   const resetForm = () => {
     setFormState(INITIAL_FORM)
     setFormErrors({})
@@ -464,13 +450,6 @@ export const SecretaryTeachingSchedulePage = () => {
   }
 
   const handleDeleteSelected = async () => {
-    if (!trimmedStaffActorName) {
-      setSubmitState('error')
-      setSubmitMessage(STAFF_ACTOR_REQUIRED_MESSAGE)
-      setSubmitErrorDetails(null)
-      setSubmitErrorDetailsOpen(false)
-      return
-    }
     if (allSelectedHaveAttendance) {
       setSubmitState('error')
       setSubmitMessage(`${selectedCount} teaching event(s) cannot be deleted because attendance exists.`)
@@ -491,9 +470,7 @@ export const SecretaryTeachingSchedulePage = () => {
     setSubmitState('submitting')
     setSubmitMessage(null)
 
-    const deleteAttempts = await Promise.allSettled(
-      idsToDelete.map((id) => deleteSecretaryTeachingEvent(id, trimmedStaffActorName)),
-    )
+    const deleteAttempts = await Promise.allSettled(idsToDelete.map((id) => deleteSecretaryTeachingEvent(id)))
     const deletedIds: string[] = []
     const errorIds: string[] = []
     for (let index = 0; index < deleteAttempts.length; index++) {
@@ -556,13 +533,6 @@ export const SecretaryTeachingSchedulePage = () => {
   }
 
   const handleCreate = async () => {
-    if (!trimmedStaffActorName) {
-      setSubmitState('error')
-      setSubmitMessage(STAFF_ACTOR_REQUIRED_MESSAGE)
-      setSubmitErrorDetails(null)
-      setSubmitErrorDetailsOpen(false)
-      return
-    }
     if (drawerMode === 'edit' && !sourceEvent) {
       setSubmitState('error')
       setSubmitMessage('Please select an event to edit first.')
@@ -633,8 +603,8 @@ export const SecretaryTeachingSchedulePage = () => {
     try {
       const savedEvent =
         drawerMode === 'edit' && sourceEvent
-          ? await updateSecretaryTeachingEvent(sourceEvent.id, payload, trimmedStaffActorName)
-          : await createSecretaryTeachingEvent(payload, trimmedStaffActorName)
+          ? await updateSecretaryTeachingEvent(sourceEvent.id, payload)
+          : await createSecretaryTeachingEvent(payload)
 
       if (supportsEventListEndpoint) {
         const refreshed = await loadEvents()
@@ -723,12 +693,6 @@ export const SecretaryTeachingSchedulePage = () => {
             </span>
           </div>
           <div className="secretary-action-row">
-            <StaffActorNameField
-              value={staffActorName}
-              onChange={setStaffActorName}
-              className="staff-actor-field-compact"
-              showLabel={false}
-            />
             <div className="secretary-button-row">
               <button
                 type="button"
@@ -743,7 +707,6 @@ export const SecretaryTeachingSchedulePage = () => {
                 type="button"
                 className="button button-primary"
                 onClick={openDrawer}
-                disabled={!trimmedStaffActorName}
               >
                 <IconPlus size={14} />
                 Add Teaching
@@ -788,7 +751,6 @@ export const SecretaryTeachingSchedulePage = () => {
                   type="button"
                   className="button button-ghost danger"
                   onClick={() => void handleDeleteSelected()}
-                  disabled={!trimmedStaffActorName}
                   title="Delete selected teaching event(s)."
                 >
                   Delete
@@ -915,14 +877,11 @@ export const SecretaryTeachingSchedulePage = () => {
                 onClick={() => void handleCreate()}
                 disabled={
                   submitState === 'submitting' ||
-                  !trimmedStaffActorName ||
                   !!selectedPeriodDateError ||
                   (drawerMode === 'edit' && (!sourceEvent || sourceEvent.hasAttendance))
                 }
                 title={
-                  !trimmedStaffActorName
-                    ? STAFF_ACTOR_REQUIRED_MESSAGE
-                    : selectedPeriodDateError
+                  selectedPeriodDateError
                     ? 'Event date must be within the selected reporting period.'
                     : drawerMode === 'edit' && sourceEvent?.hasAttendance
                       ? 'Editing and deleting are disabled because attendance has been submitted for this event.'

@@ -24,12 +24,17 @@ from app.schemas import (
     MultiPostingRuleMutationRequest,
     MultiPostingRuleResponse,
     ParsedAcademicMonthBoundaryListResponse,
+    ParsedDataCorrectionHistoryListResponse,
+    ParsedDataCorrectionRequest,
+    ParsedDataCorrectionResponse,
+    ParsedDataSourceCellReplaceResponse,
     ParsedFormF1RecordListResponse,
     ParsedPublicHolidayListResponse,
     ParsedResidentListResponse,
     ParsedResidentPostingListResponse,
     ParsedTeachingNameCatalogueListResponse,
     ParsedTeachingTargetListResponse,
+    ResidentPostingSourceCellReplaceRequest,
     PostingGroupMutationRequest,
     PostingGroupResponse,
     PostingCodeResponse,
@@ -589,6 +594,13 @@ async def upload_rdb(
             errors=[str(exc)],
         ) from exc
 
+    corrected_rows_warning = None
+    if db is not None:
+        corrected_rows_warning = await parsed_data.resident_posting_corrections_reupload_warning(
+            db,
+            reporting_period_id=reporting_period_id,
+        )
+
     from app.services.rdb_parser import parse_rdb_upload
 
     parser_result = await parse_rdb_upload(
@@ -597,6 +609,8 @@ async def upload_rdb(
         reporting_period_id=reporting_period_id,
         db_session=db,
     )
+    if corrected_rows_warning is not None:
+        parser_result.warnings.append(corrected_rows_warning)
 
     await _write_upload_log_and_audit(
         db=db,
@@ -2009,6 +2023,218 @@ async def list_parsed_academic_month_boundaries(
         offset=offset,
     )
     return ParsedAcademicMonthBoundaryListResponse.model_validate(payload)
+
+
+@router.patch("/parsed-data/residents/{resident_id}", response_model=ParsedDataCorrectionResponse)
+async def correct_parsed_resident(
+    resident_id: UUID,
+    request: ParsedDataCorrectionRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ParsedDataCorrectionResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    payload = await parsed_data.correct_resident(
+        db,
+        row_id=resident_id,
+        changes=request.changes,
+        correction_reason=request.correction_reason,
+        last_seen_updated_at=request.last_seen_updated_at,
+        actor=staff_actor,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+    )
+    return ParsedDataCorrectionResponse.model_validate(payload)
+
+
+@router.patch(
+    "/parsed-data/resident-postings/{resident_posting_id}",
+    response_model=ParsedDataCorrectionResponse,
+)
+async def correct_parsed_resident_posting(
+    resident_posting_id: UUID,
+    request: ParsedDataCorrectionRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ParsedDataCorrectionResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    payload = await parsed_data.correct_resident_posting(
+        db,
+        row_id=resident_posting_id,
+        changes=request.changes,
+        correction_reason=request.correction_reason,
+        last_seen_updated_at=request.last_seen_updated_at,
+        actor=staff_actor,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+    )
+    return ParsedDataCorrectionResponse.model_validate(payload)
+
+
+@router.patch(
+    "/parsed-data/teaching-targets/{teaching_target_id}",
+    response_model=ParsedDataCorrectionResponse,
+)
+async def correct_parsed_teaching_target(
+    teaching_target_id: UUID,
+    request: ParsedDataCorrectionRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ParsedDataCorrectionResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    payload = await parsed_data.correct_teaching_target(
+        db,
+        row_id=teaching_target_id,
+        changes=request.changes,
+        correction_reason=request.correction_reason,
+        last_seen_updated_at=request.last_seen_updated_at,
+        actor=staff_actor,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+    )
+    return ParsedDataCorrectionResponse.model_validate(payload)
+
+
+@router.patch(
+    "/parsed-data/form-f1-records/{form_f1_record_id}",
+    response_model=ParsedDataCorrectionResponse,
+)
+async def correct_parsed_form_f1_record(
+    form_f1_record_id: UUID,
+    request: ParsedDataCorrectionRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ParsedDataCorrectionResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    payload = await parsed_data.correct_form_f1_record(
+        db,
+        row_id=form_f1_record_id,
+        changes=request.changes,
+        correction_reason=request.correction_reason,
+        last_seen_updated_at=request.last_seen_updated_at,
+        actor=staff_actor,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+    )
+    return ParsedDataCorrectionResponse.model_validate(payload)
+
+
+@router.patch(
+    "/parsed-data/academic-month-boundaries/{academic_month_boundary_id}",
+    response_model=ParsedDataCorrectionResponse,
+)
+async def correct_parsed_academic_month_boundary(
+    academic_month_boundary_id: UUID,
+    request: ParsedDataCorrectionRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ParsedDataCorrectionResponse:
+    _require_master_admin(admin_context)
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    payload = await parsed_data.correct_academic_month_boundary(
+        db,
+        row_id=academic_month_boundary_id,
+        changes=request.changes,
+        correction_reason=request.correction_reason,
+        last_seen_updated_at=request.last_seen_updated_at,
+        actor=staff_actor,
+    )
+    return ParsedDataCorrectionResponse.model_validate(payload)
+
+
+@router.post(
+    "/parsed-data/resident-postings/source-cell-replace",
+    response_model=ParsedDataSourceCellReplaceResponse,
+)
+async def replace_parsed_resident_posting_source_cell(
+    request: ResidentPostingSourceCellReplaceRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ParsedDataSourceCellReplaceResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    payload = await parsed_data.replace_resident_posting_source_cell(
+        db,
+        affected_resident_posting_ids=request.affected_resident_posting_ids,
+        replacement_rows=[
+            row.model_dump(mode="python") for row in request.replacement_rows
+        ],
+        last_seen_rows=[row.model_dump(mode="python") for row in request.last_seen_rows],
+        source=request.source.model_dump(mode="python"),
+        correction_reason=request.correction_reason,
+        actor=staff_actor,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+    )
+    return ParsedDataSourceCellReplaceResponse.model_validate(payload)
+
+
+@router.get(
+    "/parsed-data/corrections",
+    response_model=ParsedDataCorrectionHistoryListResponse,
+)
+async def list_parsed_data_corrections(
+    entity_type: str | None = Query(default=None),
+    entity_id: UUID | None = Query(default=None),
+    upload_log_id: UUID | None = Query(default=None),
+    sheet_name: str | None = Query(default=None),
+    row_number: int | None = Query(default=None, ge=1),
+    cell_ref: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ParsedDataCorrectionHistoryListResponse:
+    if db is None:
+        return ParsedDataCorrectionHistoryListResponse(items=[], total=0, limit=limit, offset=offset)
+    payload = await parsed_data.list_correction_history(
+        db,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        upload_log_id=upload_log_id,
+        sheet_name=sheet_name,
+        row_number=row_number,
+        cell_ref=cell_ref,
+        limit=limit,
+        offset=offset,
+    )
+    return ParsedDataCorrectionHistoryListResponse.model_validate(payload)
 
 
 @router.get("/form-f1-records", response_model=list[FormF1RecordResponse])

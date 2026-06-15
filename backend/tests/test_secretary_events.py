@@ -642,66 +642,23 @@ def test_non_secretary_access_rejected() -> None:
     assert response.status_code == 403
 
 
-def test_secretary_mutation_endpoints_require_actor_name() -> None:
+def test_secretary_mutation_endpoint_allows_missing_actor_name_and_writes_audit() -> None:
     fake_db = FakeSecretarySession()
     client = _client(fake_db)
-    event_id = fake_db.events[1]["id"]
-    series_event_id = fake_db.events[2]["id"]
     headers = _without_actor(_headers(fake_db))
-    paths_with_payloads = [
-        (
-            "POST",
-            "/secretary/teaching-events",
-            {"teaching_name": "Journal Club", "event_date": "2026-05-18", "start_time": "10:00"},
-            None,
-        ),
-        (
-            "POST",
-            "/secretary/teaching-events/duplicate",
-            {"source_event_id": fake_db.attended_event_id, "event_date": "2026-05-25"},
-            None,
-        ),
-        (
-            "PUT",
-            f"/secretary/teaching-events/{event_id}",
-            {"teaching_name": "Journal Club", "event_date": "2026-05-18", "start_time": "10:00"},
-            None,
-        ),
-        ("DELETE", f"/secretary/teaching-events/{event_id}", None, None),
-        (
-            "POST",
-            "/secretary/teaching-events/series",
-            {
-                "teaching_name": "Journal Club",
-                "start_date": "2026-04-24",
-                "start_time": "10:00",
-                "recurrence_pattern": "weekly",
-                "recurrence_interval": 1,
-                "days_of_week": ["fri"],
-                "end_type": "by_count",
-                "end_after_count": 2,
-            },
-            None,
-        ),
-        (
-            "DELETE",
-            f"/secretary/teaching-events/series/{fake_db.series_id}",
-            None,
-            {"scope": "single", "event_id": series_event_id},
-        ),
-    ]
 
-    for method, path, payload, params in paths_with_payloads:
-        if method == "POST":
-            response = client.post(path, headers=headers, json=payload or {})
-        elif method == "PUT":
-            response = client.put(path, headers=headers, json=payload or {})
-        else:
-            response = client.delete(path, headers=headers, params=params)
-        assert response.status_code == 422, f"{method} {path}"
+    response = client.post(
+        "/secretary/teaching-events",
+        headers=headers,
+        json={"teaching_name": "Journal Club", "event_date": "2026-05-18", "start_time": "10:00"},
+    )
+
+    assert response.status_code == 200
+    assert fake_db.audit_logs[-1]["actor_name"] == "Unknown actor"
+    assert fake_db.audit_logs[-1]["action"] == "secretary.teaching_event.create"
 
 
-def test_secretary_mutation_endpoints_reject_blank_actor_name() -> None:
+def test_secretary_mutation_endpoint_allows_blank_actor_name() -> None:
     fake_db = FakeSecretarySession()
     client = _client(fake_db)
     headers = _headers(fake_db)
@@ -713,7 +670,8 @@ def test_secretary_mutation_endpoints_reject_blank_actor_name() -> None:
         json={"teaching_name": "Journal Club", "event_date": "2026-05-18", "start_time": "10:00"},
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 200
+    assert fake_db.audit_logs[-1]["actor_name"] == "Unknown actor"
 
 
 def test_secretary_read_endpoints_do_not_require_actor_name() -> None:

@@ -1028,58 +1028,6 @@ small {
   color: var(--red);
 }
 
-.staff-actor-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  min-width: min(100%, 20rem);
-}
-
-.staff-actor-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--ink-2);
-}
-
-.staff-actor-helper-text {
-  max-width: none;
-  white-space: nowrap;
-}
-
-.staff-actor-field input {
-  width: 100%;
-}
-
-.staff-actor-field-toolbar {
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.staff-actor-field-toolbar span {
-  flex: 0 0 auto;
-  white-space: nowrap;
-}
-
-.staff-actor-field-toolbar input {
-  width: 100%;
-  min-width: 0;
-}
-
-.staff-actor-label-hidden,
-.staff-actor-helper-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
 .upload-progress-card {
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -1526,12 +1474,6 @@ tr:last-child td {
   flex: 0 0 auto;
 }
 
-.staff-actor-field-compact {
-  flex: 0 0 360px;
-  width: 360px;
-  max-width: 100%;
-}
-
 .scope-chip {
   display: inline-flex;
   align-items: center;
@@ -1873,10 +1815,6 @@ tr:last-child td {
   .hero-meta {
     white-space: normal;
     flex-wrap: wrap;
-  }
-
-  .staff-actor-helper-text {
-    white-space: normal;
   }
 
   .secretary-schedule-header,

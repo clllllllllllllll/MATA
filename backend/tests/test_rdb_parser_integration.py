@@ -24,6 +24,9 @@ class _FakeScalarResult:
     def scalar_one_or_none(self) -> object:
         return self._value
 
+    def scalar_one(self) -> object:
+        return self._value
+
     def scalar(self) -> object:
         return self._value
 
@@ -202,6 +205,9 @@ class FakeRDBSession:
     async def execute(self, statement, params: dict | None = None):
         sql = str(statement)
         params = dict(params or {})
+
+        if "/* parsed_data_correction:corrected_resident_posting_reupload_count */" in sql:
+            return _FakeScalarResult(0)
 
         if "FROM programmes" in sql:
             return _FakeMappingResult(self.programmes)
