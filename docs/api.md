@@ -168,6 +168,20 @@ Required cache rules:
 - Period snapshots are immutable after close except reopen/reclose flows; snapshot/export reads may use longer cache TTLs.
 - If distributed deployment is used, replace in-memory cache with Redis or the platform cache so invalidation works across workers.
 
+### Data Revalidation contract
+
+Data Revalidation is the shared backend concept for assessing the impact of Admin/PC Live Data and Config mutations. The backend service boundary is `data_revalidation_service`; user-facing actions should use names such as `Revalidate data` and `Data revalidation impact summary`.
+
+3H-B defines only the service contract and default response shape. It does not wire CRUD endpoints, mutate warnings, run RDB source-cell parsing, regenerate `resident_postings`, or perform compliance calculation. Future wiring phases will call the service from applicable Admin/PC mutations and receive one of these canonical outcomes:
+
+- `no_op`
+- `warning_only`
+- `targeted_revalidation`
+- `future_compliance_impact`
+- `manual_revalidation_required`
+
+Normal Refresh buttons remain read-only refetch actions. Any mutating recalculation must be exposed as a separate explicit Data Revalidation action. Use `reparse` only for low-level RDB source-cell parsing, not as the broad system concept.
+
 ---
 
 ## Admin Endpoints

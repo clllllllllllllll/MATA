@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -122,13 +122,15 @@ def test_adhoc_teaching_rejects_when_no_posting_exists_for_date() -> None:
 
 def test_adhoc_weekend_non_exception_returns_warning() -> None:
     fake_db = FakeResidentSession()
+    weekend_offset = (fake_db.today.weekday() - 5) % 7
+    weekend_date = fake_db.today - timedelta(days=weekend_offset)
     client = _client(fake_db)
 
     response = client.post(
         "/resident/adhoc-teaching",
         headers=_headers(fake_db),
         json={
-            "date": "2026-05-16",
+            "date": weekend_date.isoformat(),
             "start_time": "10:00",
             "teaching_name": "Journal Club",
         },

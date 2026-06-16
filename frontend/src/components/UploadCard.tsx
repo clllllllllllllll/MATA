@@ -320,7 +320,7 @@ export const UploadCard = ({
             <strong>Upload failed</strong>
           </div>
           <p className="upload-result-message">{errorMessage}</p>
-          {errorDetails ? <p className="inline-muted">Technical details were captured for debugging.</p> : null}
+          {errorDetails ? <p className="inline-muted">Additional error context was captured for review.</p> : null}
           <div className="result-actions">
             <button
               type="button"

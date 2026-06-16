@@ -547,6 +547,16 @@ Every important decision made during the project, with reasoning and consequence
 
 ---
 
+#### Decision: Data Revalidation service boundary
+- **Status:** Confirmed for Phase 3H-B
+- **Decision:** Use `Data Revalidation` as the shared system/user-facing concept for mutation impact assessment. The backend service boundary is `data_revalidation_service`.
+- **Reasoning:** Admin/PC Live Data and Config mutations need a common impact summary without overloading read-only Refresh actions or introducing heavy recalculation into every endpoint.
+- **Consequences for codebase:** Phase 3H-B defines the service contract and default outcomes only: `no_op`, `warning_only`, `targeted_revalidation`, `future_compliance_impact`, and `manual_revalidation_required`. CRUD endpoint wiring and concrete handlers are deferred to later 3H phases.
+- **Naming guardrail:** Reserve `reparse` for low-level RDB source-cell parsing only. Use `Revalidate data` and `Data revalidation impact summary` for user-facing actions and summaries.
+- **Do not change without PM/stakeholder approval:** Yes
+
+---
+
 #### Decision: Period close generates frozen snapshots
 - **Status:** ✅ Confirmed
 - **Decision:** Closing a reporting period writes one `period_snapshots` row per programme. Historical compliance is served from snapshots, not by re-querying live tables.

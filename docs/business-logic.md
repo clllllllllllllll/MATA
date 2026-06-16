@@ -915,6 +915,14 @@ Invalidate affected compliance/report caches after:
 - resident ad-hoc teaching create
 - reporting period close/reopen
 
+### Data Revalidation
+
+Data Revalidation is the standard service boundary for assessing the impact of Admin/PC Live Data and Config mutations. The backend service name is `data_revalidation_service`; user-facing text should use `Data Revalidation`, `Revalidate data`, and `Data revalidation impact summary`.
+
+3H-B creates only the service contract/skeleton. It returns stable impact summaries with one of `no_op`, `warning_only`, `targeted_revalidation`, `future_compliance_impact`, or `manual_revalidation_required`. It does not wire CRUD endpoints, mutate warnings, run RDB source-cell parsing, regenerate `resident_postings`, or calculate compliance.
+
+Normal Refresh buttons are read-only refetch actions and must not trigger Data Revalidation. Reserve `reparse` for the low-level RDB source-cell parsing step only.
+
 ### What must never be cached as authoritative
 
 - raw attendance rows
@@ -927,4 +935,3 @@ Invalidate affected compliance/report caches after:
 ### Query performance expectations
 
 Compliance and reporting queries must use the indexes documented in `docs/schema.md`. Admin report SQL should be checked with `EXPLAIN ANALYZE` once sample data exists. If performance remains poor, prefer query/index tuning before introducing materialised compliance tables.
-
