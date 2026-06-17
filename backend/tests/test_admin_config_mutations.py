@@ -11,6 +11,11 @@ from sqlalchemy.exc import IntegrityError
 
 from app.middleware.errors import install_error_handlers
 from app.routers import admin
+from app.schemas.data_revalidation import (
+    DataRevalidationImpactSummary,
+    DataRevalidationOutcome,
+)
+from app.services import data_revalidation_service
 
 
 class _FakeMutationResult:
@@ -639,6 +644,26 @@ def _audit_json(row: dict, field: str) -> dict | None:
     return json.loads(value)
 
 
+def _assert_config_impact(
+    body: dict,
+    *,
+    changed_entity: str,
+    action: str,
+    outcome: str = "future_compliance_impact",
+) -> dict:
+    impact = body["data_revalidation"]
+    assert impact["trigger_source"] in {"admin_config_change", "pc_config_change"}
+    assert impact["changed_entity"] == changed_entity
+    assert impact["action"] == action
+    assert impact["outcome"] == outcome
+    assert impact["rows_examined"] == 0
+    assert impact["rows_updated"] == 0
+    assert impact["warnings_created"] == 0
+    assert impact["warnings_updated"] == 0
+    assert impact["warnings_resolved"] == 0
+    return impact
+
+
 def test_admin_only_mutation_access_rejects_non_admin() -> None:
     client = _build_client_with_session(FakeMutationSession())
     response = client.post(
@@ -728,6 +753,66 @@ def test_config_mutation_endpoint_allows_blank_actor_name() -> None:
     assert session.audit_logs[-1]["actor_name"] == "Unknown actor"
 
 
+def test_data_revalidation_runs_only_after_successful_config_mutation(monkeypatch) -> None:
+    session = FakeMutationSession()
+    client = _build_client_with_session(session)
+    contexts = []
+
+    async def _spy_revalidate_after_config_change(*, context, db_session):
+        contexts.append(context)
+        return DataRevalidationImpactSummary(
+            outcome=DataRevalidationOutcome.FUTURE_COMPLIANCE_IMPACT,
+            trigger_source=context.trigger_source,
+            changed_entity=context.changed_entity,
+            action=context.action,
+            scope=context.scope,
+            summary="spy config impact summary",
+            details={"changed_fields": list(context.changed_fields)},
+        )
+
+    monkeypatch.setattr(
+        data_revalidation_service,
+        "revalidate_after_config_change",
+        _spy_revalidate_after_config_change,
+    )
+
+    global_type_id = session.global_session_types[0]["id"]
+    succeeded = client.put(
+        f"/admin/global-session-types/{global_type_id}",
+        headers=_master_admin_headers("DR"),
+        json={"is_active": False},
+    )
+    protected_delete = client.delete(
+        f"/admin/global-session-types/{global_type_id}",
+        headers=_master_admin_headers("DR"),
+    )
+    invalid_weekend_exception = client.post(
+        "/admin/weekend-exceptions",
+        headers=_master_admin_headers("DR"),
+        json={"programme_code": "DR", "posting_code": "UNKNOWN", "day_type": "sat"},
+    )
+    out_of_scope_rule = client.post(
+        "/admin/multi-posting-rules",
+        headers=_admin_headers("DR"),
+        json={
+            "programme_code": "GRM",
+            "posting_code_1": "TTSHDR",
+            "posting_code_2": "KTPHDR",
+            "rule_type": "combine",
+            "combined_label": "TTSHDR & KTPHDR",
+        },
+    )
+
+    assert succeeded.status_code == 200
+    assert protected_delete.status_code == 409
+    assert invalid_weekend_exception.status_code == 422
+    assert out_of_scope_rule.status_code == 403
+    assert len(contexts) == 1
+    assert contexts[0].changed_entity.value == "global_session_type"
+    assert contexts[0].action.value == "update"
+    assert contexts[0].changed_fields == ["is_active"]
+
+
 def test_config_list_endpoints_do_not_require_actor_name() -> None:
     client = _build_client_with_session(FakeMutationSession())
     master_headers = _without_actor(_master_admin_headers("DR"))
@@ -760,13 +845,34 @@ def test_admin_config_crud_mutations_write_audit_logs() -> None:
         json={"label": "Jul - Dec 2026", "start_date": "2026-07-01", "end_date": "2026-12-31"},
     )
     assert reporting_period.status_code == 200
-    reporting_period_id = reporting_period.json()["id"]
-    assert client.put(
+    reporting_period_body = reporting_period.json()
+    reporting_period_id = reporting_period_body["id"]
+    _assert_config_impact(
+        reporting_period_body,
+        changed_entity="reporting_period",
+        action="create",
+    )
+    reporting_period_update = client.put(
         f"/admin/reporting-periods/{reporting_period_id}",
         headers=master_headers,
         json={"label": "H2 2026", "status": "closed"},
-    ).status_code == 200
-    assert client.delete(f"/admin/reporting-periods/{reporting_period_id}", headers=master_headers).status_code == 204
+    )
+    assert reporting_period_update.status_code == 200
+    _assert_config_impact(
+        reporting_period_update.json(),
+        changed_entity="reporting_period",
+        action="update",
+    )
+    reporting_period_delete = client.delete(
+        f"/admin/reporting-periods/{reporting_period_id}",
+        headers=master_headers,
+    )
+    assert reporting_period_delete.status_code == 200
+    _assert_config_impact(
+        reporting_period_delete.json(),
+        changed_entity="reporting_period",
+        action="delete",
+    )
 
     holiday = client.post(
         "/admin/public-holidays",
@@ -774,19 +880,47 @@ def test_admin_config_crud_mutations_write_audit_logs() -> None:
         json={"holiday_date": "2026-08-09", "name": "National Day"},
     )
     assert holiday.status_code == 200
-    holiday_id = holiday.json()["id"]
-    assert client.put(
+    holiday_body = holiday.json()
+    holiday_id = holiday_body["id"]
+    _assert_config_impact(
+        holiday_body,
+        changed_entity="public_holiday",
+        action="create",
+    )
+    holiday_update = client.put(
         f"/admin/public-holidays/{holiday_id}",
         headers=master_headers,
         json={"holiday_date": "2026-08-10", "name": "National Day observed"},
-    ).status_code == 200
-    assert client.delete(f"/admin/public-holidays/{holiday_id}", headers=master_headers).status_code == 204
+    )
+    assert holiday_update.status_code == 200
+    _assert_config_impact(
+        holiday_update.json(),
+        changed_entity="public_holiday",
+        action="update",
+    )
+    holiday_delete = client.delete(f"/admin/public-holidays/{holiday_id}", headers=master_headers)
+    assert holiday_delete.status_code == 200
+    _assert_config_impact(
+        holiday_delete.json(),
+        changed_entity="public_holiday",
+        action="delete",
+    )
 
-    assert client.put(
+    programme_update = client.put(
         "/admin/programmes/DR",
         headers=master_headers,
         json={"r_year_required": False, "is_subspecialty": True},
-    ).status_code == 200
+    )
+    assert programme_update.status_code == 200
+    programme_impact = _assert_config_impact(
+        programme_update.json(),
+        changed_entity="programme",
+        action="update",
+    )
+    assert programme_impact["details"]["changed_fields"] == [
+        "is_subspecialty",
+        "r_year_required",
+    ]
 
     loa_type = client.post(
         "/admin/loa-types",
@@ -794,13 +928,27 @@ def test_admin_config_crud_mutations_write_audit_logs() -> None:
         json={"code": "Study Leave", "description": "Academic study leave"},
     )
     assert loa_type.status_code == 200
-    loa_type_id = loa_type.json()["id"]
-    assert client.put(
+    loa_type_body = loa_type.json()
+    loa_type_id = loa_type_body["id"]
+    _assert_config_impact(loa_type_body, changed_entity="loa_type", action="create")
+    loa_type_update = client.put(
         f"/admin/loa-types/{loa_type_id}",
         headers=master_headers,
         json={"code": "Exam Leave", "description": ""},
-    ).status_code == 200
-    assert client.delete(f"/admin/loa-types/{loa_type_id}", headers=master_headers).status_code == 204
+    )
+    assert loa_type_update.status_code == 200
+    _assert_config_impact(
+        loa_type_update.json(),
+        changed_entity="loa_type",
+        action="update",
+    )
+    loa_type_delete = client.delete(f"/admin/loa-types/{loa_type_id}", headers=master_headers)
+    assert loa_type_delete.status_code == 200
+    _assert_config_impact(
+        loa_type_delete.json(),
+        changed_entity="loa_type",
+        action="delete",
+    )
 
     multi_rule_payload = {
         "programme_code": "DR",
@@ -813,15 +961,40 @@ def test_admin_config_crud_mutations_write_audit_logs() -> None:
     }
     multi_rule = client.post("/admin/multi-posting-rules", headers=pc_headers, json=multi_rule_payload)
     assert multi_rule.status_code == 200
-    multi_rule_id = multi_rule.json()["id"]
+    multi_rule_body = multi_rule.json()
+    multi_rule_id = multi_rule_body["id"]
+    multi_create_impact = _assert_config_impact(
+        multi_rule_body,
+        changed_entity="multi_posting_rule",
+        action="create",
+        outcome="manual_revalidation_required",
+    )
+    assert multi_create_impact["details"]["source_metadata"]["rule_type"] == "combine"
     updated_multi_rule_payload = dict(multi_rule_payload)
     updated_multi_rule_payload["combined_label"] = "TTSHDR-KTPHDR"
-    assert client.put(
+    multi_rule_update = client.put(
         f"/admin/multi-posting-rules/{multi_rule_id}",
         headers=pc_headers,
         json=updated_multi_rule_payload,
-    ).status_code == 200
-    assert client.delete(f"/admin/multi-posting-rules/{multi_rule_id}", headers=pc_headers).status_code == 204
+    )
+    assert multi_rule_update.status_code == 200
+    _assert_config_impact(
+        multi_rule_update.json(),
+        changed_entity="multi_posting_rule",
+        action="update",
+        outcome="manual_revalidation_required",
+    )
+    multi_rule_delete = client.delete(
+        f"/admin/multi-posting-rules/{multi_rule_id}",
+        headers=pc_headers,
+    )
+    assert multi_rule_delete.status_code == 200
+    _assert_config_impact(
+        multi_rule_delete.json(),
+        changed_entity="multi_posting_rule",
+        action="delete",
+        outcome="manual_revalidation_required",
+    )
 
     posting_group = client.post(
         "/admin/posting-groups",
@@ -829,13 +1002,34 @@ def test_admin_config_crud_mutations_write_audit_logs() -> None:
         json={"group_code": "DR-GROUP", "posting_code": "TTSHRespi", "programme_code": "DR"},
     )
     assert posting_group.status_code == 200
-    posting_group_id = posting_group.json()["id"]
-    assert client.put(
+    posting_group_body = posting_group.json()
+    posting_group_id = posting_group_body["id"]
+    _assert_config_impact(
+        posting_group_body,
+        changed_entity="posting_group",
+        action="create",
+    )
+    posting_group_update = client.put(
         f"/admin/posting-groups/{posting_group_id}",
         headers=pc_headers,
         json={"group_code": "DR-GROUP-UPDATED", "posting_code": "TTSHRespi(MICU)", "programme_code": "DR"},
-    ).status_code == 200
-    assert client.delete(f"/admin/posting-groups/{posting_group_id}", headers=pc_headers).status_code == 204
+    )
+    assert posting_group_update.status_code == 200
+    _assert_config_impact(
+        posting_group_update.json(),
+        changed_entity="posting_group",
+        action="update",
+    )
+    posting_group_delete = client.delete(
+        f"/admin/posting-groups/{posting_group_id}",
+        headers=pc_headers,
+    )
+    assert posting_group_delete.status_code == 200
+    _assert_config_impact(
+        posting_group_delete.json(),
+        changed_entity="posting_group",
+        action="delete",
+    )
 
     weekend_exception = client.post(
         "/admin/weekend-exceptions",
@@ -843,13 +1037,34 @@ def test_admin_config_crud_mutations_write_audit_logs() -> None:
         json={"programme_code": "DR", "posting_code": "TTSHDR", "day_type": "sat"},
     )
     assert weekend_exception.status_code == 200
-    weekend_exception_id = weekend_exception.json()["id"]
-    assert client.put(
+    weekend_exception_body = weekend_exception.json()
+    weekend_exception_id = weekend_exception_body["id"]
+    _assert_config_impact(
+        weekend_exception_body,
+        changed_entity="weekend_exception",
+        action="create",
+    )
+    weekend_exception_update = client.put(
         f"/admin/weekend-exceptions/{weekend_exception_id}",
         headers=master_headers,
         json={"programme_code": "DR", "posting_code": "TTSHDR", "day_type": "sun"},
-    ).status_code == 200
-    assert client.delete(f"/admin/weekend-exceptions/{weekend_exception_id}", headers=master_headers).status_code == 204
+    )
+    assert weekend_exception_update.status_code == 200
+    _assert_config_impact(
+        weekend_exception_update.json(),
+        changed_entity="weekend_exception",
+        action="update",
+    )
+    weekend_exception_delete = client.delete(
+        f"/admin/weekend-exceptions/{weekend_exception_id}",
+        headers=master_headers,
+    )
+    assert weekend_exception_delete.status_code == 200
+    _assert_config_impact(
+        weekend_exception_delete.json(),
+        changed_entity="weekend_exception",
+        action="delete",
+    )
 
     global_session_type = client.post(
         "/admin/global-session-types",
@@ -857,13 +1072,34 @@ def test_admin_config_crud_mutations_write_audit_logs() -> None:
         json={"name": "Smoke Global Teaching [1h]", "duration_hours": "1.0", "is_active": True},
     )
     assert global_session_type.status_code == 200
-    global_session_type_id = global_session_type.json()["id"]
-    assert client.put(
+    global_session_type_body = global_session_type.json()
+    global_session_type_id = global_session_type_body["id"]
+    _assert_config_impact(
+        global_session_type_body,
+        changed_entity="global_session_type",
+        action="create",
+    )
+    global_session_type_update = client.put(
         f"/admin/global-session-types/{global_session_type_id}",
         headers=master_headers,
         json={"duration_hours": "1.5", "is_active": False},
-    ).status_code == 200
-    assert client.delete(f"/admin/global-session-types/{global_session_type_id}", headers=master_headers).status_code == 204
+    )
+    assert global_session_type_update.status_code == 200
+    _assert_config_impact(
+        global_session_type_update.json(),
+        changed_entity="global_session_type",
+        action="update",
+    )
+    global_session_type_delete = client.delete(
+        f"/admin/global-session-types/{global_session_type_id}",
+        headers=master_headers,
+    )
+    assert global_session_type_delete.status_code == 200
+    _assert_config_impact(
+        global_session_type_delete.json(),
+        changed_entity="global_session_type",
+        action="delete",
+    )
 
     assert [row["action"] for row in session.audit_logs] == [
         "admin.config.reporting_period.create",
@@ -902,6 +1138,13 @@ def test_admin_config_crud_mutations_write_audit_logs() -> None:
     assert _audit_json(session.audit_logs[10], "metadata_json")["rule_type"] == "combine"
     assert _audit_json(session.audit_logs[13], "metadata_json")["posting_code"] == "TTSHRespi"
     assert _audit_json(session.audit_logs[16], "metadata_json")["posting_code"] == "TTSHDR"
+    for audit_row in session.audit_logs:
+        metadata = _audit_json(audit_row, "metadata_json")
+        assert metadata["data_revalidation"]["changed_entity"] == metadata["config_entity"]
+        assert metadata["data_revalidation"]["trigger_source"] in {
+            "admin_config_change",
+            "pc_config_change",
+        }
 
 
 def test_programme_scope_enforced_for_scoped_mutations() -> None:
@@ -967,7 +1210,8 @@ def test_master_admin_can_mutate_posting_groups_without_programme_scope() -> Non
         f"/admin/posting-groups/{posting_group_id}",
         headers=_master_admin_headers(scope=None),
     )
-    assert deleted.status_code == 204
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
 
 
 def test_null_scope_cannot_mutate_reporting_periods() -> None:
@@ -1025,7 +1269,8 @@ def test_reporting_period_create_update_delete_crud() -> None:
         f"/admin/reporting-periods/{body['id']}",
         headers=_master_admin_headers("DR"),
     )
-    assert deleted.status_code == 204
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
 
 
 def test_reporting_period_delete_returns_dependency_counts() -> None:
@@ -1137,7 +1382,8 @@ def test_public_holiday_delete_succeeds() -> None:
         headers=_master_admin_headers("DR"),
     )
 
-    assert deleted.status_code == 204
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
 
 
 def test_null_scope_cannot_mutate_public_holidays() -> None:
@@ -1271,7 +1517,8 @@ def test_weekend_exception_crud_allows_nullable_clears_and_both_day_type() -> No
         f"/admin/weekend-exceptions/{body['id']}",
         headers=_master_admin_headers("DR"),
     )
-    assert deleted.status_code == 204
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
     assert session.weekend_exceptions == []
 
 
@@ -1354,7 +1601,8 @@ def test_global_session_type_crud_duplicate_delete_guard_and_inactive_update() -
         f"/admin/global-session-types/{body['id']}",
         headers=_master_admin_headers("DR"),
     )
-    assert deleted.status_code == 204
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
 
 
 def test_global_session_type_rejects_blank_name_and_invalid_duration() -> None:
@@ -1512,7 +1760,8 @@ def test_loa_type_crud_and_duplicate_conflict() -> None:
     assert updated.status_code == 200
     assert updated.json()["code"] == "Exam Leave"
     assert updated.json()["description"] is None
-    assert deleted.status_code == 204
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
 
 
 def test_loa_type_empty_code_rejected() -> None:

@@ -923,7 +923,9 @@ Data Revalidation is the standard service boundary for assessing the impact of A
 
 3H-C wires Admin Live Data correction mutations to the service. Successful Resident, Resident Posting, Resident Posting source-cell replacement, Teaching Target, FormF1, and Academic Month Boundary corrections include a `data_revalidation` impact summary in the API response and correction audit metadata. Failed validation, stale/concurrency, unauthorized, or out-of-scope mutations do not call Data Revalidation.
 
-3H-C still does not wire Config CRUD endpoints, mutate warnings, run RDB source-cell parsing, regenerate `resident_postings` from corrected fragments, or calculate compliance. Those concrete handlers remain later 3H work.
+3H-D wires successful Admin/PC Config CRUD mutations to the service. Reporting periods, public holidays, programmes, LOA types, multi-posting rules, posting groups, weekend exceptions, and global session types return `data_revalidation` in successful mutation responses and config audit metadata. Failed validation, unauthorized, out-of-scope, not-found, duplicate/conflict, and protected-delete mutations do not call Data Revalidation.
+
+3H-D still does not mutate warnings, run RDB source-cell parsing, re-resolve existing multi-posting source cells, regenerate `resident_postings`, or calculate compliance. Multi-posting rule changes return `manual_revalidation_required` as a placeholder impact summary until 3H-E concrete handlers are implemented.
 
 Normal Refresh buttons are read-only refetch actions and must not trigger Data Revalidation. Reserve `reparse` for the low-level RDB source-cell parsing step only.
 

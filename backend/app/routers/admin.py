@@ -14,14 +14,18 @@ from app.dependencies.staff_actor import StaffActorContext, require_staff_actor
 from app.errors import ApiError, ErrorCode, UploadValidationApiError
 from app.schemas import (
     AcademicMonthBoundaryResponse,
+    ConfigMutationDeleteResponse,
     FormF1RecordResponse,
     GlobalSessionTypeCreateRequest,
+    GlobalSessionTypeMutationResponse,
     GlobalSessionTypeResponse,
     GlobalSessionTypeUpdateRequest,
     LoaTypeCreateRequest,
+    LoaTypeMutationResponse,
     LoaTypeResponse,
     LoaTypeUpdateRequest,
     MultiPostingRuleMutationRequest,
+    MultiPostingRuleMutationResponseModel,
     MultiPostingRuleResponse,
     ParsedAcademicMonthBoundaryListResponse,
     ParsedDataCorrectionHistoryListResponse,
@@ -36,15 +40,19 @@ from app.schemas import (
     ParsedTeachingTargetListResponse,
     ResidentPostingSourceCellReplaceRequest,
     PostingGroupMutationRequest,
+    PostingGroupMutationResponse,
     PostingGroupResponse,
     PostingCodeResponse,
     ProgrammeUpdateRequest,
+    ProgrammeMutationResponse,
     ProgrammeResponse,
     ResidentPostingResponse,
     ResidentResponse,
     PublicHolidayUpsertRequest,
+    PublicHolidayMutationResponse,
     PublicHolidayResponse,
     ReportingPeriodCreateRequest,
+    ReportingPeriodMutationResponse,
     ReportingPeriodResponse,
     ReportingPeriodUpdateRequest,
     SessionTypeResponse,
@@ -54,9 +62,17 @@ from app.schemas import (
     UploadLogListResponse,
     UploadWarningResponse,
     WeekendExceptionMutationRequest,
+    WeekendExceptionMutationResponse,
     WeekendExceptionResponse,
 )
-from app.services import admin_config, parsed_data
+from app.schemas.data_revalidation import (
+    DataRevalidationAction,
+    DataRevalidationChangedEntity,
+    DataRevalidationContext,
+    DataRevalidationScope,
+    DataRevalidationTriggerSource,
+)
+from app.services import admin_config, data_revalidation_service, parsed_data
 from app.services.audit import write_audit_log
 from app.services.upload_logs import (
     error_count,
@@ -500,6 +516,172 @@ def _compact_snapshot(row: dict[str, Any] | None) -> dict[str, Any] | None:
     return {key: value for key, value in dict(row).items()}
 
 
+_CONFIG_REVALIDATION_ENTITY = {
+    "reporting_period": DataRevalidationChangedEntity.REPORTING_PERIOD,
+    "public_holiday": DataRevalidationChangedEntity.PUBLIC_HOLIDAY,
+    "programme": DataRevalidationChangedEntity.PROGRAMME,
+    "loa_type": DataRevalidationChangedEntity.LOA_TYPE,
+    "multi_posting_rule": DataRevalidationChangedEntity.MULTI_POSTING_RULE,
+    "posting_group": DataRevalidationChangedEntity.POSTING_GROUP,
+    "weekend_exception": DataRevalidationChangedEntity.WEEKEND_EXCEPTION,
+    "global_session_type": DataRevalidationChangedEntity.GLOBAL_SESSION_TYPE,
+}
+
+_CONFIG_REVALIDATION_ACTION = {
+    "create": DataRevalidationAction.CREATE,
+    "update": DataRevalidationAction.UPDATE,
+    "delete": DataRevalidationAction.DELETE,
+}
+
+_CONFIG_SOURCE_METADATA_FIELDS = {
+    "reporting_period": ("label", "start_date", "end_date", "status"),
+    "public_holiday": ("holiday_date", "name", "day_of_week", "year"),
+    "programme": ("code", "r_year_required", "is_subspecialty", "rdb_alias"),
+    "loa_type": ("code", "description"),
+    "multi_posting_rule": (
+        "rule_type",
+        "posting_code_1",
+        "posting_code_2",
+        "combined_label",
+        "main_posting_code",
+        "exclusion_code",
+    ),
+    "posting_group": ("group_code", "posting_code"),
+    "weekend_exception": (
+        "programme_code",
+        "posting_code",
+        "day_type",
+        "start_time_min",
+        "end_time_max",
+        "session_type_id",
+        "session_name_pattern",
+        "mutates_to_session_type_id",
+        "adjusted_duration_hours",
+    ),
+    "global_session_type": ("name", "duration_hours", "is_active"),
+}
+
+
+def _config_changed_fields(payload: Any) -> list[str]:
+    return sorted(getattr(payload, "model_fields_set", set()))
+
+
+def _config_revalidation_scope(
+    *,
+    entity_type: str,
+    snapshot: dict[str, Any] | None,
+) -> DataRevalidationScope:
+    if entity_type == "reporting_period":
+        return DataRevalidationScope.REPORTING_PERIOD
+    if entity_type in {"public_holiday", "loa_type", "global_session_type"}:
+        return DataRevalidationScope.GLOBAL
+    if entity_type in {"programme", "multi_posting_rule", "posting_group"}:
+        return DataRevalidationScope.PROGRAMME
+    if entity_type == "weekend_exception":
+        snapshot = snapshot or {}
+        if snapshot.get("programme_code") is not None:
+            return DataRevalidationScope.PROGRAMME
+        if snapshot.get("posting_code") is not None:
+            return DataRevalidationScope.POSTING
+        return DataRevalidationScope.GLOBAL
+    return DataRevalidationScope.UNKNOWN
+
+
+def _config_revalidation_programme_code(
+    *,
+    entity_type: str,
+    snapshot: dict[str, Any] | None,
+) -> str | None:
+    snapshot = snapshot or {}
+    if entity_type == "programme" and snapshot.get("code") is not None:
+        return str(snapshot["code"])
+    if snapshot.get("programme_code") is not None:
+        return str(snapshot["programme_code"])
+    return None
+
+
+def _config_revalidation_source_metadata(
+    *,
+    entity_type: str,
+    snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    snapshot = snapshot or {}
+    return {
+        field: snapshot[field]
+        for field in _CONFIG_SOURCE_METADATA_FIELDS.get(entity_type, ())
+        if snapshot.get(field) is not None
+    }
+
+
+async def _revalidate_config_mutation(
+    db: AsyncSession,
+    *,
+    admin_context: AdminContext,
+    actor: StaffActorContext,
+    entity_type: str,
+    mutation: Literal["create", "update", "delete"],
+    entity_id: UUID | str | None,
+    snapshot: dict[str, Any] | None,
+    changed_fields: list[str],
+) -> dict[str, Any]:
+    summary = await data_revalidation_service.revalidate_after_config_change(
+        context=DataRevalidationContext(
+            trigger_source=(
+                DataRevalidationTriggerSource.ADMIN_CONFIG_CHANGE
+                if admin_context.is_master_admin
+                else DataRevalidationTriggerSource.PC_CONFIG_CHANGE
+            ),
+            changed_entity=_CONFIG_REVALIDATION_ENTITY[entity_type],
+            action=_CONFIG_REVALIDATION_ACTION[mutation],
+            scope=_config_revalidation_scope(
+                entity_type=entity_type,
+                snapshot=snapshot,
+            ),
+            entity_id=str(entity_id) if entity_id is not None else None,
+            programme_code=_config_revalidation_programme_code(
+                entity_type=entity_type,
+                snapshot=snapshot,
+            ),
+            reporting_period_id=(
+                str(snapshot["id"])
+                if entity_type == "reporting_period" and snapshot and snapshot.get("id") is not None
+                else None
+            ),
+            changed_fields=changed_fields,
+            source_metadata=_config_revalidation_source_metadata(
+                entity_type=entity_type,
+                snapshot=snapshot,
+            ),
+            actor_user_id=str(actor.actor_user_id) if actor.actor_user_id else None,
+            actor_role=actor.actor_role,
+            reason=f"Admin Config {entity_type} {mutation}",
+        ),
+        db_session=db,
+    )
+    return summary.model_dump(mode="json")
+
+
+def _with_data_revalidation(
+    row: dict[str, Any],
+    data_revalidation: dict[str, Any],
+) -> dict[str, Any]:
+    return {**row, "data_revalidation": data_revalidation}
+
+
+def _delete_config_response(
+    *,
+    entity_type: str,
+    entity_id: UUID | str,
+    data_revalidation: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "entity_type": entity_type,
+        "entity_id": str(entity_id),
+        "deleted": True,
+        "data_revalidation": data_revalidation,
+    }
+
+
 async def _read_config_audit_snapshot(
     db: AsyncSession,
     *,
@@ -522,6 +704,7 @@ def _config_audit_metadata(
     action: str,
     before: dict[str, Any] | None,
     after: dict[str, Any] | None,
+    data_revalidation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     snapshot = after or before or {}
     metadata: dict[str, Any] = {
@@ -540,6 +723,8 @@ def _config_audit_metadata(
         metadata["rule_type"] = snapshot["rule_type"]
     if snapshot.get("posting_code") is not None:
         metadata["posting_code"] = snapshot["posting_code"]
+    if data_revalidation is not None:
+        metadata["data_revalidation"] = data_revalidation
     return metadata
 
 
@@ -552,6 +737,7 @@ async def _write_config_audit(
     entity_id: UUID | str | None,
     before: dict[str, Any] | None,
     after: dict[str, Any] | None,
+    data_revalidation: dict[str, Any] | None = None,
 ) -> None:
     await write_audit_log(
         db,
@@ -566,6 +752,7 @@ async def _write_config_audit(
             action=mutation,
             before=before,
             after=after,
+            data_revalidation=data_revalidation,
         ),
     )
     await db.commit()
@@ -792,13 +979,13 @@ async def list_reporting_periods(
     return [ReportingPeriodResponse.model_validate(row) for row in rows]
 
 
-@router.post("/reporting-periods", response_model=ReportingPeriodResponse)
+@router.post("/reporting-periods", response_model=ReportingPeriodMutationResponse)
 async def create_reporting_period(
     payload: ReportingPeriodCreateRequest,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> ReportingPeriodResponse:
+) -> ReportingPeriodMutationResponse:
     _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
@@ -813,6 +1000,16 @@ async def create_reporting_period(
         start_date=payload.start_date,
         end_date=payload.end_date,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="reporting_period",
+        mutation="create",
+        entity_id=row["id"],
+        snapshot=row,
+        changed_fields=_config_changed_fields(payload),
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -821,18 +1018,21 @@ async def create_reporting_period(
         entity_id=row["id"],
         before=None,
         after=_compact_snapshot(row),
+        data_revalidation=data_revalidation,
     )
-    return ReportingPeriodResponse.model_validate(row)
+    return ReportingPeriodMutationResponse.model_validate(
+        _with_data_revalidation(row, data_revalidation)
+    )
 
 
-@router.put("/reporting-periods/{reporting_period_id}", response_model=ReportingPeriodResponse)
+@router.put("/reporting-periods/{reporting_period_id}", response_model=ReportingPeriodMutationResponse)
 async def update_reporting_period(
     reporting_period_id: UUID,
     payload: ReportingPeriodUpdateRequest,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> ReportingPeriodResponse:
+) -> ReportingPeriodMutationResponse:
     _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
@@ -854,6 +1054,16 @@ async def update_reporting_period(
         end_date=payload.end_date,
         status=payload.status,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="reporting_period",
+        mutation="update",
+        entity_id=reporting_period_id,
+        snapshot=row,
+        changed_fields=_config_changed_fields(payload),
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -862,17 +1072,20 @@ async def update_reporting_period(
         entity_id=reporting_period_id,
         before=before,
         after=_compact_snapshot(row),
+        data_revalidation=data_revalidation,
     )
-    return ReportingPeriodResponse.model_validate(row)
+    return ReportingPeriodMutationResponse.model_validate(
+        _with_data_revalidation(row, data_revalidation)
+    )
 
 
-@router.delete("/reporting-periods/{reporting_period_id}", status_code=204)
+@router.delete("/reporting-periods/{reporting_period_id}", response_model=ConfigMutationDeleteResponse)
 async def delete_reporting_period(
     reporting_period_id: UUID,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> None:
+) -> ConfigMutationDeleteResponse:
     _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
@@ -890,6 +1103,16 @@ async def delete_reporting_period(
         programme_scope=_global_config_scope(admin_context),
         reporting_period_id=reporting_period_id,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="reporting_period",
+        mutation="delete",
+        entity_id=reporting_period_id,
+        snapshot=before,
+        changed_fields=["deleted"],
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -898,6 +1121,14 @@ async def delete_reporting_period(
         entity_id=reporting_period_id,
         before=before,
         after=None,
+        data_revalidation=data_revalidation,
+    )
+    return ConfigMutationDeleteResponse.model_validate(
+        _delete_config_response(
+            entity_type="reporting_period",
+            entity_id=reporting_period_id,
+            data_revalidation=data_revalidation,
+        )
     )
 
 
@@ -918,13 +1149,13 @@ async def list_public_holidays(
     return [PublicHolidayResponse.model_validate(row) for row in rows]
 
 
-@router.post("/public-holidays", response_model=PublicHolidayResponse)
+@router.post("/public-holidays", response_model=PublicHolidayMutationResponse)
 async def upsert_public_holiday(
     payload: PublicHolidayUpsertRequest,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> PublicHolidayResponse:
+) -> PublicHolidayMutationResponse:
     _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
@@ -940,6 +1171,16 @@ async def upsert_public_holiday(
         day_of_week=payload.day_of_week,
         year=payload.year,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="public_holiday",
+        mutation="create",
+        entity_id=row["id"],
+        snapshot=row,
+        changed_fields=_config_changed_fields(payload),
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -948,18 +1189,21 @@ async def upsert_public_holiday(
         entity_id=row["id"],
         before=None,
         after=_compact_snapshot(row),
+        data_revalidation=data_revalidation,
     )
-    return PublicHolidayResponse.model_validate(row)
+    return PublicHolidayMutationResponse.model_validate(
+        _with_data_revalidation(row, data_revalidation)
+    )
 
 
-@router.put("/public-holidays/{holiday_id}", response_model=PublicHolidayResponse)
+@router.put("/public-holidays/{holiday_id}", response_model=PublicHolidayMutationResponse)
 async def update_public_holiday(
     holiday_id: UUID,
     payload: PublicHolidayUpsertRequest,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> PublicHolidayResponse:
+) -> PublicHolidayMutationResponse:
     _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
@@ -981,6 +1225,16 @@ async def update_public_holiday(
         day_of_week=payload.day_of_week,
         year=payload.year,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="public_holiday",
+        mutation="update",
+        entity_id=holiday_id,
+        snapshot=row,
+        changed_fields=_config_changed_fields(payload),
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -989,17 +1243,20 @@ async def update_public_holiday(
         entity_id=holiday_id,
         before=before,
         after=_compact_snapshot(row),
+        data_revalidation=data_revalidation,
     )
-    return PublicHolidayResponse.model_validate(row)
+    return PublicHolidayMutationResponse.model_validate(
+        _with_data_revalidation(row, data_revalidation)
+    )
 
 
-@router.delete("/public-holidays/{holiday_id}", status_code=204)
+@router.delete("/public-holidays/{holiday_id}", response_model=ConfigMutationDeleteResponse)
 async def delete_public_holiday(
     holiday_id: UUID,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> None:
+) -> ConfigMutationDeleteResponse:
     _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
@@ -1017,6 +1274,16 @@ async def delete_public_holiday(
         programme_scope=_global_config_scope(admin_context),
         holiday_id=holiday_id,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="public_holiday",
+        mutation="delete",
+        entity_id=holiday_id,
+        snapshot=before,
+        changed_fields=["deleted"],
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -1025,6 +1292,14 @@ async def delete_public_holiday(
         entity_id=holiday_id,
         before=before,
         after=None,
+        data_revalidation=data_revalidation,
+    )
+    return ConfigMutationDeleteResponse.model_validate(
+        _delete_config_response(
+            entity_type="public_holiday",
+            entity_id=holiday_id,
+            data_revalidation=data_revalidation,
+        )
     )
 
 
@@ -1046,14 +1321,14 @@ async def list_programmes(
     return [ProgrammeResponse.model_validate(row) for row in rows]
 
 
-@router.put("/programmes/{programme_code}", response_model=ProgrammeResponse)
+@router.put("/programmes/{programme_code}", response_model=ProgrammeMutationResponse)
 async def update_programme(
     programme_code: str,
     payload: ProgrammeUpdateRequest,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> ProgrammeResponse:
+) -> ProgrammeMutationResponse:
     _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
@@ -1076,6 +1351,16 @@ async def update_programme(
         rdb_alias=payload.rdb_alias,
         rdb_alias_is_set="rdb_alias" in payload.model_fields_set,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="programme",
+        mutation="update",
+        entity_id=clean_programme_code,
+        snapshot=row,
+        changed_fields=_config_changed_fields(payload),
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -1084,8 +1369,11 @@ async def update_programme(
         entity_id=clean_programme_code,
         before=before,
         after=_compact_snapshot(row),
+        data_revalidation=data_revalidation,
     )
-    return ProgrammeResponse.model_validate(row)
+    return ProgrammeMutationResponse.model_validate(
+        _with_data_revalidation(row, data_revalidation)
+    )
 
 
 @router.get("/loa-types", response_model=list[LoaTypeResponse])
@@ -1103,13 +1391,13 @@ async def list_loa_types(
     return [LoaTypeResponse.model_validate(row) for row in rows]
 
 
-@router.post("/loa-types", response_model=LoaTypeResponse)
+@router.post("/loa-types", response_model=LoaTypeMutationResponse)
 async def create_loa_type(
     payload: LoaTypeCreateRequest,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> LoaTypeResponse:
+) -> LoaTypeMutationResponse:
     _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
@@ -1123,6 +1411,16 @@ async def create_loa_type(
         code=payload.code,
         description=payload.description,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="loa_type",
+        mutation="create",
+        entity_id=row["id"],
+        snapshot=row,
+        changed_fields=_config_changed_fields(payload),
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -1131,18 +1429,21 @@ async def create_loa_type(
         entity_id=row["id"],
         before=None,
         after=_compact_snapshot(row),
+        data_revalidation=data_revalidation,
     )
-    return LoaTypeResponse.model_validate(row)
+    return LoaTypeMutationResponse.model_validate(
+        _with_data_revalidation(row, data_revalidation)
+    )
 
 
-@router.put("/loa-types/{loa_type_id}", response_model=LoaTypeResponse)
+@router.put("/loa-types/{loa_type_id}", response_model=LoaTypeMutationResponse)
 async def update_loa_type(
     loa_type_id: UUID,
     payload: LoaTypeUpdateRequest,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> LoaTypeResponse:
+) -> LoaTypeMutationResponse:
     _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
@@ -1162,6 +1463,16 @@ async def update_loa_type(
         code=payload.code,
         description=payload.description,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="loa_type",
+        mutation="update",
+        entity_id=loa_type_id,
+        snapshot=row,
+        changed_fields=_config_changed_fields(payload),
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -1170,17 +1481,20 @@ async def update_loa_type(
         entity_id=loa_type_id,
         before=before,
         after=_compact_snapshot(row),
+        data_revalidation=data_revalidation,
     )
-    return LoaTypeResponse.model_validate(row)
+    return LoaTypeMutationResponse.model_validate(
+        _with_data_revalidation(row, data_revalidation)
+    )
 
 
-@router.delete("/loa-types/{loa_type_id}", status_code=204)
+@router.delete("/loa-types/{loa_type_id}", response_model=ConfigMutationDeleteResponse)
 async def delete_loa_type(
     loa_type_id: UUID,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> None:
+) -> ConfigMutationDeleteResponse:
     _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
@@ -1198,6 +1512,16 @@ async def delete_loa_type(
         programme_scope=_global_config_scope(admin_context),
         loa_type_id=loa_type_id,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="loa_type",
+        mutation="delete",
+        entity_id=loa_type_id,
+        snapshot=before,
+        changed_fields=["deleted"],
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -1206,6 +1530,14 @@ async def delete_loa_type(
         entity_id=loa_type_id,
         before=before,
         after=None,
+        data_revalidation=data_revalidation,
+    )
+    return ConfigMutationDeleteResponse.model_validate(
+        _delete_config_response(
+            entity_type="loa_type",
+            entity_id=loa_type_id,
+            data_revalidation=data_revalidation,
+        )
     )
 
 
@@ -1228,13 +1560,13 @@ async def list_multi_posting_rules(
     return [MultiPostingRuleResponse.model_validate(row) for row in rows]
 
 
-@router.post("/multi-posting-rules", response_model=MultiPostingRuleResponse)
+@router.post("/multi-posting-rules", response_model=MultiPostingRuleMutationResponseModel)
 async def create_multi_posting_rule(
     payload: MultiPostingRuleMutationRequest,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> MultiPostingRuleResponse:
+) -> MultiPostingRuleMutationResponseModel:
     if db is None:
         raise ApiError(
             status_code=500,
@@ -1253,6 +1585,16 @@ async def create_multi_posting_rule(
         main_posting_code=payload.main_posting_code,
         exclusion_code=payload.exclusion_code,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="multi_posting_rule",
+        mutation="create",
+        entity_id=row["id"],
+        snapshot=row,
+        changed_fields=_config_changed_fields(payload),
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -1261,18 +1603,21 @@ async def create_multi_posting_rule(
         entity_id=row["id"],
         before=None,
         after=_compact_snapshot(row),
+        data_revalidation=data_revalidation,
     )
-    return MultiPostingRuleResponse.model_validate(row)
+    return MultiPostingRuleMutationResponseModel.model_validate(
+        _with_data_revalidation(row, data_revalidation)
+    )
 
 
-@router.put("/multi-posting-rules/{rule_id}", response_model=MultiPostingRuleResponse)
+@router.put("/multi-posting-rules/{rule_id}", response_model=MultiPostingRuleMutationResponseModel)
 async def update_multi_posting_rule(
     rule_id: UUID,
     payload: MultiPostingRuleMutationRequest,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> MultiPostingRuleResponse:
+) -> MultiPostingRuleMutationResponseModel:
     if db is None:
         raise ApiError(
             status_code=500,
@@ -1297,6 +1642,16 @@ async def update_multi_posting_rule(
         main_posting_code=payload.main_posting_code,
         exclusion_code=payload.exclusion_code,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="multi_posting_rule",
+        mutation="update",
+        entity_id=rule_id,
+        snapshot=row,
+        changed_fields=_config_changed_fields(payload),
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -1305,17 +1660,20 @@ async def update_multi_posting_rule(
         entity_id=rule_id,
         before=before,
         after=_compact_snapshot(row),
+        data_revalidation=data_revalidation,
     )
-    return MultiPostingRuleResponse.model_validate(row)
+    return MultiPostingRuleMutationResponseModel.model_validate(
+        _with_data_revalidation(row, data_revalidation)
+    )
 
 
-@router.delete("/multi-posting-rules/{rule_id}", status_code=204)
+@router.delete("/multi-posting-rules/{rule_id}", response_model=ConfigMutationDeleteResponse)
 async def delete_multi_posting_rule(
     rule_id: UUID,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> None:
+) -> ConfigMutationDeleteResponse:
     if db is None:
         raise ApiError(
             status_code=500,
@@ -1333,6 +1691,16 @@ async def delete_multi_posting_rule(
         master_admin=admin_context.is_master_admin,
         rule_id=rule_id,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="multi_posting_rule",
+        mutation="delete",
+        entity_id=rule_id,
+        snapshot=before,
+        changed_fields=["deleted"],
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -1341,6 +1709,14 @@ async def delete_multi_posting_rule(
         entity_id=rule_id,
         before=before,
         after=None,
+        data_revalidation=data_revalidation,
+    )
+    return ConfigMutationDeleteResponse.model_validate(
+        _delete_config_response(
+            entity_type="multi_posting_rule",
+            entity_id=rule_id,
+            data_revalidation=data_revalidation,
+        )
     )
 
 
@@ -1363,13 +1739,13 @@ async def list_posting_groups(
     return [PostingGroupResponse.model_validate(row) for row in rows]
 
 
-@router.post("/posting-groups", response_model=PostingGroupResponse)
+@router.post("/posting-groups", response_model=PostingGroupMutationResponse)
 async def create_posting_group(
     payload: PostingGroupMutationRequest,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> PostingGroupResponse:
+) -> PostingGroupMutationResponse:
     if db is None:
         raise ApiError(
             status_code=500,
@@ -1384,6 +1760,16 @@ async def create_posting_group(
         programme_code=payload.programme_code,
         master_admin=admin_context.is_master_admin,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="posting_group",
+        mutation="create",
+        entity_id=row["id"],
+        snapshot=row,
+        changed_fields=_config_changed_fields(payload),
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -1392,18 +1778,21 @@ async def create_posting_group(
         entity_id=row["id"],
         before=None,
         after=_compact_snapshot(row),
+        data_revalidation=data_revalidation,
     )
-    return PostingGroupResponse.model_validate(row)
+    return PostingGroupMutationResponse.model_validate(
+        _with_data_revalidation(row, data_revalidation)
+    )
 
 
-@router.put("/posting-groups/{posting_group_id}", response_model=PostingGroupResponse)
+@router.put("/posting-groups/{posting_group_id}", response_model=PostingGroupMutationResponse)
 async def update_posting_group(
     posting_group_id: UUID,
     payload: PostingGroupMutationRequest,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> PostingGroupResponse:
+) -> PostingGroupMutationResponse:
     if db is None:
         raise ApiError(
             status_code=500,
@@ -1424,6 +1813,16 @@ async def update_posting_group(
         programme_code=payload.programme_code,
         master_admin=admin_context.is_master_admin,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="posting_group",
+        mutation="update",
+        entity_id=posting_group_id,
+        snapshot=row,
+        changed_fields=_config_changed_fields(payload),
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -1432,17 +1831,20 @@ async def update_posting_group(
         entity_id=posting_group_id,
         before=before,
         after=_compact_snapshot(row),
+        data_revalidation=data_revalidation,
     )
-    return PostingGroupResponse.model_validate(row)
+    return PostingGroupMutationResponse.model_validate(
+        _with_data_revalidation(row, data_revalidation)
+    )
 
 
-@router.delete("/posting-groups/{posting_group_id}", status_code=204)
+@router.delete("/posting-groups/{posting_group_id}", response_model=ConfigMutationDeleteResponse)
 async def delete_posting_group(
     posting_group_id: UUID,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> None:
+) -> ConfigMutationDeleteResponse:
     if db is None:
         raise ApiError(
             status_code=500,
@@ -1460,6 +1862,16 @@ async def delete_posting_group(
         posting_group_id=posting_group_id,
         master_admin=admin_context.is_master_admin,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="posting_group",
+        mutation="delete",
+        entity_id=posting_group_id,
+        snapshot=before,
+        changed_fields=["deleted"],
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -1468,6 +1880,14 @@ async def delete_posting_group(
         entity_id=posting_group_id,
         before=before,
         after=None,
+        data_revalidation=data_revalidation,
+    )
+    return ConfigMutationDeleteResponse.model_validate(
+        _delete_config_response(
+            entity_type="posting_group",
+            entity_id=posting_group_id,
+            data_revalidation=data_revalidation,
+        )
     )
 
 
@@ -1491,13 +1911,13 @@ async def list_weekend_exceptions(
     return [WeekendExceptionResponse.model_validate(row) for row in rows]
 
 
-@router.post("/weekend-exceptions", response_model=WeekendExceptionResponse)
+@router.post("/weekend-exceptions", response_model=WeekendExceptionMutationResponse)
 async def create_weekend_exception(
     payload: WeekendExceptionMutationRequest,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> WeekendExceptionResponse:
+) -> WeekendExceptionMutationResponse:
     _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
@@ -1519,6 +1939,16 @@ async def create_weekend_exception(
         adjusted_duration_hours=payload.adjusted_duration_hours,
         master_admin=admin_context.is_master_admin,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="weekend_exception",
+        mutation="create",
+        entity_id=row["id"],
+        snapshot=row,
+        changed_fields=_config_changed_fields(payload),
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -1527,18 +1957,21 @@ async def create_weekend_exception(
         entity_id=row["id"],
         before=None,
         after=_compact_snapshot(row),
+        data_revalidation=data_revalidation,
     )
-    return WeekendExceptionResponse.model_validate(row)
+    return WeekendExceptionMutationResponse.model_validate(
+        _with_data_revalidation(row, data_revalidation)
+    )
 
 
-@router.put("/weekend-exceptions/{weekend_exception_id}", response_model=WeekendExceptionResponse)
+@router.put("/weekend-exceptions/{weekend_exception_id}", response_model=WeekendExceptionMutationResponse)
 async def update_weekend_exception(
     weekend_exception_id: UUID,
     payload: WeekendExceptionMutationRequest,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> WeekendExceptionResponse:
+) -> WeekendExceptionMutationResponse:
     _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
@@ -1566,6 +1999,16 @@ async def update_weekend_exception(
         adjusted_duration_hours=payload.adjusted_duration_hours,
         master_admin=admin_context.is_master_admin,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="weekend_exception",
+        mutation="update",
+        entity_id=weekend_exception_id,
+        snapshot=row,
+        changed_fields=_config_changed_fields(payload),
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -1574,17 +2017,20 @@ async def update_weekend_exception(
         entity_id=weekend_exception_id,
         before=before,
         after=_compact_snapshot(row),
+        data_revalidation=data_revalidation,
     )
-    return WeekendExceptionResponse.model_validate(row)
+    return WeekendExceptionMutationResponse.model_validate(
+        _with_data_revalidation(row, data_revalidation)
+    )
 
 
-@router.delete("/weekend-exceptions/{weekend_exception_id}", status_code=204)
+@router.delete("/weekend-exceptions/{weekend_exception_id}", response_model=ConfigMutationDeleteResponse)
 async def delete_weekend_exception(
     weekend_exception_id: UUID,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> None:
+) -> ConfigMutationDeleteResponse:
     _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
@@ -1603,6 +2049,16 @@ async def delete_weekend_exception(
         weekend_exception_id=weekend_exception_id,
         master_admin=admin_context.is_master_admin,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="weekend_exception",
+        mutation="delete",
+        entity_id=weekend_exception_id,
+        snapshot=before,
+        changed_fields=["deleted"],
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -1611,6 +2067,14 @@ async def delete_weekend_exception(
         entity_id=weekend_exception_id,
         before=before,
         after=None,
+        data_revalidation=data_revalidation,
+    )
+    return ConfigMutationDeleteResponse.model_validate(
+        _delete_config_response(
+            entity_type="weekend_exception",
+            entity_id=weekend_exception_id,
+            data_revalidation=data_revalidation,
+        )
     )
 
 
@@ -1627,13 +2091,13 @@ async def list_global_session_types(
     return [GlobalSessionTypeResponse.model_validate(row) for row in rows]
 
 
-@router.post("/global-session-types", response_model=GlobalSessionTypeResponse)
+@router.post("/global-session-types", response_model=GlobalSessionTypeMutationResponse)
 async def create_global_session_type(
     payload: GlobalSessionTypeCreateRequest,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> GlobalSessionTypeResponse:
+) -> GlobalSessionTypeMutationResponse:
     _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
@@ -1648,6 +2112,16 @@ async def create_global_session_type(
         duration_hours=payload.duration_hours,
         is_active=payload.is_active,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="global_session_type",
+        mutation="create",
+        entity_id=row["id"],
+        snapshot=row,
+        changed_fields=_config_changed_fields(payload),
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -1656,18 +2130,21 @@ async def create_global_session_type(
         entity_id=row["id"],
         before=None,
         after=_compact_snapshot(row),
+        data_revalidation=data_revalidation,
     )
-    return GlobalSessionTypeResponse.model_validate(row)
+    return GlobalSessionTypeMutationResponse.model_validate(
+        _with_data_revalidation(row, data_revalidation)
+    )
 
 
-@router.put("/global-session-types/{global_session_type_id}", response_model=GlobalSessionTypeResponse)
+@router.put("/global-session-types/{global_session_type_id}", response_model=GlobalSessionTypeMutationResponse)
 async def update_global_session_type(
     global_session_type_id: UUID,
     payload: GlobalSessionTypeUpdateRequest,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> GlobalSessionTypeResponse:
+) -> GlobalSessionTypeMutationResponse:
     _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
@@ -1688,6 +2165,16 @@ async def update_global_session_type(
         duration_hours=payload.duration_hours,
         is_active=payload.is_active,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="global_session_type",
+        mutation="update",
+        entity_id=global_session_type_id,
+        snapshot=row,
+        changed_fields=_config_changed_fields(payload),
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -1696,17 +2183,20 @@ async def update_global_session_type(
         entity_id=global_session_type_id,
         before=before,
         after=_compact_snapshot(row),
+        data_revalidation=data_revalidation,
     )
-    return GlobalSessionTypeResponse.model_validate(row)
+    return GlobalSessionTypeMutationResponse.model_validate(
+        _with_data_revalidation(row, data_revalidation)
+    )
 
 
-@router.delete("/global-session-types/{global_session_type_id}", status_code=204)
+@router.delete("/global-session-types/{global_session_type_id}", response_model=ConfigMutationDeleteResponse)
 async def delete_global_session_type(
     global_session_type_id: UUID,
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
-) -> None:
+) -> ConfigMutationDeleteResponse:
     _require_master_admin(admin_context)
     if db is None:
         raise ApiError(
@@ -1724,6 +2214,16 @@ async def delete_global_session_type(
         programme_scope=_global_config_scope(admin_context),
         global_session_type_id=global_session_type_id,
     )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="global_session_type",
+        mutation="delete",
+        entity_id=global_session_type_id,
+        snapshot=before,
+        changed_fields=["deleted"],
+    )
     await _write_config_audit(
         db,
         actor=staff_actor,
@@ -1732,6 +2232,14 @@ async def delete_global_session_type(
         entity_id=global_session_type_id,
         before=before,
         after=None,
+        data_revalidation=data_revalidation,
+    )
+    return ConfigMutationDeleteResponse.model_validate(
+        _delete_config_response(
+            entity_type="global_session_type",
+            entity_id=global_session_type_id,
+            data_revalidation=data_revalidation,
+        )
     )
 
 

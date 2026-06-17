@@ -57,6 +57,8 @@ class DataRevalidationScope(str, Enum):
     SINGLE_ROW = "single_row"
     RESIDENT_MONTH = "resident_month"
     RESIDENT_REPORTING_PERIOD = "resident_reporting_period"
+    PROGRAMME = "programme"
+    POSTING = "posting"
     PROGRAMME_REPORTING_PERIOD = "programme_reporting_period"
     REPORTING_PERIOD = "reporting_period"
     UPLOAD_LOG = "upload_log"

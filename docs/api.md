@@ -172,7 +172,7 @@ Required cache rules:
 
 Data Revalidation is the shared backend concept for assessing the impact of Admin/PC Live Data and Config mutations. The backend service boundary is `data_revalidation_service`; user-facing actions should use names such as `Revalidate data` and `Data revalidation impact summary`.
 
-3H-B defines only the service contract and default response shape. 3H-C wires Admin Live Data correction mutations to that service and adds a `data_revalidation` impact summary to successful mutation responses and correction audit metadata. Config/Admin/PC CRUD wiring remains 3H-D.
+3H-B defines only the service contract and default response shape. 3H-C wires Admin Live Data correction mutations to that service and adds a `data_revalidation` impact summary to successful mutation responses and correction audit metadata. 3H-D wires Admin/PC Config CRUD mutations to the same service and adds the same `data_revalidation` impact summary to successful mutation responses and config audit metadata.
 
 The current 3H-C wiring covers:
 - `PATCH /admin/parsed-data/residents/{id}`
@@ -182,7 +182,9 @@ The current 3H-C wiring covers:
 - `PATCH /admin/parsed-data/form-f1-records/{id}`
 - `PATCH /admin/parsed-data/academic-month-boundaries/{id}`
 
-3H-C still does not mutate warnings, run RDB source-cell parsing, regenerate `resident_postings` from corrected fragments, or perform compliance calculation. Successful Live Data mutation responses receive one of these canonical outcomes:
+The current 3H-D Config wiring covers successful creates, updates, and deletes for reporting periods, public holidays, programmes, LOA types, multi-posting rules, posting groups, weekend exceptions, and global session types. Create/update responses preserve the entity fields and add `data_revalidation`. Delete responses return `{ "entity_type": "...", "entity_id": "...", "deleted": true, "data_revalidation": {...} }`.
+
+3H-D still does not mutate warnings, run RDB source-cell parsing, re-resolve existing multi-posting rows, regenerate `resident_postings`, or perform compliance calculation. Multi-posting rule changes return `manual_revalidation_required` to indicate existing RDB source cells/warnings need an explicit later revalidation or future RDB re-upload. Successful Data Revalidation summaries use one of these canonical outcomes:
 
 - `no_op`
 - `warning_only`
@@ -190,7 +192,7 @@ The current 3H-C wiring covers:
 - `future_compliance_impact`
 - `manual_revalidation_required`
 
-Normal Refresh buttons remain read-only refetch actions. Any mutating recalculation must be exposed as a separate explicit Data Revalidation action. Use `reparse` only for low-level RDB source-cell parsing, not as the broad system concept.
+Normal Refresh buttons remain read-only refetch actions. Any mutating recalculation must be exposed as a separate explicit Data Revalidation action. Use `reparse` only for low-level RDB source-cell parsing, not as the broad system concept. Concrete Data Revalidation handlers remain 3H-E.
 
 ---
 
@@ -390,6 +392,7 @@ Delete a multi-posting rule.
 - **Auth:** admin only
 - **Authorization:** The row's `programme_code` must be within the admin's `programme_scope`.
 - **Behaviour:** Deleting a rule does not delete existing `resident_postings`. The effect is seen on the next RDB re-upload or future parse.
+- **Response:** `200` with `{ "entity_type": "multi_posting_rule", "entity_id": "...", "deleted": true, "data_revalidation": {...} }`.
 
 **Rule-specific API semantics:**
 - `main_posting`: Used by FM Main Posting tab. Rows with `posting_code_2 = null` define the recognised `RDB Posting #1` trigger list. `exclusion_code` is the configured zero-match fallback, usually `NHGPlyNHGPly`.
@@ -429,6 +432,7 @@ Update an existing posting group entry.
 Delete a posting group entry.
 
 - **Auth:** admin only
+- **Response:** `200` with `{ "entity_type": "posting_group", "entity_id": "...", "deleted": true, "data_revalidation": {...} }`.
 
 List all weekend exception rules.
 
@@ -466,6 +470,7 @@ Update an existing weekend exception rule.
 Delete a weekend exception rule.
 
 - **Auth:** admin only
+- **Response:** `200` with `{ "entity_type": "weekend_exception", "entity_id": "...", "deleted": true, "data_revalidation": {...} }`.
 
 ### GET `/admin/programmes`
 
@@ -506,6 +511,7 @@ Add a new LOA type.
 Delete a LOA type.
 
 - **Auth:** admin only
+- **Response:** `200` with `{ "entity_type": "loa_type", "entity_id": "...", "deleted": true, "data_revalidation": {...} }`.
 
 ### GET `/admin/global-session-types`
 
@@ -535,6 +541,7 @@ Delete a global session type.
 
 - **Auth:** admin only
 - **Note:** Returns `409` if any `teaching_events` rows reference this session type name. Deactivate instead of deleting in that case.
+- **Response:** `200` with `{ "entity_type": "global_session_type", "entity_id": "...", "deleted": true, "data_revalidation": {...} }`.
 
 List all reporting periods.
 
@@ -647,6 +654,7 @@ Endpoint name remains unchanged for backward compatibility.
 Delete a single public holiday entry.
 
 - **Auth:** admin only
+- **Response:** `200` with `{ "entity_type": "public_holiday", "entity_id": "...", "deleted": true, "data_revalidation": {...} }`.
 
 ---
 

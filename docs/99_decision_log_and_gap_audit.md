@@ -548,10 +548,10 @@ Every important decision made during the project, with reasoning and consequence
 ---
 
 #### Decision: Data Revalidation service boundary
-- **Status:** Confirmed for Phase 3H-B; Live Data mutation wiring added in Phase 3H-C
+- **Status:** Confirmed for Phase 3H-B; Live Data mutation wiring added in Phase 3H-C; Config mutation wiring added in Phase 3H-D
 - **Decision:** Use `Data Revalidation` as the shared system/user-facing concept for mutation impact assessment. The backend service boundary is `data_revalidation_service`.
 - **Reasoning:** Admin/PC Live Data and Config mutations need a common impact summary without overloading read-only Refresh actions or introducing heavy recalculation into every endpoint.
-- **Consequences for codebase:** Phase 3H-B defines the service contract and default outcomes: `no_op`, `warning_only`, `targeted_revalidation`, `future_compliance_impact`, and `manual_revalidation_required`. Phase 3H-C wires successful Admin Live Data correction mutations to the service and returns a `data_revalidation` impact summary in mutation responses and correction audit metadata. Config/Admin/PC CRUD wiring remains 3H-D; concrete warning updates, source-cell parsing, and compliance recalculation remain later 3H work.
+- **Consequences for codebase:** Phase 3H-B defines the service contract and default outcomes: `no_op`, `warning_only`, `targeted_revalidation`, `future_compliance_impact`, and `manual_revalidation_required`. Phase 3H-C wires successful Admin Live Data correction mutations to the service and returns a `data_revalidation` impact summary in mutation responses and correction audit metadata. Phase 3H-D wires successful Admin/PC Config CRUD mutations to the service and returns the same impact summary in mutation responses and config audit metadata. Concrete warning updates, source-cell parsing, multi-posting re-resolution, resident posting regeneration, and compliance recalculation remain 3H-E/later work.
 - **Naming guardrail:** Reserve `reparse` for low-level RDB source-cell parsing only. Use `Revalidate data` and `Data revalidation impact summary` for user-facing actions and summaries.
 - **Do not change without PM/stakeholder approval:** Yes
 

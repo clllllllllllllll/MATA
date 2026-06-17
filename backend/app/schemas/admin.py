@@ -20,6 +20,10 @@ class ReportingPeriodResponse(BaseModel):
     updated_at: datetime
 
 
+class ReportingPeriodMutationResponse(ReportingPeriodResponse):
+    data_revalidation: DataRevalidationImpactSummary
+
+
 class PublicHolidayResponse(BaseModel):
     id: UUID
     holiday_date: date
@@ -28,6 +32,10 @@ class PublicHolidayResponse(BaseModel):
     year: int | None
     created_at: datetime
     updated_at: datetime
+
+
+class PublicHolidayMutationResponse(PublicHolidayResponse):
+    data_revalidation: DataRevalidationImpactSummary
 
 
 class ProgrammeResponse(BaseModel):
@@ -43,12 +51,20 @@ class ProgrammeResponse(BaseModel):
     updated_at: datetime
 
 
+class ProgrammeMutationResponse(ProgrammeResponse):
+    data_revalidation: DataRevalidationImpactSummary
+
+
 class LoaTypeResponse(BaseModel):
     id: UUID
     code: str
     description: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class LoaTypeMutationResponse(LoaTypeResponse):
+    data_revalidation: DataRevalidationImpactSummary
 
 
 class MultiPostingRuleResponse(BaseModel):
@@ -64,6 +80,10 @@ class MultiPostingRuleResponse(BaseModel):
     updated_at: datetime
 
 
+class MultiPostingRuleMutationResponseModel(MultiPostingRuleResponse):
+    data_revalidation: DataRevalidationImpactSummary
+
+
 class PostingGroupResponse(BaseModel):
     id: UUID
     group_code: str
@@ -71,6 +91,10 @@ class PostingGroupResponse(BaseModel):
     programme_code: str
     created_at: datetime
     updated_at: datetime
+
+
+class PostingGroupMutationResponse(PostingGroupResponse):
+    data_revalidation: DataRevalidationImpactSummary
 
 
 class WeekendExceptionResponse(BaseModel):
@@ -90,6 +114,10 @@ class WeekendExceptionResponse(BaseModel):
     updated_at: datetime
 
 
+class WeekendExceptionMutationResponse(WeekendExceptionResponse):
+    data_revalidation: DataRevalidationImpactSummary
+
+
 class GlobalSessionTypeResponse(BaseModel):
     id: UUID
     name: str
@@ -97,6 +125,17 @@ class GlobalSessionTypeResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+
+
+class GlobalSessionTypeMutationResponse(GlobalSessionTypeResponse):
+    data_revalidation: DataRevalidationImpactSummary
+
+
+class ConfigMutationDeleteResponse(BaseModel):
+    entity_type: str
+    entity_id: str
+    deleted: bool = True
+    data_revalidation: DataRevalidationImpactSummary
 
 
 class UploadLogListItem(BaseModel):
