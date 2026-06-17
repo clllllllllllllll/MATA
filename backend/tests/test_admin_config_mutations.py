@@ -59,7 +59,9 @@ class FakeMutationSession:
                 "label": "Jan - June 2026",
                 "start_date": date(2026, 1, 1),
                 "end_date": date(2026, 6, 30),
-                "status": "open",
+                "status": "active",
+                "activate_on": None,
+                "deactivate_on": None,
                 "created_at": self.now,
                 "updated_at": self.now,
             }
@@ -183,7 +185,9 @@ class FakeMutationSession:
                 "label": payload["label"],
                 "start_date": payload["start_date"],
                 "end_date": payload["end_date"],
-                "status": "open",
+                "status": payload.get("status") or "active",
+                "activate_on": payload.get("activate_on"),
+                "deactivate_on": payload.get("deactivate_on"),
                 "created_at": self.now,
                 "updated_at": self.now,
             }
@@ -191,7 +195,7 @@ class FakeMutationSession:
             return _FakeMutationResult(rows=[row])
 
         if (
-            "SELECT id, label, start_date, end_date, status, created_at, updated_at" in sql
+            "SELECT" in sql
             and "FROM reporting_periods" in sql
             and "WHERE id = :id" in sql
         ):
@@ -201,7 +205,7 @@ class FakeMutationSession:
             )
             return _FakeMutationResult(rows=[period] if period else [])
 
-        if "SELECT id, label, start_date, end_date, status, created_at, updated_at" in sql and "FROM reporting_periods" in sql:
+        if "FROM reporting_periods" in sql and "ORDER BY start_date" in sql:
             return _FakeMutationResult(rows=list(self.reporting_periods))
 
         if "SELECT id, holiday_date, name, day_of_week, year, created_at, updated_at" in sql and "FROM public_holidays" in sql:
@@ -246,6 +250,10 @@ class FakeMutationSession:
                 period["end_date"] = payload["end_date"]
             if payload.get("status") is not None:
                 period["status"] = payload["status"]
+            if payload.get("activate_on_set"):
+                period["activate_on"] = payload.get("activate_on")
+            if payload.get("deactivate_on_set"):
+                period["deactivate_on"] = payload.get("deactivate_on")
             period["updated_at"] = self.now
             return _FakeMutationResult(rows=[period])
 
@@ -688,7 +696,9 @@ def test_all_phase3_mutation_endpoints_reject_non_admin() -> None:
     global_type_id = session.global_session_types[0]["id"]
     paths_with_payloads = [
         ("POST", "/admin/reporting-periods", {"label": "Jul - Dec 2026", "start_date": "2026-07-01", "end_date": "2026-12-31"}),
-        ("PUT", f"/admin/reporting-periods/{period_id}", {"status": "closed"}),
+        ("PUT", f"/admin/reporting-periods/{period_id}", {"status": "inactive"}),
+        ("PUT", f"/admin/reporting-periods/{period_id}/activate", {}),
+        ("PUT", f"/admin/reporting-periods/{period_id}/deactivate", {}),
         ("DELETE", f"/admin/reporting-periods/{period_id}", None),
         ("POST", "/admin/public-holidays", {"holiday_date": "2026-08-09", "name": "National Day", "day_of_week": "Sunday", "year": 2026}),
         ("PUT", f"/admin/public-holidays/{uuid4()}", {"holiday_date": "2026-08-09", "name": "National Day", "day_of_week": "Sunday", "year": 2026}),
@@ -802,11 +812,16 @@ def test_data_revalidation_runs_only_after_successful_config_mutation(monkeypatc
             "combined_label": "TTSHDR & KTPHDR",
         },
     )
+    missing_reporting_period_activate = client.put(
+        f"/admin/reporting-periods/{uuid4()}/activate",
+        headers=_master_admin_headers("DR"),
+    )
 
     assert succeeded.status_code == 200
     assert protected_delete.status_code == 409
     assert invalid_weekend_exception.status_code == 422
     assert out_of_scope_rule.status_code == 403
+    assert missing_reporting_period_activate.status_code == 404
     assert len(contexts) == 1
     assert contexts[0].changed_entity.value == "global_session_type"
     assert contexts[0].action.value == "update"
@@ -855,13 +870,49 @@ def test_admin_config_crud_mutations_write_audit_logs() -> None:
     reporting_period_update = client.put(
         f"/admin/reporting-periods/{reporting_period_id}",
         headers=master_headers,
-        json={"label": "H2 2026", "status": "closed"},
+        json={
+            "label": "H2 2026",
+            "status": "inactive",
+            "activate_on": "2026-07-01",
+            "deactivate_on": "2026-12-31",
+        },
     )
     assert reporting_period_update.status_code == 200
-    _assert_config_impact(
-        reporting_period_update.json(),
+    reporting_period_update_body = reporting_period_update.json()
+    assert reporting_period_update_body["activate_on"] == "2026-07-01"
+    assert reporting_period_update_body["deactivate_on"] == "2026-12-31"
+    reporting_period_impact = _assert_config_impact(
+        reporting_period_update_body,
         changed_entity="reporting_period",
         action="update",
+    )
+    assert reporting_period_impact["details"]["changed_fields"] == [
+        "activate_on",
+        "deactivate_on",
+        "label",
+        "status",
+    ]
+    reporting_period_deactivate = client.put(
+        f"/admin/reporting-periods/{reporting_period_id}/deactivate",
+        headers=master_headers,
+    )
+    assert reporting_period_deactivate.status_code == 200
+    assert reporting_period_deactivate.json()["status"] == "inactive"
+    _assert_config_impact(
+        reporting_period_deactivate.json(),
+        changed_entity="reporting_period",
+        action="deactivate",
+    )
+    reporting_period_activate = client.put(
+        f"/admin/reporting-periods/{reporting_period_id}/activate",
+        headers=master_headers,
+    )
+    assert reporting_period_activate.status_code == 200
+    assert reporting_period_activate.json()["status"] == "active"
+    _assert_config_impact(
+        reporting_period_activate.json(),
+        changed_entity="reporting_period",
+        action="activate",
     )
     reporting_period_delete = client.delete(
         f"/admin/reporting-periods/{reporting_period_id}",
@@ -1104,6 +1155,8 @@ def test_admin_config_crud_mutations_write_audit_logs() -> None:
     assert [row["action"] for row in session.audit_logs] == [
         "admin.config.reporting_period.create",
         "admin.config.reporting_period.update",
+        "admin.config.reporting_period.deactivate",
+        "admin.config.reporting_period.activate",
         "admin.config.reporting_period.delete",
         "admin.config.public_holiday.create",
         "admin.config.public_holiday.update",
@@ -1130,14 +1183,16 @@ def test_admin_config_crud_mutations_write_audit_logs() -> None:
     assert session.audit_logs[0]["entity_id"] == reporting_period_id
     assert _audit_json(session.audit_logs[0], "before_json") is None
     assert _audit_json(session.audit_logs[0], "after_json")["label"] == "Jul - Dec 2026"
-    assert _audit_json(session.audit_logs[1], "before_json")["status"] == "open"
-    assert _audit_json(session.audit_logs[1], "after_json")["status"] == "closed"
-    assert _audit_json(session.audit_logs[2], "before_json")["label"] == "H2 2026"
-    assert _audit_json(session.audit_logs[2], "after_json") is None
-    assert _audit_json(session.audit_logs[6], "metadata_json")["programme_code"] == "DR"
-    assert _audit_json(session.audit_logs[10], "metadata_json")["rule_type"] == "combine"
-    assert _audit_json(session.audit_logs[13], "metadata_json")["posting_code"] == "TTSHRespi"
-    assert _audit_json(session.audit_logs[16], "metadata_json")["posting_code"] == "TTSHDR"
+    assert _audit_json(session.audit_logs[1], "before_json")["status"] == "active"
+    assert _audit_json(session.audit_logs[1], "after_json")["status"] == "inactive"
+    assert _audit_json(session.audit_logs[2], "metadata_json")["mutation"] == "deactivate"
+    assert _audit_json(session.audit_logs[3], "metadata_json")["mutation"] == "activate"
+    assert _audit_json(session.audit_logs[4], "before_json")["label"] == "H2 2026"
+    assert _audit_json(session.audit_logs[4], "after_json") is None
+    assert _audit_json(session.audit_logs[8], "metadata_json")["programme_code"] == "DR"
+    assert _audit_json(session.audit_logs[12], "metadata_json")["rule_type"] == "combine"
+    assert _audit_json(session.audit_logs[15], "metadata_json")["posting_code"] == "TTSHRespi"
+    assert _audit_json(session.audit_logs[18], "metadata_json")["posting_code"] == "TTSHDR"
     for audit_row in session.audit_logs:
         metadata = _audit_json(audit_row, "metadata_json")
         assert metadata["data_revalidation"]["changed_entity"] == metadata["config_entity"]
@@ -1223,6 +1278,7 @@ def test_null_scope_cannot_mutate_reporting_periods() -> None:
             "label": "Jul - Dec 2026",
             "start_date": "2026-07-01",
             "end_date": "2026-12-31",
+            "activate_on": "2026-07-01",
         },
     )
     assert response.status_code == 403
@@ -1238,12 +1294,15 @@ def test_reporting_period_create_update_delete_crud() -> None:
             "label": "Jul - Dec 2026",
             "start_date": "2026-07-01",
             "end_date": "2026-12-31",
+            "activate_on": "2026-07-01",
         },
     )
     assert created.status_code == 200
     body = created.json()
     assert body["label"] == "Jul - Dec 2026"
-    assert body["status"] == "open"
+    assert body["status"] == "active"
+    assert body["activate_on"] == "2026-07-01"
+    assert body["deactivate_on"] is None
 
     duplicate = client.post(
         "/admin/reporting-periods",
@@ -1252,6 +1311,7 @@ def test_reporting_period_create_update_delete_crud() -> None:
             "label": "Jul - Dec 2026",
             "start_date": "2026-07-01",
             "end_date": "2026-12-31",
+            "activate_on": "2026-07-01",
         },
     )
     assert duplicate.status_code == 409
@@ -1259,11 +1319,32 @@ def test_reporting_period_create_update_delete_crud() -> None:
     updated = client.put(
         f"/admin/reporting-periods/{body['id']}",
         headers=_master_admin_headers("DR"),
-        json={"label": "H2 2026", "status": "closed"},
+        json={
+            "label": "H2 2026",
+            "status": "inactive",
+            "activate_on": "2026-07-01",
+            "deactivate_on": "2026-12-31",
+        },
     )
     assert updated.status_code == 200
     assert updated.json()["label"] == "H2 2026"
-    assert updated.json()["status"] == "closed"
+    assert updated.json()["status"] == "inactive"
+    assert updated.json()["activate_on"] == "2026-07-01"
+    assert updated.json()["deactivate_on"] == "2026-12-31"
+
+    stale_status = client.put(
+        f"/admin/reporting-periods/{body['id']}",
+        headers=_master_admin_headers("DR"),
+        json={"status": "closed"},
+    )
+    assert stale_status.status_code == 422
+
+    invalid_transition_order = client.put(
+        f"/admin/reporting-periods/{body['id']}",
+        headers=_master_admin_headers("DR"),
+        json={"activate_on": "2026-12-31", "deactivate_on": "2026-07-01"},
+    )
+    assert invalid_transition_order.status_code == 422
 
     deleted = client.delete(
         f"/admin/reporting-periods/{body['id']}",

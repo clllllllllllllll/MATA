@@ -47,6 +47,8 @@ class DataRevalidationAction(str, Enum):
     CREATE = "create"
     UPDATE = "update"
     DELETE = "delete"
+    ACTIVATE = "activate"
+    DEACTIVATE = "deactivate"
     REPLACE = "replace"
     UPLOAD = "upload"
     MANUAL = "manual"

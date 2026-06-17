@@ -11,6 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
 from app.services.cache import cache
+from app.services.reporting_period_status import (
+    REPORTING_PERIOD_ACTIVE,
+    normalise_reporting_period_status,
+)
 
 
 ALLOWED_MULTI_POSTING_RULE_TYPES = {"main_posting", "combine", "half_month"}
@@ -101,7 +105,16 @@ async def list_reporting_periods(
         where_clauses.append("id = :reporting_period_id")
 
     sql = """
-        SELECT id, label, start_date, end_date, status, created_at, updated_at
+        SELECT
+            id,
+            label,
+            start_date,
+            end_date,
+            status,
+            activate_on,
+            deactivate_on,
+            created_at,
+            updated_at
         FROM reporting_periods
     """
     if where_clauses:
@@ -1081,6 +1094,15 @@ def _raise_validation(detail: str) -> None:
     )
 
 
+def _validate_reporting_period_transition_order(
+    *,
+    activate_on: date | None,
+    deactivate_on: date | None,
+) -> None:
+    if activate_on is not None and deactivate_on is not None and activate_on > deactivate_on:
+        _raise_validation("activate_on must be on or before deactivate_on")
+
+
 def _raise_dependency_conflict(dependencies: dict[str, int]) -> None:
     raise ApiError(
         status_code=409,
@@ -1097,23 +1119,61 @@ async def create_reporting_period(
     label: str,
     start_date: date,
     end_date: date,
+    status: str | None,
+    activate_on: date | None,
+    deactivate_on: date | None,
 ) -> dict[str, Any]:
     _validate_programme_scope_for_write(programme_scope)
     if start_date > end_date:
         _raise_validation("start_date must be on or before end_date")
+    _validate_reporting_period_transition_order(
+        activate_on=activate_on,
+        deactivate_on=deactivate_on,
+    )
+    resolved_status = (
+        normalise_reporting_period_status(status)
+        if status is not None
+        else REPORTING_PERIOD_ACTIVE
+    )
     try:
         result = await db.execute(
             text(
                 """
-                INSERT INTO reporting_periods (label, start_date, end_date)
-                VALUES (:label, :start_date, :end_date)
-                RETURNING id, label, start_date, end_date, status, created_at, updated_at
+                INSERT INTO reporting_periods (
+                    label,
+                    start_date,
+                    end_date,
+                    status,
+                    activate_on,
+                    deactivate_on
+                )
+                VALUES (
+                    :label,
+                    :start_date,
+                    :end_date,
+                    :status,
+                    :activate_on,
+                    :deactivate_on
+                )
+                RETURNING
+                    id,
+                    label,
+                    start_date,
+                    end_date,
+                    status,
+                    activate_on,
+                    deactivate_on,
+                    created_at,
+                    updated_at
                 """
             ),
             {
                 "label": label,
                 "start_date": start_date,
                 "end_date": end_date,
+                "status": resolved_status,
+                "activate_on": activate_on,
+                "deactivate_on": deactivate_on,
             },
         )
         await db.commit()
@@ -1134,12 +1194,25 @@ async def update_reporting_period(
     start_date: date | None,
     end_date: date | None,
     status: str | None,
+    activate_on: date | None,
+    activate_on_set: bool,
+    deactivate_on: date | None,
+    deactivate_on_set: bool,
 ) -> dict[str, Any]:
     _validate_programme_scope_for_write(programme_scope)
     existing = await db.execute(
         text(
             """
-            SELECT id, label, start_date, end_date, status, created_at, updated_at
+            SELECT
+                id,
+                label,
+                start_date,
+                end_date,
+                status,
+                activate_on,
+                deactivate_on,
+                created_at,
+                updated_at
             FROM reporting_periods
             WHERE id = :id
             """
@@ -1154,6 +1227,17 @@ async def update_reporting_period(
     resolved_end = end_date if end_date is not None else current["end_date"]
     if resolved_start > resolved_end:
         _raise_validation("start_date must be on or before end_date")
+    resolved_activate_on = activate_on if activate_on_set else current["activate_on"]
+    resolved_deactivate_on = deactivate_on if deactivate_on_set else current["deactivate_on"]
+    _validate_reporting_period_transition_order(
+        activate_on=resolved_activate_on,
+        deactivate_on=resolved_deactivate_on,
+    )
+    resolved_status = (
+        normalise_reporting_period_status(status)
+        if status is not None
+        else None
+    )
 
     try:
         result = await db.execute(
@@ -1165,9 +1249,26 @@ async def update_reporting_period(
                     start_date = COALESCE(:start_date, start_date),
                     end_date = COALESCE(:end_date, end_date),
                     status = COALESCE(:status, status),
+                    activate_on = CASE
+                        WHEN :activate_on_set THEN :activate_on
+                        ELSE activate_on
+                    END,
+                    deactivate_on = CASE
+                        WHEN :deactivate_on_set THEN :deactivate_on
+                        ELSE deactivate_on
+                    END,
                     updated_at = now()
                 WHERE id = :id
-                RETURNING id, label, start_date, end_date, status, created_at, updated_at
+                RETURNING
+                    id,
+                    label,
+                    start_date,
+                    end_date,
+                    status,
+                    activate_on,
+                    deactivate_on,
+                    created_at,
+                    updated_at
                 """
             ),
             {
@@ -1175,7 +1276,11 @@ async def update_reporting_period(
                 "label": label,
                 "start_date": start_date,
                 "end_date": end_date,
-                "status": status,
+                "status": resolved_status,
+                "activate_on": activate_on,
+                "activate_on_set": activate_on_set,
+                "deactivate_on": deactivate_on,
+                "deactivate_on_set": deactivate_on_set,
             },
         )
         await db.commit()
@@ -1186,6 +1291,28 @@ async def update_reporting_period(
     row = result.mappings().one()
     _invalidate_admin_config_cache()
     return dict(row)
+
+
+async def set_reporting_period_status(
+    db: AsyncSession,
+    *,
+    programme_scope: set[str],
+    reporting_period_id: UUID,
+    status: str,
+) -> dict[str, Any]:
+    return await update_reporting_period(
+        db,
+        programme_scope=programme_scope,
+        reporting_period_id=reporting_period_id,
+        label=None,
+        start_date=None,
+        end_date=None,
+        status=status,
+        activate_on=None,
+        activate_on_set=False,
+        deactivate_on=None,
+        deactivate_on_set=False,
+    )
 
 
 async def delete_reporting_period(

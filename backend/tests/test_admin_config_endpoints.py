@@ -312,7 +312,9 @@ class FakeAdminConfigSession:
                     "label": "Jul - Dec 2025",
                     "start_date": date(2025, 7, 1),
                     "end_date": date(2025, 12, 31),
-                    "status": "open",
+                    "status": "active",
+                    "activate_on": None,
+                    "deactivate_on": None,
                     "created_at": now,
                     "updated_at": now,
                 }

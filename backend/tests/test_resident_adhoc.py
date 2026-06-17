@@ -140,3 +140,46 @@ def test_adhoc_weekend_non_exception_returns_warning() -> None:
     assert response.json()["compliance_warning"].startswith(
         "1 session(s) submitted on a weekend"
     )
+
+
+def test_adhoc_teaching_is_blocked_when_reporting_period_is_inactive() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.reporting_periods[0]["status"] = "inactive"
+    before_events = len(fake_db.events)
+    before_attendance = len(fake_db.attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "date": "2026-05-18",
+            "start_time": "10:00",
+            "teaching_name": "Journal Club",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "No active reporting period is available"
+    assert len(fake_db.events) == before_events
+    assert len(fake_db.attendance) == before_attendance
+
+
+def test_adhoc_teaching_uses_effectively_active_scheduled_reporting_period() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.reporting_periods[0]["status"] = "inactive"
+    fake_db.reporting_periods[0]["activate_on"] = fake_db.today - timedelta(days=1)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "date": "2026-05-18",
+            "start_time": "10:00",
+            "teaching_name": "Journal Club",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["event"]["is_adhoc"] is True

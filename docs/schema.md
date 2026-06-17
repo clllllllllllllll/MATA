@@ -140,7 +140,11 @@ Six-month reporting windows.
 | label | VARCHAR(30) | UNIQUE, NOT NULL | e.g. `Jan - June 2026`, `Jul - Dec 2025` |
 | start_date | DATE | NOT NULL | |
 | end_date | DATE | NOT NULL | |
-| status | VARCHAR(10) | DEFAULT 'open' | `open`, `closed` |
+| status | VARCHAR(10) | DEFAULT 'active' | `active`, `inactive` only. `open`/`closed` are legacy values and must be migrated/rejected at the API boundary. |
+| activate_on | DATE | nullable | Optional scheduled activation date. Effective status is resolved at read time. |
+| deactivate_on | DATE | nullable | Optional scheduled deactivation date. Effective status is resolved at read time. |
+
+**Effective status:** `status` is the stored manual state. `activate_on` and `deactivate_on` are read-time scheduling hints; due dates do not mutate the row by themselves. When both scheduled dates are due, the later scheduled date wins; if both are due on the same date, deactivation wins.
 
 ---
 
@@ -700,16 +704,16 @@ Persistent audit trail of every RDB, TTF, FormF1, and Academic Calendar / Public
 
 ## Table: `period_snapshots`
 
-Frozen compliance state captured at reporting period close.
+Frozen compliance state captured by the future final close/freeze flow.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
 | id | UUID | PK | |
 | reporting_period_id | UUID | FK → reporting_periods.id, NOT NULL | |
 | programme_code | VARCHAR(20) | NOT NULL | One snapshot per (period, programme) |
-| snapshot_data | JSONB | NOT NULL | Full compliance state at period close |
+| snapshot_data | JSONB | NOT NULL | Full compliance state at future final close/freeze |
 | generated_at | TIMESTAMPTZ | DEFAULT now() | |
-| generated_by | UUID | FK → users.id | Admin who triggered period close |
+| generated_by | UUID | FK → users.id | Admin who triggered future final close/freeze |
 
 **Unique constraint:** `UNIQUE(reporting_period_id, programme_code)`
 
@@ -755,7 +759,7 @@ Frozen compliance state captured at reporting period close.
 
 ## Table: `clawback_records`
 
-Generated at period close for residents who failed to meet the 70% PTT threshold.
+Generated at future final close/freeze for residents who failed to meet the 70% PTT threshold.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
@@ -765,7 +769,7 @@ Generated at period close for residents who failed to meet the 70% PTT threshold
 | posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | |
 | r_year | VARCHAR(10) | NOT NULL | Used for norm rate lookup |
 | active_months | DECIMAL(4,1) | NOT NULL | May be fractional for GASTRO split months |
-| compliance_percentage | DECIMAL(5,4) | NOT NULL | Posting-level percentage at period close |
+| compliance_percentage | DECIMAL(5,4) | NOT NULL | Posting-level percentage at future final close/freeze |
 | clawback_amount | DECIMAL(10,2) | NOT NULL | Calculated amount. 0.0 for exempted residents. |
 | clawback_suppressed_reason | VARCHAR(50) | nullable | Reason row is shown but amount is 0. Values: `Extension`, `R7`, `SAF_Employed`, `SCDF_Employed`. NULL = standard clawback row. |
 | billing_dept | VARCHAR(50) | | Copied from posting_codes.billing_dept at generation time |
@@ -847,7 +851,7 @@ ON posting_codes(supports_secretary_events);
 #### `reporting_periods`
 
 ```sql
--- Fast lookup of the current/open period.
+-- Fast lookup of the active/effectively active period.
 CREATE INDEX idx_reporting_periods_status
 ON reporting_periods(status);
 

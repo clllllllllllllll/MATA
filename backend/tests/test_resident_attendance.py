@@ -210,3 +210,36 @@ def test_inactive_posting_status_is_rejected_for_attendance() -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_attendance_is_blocked_when_reporting_period_is_inactive() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.reporting_periods[0]["status"] = "inactive"
+    before_count = len(fake_db.attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [fake_db.event_id]},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "No active reporting period is available"
+    assert len(fake_db.attendance) == before_count
+
+
+def test_attendance_uses_effectively_active_scheduled_reporting_period() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.reporting_periods[0]["status"] = "inactive"
+    fake_db.reporting_periods[0]["activate_on"] = fake_db.today - timedelta(days=1)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [fake_db.event_id]},
+    )
+
+    assert response.status_code == 200
+    assert any(row["teaching_event_id"] == fake_db.event_id for row in fake_db.attendance)

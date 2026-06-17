@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.data_revalidation import DataRevalidationImpactSummary
+from app.services.reporting_period_status import normalise_reporting_period_status
 
 
 class ReportingPeriodResponse(BaseModel):
@@ -16,6 +17,8 @@ class ReportingPeriodResponse(BaseModel):
     start_date: date
     end_date: date
     status: str
+    activate_on: date | None = None
+    deactivate_on: date | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -638,6 +641,9 @@ class ReportingPeriodCreateRequest(BaseModel):
     label: str = Field(min_length=1, max_length=30)
     start_date: date
     end_date: date
+    status: str | None = None
+    activate_on: date | None = None
+    deactivate_on: date | None = None
 
     @field_validator("label")
     @classmethod
@@ -651,7 +657,20 @@ class ReportingPeriodCreateRequest(BaseModel):
     def _validate_date_range(self) -> "ReportingPeriodCreateRequest":
         if self.start_date > self.end_date:
             raise ValueError("start_date must be on or before end_date")
+        if (
+            self.activate_on is not None
+            and self.deactivate_on is not None
+            and self.activate_on > self.deactivate_on
+        ):
+            raise ValueError("activate_on must be on or before deactivate_on")
         return self
+
+    @field_validator("status")
+    @classmethod
+    def _validate_status(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return normalise_reporting_period_status(value)
 
 
 class ReportingPeriodUpdateRequest(BaseModel):
@@ -661,6 +680,8 @@ class ReportingPeriodUpdateRequest(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     status: str | None = None
+    activate_on: date | None = None
+    deactivate_on: date | None = None
 
     @field_validator("label")
     @classmethod
@@ -677,10 +698,17 @@ class ReportingPeriodUpdateRequest(BaseModel):
     def _validate_status(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        lowered = value.strip().lower()
-        if lowered not in {"open", "closed"}:
-            raise ValueError("status must be one of: open, closed")
-        return lowered
+        return normalise_reporting_period_status(value)
+
+    @model_validator(mode="after")
+    def _validate_transition_order(self) -> "ReportingPeriodUpdateRequest":
+        if (
+            self.activate_on is not None
+            and self.deactivate_on is not None
+            and self.activate_on > self.deactivate_on
+        ):
+            raise ValueError("activate_on must be on or before deactivate_on")
+        return self
 
 
 class PublicHolidayUpsertRequest(BaseModel):

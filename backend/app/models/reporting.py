@@ -36,8 +36,10 @@ class ReportingPeriod(UUIDTimestampMixin, Base):
     status: Mapped[str] = mapped_column(
         String(10),
         nullable=False,
-        server_default=text("'open'"),
+        server_default=text("'active'"),
     )
+    activate_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    deactivate_on: Mapped[date | None] = mapped_column(Date, nullable=True)
 
 
 class LoaType(UUIDTimestampMixin, Base):

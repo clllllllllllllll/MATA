@@ -58,7 +58,7 @@ External/cross-cluster residents are **not** in the `users` table and are **not*
 1. Resident logs in with MCR → JWT issued with `programme_code = 'GRM'`
 2. On `GET /resident/events` or `GET /resident/dashboard`:
    - Current posting derived from `resident_postings` WHERE today falls within `start_date..end_date` AND `status IN ('active', 'loa_working')`
-   - Compliance targets from `teaching_targets` WHERE `programme_code = 'GRM'` AND `posting_code` from current phase AND `r_year` from **resident_postings row** (not residents.r_year) AND `reporting_period_id` from open period
+   - Compliance targets from `teaching_targets` WHERE `programme_code = 'GRM'` AND `posting_code` from current phase AND `r_year` from **resident_postings row** (not residents.r_year) AND `reporting_period_id` from the active/effectively active period
 
 ### Request identity headers (Phase 1 stub)
 
@@ -164,8 +164,8 @@ Required cache rules:
   - admin CRUD changes to config tables
   - secretary teaching event create/update/delete
   - resident attendance submit/delete
-  - reporting period close/reopen
-- Period snapshots are immutable after close except reopen/reclose flows; snapshot/export reads may use longer cache TTLs.
+  - reporting period create/update/delete/activate/deactivate or scheduled transition edits
+- Period snapshots remain future final-close artifacts; normal reporting-period activation/deactivation does not generate snapshots.
 - If distributed deployment is used, replace in-memory cache with Redis or the platform cache so invalidation works across workers.
 
 ### Data Revalidation contract
@@ -182,9 +182,9 @@ The current 3H-C wiring covers:
 - `PATCH /admin/parsed-data/form-f1-records/{id}`
 - `PATCH /admin/parsed-data/academic-month-boundaries/{id}`
 
-The current 3H-D Config wiring covers successful creates, updates, and deletes for reporting periods, public holidays, programmes, LOA types, multi-posting rules, posting groups, weekend exceptions, and global session types. Create/update responses preserve the entity fields and add `data_revalidation`. Delete responses return `{ "entity_type": "...", "entity_id": "...", "deleted": true, "data_revalidation": {...} }`.
+The current 3H-D Config wiring covers successful creates, updates, deletes, and reporting-period activate/deactivate mutations for reporting periods, public holidays, programmes, LOA types, multi-posting rules, posting groups, weekend exceptions, and global session types. Create/update/activate/deactivate responses preserve the entity fields and add `data_revalidation`. Delete responses return `{ "entity_type": "...", "entity_id": "...", "deleted": true, "data_revalidation": {...} }`.
 
-3H-D still does not mutate warnings, run RDB source-cell parsing, re-resolve existing multi-posting rows, regenerate `resident_postings`, or perform compliance calculation. Multi-posting rule changes return `manual_revalidation_required` to indicate existing RDB source cells/warnings need an explicit later revalidation or future RDB re-upload. Successful Data Revalidation summaries use one of these canonical outcomes:
+3H-D still does not mutate warnings, run RDB source-cell parsing, re-resolve existing multi-posting rows, regenerate `resident_postings`, generate period snapshots, hibernate surplus, generate clawback rows, or perform compliance calculation. Multi-posting rule changes return `manual_revalidation_required` to indicate existing RDB source cells/warnings need an explicit later revalidation or future RDB re-upload. Reporting-period mutations return the default `future_compliance_impact` summary. Successful Data Revalidation summaries use one of these canonical outcomes:
 
 - `no_op`
 - `warning_only`
@@ -543,6 +543,8 @@ Delete a global session type.
 - **Note:** Returns `409` if any `teaching_events` rows reference this session type name. Deactivate instead of deleting in that case.
 - **Response:** `200` with `{ "entity_type": "global_session_type", "entity_id": "...", "deleted": true, "data_revalidation": {...} }`.
 
+### GET `/admin/reporting-periods`
+
 List all reporting periods.
 
 - **Auth:** admin only
@@ -557,37 +559,59 @@ Create a new reporting period.
 {
   "label": "Jan - June 2026",
   "start_date": "2026-01-06",
-  "end_date": "2026-07-06"
+  "end_date": "2026-07-06",
+  "status": "active",
+  "activate_on": null,
+  "deactivate_on": null
 }
 ```
 
-### PUT `/admin/reporting-periods/{id}/close`
+`status` is optional on create and defaults to `active`. Only `active` and `inactive` are accepted; legacy `open`/`closed` values are rejected. `activate_on` and `deactivate_on` are optional scheduled transition dates. If both are supplied, `activate_on <= deactivate_on` is required.
 
-Close a reporting period.
+### PUT `/admin/reporting-periods/{id}`
+
+Update a reporting period label, date range, stored status, or scheduled transition dates.
 
 - **Auth:** admin only
-- **Actions triggered at close (in order):**
-  1. Set `reporting_periods.status = 'closed'`
-  2. Set all `surplus_ledger.is_hibernating = true` for all non-hibernating rows in this period
-  3. Generate one `period_snapshots` row per programme that has TTF data for this period
-  4. Generate `clawback_records` rows for all residents who failed 70% PTT (excluding SAF/SCDF-Employed; setting `clawback_suppressed_reason` for Extension and R7)
-  5. If a snapshot already exists (period was previously closed and reopened), the existing snapshot is replaced
-- **Response:**
+- **Body:** any subset of `label`, `start_date`, `end_date`, `status`, `activate_on`, `deactivate_on`.
+- **Validation:** `start_date <= end_date`, `status` is `active` or `inactive`, and the resolved `activate_on/deactivate_on` pair must satisfy `activate_on <= deactivate_on` when both are set.
+- **Response:** existing reporting-period entity fields plus `data_revalidation`.
+
+### PUT `/admin/reporting-periods/{id}/activate`
+
+Set `reporting_periods.status = 'active'`.
+
+- **Auth:** admin only
+- **Response:** existing reporting-period entity fields plus `data_revalidation`.
+
+### PUT `/admin/reporting-periods/{id}/deactivate`
+
+Set `reporting_periods.status = 'inactive'`.
+
+- **Auth:** admin only
+- **Important:** Deactivation is an operational status change only. It does not generate snapshots, clawback rows, or surplus hibernation.
+- **Response:** existing reporting-period entity fields plus `data_revalidation`.
+
+### DELETE `/admin/reporting-periods/{id}`
+
+Delete an unused reporting period.
+
+- **Auth:** admin only
+- **Response:** `200` with `{ "entity_type": "reporting_period", "entity_id": "...", "deleted": true, "data_revalidation": {...} }`.
+
+### Reporting-period effective status
+
+Resident-facing default period resolution uses the effective status, not only the stored `status` column:
+
 ```json
 {
-  "period_label": "Jan - June 2026",
-  "snapshots_generated": 2,
-  "programmes_snapshotted": ["DR", "GRM"],
-  "clawback_rows_generated": 14,
-  "clawback_rows_suppressed": 2
+  "status": "active",
+  "activate_on": "2026-01-06",
+  "deactivate_on": "2026-07-06"
 }
 ```
 
-### PUT `/admin/reporting-periods/{id}/reopen`
-
-Reopen a closed reporting period. Does NOT delete existing snapshots — new snapshots generated on next close.
-
-- **Auth:** admin only
+The stored status remains `active` or `inactive`; due scheduled dates are resolved at read time and do not mutate the row. When both scheduled dates are due, the later scheduled date wins; if both are due on the same date, deactivation wins. With no active/effectively active period, resident event listing returns an empty list with `reason = "active_reporting_period_unavailable"` and ad-hoc disabled; attendance and ad-hoc submission endpoints reject with `422`.
 
 ---
 
@@ -701,7 +725,7 @@ Clawback report for the reporting period. This is the **5th tab** in the admin/P
 
 - **Auth:** admin only
 - **Query params:** `reporting_period_id`, `programme_code`, `format` (`json` | `xlsx`)
-- **Scope:** Reads from `clawback_records` table generated at period close. All rows shown — including suppressed rows (Extension, R7) with `clawback_amount = 0` and `clawback_suppressed_reason` displayed.
+- **Scope:** Reads from `clawback_records` table generated by a future final close/freeze flow. All rows shown — including suppressed rows (Extension, R7) with `clawback_amount = 0` and `clawback_suppressed_reason` displayed.
 - **Response:**
 ```json
 {
@@ -739,7 +763,7 @@ Clawback report for the reporting period. This is the **5th tab** in the admin/P
 
 ### GET `/admin/exports/period-snapshot/{snapshot_id}`
 
-Export a historical period snapshot as Excel. Available for closed periods only.
+Export a historical period snapshot as Excel. Available for finalized/frozen period snapshots only. Final close/freeze behavior is deferred and is separate from active/inactive operational status.
 
 - **Auth:** admin only
 
@@ -1184,7 +1208,7 @@ External attendance export for NHG PCs is **TBD/deferred** until dashboard/expor
 { "detail": "Cannot delete event with attendance" }                              // 409
 { "detail": "Duplicate attendance submission" }                                  // 409
 { "detail": "Another TTF upload for this scope is in progress" }                 // 409
-{ "detail": "Reporting period is closed" }                                       // 409
+{ "detail": "No active reporting period is available" }                          // 422
 { "detail": "TTF validation failed", "errors": [...] }                           // 422
 { "detail": "Event date is a public holiday — event creation not allowed" }      // 422
 { "detail": "Attendance submission invalid: event date is outside your tenure at this posting" }  // 422

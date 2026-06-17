@@ -108,7 +108,7 @@ def test_events_include_global_session_types_through_normal_posting_rules() -> N
     assert global_event["is_global"] is True
 
 
-def test_events_return_empty_reason_when_no_open_reporting_period_exists() -> None:
+def test_events_return_empty_reason_when_no_active_reporting_period_exists() -> None:
     fake_db = FakeResidentSession()
     fake_db.reporting_periods = []
     client = _client(fake_db)
@@ -118,8 +118,35 @@ def test_events_return_empty_reason_when_no_open_reporting_period_exists() -> No
     assert response.status_code == 200
     payload = response.json()
     assert payload["events"] == []
-    assert payload["reason"] == "reporting_period_unavailable"
+    assert payload["reason"] == "active_reporting_period_unavailable"
     assert payload["ad_hoc_allowed"] is False
+
+
+def test_events_hide_unsubmitted_events_when_reporting_period_is_inactive() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.reporting_periods[0]["status"] = "inactive"
+    client = _client(fake_db)
+
+    response = client.get("/resident/events", headers=_headers(fake_db))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["events"] == []
+    assert payload["reason"] == "active_reporting_period_unavailable"
+    assert payload["ad_hoc_allowed"] is False
+
+
+def test_events_use_effectively_active_scheduled_reporting_period() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.reporting_periods[0]["status"] = "inactive"
+    fake_db.reporting_periods[0]["activate_on"] = fake_db.today - timedelta(days=1)
+    client = _client(fake_db)
+
+    response = client.get("/resident/events", headers=_headers(fake_db))
+
+    assert response.status_code == 200
+    ids = {row["id"] for row in response.json()["events"]}
+    assert fake_db.event_id in ids
 
 
 def test_events_return_empty_and_allow_adhoc_when_no_eligible_scheduled_events_exist() -> None:
@@ -181,7 +208,7 @@ def test_events_reject_non_resident_role() -> None:
     assert response.status_code == 403
 
 
-def test_events_use_open_period_event_window_not_today_posting_only() -> None:
+def test_events_use_active_period_event_window_not_today_posting_only() -> None:
     fake_db = FakeResidentSession()
     fake_db.reporting_periods = [
         {
@@ -189,7 +216,7 @@ def test_events_use_open_period_event_window_not_today_posting_only() -> None:
             "label": "Jul-Dec 2025",
             "start_date": date(2025, 7, 1),
             "end_date": date(2025, 12, 31),
-            "status": "open",
+            "status": "active",
         }
     ]
     fake_db.resident_postings = [
@@ -242,7 +269,7 @@ def test_events_use_open_period_event_window_not_today_posting_only() -> None:
     assert all("(from " not in row["posting_code"] for row in payload["posting_capabilities"])
 
 
-def test_events_exclude_submitted_event_in_open_period_window() -> None:
+def test_events_exclude_submitted_event_in_active_period_window() -> None:
     fake_db = FakeResidentSession()
     fake_db.reporting_periods = [
         {
@@ -250,7 +277,7 @@ def test_events_exclude_submitted_event_in_open_period_window() -> None:
             "label": "Jul-Dec 2025",
             "start_date": date(2025, 7, 1),
             "end_date": date(2025, 12, 31),
-            "status": "open",
+            "status": "active",
         }
     ]
     fake_db.resident_postings = [

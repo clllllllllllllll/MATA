@@ -227,7 +227,7 @@ def update_surplus(resident_id, posting_code, session_type_id, reporting_period_
 Hibernation is triggered at **two points**, not lazily on compliance read:
 
 1. **On RDB upload** — after `resident_postings` rows are written, the parser identifies all `(resident, posting_code)` pairs with no active phase in this period and sets `is_hibernating = true`.
-2. **On period close** — all non-hibernating `surplus_ledger` rows for the period are set to `is_hibernating = true`.
+2. **On future final close/freeze** — all non-hibernating `surplus_ledger` rows for the period are set to `is_hibernating = true`.
 
 ```python
 def hibernate_stale_surplus(session, reporting_period_id: str):
@@ -405,7 +405,7 @@ The compliance engine runs **JIT (just-in-time)** — recalculated on read, not 
 - `ay_date_category` — from `programmes.ay_date_category` for the resident programme
 - `posting_code` — derived at request time from `resident_postings`
 - `r_year` — from the `resident_postings` row for each phase (not `residents.r_year`)
-- `reporting_period_id` — from `reporting_periods` WHERE `status = 'open'`
+- `reporting_period_id` — from the active/effectively active `reporting_periods` row
 - `is_active` — from `form_f1_records` for the resident's MCR and each calendar month
 
 ### Resident dashboard — Python (single-resident JIT)
@@ -424,6 +424,16 @@ The compliance engine runs **JIT (just-in-time)** — recalculated on read, not 
 12. Apply tag-based reallocation (BL-3) — read-time only, not written back
 13. Compute posting-level compliance (BL-2)
 14. Annotate dual-posting flag (BL-7)
+
+### Reporting-period active/inactive semantics
+
+`reporting_periods.status` accepts `active` and `inactive` only. `open` and `closed` are legacy names and are rejected by the API after migration.
+
+`activate_on` and `deactivate_on` are nullable scheduled transition dates. They are resolved at read time and do not mutate the stored `status` value. When both scheduled dates are due, the later scheduled date wins; if both scheduled dates are due on the same date, deactivation wins.
+
+Resident event discovery and new submissions use the active/effectively active period. If no active/effectively active period exists, the event list is empty with `reason = "active_reporting_period_unavailable"` and ad-hoc submission is disabled; attendance and ad-hoc submission attempts return `422`. Existing attendance records remain stored and auditable.
+
+Operational deactivation is not period close/freeze. It does not generate `period_snapshots`, `clawback_records`, or surplus hibernation, and it does not run compliance calculation. Admin JIT reports may still calculate a selected inactive period explicitly.
 
 ### Admin reporting views — SQL (batch, programme-wide)
 
@@ -702,7 +712,7 @@ External attendance must be exportable/queryable later by NHG PCs for forwarding
 
 ## BL-10: Clawback Calculation
 
-Generated at period close for residents who failed to meet the 70% PTT threshold.
+Generated at future final close/freeze for residents who failed to meet the 70% PTT threshold.
 
 **Trigger condition:** Any `(resident, posting)` where `percentage(posting) < 0.70` AND the posting has at least one active month.
 
@@ -752,7 +762,7 @@ def compute_clawback(
     return round((rate / 12) * active_months, 2)
 ```
 
-**Clawback tab:** Displayed as a 5th tab in the admin/PC dashboard alongside Monthly View, Posting View, Attendance Breakdown, Submitted Attendances. Read-only. Generated/refreshed at period close. Visible to admin/PC role only.
+**Clawback tab:** Displayed as a 5th tab in the admin/PC dashboard alongside Monthly View, Posting View, Attendance Breakdown, Submitted Attendances. Read-only. Generated/refreshed by the future final close/freeze flow. Visible to admin/PC role only.
 
 ---
 
@@ -845,7 +855,7 @@ Both are handled automatically via FormF1 values. No special-case code needed.
 
 ## TBD-MIGRATION: Historical Data Migration Strategy
 
-**Status:** Awaiting stakeholder decision before first period close.
+**Status:** Awaiting stakeholder decision before the future final close/freeze workflow.
 
 **Option A — Archive only (recommended default):**
 Legacy Excel files remain accessible. New system holds data from cutover period onwards. Zero migration effort.
@@ -899,7 +909,7 @@ MATA compliance is calculated JIT (just-in-time) on read. Performance optimisati
   - report endpoint and query params
   - role/scope information
 - Suggested TTL for live compliance/report results: 30–120 seconds.
-- Period snapshots generated at close are frozen records; snapshot/export reads may have longer TTLs.
+- Period snapshots are generated only by a future final close/freeze workflow, not by reporting-period deactivate/inactive status; snapshot/export reads may have longer TTLs.
 
 ### Required invalidation triggers
 
@@ -913,7 +923,7 @@ Invalidate affected compliance/report caches after:
 - secretary teaching event create/update/delete
 - resident attendance submit/delete
 - resident ad-hoc teaching create
-- reporting period close/reopen
+- reporting period create/update/delete/activate/deactivate or scheduled transition edits
 
 ### Data Revalidation
 

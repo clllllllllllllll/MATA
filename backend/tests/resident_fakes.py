@@ -4,6 +4,8 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
 
+from app.services.reporting_period_status import is_reporting_period_effectively_active
+
 
 class FakeResult:
     def __init__(
@@ -51,7 +53,7 @@ class FakeResidentSession:
         weekend_offset = (self.today.weekday() - 5) % 7
         weekend_event_day = self.today - timedelta(days=weekend_offset)
         self.period_id = str(uuid4())
-        self.closed_period_id = str(uuid4())
+        self.inactive_period_id = str(uuid4())
         self.resident_id = str(uuid4())
         self.other_resident_id = str(uuid4())
         self.admin_id = str(uuid4())
@@ -150,7 +152,9 @@ class FakeResidentSession:
                 "label": "Jan - June 2026",
                 "start_date": period_start,
                 "end_date": period_end,
-                "status": "open",
+                "status": "active",
+                "activate_on": None,
+                "deactivate_on": None,
             }
         ]
         self.resident_postings = [
@@ -336,7 +340,12 @@ class FakeResidentSession:
             return FakeResult(scalar=1 if exists else None)
 
         if "FROM reporting_periods" in sql:
-            rows = [row for row in self.reporting_periods if row["status"] == "open"]
+            rows = [
+                row
+                for row in self.reporting_periods
+                if is_reporting_period_effectively_active(row, as_of_date=self.today)
+            ]
+            rows.sort(key=lambda row: row["start_date"], reverse=True)
             return FakeResult(rows=rows[:1])
 
         if "FROM resident_postings" in sql:

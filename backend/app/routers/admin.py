@@ -325,6 +325,8 @@ _CONFIG_AUDIT_ACTIONS = {
     ("reporting_period", "create"): "admin.config.reporting_period.create",
     ("reporting_period", "update"): "admin.config.reporting_period.update",
     ("reporting_period", "delete"): "admin.config.reporting_period.delete",
+    ("reporting_period", "activate"): "admin.config.reporting_period.activate",
+    ("reporting_period", "deactivate"): "admin.config.reporting_period.deactivate",
     ("public_holiday", "create"): "admin.config.public_holiday.create",
     ("public_holiday", "update"): "admin.config.public_holiday.update",
     ("public_holiday", "delete"): "admin.config.public_holiday.delete",
@@ -349,7 +351,16 @@ _CONFIG_AUDIT_ACTIONS = {
 _CONFIG_AUDIT_SNAPSHOT_SQL = {
     "reporting_period": """
         /* audit_snapshot:reporting_period */
-        SELECT id, label, start_date, end_date, status, created_at, updated_at
+        SELECT
+            id,
+            label,
+            start_date,
+            end_date,
+            status,
+            activate_on,
+            deactivate_on,
+            created_at,
+            updated_at
         FROM reporting_periods
         WHERE id = :id
     """,
@@ -531,10 +542,19 @@ _CONFIG_REVALIDATION_ACTION = {
     "create": DataRevalidationAction.CREATE,
     "update": DataRevalidationAction.UPDATE,
     "delete": DataRevalidationAction.DELETE,
+    "activate": DataRevalidationAction.ACTIVATE,
+    "deactivate": DataRevalidationAction.DEACTIVATE,
 }
 
 _CONFIG_SOURCE_METADATA_FIELDS = {
-    "reporting_period": ("label", "start_date", "end_date", "status"),
+    "reporting_period": (
+        "label",
+        "start_date",
+        "end_date",
+        "status",
+        "activate_on",
+        "deactivate_on",
+    ),
     "public_holiday": ("holiday_date", "name", "day_of_week", "year"),
     "programme": ("code", "r_year_required", "is_subspecialty", "rdb_alias"),
     "loa_type": ("code", "description"),
@@ -619,7 +639,7 @@ async def _revalidate_config_mutation(
     admin_context: AdminContext,
     actor: StaffActorContext,
     entity_type: str,
-    mutation: Literal["create", "update", "delete"],
+    mutation: Literal["create", "update", "delete", "activate", "deactivate"],
     entity_id: UUID | str | None,
     snapshot: dict[str, Any] | None,
     changed_fields: list[str],
@@ -733,7 +753,7 @@ async def _write_config_audit(
     *,
     actor: StaffActorContext,
     entity_type: str,
-    mutation: Literal["create", "update", "delete"],
+    mutation: Literal["create", "update", "delete", "activate", "deactivate"],
     entity_id: UUID | str | None,
     before: dict[str, Any] | None,
     after: dict[str, Any] | None,
@@ -999,6 +1019,9 @@ async def create_reporting_period(
         label=payload.label,
         start_date=payload.start_date,
         end_date=payload.end_date,
+        status=payload.status,
+        activate_on=payload.activate_on,
+        deactivate_on=payload.deactivate_on,
     )
     data_revalidation = await _revalidate_config_mutation(
         db,
@@ -1053,6 +1076,10 @@ async def update_reporting_period(
         start_date=payload.start_date,
         end_date=payload.end_date,
         status=payload.status,
+        activate_on=payload.activate_on,
+        activate_on_set="activate_on" in payload.model_fields_set,
+        deactivate_on=payload.deactivate_on,
+        deactivate_on_set="deactivate_on" in payload.model_fields_set,
     )
     data_revalidation = await _revalidate_config_mutation(
         db,
@@ -1076,6 +1103,99 @@ async def update_reporting_period(
     )
     return ReportingPeriodMutationResponse.model_validate(
         _with_data_revalidation(row, data_revalidation)
+    )
+
+
+async def _set_reporting_period_status_response(
+    *,
+    reporting_period_id: UUID,
+    status: Literal["active", "inactive"],
+    mutation: Literal["activate", "deactivate"],
+    admin_context: AdminContext,
+    staff_actor: StaffActorContext,
+    db: AsyncSession,
+) -> ReportingPeriodMutationResponse:
+    before = await _read_config_audit_snapshot(
+        db,
+        entity_type="reporting_period",
+        entity_id=reporting_period_id,
+    )
+    row = await admin_config.set_reporting_period_status(
+        db,
+        programme_scope=_global_config_scope(admin_context),
+        reporting_period_id=reporting_period_id,
+        status=status,
+    )
+    data_revalidation = await _revalidate_config_mutation(
+        db,
+        admin_context=admin_context,
+        actor=staff_actor,
+        entity_type="reporting_period",
+        mutation=mutation,
+        entity_id=reporting_period_id,
+        snapshot=row,
+        changed_fields=["status"],
+    )
+    await _write_config_audit(
+        db,
+        actor=staff_actor,
+        entity_type="reporting_period",
+        mutation=mutation,
+        entity_id=reporting_period_id,
+        before=before,
+        after=_compact_snapshot(row),
+        data_revalidation=data_revalidation,
+    )
+    return ReportingPeriodMutationResponse.model_validate(
+        _with_data_revalidation(row, data_revalidation)
+    )
+
+
+@router.put("/reporting-periods/{reporting_period_id}/activate", response_model=ReportingPeriodMutationResponse)
+async def activate_reporting_period(
+    reporting_period_id: UUID,
+    admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ReportingPeriodMutationResponse:
+    _require_master_admin(admin_context)
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    return await _set_reporting_period_status_response(
+        reporting_period_id=reporting_period_id,
+        status="active",
+        mutation="activate",
+        admin_context=admin_context,
+        staff_actor=staff_actor,
+        db=db,
+    )
+
+
+@router.put("/reporting-periods/{reporting_period_id}/deactivate", response_model=ReportingPeriodMutationResponse)
+async def deactivate_reporting_period(
+    reporting_period_id: UUID,
+    admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> ReportingPeriodMutationResponse:
+    _require_master_admin(admin_context)
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    return await _set_reporting_period_status_response(
+        reporting_period_id=reporting_period_id,
+        status="inactive",
+        mutation="deactivate",
+        admin_context=admin_context,
+        staff_actor=staff_actor,
+        db=db,
     )
 
 

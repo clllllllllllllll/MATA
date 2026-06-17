@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
 from app.services.cache import cache
+from app.services.reporting_period_status import is_reporting_period_effectively_active
 
 
 ACTIVE_POSTING_STATUSES = {"active", "loa_working"}
@@ -160,20 +161,32 @@ async def _external_resident(
     return dict(row)
 
 
-async def _open_reporting_period(db: AsyncSession) -> dict[str, Any] | None:
+async def _active_reporting_period(
+    db: AsyncSession,
+    *,
+    as_of_date: date,
+) -> dict[str, Any] | None:
     result = await db.execute(
         text(
             """
-            SELECT id, label, start_date, end_date, status
+            SELECT
+                id,
+                label,
+                start_date,
+                end_date,
+                status,
+                activate_on,
+                deactivate_on
             FROM reporting_periods
-            WHERE status = 'open'
             ORDER BY start_date DESC
-            LIMIT 1
             """
         )
     )
-    row = result.mappings().one_or_none()
-    return dict(row) if row is not None else None
+    for row in result.mappings().all():
+        period = dict(row)
+        if is_reporting_period_effectively_active(period, as_of_date=as_of_date):
+            return period
+    return None
 
 
 async def _posting_contexts(
@@ -617,13 +630,13 @@ async def list_available_events(
             error_code=ErrorCode.UNAUTHORIZED.value,
         )
     resident = await _resident(db, resident_id)
-    period = await _open_reporting_period(db)
+    period = await _active_reporting_period(db, as_of_date=today)
     if period is None:
         return {
             "events": [],
-            "reason": "reporting_period_unavailable",
+            "reason": "active_reporting_period_unavailable",
             "ad_hoc_allowed": False,
-            "message": "No open reporting period is available yet.",
+            "message": "No active reporting period is available yet.",
             "posting_capabilities": [],
         }
 
@@ -1024,11 +1037,11 @@ async def submit_attendance(
             error_code=ErrorCode.UNAUTHORIZED.value,
         )
     resident = await _resident(db, resident_id)
-    period = await _open_reporting_period(db)
+    period = await _active_reporting_period(db, as_of_date=today)
     if period is None:
         raise ApiError(
             status_code=422,
-            detail="No open reporting period is available",
+            detail="No active reporting period is available",
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
 
@@ -1231,11 +1244,11 @@ async def submit_adhoc_teaching(
             error_code=ErrorCode.UNAUTHORIZED.value,
         )
     resident = await _resident(db, resident_id)
-    period = await _open_reporting_period(db)
+    period = await _active_reporting_period(db, as_of_date=date.today())
     if period is None:
         raise ApiError(
             status_code=422,
-            detail="No open reporting period is available",
+            detail="No active reporting period is available",
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
     await _ensure_not_public_holiday(db, event_date)
@@ -1484,7 +1497,7 @@ async def dashboard_placeholder(
             error_code=ErrorCode.UNAUTHORIZED.value,
         )
     resident = await _resident(db, resident_id)
-    period = await _open_reporting_period(db)
+    period = await _active_reporting_period(db, as_of_date=date.today())
     return {
         "resident": {
             "id": resident["id"],
