@@ -11,6 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.staff_actor import StaffActorContext
 from app.errors import ApiError, ErrorCode
+from app.schemas.data_revalidation import (
+    DataRevalidationAction,
+    DataRevalidationChangedEntity,
+    DataRevalidationContext,
+    DataRevalidationScope,
+    DataRevalidationTriggerSource,
+)
+from app.services import data_revalidation_service
 from app.services.audit import write_audit_log
 from app.services.ttf_parser import split_keywords
 
@@ -1642,6 +1650,44 @@ async def _write_correction_audit(
     )
 
 
+async def _revalidate_live_data_correction(
+    db: AsyncSession,
+    *,
+    actor: StaffActorContext,
+    changed_entity: DataRevalidationChangedEntity,
+    action: DataRevalidationAction,
+    scope: DataRevalidationScope,
+    entity_id: UUID | str | None,
+    changed_fields: list[str],
+    correction_reason: str,
+    programme_code: str | None = None,
+    resident_id: UUID | str | None = None,
+    reporting_period_id: UUID | str | None = None,
+    source_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    summary = await data_revalidation_service.revalidate_after_live_data_correction(
+        context=DataRevalidationContext(
+            trigger_source=DataRevalidationTriggerSource.LIVE_DATA_CORRECTION,
+            changed_entity=changed_entity,
+            action=action,
+            scope=scope,
+            entity_id=str(entity_id) if entity_id is not None else None,
+            programme_code=programme_code,
+            resident_id=str(resident_id) if resident_id is not None else None,
+            reporting_period_id=(
+                str(reporting_period_id) if reporting_period_id is not None else None
+            ),
+            changed_fields=list(changed_fields),
+            source_metadata=source_metadata or {},
+            actor_user_id=str(actor.actor_user_id) if actor.actor_user_id else None,
+            actor_role=actor.actor_role,
+            reason=correction_reason,
+        ),
+        db_session=db,
+    )
+    return summary.model_dump(mode="json")
+
+
 async def correct_resident(
     db: AsyncSession,
     *,
@@ -1680,6 +1726,19 @@ async def correct_resident(
         programme_scope=programme_scope,
         master_admin=master_admin,
     )
+    updated_fields = sorted(changed)
+    data_revalidation = await _revalidate_live_data_correction(
+        db,
+        actor=actor,
+        changed_entity=DataRevalidationChangedEntity.RESIDENT,
+        action=DataRevalidationAction.UPDATE,
+        scope=DataRevalidationScope.SINGLE_ROW,
+        entity_id=row_id,
+        resident_id=row_id,
+        programme_code=after.get("programme_code"),
+        changed_fields=updated_fields,
+        correction_reason=correction_reason,
+    )
     audit = await _write_correction_audit(
         db,
         actor=actor,
@@ -1690,8 +1749,9 @@ async def correct_resident(
         after=after,
         metadata={
             "correction_reason": correction_reason,
-            "updated_fields": sorted(changed),
+            "updated_fields": updated_fields,
             "programme_code": after.get("programme_code"),
+            "data_revalidation": data_revalidation,
         },
     )
     await db.commit()
@@ -1700,7 +1760,8 @@ async def correct_resident(
         "audit_log_id": audit["id"],
         "entity_type": "resident",
         "entity_id": str(row_id),
-        "updated_fields": sorted(changed),
+        "updated_fields": updated_fields,
+        "data_revalidation": data_revalidation,
     }
 
 
@@ -1750,6 +1811,20 @@ async def correct_resident_posting(
         programme_scope=programme_scope,
         master_admin=master_admin,
     )
+    updated_fields = sorted(changed)
+    data_revalidation = await _revalidate_live_data_correction(
+        db,
+        actor=actor,
+        changed_entity=DataRevalidationChangedEntity.RESIDENT_POSTING,
+        action=DataRevalidationAction.UPDATE,
+        scope=DataRevalidationScope.RESIDENT_MONTH,
+        entity_id=row_id,
+        resident_id=after.get("resident_id"),
+        reporting_period_id=after.get("reporting_period_id"),
+        programme_code=after.get("programme_code"),
+        changed_fields=updated_fields,
+        correction_reason=correction_reason,
+    )
     audit = await _write_correction_audit(
         db,
         actor=actor,
@@ -1760,10 +1835,11 @@ async def correct_resident_posting(
         after=after,
         metadata={
             "correction_reason": correction_reason,
-            "updated_fields": sorted(changed),
+            "updated_fields": updated_fields,
             "programme_code": after.get("programme_code"),
             "resident_id": str(after.get("resident_id")),
             "reporting_period_id": str(after.get("reporting_period_id")),
+            "data_revalidation": data_revalidation,
         },
     )
     await db.commit()
@@ -1772,7 +1848,8 @@ async def correct_resident_posting(
         "audit_log_id": audit["id"],
         "entity_type": "resident_posting",
         "entity_id": str(row_id),
-        "updated_fields": sorted(changed),
+        "updated_fields": updated_fields,
+        "data_revalidation": data_revalidation,
     }
 
 
@@ -1891,6 +1968,19 @@ async def correct_teaching_target(
             target=after,
             keywords=keywords,
         )
+    updated_fields = sorted(changed)
+    data_revalidation = await _revalidate_live_data_correction(
+        db,
+        actor=actor,
+        changed_entity=DataRevalidationChangedEntity.TEACHING_TARGET,
+        action=DataRevalidationAction.UPDATE,
+        scope=DataRevalidationScope.PROGRAMME_REPORTING_PERIOD,
+        entity_id=row_id,
+        programme_code=after.get("programme_code"),
+        reporting_period_id=after.get("reporting_period_id"),
+        changed_fields=updated_fields,
+        correction_reason=correction_reason,
+    )
     audit = await _write_correction_audit(
         db,
         actor=actor,
@@ -1901,10 +1991,11 @@ async def correct_teaching_target(
         after=after,
         metadata={
             "correction_reason": correction_reason,
-            "updated_fields": sorted(changed),
+            "updated_fields": updated_fields,
             "programme_code": after.get("programme_code"),
             "reporting_period_id": str(after.get("reporting_period_id")),
             "catalogue_keywords": keywords,
+            "data_revalidation": data_revalidation,
         },
     )
     await db.commit()
@@ -1913,7 +2004,8 @@ async def correct_teaching_target(
         "audit_log_id": audit["id"],
         "entity_type": "teaching_target",
         "entity_id": str(row_id),
-        "updated_fields": sorted(changed),
+        "updated_fields": updated_fields,
+        "data_revalidation": data_revalidation,
     }
 
 
@@ -1953,6 +2045,23 @@ async def correct_form_f1_record(
         programme_scope=programme_scope,
         master_admin=master_admin,
     )
+    updated_fields = sorted(changed)
+    data_revalidation = await _revalidate_live_data_correction(
+        db,
+        actor=actor,
+        changed_entity=DataRevalidationChangedEntity.FORM_F1_RECORD,
+        action=DataRevalidationAction.UPDATE,
+        scope=DataRevalidationScope.RESIDENT_REPORTING_PERIOD,
+        entity_id=row_id,
+        programme_code=after.get("programme_code"),
+        reporting_period_id=after.get("reporting_period_id"),
+        changed_fields=updated_fields,
+        correction_reason=correction_reason,
+        source_metadata={
+            "mcr": after.get("mcr"),
+            "month_label": after.get("month_label"),
+        },
+    )
     audit = await _write_correction_audit(
         db,
         actor=actor,
@@ -1963,10 +2072,11 @@ async def correct_form_f1_record(
         after=after,
         metadata={
             "correction_reason": correction_reason,
-            "updated_fields": sorted(changed),
+            "updated_fields": updated_fields,
             "programme_code": after.get("programme_code"),
             "mcr": after.get("mcr"),
             "reporting_period_id": str(after.get("reporting_period_id")),
+            "data_revalidation": data_revalidation,
         },
     )
     await db.commit()
@@ -1975,7 +2085,8 @@ async def correct_form_f1_record(
         "audit_log_id": audit["id"],
         "entity_type": "form_f1_record",
         "entity_id": str(row_id),
-        "updated_fields": sorted(changed),
+        "updated_fields": updated_fields,
+        "data_revalidation": data_revalidation,
     }
 
 
@@ -2006,6 +2117,22 @@ async def correct_academic_month_boundary(
         changed=changed,
     )
     after = await _snapshot_academic_month_boundary(db, row_id=row_id)
+    updated_fields = sorted(changed)
+    data_revalidation = await _revalidate_live_data_correction(
+        db,
+        actor=actor,
+        changed_entity=DataRevalidationChangedEntity.ACADEMIC_MONTH_BOUNDARY,
+        action=DataRevalidationAction.UPDATE,
+        scope=DataRevalidationScope.GLOBAL,
+        entity_id=row_id,
+        changed_fields=updated_fields,
+        correction_reason=correction_reason,
+        source_metadata={
+            "academic_year_label": after.get("academic_year_label"),
+            "ay_date_category": after.get("ay_date_category"),
+            "month_label": after.get("month_label"),
+        },
+    )
     audit = await _write_correction_audit(
         db,
         actor=actor,
@@ -2016,9 +2143,10 @@ async def correct_academic_month_boundary(
         after=after,
         metadata={
             "correction_reason": correction_reason,
-            "updated_fields": sorted(changed),
+            "updated_fields": updated_fields,
             "academic_year_label": after.get("academic_year_label"),
             "ay_date_category": after.get("ay_date_category"),
+            "data_revalidation": data_revalidation,
         },
     )
     await db.commit()
@@ -2027,7 +2155,8 @@ async def correct_academic_month_boundary(
         "audit_log_id": audit["id"],
         "entity_type": "academic_month_boundary",
         "entity_id": str(row_id),
-        "updated_fields": sorted(changed),
+        "updated_fields": updated_fields,
+        "data_revalidation": data_revalidation,
     }
 
 
@@ -2444,6 +2573,29 @@ async def replace_resident_posting_source_cell(
             {"id": row_id, **row},
         )
     after_rows = await _fetch_resident_posting_rows_by_ids(db, row_ids=inserted_ids)
+    verified_source_metadata = source_metadata.get("verified_source_metadata")
+    if not isinstance(verified_source_metadata, dict):
+        verified_source_metadata = source_metadata.get("source")
+    source_payload = {
+        **(verified_source_metadata if isinstance(verified_source_metadata, dict) else {}),
+        **source_metadata,
+    }
+    source_payload["affected_row_count"] = len(before_rows)
+    source_payload["replacement_row_count"] = len(after_rows)
+    data_revalidation = await _revalidate_live_data_correction(
+        db,
+        actor=actor,
+        changed_entity=DataRevalidationChangedEntity.RESIDENT_POSTING_SOURCE_FRAGMENT,
+        action=DataRevalidationAction.REPLACE,
+        scope=DataRevalidationScope.RESIDENT_MONTH,
+        entity_id=affected_ids[0] if affected_ids else None,
+        resident_id=before_rows[0].get("resident_id"),
+        reporting_period_id=before_rows[0].get("reporting_period_id"),
+        programme_code=before_rows[0].get("programme_code"),
+        changed_fields=["source_cell_replacement"],
+        correction_reason=correction_reason,
+        source_metadata=source_payload,
+    )
     metadata = {
         "correction_reason": correction_reason,
         "updated_fields": sorted(_RESIDENT_POSTING_ALLOWED_FIELDS),
@@ -2452,6 +2604,7 @@ async def replace_resident_posting_source_cell(
         "programme_code": before_rows[0].get("programme_code"),
         "resident_id": str(before_rows[0].get("resident_id")),
         "reporting_period_id": str(before_rows[0].get("reporting_period_id")),
+        "data_revalidation": data_revalidation,
         **source_metadata,
     }
     audit = await _write_correction_audit(
@@ -2472,6 +2625,7 @@ async def replace_resident_posting_source_cell(
         "entity_type": "resident_posting_source_cell",
         "entity_id": affected_ids[0],
         "updated_fields": sorted(_RESIDENT_POSTING_ALLOWED_FIELDS),
+        "data_revalidation": data_revalidation,
     }
 
 

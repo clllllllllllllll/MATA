@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.data_revalidation import DataRevalidationImpactSummary
+
 
 class ReportingPeriodResponse(BaseModel):
     id: UUID
@@ -346,6 +348,7 @@ class ParsedDataCorrectionResponse(BaseModel):
     entity_type: str
     entity_id: UUID | None = None
     updated_fields: list[str]
+    data_revalidation: DataRevalidationImpactSummary | None = None
 
 
 class ResidentPostingReplacementRow(BaseModel):
@@ -438,6 +441,7 @@ class ParsedDataSourceCellReplaceResponse(BaseModel):
     entity_type: str
     entity_id: UUID | None = None
     updated_fields: list[str]
+    data_revalidation: DataRevalidationImpactSummary | None = None
 
 
 class ParsedDataCorrectionHistoryRow(BaseModel):

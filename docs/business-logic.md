@@ -919,7 +919,11 @@ Invalidate affected compliance/report caches after:
 
 Data Revalidation is the standard service boundary for assessing the impact of Admin/PC Live Data and Config mutations. The backend service name is `data_revalidation_service`; user-facing text should use `Data Revalidation`, `Revalidate data`, and `Data revalidation impact summary`.
 
-3H-B creates only the service contract/skeleton. It returns stable impact summaries with one of `no_op`, `warning_only`, `targeted_revalidation`, `future_compliance_impact`, or `manual_revalidation_required`. It does not wire CRUD endpoints, mutate warnings, run RDB source-cell parsing, regenerate `resident_postings`, or calculate compliance.
+3H-B creates only the service contract/skeleton. It returns stable impact summaries with one of `no_op`, `warning_only`, `targeted_revalidation`, `future_compliance_impact`, or `manual_revalidation_required`.
+
+3H-C wires Admin Live Data correction mutations to the service. Successful Resident, Resident Posting, Resident Posting source-cell replacement, Teaching Target, FormF1, and Academic Month Boundary corrections include a `data_revalidation` impact summary in the API response and correction audit metadata. Failed validation, stale/concurrency, unauthorized, or out-of-scope mutations do not call Data Revalidation.
+
+3H-C still does not wire Config CRUD endpoints, mutate warnings, run RDB source-cell parsing, regenerate `resident_postings` from corrected fragments, or calculate compliance. Those concrete handlers remain later 3H work.
 
 Normal Refresh buttons are read-only refetch actions and must not trigger Data Revalidation. Reserve `reparse` for the low-level RDB source-cell parsing step only.
 

@@ -13,6 +13,15 @@ from openpyxl import Workbook
 
 from app.middleware.errors import install_error_handlers
 from app.routers import admin
+from app.schemas.data_revalidation import (
+    DataRevalidationAction,
+    DataRevalidationChangedEntity,
+    DataRevalidationImpactSummary,
+    DataRevalidationOutcome,
+    DataRevalidationScope,
+    DataRevalidationTriggerSource,
+)
+from app.services import data_revalidation_service
 from app.services.parser_common import ParserResult
 
 
@@ -637,6 +646,18 @@ def _audit_json(row: dict, key: str):
     return json.loads(value)
 
 
+def _impact(body: dict) -> dict:
+    impact = body["data_revalidation"]
+    assert impact["trigger_source"] == "live_data_correction"
+    assert impact["rows_examined"] == 0
+    assert impact["rows_updated"] == 0
+    assert impact["warnings_created"] == 0
+    assert impact["warnings_updated"] == 0
+    assert impact["warnings_resolved"] == 0
+    assert impact["warnings_remaining"] == 0
+    return impact
+
+
 def _posting_unique_key(row: dict) -> tuple[str, str, str, str | None]:
     return (
         str(row["resident_id"]),
@@ -661,8 +682,15 @@ def test_resident_correction_updates_live_row_and_writes_audit_log() -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["item"]["name"] == "Geriatrics Resident"
-    assert response.json()["updated_fields"] == ["mcr", "name"]
+    body = response.json()
+    assert body["item"]["name"] == "Geriatrics Resident"
+    assert body["updated_fields"] == ["mcr", "name"]
+    impact = _impact(body)
+    assert impact["outcome"] == "future_compliance_impact"
+    assert impact["changed_entity"] == "resident"
+    assert impact["action"] == "update"
+    assert impact["scope"] == "single_row"
+    assert impact["details"]["changed_fields"] == ["mcr", "name"]
     assert session.residents[0]["mcr"] == "M11111Z"
     assert session.commits == 1
     assert len(session.audit_logs) == 1
@@ -675,6 +703,8 @@ def test_resident_correction_updates_live_row_and_writes_audit_log() -> None:
     assert metadata["correction_reason"] == "RDB row had a typo"
     assert metadata["programme_code"] == "GERI"
     assert metadata["source_page"] == "parsed_data"
+    assert metadata["data_revalidation"]["changed_entity"] == "resident"
+    assert metadata["data_revalidation"]["details"]["changed_fields"] == ["mcr", "name"]
 
 
 def test_correction_allows_missing_actor_and_requires_reason_and_allowlisted_fields() -> None:
@@ -844,6 +874,10 @@ def test_resident_posting_patch_uses_documented_status_values() -> None:
     )
 
     assert allowed.status_code == 200
+    impact = _impact(allowed.json())
+    assert impact["changed_entity"] == "resident_posting"
+    assert impact["scope"] == "resident_month"
+    assert impact["warnings_created"] == 0
     assert session.resident_postings[0]["status"] == "loa_working"
     assert blocked.status_code == 422
     assert session.resident_postings[1]["status"] == "active"
@@ -1071,6 +1105,14 @@ def test_resident_posting_source_cell_replace_rewrites_rows_and_audits_original_
     assert len(body["before_rows"]) == 2
     assert len(body["after_rows"]) == 1
     assert body["after_rows"][0]["start_date"] == "2026-01-01"
+    impact = _impact(body)
+    assert impact["outcome"] == "manual_revalidation_required"
+    assert impact["changed_entity"] == "resident_posting_source_fragment"
+    assert impact["action"] == "replace"
+    assert impact["details"]["backend_handler_available"] is False
+    assert impact["details"]["affected_row_count"] == 2
+    assert impact["details"]["replacement_row_count"] == 1
+    assert impact["details"]["source_metadata"]["cell_ref"] == "J42"
     assert {row["id"] for row in session.resident_postings} == set(session.new_posting_ids)
     audit_row = session.audit_logs[0]
     assert audit_row["action"] == "admin.parsed_data.resident_posting.source_cell_replace"
@@ -1083,6 +1125,8 @@ def test_resident_posting_source_cell_replace_rewrites_rows_and_audits_original_
     assert metadata["source"]["cell_ref"] == "J42"
     assert metadata["source"]["source_cell_text"] == "TTSHGerMed (from 01-Jan-2026 to 31-Jan-2026)"
     assert metadata["verified_source_metadata"]["cell_ref"] == "J42"
+    assert metadata["data_revalidation"]["changed_entity"] == "resident_posting_source_fragment"
+    assert metadata["data_revalidation"]["details"]["replacement_row_count"] == 1
 
 
 def test_source_cell_replace_uses_documented_status_values() -> None:
@@ -1131,7 +1175,11 @@ def test_teaching_target_correction_regenerates_catalogue_from_details_of_traini
     )
 
     assert response.status_code == 200
-    assert response.json()["item"]["details_of_training"] == "Journal Club, Grand Round"
+    body = response.json()
+    assert body["item"]["details_of_training"] == "Journal Club, Grand Round"
+    impact = _impact(body)
+    assert impact["changed_entity"] == "teaching_target"
+    assert impact["affected_models"] == ["teaching_targets", "teaching_name_catalogue"]
     assert {row["keyword"] for row in session.catalogue_rows} == {"Journal Club", "Grand Round"}
     audit_row = session.audit_logs[0]
     assert audit_row["action"] == "admin.parsed_data.teaching_target.update"
@@ -1205,6 +1253,9 @@ def test_form_f1_known_status_valid_pairs_succeed() -> None:
         )
 
         assert response.status_code == 200
+        impact = _impact(response.json())
+        assert impact["changed_entity"] == "form_f1_record"
+        assert impact["scope"] == "resident_reporting_period"
         assert session.form_f1_records[0]["status_raw"] == status_raw
         assert session.form_f1_records[0]["is_active"] is is_active
         assert len(session.audit_logs) == 1
@@ -1287,8 +1338,63 @@ def test_academic_month_boundary_non_conflicting_tuple_update_still_succeeds() -
     )
 
     assert response.status_code == 200
+    body = response.json()
+    assert body["data_revalidation"]["changed_entity"] == "academic_month_boundary"
+    assert body["data_revalidation"]["scope"] == "global"
     assert session.academic_month_boundaries[0]["month_label"] == "Jan-2026"
     assert len(session.audit_logs) == 1
+
+
+def test_data_revalidation_runs_only_after_successful_live_data_mutation(monkeypatch) -> None:
+    session = FakeParsedDataCorrectionSession()
+    client = _build_client_with_session(session)
+    contexts = []
+
+    async def _spy_revalidate_after_live_data_correction(*, context, db_session):
+        contexts.append(context)
+        return DataRevalidationImpactSummary(
+            outcome=DataRevalidationOutcome.FUTURE_COMPLIANCE_IMPACT,
+            trigger_source=context.trigger_source,
+            changed_entity=context.changed_entity,
+            action=context.action,
+            scope=context.scope,
+            summary="spy impact summary",
+            details={"changed_fields": list(context.changed_fields)},
+        )
+
+    monkeypatch.setattr(
+        data_revalidation_service,
+        "revalidate_after_live_data_correction",
+        _spy_revalidate_after_live_data_correction,
+    )
+
+    failed = client.patch(
+        f"/admin/parsed-data/residents/{session.resident_id}",
+        headers=_headers(scope="DR"),
+        json={
+            "correction_reason": "out of scope",
+            "last_seen_updated_at": session.now.isoformat(),
+            "changes": {"name": "Blocked"},
+        },
+    )
+    succeeded = client.patch(
+        f"/admin/parsed-data/residents/{session.resident_id}",
+        headers=_headers(),
+        json={
+            "correction_reason": "valid correction",
+            "last_seen_updated_at": session.now.isoformat(),
+            "changes": {"name": "Allowed"},
+        },
+    )
+
+    assert failed.status_code == 404
+    assert succeeded.status_code == 200
+    assert len(contexts) == 1
+    assert contexts[0].trigger_source == DataRevalidationTriggerSource.LIVE_DATA_CORRECTION
+    assert contexts[0].changed_entity == DataRevalidationChangedEntity.RESIDENT
+    assert contexts[0].action == DataRevalidationAction.UPDATE
+    assert contexts[0].scope == DataRevalidationScope.SINGLE_ROW
+    assert contexts[0].changed_fields == ["name"]
 
 
 def test_corrections_history_returns_audit_rows_scoped_by_programme() -> None:

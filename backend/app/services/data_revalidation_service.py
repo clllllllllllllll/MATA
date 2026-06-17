@@ -69,6 +69,15 @@ def _summary(
     affected_models: list[str] | None = None,
     details: dict[str, Any] | None = None,
 ) -> DataRevalidationImpactSummary:
+    base_details: dict[str, Any] = {
+        "handler_version": "3H-B",
+        "business_tables_mutated": False,
+        "warnings_mutated": False,
+        "changed_fields": list(context.changed_fields),
+    }
+    if context.source_metadata:
+        base_details["source_metadata"] = dict(context.source_metadata)
+    base_details.update(details or {})
     payload = DataRevalidationImpactSummary(
         outcome=outcome,
         trigger_source=context.trigger_source,
@@ -77,12 +86,7 @@ def _summary(
         scope=context.scope,
         summary=message,
         affected_models=affected_models if affected_models is not None else _affected_models_for(context),
-        details={
-            "handler_version": "3H-B",
-            "business_tables_mutated": False,
-            "warnings_mutated": False,
-            **(details or {}),
-        },
+        details=base_details,
     )
     payload.audit_metadata = _audit_metadata(context, payload)
     return payload
@@ -92,12 +96,13 @@ def _manual_required_summary(
     *,
     context: DataRevalidationContext,
     message: str,
+    details: dict[str, Any] | None = None,
 ) -> DataRevalidationImpactSummary:
     return _summary(
         context=context,
         outcome=DataRevalidationOutcome.MANUAL_REVALIDATION_REQUIRED,
         message=message,
-        details={"backend_handler_available": False},
+        details={"backend_handler_available": False, **(details or {})},
     )
 
 
@@ -137,14 +142,24 @@ async def revalidate_after_live_data_correction(
             db_session=db_session,
         )
 
+    affected_models: list[str] | None = None
+    details: dict[str, Any] = {"backend_handler_available": True}
+    if (
+        context.changed_entity == DataRevalidationChangedEntity.TEACHING_TARGET
+        and "details_of_training" in context.changed_fields
+    ):
+        affected_models = ["teaching_targets", "teaching_name_catalogue"]
+        details["catalogue_regenerated"] = True
+
     return _summary(
         context=context,
         outcome=DataRevalidationOutcome.FUTURE_COMPLIANCE_IMPACT,
         message=(
             "Live Data correction may affect future compliance reads. "
-            "No heavy Data Revalidation handler is implemented in 3H-B."
+            "No heavy Data Revalidation handler is implemented."
         ),
-        details={"backend_handler_available": True},
+        affected_models=affected_models,
+        details=details,
     )
 
 
@@ -203,12 +218,18 @@ async def preview_resident_posting_source_cell_revalidation(
     context: DataRevalidationContext,
     db_session: Any | None = None,
 ) -> DataRevalidationImpactSummary:
+    details = {
+        key: context.source_metadata[key]
+        for key in ("affected_row_count", "replacement_row_count")
+        if key in context.source_metadata
+    }
     return _manual_required_summary(
         context=context,
         message=(
             "The backend source-cell Data Revalidation handler is not implemented yet. "
             "A later phase will parse corrected RDB source-cell text and refresh affected warnings."
         ),
+        details=details,
     )
 
 

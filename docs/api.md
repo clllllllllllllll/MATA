@@ -172,7 +172,17 @@ Required cache rules:
 
 Data Revalidation is the shared backend concept for assessing the impact of Admin/PC Live Data and Config mutations. The backend service boundary is `data_revalidation_service`; user-facing actions should use names such as `Revalidate data` and `Data revalidation impact summary`.
 
-3H-B defines only the service contract and default response shape. It does not wire CRUD endpoints, mutate warnings, run RDB source-cell parsing, regenerate `resident_postings`, or perform compliance calculation. Future wiring phases will call the service from applicable Admin/PC mutations and receive one of these canonical outcomes:
+3H-B defines only the service contract and default response shape. 3H-C wires Admin Live Data correction mutations to that service and adds a `data_revalidation` impact summary to successful mutation responses and correction audit metadata. Config/Admin/PC CRUD wiring remains 3H-D.
+
+The current 3H-C wiring covers:
+- `PATCH /admin/parsed-data/residents/{id}`
+- `PATCH /admin/parsed-data/resident-postings/{id}`
+- `POST /admin/parsed-data/resident-postings/source-cell-replace`
+- `PATCH /admin/parsed-data/teaching-targets/{id}`
+- `PATCH /admin/parsed-data/form-f1-records/{id}`
+- `PATCH /admin/parsed-data/academic-month-boundaries/{id}`
+
+3H-C still does not mutate warnings, run RDB source-cell parsing, regenerate `resident_postings` from corrected fragments, or perform compliance calculation. Successful Live Data mutation responses receive one of these canonical outcomes:
 
 - `no_op`
 - `warning_only`
