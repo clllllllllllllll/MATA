@@ -10,7 +10,11 @@ from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies.staff_actor import StaffActorContext, require_staff_actor
+from app.dependencies.staff_actor import (
+    STAFF_ACTOR_FALLBACK_NAME,
+    StaffActorContext,
+    require_staff_actor,
+)
 from app.errors import ApiError, ErrorCode, UploadValidationApiError
 from app.schemas import (
     AcademicMonthBoundaryResponse,
@@ -46,6 +50,10 @@ from app.schemas import (
     ProgrammeUpdateRequest,
     ProgrammeMutationResponse,
     ProgrammeResponse,
+    RDBSourceCellWarningApplyRequest,
+    RDBSourceCellWarningApplyResponse,
+    RDBSourceCellWarningPreviewRequest,
+    RDBSourceCellWarningPreviewResponse,
     ResidentPostingResponse,
     ResidentResponse,
     PublicHolidayUpsertRequest,
@@ -121,6 +129,22 @@ class AdminContext:
     user_id: UUID
     programme_scope: set[str]
     is_master_admin: bool
+
+
+def _admin_actor_context(admin_context: AdminContext) -> StaffActorContext:
+    scope_metadata: dict[str, Any] = {}
+    if admin_context.programme_scope:
+        scope_metadata["programme_scope"] = sorted(admin_context.programme_scope)
+    if admin_context.is_master_admin:
+        scope_metadata["admin_level"] = "master"
+    return StaffActorContext(
+        actor_user_id=admin_context.user_id,
+        actor_role="admin",
+        actor_name=STAFF_ACTOR_FALLBACK_NAME,
+        actor_programme=",".join(sorted(admin_context.programme_scope)) or None,
+        actor_admin_level="master" if admin_context.is_master_admin else None,
+        raw_scope_metadata=scope_metadata,
+    )
 
 
 async def require_admin_context(
@@ -2624,6 +2648,66 @@ async def supersede_upload_warning_issue(
         staff_actor=staff_actor,
         db=db,
     )
+
+
+@router.post(
+    "/upload-warnings/{warning_issue_id}/source-cell-replace/preview",
+    response_model=RDBSourceCellWarningPreviewResponse,
+)
+async def preview_upload_warning_source_cell_replace(
+    warning_issue_id: UUID,
+    body: RDBSourceCellWarningPreviewRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> RDBSourceCellWarningPreviewResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    payload = await parsed_data.preview_warning_source_cell_replacement(
+        db,
+        warning_issue_id=warning_issue_id,
+        replacement_raw_cell_value=body.replacement_raw_cell_value,
+        upload_warning_id=body.upload_warning_id,
+        expected_latest_upload_warning_id=body.expected_latest_upload_warning_id,
+        expected_fingerprint=body.expected_fingerprint,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+    )
+    return RDBSourceCellWarningPreviewResponse.model_validate(payload)
+
+
+@router.post(
+    "/upload-warnings/{warning_issue_id}/source-cell-replace/apply",
+    response_model=RDBSourceCellWarningApplyResponse,
+)
+async def apply_upload_warning_source_cell_replace(
+    warning_issue_id: UUID,
+    body: RDBSourceCellWarningApplyRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> RDBSourceCellWarningApplyResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    payload = await parsed_data.apply_warning_source_cell_replacement(
+        db,
+        warning_issue_id=warning_issue_id,
+        replacement_raw_cell_value=body.replacement_raw_cell_value,
+        correction_reason=body.correction_reason,
+        upload_warning_id=body.upload_warning_id,
+        expected_latest_upload_warning_id=body.expected_latest_upload_warning_id,
+        expected_fingerprint=body.expected_fingerprint,
+        actor=_admin_actor_context(admin_context),
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+    )
+    return RDBSourceCellWarningApplyResponse.model_validate(payload)
 
 
 @router.get("/parsed-data/residents", response_model=ParsedResidentListResponse)

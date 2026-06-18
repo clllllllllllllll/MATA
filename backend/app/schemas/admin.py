@@ -281,6 +281,65 @@ class UploadWarningIssueActionResponse(BaseModel):
     resolved_at: datetime | None = None
 
 
+class RDBSourceCellWarningPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    replacement_raw_cell_value: Any = None
+    upload_warning_id: UUID | None = None
+    expected_latest_upload_warning_id: UUID | None = None
+    expected_fingerprint: str | None = None
+
+
+class RDBSourceCellWarningApplyRequest(RDBSourceCellWarningPreviewRequest):
+    correction_reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("correction_reason")
+    @classmethod
+    def _trim_reason(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("correction_reason is required")
+        return trimmed
+
+
+class RDBSourceCellWarningPreviewResponse(BaseModel):
+    warning_issue_id: str
+    upload_warning_id: str | None = None
+    fingerprint: str
+    source_trace: dict[str, Any]
+    original_warning_type: str
+    original_warning_status: str
+    replacement_raw_cell_value: Any = None
+    normalized_cell_value: str
+    parsed_candidate_rows: list[dict[str, Any]]
+    parser_warnings: list[Any] = Field(default_factory=list)
+    parser_errors: list[Any] = Field(default_factory=list)
+    apply_allowed: bool
+    data_revalidation: DataRevalidationImpactSummary | None = None
+    suggested_next_action: str
+
+
+class RDBSourceCellWarningApplyResponse(BaseModel):
+    warning_issue_id: str
+    upload_warning_id: str | None = None
+    fingerprint: str
+    source_trace: dict[str, Any]
+    original_warning_type: str
+    warning_issue_status: str
+    replacement_raw_cell_value: Any = None
+    normalized_cell_value: str
+    before_rows: list[dict[str, Any]]
+    after_rows: list[dict[str, Any]]
+    parser_warnings: list[Any] = Field(default_factory=list)
+    parser_errors: list[Any] = Field(default_factory=list)
+    audit_log_id: UUID
+    entity_type: str
+    entity_id: UUID | None = None
+    updated_fields: list[str]
+    data_revalidation: DataRevalidationImpactSummary | None = None
+    suggested_next_action: str
+
+
 class ParsedResidentRow(BaseModel):
     id: UUID
     employee_code: str | None = None

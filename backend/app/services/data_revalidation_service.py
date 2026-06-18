@@ -137,7 +137,7 @@ async def revalidate_after_live_data_correction(
         )
 
     if context.changed_entity == DataRevalidationChangedEntity.RESIDENT_POSTING_SOURCE_FRAGMENT:
-        return await preview_resident_posting_source_cell_revalidation(
+        return await apply_resident_posting_source_cell_revalidation(
             context=context,
             db_session=db_session,
         )
@@ -223,13 +223,15 @@ async def preview_resident_posting_source_cell_revalidation(
         for key in ("affected_row_count", "replacement_row_count")
         if key in context.source_metadata
     }
-    return _manual_required_summary(
+    return _summary(
         context=context,
+        outcome=DataRevalidationOutcome.WARNING_ONLY,
         message=(
-            "The backend source-cell Data Revalidation handler is not implemented yet. "
-            "A later phase will parse corrected RDB source-cell text and refresh affected warnings."
+            "Preview parsed the corrected RDB source-cell text without mutating "
+            "resident_postings or warning history."
         ),
-        details=details,
+        affected_models=[],
+        details={"backend_handler_available": True, **details},
     )
 
 
@@ -238,10 +240,22 @@ async def apply_resident_posting_source_cell_revalidation(
     context: DataRevalidationContext,
     db_session: Any | None = None,
 ) -> DataRevalidationImpactSummary:
-    return _manual_required_summary(
+    details = {
+        key: context.source_metadata[key]
+        for key in ("affected_row_count", "replacement_row_count")
+        if key in context.source_metadata
+    }
+    return _summary(
         context=context,
+        outcome=DataRevalidationOutcome.TARGETED_REVALIDATION,
         message=(
-            "The backend source-cell Data Revalidation handler is not implemented yet. "
-            "3H-B does not apply RDB source-cell parsing or resident_postings regeneration."
+            "Applied a targeted RDB source-cell replacement for one resident/month scope. "
+            "No compliance calculation, snapshots, surplus hibernation, or clawback generation was run."
         ),
+        affected_models=["resident_postings"],
+        details={
+            "backend_handler_available": True,
+            "business_tables_mutated": True,
+            **details,
+        },
     )

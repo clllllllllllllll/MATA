@@ -1106,10 +1106,11 @@ def test_resident_posting_source_cell_replace_rewrites_rows_and_audits_original_
     assert len(body["after_rows"]) == 1
     assert body["after_rows"][0]["start_date"] == "2026-01-01"
     impact = _impact(body)
-    assert impact["outcome"] == "manual_revalidation_required"
+    assert impact["outcome"] == "targeted_revalidation"
     assert impact["changed_entity"] == "resident_posting_source_fragment"
     assert impact["action"] == "replace"
-    assert impact["details"]["backend_handler_available"] is False
+    assert impact["details"]["backend_handler_available"] is True
+    assert impact["details"]["business_tables_mutated"] is True
     assert impact["details"]["affected_row_count"] == 2
     assert impact["details"]["replacement_row_count"] == 1
     assert impact["details"]["source_metadata"]["cell_ref"] == "J42"

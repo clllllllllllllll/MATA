@@ -108,6 +108,19 @@ class ResidentPostingWrite:
     working_days_in_month: int | None = None
 
 
+@dataclass(slots=True)
+class RDBSourceCellParseResult:
+    raw_value: Any
+    normalized_value: str
+    normalized_lines: list[str]
+    candidate_postings: list[ResidentPostingWrite]
+    warnings: list[Any]
+    errors: list[Any]
+    posting_codes: set[str]
+    raw_multi_posting_fragments: list[dict[str, Any]]
+    multi_posting_rules_applied: int = 0
+
+
 @dataclass(slots=True, frozen=True)
 class MultiPostingRuleConfig:
     id: str | None
@@ -1554,6 +1567,229 @@ async def _load_multi_posting_rules(
         )
         for row in result.mappings().all()
     ]
+
+
+async def parse_rdb_source_cell_replacement(
+    *,
+    db_session: AsyncSession,
+    raw_value: Any,
+    reporting_period_id: UUID,
+    resident_mcr: str,
+    resident_name: str,
+    programme_code: str,
+    r_year: str,
+    month_label: str | None,
+    phase_start: date | None,
+    phase_end: date | None,
+    sheet_name: str | None = None,
+    row_number: int | None = None,
+    cell_ref: str | None = None,
+    source_column_header: str | None = None,
+) -> RDBSourceCellParseResult:
+    normalized = normalize_rdb_cell(raw_value)
+    if not normalized.normalized_value:
+        return RDBSourceCellParseResult(
+            raw_value=raw_value,
+            normalized_value=normalized.normalized_value,
+            normalized_lines=normalized.normalized_lines,
+            candidate_postings=[],
+            warnings=[],
+            errors=[],
+            posting_codes=set(),
+            raw_multi_posting_fragments=[],
+        )
+
+    known_loa_types = await _load_known_loa_types(db_session)
+    context: dict[str, Any] = {"known_loa_types": known_loa_types}
+    if phase_start is not None and phase_end is not None:
+        context["phase_start"] = phase_start
+        context["phase_end"] = phase_end
+
+    try:
+        parsed_cell = classify_posting_cell(normalized, context)
+    except Exception as exc:
+        return RDBSourceCellParseResult(
+            raw_value=raw_value,
+            normalized_value=normalized.normalized_value,
+            normalized_lines=normalized.normalized_lines,
+            candidate_postings=[],
+            warnings=[],
+            errors=[
+                {
+                    "type": "parser_error",
+                    "message": str(exc) or exc.__class__.__name__,
+                }
+            ],
+            posting_codes=set(),
+            raw_multi_posting_fragments=[],
+        )
+
+    if parsed_cell is None:
+        return RDBSourceCellParseResult(
+            raw_value=raw_value,
+            normalized_value=normalized.normalized_value,
+            normalized_lines=normalized.normalized_lines,
+            candidate_postings=[],
+            warnings=[],
+            errors=[],
+            posting_codes=set(),
+            raw_multi_posting_fragments=[],
+        )
+
+    accumulator = RDBParseAccumulator(
+        residents={},
+        posting_codes=set(),
+        warnings=[],
+        errors=[],
+        rows_skipped=0,
+        skip_reasons=[],
+        unknown_loa_types=set(),
+        loa_records=0,
+        employed_residents_flagged=set(),
+        multi_posting_rules_applied=0,
+        raw_multi_posting_fragments=[],
+    )
+    warnings: list[Any] = list(parsed_cell.warnings)
+    errors: list[Any] = []
+
+    if parsed_cell.status == "employed":
+        employer_tag = parsed_cell.employer_tag or "unknown"
+        warnings.append(
+            {
+                "type": "employed_cell_not_applied",
+                "message": (
+                    "The replacement parsed as an employed marker. Source-cell apply "
+                    "does not update resident profile/employer fields, so no "
+                    "resident_postings row will be created."
+                ),
+            }
+        )
+        errors.append(
+            {
+                "type": "employed_marker_not_applyable",
+                "employer_tag": employer_tag,
+                "message": (
+                    "Employed-marker cells require updating residents.employer_tag "
+                    f"(parsed employer_tag={employer_tag}), but this source-cell "
+                    "replacement endpoint does not update resident profile fields. "
+                    "Use full RDB re-upload or a future audited profile-aware "
+                    "correction flow."
+                ),
+            }
+        )
+        return RDBSourceCellParseResult(
+            raw_value=raw_value,
+            normalized_value=normalized.normalized_value,
+            normalized_lines=normalized.normalized_lines,
+            candidate_postings=[],
+            warnings=warnings,
+            errors=errors,
+            posting_codes=set(),
+            raw_multi_posting_fragments=[],
+        )
+
+    if parsed_cell.multi_posting_fragments:
+        fragment_start, fragment_end = _fragment_bounds(parsed_cell.multi_posting_fragments)
+        header = PostingColumnHeader(
+            column_index=0,
+            column_header_cell_ref="",
+            source_column_header=source_column_header or month_label or "",
+            month_label=month_label or "",
+            start_date=phase_start or fragment_start,
+            end_date=phase_end or fragment_end,
+        )
+        rules = await _load_multi_posting_rules(db_session, programme_code)
+        postings = _apply_multi_posting_cell(
+            resident_mcr=resident_mcr,
+            resident_name=resident_name,
+            programme_code=programme_code,
+            reporting_period_id=reporting_period_id,
+            header=header,
+            sheet_name=sheet_name or "",
+            row_number=row_number or 0,
+            cell_ref=cell_ref or "",
+            r_year=r_year,
+            parsed_cell=parsed_cell,
+            rules=rules,
+            accumulator=accumulator,
+        )
+        return RDBSourceCellParseResult(
+            raw_value=raw_value,
+            normalized_value=normalized.normalized_value,
+            normalized_lines=normalized.normalized_lines,
+            candidate_postings=postings,
+            warnings=[*warnings, *accumulator.warnings],
+            errors=errors,
+            posting_codes=accumulator.posting_codes,
+            raw_multi_posting_fragments=accumulator.raw_multi_posting_fragments,
+            multi_posting_rules_applied=accumulator.multi_posting_rules_applied,
+        )
+
+    if phase_start is None or phase_end is None:
+        errors.append(
+            {
+                "type": "missing_phase_dates",
+                "message": (
+                    "Cannot safely preview/apply a non-empty source-cell replacement "
+                    "because the source phase start/end dates are unavailable."
+                ),
+            }
+        )
+        return RDBSourceCellParseResult(
+            raw_value=raw_value,
+            normalized_value=normalized.normalized_value,
+            normalized_lines=normalized.normalized_lines,
+            candidate_postings=[],
+            warnings=warnings,
+            errors=errors,
+            posting_codes=set(),
+            raw_multi_posting_fragments=[],
+        )
+
+    if parsed_cell.status == "active" and parsed_cell.posting_code is None:
+        errors.append(
+            {
+                "type": "missing_posting_code",
+                "message": "Replacement cell did not produce a safe posting_code.",
+            }
+        )
+        return RDBSourceCellParseResult(
+            raw_value=raw_value,
+            normalized_value=normalized.normalized_value,
+            normalized_lines=normalized.normalized_lines,
+            candidate_postings=[],
+            warnings=warnings,
+            errors=errors,
+            posting_codes=set(),
+            raw_multi_posting_fragments=[],
+        )
+
+    header = PostingColumnHeader(
+        column_index=0,
+        column_header_cell_ref="",
+        source_column_header=source_column_header or month_label or "",
+        month_label=month_label or "",
+        start_date=phase_start,
+        end_date=phase_end,
+    )
+    posting = _base_posting_from_cell(
+        resident_mcr=resident_mcr,
+        reporting_period_id=reporting_period_id,
+        header=header,
+        r_year=r_year,
+        parsed_cell=parsed_cell,
+    )
+    posting_codes = {posting.posting_code} if posting.posting_code else set()
+    return RDBSourceCellParseResult(
+        raw_value=raw_value,
+        normalized_value=normalized.normalized_value,
+        normalized_lines=normalized.normalized_lines,
+        candidate_postings=[posting],
+        warnings=warnings,
+        errors=errors,
+        posting_codes=posting_codes,
+        raw_multi_posting_fragments=[],
+    )
 
 
 async def _fetch_existing_resident_ids(

@@ -20,6 +20,12 @@ from app.schemas.data_revalidation import (
 )
 from app.services import data_revalidation_service
 from app.services.audit import write_audit_log
+from app.services.rdb_parser import (
+    ProgrammeConfig,
+    ResidentPostingWrite,
+    parse_rdb_source_cell_replacement,
+    resolve_r_year,
+)
 from app.services.ttf_parser import split_keywords
 
 
@@ -2626,6 +2632,840 @@ async def replace_resident_posting_source_cell(
         "entity_id": affected_ids[0],
         "updated_fields": sorted(_RESIDENT_POSTING_ALLOWED_FIELDS),
         "data_revalidation": data_revalidation,
+    }
+
+
+_SOURCE_CELL_MANUAL_NEXT_ACTION = (
+    "Review the preview/apply result, then manually resolve the warning if the source issue is fixed."
+)
+_RDB_SOURCE_CELL_WARNING_TYPES = {
+    "empty_posting_cell",
+    "unmatched_multi_posting",
+}
+
+
+def _parse_source_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return date.fromisoformat(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _source_payload_dates(source_payload: dict[str, Any]) -> tuple[date | None, date | None]:
+    candidates = [
+        source_payload,
+        source_payload.get("source_trace") if isinstance(source_payload.get("source_trace"), dict) else {},
+    ]
+    for payload in candidates:
+        start = (
+            _parse_source_date(payload.get("phase_start"))
+            or _parse_source_date(payload.get("start_date"))
+            or _parse_source_date(payload.get("fragment_start_date"))
+        )
+        end = (
+            _parse_source_date(payload.get("phase_end"))
+            or _parse_source_date(payload.get("end_date"))
+            or _parse_source_date(payload.get("fragment_end_date"))
+        )
+        if start is not None and end is not None:
+            return start, end
+    return None, None
+
+
+def _source_payload_posting_codes(source_payload: dict[str, Any]) -> list[str]:
+    values = source_payload.get("posting_codes") or source_payload.get("postingCodes") or []
+    if not isinstance(values, list):
+        return []
+    return [str(value) for value in values if str(value).strip()]
+
+
+async def _fetch_warning_source_context(
+    db: AsyncSession,
+    *,
+    warning_issue_id: UUID,
+    programme_scope: set[str],
+    master_admin: bool,
+) -> dict[str, Any] | None:
+    params: dict[str, Any] = {"warning_issue_id": str(warning_issue_id)}
+    scope_sql = _scope_filter_sql(
+        column_sql="wi.programme_code",
+        programme_scope=programme_scope,
+        master_admin=master_admin,
+        params=params,
+    )
+    result = await db.execute(
+        text(
+            f"""
+            /* rdb_source_cell_warning:context */
+            SELECT
+                wi.id AS issue_id,
+                wi.fingerprint AS issue_fingerprint,
+                wi.warning_type AS issue_warning_type,
+                wi.severity AS issue_severity,
+                wi.status AS issue_status,
+                wi.reporting_period_id AS issue_reporting_period_id,
+                wi.programme_code AS issue_programme_code,
+                wi.resident_id AS issue_resident_id,
+                wi.mcr AS issue_mcr,
+                wi.month_label AS issue_month_label,
+                uw.id AS warning_id,
+                uw.upload_log_id AS warning_upload_log_id,
+                uw.warning_type AS warning_warning_type,
+                uw.severity AS warning_severity,
+                uw.reporting_period_id AS warning_reporting_period_id,
+                uw.programme_code AS warning_programme_code,
+                uw.resident_id AS warning_resident_id,
+                uw.mcr AS warning_mcr,
+                uw.resident_name AS warning_resident_name,
+                uw.month_label AS warning_month_label,
+                uw.sheet_name AS warning_sheet_name,
+                uw.row_number AS warning_row_number,
+                uw.cell_ref AS warning_cell_ref,
+                uw.source_payload AS warning_source_payload,
+                uw.message AS warning_message,
+                uw.suggested_action AS warning_suggested_action,
+                uw.fingerprint AS warning_fingerprint,
+                uw.created_at AS warning_created_at,
+                ul.upload_type,
+                ul.uploaded_at,
+                ul.summary AS upload_summary
+            FROM warning_issues wi
+            JOIN LATERAL (
+                SELECT *
+                FROM upload_warnings latest_uw
+                WHERE latest_uw.issue_id = wi.id
+                ORDER BY latest_uw.created_at DESC, latest_uw.id DESC
+                LIMIT 1
+            ) uw ON TRUE
+            JOIN upload_logs ul ON ul.id = uw.upload_log_id
+            WHERE wi.id = :warning_issue_id
+            {scope_sql}
+            """
+        ),
+        params,
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        return None
+    context = dict(row)
+    source_payload = _parse_json_field(context.get("warning_source_payload"))
+    if not isinstance(source_payload, dict):
+        source_payload = {}
+    context["warning_source_payload"] = source_payload
+    return context
+
+
+def _warning_source_trace(context: dict[str, Any]) -> dict[str, Any]:
+    source_payload = context.get("warning_source_payload")
+    if not isinstance(source_payload, dict):
+        source_payload = {}
+    reporting_period_id = (
+        context.get("warning_reporting_period_id")
+        or context.get("issue_reporting_period_id")
+    )
+    programme_code = context.get("warning_programme_code") or context.get("issue_programme_code")
+    mcr = context.get("warning_mcr") or context.get("issue_mcr")
+    resident_name = context.get("warning_resident_name")
+    month_label = context.get("warning_month_label") or context.get("issue_month_label")
+    return {
+        "reporting_period_id": str(reporting_period_id) if reporting_period_id else None,
+        "programme_code": programme_code,
+        "mcr": mcr,
+        "resident_name": resident_name,
+        "month_label": month_label,
+        "sheet_name": context.get("warning_sheet_name"),
+        "row_number": context.get("warning_row_number"),
+        "cell_ref": context.get("warning_cell_ref"),
+        "source_payload": _json_ready(source_payload),
+    }
+
+
+def _validate_warning_stale_context(
+    context: dict[str, Any],
+    *,
+    upload_warning_id: UUID | None,
+    expected_latest_upload_warning_id: UUID | None,
+    expected_fingerprint: str | None,
+) -> None:
+    latest_upload_warning_id = str(context["warning_id"])
+    if upload_warning_id is not None and str(upload_warning_id) != latest_upload_warning_id:
+        _raise_validation(
+            "upload_warning_id is not the latest occurrence for this warning issue",
+            status_code=409,
+        )
+    if (
+        expected_latest_upload_warning_id is not None
+        and str(expected_latest_upload_warning_id) != latest_upload_warning_id
+    ):
+        _raise_validation(
+            "warning issue has a newer upload warning occurrence",
+            status_code=409,
+        )
+    fingerprint = str(context.get("issue_fingerprint") or context.get("warning_fingerprint"))
+    if expected_fingerprint is not None and expected_fingerprint != fingerprint:
+        _raise_validation("warning fingerprint does not match latest context", status_code=409)
+
+
+async def _fetch_source_cell_resident(
+    db: AsyncSession,
+    *,
+    mcr: str,
+    programme_code: str,
+    programme_scope: set[str],
+    master_admin: bool,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"mcr": mcr, "programme_code": programme_code}
+    scope_sql = _scope_filter_sql(
+        column_sql="programme_code",
+        programme_scope=programme_scope,
+        master_admin=master_admin,
+        params=params,
+    )
+    result = await db.execute(
+        text(
+            f"""
+            /* rdb_source_cell_warning:resident_by_mcr */
+            SELECT id, name, mcr, programme_code, r_year
+            FROM residents
+            WHERE UPPER(mcr) = UPPER(:mcr)
+              AND programme_code = :programme_code
+            {scope_sql}
+            LIMIT 1
+            """
+        ),
+        params,
+    )
+    resident = result.mappings().one_or_none()
+    if resident is None:
+        _raise_validation("warning resident could not be resolved in admin scope")
+    return dict(resident)
+
+
+async def _fetch_source_cell_programme_config(
+    db: AsyncSession,
+    *,
+    programme_code: str,
+) -> ProgrammeConfig:
+    result = await db.execute(
+        text(
+            """
+            SELECT code, r_year_required, is_subspecialty
+            FROM programmes
+            WHERE code = :programme_code
+            LIMIT 1
+            """
+        ),
+        {"programme_code": programme_code},
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        _raise_validation("programme_code from warning source could not be resolved")
+    return ProgrammeConfig(
+        code=str(row["code"]),
+        r_year_required=bool(row["r_year_required"]),
+        is_subspecialty=bool(row["is_subspecialty"]),
+    )
+
+
+async def _resolve_warning_source_phase(
+    db: AsyncSession,
+    *,
+    resident_id: str,
+    reporting_period_id: str,
+    programme_code: str,
+    month_label: str | None,
+    source_payload: dict[str, Any],
+) -> dict[str, Any]:
+    phase_start, phase_end = _source_payload_dates(source_payload)
+    if phase_start is not None and phase_end is not None:
+        return {
+            "phase_start": phase_start,
+            "phase_end": phase_end,
+            "r_year": source_payload.get("r_year"),
+            "source_column_header": source_payload.get("source_column_header"),
+            "phase_source": "warning_source_payload",
+        }
+
+    if month_label:
+        result = await db.execute(
+            text(
+                """
+                /* rdb_source_cell_warning:phase_from_rows */
+                SELECT
+                    MIN(start_date) AS start_date,
+                    MAX(end_date) AS end_date,
+                    MIN(r_year) AS r_year
+                FROM resident_postings
+                WHERE resident_id = :resident_id
+                  AND reporting_period_id = :reporting_period_id
+                  AND month_label = :month_label
+                """
+            ),
+            {
+                "resident_id": resident_id,
+                "reporting_period_id": reporting_period_id,
+                "month_label": month_label,
+            },
+        )
+        row = result.mappings().one_or_none()
+        if row is not None and row.get("start_date") is not None and row.get("end_date") is not None:
+            return {
+                "phase_start": row["start_date"],
+                "phase_end": row["end_date"],
+                "r_year": row.get("r_year"),
+                "source_column_header": source_payload.get("source_column_header"),
+                "phase_source": "resident_postings",
+            }
+
+        result = await db.execute(
+            text(
+                """
+                /* rdb_source_cell_warning:phase_from_academic_boundary */
+                SELECT amb.start_date, amb.end_date
+                FROM academic_month_boundaries amb
+                JOIN programmes p ON p.ay_date_category = amb.ay_date_category
+                JOIN reporting_periods rp ON rp.id = :reporting_period_id
+                WHERE p.code = :programme_code
+                  AND amb.month_label = :month_label
+                  AND amb.start_date <= rp.end_date
+                  AND amb.end_date >= rp.start_date
+                ORDER BY amb.start_date ASC, amb.end_date ASC
+                LIMIT 1
+                """
+            ),
+            {
+                "programme_code": programme_code,
+                "reporting_period_id": reporting_period_id,
+                "month_label": month_label,
+            },
+        )
+        boundary = result.mappings().one_or_none()
+        if boundary is not None:
+            return {
+                "phase_start": boundary["start_date"],
+                "phase_end": boundary["end_date"],
+                "r_year": source_payload.get("r_year"),
+                "source_column_header": source_payload.get("source_column_header"),
+                "phase_source": "academic_month_boundaries",
+            }
+
+    return {
+        "phase_start": None,
+        "phase_end": None,
+        "r_year": source_payload.get("r_year"),
+        "source_column_header": source_payload.get("source_column_header"),
+        "phase_source": "unresolved",
+    }
+
+
+def _candidate_row_from_posting(
+    posting: ResidentPostingWrite,
+    *,
+    resident_id: str,
+) -> dict[str, Any]:
+    return {
+        "resident_id": resident_id,
+        "posting_code": posting.posting_code,
+        "reporting_period_id": str(posting.reporting_period_id),
+        "start_date": posting.start_date,
+        "end_date": posting.end_date,
+        "day_part": posting.day_part,
+        "month_label": posting.month_label,
+        "r_year": posting.r_year or "ALL",
+        "status": posting.status,
+        "loa_type": posting.loa_type,
+        "loa_start_date": posting.loa_start_date,
+        "loa_end_date": posting.loa_end_date,
+        "refresher_training_type": posting.refresher_training_type,
+        "refresher_training_start": posting.refresher_training_start,
+        "refresher_training_end": posting.refresher_training_end,
+        "active_months_weight": posting.active_months_weight,
+        "working_days_in_month": posting.working_days_in_month,
+    }
+
+
+async def _insert_missing_posting_codes_for_source_cell(
+    db: AsyncSession,
+    *,
+    posting_codes: set[str],
+) -> None:
+    for code in sorted(code for code in posting_codes if code):
+        await db.execute(
+            text(
+                """
+                INSERT INTO posting_codes (code, display_name)
+                VALUES (:code, NULL)
+                ON CONFLICT (code) DO NOTHING
+                """
+            ),
+            {"code": code},
+        )
+
+
+async def _preview_warning_source_cell_replacement(
+    db: AsyncSession,
+    *,
+    warning_issue_id: UUID,
+    replacement_raw_cell_value: Any,
+    upload_warning_id: UUID | None,
+    expected_latest_upload_warning_id: UUID | None,
+    expected_fingerprint: str | None,
+    programme_scope: set[str],
+    master_admin: bool,
+) -> dict[str, Any]:
+    context = await _fetch_warning_source_context(
+        db,
+        warning_issue_id=warning_issue_id,
+        programme_scope=programme_scope,
+        master_admin=master_admin,
+    )
+    if context is None:
+        _raise_not_found("warning issue")
+    warning_type = context.get("issue_warning_type") or context.get("warning_warning_type")
+    if context.get("upload_type") != "rdb" or warning_type not in _RDB_SOURCE_CELL_WARNING_TYPES:
+        _raise_validation("source-cell replacement is only available for RDB source-cell warnings")
+    _validate_warning_stale_context(
+        context,
+        upload_warning_id=upload_warning_id,
+        expected_latest_upload_warning_id=expected_latest_upload_warning_id,
+        expected_fingerprint=expected_fingerprint,
+    )
+
+    source_trace = _warning_source_trace(context)
+    reporting_period_id = source_trace.get("reporting_period_id")
+    programme_code = source_trace.get("programme_code")
+    mcr = source_trace.get("mcr")
+    month_label = source_trace.get("month_label")
+    if not reporting_period_id or not programme_code or not mcr:
+        _raise_validation("warning source trace is missing reporting period, programme, or MCR")
+
+    resident = await _fetch_source_cell_resident(
+        db,
+        mcr=mcr,
+        programme_code=programme_code,
+        programme_scope=programme_scope,
+        master_admin=master_admin,
+    )
+    source_payload = context.get("warning_source_payload")
+    if not isinstance(source_payload, dict):
+        source_payload = {}
+    phase = await _resolve_warning_source_phase(
+        db,
+        resident_id=str(resident["id"]),
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        month_label=month_label,
+        source_payload=source_payload,
+    )
+    programme = await _fetch_source_cell_programme_config(db, programme_code=programme_code)
+    r_year = (
+        _source_metadata_value(phase.get("r_year"))
+        or resolve_r_year(str(resident.get("r_year") or ""), programme)
+        or "ALL"
+    )
+    parse_result = await parse_rdb_source_cell_replacement(
+        db_session=db,
+        raw_value=replacement_raw_cell_value,
+        reporting_period_id=UUID(reporting_period_id),
+        resident_mcr=mcr,
+        resident_name=source_trace.get("resident_name") or resident.get("name") or "",
+        programme_code=programme_code,
+        r_year=r_year,
+        month_label=month_label,
+        phase_start=phase.get("phase_start"),
+        phase_end=phase.get("phase_end"),
+        sheet_name=source_trace.get("sheet_name"),
+        row_number=source_trace.get("row_number"),
+        cell_ref=source_trace.get("cell_ref"),
+        source_column_header=phase.get("source_column_header") or month_label,
+    )
+    candidate_rows = [
+        _candidate_row_from_posting(posting, resident_id=str(resident["id"]))
+        for posting in parse_result.candidate_postings
+    ]
+    data_revalidation_context = DataRevalidationContext(
+        trigger_source=DataRevalidationTriggerSource.LIVE_DATA_CORRECTION,
+        changed_entity=DataRevalidationChangedEntity.RESIDENT_POSTING_SOURCE_FRAGMENT,
+        action=DataRevalidationAction.REPLACE,
+        scope=DataRevalidationScope.RESIDENT_MONTH,
+        entity_id=str(warning_issue_id),
+        resident_id=str(resident["id"]),
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        changed_fields=["source_cell_preview"],
+        source_metadata={
+            "warning_issue_id": str(warning_issue_id),
+            "upload_warning_id": str(context["warning_id"]),
+            "fingerprint": str(context.get("issue_fingerprint") or context.get("warning_fingerprint")),
+            "candidate_row_count": len(candidate_rows),
+            "parser_error_count": len(parse_result.errors),
+            "phase_source": phase.get("phase_source"),
+        },
+    )
+    data_revalidation = await data_revalidation_service.preview_resident_posting_source_cell_revalidation(
+        context=data_revalidation_context,
+        db_session=db,
+    )
+    return {
+        "context": context,
+        "resident": resident,
+        "phase": phase,
+        "parse_result": parse_result,
+        "candidate_rows": candidate_rows,
+        "source_trace": source_trace,
+        "data_revalidation": data_revalidation,
+    }
+
+
+async def preview_warning_source_cell_replacement(
+    db: AsyncSession,
+    *,
+    warning_issue_id: UUID,
+    replacement_raw_cell_value: Any,
+    upload_warning_id: UUID | None,
+    expected_latest_upload_warning_id: UUID | None,
+    expected_fingerprint: str | None,
+    programme_scope: set[str],
+    master_admin: bool,
+) -> dict[str, Any]:
+    preview = await _preview_warning_source_cell_replacement(
+        db,
+        warning_issue_id=warning_issue_id,
+        replacement_raw_cell_value=replacement_raw_cell_value,
+        upload_warning_id=upload_warning_id,
+        expected_latest_upload_warning_id=expected_latest_upload_warning_id,
+        expected_fingerprint=expected_fingerprint,
+        programme_scope=programme_scope,
+        master_admin=master_admin,
+    )
+    context = preview["context"]
+    parse_result = preview["parse_result"]
+    return {
+        "warning_issue_id": str(context["issue_id"]),
+        "upload_warning_id": str(context["warning_id"]),
+        "fingerprint": str(context.get("issue_fingerprint") or context.get("warning_fingerprint")),
+        "source_trace": preview["source_trace"],
+        "original_warning_type": context.get("issue_warning_type") or context.get("warning_warning_type"),
+        "original_warning_status": context.get("issue_status"),
+        "replacement_raw_cell_value": replacement_raw_cell_value,
+        "normalized_cell_value": parse_result.normalized_value,
+        "parsed_candidate_rows": [_row_dict(row) for row in preview["candidate_rows"]],
+        "parser_warnings": _json_ready(parse_result.warnings),
+        "parser_errors": _json_ready(parse_result.errors),
+        "apply_allowed": not parse_result.errors,
+        "data_revalidation": preview["data_revalidation"],
+        "suggested_next_action": _SOURCE_CELL_MANUAL_NEXT_ACTION,
+    }
+
+
+async def _fetch_warning_source_affected_rows(
+    db: AsyncSession,
+    *,
+    resident_id: str,
+    reporting_period_id: str,
+    month_label: str | None,
+    phase_start: date | None,
+    phase_end: date | None,
+    posting_codes: list[str],
+) -> list[dict[str, Any]]:
+    result = await db.execute(
+        text(
+            """
+            /* rdb_source_cell_warning:affected_rows */
+            SELECT
+                rp.id,
+                rp.resident_id,
+                r.name AS resident_name,
+                r.mcr,
+                r.programme_code,
+                rp.posting_code,
+                rp.reporting_period_id,
+                rp.start_date,
+                rp.end_date,
+                rp.day_part,
+                rp.month_label,
+                rp.r_year,
+                rp.status,
+                rp.loa_type,
+                rp.loa_start_date,
+                rp.loa_end_date,
+                rp.refresher_training_type,
+                rp.refresher_training_start,
+                rp.refresher_training_end,
+                rp.active_months_weight,
+                rp.working_days_in_month,
+                rp.created_at,
+                rp.updated_at
+            FROM resident_postings rp
+            JOIN residents r ON r.id = rp.resident_id
+            WHERE rp.resident_id = :resident_id
+              AND rp.reporting_period_id = :reporting_period_id
+              AND (:month_label IS NULL OR rp.month_label = :month_label)
+              AND (:phase_start IS NULL OR rp.start_date = :phase_start)
+              AND (:phase_end IS NULL OR rp.end_date = :phase_end)
+              AND (:filter_posting_codes = false OR rp.posting_code = ANY(:posting_codes))
+            ORDER BY rp.start_date ASC, rp.day_part ASC NULLS FIRST, rp.id ASC
+            """
+        ),
+        {
+            "resident_id": resident_id,
+            "reporting_period_id": reporting_period_id,
+            "month_label": month_label,
+            "phase_start": phase_start,
+            "phase_end": phase_end,
+            "filter_posting_codes": bool(posting_codes),
+            "posting_codes": posting_codes,
+        },
+    )
+    return [dict(row) for row in result.mappings().all()]
+
+
+async def _lock_warning_source_cell_scope(
+    db: AsyncSession,
+    *,
+    resident_id: str,
+    reporting_period_id: str,
+    month_label: str | None,
+) -> None:
+    await db.execute(
+        text(
+            """
+            /* rdb_source_cell_warning:lock_resident_month */
+            SELECT rp.id
+            FROM resident_postings rp
+            WHERE rp.resident_id = :resident_id
+              AND rp.reporting_period_id = :reporting_period_id
+              AND (:month_label IS NULL OR rp.month_label = :month_label)
+            FOR UPDATE
+            """
+        ),
+        {
+            "resident_id": resident_id,
+            "reporting_period_id": reporting_period_id,
+            "month_label": month_label,
+        },
+    )
+
+
+async def apply_warning_source_cell_replacement(
+    db: AsyncSession,
+    *,
+    warning_issue_id: UUID,
+    replacement_raw_cell_value: Any,
+    correction_reason: str,
+    upload_warning_id: UUID | None,
+    expected_latest_upload_warning_id: UUID | None,
+    expected_fingerprint: str | None,
+    actor: StaffActorContext,
+    programme_scope: set[str],
+    master_admin: bool,
+) -> dict[str, Any]:
+    preview = await _preview_warning_source_cell_replacement(
+        db,
+        warning_issue_id=warning_issue_id,
+        replacement_raw_cell_value=replacement_raw_cell_value,
+        upload_warning_id=upload_warning_id,
+        expected_latest_upload_warning_id=expected_latest_upload_warning_id,
+        expected_fingerprint=expected_fingerprint,
+        programme_scope=programme_scope,
+        master_admin=master_admin,
+    )
+    context = preview["context"]
+    resident = preview["resident"]
+    parse_result = preview["parse_result"]
+    candidate_rows = preview["candidate_rows"]
+    source_trace = preview["source_trace"]
+    phase = preview["phase"]
+    if parse_result.errors:
+        _raise_validation("replacement source cell could not be parsed")
+
+    reporting_period_id = str(source_trace["reporting_period_id"])
+    month_label = source_trace.get("month_label")
+    source_payload = context.get("warning_source_payload")
+    if not isinstance(source_payload, dict):
+        source_payload = {}
+    posting_codes = _source_payload_posting_codes(source_payload)
+    affected_phase_start = None if posting_codes else phase.get("phase_start")
+    affected_phase_end = None if posting_codes else phase.get("phase_end")
+
+    await _lock_warning_source_cell_scope(
+        db,
+        resident_id=str(resident["id"]),
+        reporting_period_id=reporting_period_id,
+        month_label=month_label,
+    )
+    before_rows = await _fetch_warning_source_affected_rows(
+        db,
+        resident_id=str(resident["id"]),
+        reporting_period_id=reporting_period_id,
+        month_label=month_label,
+        phase_start=affected_phase_start,
+        phase_end=affected_phase_end,
+        posting_codes=posting_codes,
+    )
+    await _insert_missing_posting_codes_for_source_cell(
+        db,
+        posting_codes={
+            str(row["posting_code"])
+            for row in candidate_rows
+            if row.get("posting_code")
+        },
+    )
+    for row in candidate_rows:
+        await _validate_resident_posting_payload(
+            db,
+            row=row,
+            programme_scope=programme_scope,
+            master_admin=master_admin,
+        )
+    affected_ids = [str(row["id"]) for row in before_rows]
+    await _validate_source_cell_replacement_uniqueness(
+        db,
+        replacement_rows=candidate_rows,
+        affected_ids=affected_ids,
+    )
+    if affected_ids:
+        await db.execute(
+            text(
+                """
+                DELETE FROM resident_postings
+                WHERE id = ANY(:ids)
+                """
+            ),
+            {"ids": affected_ids},
+        )
+
+    inserted_ids: list[str] = []
+    for row in candidate_rows:
+        row_id = str(uuid4())
+        inserted_ids.append(row_id)
+        await db.execute(
+            text(
+                """
+                INSERT INTO resident_postings (
+                    id,
+                    resident_id,
+                    posting_code,
+                    reporting_period_id,
+                    start_date,
+                    end_date,
+                    day_part,
+                    month_label,
+                    r_year,
+                    status,
+                    loa_type,
+                    loa_start_date,
+                    loa_end_date,
+                    refresher_training_type,
+                    refresher_training_start,
+                    refresher_training_end,
+                    active_months_weight,
+                    working_days_in_month
+                )
+                VALUES (
+                    :id,
+                    :resident_id,
+                    :posting_code,
+                    :reporting_period_id,
+                    :start_date,
+                    :end_date,
+                    :day_part,
+                    :month_label,
+                    :r_year,
+                    :status,
+                    :loa_type,
+                    :loa_start_date,
+                    :loa_end_date,
+                    :refresher_training_type,
+                    :refresher_training_start,
+                    :refresher_training_end,
+                    :active_months_weight,
+                    :working_days_in_month
+                )
+                """
+            ),
+            {"id": row_id, **row},
+        )
+
+    after_rows = await _fetch_resident_posting_rows_by_ids(db, row_ids=inserted_ids)
+    data_revalidation = await _revalidate_live_data_correction(
+        db,
+        actor=actor,
+        changed_entity=DataRevalidationChangedEntity.RESIDENT_POSTING_SOURCE_FRAGMENT,
+        action=DataRevalidationAction.REPLACE,
+        scope=DataRevalidationScope.RESIDENT_MONTH,
+        entity_id=affected_ids[0] if affected_ids else str(warning_issue_id),
+        resident_id=str(resident["id"]),
+        reporting_period_id=reporting_period_id,
+        programme_code=source_trace.get("programme_code"),
+        changed_fields=["source_cell_replacement"],
+        correction_reason=correction_reason,
+        source_metadata={
+            "warning_issue_id": str(warning_issue_id),
+            "upload_warning_id": str(context["warning_id"]),
+            "fingerprint": str(context.get("issue_fingerprint") or context.get("warning_fingerprint")),
+            "affected_row_count": len(before_rows),
+            "replacement_row_count": len(after_rows),
+            "source_trace": source_trace,
+        },
+    )
+    metadata = {
+        "correction_reason": correction_reason,
+        "updated_fields": sorted(_RESIDENT_POSTING_ALLOWED_FIELDS),
+        "affected_resident_posting_ids": affected_ids,
+        "replacement_resident_posting_ids": inserted_ids,
+        "programme_code": source_trace.get("programme_code"),
+        "resident_id": str(resident["id"]),
+        "reporting_period_id": reporting_period_id,
+        "warning_issue_id": str(warning_issue_id),
+        "upload_warning_id": str(context["warning_id"]),
+        "fingerprint": str(context.get("issue_fingerprint") or context.get("warning_fingerprint")),
+        "before_source_payload": source_trace.get("source_payload"),
+        "after_raw_cell_value": replacement_raw_cell_value,
+        "normalized_cell_value": parse_result.normalized_value,
+        "parsed_row_summary": [_row_dict(row) for row in candidate_rows],
+        "source_trace": source_trace,
+        "parser_warnings": _json_ready(parse_result.warnings),
+        "data_revalidation": data_revalidation,
+    }
+    audit = await _write_correction_audit(
+        db,
+        actor=actor,
+        action="admin.parsed_data.resident_posting.source_cell_replace",
+        entity_type="resident_posting_source_cell",
+        entity_id=affected_ids[0] if affected_ids else str(warning_issue_id),
+        before={"before_rows": [_row_dict(row) for row in before_rows]},
+        after={"after_rows": [_row_dict(row) for row in after_rows]},
+        metadata=metadata,
+    )
+    await db.commit()
+    return {
+        "warning_issue_id": str(context["issue_id"]),
+        "upload_warning_id": str(context["warning_id"]),
+        "fingerprint": str(context.get("issue_fingerprint") or context.get("warning_fingerprint")),
+        "source_trace": source_trace,
+        "original_warning_type": context.get("issue_warning_type") or context.get("warning_warning_type"),
+        "warning_issue_status": context.get("issue_status"),
+        "replacement_raw_cell_value": replacement_raw_cell_value,
+        "normalized_cell_value": parse_result.normalized_value,
+        "before_rows": [_row_dict(row) for row in before_rows],
+        "after_rows": [_row_dict(row) for row in after_rows],
+        "parser_warnings": _json_ready(parse_result.warnings),
+        "parser_errors": _json_ready(parse_result.errors),
+        "audit_log_id": audit["id"],
+        "entity_type": "resident_posting_source_cell",
+        "entity_id": affected_ids[0] if affected_ids else str(warning_issue_id),
+        "updated_fields": sorted(_RESIDENT_POSTING_ALLOWED_FIELDS),
+        "data_revalidation": data_revalidation,
+        "suggested_next_action": _SOURCE_CELL_MANUAL_NEXT_ACTION,
     }
 
 

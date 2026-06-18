@@ -119,7 +119,7 @@ async def test_config_change_returns_future_impact_for_default_config_entities()
 
 
 @pytest.mark.asyncio
-async def test_source_fragment_trigger_returns_manual_required_handler_unavailable_summary() -> None:
+async def test_source_fragment_preview_returns_warning_only_non_mutating_summary() -> None:
     context = _context(
         changed_entity=DataRevalidationChangedEntity.RESIDENT_POSTING_SOURCE_FRAGMENT,
         action=DataRevalidationAction.REPLACE,
@@ -132,10 +132,11 @@ async def test_source_fragment_trigger_returns_manual_required_handler_unavailab
         db_session=MutationGuardSession(),
     )
 
-    assert summary.outcome == DataRevalidationOutcome.MANUAL_REVALIDATION_REQUIRED
+    assert summary.outcome == DataRevalidationOutcome.WARNING_ONLY
     assert summary.changed_entity == DataRevalidationChangedEntity.RESIDENT_POSTING_SOURCE_FRAGMENT
-    assert summary.details["backend_handler_available"] is False
-    assert "source-cell Data Revalidation handler is not implemented yet" in summary.summary
+    assert summary.details["backend_handler_available"] is True
+    assert summary.details["business_tables_mutated"] is False
+    assert "without mutating resident_postings" in summary.summary
     assert summary.rows_examined == 0
     assert summary.rows_updated == 0
 
@@ -232,7 +233,7 @@ async def test_unknown_live_data_entity_can_return_no_op() -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_source_cell_revalidation_is_callable_and_still_contract_only() -> None:
+async def test_apply_source_cell_revalidation_returns_targeted_summary() -> None:
     context = _context(
         changed_entity=DataRevalidationChangedEntity.RESIDENT_POSTING_SOURCE_FRAGMENT,
         action=DataRevalidationAction.REPLACE,
@@ -244,6 +245,8 @@ async def test_apply_source_cell_revalidation_is_callable_and_still_contract_onl
         db_session=MutationGuardSession(),
     )
 
-    assert summary.outcome == DataRevalidationOutcome.MANUAL_REVALIDATION_REQUIRED
-    assert summary.details["business_tables_mutated"] is False
-    assert summary.details["backend_handler_available"] is False
+    assert summary.outcome == DataRevalidationOutcome.TARGETED_REVALIDATION
+    assert summary.affected_models == ["resident_postings"]
+    assert summary.details["business_tables_mutated"] is True
+    assert summary.details["backend_handler_available"] is True
+    assert "No compliance calculation" in summary.summary

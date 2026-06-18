@@ -178,6 +178,8 @@ The current 3H-C wiring covers:
 - `PATCH /admin/parsed-data/residents/{id}`
 - `PATCH /admin/parsed-data/resident-postings/{id}`
 - `POST /admin/parsed-data/resident-postings/source-cell-replace`
+- `POST /admin/upload-warnings/{warning_issue_id}/source-cell-replace/preview`
+- `POST /admin/upload-warnings/{warning_issue_id}/source-cell-replace/apply`
 - `PATCH /admin/parsed-data/teaching-targets/{id}`
 - `PATCH /admin/parsed-data/form-f1-records/{id}`
 - `PATCH /admin/parsed-data/academic-month-boundaries/{id}`
@@ -192,7 +194,7 @@ The current 3H-D Config wiring covers successful creates, updates, deletes, and 
 - `future_compliance_impact`
 - `manual_revalidation_required`
 
-Normal Refresh buttons remain read-only refetch actions. Any mutating recalculation must be exposed as a separate explicit Data Revalidation action. Use `reparse` only for low-level RDB source-cell parsing, not as the broad system concept. 3H-E2 adds first-class warning issue persistence and manual issue status actions only; concrete source-cell reparse, multi-posting re-resolution, resident posting regeneration, and compliance recalculation remain later handlers.
+Normal Refresh buttons remain read-only refetch actions. Any mutating recalculation must be exposed as a separate explicit Data Revalidation action. Use `reparse` only for low-level RDB source-cell parsing, not as the broad system concept. 3H-E2 adds first-class warning issue persistence and manual issue status actions only. 3H-E3 adds explicit admin-triggered preview/apply for one RDB source cell linked to a durable warning issue. It does not mutate `upload_logs.summary`, run a full RDB re-upload, re-resolve impacted multi-posting rules globally, regenerate all `resident_postings`, calculate compliance, generate snapshots, hibernate surplus, or generate clawback.
 
 ---
 
@@ -388,6 +390,36 @@ Manually update a warning issue status.
 - **Audit:** Writes an audit log row with actor, action, before/after status, and warning scope metadata.
 - **Behaviour:** Does not mutate `upload_logs.summary`, does not run RDB source-cell parsing, does not regenerate `resident_postings`, and does not calculate compliance.
 - **Reappearance:** If the same fingerprint appears in a later upload after an issue was `resolved`, `dismissed`, or `superseded`, its status becomes `reappeared` while preserving the previous resolution note/actor/timestamp.
+
+### POST `/admin/upload-warnings/{warning_issue_id}/source-cell-replace/preview`
+
+Preview a single RDB source-cell replacement linked to a durable upload warning issue.
+
+- **Auth:** admin only
+- **Scope:** Same programme-scope rules as the warning issue endpoints. Non-master admins with null/empty programme scope have no access. Master admin access is explicit via admin level.
+- **Allowed warnings:** RDB `empty_posting_cell` and `unmatched_multi_posting` source-cell warning issues.
+- **Body:**
+```json
+{
+  "replacement_raw_cell_value": "TTSHAnaes",
+  "upload_warning_id": "<optional latest occurrence uuid>",
+  "expected_latest_upload_warning_id": "<optional stale-context guard>",
+  "expected_fingerprint": "<optional stale-context guard>"
+}
+```
+- **Behaviour:** Parses the replacement with RDB cell normalisation, LOA parsing, and multi-posting rule handling. Does not write `resident_postings`, `posting_codes`, `upload_logs`, `upload_warnings`, or `warning_issues`.
+- **Response:** Includes warning identifiers, source trace, normalized value, parsed candidate rows, parser warnings/errors, `apply_allowed`, `data_revalidation`, and a manual resolve/dismiss next-action hint.
+
+### POST `/admin/upload-warnings/{warning_issue_id}/source-cell-replace/apply`
+
+Apply a single previewed RDB source-cell replacement linked to a durable upload warning issue.
+
+- **Auth:** admin only
+- **Scope:** Same as preview.
+- **Body:** Same as preview plus required `correction_reason`.
+- **Behaviour:** Re-loads latest warning context, checks optional stale-context guards, parses the replacement, locks the resident/month scope where practical, deletes only matching scoped `resident_postings` rows, inserts only parsed replacement rows, upserts produced `posting_codes`, and writes correction audit metadata linking `warning_issue_id`, `upload_warning_id`, and fingerprint.
+- **Warning history:** Does not mutate `upload_logs.summary`, does not append fake `upload_warnings`, and does not auto-resolve the warning issue. Response includes `warning_issue_status` and a manual next-action hint.
+- **Data Revalidation:** Successful apply returns `targeted_revalidation`. It does not calculate compliance, generate snapshots, hibernate surplus, or generate clawback.
 
 ### GET `/admin/teaching-targets`
 
