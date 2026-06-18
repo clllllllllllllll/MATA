@@ -39,8 +39,8 @@ class FakeResult:
 
 
 class FakeResidentSession:
-    def __init__(self) -> None:
-        self.today = date.today()
+    def __init__(self, *, today: date | None = None) -> None:
+        self.today = today or date.today()
         self.now = datetime.combine(self.today, time(9, 0), tzinfo=timezone.utc)
         posting_start = self.today - timedelta(days=30)
         posting_end = self.today + timedelta(days=30)

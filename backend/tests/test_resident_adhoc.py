@@ -10,6 +10,13 @@ from app.routers import resident
 from tests.resident_fakes import FakeResidentSession
 
 
+ADHOC_FIXTURE_TODAY = date(2026, 5, 18)
+
+
+def _fake_db() -> FakeResidentSession:
+    return FakeResidentSession(today=ADHOC_FIXTURE_TODAY)
+
+
 def _client(fake_db: FakeResidentSession) -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
@@ -31,7 +38,7 @@ def _headers(fake_db: FakeResidentSession) -> dict[str, str]:
 
 
 def test_adhoc_teaching_derives_posting_from_submitted_date() -> None:
-    fake_db = FakeResidentSession()
+    fake_db = _fake_db()
     client = _client(fake_db)
 
     response = client.post(
@@ -53,7 +60,7 @@ def test_adhoc_teaching_derives_posting_from_submitted_date() -> None:
 
 
 def test_adhoc_teaching_on_public_holiday_returns_422_and_writes_nothing() -> None:
-    fake_db = FakeResidentSession()
+    fake_db = _fake_db()
     before_events = len(fake_db.events)
     before_attendance = len(fake_db.attendance)
     client = _client(fake_db)
@@ -74,7 +81,7 @@ def test_adhoc_teaching_on_public_holiday_returns_422_and_writes_nothing() -> No
 
 
 def test_adhoc_teaching_rejects_multiple_matching_postings_without_disambiguation() -> None:
-    fake_db = FakeResidentSession()
+    fake_db = _fake_db()
     fake_db.resident_postings.append(
         {
             "resident_id": fake_db.resident_id,
@@ -103,7 +110,7 @@ def test_adhoc_teaching_rejects_multiple_matching_postings_without_disambiguatio
 
 
 def test_adhoc_teaching_rejects_when_no_posting_exists_for_date() -> None:
-    fake_db = FakeResidentSession()
+    fake_db = _fake_db()
     client = _client(fake_db)
 
     response = client.post(
@@ -121,7 +128,7 @@ def test_adhoc_teaching_rejects_when_no_posting_exists_for_date() -> None:
 
 
 def test_adhoc_weekend_non_exception_returns_warning() -> None:
-    fake_db = FakeResidentSession()
+    fake_db = _fake_db()
     weekend_offset = (fake_db.today.weekday() - 5) % 7
     weekend_date = fake_db.today - timedelta(days=weekend_offset)
     client = _client(fake_db)
@@ -143,7 +150,7 @@ def test_adhoc_weekend_non_exception_returns_warning() -> None:
 
 
 def test_adhoc_teaching_is_blocked_when_reporting_period_is_inactive() -> None:
-    fake_db = FakeResidentSession()
+    fake_db = _fake_db()
     fake_db.reporting_periods[0]["status"] = "inactive"
     before_events = len(fake_db.events)
     before_attendance = len(fake_db.attendance)
@@ -166,7 +173,7 @@ def test_adhoc_teaching_is_blocked_when_reporting_period_is_inactive() -> None:
 
 
 def test_adhoc_teaching_uses_effectively_active_scheduled_reporting_period() -> None:
-    fake_db = FakeResidentSession()
+    fake_db = _fake_db()
     fake_db.reporting_periods[0]["status"] = "inactive"
     fake_db.reporting_periods[0]["activate_on"] = fake_db.today - timedelta(days=1)
     client = _client(fake_db)
