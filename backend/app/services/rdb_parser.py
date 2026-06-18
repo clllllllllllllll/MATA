@@ -1037,6 +1037,43 @@ def _warn_duplicate_resident_posting_suppressed(
     )
 
 
+def _empty_posting_cell_warning(
+    *,
+    reporting_period_id: UUID,
+    resident_mcr: str,
+    resident_name: str,
+    programme_code: str,
+    month_label: str,
+    sheet_name: str,
+    row_number: int,
+    cell_ref: str,
+    raw_value: Any,
+) -> dict[str, Any]:
+    return {
+        "type": "empty_posting_cell",
+        "severity": "info",
+        "reporting_period_id": str(reporting_period_id),
+        "mcr": resident_mcr,
+        "resident_name": resident_name,
+        "programme_code": programme_code,
+        "month_label": month_label,
+        "sheet_name": sheet_name,
+        "row_number": row_number,
+        "cell_ref": cell_ref,
+        "source_payload": {
+            "raw_value": raw_value,
+        },
+        "message": (
+            "No posting value found for this resident/month cell. "
+            "No resident posting row was created."
+        ),
+        "suggested_action": (
+            "Check whether the RDB source cell is intentionally blank. "
+            "If not, update the RDB source file and re-upload."
+        ),
+    }
+
+
 def _deduplicate_resident_postings(
     *,
     resident: ParsedRDBResident,
@@ -1918,11 +1955,11 @@ async def _parse_workbook_to_accumulator(
                     accumulator.employed_residents_flagged.add(mcr)
 
                 for header in posting_headers:
-                    raw_cell = sheet.cell(
-                        row=row_index, column=header.column_index
-                    ).value
+                    source_cell = sheet.cell(row=row_index, column=header.column_index)
+                    raw_cell = source_cell.value
+                    normalized_cell = normalize_rdb_cell(raw_cell)
                     parsed_cell = classify_posting_cell(
-                        normalize_rdb_cell(raw_cell),
+                        normalized_cell,
                         {
                             "known_loa_types": known_loa_types,
                             "phase_start": header.start_date,
@@ -1930,6 +1967,20 @@ async def _parse_workbook_to_accumulator(
                         },
                     )
                     if parsed_cell is None:
+                        if not normalized_cell.normalized_value:
+                            accumulator.warnings.append(
+                                _empty_posting_cell_warning(
+                                    reporting_period_id=reporting_period_id,
+                                    resident_mcr=mcr,
+                                    resident_name=parsed_resident.name,
+                                    programme_code=programme.code,
+                                    month_label=header.month_label,
+                                    sheet_name=sheet_name,
+                                    row_number=row_index,
+                                    cell_ref=source_cell.coordinate,
+                                    raw_value=raw_cell,
+                                )
+                            )
                         continue
 
                     for warning in parsed_cell.warnings:

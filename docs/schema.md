@@ -702,6 +702,77 @@ Persistent audit trail of every RDB, TTF, FormF1, and Academic Calendar / Public
 
 ---
 
+## Table: `warning_issues`
+
+Durable issue-level records for upload warnings derived from `upload_logs.summary`.
+One issue represents one deterministic warning fingerprint across uploads.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| id | UUID | PK | |
+| fingerprint | TEXT | UNIQUE, NOT NULL | Deterministic key derived from warning type and stable scope fields |
+| warning_type | VARCHAR(100) | NOT NULL | e.g. `unmatched_multi_posting`, `empty_posting_cell`, `mcr_not_found` |
+| severity | VARCHAR(20) | NOT NULL | `critical`, `warning`, `info` |
+| status | VARCHAR(20) | NOT NULL | `unresolved`, `resolved`, `dismissed`, `superseded`, `reappeared` |
+| first_seen_upload_log_id | UUID | FK -> upload_logs.id | First upload where this issue appeared |
+| last_seen_upload_log_id | UUID | FK -> upload_logs.id | Most recent upload where this issue appeared |
+| first_seen_at | TIMESTAMPTZ | | Copied from upload time |
+| last_seen_at | TIMESTAMPTZ | | Copied from latest upload time |
+| reporting_period_id | UUID | FK -> reporting_periods.id, nullable | Warning scope when available |
+| programme_code | VARCHAR(20) | nullable | Used for admin programme scoping |
+| resident_id | UUID | FK -> residents.id, nullable | Populated only when a warning can be tied to a resident row |
+| mcr | VARCHAR(20) | nullable | MCR from upload warning payload |
+| month_label | VARCHAR(20) | nullable | Month/phase label when available |
+| resolution_note | TEXT | nullable | Admin note from resolve/dismiss/supersede action |
+| resolution_source_type | VARCHAR(50) | nullable | e.g. `admin_warning_action` |
+| resolution_source_id | UUID | nullable | Actor/action source identifier |
+| resolved_by | UUID | FK -> users.id, nullable | Staff actor user id |
+| resolved_at | TIMESTAMPTZ | nullable | Status action timestamp |
+| created_at | TIMESTAMPTZ | DEFAULT now() | |
+| updated_at | TIMESTAMPTZ | DEFAULT now() | |
+
+**Indexes:** `status`, `warning_type`, `(reporting_period_id, programme_code)`.
+
+**Lifecycle:** New fingerprints create `unresolved` issues. If the same fingerprint appears again, `last_seen_*` fields are updated. If the prior status was `resolved`, `dismissed`, or `superseded`, the status becomes `reappeared` and the prior resolution metadata is preserved.
+
+---
+
+## Table: `upload_warnings`
+
+Occurrence-level records for a warning issue within a specific upload.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| id | UUID | PK | |
+| issue_id | UUID | FK -> warning_issues.id, NOT NULL | Durable issue this occurrence belongs to |
+| upload_log_id | UUID | FK -> upload_logs.id, NOT NULL | Upload that produced the occurrence |
+| warning_type | VARCHAR(100) | NOT NULL | Normalized warning type |
+| severity | VARCHAR(20) | NOT NULL | `critical`, `warning`, `info` |
+| reporting_period_id | UUID | FK -> reporting_periods.id, nullable | Warning scope when available |
+| programme_code | VARCHAR(20) | nullable | Used for admin programme scoping |
+| resident_id | UUID | FK -> residents.id, nullable | Populated only when known |
+| mcr | VARCHAR(20) | nullable | |
+| resident_name | VARCHAR(200) | nullable | |
+| month_label | VARCHAR(20) | nullable | |
+| sheet_name | VARCHAR(200) | nullable | Workbook trace |
+| row_number | INTEGER | nullable | Workbook trace |
+| cell_ref | VARCHAR(20) | nullable | Workbook trace |
+| source_table | VARCHAR(100) | nullable | Future source-cell/action linking |
+| source_record_id | UUID | nullable | Future source-cell/action linking |
+| source_payload | JSONB | NOT NULL, DEFAULT `{}` | Original normalized warning payload |
+| message | TEXT | NOT NULL | User-facing warning text |
+| suggested_action | TEXT | nullable | Operational hint only |
+| fingerprint | TEXT | NOT NULL | Same key as the parent issue |
+| created_at | TIMESTAMPTZ | DEFAULT now() | |
+
+**Unique constraint:** `UNIQUE(upload_log_id, fingerprint)`.
+
+**Indexes:** `upload_log_id`, `issue_id`, `warning_type`, `(reporting_period_id, programme_code)`, `mcr`.
+
+`upload_warnings` is append-only by upload occurrence. It does not mutate `upload_logs.summary`; historical upload summaries remain the immutable raw audit record.
+
+---
+
 ## Table: `period_snapshots`
 
 Frozen compliance state captured by the future final close/freeze flow.

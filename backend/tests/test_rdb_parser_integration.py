@@ -438,6 +438,14 @@ def _unmatched_multi_posting_warnings(result) -> list[dict]:
     ]
 
 
+def _empty_posting_cell_warnings(result) -> list[dict]:
+    return [
+        item
+        for item in result.warnings
+        if isinstance(item, dict) and item.get("type") == "empty_posting_cell"
+    ]
+
+
 def _distinct_warning_posting_codes(warning: dict) -> list[str]:
     posting_codes = warning.get("posting_codes")
     if not isinstance(posting_codes, list):
@@ -552,6 +560,49 @@ def test_sample_upload_creates_residents_postings_posting_codes_and_upload_log()
         json.loads(session.upload_logs[-1]["summary"])["original_filename"]
         == "audit-name.xlsx"
     )
+
+
+def test_blank_rdb_resident_month_cell_emits_info_warning_without_posting_row() -> None:
+    session = FakeRDBSession()
+    period_id = uuid4()
+    file_bytes = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One",
+                mcr="M12345A",
+                r_year="R2",
+                programme="DR",
+                jul="",
+                aug="TTSHAnaes",
+                sep="",
+            )
+        ]
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="rdb.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    warnings = _empty_posting_cell_warnings(result)
+    assert {warning["month_label"] for warning in warnings} >= {"Jul-25", "Sep-25"}
+    jul_warning = next(warning for warning in warnings if warning["month_label"] == "Jul-25")
+    assert jul_warning["severity"] == "info"
+    assert jul_warning["mcr"] == "M12345A"
+    assert jul_warning["resident_name"] == "Resident One"
+    assert jul_warning["programme_code"] == "DR"
+    assert jul_warning["reporting_period_id"] == str(period_id)
+    assert jul_warning["sheet_name"] == "Phase 1"
+    assert jul_warning["row_number"] == 3
+    assert jul_warning["cell_ref"] == "I3"
+    assert "No resident posting row was created" in jul_warning["message"]
+    assert [row["posting_code"] for row in session.resident_postings] == ["TTSHAnaes"]
+    assert all(row["start_date"] != date(2025, 7, 8) for row in session.resident_postings)
 
 
 def test_reupload_delete_first_replaces_entire_reporting_period_snapshot() -> None:
@@ -990,7 +1041,15 @@ def test_standard_sheet_stops_parsing_at_red_line_marker() -> None:
 
     assert result.errors == []
     assert result.metadata["rows_skipped"] == 0
-    assert result.warnings == []
+    blank_warnings = _empty_posting_cell_warnings(result)
+    assert {warning["month_label"] for warning in blank_warnings} == {"Aug-25", "Sep-25"}
+    assert {warning["mcr"] for warning in blank_warnings} == {"M11111A"}
+    assert all(warning["row_number"] == 3 for warning in blank_warnings)
+    assert [
+        warning
+        for warning in result.warnings
+        if not (isinstance(warning, dict) and warning.get("type") == "empty_posting_cell")
+    ] == []
     assert set(session.residents.keys()) == {"M11111A"}
     assert "M99999Z" not in session.residents
     assert [row["posting_code"] for row in session.resident_postings] == ["TTSHAnaes"]

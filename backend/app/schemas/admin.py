@@ -182,6 +182,8 @@ class UploadLogResponse(BaseModel):
 
 
 class UploadWarningResponse(BaseModel):
+    issue_id: str | None = None
+    status: str | None = None
     warning_id: str
     dedupe_key: str
     upload_log_id: str
@@ -204,10 +206,79 @@ class UploadWarningResponse(BaseModel):
     count: int | None = None
     source_label: str | None = None
     raw_payload: Any = None
+    suggested_action: str | None = None
     seen_count: int = 1
     first_seen_at: datetime
     last_seen_at: datetime
     upload_log_ids: list[str] = Field(default_factory=list)
+    first_seen_upload_log_id: str | None = None
+    last_seen_upload_log_id: str | None = None
+    latest_upload_warning_id: str | None = None
+    latest_source_trace: dict[str, Any] | None = None
+    reappeared: bool = False
+
+
+class UploadWarningOccurrenceResponse(BaseModel):
+    id: str
+    issue_id: str
+    upload_log_id: str
+    upload_type: str | None = None
+    uploaded_at: datetime | None = None
+    warning_type: str
+    severity: str
+    reporting_period_id: str | None = None
+    programme_code: str | None = None
+    resident_id: str | None = None
+    mcr: str | None = None
+    resident_name: str | None = None
+    month_label: str | None = None
+    sheet_name: str | None = None
+    row_number: int | None = None
+    cell_ref: str | None = None
+    source_table: str | None = None
+    source_record_id: str | None = None
+    source_payload: Any = Field(default_factory=dict)
+    message: str
+    suggested_action: str | None = None
+    fingerprint: str
+    created_at: datetime
+
+
+class UploadWarningIssueDetailResponse(BaseModel):
+    issue_id: str
+    fingerprint: str
+    warning_type: str
+    severity: str
+    status: str
+    first_seen_upload_log_id: str | None = None
+    last_seen_upload_log_id: str | None = None
+    first_seen_at: datetime
+    last_seen_at: datetime
+    reporting_period_id: str | None = None
+    programme_code: str | None = None
+    resident_id: str | None = None
+    mcr: str | None = None
+    month_label: str | None = None
+    resolution_note: str | None = None
+    resolution_source_type: str | None = None
+    resolution_source_id: str | None = None
+    resolved_by: str | None = None
+    resolved_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    occurrences: list[UploadWarningOccurrenceResponse] = Field(default_factory=list)
+
+
+class UploadWarningActionRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class UploadWarningIssueActionResponse(BaseModel):
+    issue_id: str
+    status: str
+    resolution_note: str | None = None
+    resolved_by: str | None = None
+    resolved_at: datetime | None = None
 
 
 class ParsedResidentRow(BaseModel):

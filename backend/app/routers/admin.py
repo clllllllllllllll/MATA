@@ -60,6 +60,9 @@ from app.schemas import (
     TeachingTargetResponse,
     UploadLogDetailResponse,
     UploadLogListResponse,
+    UploadWarningActionRequest,
+    UploadWarningIssueActionResponse,
+    UploadWarningIssueDetailResponse,
     UploadWarningResponse,
     WeekendExceptionMutationRequest,
     WeekendExceptionMutationResponse,
@@ -82,6 +85,13 @@ from app.services.upload_logs import (
     warning_count,
 )
 from app.services.upload_warnings import list_upload_warnings
+from app.services.warning_issues import (
+    DurableWarningStoreUnavailable,
+    derive_upload_warnings_from_summary,
+    get_warning_issue_detail,
+    list_warning_issues,
+    update_warning_issue_status,
+)
 from app.services.parser_common import (
     ParserResult,
     UploadValidationError,
@@ -501,6 +511,15 @@ async def _write_upload_log_and_audit(
         reporting_period_id=reporting_period_id,
         programme_code=programme_code,
     )
+    try:
+        await derive_upload_warnings_from_summary(
+            db,
+            upload_log,
+            parser_result.to_summary(),
+            actor_id=uploaded_by,
+        )
+    except DurableWarningStoreUnavailable:
+        pass
     after, metadata = _upload_log_audit_payload(
         upload_log=upload_log,
         parser_result=parser_result,
@@ -2420,26 +2439,191 @@ async def get_upload_warnings(
     programme_code: str | None = Query(default=None),
     warning_type: str | None = Query(default=None),
     reporting_period_id: UUID | None = Query(default=None),
+    upload_log_id: UUID | None = Query(default=None),
+    status: str | None = Query(default=None),
+    mcr: str | None = Query(default=None),
+    month_label: str | None = Query(default=None),
     search: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     mode: Literal["active", "history"] = Query(default="active"),
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> list[UploadWarningResponse]:
     if db is None:
         return []
-    rows = await list_upload_warnings(
-        db,
-        programme_scope=admin_context.programme_scope,
-        master_admin=admin_context.is_master_admin,
-        upload_type=upload_type,
-        severity=severity,
-        programme_code=programme_code,
-        warning_type=warning_type,
-        reporting_period_id=reporting_period_id,
-        search=search,
-        mode=mode,
-    )
+    try:
+        rows = await list_warning_issues(
+            db,
+            programme_scope=admin_context.programme_scope,
+            master_admin=admin_context.is_master_admin,
+            upload_log_id=upload_log_id,
+            upload_type=upload_type,
+            reporting_period_id=reporting_period_id,
+            programme_code=programme_code,
+            warning_type=warning_type,
+            severity=severity,
+            status=status,
+            mcr=mcr,
+            month_label=month_label,
+            search=search,
+            limit=limit,
+            offset=offset,
+        )
+    except DurableWarningStoreUnavailable:
+        rows = await list_upload_warnings(
+            db,
+            programme_scope=admin_context.programme_scope,
+            master_admin=admin_context.is_master_admin,
+            upload_type=upload_type,
+            severity=severity,
+            programme_code=programme_code,
+            warning_type=warning_type,
+            reporting_period_id=reporting_period_id,
+            search=search,
+            mode=mode,
+        )
     return [UploadWarningResponse.model_validate(row) for row in rows]
+
+
+@router.get(
+    "/upload-warnings/{warning_issue_id}",
+    response_model=UploadWarningIssueDetailResponse,
+)
+async def get_upload_warning_issue(
+    warning_issue_id: UUID,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> UploadWarningIssueDetailResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    try:
+        payload = await get_warning_issue_detail(
+            db,
+            issue_id=warning_issue_id,
+            programme_scope=admin_context.programme_scope,
+            master_admin=admin_context.is_master_admin,
+        )
+    except DurableWarningStoreUnavailable as exc:
+        raise ApiError(
+            status_code=404,
+            detail="Warning issue not found",
+            error_code=ErrorCode.NOT_FOUND.value,
+        ) from exc
+    if payload is None:
+        raise ApiError(
+            status_code=404,
+            detail="Warning issue not found",
+            error_code=ErrorCode.NOT_FOUND.value,
+        )
+    return UploadWarningIssueDetailResponse.model_validate(payload)
+
+
+async def _update_upload_warning_issue(
+    *,
+    warning_issue_id: UUID,
+    action: Literal["resolve", "dismiss", "supersede"],
+    body: UploadWarningActionRequest,
+    admin_context: AdminContext,
+    staff_actor: StaffActorContext,
+    db: AsyncSession | None,
+) -> UploadWarningIssueActionResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    try:
+        payload = await update_warning_issue_status(
+            db,
+            issue_id=warning_issue_id,
+            action=action,
+            note=body.note,
+            actor=staff_actor,
+            programme_scope=admin_context.programme_scope,
+            master_admin=admin_context.is_master_admin,
+        )
+    except DurableWarningStoreUnavailable as exc:
+        raise ApiError(
+            status_code=404,
+            detail="Warning issue not found",
+            error_code=ErrorCode.NOT_FOUND.value,
+        ) from exc
+    if payload is None:
+        raise ApiError(
+            status_code=404,
+            detail="Warning issue not found",
+            error_code=ErrorCode.NOT_FOUND.value,
+        )
+    return UploadWarningIssueActionResponse.model_validate(payload)
+
+
+@router.post(
+    "/upload-warnings/{warning_issue_id}/resolve",
+    response_model=UploadWarningIssueActionResponse,
+)
+async def resolve_upload_warning_issue(
+    warning_issue_id: UUID,
+    body: UploadWarningActionRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> UploadWarningIssueActionResponse:
+    return await _update_upload_warning_issue(
+        warning_issue_id=warning_issue_id,
+        action="resolve",
+        body=body,
+        admin_context=admin_context,
+        staff_actor=staff_actor,
+        db=db,
+    )
+
+
+@router.post(
+    "/upload-warnings/{warning_issue_id}/dismiss",
+    response_model=UploadWarningIssueActionResponse,
+)
+async def dismiss_upload_warning_issue(
+    warning_issue_id: UUID,
+    body: UploadWarningActionRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> UploadWarningIssueActionResponse:
+    return await _update_upload_warning_issue(
+        warning_issue_id=warning_issue_id,
+        action="dismiss",
+        body=body,
+        admin_context=admin_context,
+        staff_actor=staff_actor,
+        db=db,
+    )
+
+
+@router.post(
+    "/upload-warnings/{warning_issue_id}/supersede",
+    response_model=UploadWarningIssueActionResponse,
+)
+async def supersede_upload_warning_issue(
+    warning_issue_id: UUID,
+    body: UploadWarningActionRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> UploadWarningIssueActionResponse:
+    return await _update_upload_warning_issue(
+        warning_issue_id=warning_issue_id,
+        action="supersede",
+        body=body,
+        admin_context=admin_context,
+        staff_actor=staff_actor,
+        db=db,
+    )
 
 
 @router.get("/parsed-data/residents", response_model=ParsedResidentListResponse)

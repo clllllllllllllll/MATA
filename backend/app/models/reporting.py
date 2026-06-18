@@ -11,13 +11,16 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
     desc,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, UUIDTimestampMixin
@@ -75,6 +78,113 @@ class UploadLog(UUIDTimestampMixin, Base):
     programme_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
     status: Mapped[str] = mapped_column(String(10), nullable=False)
     summary: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class WarningIssue(UUIDTimestampMixin, Base):
+    __tablename__ = "warning_issues"
+    __table_args__ = (
+        CheckConstraint(
+            "severity IN ('critical', 'warning', 'info')",
+            name="ck_warning_issues_severity",
+        ),
+        CheckConstraint(
+            "status IN ('unresolved', 'resolved', 'dismissed', 'superseded', 'reappeared')",
+            name="ck_warning_issues_status",
+        ),
+        Index("idx_warning_issues_status", "status"),
+        Index("idx_warning_issues_warning_type", "warning_type"),
+        Index(
+            "idx_warning_issues_period_programme",
+            "reporting_period_id",
+            "programme_code",
+        ),
+        UniqueConstraint("fingerprint", name="uq_warning_issues_fingerprint"),
+    )
+
+    fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
+    warning_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    first_seen_upload_log_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("upload_logs.id"),
+        nullable=True,
+    )
+    last_seen_upload_log_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("upload_logs.id"),
+        nullable=True,
+    )
+    first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reporting_period_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("reporting_periods.id"),
+        nullable=True,
+    )
+    programme_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    resident_id: Mapped[UUID | None] = mapped_column(ForeignKey("residents.id"), nullable=True)
+    mcr: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    month_label: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolution_source_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    resolution_source_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    resolved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UploadWarning(Base):
+    __tablename__ = "upload_warnings"
+    __table_args__ = (
+        CheckConstraint(
+            "severity IN ('critical', 'warning', 'info')",
+            name="ck_upload_warnings_severity",
+        ),
+        UniqueConstraint("upload_log_id", "fingerprint", name="uq_upload_warnings_upload_fingerprint"),
+        Index("idx_upload_warnings_upload_log", "upload_log_id"),
+        Index("idx_upload_warnings_issue", "issue_id"),
+        Index("idx_upload_warnings_warning_type", "warning_type"),
+        Index(
+            "idx_upload_warnings_period_programme",
+            "reporting_period_id",
+            "programme_code",
+        ),
+        Index("idx_upload_warnings_mcr", "mcr"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    issue_id: Mapped[UUID] = mapped_column(ForeignKey("warning_issues.id"), nullable=False)
+    upload_log_id: Mapped[UUID] = mapped_column(ForeignKey("upload_logs.id"), nullable=False)
+    warning_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)
+    reporting_period_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("reporting_periods.id"),
+        nullable=True,
+    )
+    programme_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    resident_id: Mapped[UUID | None] = mapped_column(ForeignKey("residents.id"), nullable=True)
+    mcr: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    resident_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    month_label: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    sheet_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    row_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cell_ref: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    source_table: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    source_record_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    source_payload: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
+    )
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    suggested_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
 
 
 class AcademicMonthBoundary(UUIDTimestampMixin, Base):

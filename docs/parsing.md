@@ -297,6 +297,10 @@ Each `unmatched_multi_posting` warning payload must include workbook traceabilit
 - `cell_ref` (preferred exact Excel cell coordinate, e.g. `J42`)
 - `message`
 
+Blank resident/month posting cells emit an `empty_posting_cell` warning with `severity = "info"` when the row has a valid resident MCR/programme and the cell normalises to empty. No `resident_postings` row is created for that month. The warning payload includes `reporting_period_id`, `mcr`, `resident_name`, `programme_code`, `month_label`, `sheet_name`, `row_number`, `cell_ref`, `source_payload.raw_value`, `message`, and `suggested_action`.
+
+Upload warnings are also persisted as first-class `warning_issues` and `upload_warnings` records after the upload log is written. This persistence supports review and manual status actions only. It does not reparse source cells, re-resolve multi-posting rules, regenerate `resident_postings`, or calculate compliance.
+
 ### Final Product PC Review Workflow (documentation target)
 
 After RDB upload, the Admin UI should present unmatched warnings in a review table with:
@@ -314,7 +318,7 @@ This table is for operational triage only. It helps PCs:
 - identify the exact source RDB cell
 - decide whether the source workbook needs correction
 - add a rule via Multi-posting Rules CRUD (`Main Posting`, `To Combine Posting`, `Half Month Posting`) if the combination is valid
-- re-upload/reparse RDB after correction
+- re-upload the RDB after correction; `reparse` is reserved for a future low-level source-cell parsing action
 
 **Relationship to posting_groups:** `multi_posting_rules` governs how the RDB cell is **parsed** into `resident_postings` rows. `posting_groups` governs how compliance is **aggregated** across separate postings that were posted at independently. They are independent — a resident may have two clean separate `resident_postings` rows (no multi_posting_rule needed) but still have their compliance pooled via `posting_groups` if they served at both postings across the period.
 

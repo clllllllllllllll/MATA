@@ -581,6 +581,64 @@ def test_successful_admin_uploads_write_audit_logs_linked_to_upload_logs(monkeyp
         assert after["status"] == "success"
 
 
+def test_successful_admin_uploads_derive_warning_issues_after_upload_log(monkeypatch) -> None:
+    async def _fake_rdb_parser(**kwargs):
+        return ParserResult(upload_type="rdb", warnings=[{"type": "empty_posting_cell"}])
+
+    async def _fake_ttf_parser(**kwargs):
+        return ParserResult(upload_type="ttf", warnings=[{"type": "tag_order_warning"}])
+
+    async def _fake_formf1_parser(**kwargs):
+        return ParserResult(upload_type="form_f1", warnings=["M99999Z not found"])
+
+    async def _fake_public_holiday_parser(**kwargs):
+        return ParserResult(upload_type="public_holidays", warnings=[{"type": "public_holiday_day_mismatch"}])
+
+    calls: list[dict] = []
+
+    async def _fake_derivation(db, upload_log, summary, actor_id=None):
+        calls.append(
+            {
+                "upload_log_id": upload_log["id"],
+                "upload_type": upload_log["upload_type"],
+                "summary_upload_type": summary["upload_type"],
+                "actor_id": actor_id,
+            }
+        )
+
+    monkeypatch.setattr("app.services.rdb_parser.parse_rdb_upload", _fake_rdb_parser)
+    monkeypatch.setattr("app.routers.admin.parse_ttf_upload", _fake_ttf_parser)
+    monkeypatch.setattr("app.routers.admin.parse_formf1_upload", _fake_formf1_parser)
+    monkeypatch.setattr("app.routers.admin.parse_public_holiday_upload", _fake_public_holiday_parser)
+    monkeypatch.setattr("app.routers.admin.derive_upload_warnings_from_summary", _fake_derivation)
+
+    session = _UploadAuditSession()
+    client = _build_upload_audit_client(session)
+    headers = _admin_headers()
+    actor_id = headers["X-User-Id"]
+    period_id = str(uuid4())
+    files = {
+        "file": (
+            "source.xlsx",
+            _make_valid_xlsx_bytes(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+
+    responses = [
+        client.post("/admin/upload/rdb", headers=headers, data={"reporting_period_id": period_id}, files=files),
+        client.post("/admin/upload/ttf", headers=headers, data={"reporting_period_id": period_id, "programme_code": "DR"}, files=files),
+        client.post("/admin/upload/form-f1", headers=headers, data={"reporting_period_id": period_id}, files=files),
+        client.post("/admin/upload/public-holidays", headers=headers, files=files),
+    ]
+
+    assert [response.status_code for response in responses] == [200, 200, 200, 200]
+    assert [call["upload_type"] for call in calls] == ["rdb", "ttf", "form_f1", "public_holidays"]
+    assert [call["summary_upload_type"] for call in calls] == ["rdb", "ttf", "form_f1", "public_holidays"]
+    assert all(str(call["actor_id"]) == actor_id for call in calls)
+    assert [call["upload_log_id"] for call in calls] == [row["id"] for row in session.upload_logs]
+
+
 def test_parser_signatures_importable() -> None:
     from app.services.formf1_parser import parse_formf1_upload
     from app.services.public_holiday_parser import parse_public_holiday_upload

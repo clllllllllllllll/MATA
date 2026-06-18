@@ -557,6 +557,16 @@ Every important decision made during the project, with reasoning and consequence
 
 ---
 
+#### Decision: First-class upload warning issues
+- **Status:** Confirmed for Phase 3H-E2
+- **Decision:** Upload warnings derived from `upload_logs.summary` are persisted into durable `warning_issues` and `upload_warnings` records. `warning_issues` group repeated warnings by deterministic fingerprint; `upload_warnings` records each upload occurrence.
+- **Reasoning:** PCs need a stable review queue that survives refreshes and repeat uploads without rewriting historical upload summaries.
+- **Consequences for codebase:** Successful RDB, TTF, FormF1, and Academic Calendar / Public Holidays uploads derive warning issues after the upload log is written. Admin endpoints list issues, show occurrence details, and allow manual `resolve`, `dismiss`, or `supersede` actions with audit logging. Resolved/dismissed/superseded issues become `reappeared` if the same fingerprint appears again. RDB blank resident/month cells now emit low-priority `empty_posting_cell` warnings.
+- **Boundary:** 3H-E2 does not mutate `upload_logs.summary`, reparse RDB source cells, re-resolve multi-posting rules, regenerate `resident_postings`, update warning source data automatically, calculate compliance, generate snapshots, hibernate surplus, or generate clawback rows.
+- **Do not change without PM/stakeholder approval:** Yes
+
+---
+
 #### Decision: Reporting-period active/inactive operational status
 - **Status:** ✅ Confirmed for 3H-D-FU
 - **Decision:** Reporting periods use stored status values `active` and `inactive`. `activate_on` and `deactivate_on` are optional scheduled transition dates resolved at read time, without mutating the row. `open` and `closed` are legacy values and are migrated/rejected.

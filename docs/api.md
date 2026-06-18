@@ -192,7 +192,7 @@ The current 3H-D Config wiring covers successful creates, updates, deletes, and 
 - `future_compliance_impact`
 - `manual_revalidation_required`
 
-Normal Refresh buttons remain read-only refetch actions. Any mutating recalculation must be exposed as a separate explicit Data Revalidation action. Use `reparse` only for low-level RDB source-cell parsing, not as the broad system concept. Concrete Data Revalidation handlers remain 3H-E.
+Normal Refresh buttons remain read-only refetch actions. Any mutating recalculation must be exposed as a separate explicit Data Revalidation action. Use `reparse` only for low-level RDB source-cell parsing, not as the broad system concept. 3H-E2 adds first-class warning issue persistence and manual issue status actions only; concrete source-cell reparse, multi-posting re-resolution, resident posting regeneration, and compliance recalculation remain later handlers.
 
 ---
 
@@ -239,6 +239,25 @@ Upload RDB Posting Schedule Excel file.
   "cell_ref": "J42",
   "posting_codes": ["NHCCardio", "TTSHCardio"],
   "message": "No matching multi-posting rule found. Postings were persisted independently. Add a multi_posting_rule or correct the RDB source if needed."
+}
+```
+
+- **`empty_posting_cell` warning payload (when applicable):**
+```json
+{
+  "type": "empty_posting_cell",
+  "severity": "info",
+  "reporting_period_id": "<period_uuid>",
+  "mcr": "M12345A",
+  "resident_name": "Resident Name",
+  "programme_code": "DR",
+  "month_label": "Jul-25",
+  "sheet_name": "Phase 1",
+  "row_number": 3,
+  "cell_ref": "I3",
+  "source_payload": { "raw_value": null },
+  "message": "No posting value found for this resident/month cell. No resident posting row was created.",
+  "suggested_action": "Check whether the RDB source cell is intentionally blank. If not, update the RDB source file and re-upload."
 }
 ```
 
@@ -307,6 +326,68 @@ Upload FormF1 Excel file for active/inactive status per resident per calendar mo
   "errors": []
 }
 ```
+
+### GET `/admin/upload-warnings`
+
+List first-class warning issues derived from `upload_logs.summary`.
+
+- **Auth:** admin only
+- **Query params:** `upload_log_id`, `upload_type`, `reporting_period_id`, `programme_code`, `warning_type`, `severity`, `status`, `mcr`, `month_label`, `search`, `limit`, `offset`
+- **Scope:** Programme-scoped admins only see issues whose `programme_code` is in their scope. Master admins may see all issues.
+- **Response:** Issue-centric rows. Existing upload-warning row fields are preserved where possible and enriched with `issue_id`, `status`, `latest_upload_warning_id`, and `latest_source_trace`.
+- **Notes:** Upload warning issues are derived after successful upload-log creation. `upload_logs.summary` remains immutable; resolving/dismissing/superseding an issue does not edit historical upload summaries.
+
+```json
+[
+  {
+    "issue_id": "<warning_issue_uuid>",
+    "status": "unresolved",
+    "warning_id": "<latest_upload_warning_uuid>",
+    "dedupe_key": "empty_posting_cell|<period>|DR|M12345A|Jul-25",
+    "upload_log_id": "<latest_upload_log_uuid>",
+    "upload_type": "rdb",
+    "uploaded_at": "2026-06-17T09:00:00Z",
+    "reporting_period_id": "<period_uuid>",
+    "programme_code": "DR",
+    "warning_type": "empty_posting_cell",
+    "severity": "info",
+    "message": "No posting value found for this resident/month cell. No resident posting row was created.",
+    "mcr": "M12345A",
+    "month_label": "Jul-25",
+    "sheet_name": "Phase 1",
+    "row_number": 3,
+    "cell_ref": "I3",
+    "seen_count": 1,
+    "latest_upload_warning_id": "<upload_warning_uuid>",
+    "latest_source_trace": {
+      "sheet_name": "Phase 1",
+      "row_number": 3,
+      "cell_ref": "I3"
+    },
+    "reappeared": false
+  }
+]
+```
+
+### GET `/admin/upload-warnings/{warning_issue_id}`
+
+Return one warning issue plus all upload warning occurrences that have the same deterministic fingerprint.
+
+- **Auth:** admin only
+- **Scope:** Same programme-scope rules as the list endpoint
+- **Response:** Issue metadata, resolution metadata, and `occurrences[]`
+
+### POST `/admin/upload-warnings/{warning_issue_id}/resolve`
+### POST `/admin/upload-warnings/{warning_issue_id}/dismiss`
+### POST `/admin/upload-warnings/{warning_issue_id}/supersede`
+
+Manually update a warning issue status.
+
+- **Auth:** admin only
+- **Body:** `{ "note": "optional admin note" }`
+- **Audit:** Writes an audit log row with actor, action, before/after status, and warning scope metadata.
+- **Behaviour:** Does not mutate `upload_logs.summary`, does not run RDB source-cell parsing, does not regenerate `resident_postings`, and does not calculate compliance.
+- **Reappearance:** If the same fingerprint appears in a later upload after an issue was `resolved`, `dismissed`, or `superseded`, its status becomes `reappeared` while preserving the previous resolution note/actor/timestamp.
 
 ### GET `/admin/teaching-targets`
 

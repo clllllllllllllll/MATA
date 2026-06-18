@@ -14,11 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 WARNING_SOURCE_TYPES = {
     "unmatched_multi_posting": "unmatched_multi_posting",
+    "empty_posting_cell": "empty_posting_cell",
     "unknown_loa_type": "unknown_loa_type",
     "unknown_loa_types": "unknown_loa_types",
     "mcr_not_found": "mcr_not_found",
     "mcr_not_found_warnings": "mcr_not_found",
     "orphaned_attendance": "orphaned_attendance",
+    "public_holiday_day_mismatch": "public_holiday_day_mismatch",
     "duplicate_mcr_error": "duplicate_mcr_error",
     "duplicate_mcr_errors": "duplicate_mcr_error",
     "tag_order_warnings": "tag_order_warning",
@@ -47,6 +49,9 @@ WARNING_SEVERITY_TYPES = {
     "promotion_date_warning",
     "promotion_date_warnings",
     "warning",
+}
+INFO_WARNING_TYPES = {
+    "empty_posting_cell",
 }
 MCR_RE = re.compile(r"\b[A-Z]\d{4,6}[A-Z]\b", re.IGNORECASE)
 
@@ -182,9 +187,15 @@ def _warning_type(source_key: str, payload: Any) -> str:
     return WARNING_SOURCE_TYPES[source_key]
 
 
-def _severity_for(warning_type: str, source_key: str) -> str:
+def _severity_for(warning_type: str, source_key: str, explicit: str | None = None) -> str:
+    if explicit:
+        normalized_explicit = explicit.strip().lower()
+        if normalized_explicit in {"critical", "warning", "info"}:
+            return normalized_explicit
     normalized = warning_type.strip().lower()
     source = source_key.strip().lower()
+    if normalized in INFO_WARNING_TYPES or source in INFO_WARNING_TYPES:
+        return "info"
     if normalized in CRITICAL_WARNING_TYPES or source in CRITICAL_WARNING_TYPES:
         return "critical"
     if normalized in WARNING_SEVERITY_TYPES or source in WARNING_SEVERITY_TYPES:
@@ -246,6 +257,9 @@ def _normalise_payload(
 ) -> UploadWarningRow:
     upload_log_id = str(upload_log["id"])
     warning_type = _warning_type(source_key, payload)
+    explicit_severity = (
+        _string_value(payload.get("severity")) if isinstance(payload, dict) else None
+    )
 
     if isinstance(payload, dict):
         resident_name = _string_value(payload.get("resident_name")) or _string_value(
@@ -308,7 +322,7 @@ def _normalise_payload(
         reporting_period_id=_string_value(upload_log.get("reporting_period_id")),
         programme_code=programme_code,
         warning_type=warning_type,
-        severity=_severity_for(warning_type, source_key),
+        severity=_severity_for(warning_type, source_key, explicit_severity),
         message=message,
         resident_name=resident_name,
         mcr=mcr.upper() if mcr else None,
@@ -322,6 +336,30 @@ def _normalise_payload(
         source_label=_source_label(sheet_name, row_number, cell_ref),
         raw_payload=payload,
     )
+
+
+def normalise_warning_rows_from_upload_log(upload_log: dict[str, Any]) -> list[UploadWarningRow]:
+    summary = upload_log.get("summary")
+    if isinstance(summary, str):
+        try:
+            summary = json.loads(summary)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(summary, dict):
+        return []
+
+    rows: list[UploadWarningRow] = []
+    for source_key, payloads in _summary_sources(summary):
+        for index, payload in enumerate(payloads):
+            row = _normalise_payload(
+                upload_log=upload_log,
+                source_key=source_key,
+                warning_index=index,
+                payload=payload,
+            )
+            row.dedupe_key = _dedupe_key(row)
+            rows.append(row)
+    return rows
 
 
 def _dedupe_key(row: UploadWarningRow) -> str:
@@ -579,18 +617,8 @@ async def list_upload_warnings(
 
     normalized: list[tuple[UploadWarningRow, str | None]] = []
     for upload_log in upload_logs:
-        summary = upload_log.get("summary")
-        if not isinstance(summary, dict):
-            continue
-        for source_key, payloads in _summary_sources(summary):
-            for index, payload in enumerate(payloads):
-                row = _normalise_payload(
-                    upload_log=upload_log,
-                    source_key=source_key,
-                    warning_index=index,
-                    payload=payload,
-                )
-                normalized.append((row, _string_value(upload_log.get("programme_code"))))
+        for row in normalise_warning_rows_from_upload_log(upload_log):
+            normalized.append((row, _string_value(upload_log.get("programme_code"))))
 
     mcr_values = {row.mcr for row, _ in normalized if row.mcr}
     resident_programmes = await _resident_programmes_by_mcr(db, mcr_values)

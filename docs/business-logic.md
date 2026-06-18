@@ -937,6 +937,10 @@ Data Revalidation is the standard service boundary for assessing the impact of A
 
 3H-D still does not mutate warnings, run RDB source-cell parsing, re-resolve existing multi-posting source cells, regenerate `resident_postings`, or calculate compliance. Multi-posting rule changes return `manual_revalidation_required` as a placeholder impact summary until 3H-E concrete handlers are implemented.
 
+3H-E2 persists upload warnings as first-class `warning_issues` and `upload_warnings` records derived from immutable `upload_logs.summary`. Warning fingerprints group repeated occurrences across uploads. Admins may mark issues `resolved`, `dismissed`, or `superseded`; if the same fingerprint appears in a later upload, the issue becomes `reappeared` while preserving the prior resolution metadata.
+
+3H-E2 warning actions are operational triage only. They do not mutate `upload_logs.summary`, parse RDB source cells, re-resolve multi-posting rules, regenerate `resident_postings`, update/resolve warning source data automatically, calculate compliance, generate snapshots, hibernate surplus, or generate clawback rows. Those concrete handlers remain later work.
+
 Normal Refresh buttons are read-only refetch actions and must not trigger Data Revalidation. Reserve `reparse` for the low-level RDB source-cell parsing step only.
 
 ### What must never be cached as authoritative

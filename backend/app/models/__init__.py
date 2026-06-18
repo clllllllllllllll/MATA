@@ -18,6 +18,8 @@ from app.models.reporting import (
     PeriodSnapshot,
     ReportingPeriod,
     UploadLog,
+    UploadWarning,
+    WarningIssue,
 )
 from app.models.resident import ExternalResident, ExternalResidentPosting, Resident, ResidentPosting, User
 from app.models.teaching import (
@@ -58,6 +60,8 @@ __all__ = [
     "TeachingNameCatalogue",
     "TeachingTarget",
     "UploadLog",
+    "UploadWarning",
     "User",
+    "WarningIssue",
     "WeekendException",
 ]

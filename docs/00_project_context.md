@@ -816,6 +816,8 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 - **Weekend compliance warning:** Display warning text after `POST /resident/attendance` when `compliance_warning` is non-null
 - **Traffic light:** Green (≥70%), Amber (50–69%), Red (<50%) colour indicators on compliance views
 
+- **Warning issue review:** Upload warnings are persisted as first-class review issues with manual resolve/dismiss/supersede status actions. These actions do not mutate upload summaries or source data.
+
 ### Technical Constraints
 
 - Tailwind CSS: core utility classes only — no JIT compiler
