@@ -602,6 +602,7 @@ _CONFIG_SOURCE_METADATA_FIELDS = {
     "programme": ("code", "r_year_required", "is_subspecialty", "rdb_alias"),
     "loa_type": ("code", "description"),
     "multi_posting_rule": (
+        "programme_code",
         "rule_type",
         "posting_code_1",
         "posting_code_2",
@@ -609,7 +610,7 @@ _CONFIG_SOURCE_METADATA_FIELDS = {
         "main_posting_code",
         "exclusion_code",
     ),
-    "posting_group": ("group_code", "posting_code"),
+    "posting_group": ("group_code", "posting_code", "programme_code"),
     "weekend_exception": (
         "programme_code",
         "posting_code",
@@ -686,7 +687,18 @@ async def _revalidate_config_mutation(
     entity_id: UUID | str | None,
     snapshot: dict[str, Any] | None,
     changed_fields: list[str],
+    previous_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    source_metadata = _config_revalidation_source_metadata(
+        entity_type=entity_type,
+        snapshot=snapshot,
+    )
+    previous_source_metadata = _config_revalidation_source_metadata(
+        entity_type=entity_type,
+        snapshot=previous_snapshot,
+    )
+    if previous_source_metadata:
+        source_metadata["previous_source_metadata"] = previous_source_metadata
     summary = await data_revalidation_service.revalidate_after_config_change(
         context=DataRevalidationContext(
             trigger_source=(
@@ -711,10 +723,7 @@ async def _revalidate_config_mutation(
                 else None
             ),
             changed_fields=changed_fields,
-            source_metadata=_config_revalidation_source_metadata(
-                entity_type=entity_type,
-                snapshot=snapshot,
-            ),
+            source_metadata=source_metadata,
             actor_user_id=str(actor.actor_user_id) if actor.actor_user_id else None,
             actor_role=actor.actor_role,
             reason=f"Admin Config {entity_type} {mutation}",
@@ -1133,6 +1142,7 @@ async def update_reporting_period(
         entity_id=reporting_period_id,
         snapshot=row,
         changed_fields=_config_changed_fields(payload),
+        previous_snapshot=before,
     )
     await _write_config_audit(
         db,
@@ -1178,6 +1188,7 @@ async def _set_reporting_period_status_response(
         entity_id=reporting_period_id,
         snapshot=row,
         changed_fields=["status"],
+        previous_snapshot=before,
     )
     await _write_config_audit(
         db,
@@ -1397,6 +1408,7 @@ async def update_public_holiday(
         entity_id=holiday_id,
         snapshot=row,
         changed_fields=_config_changed_fields(payload),
+        previous_snapshot=before,
     )
     await _write_config_audit(
         db,
@@ -1523,6 +1535,7 @@ async def update_programme(
         entity_id=clean_programme_code,
         snapshot=row,
         changed_fields=_config_changed_fields(payload),
+        previous_snapshot=before,
     )
     await _write_config_audit(
         db,
@@ -1635,6 +1648,7 @@ async def update_loa_type(
         entity_id=loa_type_id,
         snapshot=row,
         changed_fields=_config_changed_fields(payload),
+        previous_snapshot=before,
     )
     await _write_config_audit(
         db,
@@ -1814,6 +1828,7 @@ async def update_multi_posting_rule(
         entity_id=rule_id,
         snapshot=row,
         changed_fields=_config_changed_fields(payload),
+        previous_snapshot=before,
     )
     await _write_config_audit(
         db,
@@ -1985,6 +2000,7 @@ async def update_posting_group(
         entity_id=posting_group_id,
         snapshot=row,
         changed_fields=_config_changed_fields(payload),
+        previous_snapshot=before,
     )
     await _write_config_audit(
         db,
@@ -2171,6 +2187,7 @@ async def update_weekend_exception(
         entity_id=weekend_exception_id,
         snapshot=row,
         changed_fields=_config_changed_fields(payload),
+        previous_snapshot=before,
     )
     await _write_config_audit(
         db,
@@ -2337,6 +2354,7 @@ async def update_global_session_type(
         entity_id=global_session_type_id,
         snapshot=row,
         changed_fields=_config_changed_fields(payload),
+        previous_snapshot=before,
     )
     await _write_config_audit(
         db,

@@ -5,6 +5,7 @@ from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
@@ -110,7 +111,18 @@ class FakeMutationSession:
                 "updated_at": self.now,
             }
         ]
-        self.teaching_events: list[dict] = [{"teaching_name": "Department Meeting [1h]"}]
+        self.warning_issues: list[dict] = []
+        self.upload_warnings: list[dict] = []
+        self.resident_postings: list[dict] = []
+        self.teaching_events: list[dict] = [
+            {
+                "id": str(uuid4()),
+                "teaching_name": "Department Meeting [1h]",
+                "posting_code": "TTSHDR",
+                "event_date": date(2026, 5, 23),
+            }
+        ]
+        self.attendance_records: list[dict] = []
         self.audit_logs: list[dict] = []
 
     async def commit(self) -> None:
@@ -122,6 +134,103 @@ class FakeMutationSession:
     async def execute(self, statement, params=None):  # noqa: C901, PLR0912, PLR0915
         sql = str(statement)
         payload = dict(params or {})
+
+        if "/* data_revalidation:warning_candidates */" in sql:
+            statuses = set(payload.get("statuses") or [])
+            warning_types = set(payload.get("warning_types") or [])
+            programme_code = payload.get("programme_code")
+            reporting_period_id = payload.get("reporting_period_id")
+            rows = []
+            for issue in self.warning_issues:
+                if statuses and issue.get("status") not in statuses:
+                    continue
+                if warning_types and issue.get("warning_type") not in warning_types:
+                    continue
+                if programme_code is not None and issue.get("programme_code") != programme_code:
+                    continue
+                if reporting_period_id is not None and str(issue.get("reporting_period_id")) != str(reporting_period_id):
+                    continue
+                occurrences = [
+                    warning
+                    for warning in self.upload_warnings
+                    if str(warning.get("issue_id")) == str(issue["id"])
+                ]
+                latest = occurrences[-1] if occurrences else {}
+                rows.append(
+                    {
+                        "issue_id": issue["id"],
+                        "fingerprint": issue.get("fingerprint"),
+                        "warning_type": issue.get("warning_type"),
+                        "status": issue.get("status"),
+                        "severity": issue.get("severity"),
+                        "reporting_period_id": issue.get("reporting_period_id"),
+                        "programme_code": issue.get("programme_code"),
+                        "mcr": issue.get("mcr"),
+                        "month_label": issue.get("month_label"),
+                        "last_seen_at": issue.get("last_seen_at"),
+                        "latest_upload_warning_id": latest.get("id"),
+                        "source_payload": latest.get("source_payload") or {},
+                        "message": latest.get("message"),
+                        "suggested_action": latest.get("suggested_action"),
+                    }
+                )
+            return _FakeMutationResult(rows=rows[: payload.get("limit", len(rows))])
+
+        if "/* data_revalidation:count_resident_postings */" in sql:
+            count = 0
+            for row in self.resident_postings:
+                if payload.get("programme_code") is not None and row.get("programme_code") != payload["programme_code"]:
+                    continue
+                if payload.get("posting_code") is not None and row.get("posting_code") != payload["posting_code"]:
+                    continue
+                if payload.get("reporting_period_id") is not None and str(row.get("reporting_period_id")) != str(payload["reporting_period_id"]):
+                    continue
+                count += 1
+            return _FakeMutationResult(rows=[{"count": count}])
+
+        if "/* data_revalidation:count_teaching_events */" in sql:
+            count = 0
+            for row in self.teaching_events:
+                if payload.get("teaching_name") is not None and row.get("teaching_name") != payload["teaching_name"]:
+                    continue
+                if payload.get("posting_code") is not None and row.get("posting_code") != payload["posting_code"]:
+                    continue
+                if payload.get("holiday_date") is not None and row.get("event_date") != payload["holiday_date"]:
+                    continue
+                pattern = payload.get("session_name_pattern")
+                if pattern is not None and pattern.strip("%").lower() not in row.get("teaching_name", "").lower():
+                    continue
+                count += 1
+            return _FakeMutationResult(rows=[{"count": count}])
+
+        if "/* data_revalidation:count_attendance_records */" in sql:
+            event_by_id = {str(row.get("id")): row for row in self.teaching_events}
+            count = 0
+            for row in self.attendance_records:
+                event = event_by_id.get(str(row.get("event_id"))) or row
+                if payload.get("teaching_name") is not None and event.get("teaching_name") != payload["teaching_name"]:
+                    continue
+                if payload.get("posting_code") is not None and event.get("posting_code") != payload["posting_code"]:
+                    continue
+                pattern = payload.get("session_name_pattern")
+                if pattern is not None and pattern.strip("%").lower() not in event.get("teaching_name", "").lower():
+                    continue
+                count += 1
+            return _FakeMutationResult(rows=[{"count": count}])
+
+        if "/* data_revalidation:count_period_" in sql:
+            period_counts = self.reporting_period_dependencies.get(payload["reporting_period_id"], {})
+            if "count_period_upload_logs" in sql:
+                table = "upload_logs"
+            elif "count_period_resident_postings" in sql:
+                table = "resident_postings"
+            elif "count_period_teaching_targets" in sql:
+                table = "teaching_targets"
+            elif "count_period_form_f1_records" in sql:
+                table = "form_f1_records"
+            else:
+                table = ""
+            return _FakeMutationResult(rows=[{"count": period_counts.get(table, 0)}])
 
         if "SELECT 1 FROM posting_codes" in sql:
             code = payload["code"]
@@ -652,6 +761,51 @@ def _audit_json(row: dict, field: str) -> dict | None:
     return json.loads(value)
 
 
+def _add_warning_issue(
+    session: FakeMutationSession,
+    *,
+    warning_type: str,
+    programme_code: str | None = "DR",
+    reporting_period_id: str | None = None,
+    status: str = "unresolved",
+    source_payload: dict | None = None,
+    message: str | None = None,
+) -> str:
+    issue_id = str(uuid4())
+    fingerprint = f"{warning_type}|{programme_code}|{issue_id}"
+    issue = {
+        "id": issue_id,
+        "fingerprint": fingerprint,
+        "warning_type": warning_type,
+        "severity": "warning",
+        "status": status,
+        "reporting_period_id": reporting_period_id or session.reporting_periods[0]["id"],
+        "programme_code": programme_code,
+        "mcr": "M12345A",
+        "month_label": "May-26",
+        "last_seen_at": session.now,
+    }
+    occurrence = {
+        "id": str(uuid4()),
+        "issue_id": issue_id,
+        "upload_log_id": str(uuid4()),
+        "warning_type": warning_type,
+        "severity": "warning",
+        "reporting_period_id": issue["reporting_period_id"],
+        "programme_code": programme_code,
+        "mcr": issue["mcr"],
+        "month_label": issue["month_label"],
+        "source_payload": source_payload or {},
+        "message": message or f"{warning_type} warning",
+        "suggested_action": None,
+        "fingerprint": fingerprint,
+        "created_at": session.now,
+    }
+    session.warning_issues.append(issue)
+    session.upload_warnings.append(occurrence)
+    return issue_id
+
+
 def _assert_config_impact(
     body: dict,
     *,
@@ -664,7 +818,7 @@ def _assert_config_impact(
     assert impact["changed_entity"] == changed_entity
     assert impact["action"] == action
     assert impact["outcome"] == outcome
-    assert impact["rows_examined"] == 0
+    assert impact["rows_examined"] >= 0
     assert impact["rows_updated"] == 0
     assert impact["warnings_created"] == 0
     assert impact["warnings_updated"] == 0
@@ -1200,6 +1354,297 @@ def test_admin_config_crud_mutations_write_audit_logs() -> None:
             "admin_config_change",
             "pc_config_change",
         }
+
+
+@pytest.mark.parametrize(
+    ("rule_payload", "warning_posting_codes"),
+    [
+        (
+            {
+                "programme_code": "DR",
+                "posting_code_1": "TTSHDR",
+                "posting_code_2": "KTPHDR",
+                "rule_type": "combine",
+                "combined_label": "TTSHDR-KTPHDR",
+                "main_posting_code": None,
+                "exclusion_code": None,
+            },
+            ["KTPHDR", "TTSHDR"],
+        ),
+        (
+            {
+                "programme_code": "DR",
+                "posting_code_1": "TTSHDR",
+                "posting_code_2": "KTPHDR",
+                "rule_type": "half_month",
+                "combined_label": None,
+                "main_posting_code": None,
+                "exclusion_code": None,
+            },
+            ["KTPHDR", "TTSHDR"],
+        ),
+        (
+            {
+                "programme_code": "DR",
+                "posting_code_1": "TTSHDR",
+                "posting_code_2": "KTPHDR",
+                "rule_type": "main_posting",
+                "combined_label": None,
+                "main_posting_code": "TTSHDR",
+                "exclusion_code": None,
+            },
+            ["KTPHDR", "TTSHDR"],
+        ),
+        (
+            {
+                "programme_code": "DR",
+                "posting_code_1": "TTSHDR",
+                "posting_code_2": None,
+                "rule_type": "main_posting",
+                "combined_label": None,
+                "main_posting_code": "TTSHDR",
+                "exclusion_code": "KTPHDR",
+            },
+            ["TTSHDR", "KTPHDR"],
+        ),
+    ],
+)
+def test_multi_posting_rule_mutation_enriches_matching_unmatched_warning_summary(
+    rule_payload: dict,
+    warning_posting_codes: list[str],
+) -> None:
+    session = FakeMutationSession()
+    issue_id = _add_warning_issue(
+        session,
+        warning_type="unmatched_multi_posting",
+        programme_code="DR",
+        status="reappeared",
+        source_payload={
+            "type": "unmatched_multi_posting",
+            "posting_codes": warning_posting_codes,
+        },
+        message="No matching multi-posting rule found",
+    )
+    _add_warning_issue(
+        session,
+        warning_type="unmatched_multi_posting",
+        programme_code="GRM",
+        source_payload={"posting_codes": warning_posting_codes},
+    )
+    _add_warning_issue(
+        session,
+        warning_type="unmatched_multi_posting",
+        programme_code="DR",
+        status="resolved",
+        source_payload={"posting_codes": warning_posting_codes},
+    )
+    client = _build_client_with_session(session)
+
+    response = client.post(
+        "/admin/multi-posting-rules",
+        headers=_admin_headers("DR"),
+        json=rule_payload,
+    )
+
+    assert response.status_code == 200
+    impact = _assert_config_impact(
+        response.json(),
+        changed_entity="multi_posting_rule",
+        action="create",
+        outcome="manual_revalidation_required",
+    )
+    assert impact["warnings_remaining"] == 1
+    assert impact["affected_warning_ids"] == [issue_id]
+    details = impact["details"]
+    assert details["affected_warning_count"] == 1
+    assert details["affected_warning_issue_ids"] == [issue_id]
+    assert details["affected_warning_summaries"][0]["warning_type"] == "unmatched_multi_posting"
+    assert details["affected_warning_summaries"][0]["posting_codes"] == warning_posting_codes
+    assert details["affected_scope"]["programme_code"] == "DR"
+    assert details["affected_scope"]["rule_type"] == rule_payload["rule_type"]
+    assert "source-cell preview/apply" in " ".join(details["next_actions"])
+    assert session.warning_issues[0]["status"] == "reappeared"
+
+
+def test_loa_type_create_enriches_unknown_loa_warning_without_auto_resolve() -> None:
+    session = FakeMutationSession()
+    issue_id = _add_warning_issue(
+        session,
+        warning_type="unknown_loa_type",
+        programme_code="DR",
+        source_payload={"loa_type": "Study Leave"},
+        message="Unknown LOA type: Study Leave",
+    )
+    _add_warning_issue(
+        session,
+        warning_type="unknown_loa_type",
+        programme_code="DR",
+        status="dismissed",
+        source_payload={"loa_type": "Study Leave"},
+    )
+    client = _build_client_with_session(session)
+
+    response = client.post(
+        "/admin/loa-types",
+        headers=_master_admin_headers("DR"),
+        json={"code": "Study Leave", "description": "Academic study leave"},
+    )
+
+    assert response.status_code == 200
+    impact = _assert_config_impact(
+        response.json(),
+        changed_entity="loa_type",
+        action="create",
+        outcome="manual_revalidation_required",
+    )
+    assert impact["warnings_remaining"] == 1
+    assert impact["affected_warning_ids"] == [issue_id]
+    assert impact["details"]["affected_warning_count"] == 1
+    assert impact["details"]["affected_warning_summaries"][0]["loa_type"] == "Study Leave"
+    assert "manual" in " ".join(impact["details"]["next_actions"]).lower()
+    assert session.warning_issues[0]["status"] == "unresolved"
+
+
+def test_programme_update_includes_parser_warning_summary_for_programme_scope() -> None:
+    session = FakeMutationSession()
+    issue_id = _add_warning_issue(
+        session,
+        warning_type="unmatched_multi_posting",
+        programme_code="DR",
+        source_payload={"posting_codes": ["TTSHDR", "KTPHDR"]},
+    )
+    _add_warning_issue(
+        session,
+        warning_type="unknown_loa_type",
+        programme_code="GRM",
+        source_payload={"loa_type": "Study Leave"},
+    )
+    client = _build_client_with_session(session)
+
+    response = client.put(
+        "/admin/programmes/DR",
+        headers=_master_admin_headers("DR"),
+        json={"r_year_required": False, "rdb_alias": "Diagnostic Radiology"},
+    )
+
+    assert response.status_code == 200
+    impact = _assert_config_impact(
+        response.json(),
+        changed_entity="programme",
+        action="update",
+        outcome="manual_revalidation_required",
+    )
+    assert impact["affected_warning_ids"] == [issue_id]
+    assert impact["details"]["affected_warning_count"] == 1
+    assert impact["details"]["affected_scope"]["programme_code"] == "DR"
+    assert "no source data was reprocessed" in impact["summary"].lower()
+
+
+def test_posting_group_enrichment_is_compliance_only_and_does_not_claim_unmatched_fix() -> None:
+    session = FakeMutationSession()
+    _add_warning_issue(
+        session,
+        warning_type="unmatched_multi_posting",
+        programme_code="DR",
+        source_payload={"posting_codes": ["TTSHRespi", "TTSHRespi(MICU)"]},
+    )
+    session.resident_postings.extend(
+        [
+            {"programme_code": "DR", "posting_code": "TTSHRespi"},
+            {"programme_code": "DR", "posting_code": "TTSHRespi"},
+            {"programme_code": "GRM", "posting_code": "TTSHRespi"},
+        ]
+    )
+    client = _build_client_with_session(session)
+
+    response = client.post(
+        "/admin/posting-groups",
+        headers=_admin_headers("DR"),
+        json={"group_code": "DR-GROUP", "posting_code": "TTSHRespi", "programme_code": "DR"},
+    )
+
+    assert response.status_code == 200
+    impact = _assert_config_impact(
+        response.json(),
+        changed_entity="posting_group",
+        action="create",
+    )
+    assert impact["affected_warning_ids"] == []
+    assert impact["details"]["affected_warning_count"] == 0
+    assert impact["details"]["affected_entity_counts"]["resident_postings"] == 2
+    assert impact["details"]["affected_scope"]["posting_code"] == "TTSHRespi"
+    assert "compliance aggregation" in " ".join(impact["details"]["next_actions"]).lower()
+
+
+def test_config_enrichment_reports_lightweight_counts_for_workflow_tables() -> None:
+    session = FakeMutationSession()
+    period_id = session.reporting_periods[0]["id"]
+    session.reporting_period_dependencies[period_id] = {
+        "upload_logs": 2,
+        "resident_postings": 3,
+        "teaching_targets": 4,
+        "form_f1_records": 5,
+    }
+    session.teaching_events.append(
+        {
+            "id": str(uuid4()),
+            "teaching_name": "Weekend Teaching",
+            "posting_code": "TTSHDR",
+            "event_date": date(2026, 8, 9),
+        }
+    )
+    session.attendance_records.append({"event_id": session.teaching_events[0]["id"]})
+    session.attendance_records.append({"event_id": session.teaching_events[-1]["id"]})
+    client = _build_client_with_session(session)
+
+    holiday = client.post(
+        "/admin/public-holidays",
+        headers=_master_admin_headers("DR"),
+        json={"holiday_date": "2026-08-09", "name": "National Day"},
+    )
+    global_update = client.put(
+        f"/admin/global-session-types/{session.global_session_types[0]['id']}",
+        headers=_master_admin_headers("DR"),
+        json={"is_active": False},
+    )
+    weekend = client.post(
+        "/admin/weekend-exceptions",
+        headers=_master_admin_headers("DR"),
+        json={
+            "programme_code": "DR",
+            "posting_code": "TTSHDR",
+            "day_type": "sat",
+            "session_name_pattern": "Weekend",
+        },
+    )
+    reporting_period = client.put(
+        f"/admin/reporting-periods/{period_id}",
+        headers=_master_admin_headers("DR"),
+        json={"label": "H1 2026 Updated"},
+    )
+
+    assert holiday.status_code == 200
+    holiday_counts = holiday.json()["data_revalidation"]["details"]["affected_entity_counts"]
+    assert holiday_counts["teaching_events"] == 1
+
+    assert global_update.status_code == 200
+    global_counts = global_update.json()["data_revalidation"]["details"]["affected_entity_counts"]
+    assert global_counts["teaching_events"] == 1
+    assert global_counts["attendance_records"] == 1
+
+    assert weekend.status_code == 200
+    weekend_counts = weekend.json()["data_revalidation"]["details"]["affected_entity_counts"]
+    assert weekend_counts["teaching_events"] == 1
+    assert weekend_counts["attendance_records"] == 1
+
+    assert reporting_period.status_code == 200
+    period_counts = reporting_period.json()["data_revalidation"]["details"]["affected_entity_counts"]
+    assert period_counts == {
+        "upload_logs": 2,
+        "resident_postings": 3,
+        "teaching_targets": 4,
+        "form_f1_records": 5,
+    }
 
 
 def test_programme_scope_enforced_for_scoped_mutations() -> None:

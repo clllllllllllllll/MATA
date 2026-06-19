@@ -27,6 +27,81 @@ class MutationGuardSession:
         raise AssertionError("default Data Revalidation handlers must not rollback")
 
 
+class _MappingResult:
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+
+    def mappings(self) -> "_MappingResult":
+        return self
+
+    def all(self) -> list[dict]:
+        return list(self._rows)
+
+    def one_or_none(self) -> dict | None:
+        if len(self._rows) > 1:
+            raise AssertionError("Expected at most one row")
+        return self._rows[0] if self._rows else None
+
+
+class EmptyConfigImpactSession:
+    async def execute(self, statement, params=None):
+        sql = str(statement)
+        if "/* data_revalidation:warning_candidates */" in sql:
+            return _MappingResult([])
+        raise AssertionError(f"Unexpected SQL: {sql}")
+
+    async def commit(self) -> None:  # pragma: no cover - should never be reached
+        raise AssertionError("Data Revalidation handlers must not commit")
+
+    async def rollback(self) -> None:  # pragma: no cover - should never be reached
+        raise AssertionError("Data Revalidation handlers must not rollback")
+
+
+class BulkConfigImpactSession:
+    def __init__(self, *, warning_count: int) -> None:
+        self.warning_issues = [
+            {
+                "id": str(uuid4()),
+                "fingerprint": f"programme|GERI|{index}",
+                "warning_type": "unmatched_multi_posting",
+                "status": "reappeared" if index % 2 else "unresolved",
+                "severity": "warning",
+                "reporting_period_id": str(uuid4()),
+                "programme_code": "GERI",
+                "mcr": f"M{index:05d}A",
+                "month_label": "May-26",
+                "last_seen_at": None,
+                "latest_upload_warning_id": str(uuid4()),
+                "source_payload": {"posting_codes": ["A", "B"]},
+                "message": "No matching multi-posting rule found",
+                "suggested_action": None,
+            }
+            for index in range(warning_count)
+        ]
+
+    async def execute(self, statement, params=None):
+        sql = str(statement)
+        payload = dict(params or {})
+        if "/* data_revalidation:warning_candidates */" in sql:
+            statuses = set(payload.get("statuses") or [])
+            warning_types = set(payload.get("warning_types") or [])
+            rows = [
+                row
+                for row in self.warning_issues
+                if row["status"] in statuses
+                and row["warning_type"] in warning_types
+                and row["programme_code"] == payload.get("programme_code")
+            ]
+            return _MappingResult(rows[: payload.get("limit", len(rows))])
+        raise AssertionError(f"Unexpected SQL: {sql}")
+
+    async def commit(self) -> None:  # pragma: no cover - should never be reached
+        raise AssertionError("Data Revalidation handlers must not commit")
+
+    async def rollback(self) -> None:  # pragma: no cover - should never be reached
+        raise AssertionError("Data Revalidation handlers must not rollback")
+
+
 def _context(**overrides) -> DataRevalidationContext:
     payload = {
         "trigger_source": DataRevalidationTriggerSource.LIVE_DATA_CORRECTION,
@@ -153,17 +228,52 @@ async def test_multi_posting_rule_config_trigger_returns_manual_required_summary
 
     summary = await data_revalidation_service.revalidate_after_config_change(
         context=context,
-        db_session=MutationGuardSession(),
+        db_session=EmptyConfigImpactSession(),
     )
 
     assert summary.outcome == DataRevalidationOutcome.MANUAL_REVALIDATION_REQUIRED
     assert summary.trigger_source == DataRevalidationTriggerSource.PC_CONFIG_CHANGE
     assert summary.changed_entity == DataRevalidationChangedEntity.MULTI_POSTING_RULE
-    assert summary.details["backend_handler_available"] is False
-    assert "targeted config Data Revalidation handler is not implemented yet" in summary.summary
+    assert summary.details["backend_handler_available"] is True
+    assert summary.details["concrete_revalidation_handler_available"] is False
+    assert summary.details["affected_warning_count"] == 0
+    assert summary.details["warning_candidate_limit"] == data_revalidation_service._WARNING_QUERY_LIMIT
+    assert summary.details["warning_candidate_limit_reached"] is False
+    assert summary.details["affected_warning_count_is_partial"] is False
+    assert summary.details["affected_warning_details_are_partial"] is False
+    assert "No source cells were reparsed" in summary.summary
     assert summary.warnings_created == 0
     assert summary.warnings_updated == 0
     assert summary.warnings_resolved == 0
+
+
+@pytest.mark.asyncio
+async def test_config_change_marks_warning_details_partial_when_candidate_cap_is_reached() -> None:
+    warning_limit = data_revalidation_service._WARNING_QUERY_LIMIT
+    session = BulkConfigImpactSession(warning_count=warning_limit + 5)
+    original_statuses = [row["status"] for row in session.warning_issues]
+    context = _context(
+        trigger_source=DataRevalidationTriggerSource.ADMIN_CONFIG_CHANGE,
+        changed_entity=DataRevalidationChangedEntity.PROGRAMME,
+        action=DataRevalidationAction.UPDATE,
+        scope=DataRevalidationScope.PROGRAMME_REPORTING_PERIOD,
+        programme_code="GERI",
+        changed_fields=["rdb_alias"],
+    )
+
+    summary = await data_revalidation_service.revalidate_after_config_change(
+        context=context,
+        db_session=session,
+    )
+
+    assert summary.details["affected_warning_count"] == warning_limit
+    assert summary.details["affected_warning_count_is_partial"] is True
+    assert summary.details["affected_warning_details_are_partial"] is True
+    assert summary.details["warning_candidate_limit"] == warning_limit
+    assert summary.details["warning_candidate_limit_reached"] is True
+    assert len(summary.details["affected_warning_issue_ids"]) <= 20
+    assert len(summary.details["affected_warning_summaries"]) <= 10
+    assert [row["status"] for row in session.warning_issues] == original_statuses
 
 
 @pytest.mark.asyncio
