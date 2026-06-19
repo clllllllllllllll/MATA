@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
-from app.services.cache import cache
+from app.services import cache_invalidation
 from app.services.reporting_period_status import is_reporting_period_effectively_active
 
 
@@ -94,26 +94,23 @@ def _is_weekend(value: date) -> tuple[bool, str]:
     return False, ""
 
 
-def _cache_posting_prefix(posting_code: str) -> str:
-    return f"resident_events|posting_code={posting_code}"
-
-
 def invalidate_resident_caches(
     *,
     resident_id: UUID | str | None = None,
     external_resident_id: UUID | str | None = None,
     posting_codes: set[str],
+    programme_code: str | None = None,
+    reporting_period_id: UUID | str | None = None,
+    include_secretary_events: bool = False,
 ) -> None:
-    if resident_id is not None:
-        cache.invalidate_prefix(f"resident_events|resident_id={resident_id}")
-        cache.invalidate_prefix(f"resident_dashboard|resident_id={resident_id}")
-    if external_resident_id is not None:
-        cache.invalidate_prefix(f"resident_events|external_resident_id={external_resident_id}")
-        cache.invalidate_prefix(
-            f"resident_dashboard|external_resident_id={external_resident_id}"
-        )
-    for posting_code in posting_codes:
-        cache.invalidate_prefix(_cache_posting_prefix(posting_code))
+    cache_invalidation.invalidate_after_resident_attendance_mutation(
+        resident_id=resident_id,
+        external_resident_id=external_resident_id,
+        posting_codes=posting_codes,
+        programme_code=programme_code,
+        reporting_period_id=reporting_period_id,
+        include_secretary_events=include_secretary_events,
+    )
 
 
 async def _resident(db: AsyncSession, resident_id: UUID) -> dict[str, Any]:
@@ -1116,7 +1113,12 @@ async def submit_attendance(
             weekend_warning_count += 1
 
     await db.commit()
-    invalidate_resident_caches(resident_id=resident_id, posting_codes=touched_postings)
+    invalidate_resident_caches(
+        resident_id=resident_id,
+        posting_codes=touched_postings,
+        programme_code=resident["programme_code"],
+        reporting_period_id=period["id"],
+    )
     return {
         "submitted": submitted,
         "submitted_events": submitted_events,
@@ -1230,6 +1232,7 @@ async def submit_adhoc_teaching(
         invalidate_resident_caches(
             external_resident_id=external_resident_id,
             posting_codes={event["posting_code"]},
+            include_secretary_events=True,
         )
         return {
             "event": event,
@@ -1356,7 +1359,13 @@ async def submit_adhoc_teaching(
         session_type_id=resolved.get("session_type_id"),
     )
     await db.commit()
-    invalidate_resident_caches(resident_id=resident_id, posting_codes={event["posting_code"]})
+    invalidate_resident_caches(
+        resident_id=resident_id,
+        posting_codes={event["posting_code"]},
+        programme_code=resident["programme_code"],
+        reporting_period_id=period["id"],
+        include_secretary_events=True,
+    )
     return {
         "event": event,
         "attendance": attendance,

@@ -18,6 +18,7 @@ from app.schemas.data_revalidation import (
     DataRevalidationScope,
     DataRevalidationTriggerSource,
 )
+from app.services import cache_invalidation
 from app.services import data_revalidation_service
 from app.services.audit import write_audit_log
 from app.services.rdb_parser import (
@@ -1761,6 +1762,13 @@ async def correct_resident(
         },
     )
     await db.commit()
+    cache_invalidation.invalidate_after_live_data_correction(
+        entity_type="resident",
+        entity_id=row_id,
+        resident_id=row_id,
+        programme_code=after.get("programme_code"),
+        mcr=after.get("mcr"),
+    )
     return {
         "item": _row_dict(after),
         "audit_log_id": audit["id"],
@@ -1849,6 +1857,14 @@ async def correct_resident_posting(
         },
     )
     await db.commit()
+    cache_invalidation.invalidate_after_live_data_correction(
+        entity_type="resident_posting",
+        entity_id=row_id,
+        resident_id=after.get("resident_id"),
+        reporting_period_id=after.get("reporting_period_id"),
+        programme_code=after.get("programme_code"),
+        posting_code=after.get("posting_code"),
+    )
     return {
         "item": _row_dict(after),
         "audit_log_id": audit["id"],
@@ -2005,6 +2021,13 @@ async def correct_teaching_target(
         },
     )
     await db.commit()
+    cache_invalidation.invalidate_after_live_data_correction(
+        entity_type="teaching_target",
+        entity_id=row_id,
+        reporting_period_id=after.get("reporting_period_id"),
+        programme_code=after.get("programme_code"),
+        posting_code=after.get("posting_code"),
+    )
     return {
         "item": _row_dict(after),
         "audit_log_id": audit["id"],
@@ -2086,6 +2109,13 @@ async def correct_form_f1_record(
         },
     )
     await db.commit()
+    cache_invalidation.invalidate_after_live_data_correction(
+        entity_type="form_f1_record",
+        entity_id=row_id,
+        reporting_period_id=after.get("reporting_period_id"),
+        programme_code=after.get("programme_code"),
+        mcr=after.get("mcr"),
+    )
     return {
         "item": _row_dict(after),
         "audit_log_id": audit["id"],
@@ -2156,6 +2186,10 @@ async def correct_academic_month_boundary(
         },
     )
     await db.commit()
+    cache_invalidation.invalidate_after_live_data_correction(
+        entity_type="academic_month_boundary",
+        entity_id=row_id,
+    )
     return {
         "item": _row_dict(after),
         "audit_log_id": audit["id"],
@@ -2624,6 +2658,13 @@ async def replace_resident_posting_source_cell(
         metadata=metadata,
     )
     await db.commit()
+    cache_invalidation.invalidate_after_live_data_correction(
+        entity_type="resident_posting_source_cell",
+        entity_id=affected_ids[0] if affected_ids else None,
+        resident_id=before_rows[0].get("resident_id"),
+        reporting_period_id=before_rows[0].get("reporting_period_id"),
+        programme_code=before_rows[0].get("programme_code"),
+    )
     return {
         "before_rows": [_row_dict(row) for row in before_rows],
         "after_rows": [_row_dict(row) for row in after_rows],
@@ -3447,6 +3488,14 @@ async def apply_warning_source_cell_replacement(
         metadata=metadata,
     )
     await db.commit()
+    cache_invalidation.invalidate_after_source_cell_apply(
+        resident_id=resident["id"],
+        reporting_period_id=reporting_period_id,
+        programme_code=source_trace.get("programme_code"),
+        warning_issue_id=warning_issue_id,
+        upload_warning_id=context["warning_id"],
+        mcr=source_trace.get("mcr"),
+    )
     return {
         "warning_issue_id": str(context["issue_id"]),
         "upload_warning_id": str(context["warning_id"]),

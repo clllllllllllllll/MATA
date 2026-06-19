@@ -83,7 +83,7 @@ from app.schemas.data_revalidation import (
     DataRevalidationScope,
     DataRevalidationTriggerSource,
 )
-from app.services import admin_config, data_revalidation_service, parsed_data
+from app.services import admin_config, cache_invalidation, data_revalidation_service, parsed_data
 from app.services.audit import write_audit_log
 from app.services.upload_logs import (
     error_count,
@@ -562,6 +562,12 @@ async def _write_upload_log_and_audit(
         metadata=metadata,
     )
     await db.commit()
+    cache_invalidation.invalidate_after_upload(
+        upload_type=parser_result.upload_type,
+        upload_log_id=upload_log.get("id"),
+        reporting_period_id=reporting_period_id or upload_log.get("reporting_period_id"),
+        programme_code=programme_code or upload_log.get("programme_code"),
+    )
 
 
 def _compact_snapshot(row: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -729,6 +735,12 @@ async def _revalidate_config_mutation(
             reason=f"Admin Config {entity_type} {mutation}",
         ),
         db_session=db,
+    )
+    cache_invalidation.invalidate_after_config_change(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        snapshot=snapshot,
+        programme_scope=admin_context.programme_scope,
     )
     return summary.model_dump(mode="json")
 

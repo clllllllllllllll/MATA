@@ -507,6 +507,34 @@ def test_warning_issue_actions_record_note_actor_and_do_not_mutate_upload_log_su
     assert session.audit_logs
 
 
+def test_warning_issue_action_invalidates_warning_caches(monkeypatch) -> None:
+    calls: list[tuple[set[str], dict]] = []
+
+    def _spy(domains, **scope):  # noqa: ANN001
+        calls.append((set(domains), scope))
+        return []
+
+    monkeypatch.setattr("app.services.cache_invalidation.invalidate_cache", _spy)
+    session = FakeWarningIssueSession()
+    upload_log = session.add_upload_log(summary={"mcr_not_found_warnings": ["M99999Z not found"]})
+    _run(derive_upload_warnings_from_summary(session, upload_log, upload_log["summary"]))
+    calls.clear()
+    issue_id = session.warning_issues[0]["id"]
+    client = _client(session)
+
+    response = client.post(
+        f"/admin/upload-warnings/{issue_id}/dismiss",
+        headers=_headers(scope=None, master=True, user_id=str(uuid4())),
+        json={"note": "Handled manually"},
+    )
+
+    assert response.status_code == 200
+    assert calls
+    domains, scope = calls[-1]
+    assert {"upload_warnings", "admin_reports"} <= domains
+    assert str(scope["warning_issue_id"]) == issue_id
+
+
 def test_non_admin_cannot_mutate_warning_status() -> None:
     session = FakeWarningIssueSession()
     upload_log = session.add_upload_log(summary={"mcr_not_found_warnings": ["M99999Z not found"]})

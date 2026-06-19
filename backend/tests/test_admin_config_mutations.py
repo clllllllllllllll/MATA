@@ -2494,6 +2494,28 @@ def test_cache_invalidation_called_after_successful_mutation(monkeypatch) -> Non
     assert calls
 
 
+def test_config_crud_triggers_scoped_cache_invalidation_domains(monkeypatch) -> None:
+    calls: list[tuple[set[str], dict]] = []
+
+    def _spy(domains, **scope):  # noqa: ANN001
+        calls.append((set(domains), scope))
+        return []
+
+    monkeypatch.setattr("app.services.cache_invalidation.invalidate_cache", _spy)
+    client = _build_client_with_session(FakeMutationSession())
+    response = client.post(
+        "/admin/loa-types",
+        headers=_master_admin_headers("DR"),
+        json={"code": "Study Leave", "description": "Academic study leave"},
+    )
+
+    assert response.status_code == 200
+    assert calls
+    domains, scope = calls[-1]
+    assert {"config", "parsed_data", "upload_warnings"} <= domains
+    assert scope["entity_type"] == "loa_type"
+
+
 def test_mutation_responses_are_not_cached(monkeypatch) -> None:
     calls: list[str] = []
 

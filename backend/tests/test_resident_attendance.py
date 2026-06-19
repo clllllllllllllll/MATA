@@ -57,6 +57,31 @@ def test_attendance_submission_creates_attendance_record() -> None:
     assert "session_type_id" not in inserted
 
 
+def test_attendance_submission_invalidates_resident_and_report_caches(monkeypatch) -> None:
+    fake_db = FakeResidentSession()
+    client = _client(fake_db)
+    calls: list[tuple[set[str], dict]] = []
+
+    def _spy(domains, **scope):  # noqa: ANN001
+        calls.append((set(domains), scope))
+        return []
+
+    monkeypatch.setattr("app.services.cache_invalidation.invalidate_cache", _spy)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [fake_db.event_id]},
+    )
+
+    assert response.status_code == 200
+    assert calls
+    domains, scope = calls[-1]
+    assert {"resident_events", "resident_attendance", "resident_dashboard", "admin_reports"} <= domains
+    assert str(scope["resident_id"]) == fake_db.resident_id
+    assert "TTSHCardio" in scope["posting_code"]
+
+
 def test_submitted_event_no_longer_appears_in_available_events() -> None:
     fake_db = FakeResidentSession()
     client = _client(fake_db)

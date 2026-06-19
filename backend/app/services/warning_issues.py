@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.staff_actor import StaffActorContext
 from app.services.audit import write_audit_log
+from app.services import cache_invalidation
 from app.services.upload_warnings import UploadWarningRow, normalise_warning_rows_from_upload_log
 
 
@@ -567,6 +568,11 @@ async def derive_upload_warnings_from_summary(
             result.occurrences_skipped += 1
 
     await session.commit()
+    cache_invalidation.invalidate_after_warning_derivation(
+        upload_log_id=normalized_upload_log.get("id"),
+        reporting_period_id=normalized_upload_log.get("reporting_period_id"),
+        programme_code=normalized_upload_log.get("programme_code"),
+    )
     return result
 
 
@@ -933,6 +939,12 @@ async def update_warning_issue_status(
         },
     )
     await db.commit()
+    cache_invalidation.invalidate_after_warning_action(
+        warning_issue_id=issue_id,
+        reporting_period_id=issue.get("reporting_period_id"),
+        programme_code=issue.get("programme_code"),
+        mcr=issue.get("mcr"),
+    )
     return {
         "issue_id": str(issue["id"]),
         "status": issue["status"],

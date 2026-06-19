@@ -1165,15 +1165,15 @@ def test_cme_dashboard_is_scoped_to_secretary_posting() -> None:
 def test_cache_invalidation_called_after_event_mutations(monkeypatch) -> None:
     fake_db = FakeSecretarySession()
     client = _client(fake_db)
-    prefixes: list[str] = []
+    calls: list[tuple[set[str], dict]] = []
     deleteable_event_id = fake_db.events[1]["id"]
     series_delete_event_id = fake_db.events[2]["id"]
 
-    def _spy(prefix: str) -> int:
-        prefixes.append(prefix)
-        return 0
+    def _spy(domains, **scope):  # noqa: ANN001
+        calls.append((set(domains), scope))
+        return []
 
-    monkeypatch.setattr("app.services.secretary_events.cache.invalidate_prefix", _spy)
+    monkeypatch.setattr("app.services.cache_invalidation.invalidate_cache", _spy)
 
     client.post(
         "/secretary/teaching-events",
@@ -1217,5 +1217,34 @@ def test_cache_invalidation_called_after_event_mutations(monkeypatch) -> None:
         params={"scope": "single", "event_id": series_delete_event_id},
     )
 
-    assert prefixes.count("secretary_events|posting_code=TTSHCardio") >= 5
-    assert prefixes.count("resident_events|posting_code=TTSHCardio") >= 5
+    assert len(calls) >= 5
+    assert all({"secretary_events", "resident_events"} <= domains for domains, _scope in calls)
+    assert all(scope["posting_code"] == "TTSHCardio" for _domains, scope in calls)
+
+
+def test_secretary_event_mutation_invalidates_scoped_event_domains(monkeypatch) -> None:
+    fake_db = FakeSecretarySession()
+    client = _client(fake_db)
+    calls: list[tuple[set[str], dict]] = []
+
+    def _spy(domains, **scope):  # noqa: ANN001
+        calls.append((set(domains), scope))
+        return []
+
+    monkeypatch.setattr("app.services.cache_invalidation.invalidate_cache", _spy)
+
+    response = client.post(
+        "/secretary/teaching-events",
+        headers=_headers(fake_db),
+        json={
+            "teaching_name": "Journal Club",
+            "event_date": "2026-05-18",
+            "start_time": "10:00",
+        },
+    )
+
+    assert response.status_code == 200
+    assert calls
+    domains, scope = calls[-1]
+    assert {"secretary_events", "resident_events", "admin_reports", "resident_dashboard"} <= domains
+    assert scope["posting_code"] == "TTSHCardio"

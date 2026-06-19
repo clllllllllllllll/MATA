@@ -595,6 +595,7 @@ def test_successful_admin_uploads_derive_warning_issues_after_upload_log(monkeyp
         return ParserResult(upload_type="public_holidays", warnings=[{"type": "public_holiday_day_mismatch"}])
 
     calls: list[dict] = []
+    invalidation_calls: list[tuple[set[str], dict]] = []
 
     async def _fake_derivation(db, upload_log, summary, actor_id=None):
         calls.append(
@@ -606,11 +607,16 @@ def test_successful_admin_uploads_derive_warning_issues_after_upload_log(monkeyp
             }
         )
 
+    def _invalidate_spy(domains, **scope):  # noqa: ANN001
+        invalidation_calls.append((set(domains), scope))
+        return []
+
     monkeypatch.setattr("app.services.rdb_parser.parse_rdb_upload", _fake_rdb_parser)
     monkeypatch.setattr("app.routers.admin.parse_ttf_upload", _fake_ttf_parser)
     monkeypatch.setattr("app.routers.admin.parse_formf1_upload", _fake_formf1_parser)
     monkeypatch.setattr("app.routers.admin.parse_public_holiday_upload", _fake_public_holiday_parser)
     monkeypatch.setattr("app.routers.admin.derive_upload_warnings_from_summary", _fake_derivation)
+    monkeypatch.setattr("app.services.cache_invalidation.invalidate_cache", _invalidate_spy)
 
     session = _UploadAuditSession()
     client = _build_upload_audit_client(session)
@@ -637,6 +643,11 @@ def test_successful_admin_uploads_derive_warning_issues_after_upload_log(monkeyp
     assert [call["summary_upload_type"] for call in calls] == ["rdb", "ttf", "form_f1", "public_holidays"]
     assert all(str(call["actor_id"]) == actor_id for call in calls)
     assert [call["upload_log_id"] for call in calls] == [row["id"] for row in session.upload_logs]
+    upload_domains = [domains for domains, _scope in invalidation_calls]
+    assert any({"upload_logs", "upload_warnings", "parsed_data"} <= domains for domains in upload_domains)
+    assert any({"teaching_targets", "teaching_name_catalogue"} <= domains for domains in upload_domains)
+    assert any({"form_f1", "resident_dashboard", "admin_reports"} <= domains for domains in upload_domains)
+    assert any({"public_holidays", "academic_month_boundaries"} <= domains for domains in upload_domains)
 
 
 def test_parser_signatures_importable() -> None:

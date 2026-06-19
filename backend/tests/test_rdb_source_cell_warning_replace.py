@@ -563,6 +563,22 @@ def test_preview_simple_posting_replacement_from_warning_does_not_write() -> Non
     assert session.upload_logs == session.original_upload_logs
 
 
+def test_preview_source_cell_replacement_does_not_invalidate_caches(monkeypatch) -> None:
+    calls: list[tuple[set[str], dict]] = []
+
+    def _spy(domains, **scope):  # noqa: ANN001
+        calls.append((set(domains), scope))
+        return []
+
+    monkeypatch.setattr("app.services.cache_invalidation.invalidate_cache", _spy)
+    session = FakeRdbSourceCellWarningSession()
+
+    response = _preview(session, "TTSHGerMed")
+
+    assert response.status_code == 200
+    assert calls == []
+
+
 def test_preview_empty_cell_replacement_returns_no_candidate_rows() -> None:
     session = FakeRdbSourceCellWarningSession()
 
@@ -721,6 +737,32 @@ def test_apply_simple_posting_replacement_is_narrow_audited_and_keeps_warning_un
     assert metadata["upload_warning_id"] == session.upload_warning_id
     assert metadata["fingerprint"] == session.warning_issues[0]["fingerprint"]
     assert metadata["after_raw_cell_value"] == "TTSHGerMed"
+
+
+def test_apply_source_cell_replacement_invalidates_scoped_caches(monkeypatch) -> None:
+    calls: list[tuple[set[str], dict]] = []
+
+    def _spy(domains, **scope):  # noqa: ANN001
+        calls.append((set(domains), scope))
+        return []
+
+    monkeypatch.setattr("app.services.cache_invalidation.invalidate_cache", _spy)
+    session = FakeRdbSourceCellWarningSession()
+
+    response = _apply(session, "TTSHGerMed")
+
+    assert response.status_code == 200
+    assert calls
+    domains, scope = calls[-1]
+    assert {
+        "parsed_data",
+        "resident_postings",
+        "upload_warnings",
+        "admin_reports",
+        "resident_dashboard",
+    } <= domains
+    assert scope["resident_id"] == session.resident_id
+    assert str(scope["warning_issue_id"]) == session.warning_issue_id
 
 
 def test_apply_empty_cell_removes_scoped_rows_and_creates_no_posting_row() -> None:

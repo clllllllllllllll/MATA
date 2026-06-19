@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
-from app.services.cache import cache
+from app.services import cache_invalidation
 
 
 DAY_INDEX = {
@@ -26,8 +26,7 @@ DAY_INDEX = {
 
 
 def invalidate_secretary_event_caches(posting_code: str) -> None:
-    cache.invalidate_prefix(f"secretary_events|posting_code={posting_code}")
-    cache.invalidate_prefix(f"resident_events|posting_code={posting_code}")
+    cache_invalidation.invalidate_after_secretary_event_mutation(posting_code=posting_code)
 
 
 def _event_row(row: dict[str, Any]) -> dict[str, Any]:
