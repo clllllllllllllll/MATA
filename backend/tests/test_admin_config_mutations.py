@@ -1455,6 +1455,15 @@ def test_multi_posting_rule_mutation_enriches_matching_unmatched_warning_summary
     )
     assert impact["warnings_remaining"] == 1
     assert impact["affected_warning_ids"] == [issue_id]
+    assert impact["affected_warning_count"] == 1
+    assert impact["affected_warning_issue_ids"] == [issue_id]
+    assert impact["affected_warning_summaries"][0]["warning_type"] == "unmatched_multi_posting"
+    assert impact["affected_warning_count_is_partial"] is False
+    assert impact["affected_warning_details_are_partial"] is False
+    assert impact["warning_candidate_limit"] == data_revalidation_service._WARNING_QUERY_LIMIT
+    assert impact["warning_candidate_limit_reached"] is False
+    assert impact["enrichment_version"] == "3H-E4"
+    assert "source-cell preview/apply" in " ".join(impact["next_actions"])
     details = impact["details"]
     assert details["affected_warning_count"] == 1
     assert details["affected_warning_issue_ids"] == [issue_id]

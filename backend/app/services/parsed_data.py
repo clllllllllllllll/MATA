@@ -3192,8 +3192,10 @@ async def preview_warning_source_cell_replacement(
     return {
         "warning_issue_id": str(context["issue_id"]),
         "upload_warning_id": str(context["warning_id"]),
+        "latest_upload_warning_id": str(context["warning_id"]),
         "fingerprint": str(context.get("issue_fingerprint") or context.get("warning_fingerprint")),
         "source_trace": preview["source_trace"],
+        "source_payload": preview["source_trace"].get("source_payload") or {},
         "original_warning_type": context.get("issue_warning_type") or context.get("warning_warning_type"),
         "original_warning_status": context.get("issue_status"),
         "replacement_raw_cell_value": replacement_raw_cell_value,
@@ -3204,6 +3206,7 @@ async def preview_warning_source_cell_replacement(
         "apply_allowed": not parse_result.errors,
         "data_revalidation": preview["data_revalidation"],
         "suggested_next_action": _SOURCE_CELL_MANUAL_NEXT_ACTION,
+        "next_actions": [_SOURCE_CELL_MANUAL_NEXT_ACTION],
     }
 
 
@@ -3499,14 +3502,20 @@ async def apply_warning_source_cell_replacement(
     return {
         "warning_issue_id": str(context["issue_id"]),
         "upload_warning_id": str(context["warning_id"]),
+        "latest_upload_warning_id": str(context["warning_id"]),
         "fingerprint": str(context.get("issue_fingerprint") or context.get("warning_fingerprint")),
         "source_trace": source_trace,
+        "source_payload": source_trace.get("source_payload") or {},
         "original_warning_type": context.get("issue_warning_type") or context.get("warning_warning_type"),
         "warning_issue_status": context.get("issue_status"),
         "replacement_raw_cell_value": replacement_raw_cell_value,
         "normalized_cell_value": parse_result.normalized_value,
         "before_rows": [_row_dict(row) for row in before_rows],
         "after_rows": [_row_dict(row) for row in after_rows],
+        "replacement_summary": {
+            "rows_deleted": len(before_rows),
+            "rows_inserted": len(after_rows),
+        },
         "parser_warnings": _json_ready(parse_result.warnings),
         "parser_errors": _json_ready(parse_result.errors),
         "audit_log_id": audit["id"],
@@ -3515,6 +3524,7 @@ async def apply_warning_source_cell_replacement(
         "updated_fields": sorted(_RESIDENT_POSTING_ALLOWED_FIELDS),
         "data_revalidation": data_revalidation,
         "suggested_next_action": _SOURCE_CELL_MANUAL_NEXT_ACTION,
+        "next_actions": [_SOURCE_CELL_MANUAL_NEXT_ACTION],
     }
 
 

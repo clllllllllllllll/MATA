@@ -121,11 +121,27 @@ def _summary(
         action=context.action,
         scope=context.scope,
         summary=message,
+        reason=context.reason or message,
         rows_examined=rows_examined,
         rows_updated=rows_updated,
         warnings_remaining=warnings_remaining,
         affected_models=affected_models if affected_models is not None else _affected_models_for(context),
         affected_warning_ids=affected_warning_ids or [],
+        affected_scope=base_details.get("affected_scope"),
+        affected_warning_count=base_details.get("affected_warning_count"),
+        affected_warning_issue_ids=list(
+            base_details.get("affected_warning_issue_ids")
+            or affected_warning_ids
+            or []
+        ),
+        affected_warning_summaries=list(base_details.get("affected_warning_summaries") or []),
+        affected_warning_count_is_partial=base_details.get("affected_warning_count_is_partial"),
+        affected_warning_details_are_partial=base_details.get("affected_warning_details_are_partial"),
+        warning_candidate_limit=base_details.get("warning_candidate_limit"),
+        warning_candidate_limit_reached=base_details.get("warning_candidate_limit_reached"),
+        affected_entity_counts=dict(base_details.get("affected_entity_counts") or {}),
+        next_actions=list(base_details.get("next_actions") or []),
+        enrichment_version=base_details.get("enrichment_version"),
         warning_impacts=warning_impacts or [],
         details=base_details,
     )

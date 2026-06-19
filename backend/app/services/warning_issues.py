@@ -671,8 +671,10 @@ def _list_item(
             posting_codes = [str(item) for item in payload_posting_codes]
     return {
         "issue_id": str(issue["id"]),
+        "warning_issue_id": str(issue["id"]),
         "status": issue["status"],
         "warning_id": latest_warning_id or str(issue["id"]),
+        "upload_warning_id": latest_warning_id,
         "dedupe_key": issue["fingerprint"],
         "upload_log_id": str(issue.get("last_seen_upload_log_id") or ""),
         "upload_type": occurrence.get("upload_type", "") if occurrence else "",
@@ -842,17 +844,37 @@ async def get_warning_issue_detail(
         source_payload = occurrence.get("source_payload")
         if isinstance(source_payload, str):
             source_payload = json.loads(source_payload)
-        normalized_occurrences.append({**occurrence, "source_payload": source_payload})
+        normalized_occurrences.append(
+            {
+                **occurrence,
+                "source_payload": source_payload,
+                "source_trace": _latest_trace(occurrence),
+            }
+        )
+    latest_occurrence = normalized_occurrences[0] if normalized_occurrences else None
+    latest_source_payload = (
+        latest_occurrence.get("source_payload")
+        if isinstance(latest_occurrence, dict)
+        else {}
+    )
     return {
         "issue_id": str(issue["id"]),
+        "warning_issue_id": str(issue["id"]),
         "fingerprint": issue["fingerprint"],
         "warning_type": issue["warning_type"],
         "severity": issue["severity"],
         "status": issue["status"],
+        "reappeared": issue["status"] == "reappeared",
         "first_seen_upload_log_id": str(issue["first_seen_upload_log_id"]) if issue.get("first_seen_upload_log_id") else None,
         "last_seen_upload_log_id": str(issue["last_seen_upload_log_id"]) if issue.get("last_seen_upload_log_id") else None,
         "first_seen_at": issue["first_seen_at"],
         "last_seen_at": issue["last_seen_at"],
+        "latest_upload_warning_id": str(latest_occurrence["id"]) if latest_occurrence else None,
+        "latest_source_trace": _latest_trace(latest_occurrence),
+        "latest_source_payload": latest_source_payload if isinstance(latest_source_payload, dict) else {},
+        "message": latest_occurrence.get("message") if latest_occurrence else None,
+        "suggested_action": latest_occurrence.get("suggested_action") if latest_occurrence else None,
+        "resident_name": latest_occurrence.get("resident_name") if latest_occurrence else None,
         "reporting_period_id": str(issue["reporting_period_id"]) if issue.get("reporting_period_id") else None,
         "programme_code": issue.get("programme_code"),
         "resident_id": str(issue["resident_id"]) if issue.get("resident_id") else None,
@@ -948,7 +970,12 @@ async def update_warning_issue_status(
     return {
         "issue_id": str(issue["id"]),
         "status": issue["status"],
+        "previous_status": before["status"],
+        "new_status": issue["status"],
         "resolution_note": issue.get("resolution_note"),
+        "note": issue.get("resolution_note"),
         "resolved_by": str(issue["resolved_by"]) if issue.get("resolved_by") else None,
+        "actor_user_id": str(issue["resolved_by"]) if issue.get("resolved_by") else None,
         "resolved_at": issue.get("resolved_at"),
+        "updated_at": issue.get("updated_at"),
     }

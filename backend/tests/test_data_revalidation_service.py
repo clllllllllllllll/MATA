@@ -271,6 +271,13 @@ async def test_config_change_marks_warning_details_partial_when_candidate_cap_is
     assert summary.details["affected_warning_details_are_partial"] is True
     assert summary.details["warning_candidate_limit"] == warning_limit
     assert summary.details["warning_candidate_limit_reached"] is True
+    assert summary.affected_warning_count == warning_limit
+    assert summary.affected_warning_count_is_partial is True
+    assert summary.affected_warning_details_are_partial is True
+    assert summary.warning_candidate_limit == warning_limit
+    assert summary.warning_candidate_limit_reached is True
+    assert len(summary.affected_warning_issue_ids) <= 20
+    assert len(summary.affected_warning_summaries) <= 10
     assert len(summary.details["affected_warning_issue_ids"]) <= 20
     assert len(summary.details["affected_warning_summaries"]) <= 10
     assert [row["status"] for row in session.warning_issues] == original_statuses

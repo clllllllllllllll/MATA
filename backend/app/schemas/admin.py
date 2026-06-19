@@ -183,8 +183,10 @@ class UploadLogResponse(BaseModel):
 
 class UploadWarningResponse(BaseModel):
     issue_id: str | None = None
+    warning_issue_id: str | None = None
     status: str | None = None
     warning_id: str
+    upload_warning_id: str | None = None
     dedupe_key: str
     upload_log_id: str
     upload_type: str
@@ -221,6 +223,7 @@ class UploadWarningResponse(BaseModel):
 class UploadWarningOccurrenceResponse(BaseModel):
     id: str
     issue_id: str
+    source_trace: dict[str, Any] | None = None
     upload_log_id: str
     upload_type: str | None = None
     uploaded_at: datetime | None = None
@@ -246,14 +249,22 @@ class UploadWarningOccurrenceResponse(BaseModel):
 
 class UploadWarningIssueDetailResponse(BaseModel):
     issue_id: str
+    warning_issue_id: str
     fingerprint: str
     warning_type: str
     severity: str
     status: str
+    reappeared: bool = False
     first_seen_upload_log_id: str | None = None
     last_seen_upload_log_id: str | None = None
     first_seen_at: datetime
     last_seen_at: datetime
+    latest_upload_warning_id: str | None = None
+    latest_source_trace: dict[str, Any] | None = None
+    latest_source_payload: Any = Field(default_factory=dict)
+    message: str | None = None
+    suggested_action: str | None = None
+    resident_name: str | None = None
     reporting_period_id: str | None = None
     programme_code: str | None = None
     resident_id: str | None = None
@@ -276,9 +287,14 @@ class UploadWarningActionRequest(BaseModel):
 class UploadWarningIssueActionResponse(BaseModel):
     issue_id: str
     status: str
+    previous_status: str
+    new_status: str
     resolution_note: str | None = None
+    note: str | None = None
     resolved_by: str | None = None
+    actor_user_id: str | None = None
     resolved_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class RDBSourceCellWarningPreviewRequest(BaseModel):
@@ -305,8 +321,10 @@ class RDBSourceCellWarningApplyRequest(RDBSourceCellWarningPreviewRequest):
 class RDBSourceCellWarningPreviewResponse(BaseModel):
     warning_issue_id: str
     upload_warning_id: str | None = None
+    latest_upload_warning_id: str | None = None
     fingerprint: str
     source_trace: dict[str, Any]
+    source_payload: Any = Field(default_factory=dict)
     original_warning_type: str
     original_warning_status: str
     replacement_raw_cell_value: Any = None
@@ -317,19 +335,23 @@ class RDBSourceCellWarningPreviewResponse(BaseModel):
     apply_allowed: bool
     data_revalidation: DataRevalidationImpactSummary | None = None
     suggested_next_action: str
+    next_actions: list[str] = Field(default_factory=list)
 
 
 class RDBSourceCellWarningApplyResponse(BaseModel):
     warning_issue_id: str
     upload_warning_id: str | None = None
+    latest_upload_warning_id: str | None = None
     fingerprint: str
     source_trace: dict[str, Any]
+    source_payload: Any = Field(default_factory=dict)
     original_warning_type: str
     warning_issue_status: str
     replacement_raw_cell_value: Any = None
     normalized_cell_value: str
     before_rows: list[dict[str, Any]]
     after_rows: list[dict[str, Any]]
+    replacement_summary: dict[str, int] = Field(default_factory=dict)
     parser_warnings: list[Any] = Field(default_factory=list)
     parser_errors: list[Any] = Field(default_factory=list)
     audit_log_id: UUID
@@ -338,6 +360,7 @@ class RDBSourceCellWarningApplyResponse(BaseModel):
     updated_fields: list[str]
     data_revalidation: DataRevalidationImpactSummary | None = None
     suggested_next_action: str
+    next_actions: list[str] = Field(default_factory=list)
 
 
 class ParsedResidentRow(BaseModel):

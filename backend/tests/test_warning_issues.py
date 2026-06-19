@@ -467,7 +467,10 @@ def test_upload_warning_issue_list_and_detail_are_issue_centric() -> None:
     rows = response.json()
     assert len(rows) == 1
     assert rows[0]["issue_id"] == session.warning_issues[0]["id"]
+    assert rows[0]["warning_issue_id"] == session.warning_issues[0]["id"]
     assert rows[0]["status"] == "unresolved"
+    assert rows[0]["warning_id"] == session.upload_warnings[0]["id"]
+    assert rows[0]["upload_warning_id"] == session.upload_warnings[0]["id"]
     assert rows[0]["latest_upload_warning_id"] == session.upload_warnings[0]["id"]
     assert rows[0]["latest_source_trace"] == {
         "sheet_name": "Phase 1",
@@ -480,8 +483,24 @@ def test_upload_warning_issue_list_and_detail_are_issue_centric() -> None:
     assert detail.status_code == 200
     body = detail.json()
     assert body["issue_id"] == rows[0]["issue_id"]
+    assert body["warning_issue_id"] == rows[0]["issue_id"]
+    assert body["latest_upload_warning_id"] == session.upload_warnings[0]["id"]
+    assert body["latest_source_trace"] == {
+        "sheet_name": "Phase 1",
+        "row_number": 3,
+        "cell_ref": "I3",
+    }
+    assert body["latest_source_payload"]["type"] == "empty_posting_cell"
+    assert body["message"] == rows[0]["message"]
+    assert body["suggested_action"] == rows[0]["suggested_action"]
+    assert body["reappeared"] is False
     assert len(body["occurrences"]) == 1
     assert body["occurrences"][0]["source_payload"]["type"] == "empty_posting_cell"
+    assert body["occurrences"][0]["source_trace"] == {
+        "sheet_name": "Phase 1",
+        "row_number": 3,
+        "cell_ref": "I3",
+    }
 
 
 def test_warning_issue_actions_record_note_actor_and_do_not_mutate_upload_log_summary() -> None:
@@ -499,7 +518,12 @@ def test_warning_issue_actions_record_note_actor_and_do_not_mutate_upload_log_su
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "resolved"
+    body = response.json()
+    assert body["status"] == "resolved"
+    assert body["previous_status"] == "unresolved"
+    assert body["new_status"] == "resolved"
+    assert body["actor_user_id"] == actor_id
+    assert body["note"] == "Resolved after adding resident to RDB"
     assert session.warning_issues[0]["resolution_note"] == "Resolved after adding resident to RDB"
     assert session.warning_issues[0]["resolved_by"] == actor_id
     assert session.warning_issues[0]["resolved_at"] is not None

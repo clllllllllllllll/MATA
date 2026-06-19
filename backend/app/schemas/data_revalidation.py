@@ -108,6 +108,7 @@ class DataRevalidationImpactSummary(BaseModel):
     action: DataRevalidationAction
     scope: DataRevalidationScope
     summary: str
+    reason: str | None = None
     rows_examined: int = 0
     rows_updated: int = 0
     warnings_created: int = 0
@@ -116,6 +117,17 @@ class DataRevalidationImpactSummary(BaseModel):
     warnings_remaining: int = 0
     affected_models: list[str] = Field(default_factory=list)
     affected_warning_ids: list[str] = Field(default_factory=list)
+    affected_scope: dict[str, Any] | None = None
+    affected_warning_count: int | None = None
+    affected_warning_issue_ids: list[str] = Field(default_factory=list)
+    affected_warning_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    affected_warning_count_is_partial: bool | None = None
+    affected_warning_details_are_partial: bool | None = None
+    warning_candidate_limit: int | None = None
+    warning_candidate_limit_reached: bool | None = None
+    affected_entity_counts: dict[str, Any] = Field(default_factory=dict)
+    next_actions: list[str] = Field(default_factory=list)
+    enrichment_version: str | None = None
     warning_impacts: list[DataRevalidationWarningImpact] = Field(default_factory=list)
     audit_metadata: dict[str, Any] = Field(default_factory=dict)
     details: dict[str, Any] = Field(default_factory=dict)

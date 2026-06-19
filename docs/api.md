@@ -194,7 +194,94 @@ The current 3H-D Config wiring covers successful creates, updates, deletes, and 
 - `future_compliance_impact`
 - `manual_revalidation_required`
 
+Frontend-facing `data_revalidation` responses expose stable summary fields at the top level and preserve the richer service payload under `details`. Top-level fields may be `null` or empty when the handler has no warning/config enrichment to report.
+
+```json
+{
+  "outcome": "manual_revalidation_required",
+  "trigger_source": "admin_config_change",
+  "changed_entity": "multi_posting_rule",
+  "action": "create",
+  "scope": "programme_reporting_period",
+  "summary": "1 durable upload warning issue may be affected by this config change.",
+  "reason": "1 durable upload warning issue may be affected by this config change.",
+  "affected_scope": {
+    "programme_code": "DR",
+    "reporting_period_id": "00000000-0000-0000-0000-000000000001"
+  },
+  "affected_warning_count": 1,
+  "affected_warning_issue_ids": ["10000000-0000-0000-0000-000000000001"],
+  "affected_warning_summaries": [
+    {
+      "warning_issue_id": "10000000-0000-0000-0000-000000000001",
+      "latest_upload_warning_id": "20000000-0000-0000-0000-000000000001",
+      "warning_type": "unmatched_multi_posting",
+      "status": "unresolved",
+      "programme_code": "DR",
+      "message": "No matching multi-posting rule found."
+    }
+  ],
+  "affected_warning_count_is_partial": false,
+  "affected_warning_details_are_partial": false,
+  "warning_candidate_limit": 200,
+  "warning_candidate_limit_reached": false,
+  "affected_entity_counts": {},
+  "next_actions": [
+    "Review affected durable upload warnings; use source-cell preview/apply where appropriate."
+  ],
+  "enrichment_version": "3H-E4",
+  "details": {
+    "affected_warning_count": 1,
+    "warning_candidate_limit": 200,
+    "warning_candidate_limit_reached": false
+  }
+}
+```
+
+When `warning_candidate_limit_reached = true`, the backend has capped the warning candidate scan. `affected_warning_count_is_partial = true` means `affected_warning_count` is the capped count, not an exact total. `affected_warning_details_are_partial = true` means `affected_warning_issue_ids` and `affected_warning_summaries` are intentionally bounded for response size.
+
+Config mutation responses keep the entity fields at the top level and add `data_revalidation`:
+
+```json
+{
+  "id": "30000000-0000-0000-0000-000000000001",
+  "programme_code": "DR",
+  "posting_code_1": "TTSHDR",
+  "posting_code_2": "KTPHDR",
+  "rule_type": "combine",
+  "combined_label": "TTSHDR-KTPHDR",
+  "main_posting_code": null,
+  "exclusion_code": null,
+  "data_revalidation": {
+    "outcome": "manual_revalidation_required",
+    "affected_warning_count": 1,
+    "affected_warning_issue_ids": ["10000000-0000-0000-0000-000000000001"],
+    "affected_warning_count_is_partial": false,
+    "affected_warning_details_are_partial": false,
+    "warning_candidate_limit": 200,
+    "warning_candidate_limit_reached": false,
+    "next_actions": [
+      "Review affected durable upload warnings; use source-cell preview/apply where appropriate."
+    ],
+    "details": {
+      "affected_warning_count": 1,
+      "affected_warning_details_are_partial": false
+    }
+  }
+}
+```
+
 Normal Refresh buttons remain read-only refetch actions. Any mutating recalculation must be exposed as a separate explicit Data Revalidation action. Use `reparse` only for low-level RDB source-cell parsing, not as the broad system concept. 3H-E2 adds first-class warning issue persistence and manual issue status actions only. 3H-E3 adds explicit admin-triggered preview/apply for one RDB source cell linked to a durable warning issue. It does not mutate `upload_logs.summary`, run a full RDB re-upload, re-resolve impacted multi-posting rules globally, regenerate all `resident_postings`, calculate compliance, generate snapshots, hibernate surplus, or generate clawback.
+
+### Cache-aware frontend refetch guidance
+
+No push/live-update channel is implied in the current backend. After successful mutations, the frontend should refetch the affected views:
+
+- After warning resolve/dismiss/supersede: refetch warning list/counts and the affected warning detail.
+- After source-cell apply: refetch warning list/detail, parsed-data resident posting views, and relevant report/dashboard reads when those views exist.
+- After source-cell preview: do not refetch for cache invalidation; preview is read-only.
+- After config CRUD: refetch the config table and any visible Data Revalidation or warning-impact summaries.
+- After uploads: refetch upload logs, warning lists, parsed data, and affected config/reference views.
 
 ---
 
@@ -336,15 +423,17 @@ List first-class warning issues derived from `upload_logs.summary`.
 - **Auth:** admin only
 - **Query params:** `upload_log_id`, `upload_type`, `reporting_period_id`, `programme_code`, `warning_type`, `severity`, `status`, `mcr`, `month_label`, `search`, `limit`, `offset`
 - **Scope:** Programme-scoped admins only see issues whose `programme_code` is in their scope. Master admins may see all issues.
-- **Response:** Issue-centric rows. Existing upload-warning row fields are preserved where possible and enriched with `issue_id`, `status`, `latest_upload_warning_id`, and `latest_source_trace`.
+- **Response:** Issue-centric rows. `issue_id` and `warning_issue_id` are the durable issue id. `warning_id` is a backwards-compatible alias for the latest occurrence id; new frontend code should prefer `upload_warning_id` / `latest_upload_warning_id`.
 - **Notes:** Upload warning issues are derived after successful upload-log creation. `upload_logs.summary` remains immutable; resolving/dismissing/superseding an issue does not edit historical upload summaries.
 
 ```json
 [
   {
     "issue_id": "<warning_issue_uuid>",
+    "warning_issue_id": "<warning_issue_uuid>",
     "status": "unresolved",
     "warning_id": "<latest_upload_warning_uuid>",
+    "upload_warning_id": "<latest_upload_warning_uuid>",
     "dedupe_key": "empty_posting_cell|<period>|DR|M12345A|Jul-25",
     "upload_log_id": "<latest_upload_log_uuid>",
     "upload_type": "rdb",
@@ -360,7 +449,7 @@ List first-class warning issues derived from `upload_logs.summary`.
     "row_number": 3,
     "cell_ref": "I3",
     "seen_count": 1,
-    "latest_upload_warning_id": "<upload_warning_uuid>",
+    "latest_upload_warning_id": "<latest_upload_warning_uuid>",
     "latest_source_trace": {
       "sheet_name": "Phase 1",
       "row_number": 3,
@@ -379,6 +468,50 @@ Return one warning issue plus all upload warning occurrences that have the same 
 - **Scope:** Same programme-scope rules as the list endpoint
 - **Response:** Issue metadata, resolution metadata, and `occurrences[]`
 
+```json
+{
+  "issue_id": "<warning_issue_uuid>",
+  "warning_issue_id": "<warning_issue_uuid>",
+  "fingerprint": "empty_posting_cell|<period>|DR|M12345A|Jul-25",
+  "warning_type": "empty_posting_cell",
+  "severity": "info",
+  "status": "unresolved",
+  "reappeared": false,
+  "latest_upload_warning_id": "<latest_upload_warning_uuid>",
+  "latest_source_trace": {
+    "sheet_name": "Phase 1",
+    "row_number": 3,
+    "cell_ref": "I3"
+  },
+  "latest_source_payload": {
+    "type": "empty_posting_cell",
+    "raw_value": null
+  },
+  "message": "No posting value found for this resident/month cell. No resident posting row was created.",
+  "suggested_action": "Check whether the RDB source cell is intentionally blank.",
+  "resolution_note": null,
+  "resolved_by": null,
+  "resolved_at": null,
+  "occurrences": [
+    {
+      "id": "<latest_upload_warning_uuid>",
+      "issue_id": "<warning_issue_uuid>",
+      "upload_log_id": "<upload_log_uuid>",
+      "source_trace": {
+        "sheet_name": "Phase 1",
+        "row_number": 3,
+        "cell_ref": "I3"
+      },
+      "source_payload": {
+        "type": "empty_posting_cell",
+        "raw_value": null
+      },
+      "message": "No posting value found for this resident/month cell. No resident posting row was created."
+    }
+  ]
+}
+```
+
 ### POST `/admin/upload-warnings/{warning_issue_id}/resolve`
 ### POST `/admin/upload-warnings/{warning_issue_id}/dismiss`
 ### POST `/admin/upload-warnings/{warning_issue_id}/supersede`
@@ -390,6 +523,21 @@ Manually update a warning issue status.
 - **Audit:** Writes an audit log row with actor, action, before/after status, and warning scope metadata.
 - **Behaviour:** Does not mutate `upload_logs.summary`, does not run RDB source-cell parsing, does not regenerate `resident_postings`, and does not calculate compliance.
 - **Reappearance:** If the same fingerprint appears in a later upload after an issue was `resolved`, `dismissed`, or `superseded`, its status becomes `reappeared` while preserving the previous resolution note/actor/timestamp.
+- **Response:**
+```json
+{
+  "issue_id": "<warning_issue_uuid>",
+  "status": "resolved",
+  "previous_status": "unresolved",
+  "new_status": "resolved",
+  "resolution_note": "Resolved after source correction.",
+  "note": "Resolved after source correction.",
+  "resolved_by": "<actor_user_uuid>",
+  "actor_user_id": "<actor_user_uuid>",
+  "resolved_at": "2026-06-19T09:00:00Z",
+  "updated_at": "2026-06-19T09:00:00Z"
+}
+```
 
 ### POST `/admin/upload-warnings/{warning_issue_id}/source-cell-replace/preview`
 
@@ -410,6 +558,43 @@ Preview a single RDB source-cell replacement linked to a durable upload warning 
 - **Behaviour:** Parses the replacement with RDB cell normalisation, LOA parsing, and multi-posting rule handling. Does not write `resident_postings`, `posting_codes`, `upload_logs`, `upload_warnings`, or `warning_issues`.
 - **Response:** Includes warning identifiers, source trace, normalized value, parsed candidate rows, parser warnings/errors, `apply_allowed`, `data_revalidation`, and a manual resolve/dismiss next-action hint.
 
+The `data_revalidation` object below is abbreviated to the fields most relevant to this flow; the full object follows the Data Revalidation contract above.
+
+```json
+{
+  "warning_issue_id": "<warning_issue_uuid>",
+  "upload_warning_id": "<latest_upload_warning_uuid>",
+  "latest_upload_warning_id": "<latest_upload_warning_uuid>",
+  "fingerprint": "empty_posting_cell|<period>|DR|M12345A|Jul-25",
+  "source_trace": {
+    "reporting_period_id": "<period_uuid>",
+    "programme_code": "DR",
+    "mcr": "M12345A",
+    "month_label": "Jul-25",
+    "sheet_name": "Phase 1",
+    "row_number": 3,
+    "cell_ref": "I3",
+    "source_payload": { "type": "empty_posting_cell", "raw_value": null }
+  },
+  "source_payload": { "type": "empty_posting_cell", "raw_value": null },
+  "original_warning_type": "empty_posting_cell",
+  "original_warning_status": "unresolved",
+  "replacement_raw_cell_value": "TTSHAnaes",
+  "normalized_cell_value": "TTSHAnaes",
+  "parsed_candidate_rows": [
+    { "posting_code": "TTSHAnaes", "status": "active", "month_label": "Jul-25" }
+  ],
+  "parser_warnings": [],
+  "parser_errors": [],
+  "apply_allowed": true,
+  "data_revalidation": { "outcome": "warning_only" },
+  "suggested_next_action": "Review the preview/apply result, then manually resolve the warning if the source issue is fixed.",
+  "next_actions": [
+    "Review the preview/apply result, then manually resolve the warning if the source issue is fixed."
+  ]
+}
+```
+
 ### POST `/admin/upload-warnings/{warning_issue_id}/source-cell-replace/apply`
 
 Apply a single previewed RDB source-cell replacement linked to a durable upload warning issue.
@@ -420,6 +605,47 @@ Apply a single previewed RDB source-cell replacement linked to a durable upload 
 - **Behaviour:** Re-loads latest warning context, checks optional stale-context guards, parses the replacement, locks the resident/month scope where practical, deletes only matching scoped `resident_postings` rows, inserts only parsed replacement rows, upserts produced `posting_codes`, and writes correction audit metadata linking `warning_issue_id`, `upload_warning_id`, and fingerprint.
 - **Warning history:** Does not mutate `upload_logs.summary`, does not append fake `upload_warnings`, and does not auto-resolve the warning issue. Response includes `warning_issue_status` and a manual next-action hint.
 - **Data Revalidation:** Successful apply returns `targeted_revalidation`. It does not calculate compliance, generate snapshots, hibernate surplus, or generate clawback.
+
+The `data_revalidation` object below is abbreviated to the fields most relevant to this flow; the full object follows the Data Revalidation contract above.
+
+```json
+{
+  "warning_issue_id": "<warning_issue_uuid>",
+  "upload_warning_id": "<latest_upload_warning_uuid>",
+  "latest_upload_warning_id": "<latest_upload_warning_uuid>",
+  "fingerprint": "empty_posting_cell|<period>|DR|M12345A|Jul-25",
+  "source_trace": {
+    "reporting_period_id": "<period_uuid>",
+    "programme_code": "DR",
+    "mcr": "M12345A",
+    "month_label": "Jul-25",
+    "sheet_name": "Phase 1",
+    "row_number": 3,
+    "cell_ref": "I3",
+    "source_payload": { "type": "empty_posting_cell", "raw_value": null }
+  },
+  "source_payload": { "type": "empty_posting_cell", "raw_value": null },
+  "original_warning_type": "empty_posting_cell",
+  "warning_issue_status": "unresolved",
+  "replacement_raw_cell_value": "TTSHAnaes",
+  "normalized_cell_value": "TTSHAnaes",
+  "before_rows": [],
+  "after_rows": [
+    { "posting_code": "TTSHAnaes", "status": "active", "month_label": "Jul-25" }
+  ],
+  "replacement_summary": {
+    "rows_deleted": 0,
+    "rows_inserted": 1
+  },
+  "parser_warnings": [],
+  "parser_errors": [],
+  "data_revalidation": { "outcome": "targeted_revalidation" },
+  "suggested_next_action": "Review the preview/apply result, then manually resolve the warning if the source issue is fixed.",
+  "next_actions": [
+    "Review the preview/apply result, then manually resolve the warning if the source issue is fixed."
+  ]
+}
+```
 
 ### GET `/admin/teaching-targets`
 

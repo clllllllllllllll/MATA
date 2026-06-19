@@ -550,6 +550,11 @@ def test_preview_simple_posting_replacement_from_warning_does_not_write() -> Non
     assert response.status_code == 200
     body = response.json()
     assert body["warning_issue_id"] == session.warning_issue_id
+    assert body["upload_warning_id"] == session.upload_warning_id
+    assert body["latest_upload_warning_id"] == session.upload_warning_id
+    assert body["fingerprint"] == session.warning_issues[0]["fingerprint"]
+    assert body["source_trace"]["cell_ref"] == "I3"
+    assert body["source_payload"]["type"] == "empty_posting_cell"
     assert body["replacement_raw_cell_value"] == "TTSHGerMed"
     assert body["normalized_cell_value"] == "TTSHGerMed"
     assert body["apply_allowed"] is True
@@ -558,6 +563,7 @@ def test_preview_simple_posting_replacement_from_warning_does_not_write() -> Non
     assert body["parser_warnings"] == []
     assert body["parser_errors"] == []
     assert body["data_revalidation"]["outcome"] == "warning_only"
+    assert body["next_actions"] == [body["suggested_next_action"]]
     assert session.audit_logs == []
     assert session.new_posting_ids == []
     assert session.upload_logs == session.original_upload_logs
@@ -721,12 +727,23 @@ def test_apply_simple_posting_replacement_is_narrow_audited_and_keeps_warning_un
 
     assert response.status_code == 200
     body = response.json()
+    assert body["warning_issue_id"] == session.warning_issue_id
+    assert body["upload_warning_id"] == session.upload_warning_id
+    assert body["latest_upload_warning_id"] == session.upload_warning_id
+    assert body["fingerprint"] == session.warning_issues[0]["fingerprint"]
+    assert body["source_trace"]["cell_ref"] == "I3"
+    assert body["source_payload"]["type"] == "empty_posting_cell"
     assert len(body["before_rows"]) == 1
     assert body["before_rows"][0]["id"] == session.posting_id
     assert len(body["after_rows"]) == 1
     assert body["after_rows"][0]["posting_code"] == "TTSHGerMed"
+    assert body["replacement_summary"] == {
+        "rows_deleted": 1,
+        "rows_inserted": 1,
+    }
     assert body["warning_issue_status"] == "unresolved"
     assert body["data_revalidation"]["outcome"] == "targeted_revalidation"
+    assert body["next_actions"] == [body["suggested_next_action"]]
     assert session.warning_issues[0]["status"] == "unresolved"
     assert session.upload_logs == session.original_upload_logs
     assert {row["resident_id"] for row in session.resident_postings} == {session.resident_id, session.other_resident_id}
