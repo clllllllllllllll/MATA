@@ -15,6 +15,7 @@ posting_codes ─1:N─ resident_postings
 posting_codes ─1:N─ teaching_targets
 posting_codes ─1:N─ teaching_events
 posting_codes ─1:N─ external_residents (current_nhg_posting_code)
+posting_codes ─1:N─ external_resident_postings
 posting_codes ─1:N─ multi_posting_rules
 posting_codes ─1:N─ posting_groups
 
@@ -23,6 +24,7 @@ residents ─1:N─ attendance_records
 residents ─1:N─ surplus_ledger
 
 external_residents ─1:N─ external_attendance_records
+external_residents ─1:N─ external_resident_postings
 teaching_events ─1:N─ external_attendance_records
 
 teaching_events ─1:N─ attendance_records
@@ -307,13 +309,15 @@ First-class keyword→session_type mapping table. Seeded from TTF column K at up
 
 ## Table: `teaching_events`
 
-Teaching sessions created by secretaries or ad-hoc submissions by residents.
+Teaching sessions created by secretaries, planned Programme PC CRUD, or ad-hoc submissions by residents.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
 | id | UUID | PK | |
-| posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | The posting that owns this event |
-| teaching_name | VARCHAR(200) | NOT NULL | Free text name as entered by secretary or resident |
+| posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Posting/site context for the event. Secretary-created events are posting-owned; planned PC-created events also carry explicit programme ownership in `created_for_programme_code`. |
+| created_for_programme_code | VARCHAR(20) | FK → programmes.code, nullable | **Planned, not yet in current models/migrations.** Explicit programme ownership for PC-created scheduled events. Required for PC-created programme-owned events. Null for secretary-created posting-owned/programme-neutral events unless explicitly set by a future workflow. |
+| teaching_name | VARCHAR(200) | NOT NULL | Stored teaching keyword/name. Secretary and PC scheduled events use approved dropdown options; planned ad-hoc rework requires resident/external resident selections to come from catalogue-backed options, not arbitrary free text for compliance mapping. |
+| details_of_session | TEXT | nullable | **Planned, not yet in current models/migrations.** Display/audit-only free text for ad-hoc session context. No operational use and no compliance use. Preferred storage is on `teaching_events` because ad-hoc submission creates an event row for both native and external residents. |
 | event_date | DATE | NOT NULL | |
 | start_time | TIME | NOT NULL | |
 | end_time | TIME | | Server-computed from start_time + session_type.duration_hours at creation |
@@ -323,7 +327,15 @@ Teaching sessions created by secretaries or ad-hoc submissions by residents.
 | cme_points_awarded | BOOLEAN | DEFAULT false | |
 | smc_event_code | VARCHAR(50) | | |
 | is_adhoc | BOOLEAN | DEFAULT false | True for resident-submitted ad-hoc events, false for secretary-created events |
-| created_by_role | VARCHAR(20) | | `secretary` or `resident` |
+| created_by_role | VARCHAR(20) | | `secretary`, `admin`, `resident`, or `external_resident` depending on creator/audit actor |
+
+**Programme ownership visibility rule (planned):**
+- `created_for_programme_code IS NULL` → treat the event as normal posting-owned/programme-neutral. Resident visibility still requires posting/date/catalogue checks.
+- `created_for_programme_code IS NOT NULL` → show only to residents whose `programme_code` equals that value, and only if the event also passes posting/date/catalogue visibility checks.
+
+**PC-created event contract (planned):** Programme PC CRUD creates scheduled teaching events, not ad-hoc submissions. PC-created rows must set `created_for_programme_code`, use options from that programme's TTF Column K / `teaching_name_catalogue`, be public-holiday blocked, and be delete-blocked when attendance exists.
+
+**Ad-hoc detail contract (planned):** `details_of_session` is optional context text only. It must not participate in event visibility, session type resolution, denominator/numerator calculation, surplus, snapshots, or clawback.
 
 ---
 
@@ -341,6 +353,8 @@ Metadata for recurring teaching event series.
 | end_type | VARCHAR(10) | | `by_date`, `by_count` |
 | end_date | DATE | | |
 | end_after_count | INTEGER | | |
+
+TODO: For planned `4B` Programme PC Teaching Event CRUD, decide whether `event_series` also needs explicit programme ownership (for example `created_for_programme_code`) or whether recurrence scope is derived only from child `teaching_events`. The implementation must prevent cross-programme recurrence edits/deletes.
 
 ---
 
@@ -381,6 +395,27 @@ One row per external/cross-cluster resident who self-registers to submit attenda
 
 **Compliance exclusion:** External residents are excluded from NHG compliance, NHG numerator/denominator, surplus, period snapshots, and clawback. Do not join this table into native compliance queries.
 
+**External ad-hoc dropdown derivation (planned):** `current_nhg_posting_code` is the source for deriving a candidate `host_programme_code` for external ad-hoc teaching options. Preferred derivation source is the active/effectively active reporting period `teaching_name_catalogue` / `teaching_targets`, or a future explicit posting-to-programme mapping if needed. Example: `KTPHDiagRd -> DR` when that posting maps to exactly one programme.
+
+**Implementation-pending external option fields:** Current models/migrations do not contain `host_programme_code` or `host_r_year`. Preferred direction is to calculate/default `host_programme_code` at read time for dropdown options; storage may be added later only if audit or workflow requirements need it. If multiple programmes map to the current posting, the API must require explicit `host_programme_code`. If the selected/derived programme has `r_year_required = true`, the API must require `host_r_year` before showing catalogue-backed options; if `r_year_required = false`, use `r_year = 'ALL'`.
+
+---
+
+## Table: `external_resident_postings`
+
+Date-bounded posting history table for external residents. This table exists in current models/migrations, but the confirmed ad-hoc dropdown contract still uses `external_residents.current_nhg_posting_code` unless/until date-specific external posting history semantics are explicitly wired and approved.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| id | UUID | PK | |
+| external_resident_id | UUID | FK → external_residents.id, NOT NULL | |
+| posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | |
+| start_date | DATE | NOT NULL | |
+| end_date | DATE | nullable | |
+| is_current | BOOLEAN | DEFAULT true | |
+
+TODO: Confirm whether Phase 5B should use `external_resident_postings` for date-specific external event/ad-hoc option derivation or keep it as future/audit-ready storage while using `external_residents.current_nhg_posting_code`.
+
 ---
 
 ## Table: `external_attendance_records`
@@ -398,9 +433,9 @@ One row per external resident attendance submission. Stored separately from nati
 
 **Unique constraint:** `UNIQUE(external_resident_id, teaching_event_id)`
 
-**Session type is NOT stored here.** External attendance can be viewed/exported later for the resident's home-cluster PC, but it does not participate in NHG PTT compliance.
+**Session type is NOT stored here.** External attendance can be viewed/exported for the resident's home-cluster PC, but it does not participate in NHG PTT compliance.
 
-**Export status:** External attendance export/dashboard requirements are deferred. Keep data queryable and auditable; do not implement CSV/XLSX export until requirements are confirmed.
+**Export status:** External attendance is recording/export-only and must be exportable to Excel for forwarding to NUH/SingHealth PCs before Phase 6 compliance. It must remain excluded from native compliance joins, native resident reports, surplus, snapshots, and clawback.
 
 ---
 
@@ -1044,6 +1079,16 @@ ON external_residents(current_nhg_posting_code, status);
 
 CREATE INDEX idx_external_residents_home_cluster
 ON external_residents(home_cluster);
+```
+
+#### `external_resident_postings`
+
+```sql
+CREATE INDEX idx_external_resident_postings_external_current
+ON external_resident_postings(external_resident_id, is_current);
+
+CREATE INDEX idx_external_resident_postings_external_dates
+ON external_resident_postings(external_resident_id, start_date, end_date);
 ```
 
 #### `external_attendance_records`

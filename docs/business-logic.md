@@ -414,7 +414,7 @@ The compliance engine runs **JIT (just-in-time)** — recalculated on read, not 
 2. For each phase, check `form_f1_records.is_active` for the corresponding calendar month. If false, exclude from denominator and numerator (FormF1 gate, separate from AY month bucketing)
 3. For each active posting phase, check `posting_groups` for `(posting_code, programme_code)`. If a group is found, fetch all posting codes sharing the same `group_code`. Sum active_months and attendance across ALL group members (whole-month counting, no proration)
 4. For each attendance event, resolve AY month bucket using `programmes.ay_date_category` and `academic_month_boundaries` where `event_date BETWEEN start_date AND end_date`
-5. For each active posting phase, query `attendance_records` joined via `teaching_events.posting_code` where `event_date BETWEEN phase.start_date AND phase.end_date` and `attendance_records.status = 'submitted'`. Do NOT filter by `attendance_records.posting_code` — it is audit-only
+5. For each active posting phase, query native `attendance_records` joined via `teaching_events.posting_code` where `event_date BETWEEN phase.start_date AND phase.end_date` and `attendance_records.status = 'submitted'`. Do NOT filter by `attendance_records.posting_code` — it is audit-only. Do not join or read `external_attendance_records` in NHG compliance.
 6. For each attendance record, **first check `global_session_types`**: if `teaching_event.teaching_name` matches any active `global_session_types.name` → exclude from compliance entirely (skip catalogue lookup, excluded from both numerator and denominator). This check takes priority over the TTF catalogue.
 7. For remaining records, resolve `session_type_id` at read time by joining `teaching_name_catalogue` WHERE `keyword = teaching_event.teaching_name AND posting_code = teaching_event.posting_code AND programme_code = resident.programme_code AND r_year = phase.r_year AND reporting_period_id = current_period`. Use `duration_hours` tiebreaker if multiple catalogue rows match. If no catalogue match — silently exclude from compliance.
 8. Apply ORTHO weekend mutation if applicable (BL-5)
@@ -432,6 +432,16 @@ The compliance engine runs **JIT (just-in-time)** — recalculated on read, not 
 `activate_on` and `deactivate_on` are nullable scheduled transition dates. They are resolved at read time and do not mutate the stored `status` value. When both scheduled dates are due, the later scheduled date wins; if both scheduled dates are due on the same date, deactivation wins.
 
 Resident event discovery and new submissions use the active/effectively active period. If no active/effectively active period exists, the event list is empty with `reason = "active_reporting_period_unavailable"` and ad-hoc submission is disabled; attendance and ad-hoc submission attempts return `422`. Existing attendance records remain stored and auditable.
+
+### PC-created teaching event visibility (planned 4B)
+
+Secretary-created scheduled events remain posting-owned and programme-neutral: `teaching_events.created_for_programme_code IS NULL`. They are visible to eligible residents only after the normal posting/date/catalogue checks pass.
+
+Programme PC-created scheduled events are programme-owned: planned `teaching_events.created_for_programme_code` is set to the PC's programme. Resident event discovery must show these events only to residents whose `resident.programme_code` equals `created_for_programme_code`, and only if the event also passes posting/date/catalogue visibility checks.
+
+Null or empty admin `programme_scope` grants no programme access. Master admin all-programme access must be explicit; never infer master access from null programme scope.
+
+PC-created events are scheduled teaching events, not ad-hoc submissions. Public holiday hard-block and delete-with-attendance guardrails apply.
 
 Operational deactivation is not period close/freeze. It does not generate `period_snapshots`, `clawback_records`, or surplus hibernation, and it does not run compliance calculation. Admin JIT reports may still calculate a selected inactive period explicitly.
 
@@ -644,26 +654,37 @@ FM is not in the confirmed `weekend_exceptions` seed list. Saturday FM sessions 
 Residents can submit ad-hoc teachings not pre-created by secretaries via `POST /resident/adhoc-teaching`.
 
 **Flow:**
-1. Resident provides: `date`, `start_time`, `teaching_name`
-2. System derives `posting_code` from `resident_postings` for the given date (status IN ('active', 'loa_working'))
-3. System resolves `session_type_id` from `teaching_name_catalogue` (same logic as secretary event creation)
-4. System creates a `teaching_events` row with `is_adhoc = true`
-5. System creates an `attendance_records` row in the same transaction
-6. `end_time` = `start_time + session_type.duration_hours`
+1. Resident first selects teaching date.
+2. System derives posting for that selected date:
+   - Native resident: from `resident_postings` for the date (status IN ('active', 'loa_working')).
+   - External resident: from `external_residents.current_nhg_posting_code` unless date-specific external posting history through `external_resident_postings` is explicitly enabled later.
+3. System returns teaching options from TTF Column K / `teaching_name_catalogue`, filtered by selected date, derived posting, programme, r_year, and active/effectively active reporting period.
+4. Resident selects a catalogue-backed teaching option and provides `start_time`. Optional planned `details_of_session` may be captured as display/audit-only text.
+5. System validates the selected teaching option still exists in the same catalogue context at submit time. Arbitrary free-text teaching names must not drive compliance mapping.
+6. System creates a `teaching_events` row with `is_adhoc = true`, `cme_points_awarded = false`, `smc_event_code = null`, and planned `details_of_session` if provided.
+7. System creates an `attendance_records` row for native residents, or an `external_attendance_records` row for external residents, in the same transaction.
+8. `end_time` = `start_time + session_type.duration_hours`.
 
-**Compliance treatment:** Ad-hoc sessions are treated identically to secretary-created sessions for compliance purposes. `is_tracked` and session type resolution follow the same rules.
+**UI helper copy:** `Please ensure your current submission is not an already scheduled event. There are no CME Pts tagged to adhoc teachings.`
+
+**Native compliance treatment:** Native ad-hoc sessions are treated identically to secretary-created sessions for compliance purposes. `is_tracked` and session type resolution follow the same rules.
+
+**External treatment:** External ad-hoc sessions are recording/export-only. They never enter NHG numerator, denominator, surplus, snapshots, clawback, or native resident compliance reports.
 
 **Validation:**
 - Date must not be a public holiday (422 if PH)
-- Teaching name must exist in `teaching_name_catalogue` for the resident's posting + programme + r_year (422 if not found)
+- Teaching name must be selected from the catalogue-backed dropdown for the resident's derived posting + programme + r_year (422 if not found)
 - Duplicate detection (BL-5) applies
 
+**Planned schema note:** `details_of_session` is not currently present in models/migrations. Preferred storage is `teaching_events.details_of_session` because both native and external ad-hoc submissions create an event row. It has no operational or compliance use.
 
 ---
 
 ## BL-12: External / Cross-Cluster Resident Attendance
 
 External residents are NUH or SingHealth residents who are temporarily posted to NHG/TTSH departments and need to record teaching attendance for forwarding to their home cluster.
+
+Phase 5B must be completed before Phase 6 compliance calculation begins.
 
 **Identity and storage:**
 - External residents live in `external_residents`, not `users` and not native `residents`.
@@ -680,6 +701,8 @@ No other `home_cluster` values are valid.
 **Posting state:**
 External residents store their current NHG posting as `external_residents.current_nhg_posting_code`. They may update it themselves. This is separate from native RDB posting schedules and has no compliance denominator meaning.
 
+`external_resident_postings` exists in current models/migrations as date-bounded posting history storage, but Phase 5B ad-hoc option derivation remains based on `current_nhg_posting_code` until date-specific external posting history semantics are explicitly approved and wired.
+
 **Secretary-created event visibility:**
 Use `posting_codes.supports_secretary_events` as the scalable capability flag:
 - `true` → external/native residents at that posting may see secretary-created event lists.
@@ -695,18 +718,48 @@ External residents are excluded from all NHG compliance surfaces:
 - no surplus ledger
 - no period snapshots
 - no clawback
+- no native resident compliance reports
 
 `GET /resident/dashboard` for an external resident returns `not_applicable`, not compliance metrics.
 
+**Phase 6 guardrail:** Compliance reads native `attendance_records` only. It must never join `external_attendance_records`, even for reporting convenience.
+
 **Submission behaviour:**
 - External residents can submit attendance for eligible secretary-created events at their current NHG posting.
-- External residents can submit ad-hoc teaching.
+- External residents can submit ad-hoc teaching using the revised catalogue-backed dropdown model.
 - PH ad-hoc teaching is hard-blocked with `422`.
 - Weekend non-exception submissions are stored and return `compliance_warning`.
 - Session type is not stored on external attendance.
 
+**Pre-compliance Phase 5B workflow scope:**
+- external registration/login
+- external current NHG posting update
+- external event listing
+- external attendance submission
+- external ad-hoc teaching submission using the revised dropdown model
+- external past attendance
+- admin/PC external attendance list/read endpoint
+- Excel export endpoint for external attendance
+- frontend export preview/download flow where the roadmap UI scope includes it
+
+**External ad-hoc host programme derivation:**
+External residents create their own accounts with `name`, `mcr`, `home_cluster`, and `current_nhg_posting_code`; they should not manually select host programme by default.
+
+For external ad-hoc teaching options, derive candidate `host_programme_code` from `external_residents.current_nhg_posting_code` using active/effectively active reporting period `teaching_name_catalogue` / `teaching_targets`, or a future explicit posting-to-programme mapping if needed.
+
+Example: `current_nhg_posting_code = KTPHDiagRd` derives `host_programme_code = DR` when that posting maps to exactly one programme.
+
+Rules:
+- Exactly one programme maps to the posting → default `host_programme_code` automatically.
+- Multiple programmes map to the posting → require explicit host programme selection.
+- No programme maps to the posting → return a clear unavailable-options response; do not guess.
+- If the derived/selected programme has `r_year_required = false`, use `r_year = 'ALL'`.
+- If the derived/selected programme has `r_year_required = true`, require external `host_r_year` selection before showing catalogue-backed options unless a later decision approves all-r-year option pooling.
+
+This derivation supports external ad-hoc dropdown options only. It must not make external residents part of native NHG compliance.
+
 **Export status:**
-External attendance must be exportable/queryable later by NHG PCs for forwarding to NUH/SingHealth PCs, but CSV/XLSX/dashboard export shape is deferred until requirements are confirmed.
+External attendance must be queryable by authorized admin/PC users and exportable to Excel for forwarding to NUH/SingHealth PCs before Phase 6 compliance. Exported records are for recording/audit/forwarding only and must never write to native compliance, surplus, snapshots, or clawback outputs.
 
 ---
 
@@ -921,6 +974,7 @@ Invalidate affected compliance/report caches after:
 - public holiday upload or public holiday CRUD change
 - `posting_groups`, `multi_posting_rules`, `weekend_exceptions`, `global_session_types`, `programmes`, or `loa_types` CRUD change
 - secretary teaching event create/update/delete
+- Programme PC teaching event create/update/delete/duplicate/recurrence mutation
 - resident attendance submit/delete
 - resident ad-hoc teaching create
 - reporting period create/update/delete/activate/deactivate or scheduled transition edits

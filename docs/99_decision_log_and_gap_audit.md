@@ -32,17 +32,30 @@ Every important decision made during the project, with reasoning and consequence
 - **MCR uniqueness:** MCR is globally unique for every doctor. Because native and external identities use separate tables, enforce cross-table uniqueness in service logic: reject registration if MCR exists in either `residents` or `external_residents`.
 - **Workflow direction:** External residents self-register on first use. After registration, login is MCR-only. External residents may self-update their current NHG posting.
 - **Posting model:** External current posting is stored separately on `external_residents.current_nhg_posting_code`; do not use native `resident_postings`.
-- **Functional scope:** External residents can view supported posting events, submit attendance, view past attendance, and submit ad-hoc teaching.
+- **Functional scope:** Phase 5B must be completed before Phase 6 compliance. It includes external registration/login, current NHG posting update, supported event listing, attendance submission, revised ad-hoc teaching submission, past attendance, admin/PC external attendance list/read, and Excel export for forwarding to NUH/SingHealth PCs.
 - **Explicit exclusions:** External residents are excluded from NHG compliance and clawback surfaces:
   - no NHG resident compliance dashboard
   - no clawback output
   - no NHG compliance numerator inclusion
   - no NHG compliance denominator inclusion
   - no surplus ledger / period snapshot inclusion
-- **Export requirement:** External attendance must be exportable/queryable later by NHG PCs for onward sharing to relevant NUH or SingHealth PCs.
-- **Export status:** ❓ TBD/deferred. Exact dashboard/export endpoint, filters, response shape, CSV/XLSX requirements, and role matrix will be confirmed together with dashboard requirements.
+- **Export requirement:** External attendance must be queryable by authorized admin/PC users and exportable to Excel for onward sharing to relevant NUH or SingHealth PCs.
+- **Export status:** ✅ Confirmed before compliance. Exact endpoint response metadata and workbook columns are implementation details, but the export format is Excel.
 - **Do not use:** `users`, `programme_scope`, native `residents`, or native `resident_postings` for external resident identity/posting state.
 - **Reference file and section:** `schema.md` § `external_residents`, `external_attendance_records`; `api.md` § External Resident Endpoints; `business-logic.md` § BL-12
+- **Do not change without PM/stakeholder approval:** Yes
+---
+
+#### Decision: Programme PC teaching event CRUD before compliance
+- **Status:** ✅ Confirmed requirement, planned implementation
+- **Decision:** Add pre-compliance roadmap item `4B - Programme PC Teaching Event CRUD`. Programme PCs must be able to create, list, edit, delete, duplicate, and manage recurrence for scheduled teaching events for their own programmes where practical, similar to department secretary event CRUD.
+- **Ownership model:** PC-created teaching events are scheduled teaching events, not ad-hoc submissions. They must carry explicit programme ownership/scope, with planned nullable field `teaching_events.created_for_programme_code`: required for PC-created programme-owned events and null for normal secretary-created posting-owned/programme-neutral events unless an explicit future use case sets it.
+- **Scope and auth:** Backend authorization is mandatory: `role = admin`, requested `programme_code IN programme_scope`, and null/empty `programme_scope` means no programme access. Master admin all-programme access must be explicit and is never inferred from null programme scope.
+- **Visibility:** Secretary-created events remain posting-owned and programme-neutral. PC-created events must not be visible to other programmes unless explicitly intended. Resident event discovery must treat `created_for_programme_code IS NULL` as normal posting-owned visibility, and a set value as programme-owned visibility requiring resident `programme_code` match plus normal posting/date/catalogue checks.
+- **Options source:** PC-created teaching options come from that programme's TTF Column K via `teaching_name_catalogue`.
+- **Validation:** Public holiday hard-block applies. Delete is blocked if any native or external attendance exists. Audit actor is PC/admin, not secretary.
+- **Implementation status:** Planned documentation contract only. Current models/migrations do not contain `created_for_programme_code`.
+- **Reference file and section:** `schema.md` § `teaching_events`; `api.md` § Planned `4B` Programme PC Teaching Event CRUD endpoints; `business-logic.md` § PC-created teaching event visibility
 - **Do not change without PM/stakeholder approval:** Yes
 ---
 
@@ -393,13 +406,33 @@ Every important decision made during the project, with reasoning and consequence
 
 ---
 
-#### Decision: Ad-hoc teaching via dedicated endpoint
+#### Decision: Ad-hoc teaching submission uses catalogue-backed dropdown
 - **Status:** ✅ Confirmed
-- **Decision:** Residents submit ad-hoc teachings via `POST /resident/adhoc-teaching`. Creates `teaching_events` row (`is_adhoc = true`) and `attendance_records` row in the same transaction. Same compliance treatment as secretary-created events.
-- **Reasoning:** Residents may attend teachings not pre-created by secretaries (e.g. at external sites or ad-hoc sessions).
-- **Alternatives considered:** Secretary-only event creation — rejected, too restrictive for resident workflow.
-- **Consequences for codebase:** Dedicated endpoint with PH validation, posting derivation from `resident_postings`, catalogue lookup, and weekend exception check. Transaction wraps both inserts.
+- **Decision:** Native and external residents submit ad-hoc teachings through a date-first, catalogue-backed dropdown flow. Free-text teaching names must not drive compliance mapping.
+- **Native resident flow:** Resident selects teaching date first. Backend derives posting from `resident_postings` for that date, then returns teaching options filtered by selected date, derived posting, resident programme, r_year, active/effectively active reporting period, and TTF Column K / `teaching_name_catalogue`.
+- **External resident flow:** External resident selects teaching date first. Backend uses `external_residents.current_nhg_posting_code` unless date-specific external posting history through `external_resident_postings` is explicitly enabled later, then derives candidate host programme for the dropdown as documented in BL-12.
+- **Submission fields:** `POST /resident/adhoc-teaching` creates `teaching_events` row (`is_adhoc = true`) and the relevant attendance row in the same transaction. It also stores planned `details_of_session` as display/audit-only free text with no operational or compliance use.
+- **Ad-hoc event flags:** Ad-hoc teaching records must have `is_adhoc = true`, `cme_points_awarded = false`, and `smc_event_code = null`.
+- **Frontend helper copy:** `Please ensure your current submission is not an already scheduled event. There are no CME Pts tagged to adhoc teachings.`
+- **Reasoning:** Residents may attend teachings not pre-created by secretaries, but compliance mapping must remain controlled by TTF Column K and catalogue rows.
+- **Alternatives considered:** Secretary-only event creation — rejected, too restrictive for resident workflow. Arbitrary free-text teaching names — rejected because they can break deterministic catalogue mapping.
+- **Consequences for codebase:** Dedicated endpoint with PH validation, date-first posting derivation, catalogue-backed option lookup, optional display/audit detail capture, weekend exception check, and transaction wrapping event + attendance inserts.
+- **Implementation status:** Planned rework for Phase 5A and 5B. Current models/migrations do not contain `details_of_session`.
 - **Reference file and section:** `business-logic.md` § BL-9; `api.md` § POST `/resident/adhoc-teaching`
+- **Do not change without PM/stakeholder approval:** Yes
+
+---
+
+#### Decision: External resident ad-hoc dropdown derives host programme from NHG posting
+- **Status:** ✅ Confirmed requirement, planned implementation
+- **Decision:** External residents should not manually select host programme by default. Backend should derive candidate `host_programme_code` from `external_residents.current_nhg_posting_code` for external ad-hoc dropdown options only.
+- **Example:** `current_nhg_posting_code = KTPHDiagRd` derives host programme `DR` when the active/effectively active reporting period catalogue/targets map that posting to exactly one programme.
+- **Preferred derivation source:** Active/effectively active reporting period `teaching_name_catalogue` / `teaching_targets`, or a future explicit posting-to-programme mapping if needed.
+- **Edge cases:** Exactly one programme match defaults automatically. Multiple programme matches require explicit host programme selection. No programme match returns a clear unavailable-options response and must not guess.
+- **R-year handling:** If the derived programme has `r_year_required = false`, use `r_year = 'ALL'`. If it has `r_year_required = true`, require external `host_r_year` selection before showing catalogue-backed options unless a later decision approves all-r-year option pooling.
+- **Compliance guardrail:** Host programme derivation does not make external residents part of native NHG compliance, surplus, snapshots, clawback, or native reports.
+- **Implementation status:** Planned endpoint/logic contract. Whether `host_programme_code` / `host_r_year` are persisted or calculated at read time is implementation-pending.
+- **Reference file and section:** `schema.md` § `external_residents`; `api.md` § External Resident Endpoints; `business-logic.md` § BL-12
 - **Do not change without PM/stakeholder approval:** Yes
 
 ---
@@ -1078,7 +1111,7 @@ These are implementation errors that would fail silently — no exception thrown
 | 17 | FM Saturday exception removed | PC confirmation | PM | `weekend_exceptions` seed data |
 | 18 | Hard legacy cutover | Operational decision | PM / Senior Management | System architecture |
 | 19 | Clawback tab: 5th tab, generated by future final close/freeze workflow | Reporting requirement | PM | `clawback.py`, admin dashboard |
-| 20 | Ad-hoc teaching same compliance treatment | Policy decision | PM | `compliance.py` — no `is_adhoc` filter |
+| 20 | Ad-hoc teaching same compliance treatment, with catalogue-backed dropdown and no arbitrary free-text mapping | Policy decision | PM | `compliance.py` — no `is_adhoc` filter; BL-9 |
 | 21 | MCR-only resident auth (no password) | Intentional design choice | PM | `POST /auth/login` resident path |
 | 22 | Admin programme scope (TEXT[]) | Access control policy | PM | `users.programme_scope` |
 | 23 | Non-tracked events seeded for visibility | Event visibility policy | PM | `ttf_parser.py` — catalogue seeding |
@@ -1087,11 +1120,13 @@ These are implementation errors that would fail silently — no exception thrown
 | 26 | Weekend submission: stored + warning | Resident transparency policy | PM | `POST /resident/attendance` response |
 | 27 | Clawback suppressed rows shown (Extension, R7) | Senior management visibility | PM | `clawback_records` — all rows displayed |
 | 28 | AY month bucketing via `academic_month_boundaries` + `programmes.ay_date_category` (ignore SR/SRs header wording) | Compliance month assignment correctness and parser stability across workbook header drift | PM / Programme Director | `parsing.md` AY Dates parser; `schema.md` programme/category + boundary tables; `business-logic.md` BL-5A |
-| 29 | External/cross-cluster residents workflow is future Phase 5B, excluded from NHG compliance/clawback | Prevents accidental inclusion in NHG denominator/numerator and scope creep into Phase 3 | PM / Programme Director | Future resident auth/submission/export design |
+| 29 | External/cross-cluster residents workflow is Phase 5B before compliance, excluded from NHG compliance/clawback, and Excel-exportable for forwarding | Prevents accidental inclusion in NHG denominator/numerator and establishes forwarding workflow before Phase 6 | PM / Programme Director | External resident auth/submission/export design |
 | 30 | Master admin must be explicit; never inferred from `programme_scope = NULL` | Access-control correctness and least-privilege integrity | PM / Security owner | `users` auth model and admin endpoint guards |
 | 31 | TTSH pilot visibility: non-TTSH postings use ad-hoc-only path when secretary list is unavailable | Preserves pilot operations without blocking attendance capture | PM / Programme Director | Future resident event visibility logic |
 | 32 | Bulk TTF upload deferred; one-programme-at-a-time remains current workflow | Avoids premature high-risk parser/mapping complexity | PM | Existing `POST /admin/upload/ttf` scope flow |
 | 33 | Latest uploaded TTF export/email deferred to end-of-roadmap and staged | Prevents premature storage/email coupling before core stabilization | PM / IT | Future admin productivity module |
+| 34 | Programme PC teaching event CRUD is roadmap item `4B` before compliance; PC-created scheduled events are programme-owned | Lets PCs seed/manage programme teachings before compliance while preserving secretary programme-neutral event model | PM / Programme Director | Planned admin programme-teaching endpoints; planned `teaching_events.created_for_programme_code` |
+| 35 | External ad-hoc dropdown derives host programme from current NHG posting where possible, e.g. `KTPHDiagRd -> DR` | Removes unnecessary manual host-programme selection while keeping ambiguous/no-match cases explicit | PM / Programme Director | External ad-hoc option endpoint; BL-12 |
 
 > **⚠️ Most likely LLM mistake:** Changing the 70% threshold to 75% or 65% because it "seems more reasonable." The threshold is a regulatory requirement. The silent consequence is every compliance calculation being wrong for every resident.
 

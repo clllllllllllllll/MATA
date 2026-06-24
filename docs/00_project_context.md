@@ -157,6 +157,18 @@ All five source-of-truth files (`schema.md`, `api.md`, `business-logic.md`, `par
 | **Auth: Supabase Auth** (Phase 2) | 📋 Planned | RLS policies outlined in `AGENTS.md` |
 | **Security** (headers, RLS, rate limiting) | 📋 Planned | Specified in `AGENTS.md` Security section |
 
+### Pre-Compliance Roadmap Orientation
+
+This file is navigation only. Detailed contracts live in `99_decision_log_and_gap_audit.md`, `schema.md`, `api.md`, and `business-logic.md`.
+
+- `3I-A` Unified Admin Logs backend contract: complete / committed.
+- `3I-B` Unified Admin Logs backend endpoints: complete / committed.
+- `3I-C` Unified Admin Logs frontend page: complete / committed.
+- `4B` Programme PC Teaching Event CRUD: planned before compliance. PCs manage scheduled, programme-owned teaching events through admin endpoints. See `api.md` planned `4B` endpoints and `schema.md` planned `teaching_events.created_for_programme_code`.
+- `5A` Native resident workflow hardening: includes revised date-first, catalogue-backed ad-hoc teaching dropdown and planned `details_of_session`.
+- `5B` External Resident Workflow: must be completed before Phase 6 compliance and includes external registration/login, current NHG posting update, event listing, attendance/ad-hoc submission, past attendance, admin/PC list/read, and Excel export.
+- Phase 6 compliance must read native `attendance_records` only and never join `external_attendance_records`.
+
 ### Open TBDs
 
 | TBD | Status | Summary |
@@ -365,7 +377,9 @@ mata/
 
 External residents are NUH or SingHealth residents posted to NHG/TTSH departments. They self-register with `name`, `mcr`, `home_cluster`, and `current_nhg_posting_code`, then log in with MCR only. They are stored in `external_residents`, and their submissions are stored in `external_attendance_records`.
 
-External residents are excluded from NHG compliance, numerator, denominator, surplus, snapshots, and clawback. Their attendance is stored for future export/forwarding to their home-cluster PCs. Export/dashboard shape is deferred until requirements are confirmed.
+External residents are excluded from NHG compliance, numerator, denominator, surplus, snapshots, and clawback. Their attendance is recording/export-only and must be exportable to Excel for forwarding to NUH/SingHealth PCs before Phase 6 compliance.
+
+External ad-hoc dropdown options derive host programme from the resident's current NHG posting where possible, e.g. `KTPHDiagRd -> DR`. If multiple programmes map to the posting, require explicit host programme selection; if none map, return unavailable options. Detailed rules live in `business-logic.md` BL-12 and `api.md` External Resident Endpoints.
 
 Secretary-created event visibility is controlled by `posting_codes.supports_secretary_events`, not hardcoded TTSH logic. Current TTSH pilot postings can be enabled through data/config; future hospitals such as KTPH can be onboarded by setting the same flag. Ad-hoc submission remains available even when secretary-created event lists are not supported.
 
@@ -413,6 +427,8 @@ Secretary-created event visibility is controlled by `posting_codes.supports_secr
 5. Upload summary includes both PH and AY-boundary results (`public_holidays_created`, `academic_month_boundaries_created`, `ay_categories_parsed`, `academic_year_label`, `ignored_sheets`)
 
 **Reporting Periods:** CRUD via `/admin/reporting-periods`. Status values are `active` and `inactive`; admins can also set `activate_on` and `deactivate_on` scheduled transition dates. `PUT /admin/reporting-periods/{id}/activate` and `/deactivate` update operational status only and return Data Revalidation impact summaries. Final close/freeze with surplus hibernation, clawback, and snapshots is separate future work.
+
+**Programme PC Teaching Event CRUD (planned 4B):** PCs manage scheduled teaching events for their own programmes before compliance via planned `/admin/programme-teaching-events` endpoints. PC-created events are programme-owned through planned `teaching_events.created_for_programme_code`; secretary-created events remain posting-owned/programme-neutral. See `api.md` and `business-logic.md` for authorization, visibility, PH block, and delete-with-attendance rules.
 
 **Compliance Reporting Views — 5 Tabs:**
 1. Monthly View — per-resident monthly attendance summary
@@ -474,10 +490,13 @@ Secretary-created event visibility is controlled by `posting_codes.supports_secr
 - Duplicate prevention via `UNIQUE(resident_id, teaching_event_id)` at DB level
 
 **Ad-hoc Teaching:**
-- `POST /resident/adhoc-teaching` — resident submits teaching not pre-created by secretary
-- Creates `teaching_events` row (`is_adhoc = true`) and `attendance_records` row in same transaction
+- Date-first dropdown flow: resident selects teaching date, backend derives posting, then returns catalogue-backed options from TTF Column K / `teaching_name_catalogue`
+- `POST /resident/adhoc-teaching` — resident submits selected teaching not pre-created by secretary
+- Creates `teaching_events` row (`is_adhoc = true`, `cme_points_awarded = false`, `smc_event_code = null`) and `attendance_records` row in same transaction
+- Planned `details_of_session` is display/audit-only and has no compliance use
 - PH dates hard-blocked (422)
 - Same compliance treatment as secretary-created events
+- UI helper copy: `Please ensure your current submission is not an already scheduled event. There are no CME Pts tagged to adhoc teachings.`
 
 **Dashboard:**
 - `GET /resident/dashboard` — personal compliance view per posting per session type
@@ -707,6 +726,8 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 | `POST /admin/upload/form-f1` | FormF1 upload | Calls `form_f1_parser.py`; full replace |
 | `POST /admin/upload/public-holidays` | Academic Calendar + PH upload | Upsert `public_holidays` and replace/seed `academic_month_boundaries` from AY Dates workbook content |
 | `PUT /admin/teaching-targets/{id}` | Mid-period TTF correction | Re-seeds `teaching_name_catalogue` for that specific target |
+| `GET/POST /admin/programme-teaching-events` | Planned 4B PC event CRUD | Programme-owned scheduled events via planned `created_for_programme_code` |
+| `GET /admin/external-attendance/export.xlsx` | Planned external Excel export | Recording/export-only; never enters compliance |
 | `GET /admin/reports/clawback` | Clawback 5th tab | Read-only; generated by future final close/freeze |
 | `PUT /admin/reporting-periods/{id}/activate` | Activate period | Allows new resident submissions |
 | `PUT /admin/reporting-periods/{id}/deactivate` | Deactivate period | Blocks new resident submissions; no snapshots/clawback/surplus hibernation |
@@ -726,7 +747,8 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 |----------|---------|---------------|
 | `GET /resident/events` | Available events | Filtered by current + native posting; gated by `resident_postings` + `teaching_name_catalogue` |
 | `POST /resident/attendance` | Submit attendance | Returns `compliance_warning` for unmatched weekend sessions |
-| `POST /resident/adhoc-teaching` | Ad-hoc submission | 422 on PH; `is_adhoc = true`; same compliance treatment |
+| `GET /resident/adhoc-teaching-options` | Planned ad-hoc dropdown options | Date-first; catalogue-backed; external host programme derived from current NHG posting where possible |
+| `POST /resident/adhoc-teaching` | Ad-hoc submission | 422 on PH; `is_adhoc = true`; no CME points; native counts normally, external is export-only |
 | `GET /resident/dashboard` | Compliance view | JIT calculation per BL-6 |
 
 > **⚠️ Most likely LLM mistake:** Using `POST /admin/upload/form_f1` (underscore) instead of `POST /admin/upload/form-f1` (hyphen). The endpoint path uses a hyphen. The silent consequence is a 404 that may not be caught until integration testing.
@@ -768,6 +790,8 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 | `is_reallocatable` + `tag` | `teaching_targets` | Missing tag = no reallocation; surplus silently stays unallocated |
 | `is_hibernating` | `surplus_ledger` | Hibernated rows must be excluded from reallocation reads |
 | `session_type_id` | `teaching_events` | Display only — NOT for compliance |
+| `created_for_programme_code` | `teaching_events` (planned) | PC-created scheduled events are programme-owned; null secretary events remain programme-neutral |
+| `details_of_session` | `teaching_events` (planned) | Display/audit-only for ad-hoc sessions; no compliance use |
 | `achieved_and_counted` | Computed value | Post-cap, pre-reallocation; feeds compliance. Not raw `achieved`. |
 | `programme_scope` | `users` | `TEXT[]` — Admin sees only listed programmes. NULL = no access. |
 | `code` | `posting_codes` | Source of truth; never derive by regex |
@@ -792,7 +816,9 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 **Admin:**
 - Upload pages: RDB, TTF, FormF1, PH (each with file select + POST + result display)
 - Configuration panel: CRUD for `loa_types`, `weekend_exceptions`, `multi_posting_rules`, `posting_groups`, `global_session_types`, `programmes`
+- Programme teaching event management (planned 4B): scheduled PC-created events scoped by programme
 - Reporting dashboard: 5 tabs — Monthly View, Posting View, Attendance Breakdown, Submitted Attendances, Clawback
+- External attendance export preview/download for forwarding to NUH/SingHealth PCs
 - Reporting period management: list, create, update, activate, deactivate, delete
 - Upload log viewer
 
@@ -804,15 +830,23 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 
 **Resident:**
 - Submission portal: event list filtered by posting + catalogue
-- Ad-hoc teaching form: date-first → time/session name from dropdown
+- Ad-hoc teaching form: date-first → catalogue-backed teaching option dropdown + optional `details_of_session`
 - Personal compliance dashboard
 - Submitted attendances list
+
+**External Resident:**
+- Self-registration/login with `name`, MCR, `home_cluster`, and current NHG posting
+- Submission portal and past attendance backed by `external_attendance_records`
+- Ad-hoc teaching dropdown derives host programme from current NHG posting where possible, e.g. `KTPHDiagRd -> DR`
+- No NHG compliance dashboard; attendance is recording/export-only
 
 ### Key UI Patterns
 
 - **Upload flow:** File select → POST to upload endpoint → parse JSON response → display results/warnings/errors
 - **Secretary dropdown:** Unified list from `GET /secretary/teaching-name-options` (includes `is_global` flag for visual distinction)
-- **Resident ad-hoc:** Date-first input → time + session name dropdown (filtered by posting for that date)
+- **Resident ad-hoc:** Date-first input → time + catalogue-backed teaching option dropdown (filtered by posting/programme/r_year/period for that date)
+- **External ad-hoc:** Derive host programme from current NHG posting for dropdown options where possible; require explicit selection on multiple matches and show unavailable options on no match
+- **External export:** Admin/PC preview + Excel download for forwarding external attendance to NUH/SingHealth PCs
 - **Weekend compliance warning:** Display warning text after `POST /resident/attendance` when `compliance_warning` is non-null
 - **Traffic light:** Green (≥70%), Amber (50–69%), Red (<50%) colour indicators on compliance views
 
@@ -825,7 +859,7 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 - API client functions: `src/api/`
 - Auth state: Phase 1 stub headers set by middleware; Phase 2 Supabase JWT
 
-> **⚠️ Most likely LLM mistake:** Building the resident ad-hoc teaching form with session name first and date second. The confirmed UX flow is date-first, then time/session name from dropdown (because the dropdown depends on the resident's posting at that date). The silent consequence is a broken dropdown that shows wrong session names for the selected date.
+> **⚠️ Most likely LLM mistake:** Building the resident ad-hoc teaching form with teaching name first and date second, or allowing arbitrary free-text teaching names to drive mapping. The confirmed UX flow is date-first, then time/catalogue-backed teaching option dropdown (because the dropdown depends on the resident's posting at that date). The silent consequence is a broken dropdown that shows wrong options or bypasses TTF Column K mapping.
 
 ---
 

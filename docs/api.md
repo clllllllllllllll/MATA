@@ -1133,6 +1133,76 @@ List FormF1 active/inactive records.
 
 ---
 
+## Planned `4B` Programme PC Teaching Event CRUD endpoints - not implemented
+
+Programme PCs must be able to manage scheduled teaching events for their own programmes before Phase 6 compliance. These are planned endpoint contracts only; current code/migrations do not yet include the required `teaching_events.created_for_programme_code` field.
+
+### GET `/admin/programme-teaching-events`
+
+List PC-created programme-owned scheduled teaching events.
+
+- **Auth:** admin/PC only
+- **Scope:** `programme_code IN programme_scope`. Null or empty `programme_scope` means no access. Master admin all-programme access must be explicit and must never be inferred from null scope.
+- **Query params:** `programme_code` (required unless explicit master admin), `date_from`, `date_to`, `teaching_name`, `posting_code`, `series_id` optional.
+- **Visibility contract:** Return events where `teaching_events.created_for_programme_code = programme_code`.
+
+### GET `/admin/programme-teaching-name-options`
+
+Return teaching-name options for PC event creation.
+
+- **Auth:** admin/PC only
+- **Scope:** `programme_code IN programme_scope`.
+- **Query params:** `programme_code` required, `posting_code`, `r_year`, `reporting_period_id` optional where needed for filtering.
+- **Source:** TTF Column K via `teaching_name_catalogue` for the selected programme.
+
+### POST `/admin/programme-teaching-events`
+
+Create a programme-owned scheduled teaching event.
+
+- **Auth:** admin/PC only
+- **Scope:** request `programme_code IN programme_scope`.
+- **Validation:** Returns `422` if `event_date` is in `public_holidays`. Returns `422` if `teaching_name` is not available from that programme's `teaching_name_catalogue` for the selected posting/r_year/period context.
+- **Body:**
+```json
+{
+  "programme_code": "DR",
+  "posting_code": "KTPHDiagRd",
+  "teaching_name": "Journal Club",
+  "event_date": "2026-04-15",
+  "start_time": "10:00",
+  "recurrence": null
+}
+```
+- **Backend writes:** `teaching_events.created_for_programme_code = programme_code`, `created_by_role = 'admin'`, `is_adhoc = false`, and normal event fields. Audit actor is PC/admin, not secretary.
+- **Resident visibility:** Residents can see the event only when their `programme_code` matches `created_for_programme_code` and the event also passes posting/date/catalogue visibility rules.
+
+### PUT `/admin/programme-teaching-events/{id}`
+
+Edit a programme-owned scheduled teaching event.
+
+- **Auth:** admin/PC only
+- **Scope:** event `created_for_programme_code IN programme_scope`.
+- **Validation:** Public holiday block and catalogue option validation apply to changed event date/name/posting fields.
+- **Recurrence:** Planned edit scopes should mirror secretary workflow where practical: this event only, this and all following, all in series.
+
+### POST `/admin/programme-teaching-events/{id}/duplicate`
+
+Duplicate a programme-owned scheduled teaching event.
+
+- **Auth:** admin/PC only
+- **Scope:** source event `created_for_programme_code IN programme_scope`.
+- **Validation:** Public holiday block applies to the duplicate date. The duplicated event keeps explicit `created_for_programme_code`.
+
+### DELETE `/admin/programme-teaching-events/{id}`
+
+Delete a programme-owned scheduled teaching event.
+
+- **Auth:** admin/PC only
+- **Scope:** event `created_for_programme_code IN programme_scope`.
+- **Constraint:** Returns `409` if any native `attendance_records` or `external_attendance_records` exist for the event.
+
+---
+
 ## Secretary Endpoints
 
 ### GET `/secretary/teaching-events`
@@ -1306,6 +1376,7 @@ List teaching events available for submission.
   5. Filter to `event_date <= today` (no future events)
   6. Exclude events already submitted by this resident
   7. Filter by `teaching_name_catalogue` for the resident's `(posting_code, programme_code, r_year, reporting_period_id)` — only show events whose `teaching_name` exists in their catalogue
+  8. Apply planned programme ownership visibility: if `teaching_events.created_for_programme_code IS NULL`, treat the event as normal posting-owned/programme-neutral; if it is set, show only when it equals the resident's `programme_code`, and only after the posting/date/catalogue checks above pass.
 - **Query params:** `date_from`, `date_to`
 
 ### POST `/resident/attendance`
@@ -1318,9 +1389,10 @@ Submit attendance for one or more events.
   1. Validates event exists and is at resident's current or native posting
   2. Validates `event_date` falls within a `resident_postings` row with `status IN ('active', 'loa_working')` → `422` if outside tenure
   3. Validates `teaching_name` exists in `teaching_name_catalogue` for resident's `(posting_code, programme_code, r_year, reporting_period_id)` → `422` if no match
-  4. Validates no duplicate (`UNIQUE(resident_id, teaching_event_id)`)
-  5. Creates `attendance_records` rows — **does NOT store `session_type_id`**
-  6. Checks each submitted event against `weekend_exceptions` — if a weekend session has no matching rule, adds a `compliance_warning` to the response
+  4. Validates planned programme ownership: events with `created_for_programme_code` set must match the resident's `programme_code`
+  5. Validates no duplicate (`UNIQUE(resident_id, teaching_event_id)`)
+  6. Creates `attendance_records` rows — **does NOT store `session_type_id`**
+  7. Checks each submitted event against `weekend_exceptions` — if a weekend session has no matching rule, adds a `compliance_warning` to the response
 - **Response:**
 ```json
 {
@@ -1338,28 +1410,64 @@ Delete own submitted attendance.
 - **Auth:** resident only
 - **Constraint:** Can only delete own records.
 
+### Planned GET `/resident/adhoc-teaching-options`
+
+Return catalogue-backed teaching options for the ad-hoc form after the resident selects a teaching date.
+
+- **Auth:** native resident or external resident
+- **Query params:** `date` required. External residents may also pass `host_programme_code` when multiple candidate programmes map to their current posting, and `host_r_year` when the selected/derived programme has `r_year_required = true`.
+- **Native resident backend:**
+  1. Derives posting from `resident_postings` for the selected date.
+  2. Uses resident `programme_code`, derived posting, resident r_year for that date, and active/effectively active `reporting_period_id`.
+  3. Returns options from TTF Column K via `teaching_name_catalogue`.
+- **External resident backend:**
+  1. Uses `external_residents.current_nhg_posting_code` unless date-specific external posting history through `external_resident_postings` is explicitly enabled later.
+  2. Derives candidate host programme from active/effectively active `teaching_name_catalogue` / `teaching_targets`, or a future explicit posting-to-programme mapping.
+  3. If exactly one programme maps to the posting, defaults `host_programme_code`.
+  4. If multiple programmes map to the posting, returns a response requiring explicit host programme selection.
+  5. If no programme maps to the posting, returns a clear unavailable-options response and must not guess.
+  6. If the derived/selected programme has `r_year_required = false`, uses `r_year = 'ALL'`.
+  7. If the derived/selected programme has `r_year_required = true`, requires `host_r_year` before returning catalogue-backed options unless a later decision approves all-r-year option pooling.
+- **Response example:**
+```json
+{
+  "date": "2026-04-15",
+  "posting_code": "KTPHDiagRd",
+  "host_programme_code": "DR",
+  "host_r_year_required": true,
+  "requires_host_programme_selection": false,
+  "requires_host_r_year_selection": true,
+  "options": []
+}
+```
+- **Frontend helper copy:** `Please ensure your current submission is not an already scheduled event. There are no CME Pts tagged to adhoc teachings.`
+
 ### POST `/resident/adhoc-teaching`
 
 Submit an ad-hoc teaching not pre-created by a secretary.
 
-- **Auth:** resident only
+- **Auth:** native resident or external resident
 - **Body:**
 ```json
 {
   "date": "2026-04-15",
   "start_time": "10:00",
-  "teaching_name": "Journal Club"
+  "teaching_name": "Journal Club",
+  "details_of_session": "Case discussion after ward teaching",
+  "host_programme_code": null,
+  "host_r_year": null
 }
 ```
 - **Backend:**
   1. Validates `date` is not a public holiday → `422` if PH
-  2. Derives `posting_code` from `resident_postings` for the given date
-  3. Resolves `session_type_id` from `teaching_name_catalogue` → `422` if no match
-  4. Creates `teaching_events` row with `is_adhoc = true`
-  5. Creates `attendance_records` row in the same transaction
+  2. Derives `posting_code` from `resident_postings` for native residents, or from `external_residents.current_nhg_posting_code` for external residents unless date-specific external posting history through `external_resident_postings` is explicitly enabled later.
+  3. Validates submitted `teaching_name` was selected from the catalogue-backed options for the selected date/posting/programme/r_year/reporting period. Arbitrary free-text teaching names must not drive compliance mapping.
+  4. Creates `teaching_events` row with `is_adhoc = true`, `cme_points_awarded = false`, `smc_event_code = null`, and planned `details_of_session` when provided.
+  5. Creates `attendance_records` for native residents or `external_attendance_records` for external residents in the same transaction.
   6. `end_time` = `start_time + session_type.duration_hours`
-  7. Checks weekend exception — returns `compliance_warning` if session will not count
-- **Compliance treatment:** Identical to secretary-created sessions
+  7. Checks weekend exception — returns `compliance_warning` if session will not count for native compliance.
+- **Compliance treatment:** Native ad-hoc sessions are treated identically to secretary-created sessions. External ad-hoc sessions are stored/exportable only and never enter NHG numerator, denominator, surplus, snapshots, clawback, or native reports.
+- **Planned schema/API note:** `details_of_session` is not present in current models/migrations. It is display/audit-only and must have no operational or compliance use.
 
 ### GET `/resident/dashboard`
 
@@ -1455,7 +1563,7 @@ Update password. Admin/secretary only.
 
 ## External Resident Endpoints
 
-External residents are future Phase 5B scope. They use separate identity and attendance tables. They are never stored in `users`, never stored in native `residents`, and never represented through `resident_postings`.
+External residents are Phase 5B pre-compliance scope. They use separate identity and attendance tables. They are never stored in `users`, never stored in native `residents`, and never represented through native `resident_postings`.
 
 ### POST `/external-residents/register`
 
@@ -1501,6 +1609,7 @@ The same route may support native and external residents through identity branch
 - For `role = external_resident`, derive current posting from `external_residents.current_nhg_posting_code`.
 - If the posting's `posting_codes.supports_secretary_events = true`, return eligible secretary-created events for that posting.
 - If `supports_secretary_events = false`, return no secretary-created event list but keep ad-hoc submission available in the frontend.
+- Planned programme-owned PC events (`created_for_programme_code IS NOT NULL`) are not shown to external residents unless a future explicit requirement defines external visibility for that host programme.
 - Filter `event_date <= today`.
 - Exclude events already submitted by that external resident in `external_attendance_records`.
 - Do not apply native NHG compliance catalogue/denominator logic to external residents.
@@ -1520,12 +1629,20 @@ The same route may support native and external residents through identity branch
 
 The same route may support native and external residents through identity branching.
 
-- For `role = external_resident`, derive posting from `external_residents.current_nhg_posting_code`.
+- For `role = external_resident`, derive posting from `external_residents.current_nhg_posting_code` unless date-specific external posting history through `external_resident_postings` is explicitly enabled later.
+- Teaching options come from the planned `GET /resident/adhoc-teaching-options` date-first catalogue-backed flow.
+- Derive candidate `host_programme_code` from active/effectively active `teaching_name_catalogue` / `teaching_targets`, or a future explicit posting-to-programme mapping.
+- Example: `current_nhg_posting_code = KTPHDiagRd` derives `host_programme_code = DR` when that posting maps to exactly one programme.
+- If multiple programmes map to the posting, require explicit `host_programme_code`.
+- If no programme maps to the posting, return unavailable options and do not guess.
+- If the derived/selected programme has `r_year_required = false`, use `r_year = 'ALL'`.
+- If the derived/selected programme has `r_year_required = true`, require `host_r_year` before showing catalogue-backed options unless a later decision approves all-r-year option pooling.
 - PH hard-block with `422`.
-- Create `teaching_events` with `is_adhoc = true`, `created_by_role = 'external_resident'`, and `posting_code = current_nhg_posting_code`.
+- Create `teaching_events` with `is_adhoc = true`, `created_by_role = 'external_resident'`, `posting_code = current_nhg_posting_code`, `cme_points_awarded = false`, `smc_event_code = null`, and planned display/audit-only `details_of_session` when provided.
 - Create `external_attendance_records` in the same transaction.
 - Weekend non-exception attendance is stored and returns `compliance_warning`.
 - Do not create native `attendance_records`.
+- Host programme derivation is for option filtering only; it must not include external attendance in native NHG compliance.
 
 ### GET `/resident/attendance-history`
 
@@ -1552,7 +1669,36 @@ External residents do not receive an NHG compliance dashboard.
 
 ### External attendance export
 
-External attendance export for NHG PCs is **TBD/deferred** until dashboard/export requirements are confirmed. Do not implement CSV/XLSX/email/export endpoints yet. Ensure `external_attendance_records` remains queryable for future export work.
+External attendance list/read and Excel export are planned Phase 5B contracts that must be completed before Phase 6 compliance. External attendance remains recording/export-only and never enters NHG compliance.
+
+### Planned GET `/admin/external-attendance`
+
+List external attendance for authorized admin/PC users.
+
+- **Auth:** admin/PC only
+- **Scope:** Programme-scoped where the event posting maps to a programme in `programme_scope` through active/effectively active catalogue/target data or a future explicit posting-to-programme mapping. Explicit master admin may access all programmes. Null/empty `programme_scope` means no access.
+- **Filters:** `home_cluster`, `posting_code`, `host_programme_code`, `date_from`, `date_to`, `mcr`, `status`.
+- **Compliance exclusion:** Results are for audit/forwarding only and must not be joined into native compliance reports.
+
+### Planned GET `/admin/external-attendance/{id}`
+
+Read one external attendance record with resident, event, posting, and routing context.
+
+- **Auth:** admin/PC only
+- **Scope:** Same as list endpoint.
+
+### Planned GET `/admin/external-attendance/export.xlsx`
+
+Export filtered external attendance to Excel for forwarding to NUH/SingHealth PCs.
+
+- **Auth:** admin/PC only
+- **Scope:** Same as list endpoint.
+- **Filters:** Same as list endpoint.
+- **Format:** `.xlsx`
+- **Content:** External resident identity, `home_cluster`, current/event posting, teaching event details, submitted status/timestamps, and any planned `details_of_session` captured on ad-hoc event rows.
+- **Not included:** Native `attendance_records`, native compliance percentages, surplus, snapshots, or clawback rows.
+
+TODO: Confirm exact workbook columns, sheet partitioning by `home_cluster`, and whether host programme/r_year values are exported as derived metadata or only used for filtering.
 
 ---
 
