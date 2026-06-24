@@ -4237,3 +4237,257 @@ button:disabled,
     flex-direction: column;
   }
 }
+
+.admin-logs-search-field {
+  display: grid;
+  gap: 5px;
+  min-width: min(320px, 100%);
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.admin-logs-search-field input {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  padding: 8px 11px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.admin-logs-filter-card {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)) auto;
+  align-items: start;
+}
+
+.admin-logs-filter-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 22px;
+}
+
+.admin-logs-filter-actions .button {
+  min-height: 39px;
+}
+
+.admin-logs-advanced-filters {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.admin-logs-advanced-filters summary {
+  cursor: pointer;
+  width: fit-content;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.admin-logs-advanced-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.admin-logs-table-card .table-scroll {
+  transition: opacity 140ms ease;
+}
+
+.admin-logs-table-card.is-refetching .table-scroll {
+  opacity: 0.72;
+}
+
+.admin-logs-table {
+  table-layout: fixed;
+  min-width: 1320px;
+}
+
+.admin-logs-table th:first-child,
+.admin-logs-table td:first-child {
+  width: 132px;
+}
+
+.admin-logs-table th:nth-child(2),
+.admin-logs-table td:nth-child(2) {
+  width: 160px;
+}
+
+.admin-logs-table th:nth-child(3),
+.admin-logs-table td:nth-child(3) {
+  width: 300px;
+}
+
+.admin-logs-table th:nth-child(4),
+.admin-logs-table td:nth-child(4) {
+  width: 170px;
+}
+
+.admin-logs-table th:nth-child(5),
+.admin-logs-table td:nth-child(5) {
+  width: 95px;
+}
+
+.admin-logs-table th:nth-child(6),
+.admin-logs-table td:nth-child(6) {
+  width: 190px;
+}
+
+.admin-logs-table th:nth-child(7),
+.admin-logs-table td:nth-child(7) {
+  width: 150px;
+}
+
+.admin-logs-table th:nth-child(8),
+.admin-logs-table td:nth-child(8) {
+  width: 190px;
+}
+
+.admin-logs-table th:last-child,
+.admin-logs-table td:last-child {
+  width: 42px;
+  padding-left: 4px;
+  padding-right: 10px;
+  text-align: right;
+}
+
+.admin-log-title-cell,
+.admin-log-stack,
+.admin-log-badge-stack {
+  display: grid;
+  gap: 5px;
+}
+
+.admin-log-title-cell strong,
+.admin-log-stack strong {
+  overflow-wrap: anywhere;
+}
+
+.admin-log-title-cell span,
+.admin-log-stack span,
+.admin-log-compact-text {
+  color: var(--ink-3);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.admin-log-secondary-chip {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fafafd;
+  color: var(--ink-3);
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.admin-log-detail-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.admin-log-json-section {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-log-json-section summary {
+  cursor: pointer;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 800;
+}
+
+.admin-log-json-section summary span {
+  margin-left: 8px;
+  color: var(--amber);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.admin-log-json-preview {
+  max-height: 340px;
+}
+
+.admin-log-empty-evidence {
+  display: grid;
+  gap: 4px;
+  color: var(--ink-3);
+}
+
+.admin-log-empty-evidence p {
+  margin: 0;
+}
+
+.admin-log-related-list,
+.admin-log-action-list {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-log-related-card,
+.admin-log-action-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fafafd;
+  padding: 10px 12px;
+}
+
+.admin-log-related-card div,
+.admin-log-action-card div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.admin-log-related-card strong,
+.admin-log-action-card strong,
+.admin-log-related-card span,
+.admin-log-action-card span {
+  overflow-wrap: anywhere;
+}
+
+.admin-log-related-card span,
+.admin-log-action-card span {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .admin-logs-search-field {
+    flex: 1 1 100%;
+  }
+
+  .admin-logs-filter-card {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-logs-filter-actions {
+    padding-top: 0;
+  }
+
+  .admin-log-related-card,
+  .admin-log-action-card {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

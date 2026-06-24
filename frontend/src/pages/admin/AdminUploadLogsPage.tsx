@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { listUploadLogs } from '../../api/uploadLogs'
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconChevRight, IconRefresh } from '../../components/icons'
@@ -92,6 +92,8 @@ const SummaryCountChips = ({
 
 export const AdminUploadLogsPage = () => {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const initialSearchTerm = searchParams.get('search')?.trim() ?? ''
   const { role, demoAdminId, demoAdminProgrammes } = useAppState()
   const [logs, setLogs] = useState<UploadLogListItem[]>([])
   const [total, setTotal] = useState(0)
@@ -104,8 +106,8 @@ export const AdminUploadLogsPage = () => {
   const [uploadTypeFilter, setUploadTypeFilter] = useState<UploadType | 'all'>('all')
   const [statusFilter, setStatusFilter] = useState<UploadLogStatus | 'all'>('all')
   const [programmeFilter, setProgrammeFilter] = useState<string>('all')
-  const [searchTerm, setSearchTerm] = useState('')
-  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('')
+  const [searchTerm, setSearchTerm] = useState(initialSearchTerm)
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(initialSearchTerm)
   const [selectedLogId, setSelectedLogId] = useState<string | null>(null)
   const [selectedLog, setSelectedLog] = useState<UploadLogListItem | null>(null)
 

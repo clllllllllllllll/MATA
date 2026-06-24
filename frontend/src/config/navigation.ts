@@ -60,8 +60,8 @@ export const navItems: NavItem[] = [
     icon: 'settings',
   },
   {
-    label: 'Upload Logs',
-    path: '/admin/upload-logs',
+    label: 'Admin Logs',
+    path: '/admin/logs',
     roles: ['master_admin'],
     icon: 'file',
   },
@@ -127,6 +127,7 @@ export const breadcrumbMap: Record<string, string[]> = {
   '/admin/upload/warnings': ['Master Admin', 'Warning Review'],
   '/admin/config': ['Master Admin', 'Configuration'],
   '/admin/config/multi': ['Master Admin', 'Configuration', 'Multi-Posting Rules'],
+  '/admin/logs': ['Master Admin', 'Admin Logs'],
   '/admin/upload-logs': ['Master Admin', 'Upload Logs'],
   '/admin/parsed-data': ['Master Admin', 'Live Data'],
   '/admin/secretary-events': ['Master Admin', 'Secretary Events'],

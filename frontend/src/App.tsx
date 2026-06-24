@@ -2,6 +2,7 @@
 import { AppShell } from './components/AppShell'
 import { AdminConfigPage } from './pages/admin/AdminConfigPage'
 import { AdminHomePage } from './pages/admin/AdminHomePage'
+import { AdminLogsPage } from './pages/admin/AdminLogsPage'
 import { AdminMultiPostingPage } from './pages/admin/AdminMultiPostingPage'
 import { AdminParsedDataPage } from './pages/admin/AdminParsedDataPage'
 import { AdminPlaceholderPage } from './pages/admin/AdminPlaceholderPage'
@@ -22,6 +23,7 @@ function App() {
         <Route path="/admin/upload/warnings" element={<AdminWarningsPage />} />
         <Route path="/admin/config" element={<AdminConfigPage configViewRole="master_admin" />} />
         <Route path="/admin/config/multi" element={<AdminMultiPostingPage />} />
+        <Route path="/admin/logs" element={<AdminLogsPage />} />
         <Route path="/admin/upload-logs" element={<AdminUploadLogsPage />} />
         <Route path="/admin/parsed-data" element={<AdminParsedDataPage />} />
         <Route
