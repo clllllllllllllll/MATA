@@ -1,5 +1,7 @@
 import { buildAdminDemoHeaders, type AdminDemoLevel } from './authHeaders'
+import { toConfigDeleteResult, toDataRevalidationImpact, type ConfigDeleteResult } from './dataRevalidation'
 import { httpClient, toApiRequestError } from './http'
+import type { DataRevalidationImpact } from '../types/dataRevalidation'
 
 export interface WeekendException {
   id: string
@@ -16,6 +18,7 @@ export interface WeekendException {
   adjustedDurationHours?: string
   createdAt?: string
   updatedAt?: string
+  dataRevalidation?: DataRevalidationImpact | null
 }
 
 interface WeekendExceptionRequestContext {
@@ -55,6 +58,7 @@ const toWeekendException = (value: Record<string, unknown>): WeekendException =>
   adjustedDurationHours: toOptionalString(value.adjusted_duration_hours),
   createdAt: toOptionalString(value.created_at),
   updatedAt: toOptionalString(value.updated_at),
+  dataRevalidation: toDataRevalidationImpact(value.data_revalidation),
 })
 
 const toApiPayload = (payload: WeekendExceptionMutationPayload): Record<string, unknown> => ({
@@ -124,11 +128,12 @@ export const updateWeekendException = async (
 
 export const deleteWeekendException = async (
   params: WeekendExceptionRequestContext & { id: string },
-): Promise<void> => {
+): Promise<ConfigDeleteResult> => {
   try {
-    await httpClient.delete(`/admin/weekend-exceptions/${params.id}`, {
+    const response = await httpClient.delete(`/admin/weekend-exceptions/${params.id}`, {
       headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
     })
+    return toConfigDeleteResult(response.data)
   } catch (error) {
     throw toApiRequestError(error)
   }

@@ -44,6 +44,7 @@ import {
   type WeekendException,
 } from '../../api/weekendExceptions'
 import { ApiRequestError } from '../../api/http'
+import { DataRevalidationCallout } from '../../components/DataRevalidationCallout'
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { StatusBadge } from '../../components/StatusBadge'
 import { IconPlus, IconRefresh, NamedIcon } from '../../components/icons'
@@ -52,6 +53,7 @@ import { useAppState } from '../../context/useAppState'
 import { useAdminConfigReadCache } from '../../hooks/useAdminConfigReadCache'
 import type { ReportingPeriodOption } from '../../types/upload'
 import { MultiPostingRulesSection } from './AdminMultiPostingPage'
+import type { DataRevalidationImpact } from '../../types/dataRevalidation'
 
 type ConfigSectionKey =
   | 'reporting-periods'
@@ -138,6 +140,7 @@ type Feedback = {
     count: number
   }>
   rawMessage?: string
+  dataRevalidation?: DataRevalidationImpact | null
 } | null
 
 const emptyPublicHolidays: PublicHoliday[] = []
@@ -171,6 +174,15 @@ const emptyWeekendExceptionsConfigData: WeekendExceptionsConfigData = {
 }
 
 const emptyGlobalSessionTypes: GlobalSessionType[] = []
+
+const mutationFeedback = (
+  message: string,
+  result?: { dataRevalidation?: DataRevalidationImpact | null } | null,
+): NonNullable<Feedback> => ({
+  tone: 'success',
+  message,
+  dataRevalidation: result?.dataRevalidation ?? null,
+})
 
 const emptyReportingPeriodForm: ReportingPeriodFormState = {
   label: '',
@@ -796,15 +808,15 @@ const ReportingPeriodsSection = () => {
     setFeedbackDetailsOpen(false)
     try {
       if (drawerMode === 'edit' && selectedPeriod) {
-        await updateReportingPeriod({
+        const result = await updateReportingPeriod({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           id: selectedPeriod.id,
           payload: formState,
         })
-        setFeedback({ tone: 'success', message: 'Reporting period updated.' })
+        setFeedback(mutationFeedback('Reporting period updated.', result))
       } else {
-        await createReportingPeriod({
+        const result = await createReportingPeriod({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           payload: {
@@ -813,7 +825,7 @@ const ReportingPeriodsSection = () => {
             endDate: formState.endDate,
           },
         })
-        setFeedback({ tone: 'success', message: 'Reporting period created.' })
+        setFeedback(mutationFeedback('Reporting period created.', result))
       }
       await reloadReportingPeriods()
       setDrawerOpen(false)
@@ -845,12 +857,12 @@ const ReportingPeriodsSection = () => {
     setFeedback(null)
     setFeedbackDetailsOpen(false)
     try {
-      await deleteReportingPeriod({
+      const result = await deleteReportingPeriod({
         adminId: demoAdminId,
         adminProgrammes: demoAdminProgrammes,
         id: period.id,
       })
-      setFeedback({ tone: 'success', message: 'Reporting period deleted.' })
+      setFeedback(mutationFeedback('Reporting period deleted.', result))
       await reloadReportingPeriods()
       setConfirmingDeletePeriod(null)
     } catch (error) {
@@ -896,6 +908,7 @@ const ReportingPeriodsSection = () => {
           <div className="admin-config-feedback-content">
             <strong>{feedback.message}</strong>
             {feedback.description ? <p>{feedback.description}</p> : null}
+            <DataRevalidationCallout impact={feedback.dataRevalidation} compact />
             {feedback.detailsLabel && (feedback.dependencyDetails?.length || feedback.rawMessage) ? (
               <>
                 <button
@@ -1210,20 +1223,20 @@ const PublicHolidaysSection = () => {
     setFeedback(null)
     try {
       if (drawerMode === 'edit' && selectedHoliday) {
-        await updatePublicHoliday({
+        const result = await updatePublicHoliday({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           id: selectedHoliday.id,
           payload: formState,
         })
-        setFeedback({ tone: 'success', message: 'Public holiday updated.' })
+        setFeedback(mutationFeedback('Public holiday updated.', result))
       } else {
-        await createPublicHoliday({
+        const result = await createPublicHoliday({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           payload: formState,
         })
-        setFeedback({ tone: 'success', message: 'Public holiday created.' })
+        setFeedback(mutationFeedback('Public holiday created.', result))
       }
       await reloadPublicHolidays({ force: true })
       setDrawerOpen(false)
@@ -1245,12 +1258,12 @@ const PublicHolidaysSection = () => {
     setDeletingId(holiday.id)
     setFeedback(null)
     try {
-      await deletePublicHoliday({
+      const result = await deletePublicHoliday({
         adminId: demoAdminId,
         adminProgrammes: demoAdminProgrammes,
         id: holiday.id,
       })
-      setFeedback({ tone: 'success', message: 'Public holiday deleted.' })
+      setFeedback(mutationFeedback('Public holiday deleted.', result))
       await reloadPublicHolidays({ force: true })
       setConfirmingDeleteHoliday(null)
     } catch (error) {
@@ -1296,6 +1309,7 @@ const PublicHolidaysSection = () => {
           <div className="admin-config-feedback-content">
             <strong>{feedback.message}</strong>
             {feedback.description ? <p>{feedback.description}</p> : null}
+            <DataRevalidationCallout impact={feedback.dataRevalidation} compact />
           </div>
           <button
             type="button"
@@ -1544,7 +1558,7 @@ const ProgrammesSection = () => {
     setSubmitState('submitting')
     setFeedback(null)
     try {
-      await updateProgramme({
+      const result = await updateProgramme({
         adminId: demoAdminId,
         adminProgrammes: demoAdminProgrammes,
         adminLevel,
@@ -1555,7 +1569,7 @@ const ProgrammesSection = () => {
           rdbAlias: formState.rdbAlias.trim() || null,
         },
       })
-      setFeedback({ tone: 'success', message: 'Programme updated.' })
+      setFeedback(mutationFeedback('Programme updated.', result))
       await reloadProgrammes({ force: true })
       setDrawerOpen(false)
       setSelectedProgramme(null)
@@ -1598,6 +1612,7 @@ const ProgrammesSection = () => {
           <div className="admin-config-feedback-content">
             <strong>{feedback.message}</strong>
             {feedback.description ? <p>{feedback.description}</p> : null}
+            <DataRevalidationCallout impact={feedback.dataRevalidation} compact />
           </div>
           <button
             type="button"
@@ -1847,22 +1862,22 @@ const LoaTypesSection = () => {
     }
     try {
       if (drawerMode === 'edit' && selectedLoaType) {
-        await updateLoaType({
+        const result = await updateLoaType({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
           id: selectedLoaType.id,
           payload,
         })
-        setFeedback({ tone: 'success', message: 'LOA type updated.' })
+        setFeedback(mutationFeedback('LOA type updated.', result))
       } else {
-        await createLoaType({
+        const result = await createLoaType({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
           payload,
         })
-        setFeedback({ tone: 'success', message: 'LOA type created.' })
+        setFeedback(mutationFeedback('LOA type created.', result))
       }
       await reloadLoaTypes({ force: true })
       setDrawerOpen(false)
@@ -1890,13 +1905,13 @@ const LoaTypesSection = () => {
     setDeletingId(loaType.id)
     setFeedback(null)
     try {
-      await deleteLoaType({
+      const result = await deleteLoaType({
         adminId: demoAdminId,
         adminProgrammes: demoAdminProgrammes,
         adminLevel,
         id: loaType.id,
       })
-      setFeedback({ tone: 'success', message: 'LOA type deleted.' })
+      setFeedback(mutationFeedback('LOA type deleted.', result))
       await reloadLoaTypes({ force: true })
       setConfirmingDeleteLoaType(null)
     } catch (error) {
@@ -1942,6 +1957,7 @@ const LoaTypesSection = () => {
           <div className="admin-config-feedback-content">
             <strong>{feedback.message}</strong>
             {feedback.description ? <p>{feedback.description}</p> : null}
+            <DataRevalidationCallout impact={feedback.dataRevalidation} compact />
           </div>
           <button
             type="button"
@@ -2249,22 +2265,22 @@ const PostingGroupsSection = () => {
     }
     try {
       if (drawerMode === 'edit' && selectedPostingGroup) {
-        await updatePostingGroup({
+        const result = await updatePostingGroup({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
           id: selectedPostingGroup.id,
           payload,
         })
-        setFeedback({ tone: 'success', message: 'Posting group updated.' })
+        setFeedback(mutationFeedback('Posting group updated.', result))
       } else {
-        await createPostingGroup({
+        const result = await createPostingGroup({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
           payload,
         })
-        setFeedback({ tone: 'success', message: 'Posting group created.' })
+        setFeedback(mutationFeedback('Posting group created.', result))
       }
       await reloadPostingGroups({ force: true })
       setDrawerOpen(false)
@@ -2292,13 +2308,13 @@ const PostingGroupsSection = () => {
     setDeletingId(postingGroup.id)
     setFeedback(null)
     try {
-      await deletePostingGroup({
+      const result = await deletePostingGroup({
         adminId: demoAdminId,
         adminProgrammes: demoAdminProgrammes,
         adminLevel,
         id: postingGroup.id,
       })
-      setFeedback({ tone: 'success', message: 'Posting group deleted.' })
+      setFeedback(mutationFeedback('Posting group deleted.', result))
       await reloadPostingGroups({ force: true })
       setConfirmingDeleteGroup(null)
     } catch (error) {
@@ -2355,6 +2371,7 @@ const PostingGroupsSection = () => {
           <div className="admin-config-feedback-content">
             <strong>{feedback.message}</strong>
             {feedback.description ? <p>{feedback.description}</p> : null}
+            <DataRevalidationCallout impact={feedback.dataRevalidation} compact />
           </div>
           <button
             type="button"
@@ -2724,22 +2741,22 @@ const WeekendExceptionsSection = () => {
     }
     try {
       if (drawerMode === 'edit' && selectedException) {
-        await updateWeekendException({
+        const result = await updateWeekendException({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
           id: selectedException.id,
           payload,
         })
-        setFeedback({ tone: 'success', message: 'Weekend exception updated.' })
+        setFeedback(mutationFeedback('Weekend exception updated.', result))
       } else {
-        await createWeekendException({
+        const result = await createWeekendException({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
           payload,
         })
-        setFeedback({ tone: 'success', message: 'Weekend exception created.' })
+        setFeedback(mutationFeedback('Weekend exception created.', result))
       }
       await reloadWeekendExceptions({ force: true })
       setDrawerOpen(false)
@@ -2761,13 +2778,13 @@ const WeekendExceptionsSection = () => {
     setDeletingId(weekendException.id)
     setFeedback(null)
     try {
-      await deleteWeekendException({
+      const result = await deleteWeekendException({
         adminId: demoAdminId,
         adminProgrammes: demoAdminProgrammes,
         adminLevel,
         id: weekendException.id,
       })
-      setFeedback({ tone: 'success', message: 'Weekend exception deleted.' })
+      setFeedback(mutationFeedback('Weekend exception deleted.', result))
       await reloadWeekendExceptions({ force: true })
       setConfirmingDeleteException(null)
     } catch (error) {
@@ -2813,6 +2830,7 @@ const WeekendExceptionsSection = () => {
           <div className="admin-config-feedback-content">
             <strong>{feedback.message}</strong>
             {feedback.description ? <p>{feedback.description}</p> : null}
+            <DataRevalidationCallout impact={feedback.dataRevalidation} compact />
           </div>
           <button
             type="button"
@@ -3276,22 +3294,22 @@ const GlobalSessionTypesSection = () => {
     }
     try {
       if (drawerMode === 'edit' && selectedGlobalType) {
-        await updateGlobalSessionType({
+        const result = await updateGlobalSessionType({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
           id: selectedGlobalType.id,
           payload,
         })
-        setFeedback({ tone: 'success', message: 'Global session type updated.' })
+        setFeedback(mutationFeedback('Global session type updated.', result))
       } else {
-        await createGlobalSessionType({
+        const result = await createGlobalSessionType({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
           payload,
         })
-        setFeedback({ tone: 'success', message: 'Global session type created.' })
+        setFeedback(mutationFeedback('Global session type created.', result))
       }
       await reloadGlobalSessionTypes({ force: true })
       setDrawerOpen(false)
@@ -3319,13 +3337,13 @@ const GlobalSessionTypesSection = () => {
     setDeletingId(globalSessionType.id)
     setFeedback(null)
     try {
-      await deleteGlobalSessionType({
+      const result = await deleteGlobalSessionType({
         adminId: demoAdminId,
         adminProgrammes: demoAdminProgrammes,
         adminLevel,
         id: globalSessionType.id,
       })
-      setFeedback({ tone: 'success', message: 'Global session type deleted.' })
+      setFeedback(mutationFeedback('Global session type deleted.', result))
       await reloadGlobalSessionTypes({ force: true })
       setConfirmingDeleteGlobalType(null)
     } catch (error) {
@@ -3377,6 +3395,7 @@ const GlobalSessionTypesSection = () => {
           <div className="admin-config-feedback-content">
             <strong>{feedback.message}</strong>
             {feedback.description ? <p>{feedback.description}</p> : null}
+            <DataRevalidationCallout impact={feedback.dataRevalidation} compact />
           </div>
           <button
             type="button"

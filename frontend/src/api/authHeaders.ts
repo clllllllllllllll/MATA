@@ -11,6 +11,7 @@ export const buildAdminDemoHeaders = (
   adminLevel: AdminDemoLevel = defaultAdminDemoLevel,
   _actorName?: string,
 ): Record<string, string> => {
+  void _actorName
   const headers: Record<string, string> = {
     'X-User-Role': 'admin',
     'X-User-Id': adminId,

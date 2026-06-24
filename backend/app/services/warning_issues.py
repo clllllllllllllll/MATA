@@ -623,6 +623,45 @@ def _latest_trace(occurrence: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def _json_payload_value(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return {"value": value}
+    return value
+
+
+def _detail_occurrence_payload(occurrence: dict[str, Any]) -> dict[str, Any]:
+    source_payload = _json_payload_value(occurrence.get("source_payload"))
+    return {
+        "id": str(occurrence["id"]),
+        "issue_id": str(occurrence["issue_id"]),
+        "source_trace": _latest_trace(occurrence),
+        "upload_log_id": str(occurrence["upload_log_id"]),
+        "upload_type": occurrence.get("upload_type"),
+        "uploaded_at": occurrence.get("uploaded_at"),
+        "warning_type": occurrence["warning_type"],
+        "severity": occurrence["severity"],
+        "reporting_period_id": str(occurrence["reporting_period_id"]) if occurrence.get("reporting_period_id") else None,
+        "programme_code": occurrence.get("programme_code"),
+        "resident_id": str(occurrence["resident_id"]) if occurrence.get("resident_id") else None,
+        "mcr": occurrence.get("mcr"),
+        "resident_name": occurrence.get("resident_name"),
+        "month_label": occurrence.get("month_label"),
+        "sheet_name": occurrence.get("sheet_name"),
+        "row_number": occurrence.get("row_number"),
+        "cell_ref": occurrence.get("cell_ref"),
+        "source_table": occurrence.get("source_table"),
+        "source_record_id": str(occurrence["source_record_id"]) if occurrence.get("source_record_id") else None,
+        "source_payload": source_payload,
+        "message": occurrence["message"],
+        "suggested_action": occurrence.get("suggested_action"),
+        "fingerprint": occurrence["fingerprint"],
+        "created_at": occurrence["created_at"],
+    }
+
+
 async def _occurrences_for_issue(db: AsyncSession, issue_id: str) -> list[dict[str, Any]]:
     result = await db.execute(
         text(
@@ -662,8 +701,7 @@ def _list_item(
 ) -> dict[str, Any]:
     latest_warning_id = str(occurrence["id"]) if occurrence else None
     source_payload = occurrence.get("source_payload") if occurrence else None
-    if isinstance(source_payload, str):
-        source_payload = json.loads(source_payload)
+    source_payload = _json_payload_value(source_payload)
     posting_codes = []
     if isinstance(source_payload, dict):
         payload_posting_codes = source_payload.get("posting_codes") or source_payload.get("postingCodes")
@@ -841,16 +879,7 @@ async def get_warning_issue_detail(
     occurrences = await _occurrences_for_issue(db, str(issue["id"]))
     normalized_occurrences: list[dict[str, Any]] = []
     for occurrence in occurrences:
-        source_payload = occurrence.get("source_payload")
-        if isinstance(source_payload, str):
-            source_payload = json.loads(source_payload)
-        normalized_occurrences.append(
-            {
-                **occurrence,
-                "source_payload": source_payload,
-                "source_trace": _latest_trace(occurrence),
-            }
-        )
+        normalized_occurrences.append(_detail_occurrence_payload(occurrence))
     latest_occurrence = normalized_occurrences[0] if normalized_occurrences else None
     latest_source_payload = (
         latest_occurrence.get("source_payload")

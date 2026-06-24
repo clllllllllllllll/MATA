@@ -601,6 +601,58 @@ def test_scoped_admin_cannot_access_out_of_scope_warning_issue() -> None:
     assert response.status_code == 404
 
 
+def test_warning_issue_detail_serializes_uuid_occurrence_ids_for_unmatched_multi_posting() -> None:
+    class UuidOccurrenceSession(FakeWarningIssueSession):
+        async def execute(self, statement, params=None):
+            sql = str(statement)
+            payload = dict(params or {})
+            if "FROM upload_warnings" in sql and "issue_id = :issue_id" in sql:
+                rows = [
+                    row
+                    for row in self.upload_warnings
+                    if str(row["issue_id"]) == str(payload["issue_id"])
+                ]
+                rows.sort(key=lambda row: (row["created_at"], str(row["id"])), reverse=True)
+                uuid_rows = []
+                for row in rows:
+                    next_row = dict(row)
+                    for key in ("id", "issue_id", "upload_log_id", "reporting_period_id"):
+                        if next_row.get(key):
+                            next_row[key] = UUID(str(next_row[key]))
+                    uuid_rows.append(next_row)
+                return _FakeMappingResult(uuid_rows)
+            return await super().execute(statement, params)
+
+    session = UuidOccurrenceSession()
+    upload_log = session.add_upload_log(
+        summary={
+            "warnings": [
+                {
+                    "type": "unmatched_multi_posting",
+                    "programme_code": "GRM",
+                    "mcr": "M00009Z",
+                    "month_label": "May-26",
+                    "posting_codes": ["TTSHGerMed", "KTPHGerMed"],
+                    "message": "No matching multi-posting rule found.",
+                }
+            ]
+        }
+    )
+    _run(derive_upload_warnings_from_summary(session, upload_log, upload_log["summary"]))
+    client = _client(session)
+    issue_id = session.warning_issues[0]["id"]
+
+    response = client.get(f"/admin/upload-warnings/{issue_id}", headers=_headers("GRM"))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["warning_type"] == "unmatched_multi_posting"
+    assert body["occurrences"][0]["id"] == session.upload_warnings[0]["id"]
+    assert body["occurrences"][0]["issue_id"] == issue_id
+    assert body["occurrences"][0]["upload_log_id"] == upload_log["id"]
+    assert body["latest_source_payload"]["type"] == "unmatched_multi_posting"
+
+
 def test_unexpected_warning_table_probe_error_surfaces() -> None:
     class UnexpectedProbeError(Exception):
         pass

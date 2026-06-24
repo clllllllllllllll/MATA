@@ -116,11 +116,24 @@ export const AdminUploadPage = () => {
 
   const reviewWarningsForUpload = (uploadType: UploadType) => {
     const latest = latestByType.get(uploadType)
+    const params = new URLSearchParams({ mode: 'active', upload_type: uploadType })
     if (!latest) {
-      navigate('/admin/upload/warnings')
+      if (uploadType === 'rdb' || uploadType === 'form_f1' || uploadType === 'ttf') {
+        params.set('reporting_period_id', reportingPeriodId)
+      }
+      if (uploadType === 'ttf') {
+        params.set('programme_code', selectedProgrammeCode)
+      }
+      navigate(`/admin/upload/warnings?${params.toString()}`)
       return
     }
-    navigate('/admin/upload/warnings')
+    if (latest.reportingPeriodId) {
+      params.set('reporting_period_id', latest.reportingPeriodId)
+    }
+    if (latest.programmeCode) {
+      params.set('programme_code', latest.programmeCode)
+    }
+    navigate(`/admin/upload/warnings?${params.toString()}`)
   }
 
   return (

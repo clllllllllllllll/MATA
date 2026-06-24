@@ -162,13 +162,9 @@ export const UploadCard = ({
 
     try {
       const result = await onUpload(file)
-      setUploadProgressPercent(90)
-      setStatus('parsing')
-      setTimeout(() => {
-        setResponse(result)
-        setUploadProgressPercent(100)
-        setStatus('success')
-      }, 600)
+      setResponse(result)
+      setUploadProgressPercent(100)
+      setStatus('success')
     } catch (error) {
       let message = error instanceof Error ? error.message : 'Upload failed. Please try again.'
       let details: unknown = null

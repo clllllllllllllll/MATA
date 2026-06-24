@@ -1,16 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getUploadLog, listUploadLogs } from '../../api/uploadLogs'
+import { listUploadLogs } from '../../api/uploadLogs'
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconChevRight, IconRefresh } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useAppState } from '../../context/useAppState'
 import type { UploadType } from '../../types/app'
-import type { UploadLogDetail, UploadLogListItem, UploadLogStatus } from '../../types/upload'
+import type { UploadLogListItem, UploadLogStatus } from '../../types/upload'
 import {
   clearMemoryCache,
-  clearMemoryCacheResource,
   getMemoryCache,
   makeScopedCacheKey,
   readThroughMemoryCache,
@@ -108,9 +107,7 @@ export const AdminUploadLogsPage = () => {
   const [searchTerm, setSearchTerm] = useState('')
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('')
   const [selectedLogId, setSelectedLogId] = useState<string | null>(null)
-  const [selectedDetail, setSelectedDetail] = useState<UploadLogDetail | null>(null)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [detailError, setDetailError] = useState<string | null>(null)
+  const [selectedLog, setSelectedLog] = useState<UploadLogListItem | null>(null)
 
   const cacheScope = useMemo<CacheScope>(() => ({
     role,
@@ -126,10 +123,6 @@ export const AdminUploadLogsPage = () => {
     limit: pageSize,
     offset,
   }), [cacheScope, offset, programmeFilter, statusFilter, uploadTypeFilter])
-
-  const uploadLogDetailCacheKey = useCallback((uploadLogId: string) => makeScopedCacheKey(cacheScope, 'admin.upload-logs.detail', {
-    uploadLogId,
-  }), [cacheScope])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -165,7 +158,6 @@ export const AdminUploadLogsPage = () => {
     try {
       const key = uploadLogsCacheKey(searchTerm)
       clearMemoryCache((cacheKey) => cacheKey === key)
-      clearMemoryCacheResource('admin.upload-logs.detail')
       const response = await loadLogs(searchTerm)
       setMemoryCache(key, response)
       setDebouncedSearchTerm((previous) => (previous === searchTerm ? previous : searchTerm))
@@ -262,38 +254,18 @@ export const AdminUploadLogsPage = () => {
     setOffset(0)
   }
 
-  const openDetail = async (uploadLogId: string) => {
-    setSelectedLogId(uploadLogId)
-    setSelectedDetail(null)
-    setDetailError(null)
-    setDetailLoading(true)
-    try {
-      const { data: detail } = await readThroughMemoryCache(
-        uploadLogDetailCacheKey(uploadLogId),
-        () => getUploadLog({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
-          adminLevel: 'master',
-          uploadLogId,
-        }),
-      )
-      setSelectedDetail(detail)
-    } catch (fetchError) {
-      setDetailError(fetchError instanceof Error ? fetchError.message : 'Unable to load upload log detail.')
-    } finally {
-      setDetailLoading(false)
-    }
+  const openDetail = (uploadLog: UploadLogListItem) => {
+    setSelectedLogId(uploadLog.id)
+    setSelectedLog(uploadLog)
   }
 
   const closeDetail = () => {
     setSelectedLogId(null)
-    setSelectedDetail(null)
-    setDetailError(null)
-    setDetailLoading(false)
+    setSelectedLog(null)
   }
 
   const openRelatedWarnings = () => {
-    const uploadType = selectedDetail?.upload_type
+    const uploadType = selectedLog?.upload_type
     const query = uploadType ? `?mode=history&upload_type=${uploadType}` : '?mode=history'
     navigate(`/admin/upload/warnings${query}`)
   }
@@ -455,7 +427,7 @@ export const AdminUploadLogsPage = () => {
                   <tr
                     key={log.id}
                     className="table-clickable-row"
-                    onClick={() => void openDetail(log.id)}
+                    onClick={() => openDetail(log)}
                   >
                     <td>{uploadTypeLabels[log.upload_type]}</td>
                     <td>{formatDateTime(log.uploaded_at)}</td>
@@ -509,52 +481,41 @@ export const AdminUploadLogsPage = () => {
       )}
 
       <DetailDrawer
-        title={selectedDetail ? uploadTypeLabels[selectedDetail.upload_type] : 'Upload log detail'}
+        title={selectedLog ? uploadTypeLabels[selectedLog.upload_type] : 'Upload log detail'}
         open={Boolean(selectedLogId)}
         onClose={closeDetail}
         footer={
-          selectedDetail ? (
+          selectedLog ? (
             <button type="button" className="button button-primary" onClick={openRelatedWarnings}>
               View related warnings
             </button>
           ) : null
         }
       >
-        {detailLoading ? (
-          <section className="warning-state-card">Loading upload log detail...</section>
-        ) : detailError ? (
-          <section className="warning-state-card">
-            <strong>Detail could not be loaded.</strong>
-            <p>{detailError}</p>
-            {selectedLogId ? (
-              <button type="button" className="button button-secondary" onClick={() => void openDetail(selectedLogId)}>
-                Retry
-              </button>
-            ) : null}
-          </section>
-        ) : selectedDetail ? (
+        {selectedLog ? (
           <div className="warning-detail upload-log-detail">
             <div className="detail-block">
               <h3>Upload</h3>
-              <p>Type: {uploadTypeLabels[selectedDetail.upload_type]}</p>
-              <p>Uploaded: {formatDateTime(selectedDetail.uploaded_at)}</p>
-              <p>Uploaded by: {fieldValue(selectedDetail.uploaded_by_name ?? selectedDetail.uploaded_by)}</p>
-              <p>Status: {selectedDetail.status}</p>
-              <p>Reporting period: {fieldValue(selectedDetail.reporting_period_label ?? selectedDetail.reporting_period_id)}</p>
-              <p>Programme: {fieldValue(selectedDetail.programme_code ?? 'Global')}</p>
-              <p>Original filename: {fieldValue(selectedDetail.original_filename)}</p>
+              <p>Type: {uploadTypeLabels[selectedLog.upload_type]}</p>
+              <p>Uploaded: {formatDateTime(selectedLog.uploaded_at)}</p>
+              <p>Uploaded by: {fieldValue(selectedLog.uploaded_by_name ?? selectedLog.uploaded_by)}</p>
+              <p>Status: {selectedLog.status}</p>
+              <p>Reporting period: {fieldValue(selectedLog.reporting_period_label ?? selectedLog.reporting_period_id)}</p>
+              <p>Programme: {fieldValue(selectedLog.programme_code ?? 'Global')}</p>
             </div>
             <div className="detail-block">
               <h3>Counts</h3>
-              <p>Warnings: {selectedDetail.warning_count}</p>
-              <p>Errors: {selectedDetail.error_count}</p>
+              <p>Warnings: {selectedLog.warning_count}</p>
+              <p>Errors: {selectedLog.error_count}</p>
               <div className="summary-count-detail-list">
-                <SummaryCountChips counts={selectedDetail.summary_counts} maxItems={20} />
+                <SummaryCountChips counts={selectedLog.summary_counts} maxItems={20} />
               </div>
             </div>
             <div className="detail-block">
-              <h3>Raw summary</h3>
-              <pre className="raw-json">{JSON.stringify(selectedDetail.summary, null, 2)}</pre>
+              <h3>Audit summary</h3>
+              <p className="inline-muted">
+                Raw upload summary is retained for backend audit but hidden from the UI for performance.
+              </p>
             </div>
           </div>
         ) : null}

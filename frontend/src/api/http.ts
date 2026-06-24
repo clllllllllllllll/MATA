@@ -2,6 +2,12 @@ import axios from 'axios'
 import { frontendConfig } from '../config/frontendConfig'
 import { clearMemoryCache } from '../utils/memoryReadCache'
 
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    skipMemoryCacheClear?: boolean
+  }
+}
+
 export class ApiRequestError extends Error {
   status?: number
   details?: unknown
@@ -26,7 +32,13 @@ export const httpClient = axios.create({
 
 httpClient.interceptors.response.use((response) => {
   const method = response.config.method?.toUpperCase()
-  if (method && method !== 'GET' && response.status >= 200 && response.status < 300) {
+  if (
+    method &&
+    method !== 'GET' &&
+    response.status >= 200 &&
+    response.status < 300 &&
+    !response.config.skipMemoryCacheClear
+  ) {
     clearMemoryCache()
   }
   return response

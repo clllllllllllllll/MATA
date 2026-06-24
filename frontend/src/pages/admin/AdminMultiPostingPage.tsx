@@ -12,10 +12,12 @@ import {
 import { listPostingCodes, type PostingCodeOption } from '../../api/postingCodes'
 import { listProgrammes, type Programme } from '../../api/programmes'
 import { ApiRequestError } from '../../api/http'
+import { DataRevalidationCallout } from '../../components/DataRevalidationCallout'
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconPlus, IconRefresh } from '../../components/icons'
 import { useAppState } from '../../context/useAppState'
 import { useAdminConfigReadCache } from '../../hooks/useAdminConfigReadCache'
+import type { DataRevalidationImpact } from '../../types/dataRevalidation'
 
 type RuleTab = MultiPostingRuleType
 type ConfigViewRole = 'master_admin' | 'programme_pc'
@@ -36,7 +38,12 @@ interface MultiPostingFormState {
   exclusionCode: string
 }
 
-type Feedback = { tone: 'success' | 'error'; message: string; description?: string } | null
+type Feedback = {
+  tone: 'success' | 'error'
+  message: string
+  description?: string
+  dataRevalidation?: DataRevalidationImpact | null
+} | null
 
 interface MultiPostingConfigData {
   rules: MultiPostingRule[]
@@ -105,6 +112,15 @@ const describeError = (error: unknown, fallback: string): string => {
   }
   return error.message
 }
+
+const mutationFeedback = (
+  message: string,
+  result?: { dataRevalidation?: DataRevalidationImpact | null } | null,
+): NonNullable<Feedback> => ({
+  tone: 'success',
+  message,
+  dataRevalidation: result?.dataRevalidation ?? null,
+})
 
 const formatDate = (value?: string): string => {
   if (!value) {
@@ -413,22 +429,22 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
     setFeedback(null)
     try {
       if (drawerMode === 'edit' && selectedRule) {
-        await updateMultiPostingRule({
+        const result = await updateMultiPostingRule({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
           id: selectedRule.id,
           payload: payloadFromForm(),
         })
-        setFeedback({ tone: 'success', message: 'Multi-posting rule updated.' })
+        setFeedback(mutationFeedback('Multi-posting rule updated.', result))
       } else {
-        await createMultiPostingRule({
+        const result = await createMultiPostingRule({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
           payload: payloadFromForm(),
         })
-        setFeedback({ tone: 'success', message: 'Multi-posting rule created.' })
+        setFeedback(mutationFeedback('Multi-posting rule created.', result))
       }
       await reloadRules({ force: true })
       setDrawerOpen(false)
@@ -449,13 +465,13 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
     setDeletingId(rule.id)
     setFeedback(null)
     try {
-      await deleteMultiPostingRule({
+      const result = await deleteMultiPostingRule({
         adminId: demoAdminId,
         adminProgrammes: demoAdminProgrammes,
         adminLevel,
         id: rule.id,
       })
-      setFeedback({ tone: 'success', message: 'Multi-posting rule deleted.' })
+      setFeedback(mutationFeedback('Multi-posting rule deleted.', result))
       await reloadRules({ force: true })
       setConfirmingDeleteRule(null)
     } catch (error) {
@@ -528,6 +544,7 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
           <div className="admin-config-feedback-content">
             <strong>{feedback.message}</strong>
             {feedback.description ? <p>{feedback.description}</p> : null}
+            <DataRevalidationCallout impact={feedback.dataRevalidation} compact />
           </div>
           <button
             type="button"

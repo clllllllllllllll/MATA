@@ -1,5 +1,7 @@
 import { buildAdminDemoHeaders, type AdminDemoLevel } from './authHeaders'
+import { toConfigDeleteResult, toDataRevalidationImpact, type ConfigDeleteResult } from './dataRevalidation'
 import { httpClient, toApiRequestError } from './http'
+import type { DataRevalidationImpact } from '../types/dataRevalidation'
 
 export type MultiPostingRuleType = 'main_posting' | 'combine' | 'half_month'
 
@@ -14,6 +16,7 @@ export interface MultiPostingRule {
   exclusionCode?: string
   createdAt?: string
   updatedAt?: string
+  dataRevalidation?: DataRevalidationImpact | null
 }
 
 export interface MultiPostingRulePayload {
@@ -47,6 +50,7 @@ const toRule = (value: Record<string, unknown>): MultiPostingRule => ({
   exclusionCode: toOptionalString(value.exclusion_code),
   createdAt: toOptionalString(value.created_at),
   updatedAt: toOptionalString(value.updated_at),
+  dataRevalidation: toDataRevalidationImpact(value.data_revalidation),
 })
 
 const toApiPayload = (payload: MultiPostingRulePayload): Record<string, unknown> => ({
@@ -115,11 +119,12 @@ export const updateMultiPostingRule = async (
 
 export const deleteMultiPostingRule = async (
   params: MultiPostingRulesRequestContext & { id: string },
-): Promise<void> => {
+): Promise<ConfigDeleteResult> => {
   try {
-    await httpClient.delete(`/admin/multi-posting-rules/${params.id}`, {
+    const response = await httpClient.delete(`/admin/multi-posting-rules/${params.id}`, {
       headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
     })
+    return toConfigDeleteResult(response.data)
   } catch (error) {
     throw toApiRequestError(error)
   }

@@ -1,4 +1,5 @@
 import type { UploadType } from './app'
+import type { DataRevalidationImpact } from './dataRevalidation'
 
 export type WarningSeverity = 'critical' | 'warning' | 'info'
 export type UploadLogStatus = 'success' | 'partial' | 'failed'
@@ -11,6 +12,7 @@ export interface ReportingPeriodOption {
   status: 'open' | 'closed' | string
   createdAt?: string
   updatedAt?: string
+  dataRevalidation?: DataRevalidationImpact | null
 }
 
 export interface UploadCardState {
@@ -61,7 +63,12 @@ export interface NormalizedWarning {
 }
 
 export interface UploadWarning {
+  issueId?: string | null
+  warningIssueId?: string | null
+  status?: string | null
   warningId: string
+  uploadWarningId?: string | null
+  latestUploadWarningId?: string | null
   dedupeKey: string
   uploadLogId: string
   uploadType: UploadType
@@ -83,10 +90,164 @@ export interface UploadWarning {
   count?: number | null
   sourceLabel?: string | null
   rawPayload?: unknown
+  suggestedAction?: string | null
   seenCount: number
   firstSeenAt: string
   lastSeenAt: string
   uploadLogIds: string[]
+  firstSeenUploadLogId?: string | null
+  lastSeenUploadLogId?: string | null
+  latestSourceTrace?: WarningSourceTrace | null
+  reappeared: boolean
+}
+
+export type WarningIssueStatus =
+  | 'unresolved'
+  | 'resolved'
+  | 'dismissed'
+  | 'superseded'
+  | 'reappeared'
+  | string
+
+export interface WarningSourceTrace {
+  reporting_period_id?: string | null
+  programme_code?: string | null
+  resident_id?: string | null
+  mcr?: string | null
+  resident_name?: string | null
+  month_label?: string | null
+  sheet_name?: string | null
+  row_number?: number | null
+  cell_ref?: string | null
+  source_payload?: unknown
+  [key: string]: unknown
+}
+
+export interface UploadWarningOccurrence {
+  id: string
+  issueId: string
+  uploadLogId: string
+  uploadType?: string | null
+  uploadedAt?: string | null
+  warningType: string
+  severity: WarningSeverity
+  reportingPeriodId?: string | null
+  programmeCode?: string | null
+  residentId?: string | null
+  mcr?: string | null
+  residentName?: string | null
+  monthLabel?: string | null
+  sheetName?: string | null
+  rowNumber?: number | null
+  cellRef?: string | null
+  sourceTrace?: WarningSourceTrace | null
+  sourcePayload?: unknown
+  message: string
+  suggestedAction?: string | null
+  fingerprint: string
+  createdAt: string
+}
+
+export interface UploadWarningIssueDetail {
+  issueId: string
+  warningIssueId: string
+  fingerprint: string
+  warningType: string
+  severity: WarningSeverity
+  status: WarningIssueStatus
+  reappeared: boolean
+  firstSeenUploadLogId?: string | null
+  lastSeenUploadLogId?: string | null
+  firstSeenAt: string
+  lastSeenAt: string
+  latestUploadWarningId?: string | null
+  latestSourceTrace?: WarningSourceTrace | null
+  latestSourcePayload?: unknown
+  message?: string | null
+  suggestedAction?: string | null
+  residentName?: string | null
+  reportingPeriodId?: string | null
+  programmeCode?: string | null
+  residentId?: string | null
+  mcr?: string | null
+  monthLabel?: string | null
+  resolutionNote?: string | null
+  resolutionSourceType?: string | null
+  resolutionSourceId?: string | null
+  resolvedBy?: string | null
+  resolvedAt?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+  occurrences: UploadWarningOccurrence[]
+}
+
+export interface UploadWarningActionResponse {
+  issueId: string
+  status: WarningIssueStatus
+  previousStatus: WarningIssueStatus
+  newStatus: WarningIssueStatus
+  resolutionNote?: string | null
+  note?: string | null
+  resolvedBy?: string | null
+  actorUserId?: string | null
+  resolvedAt?: string | null
+  updatedAt?: string | null
+}
+
+export interface WarningSourceCellReplaceRequest {
+  replacement_raw_cell_value: unknown
+  upload_warning_id?: string | null
+  expected_latest_upload_warning_id?: string | null
+  expected_fingerprint?: string | null
+}
+
+export interface WarningSourceCellApplyRequest extends WarningSourceCellReplaceRequest {
+  correction_reason: string
+}
+
+export interface WarningSourceCellPreviewResponse {
+  warningIssueId: string
+  uploadWarningId?: string | null
+  latestUploadWarningId?: string | null
+  fingerprint: string
+  sourceTrace: WarningSourceTrace
+  sourcePayload?: unknown
+  originalWarningType: string
+  originalWarningStatus: WarningIssueStatus
+  replacementRawCellValue: unknown
+  normalizedCellValue: string
+  parsedCandidateRows: Record<string, unknown>[]
+  parserWarnings: unknown[]
+  parserErrors: unknown[]
+  applyAllowed: boolean
+  dataRevalidation?: DataRevalidationImpact | null
+  suggestedNextAction: string
+  nextActions: string[]
+}
+
+export interface WarningSourceCellApplyResponse {
+  warningIssueId: string
+  uploadWarningId?: string | null
+  latestUploadWarningId?: string | null
+  fingerprint: string
+  sourceTrace: WarningSourceTrace
+  sourcePayload?: unknown
+  originalWarningType: string
+  warningIssueStatus: WarningIssueStatus
+  replacementRawCellValue: unknown
+  normalizedCellValue: string
+  beforeRows: Record<string, unknown>[]
+  afterRows: Record<string, unknown>[]
+  replacementSummary: Record<string, number>
+  parserWarnings: unknown[]
+  parserErrors: unknown[]
+  auditLogId: string
+  entityType: string
+  entityId?: string | null
+  updatedFields: string[]
+  dataRevalidation?: DataRevalidationImpact | null
+  suggestedNextAction: string
+  nextActions: string[]
 }
 
 export interface UploadLogListItem {

@@ -1,3 +1,5 @@
+import type { DataRevalidationImpact } from './dataRevalidation'
+
 export interface ParsedDataListResponse<T> {
   items: T[]
   total: number
@@ -130,6 +132,7 @@ export interface ParsedDataCorrectionResponse<T extends ParsedDataRow = ParsedDa
   entity_type: string
   entity_id: string | null
   updated_fields: string[]
+  dataRevalidation?: DataRevalidationImpact | null
 }
 
 export interface ResidentPostingReplacementRow {
@@ -181,6 +184,7 @@ export interface ParsedDataSourceCellReplaceResponse {
   entity_type: string
   entity_id: string | null
   updated_fields: string[]
+  dataRevalidation?: DataRevalidationImpact | null
 }
 
 export interface ParsedDataCorrectionHistoryRow {

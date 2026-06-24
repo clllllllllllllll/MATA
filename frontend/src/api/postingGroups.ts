@@ -1,5 +1,7 @@
 import { buildAdminDemoHeaders, type AdminDemoLevel } from './authHeaders'
+import { toConfigDeleteResult, toDataRevalidationImpact, type ConfigDeleteResult } from './dataRevalidation'
 import { httpClient, toApiRequestError } from './http'
+import type { DataRevalidationImpact } from '../types/dataRevalidation'
 
 export interface PostingGroup {
   id: string
@@ -8,6 +10,7 @@ export interface PostingGroup {
   programmeCode: string
   createdAt?: string
   updatedAt?: string
+  dataRevalidation?: DataRevalidationImpact | null
 }
 
 interface PostingGroupRequestContext {
@@ -33,6 +36,7 @@ const toPostingGroup = (value: Record<string, unknown>): PostingGroup => ({
   programmeCode: String(value.programme_code ?? ''),
   createdAt: toOptionalString(value.created_at),
   updatedAt: toOptionalString(value.updated_at),
+  dataRevalidation: toDataRevalidationImpact(value.data_revalidation),
 })
 
 const toApiPayload = (payload: PostingGroupMutationPayload): Record<string, unknown> => ({
@@ -92,11 +96,12 @@ export const updatePostingGroup = async (
 
 export const deletePostingGroup = async (
   params: PostingGroupRequestContext & { id: string },
-): Promise<void> => {
+): Promise<ConfigDeleteResult> => {
   try {
-    await httpClient.delete(`/admin/posting-groups/${params.id}`, {
+    const response = await httpClient.delete(`/admin/posting-groups/${params.id}`, {
       headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
     })
+    return toConfigDeleteResult(response.data)
   } catch (error) {
     throw toApiRequestError(error)
   }

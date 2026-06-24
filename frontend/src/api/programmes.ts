@@ -1,5 +1,7 @@
 import { buildAdminDemoHeaders, type AdminDemoLevel } from './authHeaders'
+import { toDataRevalidationImpact } from './dataRevalidation'
 import { httpClient, toApiRequestError } from './http'
+import type { DataRevalidationImpact } from '../types/dataRevalidation'
 
 export interface Programme {
   id: string
@@ -12,6 +14,7 @@ export interface Programme {
   rdbAlias?: string
   createdAt?: string
   updatedAt?: string
+  dataRevalidation?: DataRevalidationImpact | null
 }
 
 interface ProgrammeRequestContext {
@@ -38,6 +41,7 @@ const toProgramme = (value: Record<string, unknown>): Programme => ({
   rdbAlias: value.rdb_alias ? String(value.rdb_alias) : undefined,
   createdAt: value.created_at ? String(value.created_at) : undefined,
   updatedAt: value.updated_at ? String(value.updated_at) : undefined,
+  dataRevalidation: toDataRevalidationImpact(value.data_revalidation),
 })
 
 const toApiPayload = (payload: ProgrammeMutationPayload): Record<string, unknown> => ({

@@ -1,6 +1,7 @@
 import { httpClient, toApiRequestError } from './http'
 import type { ReportingPeriodOption } from '../types/upload'
 import { buildAdminDemoHeaders } from './authHeaders'
+import { toConfigDeleteResult, toDataRevalidationImpact, type ConfigDeleteResult } from './dataRevalidation'
 
 const toReportingPeriod = (value: Record<string, unknown>): ReportingPeriodOption => ({
   id: String(value.id ?? ''),
@@ -10,6 +11,7 @@ const toReportingPeriod = (value: Record<string, unknown>): ReportingPeriodOptio
   status: String(value.status ?? ''),
   createdAt: value.created_at ? String(value.created_at) : undefined,
   updatedAt: value.updated_at ? String(value.updated_at) : undefined,
+  dataRevalidation: toDataRevalidationImpact(value.data_revalidation),
 })
 
 interface ReportingPeriodRequestContext {
@@ -95,11 +97,12 @@ export const updateReportingPeriod = async (
 
 export const deleteReportingPeriod = async (
   params: ReportingPeriodRequestContext & { id: string },
-): Promise<void> => {
+): Promise<ConfigDeleteResult> => {
   try {
-    await httpClient.delete(`/admin/reporting-periods/${params.id}`, {
+    const response = await httpClient.delete(`/admin/reporting-periods/${params.id}`, {
       headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, undefined, params.actorName),
     })
+    return toConfigDeleteResult(response.data)
   } catch (error) {
     throw toApiRequestError(error)
   }

@@ -1,5 +1,7 @@
 import { buildAdminDemoHeaders, type AdminDemoLevel } from './authHeaders'
+import { toConfigDeleteResult, toDataRevalidationImpact, type ConfigDeleteResult } from './dataRevalidation'
 import { httpClient, toApiRequestError } from './http'
+import type { DataRevalidationImpact } from '../types/dataRevalidation'
 
 export interface GlobalSessionType {
   id: string
@@ -8,6 +10,7 @@ export interface GlobalSessionType {
   isActive: boolean
   createdAt?: string
   updatedAt?: string
+  dataRevalidation?: DataRevalidationImpact | null
 }
 
 interface GlobalSessionTypeRequestContext {
@@ -33,6 +36,7 @@ const toGlobalSessionType = (value: Record<string, unknown>): GlobalSessionType 
   isActive: Boolean(value.is_active),
   createdAt: toOptionalString(value.created_at),
   updatedAt: toOptionalString(value.updated_at),
+  dataRevalidation: toDataRevalidationImpact(value.data_revalidation),
 })
 
 const toApiPayload = (payload: GlobalSessionTypeMutationPayload): Record<string, unknown> => ({
@@ -96,11 +100,12 @@ export const updateGlobalSessionType = async (
 
 export const deleteGlobalSessionType = async (
   params: GlobalSessionTypeRequestContext & { id: string },
-): Promise<void> => {
+): Promise<ConfigDeleteResult> => {
   try {
-    await httpClient.delete(`/admin/global-session-types/${params.id}`, {
+    const response = await httpClient.delete(`/admin/global-session-types/${params.id}`, {
       headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
     })
+    return toConfigDeleteResult(response.data)
   } catch (error) {
     throw toApiRequestError(error)
   }

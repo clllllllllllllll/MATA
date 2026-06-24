@@ -17,6 +17,7 @@ import type {
   ResidentPostingSourceCellReplaceRequest,
 } from '../types/parsedData'
 import { buildAdminDemoHeaders, type AdminDemoLevel } from './authHeaders'
+import { toDataRevalidationImpact } from './dataRevalidation'
 import { httpClient, toApiRequestError } from './http'
 
 interface AdminParsedDataParams {
@@ -195,6 +196,7 @@ const correctParsedDataRow = async <T extends ParsedDataRow>(
       updated_fields: Array.isArray(payload.updated_fields)
         ? payload.updated_fields.map(requiredString)
         : [],
+      dataRevalidation: toDataRevalidationImpact(payload.data_revalidation),
     }
   } catch (error) {
     throw toApiRequestError(error)
@@ -220,6 +222,7 @@ const toSourceCellReplaceResponse = (
   updated_fields: Array.isArray(payload.updated_fields)
     ? payload.updated_fields.map(requiredString)
     : [],
+  dataRevalidation: toDataRevalidationImpact(payload.data_revalidation),
 })
 
 const toParsedResident = (value: ApiRow): ParsedResidentRow => ({

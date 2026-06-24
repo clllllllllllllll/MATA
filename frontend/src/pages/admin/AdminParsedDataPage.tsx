@@ -14,6 +14,7 @@ import {
 } from '../../api/parsedData'
 import { ApiRequestError } from '../../api/http'
 import { getUploadLog, listUploadLogs } from '../../api/uploadLogs'
+import { DataRevalidationCallout } from '../../components/DataRevalidationCallout'
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconChevRight, IconRefresh } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
@@ -32,6 +33,7 @@ import type {
   ParsedResidentRow,
   ParsedTeachingTargetRow,
 } from '../../types/parsedData'
+import type { DataRevalidationImpact } from '../../types/dataRevalidation'
 import type { RawMultiPostingDecision, RawMultiPostingFragment, UploadLogDetail, UploadLogListItem } from '../../types/upload'
 import {
   clearMemoryCache,
@@ -1436,6 +1438,8 @@ export const AdminParsedDataPage = () => {
   const [correctionReason, setCorrectionReason] = useState('')
   const [correctionError, setCorrectionError] = useState<string | null>(null)
   const [correctionSuccess, setCorrectionSuccess] = useState<string | null>(null)
+  const [correctionRevalidation, setCorrectionRevalidation] =
+    useState<DataRevalidationImpact | null>(null)
   const [isCorrectionSubmitting, setIsCorrectionSubmitting] = useState(false)
   const [correctionHistory, setCorrectionHistory] = useState<ParsedDataCorrectionHistoryRow[]>([])
   const [isCorrectionHistoryLoading, setIsCorrectionHistoryLoading] = useState(false)
@@ -1916,6 +1920,8 @@ export const AdminParsedDataPage = () => {
     }
     setCorrectionReason('')
     setCorrectionError(null)
+    setCorrectionSuccess(null)
+    setCorrectionRevalidation(null)
   }
 
   const setCorrectionDraftField = (field: CorrectionFieldDefinition, value: string | boolean) => {
@@ -1936,6 +1942,7 @@ export const AdminParsedDataPage = () => {
     })
     setCorrectionError(null)
     setCorrectionSuccess(null)
+    setCorrectionRevalidation(null)
   }
 
   const submitRowCorrection = async () => {
@@ -1960,28 +1967,51 @@ export const AdminParsedDataPage = () => {
 
     setIsCorrectionSubmitting(true)
     setCorrectionError(null)
+    setCorrectionRevalidation(null)
     try {
       let updatedRow: ParsedDataRow
+      let dataRevalidation: DataRevalidationImpact | null | undefined
       switch (activeTabId) {
         case 'residents':
-          updatedRow = (await updateParsedResident(adminRequestParams, selectedRow.id, request)).item
+          {
+            const response = await updateParsedResident(adminRequestParams, selectedRow.id, request)
+            updatedRow = response.item
+            dataRevalidation = response.dataRevalidation
+          }
           break
         case 'resident-postings':
-          updatedRow = (await updateParsedResidentPosting(adminRequestParams, selectedRow.id, request)).item
+          {
+            const response = await updateParsedResidentPosting(adminRequestParams, selectedRow.id, request)
+            updatedRow = response.item
+            dataRevalidation = response.dataRevalidation
+          }
           break
         case 'teaching-targets':
-          updatedRow = (await updateParsedTeachingTarget(adminRequestParams, selectedRow.id, request)).item
+          {
+            const response = await updateParsedTeachingTarget(adminRequestParams, selectedRow.id, request)
+            updatedRow = response.item
+            dataRevalidation = response.dataRevalidation
+          }
           break
         case 'form-f1-records':
-          updatedRow = (await updateParsedFormF1Record(adminRequestParams, selectedRow.id, request)).item
+          {
+            const response = await updateParsedFormF1Record(adminRequestParams, selectedRow.id, request)
+            updatedRow = response.item
+            dataRevalidation = response.dataRevalidation
+          }
           break
         case 'academic-month-boundaries':
-          updatedRow = (await updateParsedAcademicMonthBoundary(adminRequestParams, selectedRow.id, request)).item
+          {
+            const response = await updateParsedAcademicMonthBoundary(adminRequestParams, selectedRow.id, request)
+            updatedRow = response.item
+            dataRevalidation = response.dataRevalidation
+          }
           break
       }
       setCorrectionMode('none')
       setCorrectionReason('')
       setCorrectionSuccess('Correction applied and audit history updated.')
+      setCorrectionRevalidation(dataRevalidation ?? null)
       setRows((currentRows) => currentRows.map((row) => (row.id === updatedRow.id ? updatedRow : row)))
       await refreshActiveRowsAfterMutation(updatedRow)
     } catch (submitError) {
@@ -2897,6 +2927,7 @@ export const AdminParsedDataPage = () => {
                   {correctionSuccess ? (
                     <div className="inline-callout callout-success">
                       <span>{correctionSuccess}</span>
+                      <DataRevalidationCallout impact={correctionRevalidation} compact />
                     </div>
                   ) : null}
                 </div>

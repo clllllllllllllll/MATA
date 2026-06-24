@@ -1,5 +1,7 @@
 import { httpClient, toApiRequestError } from './http'
 import { buildAdminDemoHeaders } from './authHeaders'
+import { toConfigDeleteResult, toDataRevalidationImpact, type ConfigDeleteResult } from './dataRevalidation'
+import type { DataRevalidationImpact } from '../types/dataRevalidation'
 
 export interface PublicHoliday {
   id: string
@@ -9,6 +11,7 @@ export interface PublicHoliday {
   year?: number
   createdAt?: string
   updatedAt?: string
+  dataRevalidation?: DataRevalidationImpact | null
 }
 
 interface PublicHolidayRequestContext {
@@ -30,6 +33,7 @@ const toPublicHoliday = (value: Record<string, unknown>): PublicHoliday => ({
   year: typeof value.year === 'number' ? value.year : undefined,
   createdAt: value.created_at ? String(value.created_at) : undefined,
   updatedAt: value.updated_at ? String(value.updated_at) : undefined,
+  dataRevalidation: toDataRevalidationImpact(value.data_revalidation),
 })
 
 const toApiPayload = (payload: PublicHolidayMutationPayload): Record<string, unknown> => ({
@@ -88,11 +92,12 @@ export const updatePublicHoliday = async (
 
 export const deletePublicHoliday = async (
   params: PublicHolidayRequestContext & { id: string },
-): Promise<void> => {
+): Promise<ConfigDeleteResult> => {
   try {
-    await httpClient.delete(`/admin/public-holidays/${params.id}`, {
+    const response = await httpClient.delete(`/admin/public-holidays/${params.id}`, {
       headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, undefined, params.actorName),
     })
+    return toConfigDeleteResult(response.data)
   } catch (error) {
     throw toApiRequestError(error)
   }

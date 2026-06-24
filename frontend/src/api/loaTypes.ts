@@ -1,5 +1,7 @@
 import { buildAdminDemoHeaders, type AdminDemoLevel } from './authHeaders'
+import { toConfigDeleteResult, toDataRevalidationImpact, type ConfigDeleteResult } from './dataRevalidation'
 import { httpClient, toApiRequestError } from './http'
+import type { DataRevalidationImpact } from '../types/dataRevalidation'
 
 export interface LoaType {
   id: string
@@ -7,6 +9,7 @@ export interface LoaType {
   description?: string
   createdAt?: string
   updatedAt?: string
+  dataRevalidation?: DataRevalidationImpact | null
 }
 
 interface LoaTypeRequestContext {
@@ -27,6 +30,7 @@ const toLoaType = (value: Record<string, unknown>): LoaType => ({
   description: value.description ? String(value.description) : undefined,
   createdAt: value.created_at ? String(value.created_at) : undefined,
   updatedAt: value.updated_at ? String(value.updated_at) : undefined,
+  dataRevalidation: toDataRevalidationImpact(value.data_revalidation),
 })
 
 const toApiPayload = (payload: LoaTypeMutationPayload): Record<string, unknown> => ({
@@ -83,11 +87,12 @@ export const updateLoaType = async (
 
 export const deleteLoaType = async (
   params: LoaTypeRequestContext & { id: string },
-): Promise<void> => {
+): Promise<ConfigDeleteResult> => {
   try {
-    await httpClient.delete(`/admin/loa-types/${params.id}`, {
+    const response = await httpClient.delete(`/admin/loa-types/${params.id}`, {
       headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, params.adminLevel, params.actorName),
     })
+    return toConfigDeleteResult(response.data)
   } catch (error) {
     throw toApiRequestError(error)
   }

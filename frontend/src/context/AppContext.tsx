@@ -24,6 +24,7 @@ import { listReportingPeriods } from '../api/reportingPeriods'
 import { ApiRequestError } from '../api/http'
 import {
   clearMemoryCache,
+  clearMemoryCacheResource,
   makeScopedCacheKey,
   readThroughMemoryCache,
   type CacheScope,
@@ -149,7 +150,10 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
   )
 
   const addUploadResult = useCallback((input: UploadResultInput): UploadMeta => {
-    clearMemoryCache()
+    clearMemoryCacheResource('admin.upload-logs.list')
+    clearMemoryCacheResource('admin.upload-warnings.list')
+    clearMemoryCacheResource('admin.parsed-data')
+    clearMemoryCacheResource('admin.upload-logs.rdb-source-list')
     const uploadMeta = makeUploadMeta({
       uploadType: input.uploadType,
       response: input.response,
