@@ -1311,6 +1311,68 @@ const renderSourceSummary = (metadata: unknown) => {
   )
 }
 
+const mergeCorrectionHistoryRows = (groups: ParsedDataCorrectionHistoryRow[][]) => {
+  const seen = new Set<string>()
+  return groups
+    .flat()
+    .filter((entry) => {
+      if (seen.has(entry.id)) {
+        return false
+      }
+      seen.add(entry.id)
+      return true
+    })
+    .sort((left, right) => (
+      Date.parse(right.created_at) - Date.parse(left.created_at) ||
+      compareText(right.id, left.id)
+    ))
+}
+
+const optimisticActionByTab: Record<ParsedDataTabId, string> = {
+  residents: 'admin.parsed_data.resident.update',
+  'resident-postings': 'admin.parsed_data.resident_posting.update',
+  'teaching-targets': 'admin.parsed_data.teaching_target.update',
+  'form-f1-records': 'admin.parsed_data.form_f1_record.update',
+  'academic-month-boundaries': 'admin.parsed_data.academic_month_boundary.update',
+}
+
+const optimisticCorrectionHistoryEntry = ({
+  auditLogId,
+  action,
+  entityType,
+  entityId,
+  correctionReason,
+  before,
+  after,
+  metadata,
+}: {
+  auditLogId: string
+  action: string
+  entityType: string
+  entityId: string | null
+  correctionReason: string
+  before: unknown
+  after: unknown
+  metadata: Record<string, unknown>
+}): ParsedDataCorrectionHistoryRow => ({
+  id: auditLogId,
+  created_at: new Date().toISOString(),
+  actor_user_id: null,
+  actor_role: 'admin',
+  actor_name: 'Unknown actor',
+  action,
+  entity_type: entityType,
+  entity_id: entityId,
+  correction_reason: correctionReason,
+  before_json: before,
+  after_json: after,
+  metadata_json: {
+    source_page: 'parsed_data',
+    correction_reason: correctionReason,
+    ...metadata,
+  },
+})
+
 const statusOptionsByTab: Partial<Record<ParsedDataTabId, { value: string; label: string }[]>> = {
   residents: [
     { value: 'active', label: 'Active' },
@@ -1447,6 +1509,10 @@ export const AdminParsedDataPage = () => {
   const [correctionHistory, setCorrectionHistory] = useState<ParsedDataCorrectionHistoryRow[]>([])
   const [isCorrectionHistoryLoading, setIsCorrectionHistoryLoading] = useState(false)
   const [correctionHistoryError, setCorrectionHistoryError] = useState<string | null>(null)
+  const [lastOptimisticHistory, setLastOptimisticHistory] = useState<{
+    rowId: string
+    entry: ParsedDataCorrectionHistoryRow
+  } | null>(null)
 
   const activeTab = useMemo(
     () => tabDefinitions.find((tab) => tab.id === activeTabId) ?? tabDefinitions[0],
@@ -1823,51 +1889,6 @@ export const AdminParsedDataPage = () => {
     }
   }, [activeTabId, demoAdminId, demoAdminProgrammes, selectedRdbUploadId, uploadLogDetailCacheKey])
 
-  useEffect(() => {
-    let active = true
-    if (!selectedRow) {
-      queueMicrotask(() => {
-        if (active) {
-          setCorrectionHistory([])
-          setCorrectionHistoryError(null)
-          setIsCorrectionHistoryLoading(false)
-        }
-      })
-      return () => {
-        active = false
-      }
-    }
-
-    ;(async () => {
-      setIsCorrectionHistoryLoading(true)
-      setCorrectionHistoryError(null)
-      try {
-        const response = await listParsedDataCorrections({
-          ...adminRequestParams,
-          entityType: activeTabId === 'resident-postings' ? undefined : entityTypeByTab[activeTabId],
-          entityId: selectedRow.id,
-          limit: 50,
-        })
-        if (active) {
-          setCorrectionHistory(response.items)
-        }
-      } catch (fetchError) {
-        if (active) {
-          setCorrectionHistory([])
-          setCorrectionHistoryError(fetchError instanceof Error ? fetchError.message : 'Unable to load correction history.')
-        }
-      } finally {
-        if (active) {
-          setIsCorrectionHistoryLoading(false)
-        }
-      }
-    })()
-
-    return () => {
-      active = false
-    }
-  }, [activeTabId, adminRequestParams, selectedRow])
-
   const firstItem = total === 0 ? 0 : offset + 1
   const lastItem = Math.min(offset + rows.length, total)
   const canGoPrevious = offset > 0
@@ -1897,9 +1918,9 @@ export const AdminParsedDataPage = () => {
   }, [activeTabId, rawFragments, rows])
   const selectedRowRawFragments = useMemo(() => (
     selectedRow && activeTabId === 'resident-postings'
-      ? rawFragmentsByPostingId.get((selectedRow as ParsedResidentPostingRow).id) ?? []
+      ? matchingRawFragmentsForPosting(selectedRow as ParsedResidentPostingRow, rawFragments)
       : []
-  ), [activeTabId, rawFragmentsByPostingId, selectedRow])
+  ), [activeTabId, rawFragments, selectedRow])
   const selectedRowRawSourceGroups = useMemo(
     () => groupRawFragmentsForDrawer(selectedRowRawFragments),
     [selectedRowRawFragments],
@@ -1929,6 +1950,82 @@ export const AdminParsedDataPage = () => {
     selectedRow &&
     selectedRowRawFragments.length > 0,
   )
+  const loadCorrectionHistoryForRow = useCallback(async (
+    row: ParsedDataRow,
+    sourceFragment: RawMultiPostingFragment | null,
+  ) => {
+    const requests = [
+      listParsedDataCorrections({
+        ...adminRequestParams,
+        entityType: activeTabId === 'resident-postings' ? undefined : entityTypeByTab[activeTabId],
+        entityId: row.id,
+        limit: 50,
+      }),
+    ]
+    if (
+      activeTabId === 'resident-postings' &&
+      sourceFragment &&
+      selectedRdbUploadId &&
+      sourceFragment.sheet_name &&
+      sourceFragment.row_number &&
+      sourceFragment.cell_ref
+    ) {
+      requests.push(listParsedDataCorrections({
+        ...adminRequestParams,
+        uploadLogId: selectedRdbUploadId,
+        sheetName: sourceFragment.sheet_name,
+        rowNumber: sourceFragment.row_number,
+        cellRef: sourceFragment.cell_ref,
+        limit: 50,
+      }))
+    }
+    const responses = await Promise.all(requests)
+    return mergeCorrectionHistoryRows(responses.map((response) => response.items))
+  }, [activeTabId, adminRequestParams, selectedRdbUploadId])
+  useEffect(() => {
+    let active = true
+    if (!selectedRow) {
+      queueMicrotask(() => {
+        if (active) {
+          setLastOptimisticHistory(null)
+          setCorrectionHistory([])
+          setCorrectionHistoryError(null)
+          setIsCorrectionHistoryLoading(false)
+        }
+      })
+      return () => {
+        active = false
+      }
+    }
+
+    ;(async () => {
+      setIsCorrectionHistoryLoading(true)
+      setCorrectionHistoryError(null)
+      try {
+        const items = await loadCorrectionHistoryForRow(selectedRow, selectedSourceFragment)
+        if (active) {
+          setCorrectionHistory(
+            lastOptimisticHistory?.rowId === selectedRow.id
+              ? mergeCorrectionHistoryRows([items, [lastOptimisticHistory.entry]])
+              : items,
+          )
+        }
+      } catch (fetchError) {
+        if (active) {
+          setCorrectionHistory([])
+          setCorrectionHistoryError(fetchError instanceof Error ? fetchError.message : 'Unable to load correction history.')
+        }
+      } finally {
+        if (active) {
+          setIsCorrectionHistoryLoading(false)
+        }
+      }
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [lastOptimisticHistory, loadCorrectionHistoryForRow, selectedRow, selectedSourceFragment])
   useEffect(() => {
     let active = true
     queueMicrotask(() => {
@@ -2039,12 +2136,20 @@ export const AdminParsedDataPage = () => {
     setCorrectionRevalidation(null)
     try {
       let updatedRow: ParsedDataRow
+      let auditLogId = ''
+      let entityType = entityTypeByTab[activeTabId]
+      let entityId: string | null = selectedRow.id
+      let updatedFields: string[] = []
       let dataRevalidation: DataRevalidationImpact | null | undefined
       switch (activeTabId) {
         case 'residents':
           {
             const response = await updateParsedResident(adminRequestParams, selectedRow.id, request)
             updatedRow = response.item
+            auditLogId = response.audit_log_id
+            entityType = response.entity_type
+            entityId = response.entity_id
+            updatedFields = response.updated_fields
             dataRevalidation = response.dataRevalidation
           }
           break
@@ -2052,6 +2157,10 @@ export const AdminParsedDataPage = () => {
           {
             const response = await updateParsedResidentPosting(adminRequestParams, selectedRow.id, request)
             updatedRow = response.item
+            auditLogId = response.audit_log_id
+            entityType = response.entity_type
+            entityId = response.entity_id
+            updatedFields = response.updated_fields
             dataRevalidation = response.dataRevalidation
           }
           break
@@ -2059,6 +2168,10 @@ export const AdminParsedDataPage = () => {
           {
             const response = await updateParsedTeachingTarget(adminRequestParams, selectedRow.id, request)
             updatedRow = response.item
+            auditLogId = response.audit_log_id
+            entityType = response.entity_type
+            entityId = response.entity_id
+            updatedFields = response.updated_fields
             dataRevalidation = response.dataRevalidation
           }
           break
@@ -2066,6 +2179,10 @@ export const AdminParsedDataPage = () => {
           {
             const response = await updateParsedFormF1Record(adminRequestParams, selectedRow.id, request)
             updatedRow = response.item
+            auditLogId = response.audit_log_id
+            entityType = response.entity_type
+            entityId = response.entity_id
+            updatedFields = response.updated_fields
             dataRevalidation = response.dataRevalidation
           }
           break
@@ -2073,15 +2190,35 @@ export const AdminParsedDataPage = () => {
           {
             const response = await updateParsedAcademicMonthBoundary(adminRequestParams, selectedRow.id, request)
             updatedRow = response.item
+            auditLogId = response.audit_log_id
+            entityType = response.entity_type
+            entityId = response.entity_id
+            updatedFields = response.updated_fields
             dataRevalidation = response.dataRevalidation
           }
           break
       }
+      const optimisticEntry = optimisticCorrectionHistoryEntry({
+        auditLogId,
+        action: optimisticActionByTab[activeTabId],
+        entityType,
+        entityId,
+        correctionReason: correctionReason.trim(),
+        before: selectedRow,
+        after: updatedRow,
+        metadata: {
+          updated_fields: updatedFields,
+          data_revalidation: dataRevalidation ?? null,
+        },
+      })
+      setLastOptimisticHistory({ rowId: updatedRow.id, entry: optimisticEntry })
       setCorrectionMode('none')
       setCorrectionReason('')
       setCorrectionSuccess('Correction applied and audit history updated.')
       setCorrectionRevalidation(dataRevalidation ?? null)
       setRows((currentRows) => currentRows.map((row) => (row.id === updatedRow.id ? updatedRow : row)))
+      const history = await loadCorrectionHistoryForRow(updatedRow, selectedSourceFragment)
+      setCorrectionHistory(mergeCorrectionHistoryRows([history, [optimisticEntry]]))
       await refreshActiveRowsAfterMutation(updatedRow)
     } catch (submitError) {
       setCorrectionError(correctionErrorMessage(submitError))
@@ -2274,14 +2411,29 @@ export const AdminParsedDataPage = () => {
       setCorrectionReason('')
       setCorrectionSuccess('Source-cell correction applied and audit history updated.')
       setCorrectionRevalidation(response.dataRevalidation ?? null)
+      const optimisticEntry = optimisticCorrectionHistoryEntry({
+        auditLogId: response.audit_log_id,
+        action: 'admin.parsed_data.resident_posting.source_cell_replace',
+        entityType: response.entity_type,
+        entityId: response.entity_id,
+        correctionReason: correctionReason.trim(),
+        before: { before_rows: response.before_rows },
+        after: { after_rows: response.after_rows },
+        metadata: {
+          updated_fields: response.updated_fields,
+          source: request.source,
+          source_metadata_verified: Boolean(request.source.upload_log_id),
+          affected_resident_posting_ids: request.affected_resident_posting_ids,
+          replacement_resident_posting_ids: response.after_rows.map((row) => row.id),
+          data_revalidation: response.dataRevalidation ?? null,
+        },
+      })
+      setLastOptimisticHistory({ rowId: selectedRow.id, entry: optimisticEntry })
       try {
-        const history = await listParsedDataCorrections({
-          ...adminRequestParams,
-          entityId: selectedRow.id,
-          limit: 50,
-        })
-        setCorrectionHistory(history.items)
+        const history = await loadCorrectionHistoryForRow(selectedRow, selectedSourceFragment)
+        setCorrectionHistory(mergeCorrectionHistoryRows([history, [optimisticEntry]]))
       } catch {
+        setCorrectionHistory((current) => mergeCorrectionHistoryRows([[optimisticEntry], current]))
         setCorrectionHistoryError('Correction was saved, but the refreshed audit history could not be loaded.')
       }
       await refreshActiveRowsAfterMutation(null)

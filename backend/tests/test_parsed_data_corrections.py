@@ -550,11 +550,24 @@ class FakeParsedDataCorrectionSession:
                 metadata = _audit_json(row, "metadata_json")
                 return metadata.get("source") if isinstance(metadata, dict) and isinstance(metadata.get("source"), dict) else {}
 
+            def _metadata_programme(row: dict) -> str | None:
+                metadata = _audit_json(row, "metadata_json")
+                if not isinstance(metadata, dict):
+                    return None
+                return metadata.get("programme_code")
+
+            scope = {
+                value
+                for key, value in payload.items()
+                if key.startswith("scope_programme_code_")
+            }
             rows = [
                 row
                 for row in self.audit_logs
                 if row["action"].startswith("admin.parsed_data.")
                 and (payload.get("entity_type") is None or row["entity_type"] == payload["entity_type"])
+                and (payload.get("entity_id") is None or str(row["entity_id"]) == str(payload["entity_id"]))
+                and (not scope or _metadata_programme(row) in scope)
                 and (
                     payload.get("upload_log_id") is None
                     or str(_metadata_source(row).get("upload_log_id")) == str(payload["upload_log_id"])
@@ -1420,6 +1433,34 @@ def test_corrections_history_returns_audit_rows_scoped_by_programme() -> None:
     assert body["total"] == 1
     assert body["items"][0]["correction_reason"] == "RDB row had a typo"
     assert body["items"][0]["entity_type"] == "resident"
+
+
+def test_corrections_history_returns_resident_posting_update_by_entity_id() -> None:
+    session = FakeParsedDataCorrectionSession()
+    client = _build_client_with_session(session)
+    response = client.patch(
+        f"/admin/parsed-data/resident-postings/{session.posting_ids[0]}",
+        headers=_headers(scope="GERI"),
+        json={
+            "correction_reason": "RDB posting date was corrected",
+            "last_seen_updated_at": session.now.isoformat(),
+            "changes": {"end_date": "2026-01-14"},
+        },
+    )
+    assert response.status_code == 200
+
+    history = client.get(
+        "/admin/parsed-data/corrections",
+        headers=_headers(scope="GERI"),
+        params={"entity_id": session.posting_ids[0]},
+    )
+
+    assert history.status_code == 200
+    body = history.json()
+    assert body["total"] == 1
+    assert body["items"][0]["entity_type"] == "resident_posting"
+    assert body["items"][0]["entity_id"] == session.posting_ids[0]
+    assert body["items"][0]["correction_reason"] == "RDB posting date was corrected"
 
 
 def test_corrections_history_source_filters_return_source_cell_replacement() -> None:
