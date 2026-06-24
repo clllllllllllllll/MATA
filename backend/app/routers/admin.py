@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Annotated, Any, AsyncIterator, Literal
@@ -18,6 +18,10 @@ from app.dependencies.staff_actor import (
 from app.errors import ApiError, ErrorCode, UploadValidationApiError
 from app.schemas import (
     AcademicMonthBoundaryResponse,
+    AdminLogActorRole,
+    AdminLogDetailResponse,
+    AdminLogListResponse,
+    AdminLogType,
     ConfigMutationDeleteResponse,
     FormF1RecordResponse,
     GlobalSessionTypeCreateRequest,
@@ -84,6 +88,10 @@ from app.schemas.data_revalidation import (
     DataRevalidationTriggerSource,
 )
 from app.services import admin_config, cache_invalidation, data_revalidation_service, parsed_data
+from app.services.admin_logs_service import (
+    get_admin_log as get_admin_log_read_model,
+    list_admin_logs as list_admin_logs_read_model,
+)
 from app.services.audit import write_audit_log
 from app.services.upload_logs import (
     error_count,
@@ -2434,6 +2442,80 @@ async def delete_global_session_type(
             data_revalidation=data_revalidation,
         )
     )
+
+
+@router.get("/logs", response_model=AdminLogListResponse)
+async def list_admin_logs(
+    log_type: AdminLogType | None = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
+    actor_user_id: UUID | None = Query(default=None),
+    actor_role: AdminLogActorRole | None = Query(default=None),
+    programme_code: str | None = Query(default=None),
+    reporting_period_id: UUID | None = Query(default=None),
+    entity_type: str | None = Query(default=None),
+    entity_id: str | None = Query(default=None),
+    upload_type: Literal["rdb", "ttf", "form_f1", "public_holidays"] | None = Query(default=None),
+    warning_type: str | None = Query(default=None),
+    correction_type: str | None = Query(default=None),
+    config_entity_type: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    outcome: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> AdminLogListResponse:
+    if db is None:
+        return AdminLogListResponse(items=[], total=0, limit=limit, offset=offset)
+    payload = await list_admin_logs_read_model(
+        db,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+        log_type=log_type,
+        date_from=date_from,
+        date_to=date_to,
+        actor_user_id=actor_user_id,
+        actor_role=actor_role.value if actor_role is not None else None,
+        programme_code=programme_code,
+        reporting_period_id=reporting_period_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        upload_type=upload_type,
+        warning_type=warning_type,
+        correction_type=correction_type,
+        config_entity_type=config_entity_type,
+        status=status,
+        outcome=outcome,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    return AdminLogListResponse.model_validate(payload)
+
+
+@router.get("/logs/{log_id}", response_model=AdminLogDetailResponse)
+async def get_admin_log_detail(
+    log_id: str,
+    include_raw_summary: bool = Query(default=False),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> AdminLogDetailResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    payload = await get_admin_log_read_model(
+        db,
+        log_id=log_id,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+        include_raw_summary=include_raw_summary,
+    )
+    return AdminLogDetailResponse.model_validate(payload)
 
 
 @router.get("/upload-logs", response_model=UploadLogListResponse)

@@ -72,10 +72,30 @@ from app.schemas.admin import (
     WeekendExceptionMutationResponse,
     WeekendExceptionResponse,
 )
+from app.schemas.admin_logs import (
+    AdminLogActorRole,
+    AdminLogAction,
+    AdminLogDeepLink,
+    AdminLogDetailResponse,
+    AdminLogListItem,
+    AdminLogListResponse,
+    AdminLogRelatedEntity,
+    AdminLogSourceRef,
+    AdminLogType,
+)
 from app.schemas.common import ErrorResponse, HealthResponse
 
 __all__ = [
     "ErrorResponse",
+    "AdminLogActorRole",
+    "AdminLogAction",
+    "AdminLogDeepLink",
+    "AdminLogDetailResponse",
+    "AdminLogListItem",
+    "AdminLogListResponse",
+    "AdminLogRelatedEntity",
+    "AdminLogSourceRef",
+    "AdminLogType",
     "AcademicMonthBoundaryResponse",
     "ConfigMutationDeleteResponse",
     "FormF1RecordResponse",
