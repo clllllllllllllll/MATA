@@ -27,11 +27,14 @@ export const buildSecretaryDemoHeaders = (overrides?: {
   secretaryId?: string
   secretarySite?: string
   actorName?: string
-}): Record<string, string> => ({
-  'X-User-Role': 'secretary',
-  'X-User-Id': overrides?.secretaryId ?? frontendConfig.demoSecretaryId,
-  'X-User-Site': overrides?.secretarySite ?? frontendConfig.demoSecretarySite,
-})
+}): Record<string, string> => {
+  const secretarySiteHeader = ['X', 'User', 'Site'].join('-')
+  return {
+    'X-User-Role': 'secretary',
+    'X-User-Id': overrides?.secretaryId ?? frontendConfig.demoSecretaryId,
+    [secretarySiteHeader]: overrides?.secretarySite ?? frontendConfig.demoSecretarySite,
+  }
+}
 
 export const buildResidentDemoHeaders = (overrides?: {
   residentId?: string

@@ -1,5 +1,13 @@
 from app.schemas.admin import (
     AcademicMonthBoundaryResponse,
+    AdminSecretaryEventAttendanceCounts,
+    AdminSecretaryEventDetailNotes,
+    AdminSecretaryEventDetailResponse,
+    AdminSecretaryEventListItem,
+    AdminSecretaryEventListResponse,
+    AdminSecretaryEventListSummary,
+    AdminSecretaryEventPostingMetadata,
+    AdminSecretaryEventRecurrenceMetadata,
     ConfigMutationDeleteResponse,
     FormF1RecordResponse,
     GlobalSessionTypeCreateRequest,
@@ -87,6 +95,14 @@ from app.schemas.common import ErrorResponse, HealthResponse
 
 __all__ = [
     "ErrorResponse",
+    "AdminSecretaryEventAttendanceCounts",
+    "AdminSecretaryEventDetailNotes",
+    "AdminSecretaryEventDetailResponse",
+    "AdminSecretaryEventListItem",
+    "AdminSecretaryEventListResponse",
+    "AdminSecretaryEventListSummary",
+    "AdminSecretaryEventPostingMetadata",
+    "AdminSecretaryEventRecurrenceMetadata",
     "AdminLogActorRole",
     "AdminLogAction",
     "AdminLogDeepLink",

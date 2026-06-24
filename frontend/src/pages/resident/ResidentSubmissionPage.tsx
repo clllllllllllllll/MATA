@@ -242,7 +242,7 @@ export const ResidentSubmissionPage = () => {
           <div className="resident-hero-actions">
             <span className="scope-chip">
               <IconCalendar size={12} />
-              Native Resident
+              NHG Resident
             </span>
             <button
               type="button"

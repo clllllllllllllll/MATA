@@ -18,7 +18,7 @@ const roleNameById: Record<AppRole, string> = {
   programme_pc: 'Demo PC',
   secretary: 'Demo Secretary',
   resident: 'Demo Resident',
-  external_resident: 'Demo External',
+  external_resident: 'Demo Non-NHG',
 }
 
 const roleFromPathname = (pathname: string): AppRole | null => {

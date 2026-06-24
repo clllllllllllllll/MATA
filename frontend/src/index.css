@@ -4491,3 +4491,166 @@ button:disabled,
     flex-direction: column;
   }
 }
+
+.admin-secretary-events-filters {
+  grid-template-columns: minmax(240px, 1.4fr) repeat(5, minmax(150px, 1fr)) auto;
+  align-items: end;
+}
+
+.admin-secretary-events-search input {
+  min-height: 38px;
+}
+
+.admin-secretary-events-filter-actions {
+  display: flex;
+  align-items: flex-end;
+  padding-bottom: 1px;
+}
+
+.secretary-event-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.secretary-event-metric {
+  display: grid;
+  gap: 5px;
+  min-height: 78px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: var(--shadow-1);
+}
+
+.secretary-event-metric span {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.secretary-event-metric strong {
+  font-size: 24px;
+  line-height: 1.1;
+  font-weight: 650;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-secretary-events-table-card .table-scroll {
+  transition: opacity 140ms ease;
+}
+
+.admin-secretary-events-table-card.is-refetching .table-scroll {
+  opacity: 0.72;
+}
+
+.admin-secretary-events-table {
+  min-width: 1440px;
+  table-layout: fixed;
+}
+
+.admin-secretary-events-table th:first-child,
+.admin-secretary-events-table td:first-child {
+  width: 240px;
+}
+
+.admin-secretary-events-table th:nth-child(2),
+.admin-secretary-events-table td:nth-child(2) {
+  width: 170px;
+}
+
+.admin-secretary-events-table th:nth-child(3),
+.admin-secretary-events-table td:nth-child(3) {
+  width: 150px;
+}
+
+.admin-secretary-events-table th:nth-child(4),
+.admin-secretary-events-table td:nth-child(4) {
+  width: 92px;
+}
+
+.admin-secretary-events-table th:nth-child(5),
+.admin-secretary-events-table td:nth-child(5) {
+  width: 135px;
+}
+
+.admin-secretary-events-table th:nth-child(6),
+.admin-secretary-events-table td:nth-child(6) {
+  width: 150px;
+}
+
+.admin-secretary-events-table th:nth-child(7),
+.admin-secretary-events-table td:nth-child(7) {
+  width: 210px;
+}
+
+.admin-secretary-events-table th:nth-child(8),
+.admin-secretary-events-table td:nth-child(8) {
+  width: 250px;
+}
+
+.admin-secretary-events-table th:last-child,
+.admin-secretary-events-table td:last-child {
+  width: 42px;
+  padding-left: 4px;
+  padding-right: 10px;
+  text-align: right;
+}
+
+.secretary-event-title-cell,
+.secretary-event-stack,
+.secretary-event-badge-stack {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.secretary-event-title-cell strong,
+.secretary-event-stack strong {
+  overflow-wrap: anywhere;
+}
+
+.secretary-event-title-cell span,
+.secretary-event-stack span {
+  color: var(--ink-3);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.secretary-event-badge-stack {
+  justify-items: start;
+}
+
+.secretary-event-source-cell .status-badge {
+  white-space: nowrap;
+}
+
+.secretary-event-detail .parsed-data-detail-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 1120px) {
+  .admin-secretary-events-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-secretary-events-filter-actions {
+    padding-bottom: 0;
+  }
+
+  .secretary-event-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .admin-secretary-events-filters,
+  .secretary-event-metrics,
+  .secretary-event-detail .parsed-data-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -788,6 +788,80 @@ class FormF1RecordResponse(BaseModel):
     updated_at: datetime
 
 
+class AdminSecretaryEventListItem(BaseModel):
+    id: UUID
+    teaching_name: str
+    posting_code: str
+    posting_display_name: str | None = None
+    event_date: date
+    start_time: time
+    end_time: time | None = None
+    duration_hours: Decimal | None = None
+    cme_points_awarded: bool
+    smc_event_code: str | None = None
+    session_type_id: UUID | None = None
+    session_type_name: str | None = None
+    series_id: UUID | None = None
+    is_recurring: bool
+    attendance_count: int
+    external_attendance_count: int
+    has_attendance: bool
+    created_by_role: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class AdminSecretaryEventListSummary(BaseModel):
+    total_events: int
+    with_attendance: int
+    without_attendance: int
+    total_attendance_count: int
+    total_external_attendance_count: int
+
+
+class AdminSecretaryEventListResponse(BaseModel):
+    items: list[AdminSecretaryEventListItem]
+    total: int
+    limit: int
+    offset: int
+    summary: AdminSecretaryEventListSummary
+
+
+class AdminSecretaryEventPostingMetadata(BaseModel):
+    code: str
+    display_name: str | None = None
+    institution: str | None = None
+    department: str | None = None
+
+
+class AdminSecretaryEventRecurrenceMetadata(BaseModel):
+    series_id: UUID
+    recurrence_pattern: str | None = None
+    recurrence_interval: int | None = None
+    days_of_week: list[str] = Field(default_factory=list)
+    end_type: str | None = None
+    end_date: date | None = None
+    end_after_count: int | None = None
+
+
+class AdminSecretaryEventAttendanceCounts(BaseModel):
+    native: int
+    external: int
+    total: int
+
+
+class AdminSecretaryEventDetailNotes(BaseModel):
+    event_source: str
+    session_type_authority: str
+
+
+class AdminSecretaryEventDetailResponse(AdminSecretaryEventListItem):
+    posting: AdminSecretaryEventPostingMetadata
+    recurrence: AdminSecretaryEventRecurrenceMetadata | None = None
+    attendance_counts: AdminSecretaryEventAttendanceCounts
+    notes: AdminSecretaryEventDetailNotes
+
+
 class ReportingPeriodCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

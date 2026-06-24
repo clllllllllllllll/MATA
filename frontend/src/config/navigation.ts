@@ -22,13 +22,13 @@ export const roleOptions: RoleOption[] = [
   },
   {
     id: 'resident',
-    label: 'Native Resident',
+    label: 'NHG Resident',
     scopeLabel: frontendConfig.demoResidentScopeLabel,
     defaultPath: '/resident/submissions',
   },
   {
     id: 'external_resident',
-    label: 'External Resident',
+    label: 'Non-NHG Resident',
     scopeLabel: 'NUH - posted to TTSH GRM',
     defaultPath: '/external',
   },
@@ -114,7 +114,7 @@ export const navItems: NavItem[] = [
     icon: 'send',
   },
   {
-    label: 'External Portal',
+    label: 'Non-NHG Portal',
     path: '/external',
     roles: ['external_resident'],
     icon: 'hospital',
@@ -137,7 +137,7 @@ export const breadcrumbMap: Record<string, string[]> = {
   '/pc/config': ['Programme PC', 'Configuration'],
   '/secretary': ['Secretary', 'Teaching Schedule'],
   '/secretary/events': ['Secretary', 'Teaching Schedule'],
-  '/resident': ['Native Resident', 'Submission Portal'],
-  '/resident/submissions': ['Native Resident', 'Submission Portal'],
-  '/external': ['External Resident', 'Submission Portal'],
+  '/resident': ['NHG Resident', 'Submission Portal'],
+  '/resident/submissions': ['NHG Resident', 'Submission Portal'],
+  '/external': ['Non-NHG Resident', 'Submission Portal'],
 }

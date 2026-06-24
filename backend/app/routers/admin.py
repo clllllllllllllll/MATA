@@ -18,6 +18,8 @@ from app.dependencies.staff_actor import (
 from app.errors import ApiError, ErrorCode, UploadValidationApiError
 from app.schemas import (
     AcademicMonthBoundaryResponse,
+    AdminSecretaryEventDetailResponse,
+    AdminSecretaryEventListResponse,
     AdminLogActorRole,
     AdminLogDetailResponse,
     AdminLogListResponse,
@@ -87,7 +89,13 @@ from app.schemas.data_revalidation import (
     DataRevalidationScope,
     DataRevalidationTriggerSource,
 )
-from app.services import admin_config, cache_invalidation, data_revalidation_service, parsed_data
+from app.services import (
+    admin_config,
+    admin_secretary_events,
+    cache_invalidation,
+    data_revalidation_service,
+    parsed_data,
+)
 from app.services.admin_logs_service import (
     get_admin_log as get_admin_log_read_model,
     list_admin_logs as list_admin_logs_read_model,
@@ -2442,6 +2450,73 @@ async def delete_global_session_type(
             data_revalidation=data_revalidation,
         )
     )
+
+
+@router.get("/secretary-events", response_model=AdminSecretaryEventListResponse)
+async def list_admin_secretary_events(
+    reporting_period_id: UUID | None = Query(default=None),
+    posting_code: str | None = Query(default=None),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    teaching_name: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    has_attendance: bool | None = Query(default=None),
+    session_type_id: UUID | None = Query(default=None),
+    series_id: UUID | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> AdminSecretaryEventListResponse:
+    _require_master_admin(admin_context)
+    if db is None:
+        return AdminSecretaryEventListResponse.model_validate(
+            {
+                "items": [],
+                "total": 0,
+                "limit": limit,
+                "offset": offset,
+                "summary": {
+                    "total_events": 0,
+                    "with_attendance": 0,
+                    "without_attendance": 0,
+                    "total_attendance_count": 0,
+                    "total_external_attendance_count": 0,
+                },
+            }
+        )
+    payload = await admin_secretary_events.list_secretary_events(
+        db,
+        reporting_period_id=reporting_period_id,
+        posting_code=posting_code,
+        date_from=date_from,
+        date_to=date_to,
+        teaching_name=teaching_name,
+        search=search,
+        has_attendance=has_attendance,
+        session_type_id=session_type_id,
+        series_id=series_id,
+        limit=limit,
+        offset=offset,
+    )
+    return AdminSecretaryEventListResponse.model_validate(payload)
+
+
+@router.get("/secretary-events/{event_id}", response_model=AdminSecretaryEventDetailResponse)
+async def get_admin_secretary_event(
+    event_id: UUID,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> AdminSecretaryEventDetailResponse:
+    _require_master_admin(admin_context)
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    payload = await admin_secretary_events.get_secretary_event(db, event_id=event_id)
+    return AdminSecretaryEventDetailResponse.model_validate(payload)
 
 
 @router.get("/logs", response_model=AdminLogListResponse)

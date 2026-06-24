@@ -89,6 +89,15 @@ const actorRoleOptions = [
   'external_resident',
 ]
 
+const actorRoleLabels: Record<string, string> = {
+  master_admin: 'Master Admin',
+  programme_pc: 'Programme PC',
+  admin: 'Admin',
+  secretary: 'Secretary',
+  resident: 'NHG Resident',
+  external_resident: 'Non-NHG Resident',
+}
+
 const statusOptions = [
   'success',
   'partial',
@@ -192,8 +201,8 @@ const actorText = (log: AdminLogListItem) => {
   return (
     log.actor_name ??
     log.actor_user_id ??
-    log.actor_role ??
-    log.stored_actor_role ??
+    labelForActorRole(log.actor_role) ??
+    labelForActorRole(log.stored_actor_role) ??
     'Unknown actor'
   )
 }
@@ -216,6 +225,9 @@ const labelForLogType = (logType: AdminLogType) => logTypeLabels[logType] ?? log
 
 const labelForUploadType = (uploadType?: UploadType | null) =>
   uploadType ? uploadTypeLabels[uploadType] ?? uploadType : null
+
+const labelForActorRole = (actorRole?: string | null) =>
+  actorRole ? actorRoleLabels[actorRole] ?? actorRole : null
 
 const statusTone = (value?: string | null): BadgeTone => {
   const text = value?.toLowerCase()
@@ -801,7 +813,7 @@ export const AdminLogsPage = () => {
             <option value="all">All roles</option>
             {actorRoleOptions.map((actorRole) => (
               <option key={actorRole} value={actorRole}>
-                {actorRole}
+                {labelForActorRole(actorRole)}
               </option>
             ))}
           </select>
@@ -975,7 +987,7 @@ export const AdminLogsPage = () => {
                     <td>
                       <div className="admin-log-stack">
                         <strong>{actorText(log)}</strong>
-                        <span>{fieldValue(log.actor_role ?? log.stored_actor_role)}</span>
+                        <span>{fieldValue(labelForActorRole(log.actor_role ?? log.stored_actor_role))}</span>
                       </div>
                     </td>
                     <td>{fieldValue(log.programme_code ?? 'Global')}</td>
@@ -1063,7 +1075,7 @@ export const AdminLogsPage = () => {
               <div className="parsed-data-detail-grid">
                 <DetailField label="Occurred at" value={formatDateTime(activeDetail.occurred_at)} />
                 <DetailField label="Actor" value={actorText(activeDetail)} />
-                <DetailField label="Actor role" value={activeDetail.actor_role ?? activeDetail.stored_actor_role} />
+                <DetailField label="Actor role" value={labelForActorRole(activeDetail.actor_role ?? activeDetail.stored_actor_role)} />
                 <DetailField label="Programme" value={activeDetail.programme_code ?? 'Global'} />
                 <DetailField label="Reporting period" value={activeDetail.reporting_period_id} />
                 <DetailField label="Entity" value={entityText(activeDetail)} />

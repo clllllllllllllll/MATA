@@ -6,6 +6,7 @@ import { AdminLogsPage } from './pages/admin/AdminLogsPage'
 import { AdminMultiPostingPage } from './pages/admin/AdminMultiPostingPage'
 import { AdminParsedDataPage } from './pages/admin/AdminParsedDataPage'
 import { AdminPlaceholderPage } from './pages/admin/AdminPlaceholderPage'
+import { AdminSecretaryEventsPage } from './pages/admin/AdminSecretaryEventsPage'
 import { AdminUploadLogsPage } from './pages/admin/AdminUploadLogsPage'
 import { AdminUploadPage } from './pages/admin/AdminUploadPage'
 import { AdminWarningsPage } from './pages/admin/AdminWarningsPage'
@@ -26,16 +27,7 @@ function App() {
         <Route path="/admin/logs" element={<AdminLogsPage />} />
         <Route path="/admin/upload-logs" element={<AdminUploadLogsPage />} />
         <Route path="/admin/parsed-data" element={<AdminParsedDataPage />} />
-        <Route
-          path="/admin/secretary-events"
-          element={
-            <AdminPlaceholderPage
-              title="Secretary Events"
-              subtitle="Master Admin - Teaching event oversight"
-              note="Cross-posting secretary event review is pending backend endpoint support. This page does not display synthetic event data."
-            />
-          }
-        />
+        <Route path="/admin/secretary-events" element={<AdminSecretaryEventsPage />} />
         <Route
           path="/admin/submissions"
           element={
@@ -65,8 +57,8 @@ function App() {
           path="/external"
           element={
             <StubPage
-              title="External Resident Portal"
-              subtitle="Optional visual stub. External resident implementation is deferred."
+              title="Non-NHG Resident Portal"
+              subtitle="Optional visual stub. Non-NHG resident implementation is deferred."
             />
           }
         />
