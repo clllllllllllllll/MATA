@@ -510,7 +510,6 @@ def test_upload_route_uses_db_session_writes_upload_log_and_maps_lock_to_409() -
             "X-User-Role": "admin",
             "X-User-Id": str(uuid4()),
             "X-User-Programme": "DR",
-            "X-Actor-Name": "Dr Lee",
         },
         data={"reporting_period_id": str(period_id), "programme_code": "DR"},
         files={
@@ -534,7 +533,6 @@ def test_upload_route_uses_db_session_writes_upload_log_and_maps_lock_to_409() -
             "X-User-Role": "admin",
             "X-User-Id": str(uuid4()),
             "X-User-Programme": "DR",
-            "X-Actor-Name": "Dr Lee",
         },
         data={"reporting_period_id": str(period_id), "programme_code": "DR"},
         files={

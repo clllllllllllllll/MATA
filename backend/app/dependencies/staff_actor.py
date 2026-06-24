@@ -49,28 +49,7 @@ def _parse_actor_user_id(raw_user_id: str | None) -> UUID | None:
         ) from exc
 
 
-def _validate_actor_name(raw_actor_name: str | None) -> str:
-    actor_name = _normalise_optional_header(raw_actor_name)
-    if actor_name is None:
-        # TODO(StaffActor): Re-enable explicit staff actor name workflow when audit UX is finalized.
-        return STAFF_ACTOR_FALLBACK_NAME
-    if len(actor_name) > 120:
-        raise ApiError(
-            status_code=422,
-            detail="X-Actor-Name must be 120 characters or fewer",
-            error_code=ErrorCode.VALIDATION_FAILED.value,
-        )
-    if any(ord(character) < 32 or ord(character) == 127 for character in actor_name):
-        raise ApiError(
-            status_code=422,
-            detail="X-Actor-Name must not contain control characters",
-            error_code=ErrorCode.VALIDATION_FAILED.value,
-        )
-    return actor_name
-
-
 async def require_staff_actor(
-    x_actor_name: Annotated[str | None, Header(alias="X-Actor-Name")] = None,
     x_user_role: Annotated[str | None, Header(alias="X-User-Role")] = None,
     x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     x_user_site: Annotated[str | None, Header(alias="X-User-Site")] = None,
@@ -85,7 +64,6 @@ async def require_staff_actor(
             error_code=ErrorCode.FORBIDDEN.value,
         )
 
-    actor_name = _validate_actor_name(x_actor_name)
     programme_scope = _parse_scope(x_user_programme)
     actor_site = _normalise_optional_header(x_user_site)
     actor_programme = _normalise_optional_header(x_user_programme)
@@ -101,7 +79,7 @@ async def require_staff_actor(
     return StaffActorContext(
         actor_user_id=_parse_actor_user_id(x_user_id),
         actor_role=actor_role,
-        actor_name=actor_name,
+        actor_name=STAFF_ACTOR_FALLBACK_NAME,
         actor_site=actor_site,
         actor_programme=actor_programme,
         actor_admin_level=actor_admin_level,

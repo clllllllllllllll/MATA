@@ -208,28 +208,24 @@ def _staff_actor_client() -> TestClient:
 def _staff_headers(
     *,
     role: str = "admin",
-    actor_name: str | None = " Dr Lee ",
 ) -> dict[str, str]:
-    headers = {
+    return {
         "X-User-Role": role,
         "X-User-Id": str(uuid4()),
         "X-User-Programme": "DR,GRM",
         "X-User-Site": "TTSHCardio",
         "X-Admin-Level": "master",
     }
-    if actor_name is not None:
-        headers["X-Actor-Name"] = actor_name
-    return headers
 
 
-def test_staff_actor_dependency_trims_valid_actor_name() -> None:
+def test_staff_actor_dependency_uses_authenticated_scope_and_fallback_actor_name() -> None:
     client = _staff_actor_client()
 
     response = client.post("/test/staff-actor", headers=_staff_headers())
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["actor_name"] == "Dr Lee"
+    assert payload["actor_name"] == "Unknown actor"
     assert payload["actor_role"] == "admin"
     assert payload["actor_programme"] == "DR,GRM"
     assert payload["actor_site"] == "TTSHCardio"
@@ -237,30 +233,26 @@ def test_staff_actor_dependency_trims_valid_actor_name() -> None:
     assert payload["raw_scope_metadata"]["programme_scope"] == ["DR", "GRM"]
 
 
-def test_staff_actor_dependency_uses_fallback_for_missing_and_blank_actor_names() -> None:
+def test_staff_actor_dependency_ignores_legacy_actor_name_header() -> None:
     client = _staff_actor_client()
+    legacy_actor_header = "-".join(["X", "Actor", "Name"])
 
-    responses = [
-        client.post("/test/staff-actor", headers=_staff_headers(actor_name=None)),
-        client.post("/test/staff-actor", headers=_staff_headers(actor_name="   ")),
-    ]
+    headers = _staff_headers()
+    headers[legacy_actor_header] = "A" * 121
+    long_header_response = client.post("/test/staff-actor", headers=headers)
 
-    assert [response.status_code for response in responses] == [200, 200]
-    assert [response.json()["actor_name"] for response in responses] == [
+    headers = _staff_headers()
+    headers[legacy_actor_header] = "Dr Lee"
+    named_header_response = client.post("/test/staff-actor", headers=headers)
+
+    assert [long_header_response.status_code, named_header_response.status_code] == [200, 200]
+    assert [
+        long_header_response.json()["actor_name"],
+        named_header_response.json()["actor_name"],
+    ] == [
         "Unknown actor",
         "Unknown actor",
     ]
-
-
-def test_staff_actor_dependency_rejects_malformed_explicit_actor_names() -> None:
-    client = _staff_actor_client()
-
-    responses = [
-        client.post("/test/staff-actor", headers=_staff_headers(actor_name="A" * 121)),
-        client.post("/test/staff-actor", headers=_staff_headers(actor_name="Dr\nLee")),
-    ]
-
-    assert [response.status_code for response in responses] == [422, 422]
 
 
 def test_staff_actor_dependency_rejects_resident_and_external_resident_roles() -> None:

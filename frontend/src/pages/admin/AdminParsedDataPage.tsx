@@ -6,6 +6,7 @@ import {
   listParsedResidentPostings,
   listParsedResidents,
   listParsedTeachingTargets,
+  replaceParsedResidentPostingSourceCell,
   updateParsedAcademicMonthBoundary,
   updateParsedFormF1Record,
   updateParsedResident,
@@ -29,6 +30,8 @@ import type {
   ParsedDataRow,
   ParsedFormF1RecordRow,
   ParsedDataCorrectionRequest,
+  ResidentPostingReplacementRow,
+  ResidentPostingSourceCellReplaceRequest,
   ParsedResidentPostingRow,
   ParsedResidentRow,
   ParsedTeachingTargetRow,
@@ -1449,7 +1452,7 @@ export const AdminParsedDataPage = () => {
     () => tabDefinitions.find((tab) => tab.id === activeTabId) ?? tabDefinitions[0],
     [activeTabId],
   )
-  const correctionFields = correctionFieldsByTab[activeTabId] ?? []
+  const correctionFields = useMemo(() => correctionFieldsByTab[activeTabId] ?? [], [activeTabId])
 
   const cacheScope = useMemo<CacheScope>(() => ({
     role,
@@ -1523,18 +1526,27 @@ export const AdminParsedDataPage = () => {
   }, [filters])
 
   useEffect(() => {
-    setCorrectionMode('none')
-    setCorrectionReason('')
-    setCorrectionError(null)
-    setCorrectionSuccess(null)
-    setCorrectionDraft(
-      selectedRow
-        ? correctionFields.reduce<Record<string, string | boolean>>((draft, field) => {
-          draft[field.key] = draftValueForField(selectedRow, field)
-          return draft
-        }, {})
-        : {},
-    )
+    let active = true
+    queueMicrotask(() => {
+      if (!active) {
+        return
+      }
+      setCorrectionMode('none')
+      setCorrectionReason('')
+      setCorrectionError(null)
+      setCorrectionSuccess(null)
+      setCorrectionDraft(
+        selectedRow
+          ? correctionFields.reduce<Record<string, string | boolean>>((draft, field) => {
+            draft[field.key] = draftValueForField(selectedRow, field)
+            return draft
+          }, {})
+          : {},
+      )
+    })
+    return () => {
+      active = false
+    }
   }, [correctionFields, selectedRow])
 
   useEffect(() => {
@@ -1752,18 +1764,32 @@ export const AdminParsedDataPage = () => {
 
   useEffect(() => {
     if (activeTabId === 'resident-postings') {
-      void loadRdbUploadLogs()
+      let active = true
+      queueMicrotask(() => {
+        if (active) {
+          void loadRdbUploadLogs()
+        }
+      })
+      return () => {
+        active = false
+      }
     }
   }, [activeTabId, loadRdbUploadLogs])
 
   useEffect(() => {
+    let active = true
     if (activeTabId !== 'resident-postings' || !selectedRdbUploadId) {
-      setSelectedRdbUploadDetail(null)
-      setIsRawDetailLoading(false)
-      return
+      queueMicrotask(() => {
+        if (active) {
+          setSelectedRdbUploadDetail(null)
+          setIsRawDetailLoading(false)
+        }
+      })
+      return () => {
+        active = false
+      }
     }
 
-    let active = true
     ;(async () => {
       setIsRawDetailLoading(true)
       setRawFragmentError(null)
@@ -1798,14 +1824,20 @@ export const AdminParsedDataPage = () => {
   }, [activeTabId, demoAdminId, demoAdminProgrammes, selectedRdbUploadId, uploadLogDetailCacheKey])
 
   useEffect(() => {
+    let active = true
     if (!selectedRow) {
-      setCorrectionHistory([])
-      setCorrectionHistoryError(null)
-      setIsCorrectionHistoryLoading(false)
-      return
+      queueMicrotask(() => {
+        if (active) {
+          setCorrectionHistory([])
+          setCorrectionHistoryError(null)
+          setIsCorrectionHistoryLoading(false)
+        }
+      })
+      return () => {
+        active = false
+      }
     }
 
-    let active = true
     ;(async () => {
       setIsCorrectionHistoryLoading(true)
       setCorrectionHistoryError(null)
@@ -1872,25 +1904,61 @@ export const AdminParsedDataPage = () => {
     () => groupRawFragmentsForDrawer(selectedRowRawFragments),
     [selectedRowRawFragments],
   )
-  const selectedSourceFragment = selectedRowRawSourceGroups[0]?.sourceFragment ?? null
+  const selectedSourceGroup = selectedRowRawSourceGroups[0] ?? null
+  const selectedSourceGroupKey = selectedSourceGroup?.key ?? null
+  const selectedSourceFragment = selectedSourceGroup?.sourceFragment ?? null
+  const affectedSourceCellRows = useMemo(() => {
+    if (!selectedRow || activeTabId !== 'resident-postings') {
+      return []
+    }
+    const selectedPostingRow = selectedRow as ParsedResidentPostingRow
+    if (!selectedSourceGroupKey) {
+      return [selectedPostingRow]
+    }
+    const matchingRows = rows.filter((row): row is ParsedResidentPostingRow => {
+      const postingRow = row as ParsedResidentPostingRow
+      return (rawFragmentsByPostingId.get(postingRow.id) ?? [])
+        .some((fragment) => rawSourceGroupKey(fragment) === selectedSourceGroupKey)
+    })
+    return matchingRows.some((row) => row.id === selectedPostingRow.id)
+      ? matchingRows
+      : [selectedPostingRow]
+  }, [activeTabId, rawFragmentsByPostingId, rows, selectedRow, selectedSourceGroupKey])
   const hasResidentPostingSourceContext = Boolean(
     activeTabId === 'resident-postings' &&
     selectedRow &&
     selectedRowRawFragments.length > 0,
   )
   useEffect(() => {
-    if (selectedRow && activeTabId === 'resident-postings') {
-      setFragmentDraftGroups(buildFragmentDraftGroups(
-        selectedRow as ParsedResidentPostingRow,
-        selectedRowRawFragments,
-      ))
-    } else {
-      setFragmentDraftGroups([])
+    let active = true
+    queueMicrotask(() => {
+      if (!active) {
+        return
+      }
+      if (selectedRow && activeTabId === 'resident-postings') {
+        setFragmentDraftGroups(buildFragmentDraftGroups(
+          selectedRow as ParsedResidentPostingRow,
+          selectedRowRawFragments,
+        ))
+      } else {
+        setFragmentDraftGroups([])
+      }
+    })
+    return () => {
+      active = false
     }
   }, [activeTabId, selectedRow, selectedRowRawFragments])
   useEffect(() => {
     if (correctionMode === 'none') {
-      setIsFragmentCorrection(hasResidentPostingSourceContext)
+      let active = true
+      queueMicrotask(() => {
+        if (active) {
+          setIsFragmentCorrection(hasResidentPostingSourceContext)
+        }
+      })
+      return () => {
+        active = false
+      }
     }
   }, [correctionMode, hasResidentPostingSourceContext])
   const changedCorrectionFields = selectedRow
@@ -1967,6 +2035,7 @@ export const AdminParsedDataPage = () => {
 
     setIsCorrectionSubmitting(true)
     setCorrectionError(null)
+    setCorrectionHistoryError(null)
     setCorrectionRevalidation(null)
     try {
       let updatedRow: ParsedDataRow
@@ -2111,35 +2180,115 @@ export const AdminParsedDataPage = () => {
     setCorrectionSuccess(null)
   }
 
-  const buildFragmentReparsePayload = () => {
+  const buildSourceCellReplaceRequest = (): ResidentPostingSourceCellReplaceRequest | null => {
     if (!selectedRow || activeTabId !== 'resident-postings') {
       return null
     }
     const postingRow = selectedRow as ParsedResidentPostingRow
+    const affectedRows = affectedSourceCellRows.length > 0 ? affectedSourceCellRows : [postingRow]
+    const missingTokenRow = affectedRows.find((row) => !row.updated_at)
+    if (missingTokenRow) {
+      setCorrectionError(
+        `Refresh before correcting ${formatValue(missingTokenRow.resident_name ?? missingTokenRow.mcr)}; an optimistic update token is missing.`,
+      )
+      return null
+    }
 
     return {
-      affected_resident_posting_ids: [postingRow.id],
-      corrected_source_cell_text: correctedSourceCellDraftText(fragmentDraftGroups),
-      corrected_fragments: fragmentDraftGroups.flatMap((group) => group.ranges.map((range) => ({
-        posting_code: group.posting_code.trim(),
-        fragment_start_date: range.fragment_start_date,
-        fragment_end_date: range.fragment_end_date,
-        day_part: range.day_part || null,
-      }))),
-      source_metadata: selectedSourceFragment && selectedRdbUploadId
+      affected_resident_posting_ids: affectedRows.map((row) => row.id),
+      replacement_rows: fragmentDraftGroups.flatMap((group): ResidentPostingReplacementRow[] => (
+        group.ranges.map((range) => ({
+          resident_id: postingRow.resident_id,
+          posting_code: group.posting_code.trim() || null,
+          reporting_period_id: postingRow.reporting_period_id,
+          start_date: range.fragment_start_date,
+          end_date: range.fragment_end_date,
+          day_part: range.day_part === 'AM' || range.day_part === 'PM' ? range.day_part : null,
+          month_label: postingRow.month_label,
+          r_year: postingRow.r_year,
+          status: postingRow.status,
+          loa_type: postingRow.loa_type,
+          loa_start_date: postingRow.loa_start_date,
+          loa_end_date: postingRow.loa_end_date,
+          refresher_training_type: postingRow.refresher_training_type,
+          refresher_training_start: postingRow.refresher_training_start,
+          refresher_training_end: postingRow.refresher_training_end,
+          active_months_weight: postingRow.active_months_weight ?? 1,
+          working_days_in_month: postingRow.working_days_in_month,
+        }))
+      )),
+      source: selectedSourceFragment
         ? {
-            upload_log_id: selectedRdbUploadId,
+            upload_log_id: selectedRdbUploadId ?? null,
             sheet_name: selectedSourceFragment.sheet_name,
             row_number: selectedSourceFragment.row_number,
             cell_ref: selectedSourceFragment.cell_ref,
             source_column_header: selectedSourceFragment.source_column_header,
             source_cell_text: selectedSourceFragment.source_cell_text,
           }
-        : null,
+        : {
+            upload_log_id: null,
+            sheet_name: null,
+            row_number: null,
+            cell_ref: null,
+            source_column_header: null,
+            source_cell_text: null,
+          },
       correction_reason: correctionReason.trim(),
-      last_seen_rows: postingRow.updated_at
-        ? [{ id: postingRow.id, updated_at: postingRow.updated_at }]
-        : [],
+      last_seen_rows: affectedRows.map((row) => ({ id: row.id, updated_at: row.updated_at as string })),
+    }
+  }
+
+  const submitSourceCellCorrection = async () => {
+    if (!selectedRow || activeTabId !== 'resident-postings') {
+      return
+    }
+    if (fragmentDraftErrors.length > 0) {
+      setCorrectionError(fragmentDraftErrors.join(' '))
+      return
+    }
+    if (!correctionReason.trim()) {
+      setCorrectionError('Correction reason is required.')
+      return
+    }
+    const request = buildSourceCellReplaceRequest()
+    if (!request) {
+      return
+    }
+
+    setIsCorrectionSubmitting(true)
+    setCorrectionError(null)
+    setCorrectionHistoryError(null)
+    setCorrectionRevalidation(null)
+    try {
+      const response = await replaceParsedResidentPostingSourceCell(adminRequestParams, request)
+      const affectedIds = new Set(request.affected_resident_posting_ids)
+      setRows((currentRows) => sortParsedRowsForDisplay(
+        activeTabId,
+        [
+          ...currentRows.filter((row) => !affectedIds.has(row.id)),
+          ...response.after_rows,
+        ],
+      ))
+      setCorrectionMode('none')
+      setCorrectionReason('')
+      setCorrectionSuccess('Source-cell correction applied and audit history updated.')
+      setCorrectionRevalidation(response.dataRevalidation ?? null)
+      try {
+        const history = await listParsedDataCorrections({
+          ...adminRequestParams,
+          entityId: selectedRow.id,
+          limit: 50,
+        })
+        setCorrectionHistory(history.items)
+      } catch {
+        setCorrectionHistoryError('Correction was saved, but the refreshed audit history could not be loaded.')
+      }
+      await refreshActiveRowsAfterMutation(null)
+    } catch (submitError) {
+      setCorrectionError(correctionErrorMessage(submitError))
+    } finally {
+      setIsCorrectionSubmitting(false)
     }
   }
 
@@ -2257,13 +2406,13 @@ export const AdminParsedDataPage = () => {
     }
 
     const draftSourceText = correctedSourceCellDraftText(fragmentDraftGroups)
-    const futureReparsePayload = buildFragmentReparsePayload()
+    const preparedReplacementCount = fragmentDraftGroups.reduce((count, group) => count + group.ranges.length, 0)
 
     return (
       <div className="fragment-source-editor">
         <div className="inline-callout callout-warning">
           <span>
-            Fragment corrections require backend reparse. This will later run the same RDB parsing, multi-posting rule resolution, FM semantics, and warning generation used during upload.
+            Source-cell corrections replace only the affected resident posting row group, preserve audit evidence, and return a Data Revalidation summary after save.
           </span>
         </div>
         {selectedSourceFragment ? (
@@ -2425,28 +2574,13 @@ export const AdminParsedDataPage = () => {
             ))
           )}
         </div>
-        <label className="correction-reason">
-          Correction reason
-          <textarea
-            value={correctionReason}
-            onChange={(event) => {
-              setCorrectionReason(event.target.value)
-              setCorrectionError(null)
-            }}
-            rows={3}
-            maxLength={500}
-            required
-          />
-        </label>
         <div className="fragment-draft-preview">
           <h4>Corrected source-cell preview</h4>
           <pre>{draftSourceText || 'Add posting groups and date ranges to preview corrected source-cell text.'}</pre>
-          <p>This is the source-cell input that will be sent for backend reparse once the endpoint is available.</p>
-          {futureReparsePayload ? (
-            <small>
-              Prepared {futureReparsePayload.corrected_fragments.length} corrected fragment row{futureReparsePayload.corrected_fragments.length === 1 ? '' : 's'} for future reparse.
-            </small>
-          ) : null}
+          <p>This preview is converted into resident posting replacement rows and validated by the backend before any data is changed.</p>
+          <small>
+            Prepared {preparedReplacementCount} replacement row{preparedReplacementCount === 1 ? '' : 's'} for {affectedSourceCellRows.length || 1} affected row{(affectedSourceCellRows.length || 1) === 1 ? '' : 's'}.
+          </small>
         </div>
         {fragmentDraftErrors.length > 0 ? (
           <div className="inline-callout callout-warning parsed-data-inline-error">
@@ -2461,13 +2595,13 @@ export const AdminParsedDataPage = () => {
     if (!selectedRow || correctionMode === 'none') {
       return null
     }
-    const fragmentSaveBlocked = activeTabId === 'resident-postings' && isFragmentCorrection
+    const fragmentCorrectionActive = activeTabId === 'resident-postings' && isFragmentCorrection
     return (
       <div className="detail-block parsed-data-correction-panel">
         <h3>Edit row</h3>
         <p>Update the row directly, or enable source-fragment correction when the posting cell needs to be split, merged, or re-parsed.</p>
         {renderFragmentCorrectionToggle()}
-        {fragmentSaveBlocked ? (
+        {fragmentCorrectionActive ? (
           renderFragmentCorrectionEditor()
         ) : (
           renderCorrectionFields()
@@ -2487,7 +2621,7 @@ export const AdminParsedDataPage = () => {
           />
         </label>
         <div className="correction-preview">
-          {!fragmentSaveBlocked ? (
+          {!fragmentCorrectionActive ? (
             <>
               <h4>Before / after preview</h4>
               {changedCorrectionFields.length === 0 ? (
@@ -2511,11 +2645,6 @@ export const AdminParsedDataPage = () => {
             <span>{correctionError}</span>
           </div>
         ) : null}
-        {fragmentSaveBlocked ? (
-          <div className="inline-callout callout-warning parsed-data-inline-error">
-            <span>Backend reparse endpoint required</span>
-          </div>
-        ) : null}
         <div className="correction-actions">
           <button
             type="button"
@@ -2531,15 +2660,20 @@ export const AdminParsedDataPage = () => {
           <button
             type="button"
             className="button button-primary"
-            onClick={() => void submitRowCorrection()}
+            onClick={() => {
+              if (fragmentCorrectionActive) {
+                void submitSourceCellCorrection()
+              } else {
+                void submitRowCorrection()
+              }
+            }}
             disabled={
               isCorrectionSubmitting ||
               !correctionReason.trim() ||
-              (fragmentSaveBlocked
-                ? true
+              (fragmentCorrectionActive
+                ? fragmentDraftErrors.length > 0
                 : changedCorrectionFields.length === 0)
             }
-            title={fragmentSaveBlocked ? 'Backend reparse endpoint required' : undefined}
           >
             {isCorrectionSubmitting ? 'Saving...' : 'Save correction'}
           </button>

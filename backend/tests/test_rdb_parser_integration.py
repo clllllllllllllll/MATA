@@ -538,7 +538,6 @@ def test_sample_upload_creates_residents_postings_posting_codes_and_upload_log()
             "X-User-Role": "admin",
             "X-User-Id": str(user_id),
             "X-User-Programme": "DR",
-            "X-Actor-Name": "Dr Lee",
         },
         data={"reporting_period_id": str(period_id)},
         files={

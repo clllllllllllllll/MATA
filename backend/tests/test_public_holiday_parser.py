@@ -96,7 +96,6 @@ def _headers_admin() -> dict[str, str]:
         "X-User-Role": "admin",
         "X-User-Id": str(uuid4()),
         "X-User-Programme": "DR,GERI",
-        "X-Actor-Name": "Dr Lee",
     }
 
 

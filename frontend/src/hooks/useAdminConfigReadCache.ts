@@ -120,7 +120,11 @@ export const useAdminConfigReadCache = <T,>({
 
   useEffect(() => {
     mountedRef.current = true
-    void reload()
+    queueMicrotask(() => {
+      if (mountedRef.current) {
+        void reload()
+      }
+    })
   }, [reload])
 
   return { data, loading, isRefreshing, error, reload }

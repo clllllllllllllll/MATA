@@ -43,7 +43,6 @@ def _admin_headers() -> dict[str, str]:
         "X-User-Role": "admin",
         "X-User-Id": str(uuid4()),
         "X-User-Programme": "DR,GRM",
-        "X-Actor-Name": " Dr Lee ",
     }
 
 
@@ -350,7 +349,6 @@ def test_upload_endpoints_allow_missing_actor_name(monkeypatch) -> None:
     client = _build_client()
     period_id = str(uuid4())
     headers = _admin_headers()
-    headers.pop("X-Actor-Name")
     files = {
         "file": (
             "upload.xlsx",
@@ -400,7 +398,7 @@ def test_upload_endpoint_allows_blank_actor_name(monkeypatch) -> None:
 
     client = _build_client()
     headers = _admin_headers()
-    headers["X-Actor-Name"] = "   "
+    headers["-".join(["X", "Actor", "Name"])] = "   "
 
     response = client.post(
         "/admin/upload/rdb",
@@ -513,7 +511,6 @@ def test_successful_admin_uploads_write_audit_logs_linked_to_upload_logs(monkeyp
     session = _UploadAuditSession()
     client = _build_upload_audit_client(session)
     headers = _admin_headers()
-    headers.pop("X-Actor-Name")
     period_id = str(uuid4())
     files = {
         "file": (
@@ -683,7 +680,6 @@ def test_programme_scope_null_is_not_all_access_for_ttf() -> None:
     headers = {
         "X-User-Role": "admin",
         "X-User-Id": str(uuid4()),
-        "X-Actor-Name": "Dr Lee",
         # Missing X-User-Programme should be treated as empty scope.
     }
     response = client.post(

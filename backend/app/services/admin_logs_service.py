@@ -1248,8 +1248,8 @@ def _upload_detail_payload(
                 "action": "view_raw_summary",
                 "label": "View raw summary",
                 "method": "GET",
-                "endpoint": f"/admin/logs/{item['id']}?include_raw_summary=true",
-                "params": {},
+                "endpoint": f"/admin/logs/{item['id']}",
+                "params": {"include_raw_summary": True},
             }
         ],
         "source_ref": None,

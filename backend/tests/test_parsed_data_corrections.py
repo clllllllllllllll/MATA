@@ -625,7 +625,7 @@ def _make_valid_xlsx_bytes() -> bytes:
     return payload.getvalue()
 
 
-def _headers(scope: str | None = "GERI", *, master: bool = False, actor: bool = True) -> dict[str, str]:
+def _headers(scope: str | None = "GERI", *, master: bool = False) -> dict[str, str]:
     headers = {
         "X-User-Role": "admin",
         "X-User-Id": str(uuid4()),
@@ -634,8 +634,6 @@ def _headers(scope: str | None = "GERI", *, master: bool = False, actor: bool = 
         headers["X-User-Programme"] = scope
     if master:
         headers["X-Admin-Level"] = "master"
-    if actor:
-        headers["X-Actor-Name"] = "Dr Lee"
     return headers
 
 
@@ -707,13 +705,13 @@ def test_resident_correction_updates_live_row_and_writes_audit_log() -> None:
     assert metadata["data_revalidation"]["details"]["changed_fields"] == ["mcr", "name"]
 
 
-def test_correction_allows_missing_actor_and_requires_reason_and_allowlisted_fields() -> None:
+def test_correction_uses_fallback_actor_and_requires_reason_and_allowlisted_fields() -> None:
     session = FakeParsedDataCorrectionSession()
     client = _build_client_with_session(session)
 
     missing_actor = client.patch(
         f"/admin/parsed-data/residents/{session.resident_id}",
-        headers=_headers(actor=False),
+        headers=_headers(),
         json={"correction_reason": "typo", "changes": {"name": "New Name"}},
     )
     forbidden_field = client.patch(
@@ -1413,7 +1411,7 @@ def test_corrections_history_returns_audit_rows_scoped_by_programme() -> None:
 
     response = client.get(
         "/admin/parsed-data/corrections",
-        headers=_headers(actor=False),
+        headers=_headers(),
         params={"entity_type": "resident"},
     )
 
@@ -1436,7 +1434,7 @@ def test_corrections_history_source_filters_return_source_cell_replacement() -> 
 
     response = client.get(
         "/admin/parsed-data/corrections",
-        headers=_headers(actor=False),
+        headers=_headers(),
         params={
             "upload_log_id": session.upload_id,
             "sheet_name": "Phase 1 & 2",

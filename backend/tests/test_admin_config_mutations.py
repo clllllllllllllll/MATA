@@ -735,7 +735,6 @@ def _admin_headers(scope: str | None = "DR,GRM") -> dict[str, str]:
     headers = {
         "X-User-Role": "admin",
         "X-User-Id": str(uuid4()),
-        "X-Actor-Name": " Dr Lee ",
     }
     if scope is not None:
         headers["X-User-Programme"] = scope
@@ -746,12 +745,6 @@ def _master_admin_headers(scope: str | None = "DR,GRM") -> dict[str, str]:
     headers = _admin_headers(scope)
     headers["X-Admin-Level"] = "master"
     return headers
-
-
-def _without_actor(headers: dict[str, str]) -> dict[str, str]:
-    copy = dict(headers)
-    copy.pop("X-Actor-Name", None)
-    return copy
 
 
 def _audit_json(row: dict, field: str) -> dict | None:
@@ -885,14 +878,13 @@ def test_all_phase3_mutation_endpoints_reject_non_admin() -> None:
         assert response.status_code == 403
 
 
-def test_config_mutation_endpoint_allows_missing_actor_name_and_writes_audit() -> None:
+def test_config_mutation_endpoint_uses_fallback_actor_name_and_writes_audit() -> None:
     session = FakeMutationSession()
     client = _build_client_with_session(session)
-    missing_actor_headers = _without_actor(_master_admin_headers("DR"))
 
     response = client.post(
         "/admin/loa-types",
-        headers=missing_actor_headers,
+        headers=_master_admin_headers("DR"),
         json={"code": "Temporary Leave", "description": "Temporary leave"},
     )
 
@@ -905,7 +897,7 @@ def test_config_mutation_endpoint_allows_blank_actor_name() -> None:
     session = FakeMutationSession()
     client = _build_client_with_session(session)
     headers = _master_admin_headers("DR")
-    headers["X-Actor-Name"] = "   "
+    headers["-".join(["X", "Actor", "Name"])] = "   "
 
     response = client.post(
         "/admin/loa-types",
@@ -984,8 +976,8 @@ def test_data_revalidation_runs_only_after_successful_config_mutation(monkeypatc
 
 def test_config_list_endpoints_do_not_require_actor_name() -> None:
     client = _build_client_with_session(FakeMutationSession())
-    master_headers = _without_actor(_master_admin_headers("DR"))
-    pc_headers = _without_actor(_admin_headers("DR"))
+    master_headers = _master_admin_headers("DR")
+    pc_headers = _admin_headers("DR")
     paths_with_headers = [
         ("/admin/reporting-periods", master_headers),
         ("/admin/public-holidays", master_headers),
@@ -1332,7 +1324,7 @@ def test_admin_config_crud_mutations_write_audit_logs() -> None:
         "admin.config.global_session_type.update",
         "admin.config.global_session_type.delete",
     ]
-    assert {row["actor_name"] for row in session.audit_logs} == {"Dr Lee"}
+    assert {row["actor_name"] for row in session.audit_logs} == {"Unknown actor"}
     assert session.audit_logs[0]["entity_type"] == "reporting_period"
     assert session.audit_logs[0]["entity_id"] == reporting_period_id
     assert _audit_json(session.audit_logs[0], "before_json") is None

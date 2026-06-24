@@ -564,8 +564,9 @@ def test_admin_log_upload_detail_is_bounded_by_default_and_raw_summary_is_explic
     assert "large_blob" not in json.dumps(payload)
 
     raw_detail = client.get(
-        f"/admin/logs/upload:{session.rdb_upload_id}?include_raw_summary=true",
+        f"/admin/logs/upload:{session.rdb_upload_id}",
         headers=_headers(master=True),
+        params={"include_raw_summary": "true"},
     )
     assert raw_detail.status_code == 200
     raw_payload = raw_detail.json()

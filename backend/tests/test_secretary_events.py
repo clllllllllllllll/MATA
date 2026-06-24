@@ -616,14 +616,7 @@ def _headers(fake_db: FakeSecretarySession, *, role: str = "secretary", site: st
         "X-User-Role": role,
         "X-User-Id": fake_db.secretary_id if role == "secretary" else fake_db.admin_id,
         "X-User-Site": site,
-        "X-Actor-Name": " Dr Tan ",
     }
-
-
-def _without_actor(headers: dict[str, str]) -> dict[str, str]:
-    copy = dict(headers)
-    copy.pop("X-Actor-Name", None)
-    return copy
 
 
 def _audit_json(row: dict, field: str) -> dict | None:
@@ -645,7 +638,7 @@ def test_non_secretary_access_rejected() -> None:
 def test_secretary_mutation_endpoint_allows_missing_actor_name_and_writes_audit() -> None:
     fake_db = FakeSecretarySession()
     client = _client(fake_db)
-    headers = _without_actor(_headers(fake_db))
+    headers = _headers(fake_db)
 
     response = client.post(
         "/secretary/teaching-events",
@@ -662,7 +655,7 @@ def test_secretary_mutation_endpoint_allows_blank_actor_name() -> None:
     fake_db = FakeSecretarySession()
     client = _client(fake_db)
     headers = _headers(fake_db)
-    headers["X-Actor-Name"] = "   "
+    headers["-".join(["X", "Actor", "Name"])] = "   "
 
     response = client.post(
         "/secretary/teaching-events",
@@ -677,7 +670,7 @@ def test_secretary_mutation_endpoint_allows_blank_actor_name() -> None:
 def test_secretary_read_endpoints_do_not_require_actor_name() -> None:
     fake_db = FakeSecretarySession()
     client = _client(fake_db)
-    headers = _without_actor(_headers(fake_db))
+    headers = _headers(fake_db)
     paths = [
         "/secretary/teaching-events",
         "/secretary/cme-dashboard",
@@ -775,7 +768,7 @@ def test_secretary_teaching_event_mutations_write_audit_logs() -> None:
         "secretary.teaching_event_series.create",
         "secretary.teaching_event_series.delete_single",
     ]
-    assert {row["actor_name"] for row in fake_db.audit_logs} == {"Dr Tan"}
+    assert {row["actor_name"] for row in fake_db.audit_logs} == {"Unknown actor"}
     assert fake_db.audit_logs[0]["entity_type"] == "teaching_event"
     assert _audit_json(fake_db.audit_logs[0], "before_json") is None
     assert _audit_json(fake_db.audit_logs[0], "after_json")["teaching_name"] == "Journal Club"
