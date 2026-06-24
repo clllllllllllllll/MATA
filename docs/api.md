@@ -969,6 +969,24 @@ Get a single upload log entry.
 
 - **Auth:** admin only
 
+### Planned 3I-B Admin Logs endpoints - not implemented
+
+The unified Admin Logs surface is planned as a read-only aggregation over existing upload, warning, correction, config mutation, and Data Revalidation audit sources. See `docs/admin-logs-contract.md` for the full backend contract.
+
+Planned endpoints:
+
+- `GET /admin/logs`
+- `GET /admin/logs/{id}`
+
+Planned rules:
+
+- Use the page/API name **Admin Logs** and route namespace `/admin/logs`.
+- Preserve `GET /admin/upload-logs` and `GET /admin/upload-logs/{id}` for compatibility.
+- Preserve existing warning, parsed-data, and config endpoints as the canonical mutation surfaces.
+- `GET /admin/logs` is read-only. It must not mutate source tables, create fake persisted log records, rewrite `upload_logs.summary`, auto-resolve warnings, reparse RDB broadly, regenerate `resident_postings`, or run compliance/snapshot/clawback/surplus work.
+- List rows must be compact and paginated. The default list/detail flow must not fetch or render full raw `upload_logs.summary`.
+- Full raw upload summary access, if added later, must be explicit through `include_raw_summary=true`, export/download, or a dedicated raw audit endpoint.
+
 ---
 
 ### Public Holidays
