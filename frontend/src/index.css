@@ -2107,6 +2107,7 @@ tr:last-child td {
   flex-direction: column;
   align-items: flex-end;
   gap: 10px;
+  min-width: 0;
 }
 
 .button-resident-submit {
@@ -2129,6 +2130,10 @@ tr:last-child td {
   overflow: hidden;
 }
 
+.resident-events-card .section-header {
+  flex-wrap: wrap;
+}
+
 .resident-table-wrap {
   border-radius: 0;
   border-inline: none;
@@ -2144,8 +2149,18 @@ tr:last-child td {
   background: var(--purple-tint-2);
 }
 
+.resident-row-disabled {
+  color: var(--ink-4);
+  cursor: not-allowed;
+}
+
+.resident-row-disabled td {
+  background: #fafafd;
+}
+
 .resident-teaching-name {
   font-weight: 500;
+  overflow-wrap: anywhere;
 }
 
 .resident-empty {
@@ -2178,6 +2193,7 @@ tr:last-child td {
   grid-template-columns: 1fr 1fr;
   gap: 12px;
   padding: 0 22px 6px;
+  min-width: 0;
 }
 
 .resident-form-grid label:last-child {
@@ -2188,28 +2204,235 @@ tr:last-child td {
   display: flex;
   justify-content: flex-end;
   padding: 0 22px;
+  min-width: 0;
 }
 
 .resident-history-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   padding: 0 22px;
 }
 
 .resident-history-row {
-  display: flex;
+  display: grid;
   align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 6px;
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 10px 12px;
+  min-width: 0;
+}
+
+.resident-history-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
 }
 
 .resident-history-title {
-  margin: 0 0 3px;
+  flex: 1 1 0;
+  margin: 0;
+  min-width: 0;
   font-weight: 600;
+  color: var(--ink);
+  line-height: 1.3;
+}
+
+.resident-history-status {
+  flex: 0 0 auto;
+}
+
+.resident-history-compact-meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.resident-history-compact-meta > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.resident-event-card-list {
+  display: none;
+}
+
+.resident-event-card {
+  width: 100%;
+  text-align: left;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.resident-event-card:disabled {
+  cursor: not-allowed;
+}
+
+.resident-event-card.is-selected {
+  border-color: var(--purple);
+  background: var(--purple-tint-2);
+  box-shadow: 0 0 0 1px rgba(109, 59, 217, 0.16);
+}
+
+.resident-event-card.is-submitted {
+  background: #fafafd;
+  color: var(--ink-3);
+}
+
+.resident-event-card-header,
+.resident-event-card-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.resident-event-card-title {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.resident-event-card-meta {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+.stub-kicker {
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.resident-event-card-line {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.resident-event-card-line.mono {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.resident-event-card-type-line {
+  color: var(--ink-3);
+}
+
+.resident-event-card-type-line .safe-wrap {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.resident-event-source-text {
+  color: var(--ink-3);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.resident-card-select-indicator {
+  min-height: var(--touch-target);
+  min-width: min(100%, 112px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--purple);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.resident-event-card.is-selected .resident-card-select-indicator {
+  border-color: var(--purple);
+  background: var(--purple);
+  color: #fff;
+}
+
+.resident-event-card.is-submitted .resident-card-select-indicator {
+  color: var(--ink-3);
+  background: var(--bg-1);
+}
+
+.resident-submit-sticky {
+  display: none;
+}
+
+.resident-submit-sticky-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.resident-submit-sticky-copy strong {
+  color: var(--ink);
+}
+
+.resident-submit-sticky-copy span {
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
+.resident-adhoc-help {
+  display: grid;
+  gap: 8px;
+  padding-top: 0;
+}
+
+.stub-page {
+  justify-content: center;
+}
+
+.stub-card {
+  display: grid;
+  gap: 16px;
+  width: min(100%, 760px);
+  padding: 24px;
+  overflow-wrap: anywhere;
+}
+
+.stub-card-heading {
+  display: grid;
+  gap: 8px;
+}
+
+.stub-card h1 {
+  margin: 0;
+  color: var(--ink);
+  font-size: clamp(22px, 1.3rem + 0.35vw, 28px);
+  line-height: 1.15;
+}
+
+.stub-card p {
+  margin: 0;
+  color: var(--ink-3);
+  line-height: 1.5;
+}
+
+.stub-lede {
+  color: var(--ink-2) !important;
+}
+
+.non-nhg-placeholder-grid .mobile-record-card {
+  box-shadow: none;
+}
+
+.non-nhg-placeholder-grid strong {
   color: var(--ink);
 }
 
@@ -2473,6 +2696,115 @@ tr:last-child td {
     min-height: var(--touch-target);
   }
 
+  .resident-page {
+    padding-bottom: calc(22px + env(safe-area-inset-bottom));
+  }
+
+  .resident-hero-actions .button-resident-submit {
+    display: none;
+  }
+
+  .resident-table-wrap {
+    display: none;
+  }
+
+  .resident-event-card-list {
+    display: grid;
+    gap: 10px;
+    padding: 0 14px 14px;
+  }
+
+  .resident-submit-sticky {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    justify-content: stretch;
+    gap: 10px;
+    margin: -4px 0 0;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: 0 -10px 30px rgba(16, 18, 40, 0.08);
+    backdrop-filter: blur(8px);
+    z-index: 30;
+  }
+
+  .resident-submit-sticky .button {
+    width: 100%;
+  }
+
+  .resident-event-card {
+    gap: 6px;
+    padding: 10px 11px;
+  }
+
+  .resident-event-card-header,
+  .resident-event-card-footer {
+    gap: 8px;
+  }
+
+  .resident-event-card-title {
+    font-size: 13.5px;
+    line-height: 1.28;
+  }
+
+  .resident-event-card .status-badge {
+    flex: 0 0 auto;
+    padding-inline: 8px;
+  }
+
+  .resident-event-card-meta {
+    gap: 3px;
+    font-size: 12px;
+    line-height: 1.3;
+  }
+
+  .resident-card-select-indicator {
+    width: 100%;
+  }
+
+  .resident-form-grid,
+  .resident-history-list {
+    padding-inline: 14px;
+  }
+
+  .resident-adhoc-footer {
+    padding-inline: 14px;
+  }
+
+  .resident-adhoc-footer .button {
+    width: 100%;
+  }
+
+  .resident-history-row {
+    display: grid;
+    gap: 5px;
+    padding: 9px 10px;
+  }
+
+  .resident-history-title {
+    font-size: 13px;
+    line-height: 1.25;
+  }
+
+  .resident-history-status {
+    padding-inline: 8px;
+  }
+
+  .resident-history-compact-meta {
+    font-size: 11.5px;
+    line-height: 1.3;
+  }
+
+  .stub-card {
+    padding: 18px;
+  }
+
+  .non-nhg-placeholder-grid {
+    grid-template-columns: 1fr;
+  }
+
   .responsive-filter-grid,
   .filter-grid,
   .filter-bar,
@@ -2512,7 +2844,6 @@ tr:last-child td {
     min-height: var(--touch-target);
   }
 }
-
 
 .appbar-search {
   margin-left: auto;

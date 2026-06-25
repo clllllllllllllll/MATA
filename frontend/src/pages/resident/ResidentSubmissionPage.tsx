@@ -34,6 +34,20 @@ const formatDate = (value?: string) => {
   })
 }
 
+const formatShortDate = (value?: string) => {
+  if (!value) {
+    return '-'
+  }
+  const dateValue = new Date(value)
+  if (!Number.isFinite(dateValue.getTime())) {
+    return value
+  }
+  return dateValue.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+  })
+}
+
 const formatTime = (value?: string) => {
   if (!value) {
     return '-'
@@ -52,11 +66,37 @@ const formatTime = (value?: string) => {
   return `${String(hour12).padStart(2, '0')}:${minutes} ${suffix}`
 }
 
+const formatCompactTime = (value?: string) => formatTime(value).replace(/\s+/g, '')
+
 const formatDuration = (value?: number) => {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return '-'
   }
   return `${Number.isInteger(value) ? value : value.toFixed(1)}h`
+}
+
+const getEventSessionLabel = (event: ResidentEventsResponse['events'][number]) =>
+  event.sessionTypeName ?? event.sessionType ?? '-'
+
+const getEventSourceLabel = (event: ResidentEventsResponse['events'][number]) => {
+  if (event.isGlobal) {
+    return 'Global Type'
+  }
+  if (event.isAdhoc) {
+    return 'Ad-hoc'
+  }
+  return 'Scheduled'
+}
+
+const getAttendanceStatusBadgeClass = (status: string) => {
+  const normalised = status.trim().toLowerCase()
+  if (normalised === 'removed') {
+    return 'status-badge-warning'
+  }
+  if (normalised === 'submitted') {
+    return 'status-badge-success'
+  }
+  return 'status-badge-neutral'
 }
 
 const normaliseResidentApiError = (error: ApiRequestError): string => {
@@ -159,6 +199,10 @@ export const ResidentSubmissionPage = () => {
   const availableEvents = eventsResponse.events
 
   const toggleSelected = (eventId: string) => {
+    const targetEvent = availableEvents.find((event) => event.id === eventId)
+    if (targetEvent?.alreadySubmitted) {
+      return
+    }
     setSelectedEventIds((previous) => {
       const next = new Set(previous)
       if (next.has(eventId)) {
@@ -272,6 +316,21 @@ export const ResidentSubmissionPage = () => {
           <span>{eventsError}</span>
         </section>
       ) : null}
+      <section className="resident-submit-sticky sticky-action-footer" aria-label="Resident attendance action bar">
+        <div className="resident-submit-sticky-copy safe-wrap">
+          <strong>{selectedCount} selected</strong>
+          <span>{selectedCount === 0 ? 'Select a teaching to submit attendance.' : 'Ready to submit attendance.'}</span>
+        </div>
+        <button
+          type="button"
+          className="button button-resident-submit"
+          disabled={selectedCount === 0 || submitState === 'submitting'}
+          onClick={() => void handleSubmitAttendance()}
+        >
+          <IconSend size={14} />
+          {submitState === 'submitting' ? 'Submitting...' : `Submit Attendance (${selectedCount})`}
+        </button>
+      </section>
 
       <section className="card resident-events-card">
         <div className="section-header">
@@ -302,43 +361,49 @@ export const ResidentSubmissionPage = () => {
                     <th>Date</th>
                     <th>Time</th>
                     <th>Posting</th>
+                    <th>Status</th>
                     <th>Tags</th>
                   </tr>
                 </thead>
                 <tbody>
                   {availableEvents.map((event) => {
                     const selected = selectedEventIds.has(event.id)
-                    const tagLabel = event.isGlobal ? 'Global Type' : event.isAdhoc ? 'Ad-hoc' : null
+                    const sourceLabel = getEventSourceLabel(event)
+                    const submitted = event.alreadySubmitted
                     return (
                       <tr
                         key={event.id}
-                        className={`table-clickable-row ${selected ? 'resident-row-selected' : ''}`}
+                        className={`table-clickable-row ${selected ? 'resident-row-selected' : ''} ${
+                          submitted ? 'resident-row-disabled' : ''
+                        }`}
                         onClick={() => toggleSelected(event.id)}
                       >
                         <td>
                           <input
                             type="checkbox"
                             checked={selected}
+                            disabled={submitted}
                             onChange={() => toggleSelected(event.id)}
                             onClick={(clickEvent) => clickEvent.stopPropagation()}
                             aria-label={`Select ${event.teachingName}`}
                           />
                         </td>
                         <td className="resident-teaching-name">{event.teachingName}</td>
-                        <td>{event.sessionTypeName ?? event.sessionType ?? '-'}</td>
+                        <td>{getEventSessionLabel(event)}</td>
                         <td className="mono">{formatDate(event.eventDate)}</td>
                         <td className="mono">
                           {formatTime(event.startTime)} - {formatTime(event.endTime)}
                         </td>
                         <td className="mono">{event.postingCode}</td>
                         <td>
-                          {tagLabel ? (
-                            <span className={`status-badge ${event.isGlobal ? 'status-badge-info' : 'status-badge-neutral'}`}>
-                              {tagLabel}
-                            </span>
-                          ) : (
-                            '-'
-                          )}
+                          <span className={`status-badge ${submitted ? 'status-badge-success' : 'status-badge-warning'}`}>
+                            {submitted ? 'Submitted' : 'Pending'}
+                          </span>
+                        </td>
+                        <td>
+                          <span className={`status-badge ${event.isGlobal ? 'status-badge-info' : 'status-badge-neutral'}`}>
+                            {sourceLabel}
+                          </span>
                         </td>
                       </tr>
                     )
@@ -348,6 +413,58 @@ export const ResidentSubmissionPage = () => {
             </div>
           </div>
         )}
+        {!eventsLoading && availableEvents.length > 0 ? (
+          <div className="resident-event-card-list responsive-card-list" aria-label="Available scheduled events">
+            {availableEvents.map((event) => {
+              const selected = selectedEventIds.has(event.id)
+              const submitted = event.alreadySubmitted
+              const sourceLabel = getEventSourceLabel(event)
+              const sessionLabel = getEventSessionLabel(event)
+              return (
+                <button
+                  type="button"
+                  key={event.id}
+                  className={`resident-event-card mobile-record-card ${selected ? 'is-selected' : ''} ${
+                    submitted ? 'is-submitted' : ''
+                  }`}
+                  onClick={() => toggleSelected(event.id)}
+                  disabled={submitted}
+                  aria-pressed={selected}
+                  aria-label={`${selected ? 'Deselect' : 'Select'} ${event.teachingName}, ${formatDate(
+                    event.eventDate,
+                  )}, ${formatTime(event.startTime)} to ${formatTime(event.endTime)}, ${event.postingCode}, ${
+                    submitted ? 'Submitted' : 'Pending'
+                  }`}
+                >
+                  <span className="resident-event-card-header">
+                    <span className="resident-event-card-title safe-wrap">{event.teachingName}</span>
+                    <span className={`status-badge ${submitted ? 'status-badge-success' : 'status-badge-warning'}`}>
+                      {submitted ? 'Submitted' : 'Pending'}
+                    </span>
+                  </span>
+                  <span className="resident-event-card-meta">
+                    <span className="resident-event-card-line">
+                      {formatDate(event.eventDate)}
+                      <span aria-hidden="true"> | </span>
+                      {formatCompactTime(event.startTime)}-{formatCompactTime(event.endTime)}
+                    </span>
+                    <span className="resident-event-card-line mono">{event.postingCode}</span>
+                    <span className="resident-event-card-line resident-event-card-type-line">
+                      <span className="safe-wrap">{sessionLabel}</span>
+                      <span aria-hidden="true"> | </span>
+                      <span className="resident-event-source-text">{sourceLabel}</span>
+                    </span>
+                  </span>
+                  <span className="resident-event-card-footer">
+                    <span className="resident-card-select-indicator" aria-hidden="true">
+                      {submitted ? 'Submitted' : selected ? 'Selected' : 'Select'}
+                    </span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        ) : null}
       </section>
 
       <section className="grid resident-panels-grid">
@@ -356,7 +473,11 @@ export const ResidentSubmissionPage = () => {
             <h2>Ad-hoc Teaching Submission</h2>
             <span className="status-badge status-badge-info">Date-first</span>
           </div>
-          <div className="resident-empty" style={{ paddingTop: 0 }}>
+          <div className="resident-empty resident-adhoc-help">
+            <p>
+              Please ensure your current submission is not an already scheduled event. There are no CME Pts tagged to
+              adhoc teachings.
+            </p>
             <p>Availability is checked after you select a teaching date.</p>
           </div>
           <div className="resident-form-grid">
@@ -417,23 +538,28 @@ export const ResidentSubmissionPage = () => {
           ) : history.length === 0 ? (
             <div className="resident-empty">No past submissions yet.</div>
           ) : (
-                <div className="resident-history-list">
-              {history.slice(0, 6).map((row) => (
-                <div className="resident-history-row" key={row.attendanceId}>
-                  <div>
-                    <p className="resident-history-title">{row.teachingName}</p>
-                    <p className="inline-muted mono">
-                      {row.postingCode} - {formatDate(row.eventDate)} - {formatTime(row.startTime)} - {formatDuration(row.durationHours)}
-                    </p>
+            <div className="resident-history-list responsive-card-list">
+              {history.slice(0, 6).map((row) => {
+                const sourceLabel = row.isAdhoc ? 'Ad-hoc' : 'Scheduled'
+                return (
+                  <div className="resident-history-row mobile-record-card" key={row.attendanceId}>
+                    <div className="resident-history-header">
+                      <p className="resident-history-title safe-wrap">{row.teachingName}</p>
+                      <span className={`status-badge resident-history-status ${getAttendanceStatusBadgeClass(row.status)}`}>
+                        {row.status}
+                      </span>
+                    </div>
+                    <div className="resident-history-compact-meta">
+                      <span>
+                        {formatShortDate(row.eventDate)} | {formatTime(row.startTime)} | {formatDuration(row.durationHours)}
+                      </span>
+                      <span>
+                        <span className="mono">{row.postingCode}</span> | {sourceLabel}
+                      </span>
+                    </div>
                   </div>
-                  <div className="resident-history-meta">
-                    <span className={`status-badge ${row.isAdhoc ? 'status-badge-neutral' : 'status-badge-info'}`}>
-                      {row.isAdhoc ? 'Ad-hoc' : 'Scheduled'}
-                    </span>
-                    <span className="status-badge status-badge-success">{row.status}</span>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </article>

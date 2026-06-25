@@ -49,7 +49,8 @@ function App() {
           element={
             <StubPage
               title="Non-NHG Resident Portal"
-              subtitle="Optional visual stub. Non-NHG resident implementation is deferred."
+              subtitle="Optional visual stub. Non-NHG Resident implementation is deferred."
+              variant="non_nhg"
             />
           }
         />
