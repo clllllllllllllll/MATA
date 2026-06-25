@@ -762,6 +762,92 @@ a {
   overflow-wrap: anywhere;
 }
 
+.admin-filter-summary,
+.admin-mobile-record-list {
+  display: none;
+}
+
+.admin-mobile-record-card {
+  width: 100%;
+  appearance: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.admin-mobile-record-card:hover {
+  border-color: #b9d8e6;
+  box-shadow: 0 8px 18px rgba(23, 41, 54, 0.08);
+}
+
+.admin-mobile-record-card:focus-visible {
+  outline: 3px solid rgba(0, 95, 139, 0.22);
+  outline-offset: 2px;
+}
+
+.admin-mobile-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.admin-mobile-card-header > .status-badge,
+.admin-mobile-card-header > .review-marker {
+  flex: 0 0 auto;
+  max-width: 45%;
+  justify-content: center;
+  text-align: center;
+  white-space: normal;
+}
+
+.admin-mobile-card-title {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13.5px;
+  font-weight: 800;
+  line-height: 1.28;
+}
+
+.admin-mobile-card-meta {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.admin-mobile-card-source,
+.admin-mobile-card-meta .mono-cell {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.admin-mobile-card-badges,
+.admin-mobile-summary-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.admin-mobile-record-card .mono-chip {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
+
+.warning-mobile-card-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
 .compact-key-value-table,
 .key-value-grid {
   display: grid;
@@ -5806,5 +5892,179 @@ button:disabled,
   .secretary-event-metrics,
   .secretary-event-detail .parsed-data-detail-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .admin-filter-summary {
+    display: flex;
+    grid-column: 1 / -1;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+    padding-bottom: 2px;
+    color: var(--ink-3);
+    font-size: 11.5px;
+  }
+
+  .admin-filter-summary span {
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .admin-filter-summary strong {
+    min-width: 0;
+    color: var(--ink-2);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .admin-logs-filter-card,
+  .upload-log-filter-card,
+  .admin-warnings-page .warning-filter-card {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: 10px;
+    padding: 12px;
+    max-height: min(320px, 38vh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .admin-logs-filter-card label,
+  .upload-log-filter-card label,
+  .admin-warnings-page .warning-filter-card label {
+    min-width: 0;
+  }
+
+  .admin-logs-filter-actions,
+  .upload-log-filter-card > .button,
+  .admin-warnings-page .warning-filter-card > .button {
+    width: 100%;
+  }
+
+  .admin-logs-filter-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    padding-top: 0;
+  }
+
+  .admin-logs-filter-actions .button,
+  .upload-log-filter-card > .button,
+  .admin-warnings-page .warning-filter-card > .button {
+    min-height: var(--touch-target);
+  }
+
+  .admin-logs-advanced-filters {
+    padding-top: 10px;
+  }
+
+  .admin-logs-advanced-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .warning-mode-panel {
+    align-items: stretch;
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .warning-mode-toggle {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .warning-history-banner {
+    padding: 10px 12px;
+  }
+
+  .admin-logs-table-card .table-scroll,
+  .upload-log-table-card .table-scroll,
+  .warning-results-card .warning-group-card .table-scroll {
+    display: none;
+  }
+
+  .admin-mobile-record-list {
+    display: grid;
+    gap: 8px;
+    padding: 10px 12px 12px;
+  }
+
+  .warning-mobile-card-list {
+    padding: 10px;
+  }
+
+  .admin-mobile-record-card {
+    gap: 6px;
+    padding: 10px 11px;
+    border-radius: 10px;
+    box-shadow: none;
+  }
+
+  .admin-mobile-card-header {
+    gap: 8px;
+  }
+
+  .admin-mobile-card-title {
+    font-size: 13px;
+  }
+
+  .admin-mobile-card-meta {
+    gap: 2px;
+    font-size: 11.5px;
+  }
+
+  .admin-mobile-card-badges,
+  .admin-mobile-summary-chips {
+    gap: 5px;
+  }
+
+  .admin-mobile-summary-chips .summary-chip-list {
+    gap: 4px;
+  }
+
+  .warning-results-header,
+  .warning-group-header {
+    align-items: flex-start;
+    gap: 8px;
+    padding: 12px;
+  }
+
+  .warning-groups-in-card {
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .warning-count-pill,
+  .review-marker,
+  .warning-seen-pill,
+  .summary-count-chip,
+  .summary-count-more,
+  .count-chip,
+  .status-badge,
+  .badge {
+    max-width: 100%;
+  }
+
+  .upload-log-pagination,
+  .warning-pagination {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 12px;
+  }
+
+  .upload-log-pagination > div,
+  .warning-pagination {
+    width: 100%;
+  }
+
+  .upload-log-pagination .button,
+  .warning-pagination .button {
+    flex: 1 1 0;
+    min-height: var(--touch-target);
   }
 }

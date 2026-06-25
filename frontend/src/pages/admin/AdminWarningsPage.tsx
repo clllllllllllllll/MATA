@@ -559,13 +559,21 @@ export const AdminWarningsPage = () => {
     Boolean(warningDetail) &&
     (selectedWarning?.uploadType === 'rdb' || selectedTrace?.source_payload !== undefined) &&
     sourceCellWarningTypes.has(warningDetail?.warningType ?? '')
+  const hasFilters =
+    uploadTypeFilter !== 'all' ||
+    severityFilter !== 'all' ||
+    programmeFilter !== 'all' ||
+    warningTypeFilter.trim().length > 0 ||
+    reportingPeriodFilter.trim().length > 0 ||
+    uploadLogFilter.trim().length > 0 ||
+    searchTerm.trim().length > 0
 
   const pageSubtitle = isShowingFirstLoad
     ? 'Loading persisted warnings'
     : `${filteredWarnings.length} ${warningMode === 'active' ? 'active ' : 'historical '}warning${filteredWarnings.length === 1 ? '' : 's'} on this page`
 
   return (
-    <div className="page">
+    <div className="page admin-warnings-page">
       <PageHero
         title="Warnings"
         subtitle={pageSubtitle}
@@ -622,6 +630,10 @@ export const AdminWarningsPage = () => {
       ) : null}
 
       <section className="card filter-bar warning-filter-card">
+        <div className="admin-filter-summary">
+          <span>Filters</span>
+          <strong>{hasFilters ? 'Active filters applied' : 'All warnings'}</strong>
+        </div>
         <label>
           Upload type
           <select
@@ -783,7 +795,14 @@ export const AdminWarningsPage = () => {
                         <tr
                           key={`${warningIssueIdForRow(warning) ?? warning.latestUploadWarningId ?? warning.warningId}-${warning.latestUploadWarningId ?? warning.warningId}`}
                           className="table-clickable-row"
+                          tabIndex={0}
                           onClick={() => openWarningDetail(warning)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              openWarningDetail(warning)
+                            }
+                          }}
                         >
                           <td className="cell-type">
                             <span className={`severity-dot severity-dot-${warning.severity}`} />
@@ -812,6 +831,47 @@ export const AdminWarningsPage = () => {
                       ))}
                     </tbody>
                   </table>
+                </div>
+                <div className="responsive-card-list admin-mobile-record-list warning-mobile-card-list" aria-label={`${uploadTypeLabels[group.uploadType]} warning cards`}>
+                  {group.warnings.map((warning) => (
+                    <button
+                      key={`${warningIssueIdForRow(warning) ?? warning.latestUploadWarningId ?? warning.warningId}-mobile`}
+                      type="button"
+                      className="mobile-record-card admin-mobile-record-card warning-mobile-card"
+                      onClick={() => openWarningDetail(warning)}
+                      aria-label={`Open warning detail for ${warning.warningType}`}
+                    >
+                      <span className="admin-mobile-card-header">
+                        <span className="admin-mobile-card-title warning-mobile-card-title safe-wrap">
+                          <span className={`severity-dot severity-dot-${warning.severity}`} />
+                          <span className="mono-chip">{warning.warningType}</span>
+                        </span>
+                        <span className={`review-marker warning-status-${warning.status ?? 'unresolved'}`}>
+                          {statusText(warning.status ?? 'unresolved')}
+                        </span>
+                      </span>
+                      <span className="admin-mobile-card-meta">
+                        <span>
+                          {warning.severity}
+                          {' - '}
+                          {fieldValue(warning.programmeCode)}
+                          {' - '}
+                          {fieldValue(warning.monthLabel)}
+                        </span>
+                        <span>{fieldValue(warning.residentName)} - {fieldValue(warning.mcr)}</span>
+                        <span className="admin-mobile-card-source mono-cell">
+                          {fieldValue(warning.sourceLabel ?? warning.cellRef)}
+                        </span>
+                        <span className="safe-wrap">{fieldValue(warning.message)}</span>
+                      </span>
+                      <span className="admin-mobile-card-badges">
+                        {warning.reappeared ? <span className="warning-seen-pill">Reappeared</span> : null}
+                        {warning.seenCount > 1 ? (
+                          <span className="warning-seen-pill">Seen in {warning.seenCount} uploads</span>
+                        ) : null}
+                      </span>
+                    </button>
+                  ))}
                 </div>
               </section>
             ))}

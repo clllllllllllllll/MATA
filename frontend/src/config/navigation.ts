@@ -124,7 +124,7 @@ export const navItems: NavItem[] = [
 export const breadcrumbMap: Record<string, string[]> = {
   '/admin': ['Master Admin', 'Home'],
   '/admin/upload': ['Master Admin', 'Upload Files'],
-  '/admin/upload/warnings': ['Master Admin', 'Warning Review'],
+  '/admin/upload/warnings': ['Master Admin', 'Warnings'],
   '/admin/config': ['Master Admin', 'Configuration'],
   '/admin/config/multi': ['Master Admin', 'Configuration', 'Multi-Posting Rules'],
   '/admin/logs': ['Master Admin', 'Admin Logs'],
@@ -133,7 +133,7 @@ export const breadcrumbMap: Record<string, string[]> = {
   '/admin/secretary-events': ['Master Admin', 'Secretary Events'],
   '/admin/submissions': ['Master Admin', 'Resident Submissions'],
   '/pc/upload-ttf': ['Programme PC', 'Upload TTF'],
-  '/pc/warnings': ['Programme PC', 'Warning Review'],
+  '/pc/warnings': ['Programme PC', 'Warnings'],
   '/pc/config': ['Programme PC', 'Configuration'],
   '/secretary': ['Secretary', 'Teaching Schedule'],
   '/secretary/events': ['Secretary', 'Teaching Schedule'],

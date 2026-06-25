@@ -708,6 +708,10 @@ export const AdminLogsPage = () => {
       />
 
       <section className="card filter-bar warning-filter-card admin-logs-filter-card">
+        <div className="admin-filter-summary">
+          <span>Filters</span>
+          <strong>{hasFilters ? 'Active filters applied' : 'All admin logs'}</strong>
+        </div>
         <label className="admin-logs-search-field">
           Search logs
           <input
@@ -1011,6 +1015,41 @@ export const AdminLogsPage = () => {
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="responsive-card-list admin-mobile-record-list admin-log-mobile-card-list" aria-label="Admin log cards">
+            {logs.map((log) => (
+              <button
+                key={`${log.id}-mobile`}
+                type="button"
+                className="mobile-record-card admin-mobile-record-card admin-log-mobile-card"
+                onClick={() => openDetail(log)}
+                aria-label={`Open admin log detail for ${log.title}`}
+              >
+                <span className="admin-mobile-card-header">
+                  <span className="admin-mobile-card-title safe-wrap">{log.title}</span>
+                  <StatusBadge label={labelForLogType(log.log_type)} tone={typeTone(log.log_type)} />
+                </span>
+                <span className="admin-mobile-card-meta">
+                  <span>{formatDateTime(log.occurred_at)} - {actorText(log)}</span>
+                  <span>
+                    {fieldValue(labelForActorRole(log.actor_role ?? log.stored_actor_role))}
+                    {' - '}
+                    {fieldValue(log.programme_code ?? 'Global')}
+                  </span>
+                  {log.summary ? <span className="safe-wrap">{log.summary}</span> : null}
+                  <span className="admin-mobile-card-source safe-wrap">
+                    {entityText(log)} - {sourceText(log)}
+                  </span>
+                </span>
+                <span className="admin-mobile-card-badges">
+                  {log.upload_type ? (
+                    <StatusBadge label={labelForUploadType(log.upload_type) ?? log.upload_type} tone="neutral" />
+                  ) : null}
+                  {log.status ? <StatusBadge label={log.status} tone={statusTone(log.status)} /> : null}
+                  {log.outcome ? <StatusBadge label={log.outcome} tone={statusTone(log.outcome)} /> : null}
+                </span>
+              </button>
+            ))}
           </div>
           <div className="upload-log-pagination">
             <span>

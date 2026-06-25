@@ -282,7 +282,7 @@ export const AdminUploadLogsPage = () => {
     : `${total} persisted upload log${total === 1 ? '' : 's'}`
 
   return (
-    <div className="page">
+    <div className="page admin-upload-logs-page">
       <PageHero
         title="Upload Logs"
         subtitle="Audit history of uploaded source files"
@@ -301,6 +301,10 @@ export const AdminUploadLogsPage = () => {
       />
 
       <section className="card filter-bar warning-filter-card upload-log-filter-card">
+        <div className="admin-filter-summary">
+          <span>Filters</span>
+          <strong>{hasFilters ? 'Active filters applied' : 'All upload logs'}</strong>
+        </div>
         <label>
           Upload type
           <select
@@ -429,7 +433,14 @@ export const AdminUploadLogsPage = () => {
                   <tr
                     key={log.id}
                     className="table-clickable-row"
+                    tabIndex={0}
                     onClick={() => openDetail(log)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        openDetail(log)
+                      }
+                    }}
                   >
                     <td>{uploadTypeLabels[log.upload_type]}</td>
                     <td>{formatDateTime(log.uploaded_at)}</td>
@@ -455,6 +466,34 @@ export const AdminUploadLogsPage = () => {
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="responsive-card-list admin-mobile-record-list upload-log-mobile-card-list" aria-label="Upload log cards">
+            {logs.map((log) => (
+              <button
+                key={`${log.id}-mobile`}
+                type="button"
+                className="mobile-record-card admin-mobile-record-card upload-log-mobile-card"
+                onClick={() => openDetail(log)}
+                aria-label={`Open upload log detail for ${uploadTypeLabels[log.upload_type]}`}
+              >
+                <span className="admin-mobile-card-header">
+                  <span className="admin-mobile-card-title safe-wrap">{uploadTypeLabels[log.upload_type]}</span>
+                  <StatusBadge label={log.status} tone={statusTone(log.status)} />
+                </span>
+                <span className="admin-mobile-card-meta">
+                  <span>{formatDateTime(log.uploaded_at)} - {fieldValue(log.uploaded_by_name ?? log.uploaded_by)}</span>
+                  <span>
+                    {fieldValue(log.reporting_period_label ?? log.reporting_period_id)}
+                    {' - '}
+                    {fieldValue(log.programme_code ?? 'Global')}
+                  </span>
+                  <span>{log.warning_count} warnings - {log.error_count} errors</span>
+                </span>
+                <span className="admin-mobile-summary-chips">
+                  <SummaryCountChips counts={log.summary_counts} maxItems={2} />
+                </span>
+              </button>
+            ))}
           </div>
           <div className="upload-log-pagination">
             <span>
