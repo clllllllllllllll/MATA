@@ -18,6 +18,8 @@ from app.dependencies.staff_actor import (
 from app.errors import ApiError, ErrorCode, UploadValidationApiError
 from app.schemas import (
     AcademicMonthBoundaryResponse,
+    AdminResidentSubmissionDetailResponse,
+    AdminResidentSubmissionListResponse,
     AdminSecretaryEventDetailResponse,
     AdminSecretaryEventListResponse,
     AdminLogActorRole,
@@ -91,6 +93,7 @@ from app.schemas.data_revalidation import (
 )
 from app.services import (
     admin_config,
+    admin_resident_submissions,
     admin_secretary_events,
     cache_invalidation,
     data_revalidation_service,
@@ -2517,6 +2520,99 @@ async def get_admin_secretary_event(
         )
     payload = await admin_secretary_events.get_secretary_event(db, event_id=event_id)
     return AdminSecretaryEventDetailResponse.model_validate(payload)
+
+
+@router.get(
+    "/resident-submissions",
+    response_model=AdminResidentSubmissionListResponse,
+)
+async def list_admin_resident_submissions(
+    reporting_period_id: UUID | None = Query(default=None),
+    programme_code: str | None = Query(default=None),
+    posting_code: str | None = Query(default=None),
+    resident_id: UUID | None = Query(default=None),
+    mcr: str | None = Query(default=None),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    source: str | None = Query(default=None),
+    is_adhoc: bool | None = Query(default=None),
+    status: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    teaching_event_id: UUID | None = Query(default=None),
+    teaching_name: str | None = Query(default=None),
+    session_type_id: UUID | None = Query(default=None),
+    submitted_from: datetime | None = Query(default=None),
+    submitted_to: datetime | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> AdminResidentSubmissionListResponse:
+    if db is None:
+        return AdminResidentSubmissionListResponse.model_validate(
+            {
+                "items": [],
+                "total": 0,
+                "limit": limit,
+                "offset": offset,
+                "summary": {
+                    "total_submissions": 0,
+                    "submitted_count": 0,
+                    "flagged_count": 0,
+                    "removed_count": 0,
+                    "secretary_event_count": 0,
+                    "adhoc_count": 0,
+                },
+            }
+        )
+    payload = await admin_resident_submissions.list_resident_submissions(
+        db,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        posting_code=posting_code,
+        resident_id=resident_id,
+        mcr=mcr,
+        date_from=date_from,
+        date_to=date_to,
+        source=source,
+        is_adhoc=is_adhoc,
+        status=status,
+        search=search,
+        teaching_event_id=teaching_event_id,
+        teaching_name=teaching_name,
+        session_type_id=session_type_id,
+        submitted_from=submitted_from,
+        submitted_to=submitted_to,
+        limit=limit,
+        offset=offset,
+    )
+    return AdminResidentSubmissionListResponse.model_validate(payload)
+
+
+@router.get(
+    "/resident-submissions/{submission_id}",
+    response_model=AdminResidentSubmissionDetailResponse,
+)
+async def get_admin_resident_submission(
+    submission_id: UUID,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> AdminResidentSubmissionDetailResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    payload = await admin_resident_submissions.get_resident_submission(
+        db,
+        submission_id=submission_id,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+    )
+    return AdminResidentSubmissionDetailResponse.model_validate(payload)
 
 
 @router.get("/logs", response_model=AdminLogListResponse)

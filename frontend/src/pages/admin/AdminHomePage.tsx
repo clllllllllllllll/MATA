@@ -56,7 +56,7 @@ const workspaceTiles = [
     title: 'Resident Submissions',
     path: '/admin/submissions',
     description: 'Submitted attendance records across programmes.',
-    stat: 'Pending endpoint',
+    stat: 'Read-only view',
     icon: <IconGrid size={18} />,
   },
 ]

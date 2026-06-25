@@ -4548,9 +4548,70 @@ button:disabled,
   opacity: 0.72;
 }
 
+.admin-resident-submissions-table-card .table-scroll {
+  transition: opacity 140ms ease;
+}
+
+.admin-resident-submissions-table-card.is-refetching .table-scroll {
+  opacity: 0.72;
+}
+
 .admin-secretary-events-table {
   min-width: 1440px;
   table-layout: fixed;
+}
+
+.admin-resident-submissions-table {
+  min-width: 1440px;
+  table-layout: fixed;
+}
+
+.admin-resident-submissions-table th:first-child,
+.admin-resident-submissions-table td:first-child {
+  width: 220px;
+}
+
+.admin-resident-submissions-table th:nth-child(2),
+.admin-resident-submissions-table td:nth-child(2) {
+  width: 240px;
+}
+
+.admin-resident-submissions-table th:nth-child(3),
+.admin-resident-submissions-table td:nth-child(3) {
+  width: 210px;
+}
+
+.admin-resident-submissions-table th:nth-child(4),
+.admin-resident-submissions-table td:nth-child(4) {
+  width: 150px;
+}
+
+.admin-resident-submissions-table th:nth-child(5),
+.admin-resident-submissions-table td:nth-child(5) {
+  width: 128px;
+}
+
+.admin-resident-submissions-table th:nth-child(6),
+.admin-resident-submissions-table td:nth-child(6) {
+  width: 110px;
+}
+
+.admin-resident-submissions-table th:nth-child(7),
+.admin-resident-submissions-table td:nth-child(7) {
+  width: 125px;
+}
+
+.admin-resident-submissions-table th:nth-child(8),
+.admin-resident-submissions-table td:nth-child(8) {
+  width: 215px;
+}
+
+.admin-resident-submissions-table th:last-child,
+.admin-resident-submissions-table td:last-child {
+  width: 42px;
+  padding-left: 4px;
+  padding-right: 10px;
+  text-align: right;
 }
 
 .admin-secretary-events-table th:first-child,
@@ -4626,6 +4687,19 @@ button:disabled,
 }
 
 .secretary-event-source-cell .status-badge {
+  white-space: nowrap;
+}
+
+.admin-resident-submissions-posting strong,
+.admin-resident-submissions-posting span,
+.admin-resident-submissions-datetime strong,
+.admin-resident-submissions-datetime span,
+.admin-resident-submissions-session-type strong,
+.admin-resident-submissions-session-type span {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

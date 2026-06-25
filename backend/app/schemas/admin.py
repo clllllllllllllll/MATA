@@ -862,6 +862,110 @@ class AdminSecretaryEventDetailResponse(AdminSecretaryEventListItem):
     notes: AdminSecretaryEventDetailNotes
 
 
+class AdminResidentSubmissionListItem(BaseModel):
+    id: UUID
+    resident_id: UUID
+    resident_name: str
+    mcr: str
+    programme_code: str | None = None
+    attendance_posting_code: str | None = None
+    posting_code: str
+    posting_display_name: str | None = None
+    teaching_event_id: UUID
+    teaching_name: str
+    event_date: date
+    start_time: time
+    end_time: time | None = None
+    duration_hours: Decimal | None = None
+    source: str
+    is_adhoc: bool
+    status: str
+    submitted_at: datetime
+    session_type_id: UUID | None = None
+    session_type_name: str | None = None
+    cme_points_awarded: bool
+    smc_event_code: str | None = None
+    created_by_role: str | None = None
+
+
+class AdminResidentSubmissionListSummary(BaseModel):
+    total_submissions: int
+    submitted_count: int
+    flagged_count: int
+    removed_count: int
+    secretary_event_count: int
+    adhoc_count: int
+
+
+class AdminResidentSubmissionListResponse(BaseModel):
+    items: list[AdminResidentSubmissionListItem]
+    total: int
+    limit: int
+    offset: int
+    summary: AdminResidentSubmissionListSummary
+
+
+class AdminResidentSubmissionAttendanceMetadata(BaseModel):
+    id: UUID
+    resident_id: UUID
+    teaching_event_id: UUID
+    status: str
+    attendance_posting_code: str | None = None
+    submitted_at: datetime
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class AdminResidentSubmissionResidentMetadata(BaseModel):
+    id: UUID
+    name: str
+    mcr: str
+    programme_code: str | None = None
+    r_year: str | None = None
+    classification: str | None = None
+    status: str | None = None
+    identity_label: str
+
+
+class AdminResidentSubmissionEventMetadata(BaseModel):
+    id: UUID
+    teaching_name: str
+    event_date: date
+    start_time: time
+    end_time: time | None = None
+    duration_hours: Decimal | None = None
+    session_type_id: UUID | None = None
+    session_type_name: str | None = None
+    cme_points_awarded: bool
+    smc_event_code: str | None = None
+    is_adhoc: bool
+    source: str
+    created_by_role: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class AdminResidentSubmissionPostingMetadata(BaseModel):
+    code: str
+    display_name: str | None = None
+    institution: str | None = None
+    department: str | None = None
+
+
+class AdminResidentSubmissionNotes(BaseModel):
+    identity_scope: str
+    session_type_authority: str
+    compliance_included: bool | None = None
+
+
+class AdminResidentSubmissionDetailResponse(AdminResidentSubmissionListItem):
+    attendance_record: AdminResidentSubmissionAttendanceMetadata
+    resident: AdminResidentSubmissionResidentMetadata
+    event: AdminResidentSubmissionEventMetadata
+    posting: AdminResidentSubmissionPostingMetadata
+    notes: AdminResidentSubmissionNotes
+
+
 class ReportingPeriodCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
