@@ -66,6 +66,21 @@ const formatDate = (value?: string) => {
   })
 }
 
+const formatCompactDate = (value?: string) => {
+  if (!value) {
+    return '-'
+  }
+  const dateValue = new Date(value)
+  if (!Number.isFinite(dateValue.getTime())) {
+    return value
+  }
+  return dateValue.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  })
+}
+
 const formatTime = (value?: string) => {
   if (!value) {
     return '-'
@@ -419,23 +434,24 @@ export const SecretaryTeachingSchedulePage = () => {
     void loadTeachingNameOptions()
   }
 
-  const handleOpenEdit = () => {
-    if (!singleSelectedEvent) {
+  const handleOpenEdit = (eventToEdit?: SecretaryTeachingEvent) => {
+    const targetEvent = eventToEdit ?? singleSelectedEvent
+    if (!targetEvent) {
       return
     }
-    if (singleSelectedEvent.hasAttendance) {
+    if (targetEvent.hasAttendance) {
       setSubmitState('error')
       setSubmitMessage('Editing and deleting are disabled because attendance has been submitted for this event.')
       return
     }
-    setSourceEvent(singleSelectedEvent)
+    setSourceEvent(targetEvent)
     setDrawerMode('edit')
     setFormState({
-      teachingName: singleSelectedEvent.teachingName,
-      eventDate: singleSelectedEvent.eventDate,
-      startTime: toTimeInputValue(singleSelectedEvent.startTime),
-      cmePointsAwarded: singleSelectedEvent.cmePointsAwarded,
-      smcEventCode: singleSelectedEvent.smcEventCode ?? '',
+      teachingName: targetEvent.teachingName,
+      eventDate: targetEvent.eventDate,
+      startTime: toTimeInputValue(targetEvent.startTime),
+      cmePointsAwarded: targetEvent.cmePointsAwarded,
+      smcEventCode: targetEvent.smcEventCode ?? '',
     })
     setFormErrors({})
     setSubmitState('idle')
@@ -720,13 +736,18 @@ export const SecretaryTeachingSchedulePage = () => {
         <div className="section-header secretary-table-header">
           <h2>Teaching schedule</h2>
           {selectedCount > 0 ? (
+            <span className="inline-muted secretary-selection-count">{selectedCount} selected</span>
+          ) : (
+            <span className="inline-muted secretary-selection-helper">Select rows to review details</span>
+          )}
+          <p className="secretary-edit-preface">Only teachings with no submitted attendance can be edited.</p>
+          {selectedCount > 0 ? (
             <div className="secretary-selection-toolbar">
-              <span className="inline-muted">{selectedCount} selected</span>
               {showEditButton ? (
                 <button
                   type="button"
-                  className="button button-ghost"
-                  onClick={handleOpenEdit}
+                  className="button button-ghost secretary-mobile-action-button secretary-toolbar-edit-button"
+                  onClick={() => handleOpenEdit()}
                   title="Edit selected teaching event."
                 >
                   Edit
@@ -735,7 +756,7 @@ export const SecretaryTeachingSchedulePage = () => {
               {showDuplicateButton ? (
                 <button
                   type="button"
-                  className="button button-secondary"
+                  className="button button-secondary secretary-mobile-action-button"
                   onClick={handleOpenDuplicate}
                   title={
                     selectedCount === 1
@@ -749,7 +770,7 @@ export const SecretaryTeachingSchedulePage = () => {
               {showDeleteButton ? (
                 <button
                   type="button"
-                  className="button button-ghost danger"
+                  className="button button-ghost danger secretary-mobile-action-button"
                   onClick={() => void handleDeleteSelected()}
                   title="Delete selected teaching event(s)."
                 >
@@ -758,7 +779,7 @@ export const SecretaryTeachingSchedulePage = () => {
               ) : null}
               <button
                 type="button"
-                className="button button-ghost"
+                className="button button-ghost secretary-mobile-action-button"
                 onClick={(event) => {
                   event.preventDefault()
                   event.stopPropagation()
@@ -768,13 +789,11 @@ export const SecretaryTeachingSchedulePage = () => {
                 Clear
               </button>
             </div>
-          ) : (
-            <span className="inline-muted">Select rows to review details</span>
-          )}
+          ) : null}
         </div>
 
         {showSelectionActionMessage ? (
-          <div className="inline-callout callout-warning secretary-inline-callout">
+          <div className="inline-callout callout-warning secretary-inline-callout secretary-selection-warning">
             <span>{selectedActionMessage}</span>
           </div>
         ) : null}
@@ -859,6 +878,81 @@ export const SecretaryTeachingSchedulePage = () => {
               </tbody>
             </table>
           </div>
+        </div>
+
+        <div className="secretary-event-card-list" aria-label="Teaching schedule cards">
+          {eventsLoading ? (
+            <div className="mobile-record-card secretary-event-empty-card">Loading teaching events...</div>
+          ) : visibleEvents.length === 0 ? (
+            <div className="mobile-record-card secretary-event-empty-card">No teaching events yet.</div>
+          ) : (
+            visibleEvents.map((event) => {
+              const selected = selectedIds.has(event.id)
+              const teachingType = event.sessionTypeName ?? teachingTypeByName.get(event.teachingName) ?? '-'
+              const postingLabel = event.postingCode || frontendConfig.demoSecretaryScopeLabel
+              const sourceLabel = event.isAdhoc ? 'Ad-hoc' : 'Scheduled'
+
+              return (
+                <article
+                  key={event.id}
+                  className={`mobile-record-card secretary-event-card ${selected ? 'is-selected' : ''} ${
+                    event.hasAttendance ? 'has-attendance' : ''
+                  }`}
+                  aria-label={event.teachingName}
+                >
+                  <span className="secretary-event-card-header">
+                    <span className="secretary-event-card-title safe-wrap">{event.teachingName}</span>
+                    <span className="secretary-event-card-badges">
+                      <span
+                        className={`status-badge ${
+                          event.cmePointsAwarded ? 'status-badge-success' : 'status-badge-neutral'
+                        }`}
+                      >
+                        {event.cmePointsAwarded ? 'CME Yes' : 'CME No'}
+                      </span>
+                    </span>
+                  </span>
+                  <span className="secretary-event-card-meta">
+                    <span className="secretary-event-card-line mono">
+                      {formatCompactDate(event.eventDate)} · {formatTime(event.startTime)} ·{' '}
+                      {formatDuration(event.durationHours)}
+                    </span>
+                    {teachingType !== '-' ? (
+                      <span className="secretary-event-card-line safe-wrap">{teachingType}</span>
+                    ) : null}
+                    <span className="secretary-event-card-line">
+                      {postingLabel} · {sourceLabel}
+                      {event.hasAttendance ? ' · Attendance submitted' : ''}
+                      {event.smcEventCode ? ` · SMC ${event.smcEventCode}` : ''}
+                    </span>
+                  </span>
+                  <span className={`secretary-card-action-row ${event.hasAttendance ? 'is-single' : ''}`}>
+                    <button
+                      type="button"
+                      className="secretary-mobile-action-button secretary-card-select-indicator"
+                      onClick={() => toggleSelected(event.id)}
+                      aria-pressed={selected}
+                      aria-label={`${selected ? 'Deselect' : 'Select'} ${event.teachingName}`}
+                    >
+                      {selected ? 'Selected' : 'Select'}
+                    </button>
+                    {!event.hasAttendance ? (
+                      <button
+                        type="button"
+                        className="button button-secondary secretary-mobile-action-button secretary-card-edit-button"
+                        onClick={(clickEvent) => {
+                          clickEvent.stopPropagation()
+                          handleOpenEdit(event)
+                        }}
+                      >
+                        Edit
+                      </button>
+                    ) : null}
+                  </span>
+                </article>
+              )
+            })
+          )}
         </div>
       </section>
 

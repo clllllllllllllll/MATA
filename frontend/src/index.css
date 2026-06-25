@@ -2002,9 +2002,18 @@ tr:last-child td {
   gap: 8px;
 }
 
+.secretary-selection-count,
+.secretary-selection-helper {
+  margin-left: auto;
+}
+
 .secretary-selection-toolbar .button {
   padding: 6px 12px;
   font-size: 12px;
+}
+
+.secretary-edit-preface {
+  display: none;
 }
 
 .secretary-inline-callout {
@@ -2040,6 +2049,132 @@ tr:last-child td {
 
 .secretary-row-selected td {
   background: var(--purple-tint-2);
+}
+
+.secretary-event-card-list {
+  display: none;
+}
+
+.secretary-event-card {
+  width: 100%;
+  appearance: none;
+  font: inherit;
+  text-align: left;
+  color: var(--ink);
+  cursor: default;
+}
+
+.secretary-event-card:focus-visible {
+  outline: 2px solid rgba(0, 75, 122, 0.35);
+  outline-offset: 2px;
+}
+
+.secretary-event-card.is-selected {
+  border-color: var(--purple);
+  background: var(--purple-tint-2);
+  box-shadow: 0 0 0 1px rgba(0, 75, 122, 0.16);
+}
+
+.secretary-event-card.has-attendance {
+  background: #fafafd;
+}
+
+.secretary-event-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.secretary-event-card-title {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.secretary-event-card-badges {
+  display: inline-flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.secretary-event-card-meta {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+.secretary-event-card-line {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.secretary-event-card-line.mono {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.secretary-card-action-row .secretary-mobile-action-button {
+  min-height: var(--touch-target);
+  width: 100%;
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--purple);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.secretary-card-action-row .secretary-mobile-action-button:hover {
+  background: var(--bg);
+  border-color: var(--line-2);
+  color: var(--purple);
+}
+
+.secretary-mobile-action-button:focus-visible {
+  outline: 2px solid rgba(0, 75, 122, 0.35);
+  outline-offset: 2px;
+}
+
+.secretary-card-action-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.secretary-card-action-row.is-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.secretary-card-edit-button {
+  box-shadow: none;
+}
+
+.secretary-event-card.is-selected .secretary-card-select-indicator {
+  border-color: var(--purple);
+  background: var(--purple);
+  color: #fff;
+}
+
+.secretary-event-empty-card {
+  color: var(--ink-3);
+  font-size: 13px;
 }
 
 .secretary-form-grid {
@@ -2687,6 +2822,150 @@ tr:last-child td {
   .secretary-button-row > .btn {
     flex: 1 1 100%;
     width: 100%;
+  }
+
+  .secretary-schedule-header,
+  .secretary-header-main,
+  .secretary-period-row {
+    width: 100%;
+  }
+
+  .secretary-period-row .filter-row {
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .secretary-period-row .filter-chip {
+    flex: 0 0 auto;
+  }
+
+  .secretary-table-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 4px 8px;
+    padding: 14px 14px 0;
+  }
+
+  .secretary-selection-toolbar {
+    grid-column: 1 / -1;
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+    gap: 8px;
+    margin-top: 2px;
+  }
+
+  .secretary-toolbar-edit-button {
+    display: none;
+  }
+
+  .secretary-selection-count,
+  .secretary-selection-helper {
+    justify-self: end;
+    margin-left: 0;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .secretary-selection-toolbar .button {
+    width: 100%;
+    min-height: var(--touch-target);
+    padding: 0 14px;
+  }
+
+  .secretary-selection-toolbar .secretary-mobile-action-button {
+    border: 1px solid var(--line-2);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--purple);
+    font-size: 12.5px;
+    font-weight: 700;
+  }
+
+  .secretary-selection-toolbar .secretary-mobile-action-button:hover {
+    background: var(--bg);
+    border-color: var(--line-2);
+    color: var(--purple);
+  }
+
+  .secretary-selection-toolbar .secretary-mobile-action-button.danger {
+    order: 3;
+    grid-column: 1 / -1;
+    border-color: var(--red-tint);
+    color: var(--red);
+  }
+
+  .secretary-selection-toolbar .secretary-mobile-action-button.danger:hover {
+    background: var(--red-tint);
+    border-color: var(--red-tint);
+    color: var(--red);
+  }
+
+  .secretary-selection-helper {
+    font-size: 11.5px;
+    line-height: 1.3;
+  }
+
+  .secretary-edit-preface {
+    display: block;
+    grid-column: 1 / -1;
+    margin: 0 0 2px;
+    color: var(--ink-3);
+    font-size: 12px;
+    line-height: 1.3;
+  }
+
+  .secretary-inline-callout {
+    margin-inline: 14px;
+  }
+
+  .secretary-selection-warning {
+    display: none;
+  }
+
+  .secretary-table-wrap {
+    display: none;
+  }
+
+  .secretary-event-card-list {
+    display: grid;
+    gap: 8px;
+    padding: 0 14px 12px;
+  }
+
+  .secretary-event-card {
+    gap: 5px;
+    padding: 8px 10px;
+    border-radius: 12px;
+  }
+
+  .secretary-event-card-header {
+    gap: 8px;
+  }
+
+  .secretary-event-card-title {
+    font-size: 13.5px;
+    line-height: 1.28;
+  }
+
+  .secretary-event-card .status-badge {
+    flex: 0 0 auto;
+    padding-inline: 8px;
+  }
+
+  .secretary-event-card-meta {
+    gap: 2px;
+    font-size: 12px;
+    line-height: 1.28;
+  }
+
+  .secretary-card-action-row {
+    gap: 7px;
   }
 
   .button,
