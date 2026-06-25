@@ -191,41 +191,43 @@ export const AdminHomePage = () => {
           <div className="section-header">
             <h2>Recent uploads</h2>
           </div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Source</th>
-                  <th>When</th>
-                  <th>Programme</th>
-                  <th>Warnings / status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {uploadLogsLoading ? (
+          <div className="table-wrap admin-home-table-wrap">
+            <div className="table-scroll">
+              <table>
+                <thead>
                   <tr>
-                    <td colSpan={4}>Loading upload logs...</td>
+                    <th>Source</th>
+                    <th>When</th>
+                    <th>Programme</th>
+                    <th>Warnings / status</th>
                   </tr>
-                ) : uploadLogsError ? (
-                  <tr>
-                    <td colSpan={4}>Upload logs could not be loaded: {uploadLogsError}</td>
-                  </tr>
-                ) : uploadLogs.length === 0 ? (
-                  <tr>
-                    <td colSpan={4}>No upload logs yet. Completed uploads will appear here.</td>
-                  </tr>
-                ) : (
-                  uploadLogs.map((entry) => (
-                    <tr key={entry.id}>
-                      <td>{getUploadLabel(entry.upload_type)}</td>
-                      <td>{formatDateTime(entry.uploaded_at)}</td>
-                      <td>{entry.programme_code ?? 'All'}</td>
-                      <td>{formatWarningsStatus(entry)}</td>
+                </thead>
+                <tbody>
+                  {uploadLogsLoading ? (
+                    <tr>
+                      <td colSpan={4}>Loading upload logs...</td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  ) : uploadLogsError ? (
+                    <tr>
+                      <td colSpan={4}>Upload logs could not be loaded: {uploadLogsError}</td>
+                    </tr>
+                  ) : uploadLogs.length === 0 ? (
+                    <tr>
+                      <td colSpan={4}>No upload logs yet. Completed uploads will appear here.</td>
+                    </tr>
+                  ) : (
+                    uploadLogs.map((entry) => (
+                      <tr key={entry.id}>
+                        <td>{getUploadLabel(entry.upload_type)}</td>
+                        <td>{formatDateTime(entry.uploaded_at)}</td>
+                        <td>{entry.programme_code ?? 'All'}</td>
+                        <td>{formatWarningsStatus(entry)}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </article>
 

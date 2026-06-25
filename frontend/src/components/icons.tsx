@@ -154,6 +154,21 @@ export const IconLogOut = (props: IconProps) => (
   </SvgIcon>
 )
 
+export const IconMenu = (props: IconProps) => (
+  <SvgIcon {...props}>
+    <path d="M4 7h16" />
+    <path d="M4 12h16" />
+    <path d="M4 17h16" />
+  </SvgIcon>
+)
+
+export const IconX = (props: IconProps) => (
+  <SvgIcon {...props}>
+    <path d="M18 6L6 18" />
+    <path d="M6 6l12 12" />
+  </SvgIcon>
+)
+
 interface NamedIconProps extends IconProps {
   name: string
 }

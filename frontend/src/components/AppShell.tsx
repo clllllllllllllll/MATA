@@ -9,7 +9,9 @@ import {
   IconChevDown,
   IconChevRight,
   IconLogOut,
+  IconMenu,
   IconSettings,
+  IconX,
   NamedIcon,
 } from './icons'
 
@@ -44,10 +46,13 @@ export const AppShell = () => {
   const { role, setRole } = useAppState()
   const location = useLocation()
   const navigate = useNavigate()
-  const [isRoleMenuOpen, setRoleMenuOpen] = useState(false)
+  const [roleMenuOpenPath, setRoleMenuOpenPath] = useState<string | null>(null)
+  const [mobileNavOpenPath, setMobileNavOpenPath] = useState<string | null>(null)
   const roleMenuRef = useRef<HTMLDivElement | null>(null)
   const forcedRole = roleFromPathname(location.pathname)
   const activeRole = forcedRole ?? role
+  const isRoleMenuOpen = roleMenuOpenPath === location.pathname
+  const isMobileNavOpen = mobileNavOpenPath === location.pathname
 
   const currentRoleOption = roleOptions.find((option) => option.id === activeRole) ?? roleOptions[0]
   const breadcrumbs = breadcrumbMap[location.pathname] ?? [currentRoleOption.label]
@@ -79,12 +84,13 @@ export const AppShell = () => {
   useEffect(() => {
     const onPointerDown = (event: MouseEvent) => {
       if (!roleMenuRef.current?.contains(event.target as Node)) {
-        setRoleMenuOpen(false)
+        setRoleMenuOpenPath(null)
       }
     }
     const onEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setRoleMenuOpen(false)
+        setRoleMenuOpenPath(null)
+        setMobileNavOpenPath(null)
       }
     }
     document.addEventListener('mousedown', onPointerDown)
@@ -101,14 +107,48 @@ export const AppShell = () => {
     }
   }, [forcedRole, role, setRole])
 
+  useEffect(() => {
+    if (!isMobileNavOpen) {
+      return
+    }
+
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+
+    return () => {
+      document.body.style.overflow = previousOverflow
+    }
+  }, [isMobileNavOpen])
+
+  const closeMobileNav = () => setMobileNavOpenPath(null)
+
   return (
-    <div className="app app-root">
-      <aside className="sidebar">
+    <div className={`app app-root ${isMobileNavOpen ? 'mobile-nav-is-open' : ''}`}>
+      {isMobileNavOpen ? (
+        <button
+          type="button"
+          className="mobile-nav-backdrop"
+          aria-label="Close navigation"
+          onClick={closeMobileNav}
+        />
+      ) : null}
+      <aside className={`sidebar ${isMobileNavOpen ? 'is-mobile-open' : ''}`} aria-label="Primary navigation">
+        <button
+          type="button"
+          className="mobile-nav-close"
+          aria-label="Close navigation"
+          onClick={closeMobileNav}
+        >
+          <IconX size={18} />
+        </button>
+
         <div className="sidebar-user-wrap" ref={roleMenuRef}>
           <button
             type="button"
             className="sidebar-user"
-            onClick={() => setRoleMenuOpen((prev) => !prev)}
+            onClick={() =>
+              setRoleMenuOpenPath((prev) => (prev === location.pathname ? null : location.pathname))
+            }
             aria-haspopup="menu"
             aria-expanded={isRoleMenuOpen}
           >
@@ -145,7 +185,8 @@ export const AppShell = () => {
                                 : option.defaultPath
                             : option.defaultPath
                         setRole(option.id)
-                        setRoleMenuOpen(false)
+                        setRoleMenuOpenPath(null)
+                        setMobileNavOpenPath(null)
                         navigate(nextPath)
                       }}
                       role="menuitemradio"
@@ -172,6 +213,7 @@ export const AppShell = () => {
             <NavLink
               key={item.path}
               to={item.path}
+              onClick={closeMobileNav}
               className={isNavActive(item.path) ? 'sidebar-link is-active' : 'sidebar-link'}
             >
               <span className="nav-icon" aria-hidden="true">
@@ -206,6 +248,15 @@ export const AppShell = () => {
       <div className="workspace app-main">
         <header className="appbar app-bar">
           <div className="appbar-inner">
+            <button
+              type="button"
+              className="mobile-nav-toggle"
+              aria-label="Open navigation"
+              aria-expanded={isMobileNavOpen}
+              onClick={() => setMobileNavOpenPath(location.pathname)}
+            >
+              <IconMenu size={19} />
+            </button>
             <div className="crumbs breadcrumbs">
               {breadcrumbs.map((crumb, index) => (
                 <span key={`${crumb}-${index}`}>
