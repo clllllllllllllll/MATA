@@ -101,6 +101,13 @@ const formatDuration = (value?: number | null) => {
   return `${label}h`
 }
 
+const compactParts = (parts: Array<string | number | null | undefined>) => {
+  const values = parts
+    .map((part) => (part === null || part === undefined ? '' : String(part).trim()))
+    .filter((part) => part && part !== '-')
+  return values.length > 0 ? values.join(' - ') : '-'
+}
+
 const fieldValue = (value?: string | number | boolean | null) => {
   if (value === null || value === undefined || value === '') {
     return '-'
@@ -127,6 +134,11 @@ const statusTone = (status?: string): 'success' | 'warning' | 'critical' | 'info
 const sourceTone = (source?: string): 'success' | 'warning' | 'critical' | 'info' | 'neutral' =>
   source === 'Ad-hoc' ? 'warning' : 'info'
 
+const compactSourceLabel = (submission: Pick<AdminResidentSubmissionListItem, 'isAdhoc' | 'source'>) => {
+  const source = submission.source.toLowerCase()
+  return submission.isAdhoc || source === 'ad-hoc' || source === 'adhoc' ? 'Ad-hoc' : 'Scheduled'
+}
+
 const toSourceParam = (value: SourceFilter): AdminResidentSubmissionSource | undefined =>
   value === 'all' ? undefined : value
 
@@ -149,11 +161,13 @@ const DetailField = ({
 const MetricTile = ({
   label,
   value,
+  className = '',
 }: {
   label: string
   value: number
+  className?: string
 }) => (
-  <div className="secretary-event-metric">
+  <div className={['secretary-event-metric', className].filter(Boolean).join(' ')}>
     <span>{label}</span>
     <strong>{value}</strong>
   </div>
@@ -445,6 +459,7 @@ export const AdminResidentSubmissionsPage = () => {
   const pageSubtitle = submissionsLoading
     ? `${roleLabel} - NHG resident attendance visibility`
     : `${total} NHG resident submission${total === 1 ? '' : 's'}`
+  const scheduledSubmissionCount = Math.max(0, summary.totalSubmissions - summary.adhocCount)
 
   return (
     <div className="page admin-resident-submissions-page">
@@ -466,6 +481,10 @@ export const AdminResidentSubmissionsPage = () => {
       />
 
       <section className="card filter-bar admin-resident-submissions-filters">
+        <div className="admin-filter-summary">
+          <span>Filters</span>
+          <strong>{hasFilters ? 'Active filters applied' : 'All resident submissions'}</strong>
+        </div>
         <label className="admin-secretary-events-search">
           Search
           <input
@@ -580,11 +599,19 @@ export const AdminResidentSubmissionsPage = () => {
         </section>
       ) : null}
 
-      <section className="secretary-event-metrics" aria-label="Resident submission counts">
-        <MetricTile label="Submissions" value={summary.totalSubmissions} />
-        <MetricTile label="Submitted" value={summary.submittedCount} />
-        <MetricTile label="Flagged" value={summary.flaggedCount} />
-        <MetricTile label="Ad-hoc" value={summary.adhocCount} />
+      <section className="secretary-event-metrics admin-resident-submissions-metrics" aria-label="Resident submission counts">
+        <div className="resident-submissions-mobile-summary-card" aria-label="Submission summary">
+          <span className="resident-submissions-summary-label">Submission summary</span>
+          <span className="resident-submissions-summary-values">
+            <strong>Total: {summary.totalSubmissions}</strong>
+            <span>Scheduled: {scheduledSubmissionCount}</span>
+            <span>Ad-hoc: {summary.adhocCount}</span>
+          </span>
+        </div>
+        <MetricTile className="resident-submissions-desktop-metric" label="Submissions" value={summary.totalSubmissions} />
+        <MetricTile className="resident-submissions-desktop-metric" label="Submitted" value={summary.submittedCount} />
+        <MetricTile className="resident-submissions-desktop-metric" label="Flagged" value={summary.flaggedCount} />
+        <MetricTile className="resident-submissions-desktop-metric" label="Ad-hoc" value={summary.adhocCount} />
       </section>
 
       {submissionsError && submissions.length > 0 ? (
@@ -712,6 +739,54 @@ export const AdminResidentSubmissionsPage = () => {
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="responsive-card-list admin-mobile-record-list admin-resident-submissions-mobile-card-list" aria-label="Resident submission cards">
+            {submissions.map((submission) => (
+              <button
+                key={`${submission.id}-mobile`}
+                type="button"
+                className="mobile-record-card admin-mobile-record-card admin-resident-submissions-mobile-card"
+                onClick={() => openDetail(submission)}
+                aria-label={`Open resident submission detail for ${submission.residentName}`}
+              >
+                <span className="admin-mobile-card-header">
+                  <span className="admin-mobile-card-title safe-wrap">
+                    {compactParts([submission.residentName, submission.mcr])}
+                  </span>
+                  <StatusBadge label={submission.status} tone={statusTone(submission.status)} />
+                </span>
+                <span className="admin-mobile-card-meta">
+                  <span className="admin-mobile-card-source admin-mobile-card-subtitle safe-wrap">
+                    {submission.teachingName}
+                  </span>
+                  <span>
+                    {compactParts([
+                      formatDate(submission.eventDate),
+                      formatTime(submission.startTime),
+                      formatDuration(submission.durationHours),
+                    ])}
+                  </span>
+                  <span className="admin-mobile-card-source safe-wrap">
+                    {compactParts([
+                      submission.postingCode,
+                      compactSourceLabel(submission),
+                      submission.programmeCode,
+                    ])}
+                  </span>
+                  {submission.sessionTypeName ||
+                  submission.cmePointsAwarded ||
+                  submission.smcEventCode ? (
+                    <span className="admin-mobile-card-source safe-wrap">
+                      {compactParts([
+                        submission.sessionTypeName,
+                        submission.cmePointsAwarded ? 'CME awarded' : null,
+                        submission.smcEventCode ? `SMC ${submission.smcEventCode}` : null,
+                      ])}
+                    </span>
+                  ) : null}
+                </span>
+              </button>
+            ))}
           </div>
           <div className="upload-log-pagination">
             <span>

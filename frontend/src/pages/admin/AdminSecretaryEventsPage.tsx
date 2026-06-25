@@ -77,6 +77,13 @@ const formatDuration = (value?: number | null) => {
   return `${label}h`
 }
 
+const compactParts = (parts: Array<string | number | null | undefined>) => {
+  const values = parts
+    .map((part) => (part === null || part === undefined ? '' : String(part).trim()))
+    .filter((part) => part && part !== '-')
+  return values.length > 0 ? values.join(' - ') : '-'
+}
+
 const fieldValue = (value?: string | number | null) => {
   if (value === null || value === undefined || value === '') {
     return '-'
@@ -86,6 +93,9 @@ const fieldValue = (value?: string | number | null) => {
 
 const sourceLabel = (event?: Pick<AdminSecretaryEventListItem, 'createdByRole'> | null) =>
   event?.createdByRole ? 'Secretary-created scheduled event' : 'Legacy scheduled secretary event'
+
+const compactSourceLabel = (event: Pick<AdminSecretaryEventListItem, 'createdByRole'>) =>
+  event.createdByRole ? 'Secretary-created' : 'Legacy scheduled'
 
 const toAttendanceParam = (value: AttendanceFilter): boolean | null => {
   if (value === 'with') {
@@ -388,6 +398,10 @@ export const AdminSecretaryEventsPage = () => {
       />
 
       <section className="card filter-bar admin-secretary-events-filters">
+        <div className="admin-filter-summary">
+          <span>Filters</span>
+          <strong>{hasFilters ? 'Active filters applied' : 'All secretary events'}</strong>
+        </div>
         <label className="admin-secretary-events-search">
           Search
           <input
@@ -598,6 +612,51 @@ export const AdminSecretaryEventsPage = () => {
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="responsive-card-list admin-mobile-record-list admin-secretary-events-mobile-card-list" aria-label="Secretary event cards">
+            {events.map((event) => (
+              <button
+                key={`${event.id}-mobile`}
+                type="button"
+                className="mobile-record-card admin-mobile-record-card admin-secretary-events-mobile-card"
+                onClick={() => openDetail(event)}
+                aria-label={`Open secretary event detail for ${event.teachingName}`}
+              >
+                <span className="admin-mobile-card-header">
+                  <span className="admin-mobile-card-title safe-wrap">{event.teachingName}</span>
+                  <StatusBadge
+                    label={event.cmePointsAwarded ? 'CME Yes' : 'No CME'}
+                    tone={event.cmePointsAwarded ? 'success' : 'neutral'}
+                  />
+                </span>
+                <span className="admin-mobile-card-meta">
+                  <span>
+                    {compactParts([
+                      formatDate(event.eventDate),
+                      formatTime(event.startTime),
+                      formatDuration(event.durationHours),
+                    ])}
+                  </span>
+                  <span className="admin-mobile-card-source safe-wrap">
+                    {compactParts([event.postingCode, compactSourceLabel(event)])}
+                  </span>
+                  {event.sessionTypeName ? (
+                    <span className="safe-wrap">{event.sessionTypeName}</span>
+                  ) : null}
+                  <span>
+                    NHG {event.attendanceCount} - Non-NHG {event.externalAttendanceCount}
+                  </span>
+                  {event.smcEventCode || event.isRecurring ? (
+                    <span className="admin-mobile-card-source safe-wrap">
+                      {compactParts([
+                        event.smcEventCode ? `SMC ${event.smcEventCode}` : null,
+                        event.isRecurring ? 'Recurring series' : null,
+                      ])}
+                    </span>
+                  ) : null}
+                </span>
+              </button>
+            ))}
           </div>
           <div className="upload-log-pagination">
             <span>

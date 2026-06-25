@@ -827,6 +827,11 @@ a {
   word-break: break-word;
 }
 
+.admin-mobile-card-subtitle {
+  color: var(--ink);
+  font-weight: 700;
+}
+
 .admin-mobile-card-badges,
 .admin-mobile-summary-chips {
   display: flex;
@@ -5706,6 +5711,10 @@ button:disabled,
   font-variant-numeric: tabular-nums;
 }
 
+.resident-submissions-mobile-summary-card {
+  display: none;
+}
+
 .admin-secretary-events-table-card .table-scroll {
   transition: opacity 140ms ease;
 }
@@ -5923,7 +5932,9 @@ button:disabled,
 
   .admin-logs-filter-card,
   .upload-log-filter-card,
-  .admin-warnings-page .warning-filter-card {
+  .admin-warnings-page .warning-filter-card,
+  .admin-secretary-events-filters,
+  .admin-resident-submissions-filters {
     grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
     gap: 10px;
@@ -5933,15 +5944,23 @@ button:disabled,
     overscroll-behavior: contain;
   }
 
+  .admin-secretary-events-filters,
+  .admin-resident-submissions-filters {
+    max-height: min(240px, 30vh);
+  }
+
   .admin-logs-filter-card label,
   .upload-log-filter-card label,
-  .admin-warnings-page .warning-filter-card label {
+  .admin-warnings-page .warning-filter-card label,
+  .admin-secretary-events-filters label,
+  .admin-resident-submissions-filters label {
     min-width: 0;
   }
 
   .admin-logs-filter-actions,
   .upload-log-filter-card > .button,
-  .admin-warnings-page .warning-filter-card > .button {
+  .admin-warnings-page .warning-filter-card > .button,
+  .admin-secretary-events-filter-actions {
     width: 100%;
   }
 
@@ -5954,7 +5973,8 @@ button:disabled,
 
   .admin-logs-filter-actions .button,
   .upload-log-filter-card > .button,
-  .admin-warnings-page .warning-filter-card > .button {
+  .admin-warnings-page .warning-filter-card > .button,
+  .admin-secretary-events-filter-actions .button {
     min-height: var(--touch-target);
   }
 
@@ -5984,8 +6004,79 @@ button:disabled,
 
   .admin-logs-table-card .table-scroll,
   .upload-log-table-card .table-scroll,
-  .warning-results-card .warning-group-card .table-scroll {
+  .warning-results-card .warning-group-card .table-scroll,
+  .admin-secretary-events-table-card .table-scroll,
+  .admin-resident-submissions-table-card .table-scroll {
     display: none;
+  }
+
+  .admin-secretary-events-table-card .warning-group-header .parsed-data-count-status,
+  .admin-resident-submissions-table-card .warning-group-header .parsed-data-count-status {
+    display: none;
+  }
+
+  .secretary-event-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .admin-resident-submissions-metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .admin-resident-submissions-metrics .resident-submissions-desktop-metric {
+    display: none;
+  }
+
+  .resident-submissions-mobile-summary-card {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: none;
+  }
+
+  .resident-submissions-summary-label {
+    color: var(--ink-3);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    line-height: 1.2;
+    text-transform: uppercase;
+  }
+
+  .resident-submissions-summary-values {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    min-width: 0;
+    color: var(--ink-2);
+    font-size: 12px;
+    line-height: 1.3;
+  }
+
+  .resident-submissions-summary-values strong {
+    color: var(--ink);
+    font-weight: 750;
+  }
+
+  .secretary-event-metric {
+    min-height: 58px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    box-shadow: none;
+  }
+
+  .secretary-event-metric span {
+    font-size: 10px;
+    line-height: 1.2;
+  }
+
+  .secretary-event-metric strong {
+    font-size: 20px;
   }
 
   .admin-mobile-record-list {
@@ -6005,17 +6096,55 @@ button:disabled,
     box-shadow: none;
   }
 
+  .admin-secretary-events-mobile-card-list,
+  .admin-resident-submissions-mobile-card-list {
+    gap: 6px;
+    padding: 8px 10px 10px;
+  }
+
+  .admin-secretary-events-mobile-card,
+  .admin-resident-submissions-mobile-card {
+    gap: 4px;
+    padding: 8px 10px;
+    border-radius: 8px;
+  }
+
   .admin-mobile-card-header {
     gap: 8px;
+  }
+
+  .admin-secretary-events-mobile-card .admin-mobile-card-header,
+  .admin-resident-submissions-mobile-card .admin-mobile-card-header {
+    align-items: center;
+    gap: 6px;
   }
 
   .admin-mobile-card-title {
     font-size: 13px;
   }
 
+  .admin-secretary-events-mobile-card .admin-mobile-card-title,
+  .admin-resident-submissions-mobile-card .admin-mobile-card-title {
+    font-size: 12.75px;
+    line-height: 1.18;
+  }
+
   .admin-mobile-card-meta {
     gap: 2px;
     font-size: 11.5px;
+  }
+
+  .admin-secretary-events-mobile-card .admin-mobile-card-meta,
+  .admin-resident-submissions-mobile-card .admin-mobile-card-meta {
+    gap: 1px;
+    line-height: 1.24;
+  }
+
+  .admin-secretary-events-mobile-card .status-badge,
+  .admin-resident-submissions-mobile-card .status-badge {
+    padding: 2px 7px;
+    font-size: 11px;
+    line-height: 1.25;
   }
 
   .admin-mobile-card-badges,
