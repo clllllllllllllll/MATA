@@ -501,6 +501,78 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
     )
   }
 
+  const renderMobileRuleCard = (rule: MultiPostingRule) => {
+    const outputLabel =
+      rule.ruleType === 'half_month'
+        ? '50/50 split'
+        : rule.combinedLabel ?? rule.mainPostingCode ?? rule.exclusionCode ?? '-'
+
+    return (
+      <article key={`${rule.id}-mobile`} className="mobile-record-card multi-posting-mobile-rule-card">
+        <div className="admin-mobile-card-header multi-posting-mobile-rule-header">
+          <strong className="admin-mobile-card-title safe-wrap">
+            <span className="mono">{rule.programmeCode}</span>
+          </strong>
+          <span className="multi-posting-mobile-rule-type">{tabLabel[rule.ruleType]}</span>
+        </div>
+        <div className="admin-mobile-card-meta multi-posting-mobile-rule-meta">
+          <span className="safe-wrap">
+            <span className="mono">{rule.postingCode1}</span>
+            {rule.postingCode2 ? (
+              <>
+                {' + '}
+                <span className="mono">{rule.postingCode2}</span>
+              </>
+            ) : null}
+          </span>
+          <span className="safe-wrap">
+            Output: <span className="mono">{outputLabel}</span>
+          </span>
+          {rule.ruleType === 'main_posting' && rule.exclusionCode ? (
+            <span className="safe-wrap">
+              Fallback: <span className="mono">{rule.exclusionCode}</span>
+            </span>
+          ) : null}
+          <span>Updated: {formatDate(rule.updatedAt)}</span>
+        </div>
+        <div className="multi-posting-mobile-rule-actions">
+          <button type="button" className="button button-secondary" onClick={() => openEditDrawer(rule)}>
+            Edit
+          </button>
+          <button type="button" className="button button-ghost danger" onClick={() => setConfirmingDeleteRule(rule)}>
+            Delete
+          </button>
+        </div>
+        {confirmingDeleteRule?.id === rule.id ? (
+          <div className="admin-config-inline-confirm multi-posting-mobile-confirm" role="group" aria-label="Confirm delete multi-posting rule">
+            <div>
+              <strong>Delete multi-posting rule?</strong>
+              <p>This affects future RDB parsing only. Existing parsed posting rows are not changed.</p>
+            </div>
+            <div className="admin-config-confirm-actions">
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={() => setConfirmingDeleteRule(null)}
+                disabled={deletingId === rule.id}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button button-ghost danger"
+                onClick={() => void handleDelete(rule)}
+                disabled={deletingId === rule.id}
+              >
+                {deletingId === rule.id ? 'Deleting...' : 'Delete rule'}
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </article>
+    )
+  }
+
   return (
     <>
       <header className="admin-config-content-header multi-posting-inline-header">
@@ -585,81 +657,94 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
             </div>
           </div>
         ) : (
-          <div className="admin-config-table-wrap">
-            <table className="admin-config-table multi-posting-table">
-              <thead>
-                <tr>
-                  <th>Programme</th>
-                  <th>Posting 1</th>
-                  <th>Posting 2</th>
-                  <th>{outputColumnLabel[activeTab]}</th>
-                  <th>Updated</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ruleRows.length === 0 ? (
-                  <MultiPostingEmptyRow
-                    title={emptyStateCopy.title}
-                    body={emptyStateCopy.body}
-                    hint={emptyStateCopy.hint}
-                  />
-                ) : (
-                  ruleRows.map((rule) => (
-                    <Fragment key={rule.id}>
-                      <tr>
-                        <td>{rule.programmeCode}</td>
-                        <td title={rule.postingCode1}>{rule.postingCode1}</td>
-                        <td title={rule.postingCode2 ?? 'No second posting'}>{rule.postingCode2 ?? '-'}</td>
-                        <td title={rule.combinedLabel ?? rule.mainPostingCode ?? ''}>{renderOutput(rule)}</td>
-                        <td>{formatDate(rule.updatedAt)}</td>
-                        <td>
-                          <div className="admin-config-row-actions">
-                            <button type="button" className="button button-secondary" onClick={() => openEditDrawer(rule)}>
-                              Edit
-                            </button>
-                            <button type="button" className="button button-ghost danger" onClick={() => setConfirmingDeleteRule(rule)}>
-                              Delete
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                      {confirmingDeleteRule?.id === rule.id ? (
-                        <tr className="admin-config-confirm-row">
-                          <td colSpan={multiPostingTableColumnCount}>
-                            <div className="admin-config-inline-confirm" role="group" aria-label="Confirm delete multi-posting rule">
-                              <div>
-                                <strong>Delete multi-posting rule?</strong>
-                                <p>This affects future RDB parsing only. Existing parsed posting rows are not changed.</p>
-                              </div>
-                              <div className="admin-config-confirm-actions">
-                                <button
-                                  type="button"
-                                  className="button button-secondary"
-                                  onClick={() => setConfirmingDeleteRule(null)}
-                                  disabled={deletingId === rule.id}
-                                >
-                                  Cancel
-                                </button>
-                                <button
-                                  type="button"
-                                  className="button button-ghost danger"
-                                  onClick={() => void handleDelete(rule)}
-                                  disabled={deletingId === rule.id}
-                                >
-                                  {deletingId === rule.id ? 'Deleting...' : 'Delete rule'}
-                                </button>
-                              </div>
+          <>
+            <div className="admin-config-table-wrap">
+              <table className="admin-config-table multi-posting-table">
+                <thead>
+                  <tr>
+                    <th>Programme</th>
+                    <th>Posting 1</th>
+                    <th>Posting 2</th>
+                    <th>{outputColumnLabel[activeTab]}</th>
+                    <th>Updated</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ruleRows.length === 0 ? (
+                    <MultiPostingEmptyRow
+                      title={emptyStateCopy.title}
+                      body={emptyStateCopy.body}
+                      hint={emptyStateCopy.hint}
+                    />
+                  ) : (
+                    ruleRows.map((rule) => (
+                      <Fragment key={rule.id}>
+                        <tr>
+                          <td>{rule.programmeCode}</td>
+                          <td title={rule.postingCode1}>{rule.postingCode1}</td>
+                          <td title={rule.postingCode2 ?? 'No second posting'}>{rule.postingCode2 ?? '-'}</td>
+                          <td title={rule.combinedLabel ?? rule.mainPostingCode ?? ''}>{renderOutput(rule)}</td>
+                          <td>{formatDate(rule.updatedAt)}</td>
+                          <td>
+                            <div className="admin-config-row-actions">
+                              <button type="button" className="button button-secondary" onClick={() => openEditDrawer(rule)}>
+                                Edit
+                              </button>
+                              <button type="button" className="button button-ghost danger" onClick={() => setConfirmingDeleteRule(rule)}>
+                                Delete
+                              </button>
                             </div>
                           </td>
                         </tr>
-                      ) : null}
-                    </Fragment>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+                        {confirmingDeleteRule?.id === rule.id ? (
+                          <tr className="admin-config-confirm-row">
+                            <td colSpan={multiPostingTableColumnCount}>
+                              <div className="admin-config-inline-confirm" role="group" aria-label="Confirm delete multi-posting rule">
+                                <div>
+                                  <strong>Delete multi-posting rule?</strong>
+                                  <p>This affects future RDB parsing only. Existing parsed posting rows are not changed.</p>
+                                </div>
+                                <div className="admin-config-confirm-actions">
+                                  <button
+                                    type="button"
+                                    className="button button-secondary"
+                                    onClick={() => setConfirmingDeleteRule(null)}
+                                    disabled={deletingId === rule.id}
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="button button-ghost danger"
+                                    onClick={() => void handleDelete(rule)}
+                                    disabled={deletingId === rule.id}
+                                  >
+                                    {deletingId === rule.id ? 'Deleting...' : 'Delete rule'}
+                                  </button>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </Fragment>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="responsive-card-list multi-posting-mobile-rule-list" aria-label="Multi-posting rule cards">
+              {ruleRows.length === 0 ? (
+                <EmptyBanner
+                  title={emptyStateCopy.title}
+                  body={emptyStateCopy.body}
+                  hint={emptyStateCopy.hint}
+                />
+              ) : (
+                ruleRows.map(renderMobileRuleCard)
+              )}
+            </div>
+          </>
         )}
       </section>
 

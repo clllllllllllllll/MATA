@@ -3834,6 +3834,10 @@ tr:last-child td {
   overflow: hidden;
 }
 
+.parsed-data-mobile-card-list {
+  display: none;
+}
+
 .parsed-data-state-card {
   min-height: 320px;
   align-content: center;
@@ -5172,6 +5176,10 @@ button:disabled,
   margin-bottom: 18px;
 }
 
+.multi-posting-mobile-rule-list {
+  display: none;
+}
+
 .multi-posting-table {
   table-layout: fixed;
 }
@@ -5323,6 +5331,10 @@ button:disabled,
   width: 126px;
 }
 
+.programmes-mobile-card-list {
+  display: none;
+}
+
 .loa-types-table th:first-child,
 .loa-types-table td:first-child {
   width: 220px;
@@ -5393,6 +5405,26 @@ button:disabled,
 @media (max-width: 900px) {
   .admin-config-shell {
     grid-template-columns: 1fr;
+  }
+
+  .admin-config-nav-card {
+    flex-direction: row;
+    gap: 5px;
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .admin-config-nav-item {
+    flex: 0 0 auto;
+    width: auto;
+    min-height: var(--touch-target);
+  }
+
+  .admin-config-nav-main {
+    grid-template-columns: 14px max-content;
+    gap: 8px;
   }
 
   .admin-config-inline-confirm {
@@ -5933,6 +5965,7 @@ button:disabled,
   .admin-logs-filter-card,
   .upload-log-filter-card,
   .admin-warnings-page .warning-filter-card,
+  .parsed-data-filter-card,
   .admin-secretary-events-filters,
   .admin-resident-submissions-filters {
     grid-template-columns: minmax(0, 1fr);
@@ -5952,6 +5985,7 @@ button:disabled,
   .admin-logs-filter-card label,
   .upload-log-filter-card label,
   .admin-warnings-page .warning-filter-card label,
+  .parsed-data-filter-card label,
   .admin-secretary-events-filters label,
   .admin-resident-submissions-filters label {
     min-width: 0;
@@ -5960,6 +5994,7 @@ button:disabled,
   .admin-logs-filter-actions,
   .upload-log-filter-card > .button,
   .admin-warnings-page .warning-filter-card > .button,
+  .parsed-data-clear-filter,
   .admin-secretary-events-filter-actions {
     width: 100%;
   }
@@ -5974,8 +6009,33 @@ button:disabled,
   .admin-logs-filter-actions .button,
   .upload-log-filter-card > .button,
   .admin-warnings-page .warning-filter-card > .button,
+  .parsed-data-clear-filter .button,
   .admin-secretary-events-filter-actions .button {
+    width: 100%;
     min-height: var(--touch-target);
+  }
+
+  .parsed-data-tab-card {
+    padding: 8px;
+  }
+
+  .parsed-data-tabs {
+    gap: 4px;
+    padding: 4px;
+    overscroll-behavior-x: contain;
+  }
+
+  .parsed-data-tabs button {
+    flex: 0 0 auto;
+    min-height: var(--touch-target);
+  }
+
+  .parsed-data-clear-filter {
+    padding-top: 0;
+  }
+
+  .parsed-data-table-card {
+    min-height: 0;
   }
 
   .admin-logs-advanced-filters {
@@ -6005,11 +6065,13 @@ button:disabled,
   .admin-logs-table-card .table-scroll,
   .upload-log-table-card .table-scroll,
   .warning-results-card .warning-group-card .table-scroll,
+  .parsed-data-table-card .table-scroll,
   .admin-secretary-events-table-card .table-scroll,
   .admin-resident-submissions-table-card .table-scroll {
     display: none;
   }
 
+  .parsed-data-table-card .warning-group-header .parsed-data-count-status,
   .admin-secretary-events-table-card .warning-group-header .parsed-data-count-status,
   .admin-resident-submissions-table-card .warning-group-header .parsed-data-count-status {
     display: none;
@@ -6102,6 +6164,12 @@ button:disabled,
     padding: 8px 10px 10px;
   }
 
+  .parsed-data-mobile-card-list {
+    display: grid;
+    gap: 6px;
+    padding: 8px 10px 10px;
+  }
+
   .admin-secretary-events-mobile-card,
   .admin-resident-submissions-mobile-card {
     gap: 4px;
@@ -6109,10 +6177,17 @@ button:disabled,
     border-radius: 8px;
   }
 
+  .parsed-data-mobile-card {
+    gap: 5px;
+    padding: 9px 10px;
+    border-radius: 8px;
+  }
+
   .admin-mobile-card-header {
     gap: 8px;
   }
 
+  .parsed-data-mobile-card-header,
   .admin-secretary-events-mobile-card .admin-mobile-card-header,
   .admin-resident-submissions-mobile-card .admin-mobile-card-header {
     align-items: center;
@@ -6123,6 +6198,7 @@ button:disabled,
     font-size: 13px;
   }
 
+  .parsed-data-mobile-card .admin-mobile-card-title,
   .admin-secretary-events-mobile-card .admin-mobile-card-title,
   .admin-resident-submissions-mobile-card .admin-mobile-card-title {
     font-size: 12.75px;
@@ -6134,10 +6210,54 @@ button:disabled,
     font-size: 11.5px;
   }
 
+  .parsed-data-mobile-card-meta,
   .admin-secretary-events-mobile-card .admin-mobile-card-meta,
   .admin-resident-submissions-mobile-card .admin-mobile-card-meta {
     gap: 1px;
     line-height: 1.24;
+  }
+
+  .parsed-data-mobile-compact-line,
+  .parsed-data-mobile-source {
+    color: var(--ink-3);
+    font-size: 11px;
+    line-height: 1.22;
+  }
+
+  .parsed-data-mobile-compact-line {
+    color: var(--ink-2);
+    font-weight: 600;
+  }
+
+  .parsed-data-mobile-status,
+  .parsed-data-mobile-type,
+  .multi-posting-mobile-rule-type {
+    flex: 0 0 auto;
+    max-width: 46%;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: #fafafd;
+    color: var(--ink-3);
+    padding: 2px 7px;
+    font-size: 10.75px;
+    font-weight: 800;
+    line-height: 1.25;
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+
+  .parsed-data-mobile-status .status-badge {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font-size: inherit;
+    line-height: inherit;
+  }
+
+  .parsed-data-mobile-action {
+    color: var(--purple);
+    font-size: 11px;
+    font-weight: 800;
   }
 
   .admin-secretary-events-mobile-card .status-badge,
@@ -6193,6 +6313,247 @@ button:disabled,
 
   .upload-log-pagination .button,
   .warning-pagination .button {
+    flex: 1 1 0;
+    min-height: var(--touch-target);
+  }
+
+  .admin-config-page {
+    padding-top: 18px;
+  }
+
+  .admin-config-shell {
+    gap: 10px;
+  }
+
+  .admin-config-nav-card {
+    padding: 5px;
+  }
+
+  .admin-config-nav-item {
+    padding: 10px 12px;
+  }
+
+  .admin-config-content-card {
+    min-height: 0;
+    border-radius: 12px;
+  }
+
+  .admin-config-content-header {
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px 12px 10px;
+  }
+
+  .admin-config-content-header > div:first-child {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .admin-config-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    gap: 8px;
+  }
+
+  .admin-config-actions .button {
+    width: 100%;
+    min-height: var(--touch-target);
+  }
+
+  .posting-groups-header .admin-config-actions,
+  .multi-posting-header-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .admin-config-feedback,
+  .admin-config-callout {
+    margin: 0 12px 10px;
+  }
+
+  .admin-config-feedback {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .admin-config-feedback-dismiss {
+    align-self: flex-start;
+  }
+
+  .admin-config-dependency-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .admin-config-dependency-list dd {
+    text-align: left;
+  }
+
+  .admin-config-table-wrap {
+    min-height: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+
+  .admin-config-table-wrap .admin-config-table {
+    min-width: 720px;
+  }
+
+  .configuration-empty-note {
+    min-height: 220px;
+    margin: 12px;
+  }
+
+  .programmes-table-wrap {
+    display: none;
+  }
+
+  .programmes-mobile-card-list {
+    display: grid;
+    gap: 8px;
+    padding: 0 12px 12px;
+  }
+
+  .programmes-mobile-card {
+    gap: 6px;
+    padding: 10px 11px;
+    border-radius: 10px;
+    box-shadow: none;
+  }
+
+  .programmes-mobile-card-header {
+    align-items: center;
+    gap: 8px;
+  }
+
+  .programmes-mobile-card-header .status-badge {
+    flex: 0 0 auto;
+    max-width: 42%;
+    justify-content: center;
+    white-space: normal;
+  }
+
+  .programmes-mobile-card-meta {
+    gap: 2px;
+    color: var(--ink-3);
+    font-size: 11.5px;
+    line-height: 1.25;
+  }
+
+  .programmes-mobile-card-name {
+    color: var(--ink-2);
+    font-size: 12.5px;
+    font-weight: 700;
+  }
+
+  .programmes-mobile-card-action {
+    width: 100%;
+    min-height: var(--touch-target);
+  }
+
+  .multi-posting-tabs {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 6px;
+    max-width: 100%;
+    margin: 0 0 10px;
+    padding-bottom: 4px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+
+  .multi-posting-tabs .tab-button {
+    flex: 0 0 auto;
+    min-height: var(--touch-target);
+    white-space: nowrap;
+  }
+
+  .multi-posting-card .admin-config-table-wrap {
+    display: none;
+  }
+
+  .multi-posting-mobile-rule-list {
+    display: grid;
+    gap: 8px;
+  }
+
+  .multi-posting-mobile-rule-card {
+    gap: 6px;
+    padding: 10px 11px;
+    border-radius: 10px;
+    box-shadow: none;
+  }
+
+  .multi-posting-mobile-rule-header {
+    align-items: center;
+  }
+
+  .multi-posting-mobile-rule-meta {
+    gap: 2px;
+    line-height: 1.26;
+  }
+
+  .multi-posting-mobile-rule-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .multi-posting-mobile-rule-actions .button,
+  .multi-posting-mobile-confirm .button {
+    width: 100%;
+    min-height: var(--touch-target);
+  }
+
+  .multi-posting-mobile-confirm {
+    margin-top: 2px;
+  }
+
+  .multi-posting-form-card {
+    gap: 12px;
+    padding: 12px;
+    border-radius: 12px;
+  }
+
+  .multi-posting-form-group {
+    gap: 10px;
+    padding-top: 12px;
+  }
+
+  .parsed-data-detail-item,
+  .correction-preview-row,
+  .correction-diff-row,
+  .correction-summary-list,
+  .correction-history-entry dl {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .correction-form-grid,
+  .teaching-target-details-row.has-tag {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .correction-mode-selector,
+  .fragment-correction-toggle {
+    padding: 10px;
+  }
+
+  .fragment-draft-group,
+  .fragment-draft-range,
+  .fragment-draft-preview,
+  .raw-posting-group-card {
+    padding: 10px;
+  }
+
+  .fragment-range-actions,
+  .admin-config-confirm-actions {
+    width: 100%;
+  }
+
+  .fragment-range-actions .button,
+  .admin-config-confirm-actions .button {
     flex: 1 1 0;
     min-height: var(--touch-target);
   }

@@ -1646,54 +1646,82 @@ const ProgrammesSection = () => {
           </div>
         </div>
       ) : (
-        <div className="admin-config-table-wrap">
-          <table className="admin-config-table programmes-table">
-            <thead>
-              <tr>
-                <th>Code</th>
-                <th>Name</th>
-                <th>AY Category</th>
-                <th>R-Year Required</th>
-                <th>Subspecialty</th>
-                <th>RDB Alias</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedProgrammes.map((programme) => (
-                <tr key={programme.id}>
-                  <td className="mono">{programme.code}</td>
-                  <td>{programme.name}</td>
-                  <td>{formatAyCategory(programme.ayDateCategory)}</td>
-                  <td>
-                    <StatusBadge
-                      label={programme.rYearRequired ? 'Yes' : 'No'}
-                      tone={booleanTone(programme.rYearRequired)}
-                    />
-                  </td>
-                  <td>
-                    <StatusBadge
-                      label={programme.isSubspecialty ? 'Yes' : 'No'}
-                      tone={booleanTone(programme.isSubspecialty)}
-                    />
-                  </td>
-                  <td>{programme.rdbAlias ?? '-'}</td>
-                  <td>
-                    <div className="admin-config-row-actions">
-                      <button
-                        type="button"
-                        className="button button-secondary"
-                        onClick={() => openEditDrawer(programme)}
-                      >
-                        Edit
-                      </button>
-                    </div>
-                  </td>
+        <>
+          <div className="admin-config-table-wrap programmes-table-wrap">
+            <table className="admin-config-table programmes-table">
+              <thead>
+                <tr>
+                  <th>Code</th>
+                  <th>Name</th>
+                  <th>AY Category</th>
+                  <th>R-Year Required</th>
+                  <th>Subspecialty</th>
+                  <th>RDB Alias</th>
+                  <th>Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {sortedProgrammes.map((programme) => (
+                  <tr key={programme.id}>
+                    <td className="mono">{programme.code}</td>
+                    <td>{programme.name}</td>
+                    <td>{formatAyCategory(programme.ayDateCategory)}</td>
+                    <td>
+                      <StatusBadge
+                        label={programme.rYearRequired ? 'Yes' : 'No'}
+                        tone={booleanTone(programme.rYearRequired)}
+                      />
+                    </td>
+                    <td>
+                      <StatusBadge
+                        label={programme.isSubspecialty ? 'Yes' : 'No'}
+                        tone={booleanTone(programme.isSubspecialty)}
+                      />
+                    </td>
+                    <td>{programme.rdbAlias ?? '-'}</td>
+                    <td>
+                      <div className="admin-config-row-actions">
+                        <button
+                          type="button"
+                          className="button button-secondary"
+                          onClick={() => openEditDrawer(programme)}
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="responsive-card-list programmes-mobile-card-list" aria-label="Programme cards">
+            {sortedProgrammes.map((programme) => (
+              <article key={`${programme.id}-mobile`} className="mobile-record-card programmes-mobile-card">
+                <div className="admin-mobile-card-header programmes-mobile-card-header">
+                  <strong className="admin-mobile-card-title mono safe-wrap">{programme.code}</strong>
+                  <StatusBadge
+                    label={programme.rYearRequired ? 'Yes' : 'No'}
+                    tone={booleanTone(programme.rYearRequired)}
+                  />
+                </div>
+                <div className="admin-mobile-card-meta programmes-mobile-card-meta">
+                  <span className="programmes-mobile-card-name safe-wrap">{programme.name}</span>
+                  <span className="safe-wrap">AY: {formatAyCategory(programme.ayDateCategory)}</span>
+                  {programme.isSubspecialty ? <span>Subspecialty</span> : null}
+                  {programme.rdbAlias ? <span className="safe-wrap">Alias: {programme.rdbAlias}</span> : null}
+                </div>
+                <button
+                  type="button"
+                  className="button button-secondary programmes-mobile-card-action"
+                  onClick={() => openEditDrawer(programme)}
+                >
+                  Edit
+                </button>
+              </article>
+            ))}
+          </div>
+        </>
       )}
 
       <DetailDrawer

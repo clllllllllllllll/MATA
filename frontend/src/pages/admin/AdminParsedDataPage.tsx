@@ -2865,6 +2865,135 @@ export const AdminParsedDataPage = () => {
     </div>
   )
 
+  const renderCompactLine = (items: Array<string | number | null | undefined>) => {
+    const values = items
+      .map((item) => formatValue(item))
+      .filter((item) => item !== '-')
+
+    if (values.length === 0) {
+      return null
+    }
+
+    return <span className="parsed-data-mobile-compact-line safe-wrap">{values.join(' · ')}</span>
+  }
+
+  const renderMobileCardBody = (row: ParsedDataRow) => {
+    if (activeTabId === 'residents') {
+      const resident = row as ParsedResidentRow
+      return (
+        <>
+          {renderCompactLine([resident.mcr, resident.programme_code, resident.r_year])}
+          {renderCompactLine([resident.classification, resident.reg_type])}
+        </>
+      )
+    }
+
+    if (activeTabId === 'resident-postings') {
+      const posting = row as ParsedResidentPostingRow
+      const rawMatches = rawFragmentsByPostingId.get(posting.id) ?? []
+      return (
+        <>
+          {renderCompactLine([posting.month_label, posting.posting_code, posting.r_year])}
+          <span className="parsed-data-mobile-compact-line safe-wrap">
+            {formatDate(posting.start_date)} - {formatDate(posting.end_date)}
+          </span>
+          {rawMatches.length > 0 ? (
+            <span className="parsed-data-mobile-source safe-wrap">
+              Source: {formatSource(rawMatches[0])}
+              {rawMatches.length > 1 ? ` + ${rawMatches.length - 1} more` : ''}
+            </span>
+          ) : null}
+        </>
+      )
+    }
+
+    if (activeTabId === 'teaching-targets') {
+      const target = row as ParsedTeachingTargetRow
+      return (
+        <>
+          {renderCompactLine([target.programme_code, target.r_year, `target ${formatNumber(target.monthly_target)}/mo`])}
+          {renderCompactLine([
+            target.is_reallocatable ? 'Reallocatable' : 'Not reallocatable',
+            target.tag ? `tag ${target.tag}` : null,
+          ])}
+        </>
+      )
+    }
+
+    if (activeTabId === 'form-f1-records') {
+      const record = row as ParsedFormF1RecordRow
+      return (
+        <>
+          {renderCompactLine([record.month_label, record.status_raw, record.programme_code])}
+          {renderCompactLine([record.resident_name])}
+          {record.promotion_date ? (
+            <span className="parsed-data-mobile-compact-line safe-wrap">
+              Promotion: {formatDate(record.promotion_date)}
+            </span>
+          ) : null}
+        </>
+      )
+    }
+
+    const boundary = row as ParsedAcademicMonthBoundaryRow
+    return (
+      <>
+        {renderCompactLine([boundary.academic_year_label])}
+        <span className="parsed-data-mobile-compact-line safe-wrap">
+          {formatDate(boundary.start_date)} - {formatDate(boundary.end_date)}
+        </span>
+      </>
+    )
+  }
+
+  const renderMobileRowCard = (row: ParsedDataRow) => {
+    let title: ReactNode
+    let status: ReactNode
+
+    if (activeTabId === 'residents') {
+      const resident = row as ParsedResidentRow
+      title = formatValue(resident.name)
+      status = <StatusBadge label={formatValue(resident.status)} tone={statusTone(resident.status)} />
+    } else if (activeTabId === 'resident-postings') {
+      const posting = row as ParsedResidentPostingRow
+      title = [posting.resident_name, posting.mcr].map(formatValue).filter((item) => item !== '-').join(' · ') || '-'
+      status = <StatusBadge label={formatValue(posting.status)} tone={statusTone(posting.status)} />
+    } else if (activeTabId === 'teaching-targets') {
+      const target = row as ParsedTeachingTargetRow
+      title = [target.posting_code, target.session_type_name].map(formatValue).filter((item) => item !== '-').join(' · ') || '-'
+      status = boolBadge(target.is_tracked, 'Tracked', 'Untracked')
+    } else if (activeTabId === 'form-f1-records') {
+      const record = row as ParsedFormF1RecordRow
+      title = formatValue(record.mcr)
+      status = boolBadge(record.is_active, 'Active', 'Inactive')
+    } else {
+      const boundary = row as ParsedAcademicMonthBoundaryRow
+      title = formatValue(boundary.month_label)
+      status = <span className="parsed-data-mobile-type">{formatValue(boundary.ay_date_category)}</span>
+    }
+
+    return (
+      <button
+        key={`${activeTab.id}-${row.id}-mobile`}
+        type="button"
+        className="mobile-record-card admin-mobile-record-card parsed-data-mobile-card"
+        onClick={() => setSelectedRow(row)}
+        aria-label={`Open ${activeTab.label} row detail`}
+      >
+        <span className="admin-mobile-card-header parsed-data-mobile-card-header">
+          <span className="admin-mobile-card-title safe-wrap">
+            {title}
+          </span>
+          <span className="parsed-data-mobile-status">{status}</span>
+        </span>
+        <span className="admin-mobile-card-meta parsed-data-mobile-card-meta">
+          {renderMobileCardBody(row)}
+        </span>
+        <span className="parsed-data-mobile-action">View details</span>
+      </button>
+    )
+  }
+
   const renderFilter = (filter: FilterDefinition) => {
     if (filter.key === 'reportingPeriodId') {
       return (
@@ -2984,10 +3113,6 @@ export const AdminParsedDataPage = () => {
         }
       />
 
-      <section className="parsed-data-callout">
-        Raw/source evidence remains read-only. Editable rows use audited corrections with before/after history.
-      </section>
-
       <section className="card parsed-data-tab-card">
         <div className="parsed-data-tabs" role="tablist" aria-label="Live data tables">
           {tabDefinitions.map((tab) => (
@@ -3024,6 +3149,10 @@ export const AdminParsedDataPage = () => {
       </section>
 
       <section className="card filter-bar warning-filter-card parsed-data-filter-card">
+        <div className="admin-filter-summary parsed-data-filter-summary">
+          <span>Filters</span>
+          <strong>{hasFilters ? 'Active filters applied' : `All ${activeTab.label.toLowerCase()}`}</strong>
+        </div>
         {activeTab.filters.map(renderFilter)}
         {activeTabId === 'resident-postings' ? (
           <label>
@@ -3151,6 +3280,9 @@ export const AdminParsedDataPage = () => {
                   })}
                 </tbody>
               </table>
+            </div>
+            <div className="responsive-card-list admin-mobile-record-list parsed-data-mobile-card-list" aria-label="Live data row cards">
+              {rows.map(renderMobileRowCard)}
             </div>
             <div className="upload-log-pagination">
               <span>
