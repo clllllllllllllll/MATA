@@ -729,6 +729,194 @@ def test_explicit_master_admin_can_upload_ttf_for_any_programme(monkeypatch) -> 
     assert captured["programme_code"] == "GRM"
 
 
+def test_explicit_master_admin_alias_can_upload_ttf_for_any_programme(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_ttf_parser(**kwargs):
+        captured.update(kwargs)
+        return ParserResult(upload_type="ttf")
+
+    monkeypatch.setattr("app.routers.admin.parse_ttf_upload", _fake_ttf_parser)
+
+    client = _build_client()
+    response = client.post(
+        "/admin/upload/ttf",
+        headers={
+            "X-User-Role": "admin",
+            "X-User-Id": str(uuid4()),
+            "X-Admin-Level": "master_admin",
+        },
+        data={"reporting_period_id": str(uuid4()), "programme_code": "ORTHO"},
+        files={
+            "file": (
+                "ttf.xlsx",
+                _make_valid_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["programme_code"] == "ORTHO"
+
+
+def test_programme_pc_can_upload_ttf_only_for_scoped_programme(monkeypatch) -> None:
+    captured_programmes: list[str] = []
+
+    async def _fake_ttf_parser(**kwargs):
+        captured_programmes.append(kwargs["programme_code"])
+        return ParserResult(upload_type="ttf")
+
+    monkeypatch.setattr("app.routers.admin.parse_ttf_upload", _fake_ttf_parser)
+
+    client = _build_client()
+    headers = {
+        "X-User-Role": "admin",
+        "X-User-Id": str(uuid4()),
+        "X-User-Programme": "DR",
+    }
+    period_id = str(uuid4())
+
+    allowed = client.post(
+        "/admin/upload/ttf",
+        headers=headers,
+        data={"reporting_period_id": period_id, "programme_code": "DR"},
+        files={
+            "file": (
+                "dr-ttf.xlsx",
+                _make_valid_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    forbidden = client.post(
+        "/admin/upload/ttf",
+        headers=headers,
+        data={"reporting_period_id": period_id, "programme_code": "GERI"},
+        files={
+            "file": (
+                "geri-ttf.xlsx",
+                _make_valid_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert allowed.status_code == 200
+    assert forbidden.status_code == 403
+    assert captured_programmes == ["DR"]
+
+
+def test_programme_pc_with_empty_scope_cannot_upload_ttf(monkeypatch) -> None:
+    called = {"count": 0}
+
+    async def _fake_ttf_parser(**kwargs):
+        called["count"] += 1
+        return ParserResult(upload_type="ttf")
+
+    monkeypatch.setattr("app.routers.admin.parse_ttf_upload", _fake_ttf_parser)
+
+    client = _build_client()
+    response = client.post(
+        "/admin/upload/ttf",
+        headers={
+            "X-User-Role": "admin",
+            "X-User-Id": str(uuid4()),
+            "X-User-Programme": " , ",
+        },
+        data={"reporting_period_id": str(uuid4()), "programme_code": "DR"},
+        files={
+            "file": (
+                "ttf.xlsx",
+                _make_valid_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 403
+    assert called["count"] == 0
+
+
+def test_ttf_upload_uses_form_programme_code_not_filename(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_ttf_parser(**kwargs):
+        captured.update(kwargs)
+        return ParserResult(upload_type="ttf")
+
+    monkeypatch.setattr("app.routers.admin.parse_ttf_upload", _fake_ttf_parser)
+
+    client = _build_client()
+    response = client.post(
+        "/admin/upload/ttf",
+        headers={
+            "X-User-Role": "admin",
+            "X-User-Id": str(uuid4()),
+            "X-User-Programme": "DR",
+        },
+        data={"reporting_period_id": str(uuid4()), "programme_code": "DR"},
+        files={
+            "file": (
+                "GERI_targets.xlsx",
+                _make_valid_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["programme_code"] == "DR"
+    assert captured["original_filename"] == "GERI_targets.xlsx"
+
+
+def test_ttf_upload_log_and_audit_preserve_programme_and_period_context(monkeypatch) -> None:
+    async def _fake_ttf_parser(**kwargs):
+        return ParserResult(
+            upload_type="ttf",
+            created_count=2,
+            metadata={"targets_created": 2},
+        )
+
+    monkeypatch.setattr("app.routers.admin.parse_ttf_upload", _fake_ttf_parser)
+
+    session = _UploadAuditSession()
+    client = _build_upload_audit_client(session)
+    period_id = str(uuid4())
+    response = client.post(
+        "/admin/upload/ttf",
+        headers={
+            "X-User-Role": "admin",
+            "X-User-Id": str(uuid4()),
+            "X-User-Programme": "DR",
+        },
+        data={"reporting_period_id": period_id, "programme_code": "DR"},
+        files={
+            "file": (
+                "ttf.xlsx",
+                _make_valid_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    upload_log = session.upload_logs[-1]
+    assert upload_log["upload_type"] == "ttf"
+    assert upload_log["reporting_period_id"] == period_id
+    assert upload_log["programme_code"] == "DR"
+    assert json.loads(upload_log["summary"])["upload_type"] == "ttf"
+
+    audit_log = session.audit_logs[-1]
+    metadata = json.loads(audit_log["metadata_json"])
+    after = json.loads(audit_log["after_json"])
+    assert metadata["upload_type"] == "ttf"
+    assert metadata["reporting_period_id"] == period_id
+    assert metadata["programme_code"] == "DR"
+    assert after["reporting_period_id"] == period_id
+    assert after["programme_code"] == "DR"
+
+
 def test_upload_extension_validation_is_endpoint_specific() -> None:
     client = _build_client()
     headers = _admin_headers()

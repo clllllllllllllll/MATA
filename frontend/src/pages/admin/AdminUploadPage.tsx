@@ -7,7 +7,7 @@ import { PageHero } from '../../components/PageHero'
 import { UploadCard } from '../../components/UploadCard'
 import { useAppState } from '../../context/useAppState'
 import type { UploadType } from '../../types/app'
-import { buildMasterAdminTtfProgrammeOptions } from './adminUploadPageLogic'
+import { buildMasterAdminTtfProgrammeOptions, buildReviewWarningsPathForUploadSlot } from './adminUploadPageLogic'
 
 const acceptedByType: Record<UploadType, string> = {
   public_holidays: '.xlsx,.csv',
@@ -158,24 +158,17 @@ export const AdminUploadPage = () => {
 
   const reviewWarningsForUpload = (uploadType: UploadType) => {
     const latest = latestByType.get(uploadType)
-    const params = new URLSearchParams({ mode: 'active', upload_type: uploadType })
-    if (!latest) {
-      if (uploadType === 'rdb' || uploadType === 'form_f1' || uploadType === 'ttf') {
-        params.set('reporting_period_id', reportingPeriodId)
-      }
-      if (uploadType === 'ttf') {
-        params.set('programme_code', selectedProgrammeCode)
-      }
-      navigate(`/admin/upload/warnings?${params.toString()}`)
-      return
-    }
-    if (latest.reportingPeriodId) {
-      params.set('reporting_period_id', latest.reportingPeriodId)
-    }
-    if (latest.programmeCode) {
-      params.set('programme_code', latest.programmeCode)
-    }
-    navigate(`/admin/upload/warnings?${params.toString()}`)
+    navigate(buildReviewWarningsPathForUploadSlot({
+      uploadType,
+      selectedReportingPeriodId: reportingPeriodId,
+      selectedProgrammeCode,
+      latestUpload: latest
+        ? {
+            reportingPeriodId: latest.reportingPeriodId,
+            programmeCode: latest.programmeCode,
+          }
+        : undefined,
+    }))
   }
 
   return (
