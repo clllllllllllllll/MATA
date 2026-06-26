@@ -216,6 +216,8 @@ def _global_config_scope(admin_context: AdminContext) -> set[str]:
 
 
 def _require_programme_in_scope(admin_context: AdminContext, programme_code: str) -> None:
+    if admin_context.is_master_admin:
+        return
     if not admin_context.programme_scope:
         raise ApiError(
             status_code=403,

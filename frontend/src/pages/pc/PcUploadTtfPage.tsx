@@ -1,5 +1,6 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { listProgrammes, type Programme } from '../../api/programmes'
 import { uploadWorkbook } from '../../api/uploads'
 import { IconGrid } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
@@ -49,10 +50,11 @@ export const PcUploadTtfPage = () => {
     uploadHistory,
     addUploadResult,
   } = useAppState()
+  const [programmeCatalogue, setProgrammeCatalogue] = useState<Programme[]>([])
 
   const programmeScope = useMemo(
-    () => resolvePcProgrammeScope(demoAdminProgrammes, selectedProgrammeCode),
-    [demoAdminProgrammes, selectedProgrammeCode],
+    () => resolvePcProgrammeScope(demoAdminProgrammes, selectedProgrammeCode, programmeCatalogue),
+    [demoAdminProgrammes, programmeCatalogue, selectedProgrammeCode],
   )
   const selectedPcProgrammeCode = programmeScope.selectedProgrammeCode
   const selectedPeriod = useMemo(
@@ -62,6 +64,30 @@ export const PcUploadTtfPage = () => {
   const activeReportingPeriodId =
     reportingPeriods.length > 0 && reportingPeriodId.trim().length > 0 ? reportingPeriodId : ''
   const localLatestTtfUpload = latestLocalTtfUpload(uploadHistory, selectedPcProgrammeCode)
+
+  useEffect(() => {
+    let active = true
+    ;(async () => {
+      try {
+        const programmes = await listProgrammes({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel: 'master',
+        })
+        if (active) {
+          setProgrammeCatalogue(programmes)
+        }
+      } catch {
+        if (active) {
+          setProgrammeCatalogue([])
+        }
+      }
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [demoAdminId, demoAdminProgrammes])
 
   useEffect(() => {
     if (selectedPcProgrammeCode && selectedProgrammeCode !== selectedPcProgrammeCode) {
@@ -114,7 +140,7 @@ export const PcUploadTtfPage = () => {
                 Programme
                 {programmeScope.mode === 'locked' ? (
                   <span className="pc-programme-lock-chip safe-wrap">
-                    Assigned programme: <strong>{selectedPcProgrammeCode}</strong>
+                    Assigned programme: <strong>{programmeScope.selectedProgrammeLabel}</strong>
                   </span>
                 ) : null}
                 {programmeScope.mode === 'select' ? (
@@ -122,9 +148,9 @@ export const PcUploadTtfPage = () => {
                     value={selectedPcProgrammeCode}
                     onChange={(event) => setSelectedProgrammeCode(event.target.value)}
                   >
-                    {programmeScope.programmeScope.map((programmeCode) => (
-                      <option key={programmeCode} value={programmeCode}>
-                        {programmeCode}
+                    {programmeScope.programmeOptions.map((programme) => (
+                      <option key={programme.code} value={programme.code}>
+                        {programme.label}
                       </option>
                     ))}
                   </select>

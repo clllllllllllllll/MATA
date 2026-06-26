@@ -1,5 +1,6 @@
-import { useMemo, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { listProgrammes, type Programme } from '../../api/programmes'
 import { uploadWorkbook } from '../../api/uploads'
 import { IconCalendar, IconFile, IconGrid } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
@@ -7,6 +8,7 @@ import { UploadCard } from '../../components/UploadCard'
 import { frontendConfig } from '../../config/frontendConfig'
 import { useAppState } from '../../context/useAppState'
 import type { UploadType } from '../../types/app'
+import { buildMasterAdminTtfProgrammeOptions } from './adminUploadPageLogic'
 
 const acceptedByType: Record<UploadType, string> = {
   public_holidays: '.xlsx,.csv',
@@ -64,6 +66,9 @@ export const AdminUploadPage = () => {
     addUploadResult,
     uploadHistory,
   } = useAppState()
+  const [programmeCatalogue, setProgrammeCatalogue] = useState<Programme[]>([])
+  const [programmesLoading, setProgrammesLoading] = useState(true)
+  const [programmesError, setProgrammesError] = useState<string | null>(null)
 
   const latestByType = useMemo(() => {
     const map = new Map<UploadType, (typeof uploadHistory)[number]>()
@@ -74,6 +79,48 @@ export const AdminUploadPage = () => {
     })
     return map
   }, [uploadHistory])
+  const ttfProgrammeOptions = useMemo(
+    () => buildMasterAdminTtfProgrammeOptions(programmeCatalogue, demoAdminProgrammes),
+    [demoAdminProgrammes, programmeCatalogue],
+  )
+
+  useEffect(() => {
+    let active = true
+    ;(async () => {
+      try {
+        const programmes = await listProgrammes({
+          adminId: demoAdminId,
+          adminProgrammes: demoAdminProgrammes,
+          adminLevel: 'master',
+        })
+        if (active) {
+          setProgrammeCatalogue(programmes)
+        }
+      } catch (error) {
+        if (active) {
+          setProgrammeCatalogue([])
+          setProgrammesError(error instanceof Error ? error.message : 'Unable to load programme catalogue.')
+        }
+      } finally {
+        if (active) {
+          setProgrammesLoading(false)
+        }
+      }
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [demoAdminId, demoAdminProgrammes])
+
+  useEffect(() => {
+    if (
+      ttfProgrammeOptions.length > 0 &&
+      !ttfProgrammeOptions.some((programme) => programme.code === selectedProgrammeCode)
+    ) {
+      setSelectedProgrammeCode(ttfProgrammeOptions[0].code)
+    }
+  }, [selectedProgrammeCode, setSelectedProgrammeCode, ttfProgrammeOptions])
 
   const uploadOne = async (uploadType: UploadType, file: File) => {
     const response = await uploadWorkbook({
@@ -83,6 +130,7 @@ export const AdminUploadPage = () => {
       programmeCode: selectedProgrammeCode,
       adminId: demoAdminId,
       adminProgrammes: demoAdminProgrammes,
+      adminLevel: 'master',
     })
 
     addUploadResult({
@@ -143,7 +191,14 @@ export const AdminUploadPage = () => {
         subtitle="Master Admin - Source workbooks"
         meta={[
           { label: 'API base URL', value: frontendConfig.apiBaseUrl },
-          { label: 'Admin programme scope', value: demoAdminProgrammes.join(', ') },
+          {
+            label: 'TTF programme coverage',
+            value: programmesLoading
+              ? 'Loading programme catalogue'
+              : programmesError
+                ? `Fallback: ${demoAdminProgrammes.join(', ')}`
+                : `${ttfProgrammeOptions.length} programmes`,
+          },
         ]}
       />
 
@@ -189,15 +244,16 @@ export const AdminUploadPage = () => {
               value={selectedProgrammeCode}
               onChange={(event) => setSelectedProgrammeCode(event.target.value)}
             >
-              {demoAdminProgrammes.map((programmeCode) => (
-                <option key={programmeCode} value={programmeCode}>
-                  {programmeCode}
+              {ttfProgrammeOptions.map((programme) => (
+                <option key={programme.code} value={programme.code}>
+                  {programme.label}
                 </option>
               ))}
             </select>
             <small>
-              TTF upload checks this value against X-User-Programme scope. Bulk TTF upload is deferred; upload one
-              programme at a time.
+              {programmesError
+                ? `${programmesError} Using configured fallback. Upload one TTF for one explicit programme at a time.`
+                : 'Master Admin can upload one TTF for any valid programme at a time.'}
             </small>
           </label>
         </div>

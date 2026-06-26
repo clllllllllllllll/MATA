@@ -1,7 +1,8 @@
 import {
   buildPcTtfWarningsPath,
   resolvePcProgrammeScope,
-} from './pcUploadTtfPageLogic'
+} from './pcUploadTtfPageLogic.ts'
+import type { Programme } from '../../api/programmes'
 
 const assertEqual = <T,>(actual: T, expected: T, label: string) => {
   if (actual !== expected) {
@@ -19,6 +20,72 @@ assertEqual(scopedSelection.selectedProgrammeCode, 'GERI', 'in-scope selected pr
 
 const fallbackSelection = resolvePcProgrammeScope(['DR', 'GERI'], 'ORTHO')
 assertEqual(fallbackSelection.selectedProgrammeCode, 'DR', 'out-of-scope selection falls back to first scoped programme')
+
+const programmeCatalogue = [
+  {
+    id: '1',
+    code: 'DR',
+    name: 'Diagnostic Radiology',
+    ayDateCategory: 'non_im_subspec',
+    rYearRequired: true,
+    isSubspecialty: false,
+  },
+  {
+    id: '2',
+    code: 'GERI',
+    name: 'Geriatric Medicine',
+    ayDateCategory: 'im_subspec',
+    rYearRequired: false,
+    isSubspecialty: false,
+  },
+  {
+    id: '3',
+    code: 'ORTHO',
+    name: 'Orthopaedic Surgery',
+    ayDateCategory: 'non_im_subspec',
+    rYearRequired: false,
+    isSubspecialty: false,
+  },
+] satisfies Programme[]
+
+const namedProgrammeScope = resolvePcProgrammeScope(['DR', 'GERI'], 'GERI', programmeCatalogue)
+assertEqual(
+  namedProgrammeScope.selectedProgrammeCode,
+  'GERI',
+  'PC upload state keeps the raw selected programme code when labels include names',
+)
+assertEqual(
+  namedProgrammeScope.programmeOptions[0]?.code,
+  'DR',
+  'PC programme selector option value remains the programme code',
+)
+assertEqual(
+  namedProgrammeScope.programmeOptions[0]?.label,
+  'DR - Diagnostic Radiology',
+  'PC programme selector includes programme name when catalogue is available',
+)
+assertEqual(
+  namedProgrammeScope.programmeOptions[1]?.label,
+  'GERI - Geriatric Medicine',
+  'PC programme selector formats each scoped programme with its full name',
+)
+assertEqual(
+  namedProgrammeScope.programmeOptions.some((programme) => programme.code === 'ORTHO'),
+  false,
+  'PC programme selector excludes out-of-scope catalogue programmes',
+)
+assertEqual(
+  namedProgrammeScope.selectedProgrammeLabel,
+  'GERI - Geriatric Medicine',
+  'locked/static PC display can use the selected programme full label',
+)
+
+const codeOnlyProgrammeScope = resolvePcProgrammeScope(['DR'], 'DR', [])
+assertEqual(
+  codeOnlyProgrammeScope.programmeOptions[0]?.label,
+  'DR',
+  'PC programme selector falls back to code-only labels when catalogue names are unavailable',
+)
 
 const warningsPath = buildPcTtfWarningsPath({
   programmeCode: 'GERI',

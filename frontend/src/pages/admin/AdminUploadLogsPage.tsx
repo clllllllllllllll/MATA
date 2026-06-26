@@ -268,7 +268,17 @@ export const AdminUploadLogsPage = () => {
 
   const openRelatedWarnings = () => {
     const uploadType = selectedLog?.upload_type
-    const query = uploadType ? `?mode=history&upload_type=${uploadType}` : '?mode=history'
+    const params = new URLSearchParams({ mode: 'history' })
+    if (uploadType) {
+      params.set('upload_type', uploadType)
+    }
+    if (selectedLog?.reporting_period_id) {
+      params.set('reporting_period_id', selectedLog.reporting_period_id)
+    }
+    if (selectedLog?.programme_code) {
+      params.set('programme_code', selectedLog.programme_code)
+    }
+    const query = `?${params.toString()}`
     navigate(`/admin/upload/warnings${query}`)
   }
 

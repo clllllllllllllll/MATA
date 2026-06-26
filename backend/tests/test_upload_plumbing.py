@@ -697,6 +697,38 @@ def test_programme_scope_null_is_not_all_access_for_ttf() -> None:
     assert response.status_code == 403
 
 
+def test_explicit_master_admin_can_upload_ttf_for_any_programme(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_ttf_parser(**kwargs):
+        captured.update(kwargs)
+        return ParserResult(upload_type="ttf")
+
+    monkeypatch.setattr("app.routers.admin.parse_ttf_upload", _fake_ttf_parser)
+
+    client = _build_client()
+    response = client.post(
+        "/admin/upload/ttf",
+        headers={
+            "X-User-Role": "admin",
+            "X-User-Id": str(uuid4()),
+            "X-User-Programme": "DR",
+            "X-Admin-Level": "master",
+        },
+        data={"reporting_period_id": str(uuid4()), "programme_code": "GRM"},
+        files={
+            "file": (
+                "ttf.xlsx",
+                _make_valid_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["programme_code"] == "GRM"
+
+
 def test_upload_extension_validation_is_endpoint_specific() -> None:
     client = _build_client()
     headers = _admin_headers()
