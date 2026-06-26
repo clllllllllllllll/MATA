@@ -10,6 +10,7 @@ import { AdminSecretaryEventsPage } from './pages/admin/AdminSecretaryEventsPage
 import { AdminUploadLogsPage } from './pages/admin/AdminUploadLogsPage'
 import { AdminUploadPage } from './pages/admin/AdminUploadPage'
 import { AdminWarningsPage } from './pages/admin/AdminWarningsPage'
+import { PcUploadTtfPage } from './pages/pc/PcUploadTtfPage'
 import { ResidentSubmissionPage } from './pages/resident/ResidentSubmissionPage'
 import { SecretaryTeachingSchedulePage } from './pages/secretary/SecretaryTeachingSchedulePage'
 import { StubPage } from './pages/StubPage'
@@ -29,15 +30,7 @@ function App() {
         <Route path="/admin/parsed-data" element={<AdminParsedDataPage />} />
         <Route path="/admin/secretary-events" element={<AdminSecretaryEventsPage />} />
         <Route path="/admin/submissions" element={<AdminResidentSubmissionsPage />} />
-        <Route
-          path="/pc/upload-ttf"
-          element={
-            <StubPage
-              title="Programme PC Upload TTF"
-              subtitle="Optional stub route for role switcher preview."
-            />
-          }
-        />
+        <Route path="/pc/upload-ttf" element={<PcUploadTtfPage />} />
         <Route path="/pc/config" element={<AdminConfigPage configViewRole="programme_pc" />} />
         <Route path="/pc/warnings" element={<AdminWarningsPage />} />
         <Route path="/secretary" element={<Navigate to="/secretary/events" replace />} />

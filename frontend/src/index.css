@@ -640,6 +640,10 @@ a {
   align-items: start;
 }
 
+.admin-upload-page .upload-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .grid-8-4,
 .bottom-split {
   display: grid;
@@ -1477,6 +1481,53 @@ small {
   flex-direction: row;
   flex-wrap: wrap;
   gap: 14px;
+}
+
+.pc-upload-ttf-page {
+  gap: 16px;
+}
+
+.pc-upload-intro {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.pc-upload-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  align-self: stretch;
+  width: 100%;
+  min-width: 0;
+}
+
+.pc-upload-main-stack {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.pc-upload-main-stack > .upload-card {
+  width: min(100%, 980px);
+}
+
+.pc-upload-controls {
+  min-width: 0;
+}
+
+.pc-programme-lock-chip {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 40px;
+  gap: 6px;
+  padding: 9px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-input);
+  background: var(--purple-tint-2);
+  color: var(--purple-deep);
 }
 
 .callout-info {
@@ -2995,6 +3046,10 @@ tr:last-child td {
   .admin-upload-page .upload-grid {
     grid-template-columns: minmax(0, 1fr);
     width: 100%;
+  }
+
+  .pc-upload-controls {
+    padding: 16px;
   }
 
   .upload-card {
