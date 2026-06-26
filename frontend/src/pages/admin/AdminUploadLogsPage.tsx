@@ -287,16 +287,11 @@ export const AdminUploadLogsPage = () => {
   const canGoPrevious = offset > 0
   const canGoNext = offset + pageSize < total
 
-  const pageSubtitle = isInitialLoading
-    ? 'Audit history of uploaded source files'
-    : `${total} persisted upload log${total === 1 ? '' : 's'}`
-
   return (
     <div className="page admin-upload-logs-page">
       <PageHero
         title="Upload Logs"
         subtitle="Audit history of uploaded source files"
-        metaInline={[pageSubtitle]}
         actions={
           <button
             type="button"

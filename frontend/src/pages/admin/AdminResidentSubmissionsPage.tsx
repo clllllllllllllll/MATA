@@ -456,9 +456,6 @@ export const AdminResidentSubmissionsPage = () => {
     () => reportingPeriods.find((period) => period.id === filters.reportingPeriodId),
     [filters.reportingPeriodId, reportingPeriods],
   )
-  const pageSubtitle = submissionsLoading
-    ? `${roleLabel} - NHG resident attendance visibility`
-    : `${total} NHG resident submission${total === 1 ? '' : 's'}`
   const scheduledSubmissionCount = Math.max(0, summary.totalSubmissions - summary.adhocCount)
 
   return (
@@ -466,7 +463,6 @@ export const AdminResidentSubmissionsPage = () => {
       <PageHero
         title="NHG Resident Submissions"
         subtitle={`${roleLabel} - attendance submission visibility`}
-        metaInline={[pageSubtitle]}
         actions={
           <button
             type="button"

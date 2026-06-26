@@ -5,7 +5,6 @@ import { uploadWorkbook } from '../../api/uploads'
 import { IconCalendar, IconFile, IconGrid } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
 import { UploadCard } from '../../components/UploadCard'
-import { frontendConfig } from '../../config/frontendConfig'
 import { useAppState } from '../../context/useAppState'
 import type { UploadType } from '../../types/app'
 import { buildMasterAdminTtfProgrammeOptions } from './adminUploadPageLogic'
@@ -67,7 +66,6 @@ export const AdminUploadPage = () => {
     uploadHistory,
   } = useAppState()
   const [programmeCatalogue, setProgrammeCatalogue] = useState<Programme[]>([])
-  const [programmesLoading, setProgrammesLoading] = useState(true)
   const [programmesError, setProgrammesError] = useState<string | null>(null)
 
   const latestByType = useMemo(() => {
@@ -100,10 +98,6 @@ export const AdminUploadPage = () => {
         if (active) {
           setProgrammeCatalogue([])
           setProgrammesError(error instanceof Error ? error.message : 'Unable to load programme catalogue.')
-        }
-      } finally {
-        if (active) {
-          setProgrammesLoading(false)
         }
       }
     })()
@@ -189,17 +183,6 @@ export const AdminUploadPage = () => {
       <PageHero
         title="Upload Files"
         subtitle="Master Admin - Source workbooks"
-        meta={[
-          { label: 'API base URL', value: frontendConfig.apiBaseUrl },
-          {
-            label: 'TTF programme coverage',
-            value: programmesLoading
-              ? 'Loading programme catalogue'
-              : programmesError
-                ? `Fallback: ${demoAdminProgrammes.join(', ')}`
-                : `${ttfProgrammeOptions.length} programmes`,
-          },
-        ]}
       />
 
       <section className="card control-panel">

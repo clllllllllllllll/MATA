@@ -180,16 +180,11 @@ export const AdminHomePage = () => {
     }
   }, [fetchUploadLogs])
 
-  const lastSyncText = uploadLogs[0]
-    ? formatDateTime(uploadLogs[0].uploaded_at)
-    : 'No uploads yet'
-
   return (
     <div className="page admin-home-page">
       <PageHero
         title="Welcome back, Demo Admin"
         subtitle="Master Admin - All programmes - System overview"
-        metaInline={[`Last full sync - ${lastSyncText}`, 'Persisted warning review']}
         actions={
           <div className="hero-action-row">
             <button

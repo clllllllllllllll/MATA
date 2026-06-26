@@ -372,7 +372,6 @@ export const AdminSecretaryEventsPage = () => {
   const activeDetail =
     currentDetail ?? (selectedEvent?.id === selectedEventId ? selectedEvent : null)
   const detailLoading = Boolean(selectedEventId) && !currentDetail && !currentDetailError
-  const pageSubtitle = eventsLoading ? 'Master Admin teaching schedule visibility' : `${total} scheduled event${total === 1 ? '' : 's'}`
   const selectedPeriod = useMemo(
     () => reportingPeriods.find((period) => period.id === filters.reportingPeriodId),
     [filters.reportingPeriodId, reportingPeriods],
@@ -383,7 +382,6 @@ export const AdminSecretaryEventsPage = () => {
       <PageHero
         title="Secretary Events"
         subtitle="Master Admin - teaching schedule visibility"
-        metaInline={[pageSubtitle]}
         actions={
           <button
             type="button"
