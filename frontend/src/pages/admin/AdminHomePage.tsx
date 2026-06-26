@@ -11,10 +11,11 @@ import {
   IconUpload,
 } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
+import { StatusBadge } from '../../components/StatusBadge'
 import { uploadLabels } from '../../config/frontendConfig'
 import { useAppState } from '../../context/useAppState'
 import type { UploadType } from '../../types/app'
-import type { UploadLogListItem } from '../../types/upload'
+import type { UploadLogListItem, UploadLogStatus } from '../../types/upload'
 
 const workspaceTiles = [
   {
@@ -83,6 +84,43 @@ const formatWarningsStatus = (log: UploadLogListItem) => {
   return log.status ? `${log.status} / warnings 0` : '0'
 }
 
+const statusToneByStatus: Record<UploadLogStatus, 'success' | 'warning' | 'critical'> = {
+  success: 'success',
+  partial: 'warning',
+  failed: 'critical',
+}
+
+const formatStatusLabel = (status: UploadLogStatus) => {
+  if (status === 'partial') {
+    return 'Partial'
+  }
+  if (status === 'failed') {
+    return 'Failed'
+  }
+  return 'Success'
+}
+
+const pluralize = (count: number, singular: string) => `${count} ${singular}${count === 1 ? '' : 's'}`
+
+const formatUploader = (log: UploadLogListItem) =>
+  log.uploaded_by_name ?? log.uploaded_by ?? 'Unknown uploader'
+
+const formatSummaryRows = (summaryCounts: Record<string, number>) => {
+  const total = Object.values(summaryCounts).reduce(
+    (sum, count) => (Number.isFinite(count) && count > 0 ? sum + count : sum),
+    0,
+  )
+  return total > 0 ? pluralize(total, 'row') : 'No row counts'
+}
+
+const formatMobileUploadSummary = (log: UploadLogListItem) => {
+  const parts = [formatSummaryRows(log.summary_counts), pluralize(log.warning_count, 'warning')]
+  if (log.error_count > 0) {
+    parts.push(pluralize(log.error_count, 'error'))
+  }
+  return parts.join(' - ')
+}
+
 export const AdminHomePage = () => {
   const navigate = useNavigate()
   const { demoAdminId, demoAdminProgrammes } = useAppState()
@@ -147,7 +185,7 @@ export const AdminHomePage = () => {
     : 'No uploads yet'
 
   return (
-    <div className="page">
+    <div className="page admin-home-page">
       <PageHero
         title="Welcome back, Demo Admin"
         subtitle="Master Admin - All programmes - System overview"
@@ -228,6 +266,37 @@ export const AdminHomePage = () => {
                 </tbody>
               </table>
             </div>
+          </div>
+          <div className="admin-home-mobile-upload-list admin-mobile-record-list" aria-label="Recent uploads">
+            {uploadLogsLoading ? (
+              <div className="mobile-record-card admin-home-mobile-state">Loading upload logs...</div>
+            ) : uploadLogsError ? (
+              <div className="mobile-record-card admin-home-mobile-state">
+                Upload logs could not be loaded: {uploadLogsError}
+              </div>
+            ) : uploadLogs.length === 0 ? (
+              <div className="mobile-record-card admin-home-mobile-state">
+                No upload logs yet. Completed uploads will appear here.
+              </div>
+            ) : (
+              uploadLogs.map((entry) => (
+                <article className="mobile-record-card admin-home-upload-card" key={`${entry.id}-mobile`}>
+                  <div className="admin-mobile-card-header">
+                    <strong className="admin-mobile-card-title">{getUploadLabel(entry.upload_type)}</strong>
+                    <StatusBadge label={formatStatusLabel(entry.status)} tone={statusToneByStatus[entry.status]} />
+                  </div>
+                  <div className="admin-mobile-card-meta">
+                    <span>
+                      {formatDateTime(entry.uploaded_at)} - {formatUploader(entry)}
+                    </span>
+                    <span>{entry.programme_code ?? entry.reporting_period_label ?? 'All programmes'}</span>
+                  </div>
+                  <div className="admin-mobile-summary-chips">
+                    <span className="mono-chip">{formatMobileUploadSummary(entry)}</span>
+                  </div>
+                </article>
+              ))
+            )}
           </div>
         </article>
 

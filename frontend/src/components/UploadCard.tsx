@@ -221,7 +221,7 @@ export const UploadCard = ({
     <article className="card upload-card">
       <header className="upload-card-h upload-card-header">
         <div className="icon-wrap upload-card-icon">{icon}</div>
-        <div className="upload-card-title-block" style={{ flex: 1 }}>
+        <div className="upload-card-title-block">
           <div className="upload-card-title-row">
             <h2>{title}</h2>
             {sourceStatus ? (
@@ -233,144 +233,146 @@ export const UploadCard = ({
         </div>
       </header>
 
-      {!isLoadingState && !isTerminalState ? (
-        <>
-          <label
-            className={`file-dropzone ${file ? 'is-selected' : ''} ${isDraggingFile ? 'is-dragging' : ''}`}
-            htmlFor={`upload-${title}`}
-            onDragEnter={onDragEnter}
-            onDragOver={onDragOver}
-            onDragLeave={onDragLeave}
-            onDrop={onDrop}
-          >
-            <input
-              id={`upload-${title}`}
-              ref={inputRef}
-              type="file"
-              accept={accept}
-              onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)}
-            />
-            {!file ? (
-              <span>
-                Drop file here or <strong>Browse</strong>
-              </span>
-            ) : (
-              <div className="selected-file-chip">
-                <span>
-                  {file.name} ({formatFileSize(file.size)})
-                </span>
-                <button type="button" className="button button-ghost danger" onClick={clearFile}>
-                  Remove
-                </button>
-              </div>
-            )}
-          </label>
-
-          {missingReportingPeriod || missingProgrammeCode ? (
-            <div className="upload-validation-slot" aria-live="polite">
-              {missingReportingPeriod ? (
-                <small className="upload-validation-text">
-                  Reporting period ID is required and must be a `reporting_periods.id` value for this upload.
-                </small>
-              ) : null}
-              {missingProgrammeCode ? (
-                <small className="upload-validation-text">
-                  Programme code is required for TTF and must be one programme within your configured scope.
-                </small>
-              ) : null}
-            </div>
-          ) : null}
-        </>
-      ) : null}
-
-      {isLoadingState ? (
-        <div className="upload-progress-card upload-state-panel">
-          <div className="upload-progress-row">
-            <span>{status === 'parsing' ? 'Parsing...' : 'Uploading...'}</span>
-            <span>{uploadProgressPercent}%</span>
-          </div>
-          <div
-            className="upload-progress-track"
-            role="progressbar"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={uploadProgressPercent}
-          >
-            <div className="upload-progress-fill" style={{ width: `${uploadProgressPercent}%` }} />
-          </div>
-        </div>
-      ) : null}
-
-      {!isLoadingState && !isTerminalState ? (
-        <div className="upload-card-actions">
-          <button type="button" className="button button-primary" disabled={isUploadDisabled} onClick={handleUpload}>
-            Upload
-          </button>
-        </div>
-      ) : null}
-
-      {status === 'error' && errorMessage ? (
-        <div className="inline-callout callout-error upload-result-card upload-state-panel">
-          <div className="upload-result-title">
-            <IconWarn size={16} />
-            <strong>Upload failed</strong>
-          </div>
-          <p className="upload-result-message">{errorMessage}</p>
-          {errorDetails ? <p className="inline-muted">Additional error context was captured for review.</p> : null}
-          <div className="result-actions">
-            <button
-              type="button"
-              className="button button-secondary"
-              onClick={clearFile}
+      <div className="upload-card-content">
+        {!isLoadingState && !isTerminalState ? (
+          <>
+            <label
+              className={`file-dropzone ${file ? 'is-selected' : ''} ${isDraggingFile ? 'is-dragging' : ''}`}
+              htmlFor={`upload-${title}`}
+              onDragEnter={onDragEnter}
+              onDragOver={onDragOver}
+              onDragLeave={onDragLeave}
+              onDrop={onDrop}
             >
-              Upload another
-            </button>
-          </div>
-        </div>
-      ) : null}
+              <input
+                id={`upload-${title}`}
+                ref={inputRef}
+                type="file"
+                accept={accept}
+                onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)}
+              />
+              {!file ? (
+                <span>
+                  Drop file here or <strong>Browse</strong>
+                </span>
+              ) : (
+                <div className="selected-file-chip">
+                  <span>
+                    {file.name} ({formatFileSize(file.size)})
+                  </span>
+                  <button type="button" className="button button-ghost danger" onClick={clearFile}>
+                    Remove
+                  </button>
+                </div>
+              )}
+            </label>
 
-      {status === 'success' && response ? (
-        <div
-          className={`inline-callout upload-result-card ${
-            isSuspiciousZeroResult ? 'callout-warning' : 'callout-success'
-          } upload-state-panel`}
-        >
-          <div className="upload-result-title">
-            {isSuspiciousZeroResult ? <IconWarn size={16} /> : <IconCheck size={16} />}
-            <strong>{isSuspiciousZeroResult ? 'Upload completed with no rows' : 'Upload successful'}</strong>
+            {missingReportingPeriod || missingProgrammeCode ? (
+              <div className="upload-validation-slot" aria-live="polite">
+                {missingReportingPeriod ? (
+                  <small className="upload-validation-text">
+                    Reporting period ID is required and must be a `reporting_periods.id` value for this upload.
+                  </small>
+                ) : null}
+                {missingProgrammeCode ? (
+                  <small className="upload-validation-text">
+                    Programme code is required for TTF and must be one programme within your configured scope.
+                  </small>
+                ) : null}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+
+        {isLoadingState ? (
+          <div className="upload-progress-card upload-state-panel">
+            <div className="upload-progress-row">
+              <span>{status === 'parsing' ? 'Parsing...' : 'Uploading...'}</span>
+              <span>{uploadProgressPercent}%</span>
+            </div>
+            <div
+              className="upload-progress-track"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={uploadProgressPercent}
+            >
+              <div className="upload-progress-fill" style={{ width: `${uploadProgressPercent}%` }} />
+            </div>
           </div>
-          <div className="upload-summary-metrics upload-summary-metrics-inline">
-            <span>
-              <strong>{createdCount ?? 0}</strong> created
-            </span>
-            <span>
-              <strong>{updatedCount ?? 'N/A'}</strong> updated
-            </span>
-            <span>
-              <strong>{summary?.warnings ?? 0}</strong> warnings
-            </span>
-          </div>
-          {isSuspiciousZeroResult ? (
-            <p className="upload-result-message">
-              No rows were created or updated. Check that the correct workbook was uploaded for this slot.
-            </p>
-          ) : null}
-          <div className="result-actions">
-            <button type="button" className="button button-ghost" onClick={clearFile}>
-              Upload another
+        ) : null}
+
+        {!isLoadingState && !isTerminalState ? (
+          <div className="upload-card-actions">
+            <button type="button" className="button button-primary" disabled={isUploadDisabled} onClick={handleUpload}>
+              Upload
             </button>
-            {!isSuspiciousZeroResult && warningsCount > 0 ? (
+          </div>
+        ) : null}
+
+        {status === 'error' && errorMessage ? (
+          <div className="inline-callout callout-error upload-result-card upload-state-panel">
+            <div className="upload-result-title">
+              <IconWarn size={16} />
+              <strong>Upload failed</strong>
+            </div>
+            <p className="upload-result-message">{errorMessage}</p>
+            {errorDetails ? <p className="inline-muted">Additional error context was captured for review.</p> : null}
+            <div className="result-actions">
               <button
                 type="button"
                 className="button button-secondary"
-                onClick={onReviewWarnings}
+                onClick={clearFile}
               >
-                Review warnings &rarr;
+                Upload another
               </button>
-            ) : null}
+            </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
+
+        {status === 'success' && response ? (
+          <div
+            className={`inline-callout upload-result-card ${
+              isSuspiciousZeroResult ? 'callout-warning' : 'callout-success'
+            } upload-state-panel`}
+          >
+            <div className="upload-result-title">
+              {isSuspiciousZeroResult ? <IconWarn size={16} /> : <IconCheck size={16} />}
+              <strong>{isSuspiciousZeroResult ? 'Upload completed with no rows' : 'Upload successful'}</strong>
+            </div>
+            <div className="upload-summary-metrics upload-summary-metrics-inline">
+              <span>
+                <strong>{createdCount ?? 0}</strong> created
+              </span>
+              <span>
+                <strong>{updatedCount ?? 'N/A'}</strong> updated
+              </span>
+              <span>
+                <strong>{summary?.warnings ?? 0}</strong> warnings
+              </span>
+            </div>
+            {isSuspiciousZeroResult ? (
+              <p className="upload-result-message">
+                No rows were created or updated. Check that the correct workbook was uploaded for this slot.
+              </p>
+            ) : null}
+            <div className="result-actions">
+              <button type="button" className="button button-ghost" onClick={clearFile}>
+                Upload another
+              </button>
+              {!isSuspiciousZeroResult && warningsCount > 0 ? (
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={onReviewWarnings}
+                >
+                  Review warnings &rarr;
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
     </article>
   )
 }

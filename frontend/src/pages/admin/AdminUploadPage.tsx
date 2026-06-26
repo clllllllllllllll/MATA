@@ -137,7 +137,7 @@ export const AdminUploadPage = () => {
   }
 
   return (
-    <div className="page">
+    <div className="page admin-upload-page">
       <PageHero
         title="Upload Files"
         subtitle="Master Admin - Source workbooks"

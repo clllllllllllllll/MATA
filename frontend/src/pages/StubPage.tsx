@@ -38,9 +38,17 @@ export const StubPage = ({ title, subtitle, variant = 'default' }: StubPageProps
             </div>
           </>
         ) : (
-          <p className="stub-lede">This route is a visual placeholder for the Phase 0 demo scope.</p>
+          <p className="stub-lede">
+            This route is a mobile-safe placeholder. The workflow remains deferred until its backend contract is ready.
+          </p>
         )}
-    </section>
+        <div className="stub-page-actions">
+          <span className="mono-chip">{isNonNhg ? 'Deferred workflow' : 'Responsive stub'}</span>
+          <span className="stub-action-note">
+            {isNonNhg ? 'No new Non-NHG backend actions are enabled here.' : 'No backend workflow is enabled here.'}
+          </span>
+        </div>
+      </section>
     </div>
   )
 }

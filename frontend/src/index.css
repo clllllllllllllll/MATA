@@ -1218,17 +1218,20 @@ small {
   gap: 12px;
   box-shadow: var(--shadow-1);
   min-height: 300px;
+  min-width: 0;
 }
 
 .upload-card-h {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
 }
 
 .upload-card-h .icon-wrap {
   width: 42px;
   height: 42px;
+  flex: 0 0 42px;
   border-radius: 10px;
   background: var(--purple-tint);
   color: var(--purple-deep);
@@ -1238,10 +1241,41 @@ small {
   font-weight: 700;
 }
 
+.upload-card-title-block,
+.upload-card-content {
+  min-width: 0;
+}
+
+.upload-card-title-block {
+  flex: 1 1 auto;
+}
+
+.upload-card-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.upload-card-title-row .status-badge {
+  flex: 0 0 auto;
+}
+
+.upload-card-content {
+  display: grid;
+  gap: 12px;
+  flex: 1 1 auto;
+  align-content: start;
+}
+
 .upload-card h2 {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .upload-card-header p {
@@ -1266,6 +1300,9 @@ small {
   flex: 0 0 auto;
   min-height: 130px;
   justify-content: center;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .file-dropzone:hover,
@@ -1295,21 +1332,32 @@ small {
   align-items: center;
   gap: 10px;
   width: 100%;
+  min-width: 0;
   text-align: left;
   justify-content: space-between;
+  flex-wrap: wrap;
 }
 
 .selected-file-chip span {
+  flex: 1 1 12rem;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.selected-file-chip .button {
+  flex: 0 0 auto;
+}
+
 .upload-card-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+  margin-top: auto;
 }
 
 .upload-validation-slot {
@@ -1341,6 +1389,9 @@ small {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
   font-size: 12.5px;
   color: var(--ink-2);
 }
@@ -1382,9 +1433,13 @@ small {
 }
 
 .upload-result-card {
+  display: grid;
+  gap: 8px;
+  align-content: start;
   border-radius: 12px;
   padding: 14px 14px 13px;
   min-height: 126px;
+  min-width: 0;
 }
 
 .upload-result-title {
@@ -1400,6 +1455,7 @@ small {
   margin: 0;
   font-size: 12.5px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .upload-summary-metrics {
@@ -1560,6 +1616,7 @@ small {
   justify-content: flex-start;
   gap: 10px;
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .raw-json {
@@ -2630,6 +2687,7 @@ tr:last-child td {
   width: min(100%, 760px);
   padding: 24px;
   overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .stub-card-heading {
@@ -2652,6 +2710,22 @@ tr:last-child td {
 
 .stub-lede {
   color: var(--ink-2) !important;
+}
+
+.stub-page-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.stub-action-note {
+  min-width: 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .non-nhg-placeholder-grid .mobile-record-card {
@@ -2872,6 +2946,114 @@ tr:last-child td {
   .page-stack {
     padding: 16px var(--page-gutter) 40px;
     gap: 16px;
+  }
+
+  .admin-home-page .grid-3 {
+    gap: 10px;
+  }
+
+  .admin-home-page .tile {
+    padding: 14px;
+    gap: 6px;
+  }
+
+  .admin-home-page .section-header {
+    padding: 14px 14px 0;
+    align-items: flex-start;
+  }
+
+  .admin-home-page .warning-list {
+    padding: 0 14px 14px;
+  }
+
+  .admin-home-page .warning-list li {
+    padding: 10px 0;
+    overflow-wrap: anywhere;
+  }
+
+  .admin-home-page .admin-home-table-wrap {
+    display: none;
+  }
+
+  .admin-home-mobile-upload-list {
+    display: grid;
+    gap: 8px;
+    padding: 10px 14px 14px;
+  }
+
+  .admin-home-upload-card {
+    gap: 6px;
+    padding: 10px 11px;
+    border-radius: 10px;
+    box-shadow: none;
+  }
+
+  .admin-upload-page .control-panel {
+    padding: 16px;
+  }
+
+  .admin-upload-page .upload-grid {
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+  }
+
+  .upload-card {
+    padding: 16px;
+    gap: 10px;
+    min-height: auto;
+  }
+
+  .upload-card-h {
+    align-items: flex-start;
+  }
+
+  .upload-card-h .icon-wrap {
+    width: 36px;
+    height: 36px;
+    flex-basis: 36px;
+  }
+
+  .file-dropzone,
+  .drop-zone {
+    min-height: 104px;
+    padding: 18px 12px;
+  }
+
+  .file-dropzone.is-selected {
+    min-height: 0;
+    padding: 12px;
+  }
+
+  .selected-file-chip {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: stretch;
+    text-align: center;
+  }
+
+  .selected-file-chip span {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .selected-file-chip .button,
+  .upload-card-actions .button,
+  .result-actions .button {
+    width: 100%;
+    flex: 1 1 100%;
+  }
+
+  .upload-state-panel,
+  .upload-result-card {
+    min-height: 0;
+  }
+
+  .upload-summary-metrics-inline {
+    gap: 6px;
+  }
+
+  .upload-summary-metrics-inline span {
+    flex: 1 1 100%;
   }
 
   .hero {
@@ -3169,6 +3351,12 @@ tr:last-child td {
 
   .stub-card {
     padding: 18px;
+    gap: 12px;
+  }
+
+  .stub-page-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .non-nhg-placeholder-grid {
@@ -3296,6 +3484,20 @@ tr:last-child td {
   border: 0;
   border-radius: 0;
   box-shadow: none;
+}
+
+.admin-home-mobile-upload-list {
+  display: none;
+}
+
+.admin-home-upload-card {
+  cursor: default;
+}
+
+.admin-home-mobile-state {
+  color: var(--ink-3);
+  font-size: 12.5px;
+  line-height: 1.4;
 }
 
 .empty-state {
