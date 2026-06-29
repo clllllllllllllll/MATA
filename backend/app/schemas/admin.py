@@ -788,6 +788,50 @@ class FormF1RecordResponse(BaseModel):
     updated_at: datetime
 
 
+class ProgrammeTeachingEventCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    programme_code: str = Field(min_length=1, max_length=20)
+    posting_code: str = Field(min_length=1, max_length=50)
+    teaching_name: str = Field(min_length=1, max_length=200)
+    event_date: date
+    start_time: time
+    cme_points_awarded: bool = False
+    smc_event_code: str | None = Field(default=None, max_length=50)
+
+    @field_validator("programme_code", "posting_code", "teaching_name", "smc_event_code")
+    @classmethod
+    def _trim_text_fields(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
+
+
+class ProgrammeTeachingEventUpdateRequest(ProgrammeTeachingEventCreateRequest):
+    pass
+
+
+class ProgrammeTeachingEventDuplicateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    programme_code: str = Field(min_length=1, max_length=20)
+    event_date: date
+    start_time: time | None = None
+    posting_code: str | None = Field(default=None, max_length=50)
+    teaching_name: str | None = Field(default=None, max_length=200)
+    cme_points_awarded: bool | None = None
+    smc_event_code: str | None = Field(default=None, max_length=50)
+
+    @field_validator("programme_code", "posting_code", "teaching_name", "smc_event_code")
+    @classmethod
+    def _trim_text_fields(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
+
+
 class AdminSecretaryEventListItem(BaseModel):
     id: UUID
     teaching_name: str

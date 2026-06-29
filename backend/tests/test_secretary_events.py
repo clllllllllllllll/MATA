@@ -56,6 +56,8 @@ class FakeSecretarySession:
         self.series_id = str(uuid4())
         self.attended_event_id = str(uuid4())
         self.other_event_id = str(uuid4())
+        self.pc_event_id = str(uuid4())
+        self.unrelated_pc_event_id = str(uuid4())
         self.deleted_event_ids: list[str] = []
         self.cache_mutation_count = 0
         self.audit_logs: list[dict] = []
@@ -228,6 +230,25 @@ class FakeSecretarySession:
                 session_type_id=self.other_session_type_id,
             ),
             {
+                "id": self.pc_event_id,
+                "posting_code": "TTSHCardio",
+                "created_for_programme_code": "CARD",
+                "teaching_name": "Journal Club",
+                "event_date": date(2026, 5, 15),
+                "start_time": time(10, 0),
+                "end_time": time(11, 0),
+                "duration_hours": Decimal("1.0"),
+                "session_type_id": self.session_type_id,
+                "session_type": "Department Teaching [1h]",
+                "series_id": None,
+                "cme_points_awarded": False,
+                "smc_event_code": None,
+                "is_adhoc": False,
+                "created_by_role": "programme_pc",
+                "created_at": self.now,
+                "updated_at": self.now,
+            },
+            {
                 "id": str(uuid4()),
                 "posting_code": "TTSHCardio",
                 "teaching_name": "Journal Club",
@@ -289,10 +310,33 @@ class FakeSecretarySession:
             "cme_points_awarded": False,
             "smc_event_code": None,
             "is_adhoc": False,
+            "created_for_programme_code": None,
             "created_by_role": "secretary",
             "created_at": self.now,
             "updated_at": self.now,
         }
+
+    def allow_cardio_card_programme_pool(self) -> None:
+        self.secretary_programme_pools.append(
+            {
+                "posting_code": "TTSHCardio",
+                "programme_code": "CARD",
+                "is_active": True,
+            }
+        )
+
+    def add_unrelated_pc_event_for_cardio(self) -> None:
+        row = self._event(
+            event_id=self.unrelated_pc_event_id,
+            posting_code="TTSHCardio",
+            teaching_name="Journal Club",
+            event_date=date(2026, 5, 22),
+            start_time=time(10, 0),
+            end_time=time(11, 0),
+        )
+        row["created_by_role"] = "programme_pc"
+        row["created_for_programme_code"] = "GERI"
+        self.events.append(row)
 
     async def commit(self) -> None:
         return None
@@ -378,11 +422,15 @@ class FakeSecretarySession:
             ]
             return _FakeResult(rows=rows)
 
-        if "FROM secretary_programme_pools" in sql:
+        if "FROM secretary_programme_pools" in sql and "FROM teaching_events" not in sql:
             rows = [
                 row
                 for row in self.secretary_programme_pools
                 if row["posting_code"] == payload["posting_code"] and row["is_active"]
+                and (
+                    "programme_code" not in payload
+                    or row["programme_code"] == payload["programme_code"]
+                )
             ]
             return _FakeResult(rows=rows)
 
@@ -492,6 +540,24 @@ class FakeSecretarySession:
             rows = [row for row in self.events if row["posting_code"] == payload["posting_code"]]
             if "created_by_role = 'secretary'" in sql:
                 rows = [row for row in rows if row["created_by_role"] == "secretary"]
+            if "created_by_role IN ('secretary', 'programme_pc')" in sql:
+                rows = [
+                    row
+                    for row in rows
+                    if row["created_by_role"] in {"secretary", "programme_pc"}
+                ]
+            if "created_for_programme_code IS NULL" in sql and "secretary_programme_pools" in sql:
+                active_programmes = {
+                    row["programme_code"]
+                    for row in self.secretary_programme_pools
+                    if row["posting_code"] == payload["posting_code"] and row["is_active"]
+                }
+                rows = [
+                    row
+                    for row in rows
+                    if row.get("created_for_programme_code") is None
+                    or row.get("created_for_programme_code") in active_programmes
+                ]
             if "is_adhoc = false" in sql:
                 rows = [row for row in rows if not row["is_adhoc"]]
             if "date_from" in payload:
@@ -887,6 +953,7 @@ def test_create_event_on_public_holiday_returns_422() -> None:
 
 def test_list_endpoint_only_returns_secretary_posting_events() -> None:
     fake_db = FakeSecretarySession()
+    fake_db.allow_cardio_card_programme_pool()
     client = _client(fake_db)
 
     response = client.get("/secretary/teaching-events", headers=_headers(fake_db))
@@ -895,9 +962,64 @@ def test_list_endpoint_only_returns_secretary_posting_events() -> None:
     payload = response.json()
     assert {row["posting_code"] for row in payload["events"]} == {"TTSHCardio"}
     assert fake_db.other_event_id not in {row["id"] for row in payload["events"]}
-    assert all(row["created_by_role"] == "secretary" for row in payload["events"])
+    assert {row["created_by_role"] for row in payload["events"]} == {
+        "secretary",
+        "programme_pc",
+    }
     assert all(not row["is_adhoc"] for row in payload["events"])
     assert payload["events"][0]["session_type"] == "Department Teaching [1h]"
+
+
+def test_secretary_schedule_includes_programme_pc_events_for_same_posting() -> None:
+    fake_db = FakeSecretarySession()
+    fake_db.allow_cardio_card_programme_pool()
+    client = _client(fake_db)
+
+    response = client.get("/secretary/teaching-events", headers=_headers(fake_db))
+
+    assert response.status_code == 200
+    ids = {row["id"] for row in response.json()["events"]}
+    assert fake_db.pc_event_id in ids
+    pc_event = next(row for row in response.json()["events"] if row["id"] == fake_db.pc_event_id)
+    assert pc_event["created_by_role"] == "programme_pc"
+
+
+def test_secretary_schedule_excludes_pc_events_outside_active_programme_pool() -> None:
+    fake_db = FakeSecretarySession()
+    fake_db.allow_cardio_card_programme_pool()
+    fake_db.add_unrelated_pc_event_for_cardio()
+    client = _client(fake_db)
+
+    response = client.get("/secretary/teaching-events", headers=_headers(fake_db))
+
+    assert response.status_code == 200
+    ids = {row["id"] for row in response.json()["events"]}
+    assert fake_db.pc_event_id in ids
+    assert fake_db.unrelated_pc_event_id not in ids
+
+
+def test_secretary_cannot_mutate_pc_event_outside_active_programme_pool() -> None:
+    fake_db = FakeSecretarySession()
+    fake_db.allow_cardio_card_programme_pool()
+    fake_db.add_unrelated_pc_event_for_cardio()
+    client = _client(fake_db)
+
+    update_response = client.put(
+        f"/secretary/teaching-events/{fake_db.unrelated_pc_event_id}",
+        headers=_headers(fake_db),
+        json={
+            "teaching_name": "Journal Club",
+            "event_date": "2026-05-26",
+            "start_time": "10:00",
+        },
+    )
+    delete_response = client.delete(
+        f"/secretary/teaching-events/{fake_db.unrelated_pc_event_id}",
+        headers=_headers(fake_db),
+    )
+
+    assert update_response.status_code == 404
+    assert delete_response.status_code == 404
 
 
 def test_secretary_cannot_access_another_posting_event() -> None:

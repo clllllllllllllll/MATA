@@ -4,6 +4,7 @@ import { buildSecretaryDemoHeaders } from './authHeaders'
 export interface SecretaryTeachingEvent {
   id: string
   postingCode: string
+  createdForProgrammeCode?: string
   teachingName: string
   eventDate: string
   startTime: string
@@ -47,6 +48,7 @@ const toNumber = (value: unknown): number | undefined => {
 const toTeachingEvent = (value: Record<string, unknown>): SecretaryTeachingEvent => ({
   id: String(value.id ?? ''),
   postingCode: String(value.posting_code ?? ''),
+  createdForProgrammeCode: value.created_for_programme_code ? String(value.created_for_programme_code) : undefined,
   teachingName: String(value.teaching_name ?? ''),
   eventDate: String(value.event_date ?? ''),
   startTime: String(value.start_time ?? ''),

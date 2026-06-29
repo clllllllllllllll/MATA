@@ -33,6 +33,7 @@ def _event_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"],
         "posting_code": row["posting_code"],
+        "created_for_programme_code": row.get("created_for_programme_code"),
         "teaching_name": row["teaching_name"],
         "event_date": row["event_date"],
         "start_time": row["start_time"],
@@ -91,6 +92,34 @@ async def _resolve_secretary_programme_pool(
         {"posting_code": posting_code},
     )
     return [str(row["programme_code"]) for row in result.mappings().all()]
+
+
+async def _programme_owned_event_in_secretary_scope(
+    db: AsyncSession,
+    *,
+    posting_code: str,
+    created_for_programme_code: str | None,
+) -> bool:
+    if created_for_programme_code is None:
+        return True
+
+    result = await db.execute(
+        text(
+            """
+            SELECT programme_code
+            FROM secretary_programme_pools
+            WHERE posting_code = :posting_code
+              AND programme_code = :programme_code
+              AND is_active = true
+            LIMIT 1
+            """
+        ),
+        {
+            "posting_code": posting_code,
+            "programme_code": created_for_programme_code,
+        },
+    )
+    return result.mappings().one_or_none() is not None
 
 
 async def _catalogue_rows_for_secretary_posting(
@@ -265,7 +294,19 @@ async def list_teaching_events(
     params: dict[str, Any] = {"posting_code": posting_code}
     where = [
         "posting_code = :posting_code",
-        "created_by_role = 'secretary'",
+        "(created_by_role IN ('secretary', 'programme_pc') OR created_by_role IS NULL)",
+        """
+        (
+            te.created_for_programme_code IS NULL
+            OR EXISTS (
+                SELECT 1
+                FROM secretary_programme_pools spp
+                WHERE spp.posting_code = :posting_code
+                  AND spp.programme_code = te.created_for_programme_code
+                  AND spp.is_active = true
+            )
+        )
+        """,
         "is_adhoc = false",
     ]
     if date_from is not None:
@@ -284,6 +325,7 @@ async def list_teaching_events(
             SELECT
                 te.id,
                 te.posting_code,
+                te.created_for_programme_code,
                 te.teaching_name,
                 te.event_date,
                 te.start_time,
@@ -300,6 +342,11 @@ async def list_teaching_events(
                     SELECT 1
                     FROM attendance_records ar
                     WHERE ar.teaching_event_id = te.id
+                    LIMIT 1
+                ) OR EXISTS (
+                    SELECT 1
+                    FROM external_attendance_records ear
+                    WHERE ear.teaching_event_id = te.id
                     LIMIT 1
                 ) AS has_attendance,
                 te.created_at,
@@ -367,6 +414,7 @@ async def _insert_event(
             RETURNING
                 id,
                 posting_code,
+                created_for_programme_code,
                 teaching_name,
                 event_date,
                 start_time,
@@ -437,6 +485,7 @@ async def _get_event_for_posting(
             SELECT
                 id,
                 posting_code,
+                created_for_programme_code,
                 teaching_name,
                 event_date,
                 start_time,
@@ -464,7 +513,18 @@ async def _get_event_for_posting(
             detail="Teaching event not found",
             error_code=ErrorCode.NOT_FOUND.value,
         )
-    return dict(row)
+    event = dict(row)
+    if not await _programme_owned_event_in_secretary_scope(
+        db,
+        posting_code=posting_code,
+        created_for_programme_code=event.get("created_for_programme_code"),
+    ):
+        raise ApiError(
+            status_code=404,
+            detail="Teaching event not found",
+            error_code=ErrorCode.NOT_FOUND.value,
+        )
+    return event
 
 
 async def duplicate_teaching_event(
@@ -515,10 +575,10 @@ async def update_teaching_event(
         event_id=event_id,
         posting_code=posting_code,
     )
-    if source.get("created_by_role") != "secretary" or source.get("is_adhoc"):
+    if source.get("created_by_role") not in {"secretary", "programme_pc", None} or source.get("is_adhoc"):
         raise ApiError(
             status_code=409,
-            detail="Teaching event cannot be edited because it is not a secretary-managed teaching event",
+            detail="Teaching event cannot be edited because it is not a scheduled teaching event",
             error_code=ErrorCode.CONFLICT.value,
         )
     if await _has_attendance(db, event_ids=[str(event_id)]):
@@ -552,11 +612,12 @@ async def update_teaching_event(
                 updated_at = now()
             WHERE id = :event_id
               AND posting_code = :posting_code
-              AND created_by_role = 'secretary'
+              AND (created_by_role IN ('secretary', 'programme_pc') OR created_by_role IS NULL)
               AND is_adhoc = false
             RETURNING
                 id,
                 posting_code,
+                created_for_programme_code,
                 teaching_name,
                 event_date,
                 start_time,
@@ -608,9 +669,18 @@ async def _has_attendance(
         text(
             """
             SELECT 1
-            FROM attendance_records
-            WHERE teaching_event_id = ANY(:event_ids)
-            LIMIT 1
+            WHERE EXISTS (
+                SELECT 1
+                FROM attendance_records ar
+                WHERE ar.teaching_event_id = ANY(:event_ids)
+                  AND ar.status = 'submitted'
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM external_attendance_records ear
+                WHERE ear.teaching_event_id = ANY(:event_ids)
+                  AND ear.status = 'submitted'
+            )
             """
         ),
         {"event_ids": event_ids},
@@ -624,7 +694,13 @@ async def delete_teaching_event(
     posting_code: str,
     event_id: UUID,
 ) -> dict[str, int]:
-    await _get_event_for_posting(db, event_id=event_id, posting_code=posting_code)
+    source = await _get_event_for_posting(db, event_id=event_id, posting_code=posting_code)
+    if source.get("created_by_role") not in {"secretary", "programme_pc", None} or source.get("is_adhoc"):
+        raise ApiError(
+            status_code=409,
+            detail="Teaching event cannot be deleted because it is not a scheduled teaching event",
+            error_code=ErrorCode.CONFLICT.value,
+        )
     event_ids = [str(event_id)]
     if await _has_attendance(db, event_ids=event_ids):
         raise ApiError(
@@ -962,6 +1038,7 @@ async def _series_events_for_scope(
             SELECT
                 id,
                 posting_code,
+                created_for_programme_code,
                 teaching_name,
                 event_date,
                 start_time,

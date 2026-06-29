@@ -1133,18 +1133,18 @@ List FormF1 active/inactive records.
 
 ---
 
-## Planned `4B` Programme PC Teaching Event CRUD endpoints - not implemented
+## `4B` Programme PC Teaching Event CRUD endpoints
 
-Programme PCs must be able to manage scheduled teaching events for their own programmes before Phase 6 compliance. These are planned endpoint contracts only; current code/migrations do not yet include the required `teaching_events.created_for_programme_code` field.
+Programme PCs manage scheduled teaching events for their own programmes before Phase 6 compliance. PC-created rows use `teaching_events.created_for_programme_code` for explicit programme ownership; secretary-created rows normally leave that field null and remain posting-owned/programme-neutral.
 
 ### GET `/admin/programme-teaching-events`
 
-List PC-created programme-owned scheduled teaching events.
+List scheduled teaching events visible to the Programme PC's programme scope.
 
 - **Auth:** admin/PC only
-- **Scope:** `programme_code IN programme_scope`. Null or empty `programme_scope` means no access. Master admin all-programme access must be explicit and must never be inferred from null scope.
-- **Query params:** `programme_code` (required unless explicit master admin), `date_from`, `date_to`, `teaching_name`, `posting_code`, `series_id` optional.
-- **Visibility contract:** Return events where `teaching_events.created_for_programme_code = programme_code`.
+- **Scope:** `programme_code IN programme_scope`. Null or empty `programme_scope` means no access. Master admin access is rejected on these PC CRUD endpoints.
+- **Query params:** `programme_code`, `date_from`, `date_to`, `posting_code` optional.
+- **Visibility contract:** Return PC-created rows where `created_for_programme_code` is in scope, plus secretary-created/null-owner scheduled rows that match the selected programme via `secretary_programme_pools` or `teaching_name_catalogue`.
 
 ### GET `/admin/programme-teaching-name-options`
 
@@ -1152,8 +1152,8 @@ Return teaching-name options for PC event creation.
 
 - **Auth:** admin/PC only
 - **Scope:** `programme_code IN programme_scope`.
-- **Query params:** `programme_code` required, `posting_code`, `r_year`, `reporting_period_id` optional where needed for filtering.
-- **Source:** TTF Column K via `teaching_name_catalogue` for the selected programme.
+- **Query params:** `programme_code` required.
+- **Source:** TTF Column K via `teaching_name_catalogue` for the selected programme, plus active `global_session_types`.
 
 ### POST `/admin/programme-teaching-events`
 
@@ -1170,10 +1170,11 @@ Create a programme-owned scheduled teaching event.
   "teaching_name": "Journal Club",
   "event_date": "2026-04-15",
   "start_time": "10:00",
-  "recurrence": null
+  "cme_points_awarded": false,
+  "smc_event_code": null
 }
 ```
-- **Backend writes:** `teaching_events.created_for_programme_code = programme_code`, `created_by_role = 'admin'`, `is_adhoc = false`, and normal event fields. Audit actor is PC/admin, not secretary.
+- **Backend writes:** `teaching_events.created_for_programme_code = programme_code`, `created_by_role = 'programme_pc'`, `is_adhoc = false`, and normal event fields. `created_by_role` is role/source metadata only; actor names are not stored on the event.
 - **Resident visibility:** Residents can see the event only when their `programme_code` matches `created_for_programme_code` and the event also passes posting/date/catalogue visibility rules.
 
 ### PUT `/admin/programme-teaching-events/{id}`
@@ -1181,24 +1182,24 @@ Create a programme-owned scheduled teaching event.
 Edit a programme-owned scheduled teaching event.
 
 - **Auth:** admin/PC only
-- **Scope:** event `created_for_programme_code IN programme_scope`.
+- **Scope:** request `programme_code IN programme_scope`, and event must be programme-owned for that programme or a secretary-created/null-owner scheduled row visible to that programme.
 - **Validation:** Public holiday block and catalogue option validation apply to changed event date/name/posting fields.
-- **Recurrence:** Planned edit scopes should mirror secretary workflow where practical: this event only, this and all following, all in series.
+- **Constraint:** Returns `409` if any native `attendance_records` or `external_attendance_records` exist for the event. `created_by_role` is preserved.
 
 ### POST `/admin/programme-teaching-events/{id}/duplicate`
 
 Duplicate a programme-owned scheduled teaching event.
 
 - **Auth:** admin/PC only
-- **Scope:** source event `created_for_programme_code IN programme_scope`.
-- **Validation:** Public holiday block applies to the duplicate date. The duplicated event keeps explicit `created_for_programme_code`.
+- **Scope:** request `programme_code IN programme_scope`, and source event must be programme-owned for that programme or a secretary-created/null-owner scheduled row visible to that programme.
+- **Validation:** Public holiday block applies to the duplicate date. The duplicated event sets `created_for_programme_code = programme_code` and `created_by_role = 'programme_pc'`.
 
 ### DELETE `/admin/programme-teaching-events/{id}`
 
 Delete a programme-owned scheduled teaching event.
 
 - **Auth:** admin/PC only
-- **Scope:** event `created_for_programme_code IN programme_scope`.
+- **Scope:** request `programme_code IN programme_scope`, and event must be programme-owned for that programme or a secretary-created/null-owner scheduled row visible to that programme.
 - **Constraint:** Returns `409` if any native `attendance_records` or `external_attendance_records` exist for the event.
 
 ---
@@ -1376,7 +1377,7 @@ List teaching events available for submission.
   5. Filter to `event_date <= today` (no future events)
   6. Exclude events already submitted by this resident
   7. Filter by `teaching_name_catalogue` for the resident's `(posting_code, programme_code, r_year, reporting_period_id)` — only show events whose `teaching_name` exists in their catalogue
-  8. Apply planned programme ownership visibility: if `teaching_events.created_for_programme_code IS NULL`, treat the event as normal posting-owned/programme-neutral; if it is set, show only when it equals the resident's `programme_code`, and only after the posting/date/catalogue checks above pass.
+  8. Apply programme ownership visibility: if `teaching_events.created_for_programme_code IS NULL`, treat the event as normal posting-owned/programme-neutral; if it is set, show only when it equals the resident's `programme_code`, and only after the posting/date/catalogue checks above pass.
 - **Query params:** `date_from`, `date_to`
 
 ### POST `/resident/attendance`
@@ -1389,7 +1390,7 @@ Submit attendance for one or more events.
   1. Validates event exists and is at resident's current or native posting
   2. Validates `event_date` falls within a `resident_postings` row with `status IN ('active', 'loa_working')` → `422` if outside tenure
   3. Validates `teaching_name` exists in `teaching_name_catalogue` for resident's `(posting_code, programme_code, r_year, reporting_period_id)` → `422` if no match
-  4. Validates planned programme ownership: events with `created_for_programme_code` set must match the resident's `programme_code`
+  4. Validates programme ownership: events with `created_for_programme_code` set must match the resident's `programme_code`
   5. Validates no duplicate (`UNIQUE(resident_id, teaching_event_id)`)
   6. Creates `attendance_records` rows — **does NOT store `session_type_id`**
   7. Checks each submitted event against `weekend_exceptions` — if a weekend session has no matching rule, adds a `compliance_warning` to the response
@@ -1609,7 +1610,7 @@ The same route may support native and external residents through identity branch
 - For `role = external_resident`, derive current posting from `external_residents.current_nhg_posting_code`.
 - If the posting's `posting_codes.supports_secretary_events = true`, return eligible secretary-created events for that posting.
 - If `supports_secretary_events = false`, return no secretary-created event list but keep ad-hoc submission available in the frontend.
-- Planned programme-owned PC events (`created_for_programme_code IS NOT NULL`) are not shown to external residents unless a future explicit requirement defines external visibility for that host programme.
+- Programme-owned PC events (`created_for_programme_code IS NOT NULL`) are not shown to external residents unless a future explicit requirement defines external visibility for that host programme.
 - Filter `event_date <= today`.
 - Exclude events already submitted by that external resident in `external_attendance_records`.
 - Do not apply native NHG compliance catalogue/denominator logic to external residents.

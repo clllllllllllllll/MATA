@@ -188,12 +188,23 @@ class TeachingEvent(UUIDTimestampMixin, Base):
             "event_date",
             postgresql_where=text("is_adhoc = true"),
         ),
+        Index(
+            "idx_teaching_events_programme_date",
+            "created_for_programme_code",
+            "event_date",
+            postgresql_where=text("created_for_programme_code IS NOT NULL"),
+        ),
     )
 
     posting_code: Mapped[str] = mapped_column(
         String(50),
         ForeignKey("posting_codes.code"),
         nullable=False,
+    )
+    created_for_programme_code: Mapped[str | None] = mapped_column(
+        String(20),
+        ForeignKey("programmes.code"),
+        nullable=True,
     )
     teaching_name: Mapped[str] = mapped_column(String(200), nullable=False)
     event_date: Mapped[date] = mapped_column(Date, nullable=False)

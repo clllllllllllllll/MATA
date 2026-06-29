@@ -5,6 +5,7 @@ import { frontendConfig } from '../../config/frontendConfig'
 import { useAppState } from '../../context/useAppState'
 import type { ReportingPeriodOption } from '../../types/upload'
 import { ApiRequestError } from '../../api/http'
+import { teachingEventCreatedByDisplay } from '../../utils/teachingEventSource'
 import {
   createSecretaryTeachingEvent,
   deleteSecretaryTeachingEvent,
@@ -144,6 +145,7 @@ const buildEventCsv = (events: SecretaryTeachingEvent[]) => {
     'Duration',
     'CME Points',
     'SMC Event',
+    'Created By',
     'Created',
   ]
   const rows = events.map((event) => [
@@ -154,6 +156,7 @@ const buildEventCsv = (events: SecretaryTeachingEvent[]) => {
     event.durationHours ?? '',
     event.cmePointsAwarded ? 'Yes' : 'No',
     event.smcEventCode ?? '',
+    teachingEventCreatedByDisplay(event.createdByRole),
     event.createdAt ?? '',
   ])
   const csvRows = [headers, ...rows]
@@ -822,17 +825,18 @@ export const SecretaryTeachingSchedulePage = () => {
                   <th>Duration</th>
                   <th>CME Pts</th>
                   <th>SMC Event</th>
+                  <th>Created By</th>
                   <th>Created</th>
                 </tr>
               </thead>
               <tbody>
                 {eventsLoading ? (
                   <tr>
-                    <td colSpan={9}>Loading teaching events...</td>
+                    <td colSpan={10}>Loading teaching events...</td>
                   </tr>
                 ) : visibleEvents.length === 0 ? (
                   <tr>
-                    <td colSpan={9}>No teaching events yet.</td>
+                    <td colSpan={10}>No teaching events yet.</td>
                   </tr>
                 ) : (
                   visibleEvents.map((event) => {
@@ -870,6 +874,7 @@ export const SecretaryTeachingSchedulePage = () => {
                           </span>
                         </td>
                         <td className="mono">{event.smcEventCode ?? '-'}</td>
+                        <td>{teachingEventCreatedByDisplay(event.createdByRole)}</td>
                         <td>{formatDate(event.createdAt)}</td>
                       </tr>
                     )
@@ -922,6 +927,8 @@ export const SecretaryTeachingSchedulePage = () => {
                     ) : null}
                     <span className="secretary-event-card-line">
                       {postingLabel} · {sourceLabel}
+                      {' | '}
+                      {teachingEventCreatedByDisplay(event.createdByRole)}
                       {event.hasAttendance ? ' · Attendance submitted' : ''}
                       {event.smcEventCode ? ` · SMC ${event.smcEventCode}` : ''}
                     </span>

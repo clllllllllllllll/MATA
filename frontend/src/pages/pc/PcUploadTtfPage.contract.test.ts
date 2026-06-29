@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import {
   buildPcTtfWarningsPath,
   resolvePcProgrammeScope,
@@ -7,6 +9,12 @@ import type { Programme } from '../../api/programmes'
 const assertEqual = <T,>(actual: T, expected: T, label: string) => {
   if (actual !== expected) {
     throw new Error(`${label}: expected ${String(expected)}, received ${String(actual)}`)
+  }
+}
+
+const assert = (condition: boolean, label: string) => {
+  if (!condition) {
+    throw new Error(label)
   }
 }
 
@@ -105,4 +113,26 @@ assertEqual(
   warningsPathWithoutPeriod,
   '/pc/warnings?mode=active&upload_type=ttf&programme_code=DR',
   'warnings link omits blank reporting period',
+)
+
+const uploadPageSource = readFileSync(
+  fileURLToPath(new URL('./PcUploadTtfPage.tsx', import.meta.url)),
+  'utf8',
+)
+assert(
+  uploadPageSource.includes('pc-programme-readonly-field'),
+  'single-scope PC upload programme display uses read-only field styling',
+)
+assert(uploadPageSource.includes('readOnly'), 'single-scope PC upload programme display is read-only')
+assert(
+  !uploadPageSource.includes('pc-programme-lock-chip'),
+  'single-scope PC upload programme display does not render the old blue chip class',
+)
+assert(
+  !uploadPageSource.includes('Assigned programme:'),
+  'single-scope PC upload programme display does not use assigned-programme chip wording',
+)
+assert(
+  uploadPageSource.includes('programmeCode: selectedPcProgrammeCode'),
+  'PC upload request keeps sending the raw selected programme code',
 )

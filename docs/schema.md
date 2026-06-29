@@ -309,13 +309,13 @@ First-class keyword→session_type mapping table. Seeded from TTF column K at up
 
 ## Table: `teaching_events`
 
-Teaching sessions created by secretaries, planned Programme PC CRUD, or ad-hoc submissions by residents.
+Teaching sessions created by secretaries, Programme PC CRUD, or ad-hoc submissions by residents.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
 | id | UUID | PK | |
-| posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Posting/site context for the event. Secretary-created events are posting-owned; planned PC-created events also carry explicit programme ownership in `created_for_programme_code`. |
-| created_for_programme_code | VARCHAR(20) | FK → programmes.code, nullable | **Planned, not yet in current models/migrations.** Explicit programme ownership for PC-created scheduled events. Required for PC-created programme-owned events. Null for secretary-created posting-owned/programme-neutral events unless explicitly set by a future workflow. |
+| posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Posting/site context for the event. Secretary-created events are posting-owned; PC-created events also carry explicit programme ownership in `created_for_programme_code`. |
+| created_for_programme_code | VARCHAR(20) | FK → programmes.code, nullable | Explicit programme ownership for PC-created scheduled events. Required for PC-created programme-owned events. Null for secretary-created posting-owned/programme-neutral events unless explicitly set by a future workflow. |
 | teaching_name | VARCHAR(200) | NOT NULL | Stored teaching keyword/name. Secretary and PC scheduled events use approved dropdown options; planned ad-hoc rework requires resident/external resident selections to come from catalogue-backed options, not arbitrary free text for compliance mapping. |
 | details_of_session | TEXT | nullable | **Planned, not yet in current models/migrations.** Display/audit-only free text for ad-hoc session context. No operational use and no compliance use. Preferred storage is on `teaching_events` because ad-hoc submission creates an event row for both native and external residents. |
 | event_date | DATE | NOT NULL | |
@@ -327,13 +327,13 @@ Teaching sessions created by secretaries, planned Programme PC CRUD, or ad-hoc s
 | cme_points_awarded | BOOLEAN | DEFAULT false | |
 | smc_event_code | VARCHAR(50) | | |
 | is_adhoc | BOOLEAN | DEFAULT false | True for resident-submitted ad-hoc events, false for secretary-created events |
-| created_by_role | VARCHAR(20) | | `secretary`, `admin`, `resident`, or `external_resident` depending on creator/audit actor |
+| created_by_role | VARCHAR(20) | | `secretary`, `programme_pc`, `resident`, or `external_resident` depending on creator/source role. This is role/source metadata only, not an actor-name field. |
 
-**Programme ownership visibility rule (planned):**
+**Programme ownership visibility rule:**
 - `created_for_programme_code IS NULL` → treat the event as normal posting-owned/programme-neutral. Resident visibility still requires posting/date/catalogue checks.
 - `created_for_programme_code IS NOT NULL` → show only to residents whose `programme_code` equals that value, and only if the event also passes posting/date/catalogue visibility checks.
 
-**PC-created event contract (planned):** Programme PC CRUD creates scheduled teaching events, not ad-hoc submissions. PC-created rows must set `created_for_programme_code`, use options from that programme's TTF Column K / `teaching_name_catalogue`, be public-holiday blocked, and be delete-blocked when attendance exists.
+**PC-created event contract:** Programme PC CRUD creates scheduled teaching events, not ad-hoc submissions. PC-created rows must set `created_for_programme_code`, use options from that programme's TTF Column K / `teaching_name_catalogue`, be public-holiday blocked, and be edit/delete-blocked when native or external attendance exists.
 
 **Ad-hoc detail contract (planned):** `details_of_session` is optional context text only. It must not participate in event visibility, session type resolution, denominator/numerator calculation, surplus, snapshots, or clawback.
 
@@ -354,7 +354,7 @@ Metadata for recurring teaching event series.
 | end_date | DATE | | |
 | end_after_count | INTEGER | | |
 
-TODO: For planned `4B` Programme PC Teaching Event CRUD, decide whether `event_series` also needs explicit programme ownership (for example `created_for_programme_code`) or whether recurrence scope is derived only from child `teaching_events`. The implementation must prevent cross-programme recurrence edits/deletes.
+TODO: If Programme PC recurrence support is added later, decide whether `event_series` also needs explicit programme ownership (for example `created_for_programme_code`) or whether recurrence scope is derived only from child `teaching_events`. The implementation must prevent cross-programme recurrence edits/deletes.
 
 ---
 
@@ -1040,6 +1040,10 @@ ON teaching_events(teaching_name, event_date);
 CREATE INDEX idx_teaching_events_adhoc
 ON teaching_events(is_adhoc, event_date)
 WHERE is_adhoc = true;
+
+CREATE INDEX idx_teaching_events_programme_date
+ON teaching_events(created_for_programme_code, event_date)
+WHERE created_for_programme_code IS NOT NULL;
 ```
 
 #### `event_series`

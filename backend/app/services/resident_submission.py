@@ -24,6 +24,7 @@ def _event_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"],
         "posting_code": row["posting_code"],
+        "created_for_programme_code": row.get("created_for_programme_code"),
         "teaching_name": row["teaching_name"],
         "event_date": row["event_date"],
         "start_time": row["start_time"],
@@ -356,6 +357,7 @@ async def _get_event(db: AsyncSession, event_id: UUID) -> dict[str, Any]:
             SELECT
                 id,
                 posting_code,
+                created_for_programme_code,
                 teaching_name,
                 event_date,
                 start_time,
@@ -436,6 +438,7 @@ async def _events_for_postings(
     db: AsyncSession,
     *,
     resident_id: UUID,
+    programme_code: str,
     posting_codes: set[str],
     today: date,
     period_start: date,
@@ -446,6 +449,7 @@ async def _events_for_postings(
     params: dict[str, Any] = {
         "resident_id": str(resident_id),
         "posting_codes": sorted(posting_codes),
+        "programme_code": programme_code,
         "today": today,
         "period_start": period_start,
         "period_end": period_end,
@@ -455,7 +459,8 @@ async def _events_for_postings(
         "event_date <= :today",
         "event_date >= :period_start",
         "event_date <= :period_end",
-        "created_by_role = 'secretary'",
+        "(created_by_role IN ('secretary', 'programme_pc') OR created_by_role IS NULL)",
+        "(created_for_programme_code IS NULL OR created_for_programme_code = :programme_code)",
         """NOT EXISTS (
               SELECT 1
               FROM attendance_records ar
@@ -477,6 +482,7 @@ async def _events_for_postings(
             SELECT
                 id,
                 posting_code,
+                created_for_programme_code,
                 teaching_name,
                 event_date,
                 start_time,
@@ -518,6 +524,7 @@ async def _events_for_external_posting(
         "posting_code = :posting_code",
         "event_date <= :today",
         "created_by_role = 'secretary'",
+        "created_for_programme_code IS NULL",
         """NOT EXISTS (
               SELECT 1
               FROM external_attendance_records ear
@@ -539,6 +546,7 @@ async def _events_for_external_posting(
             SELECT
                 id,
                 posting_code,
+                created_for_programme_code,
                 teaching_name,
                 event_date,
                 start_time,
@@ -659,6 +667,7 @@ async def list_available_events(
     raw_events = await _events_for_postings(
         db,
         resident_id=resident_id,
+        programme_code=resident["programme_code"],
         posting_codes=posting_codes,
         today=today,
         period_start=period["start_date"],
@@ -669,6 +678,9 @@ async def list_available_events(
 
     events: list[dict[str, Any]] = []
     for event in raw_events:
+        owner = event.get("created_for_programme_code")
+        if owner is not None and owner != resident["programme_code"]:
+            continue
         context = _matching_context_for_event(
             contexts,
             posting_code=event["posting_code"],
@@ -973,6 +985,12 @@ async def submit_attendance(
                     detail="Teaching event is outside the resident posting scope",
                     error_code=ErrorCode.VALIDATION_FAILED.value,
                 )
+            if event.get("created_for_programme_code") is not None or event.get("created_by_role") not in {"secretary", None}:
+                raise ApiError(
+                    status_code=422,
+                    detail="Teaching event is outside the external resident scope",
+                    error_code=ErrorCode.VALIDATION_FAILED.value,
+                )
             supports_secretary_events = await _posting_supports_secretary_events(
                 db,
                 posting_code,
@@ -1054,10 +1072,17 @@ async def submit_attendance(
                 detail="Future teaching events cannot be submitted",
                 error_code=ErrorCode.VALIDATION_FAILED.value,
             )
-        if event.get("created_by_role") != "secretary":
+        if event.get("created_by_role") not in {"secretary", "programme_pc", None}:
             raise ApiError(
                 status_code=422,
-                detail="Only secretary-created teaching events can be submitted from this endpoint",
+                detail="Only scheduled teaching events can be submitted from this endpoint",
+                error_code=ErrorCode.VALIDATION_FAILED.value,
+            )
+        owner = event.get("created_for_programme_code")
+        if owner is not None and owner != resident["programme_code"]:
+            raise ApiError(
+                status_code=422,
+                detail="Teaching event is outside the resident programme scope",
                 error_code=ErrorCode.VALIDATION_FAILED.value,
             )
         contexts = await _posting_contexts(

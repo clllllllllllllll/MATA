@@ -47,15 +47,17 @@ Every important decision made during the project, with reasoning and consequence
 ---
 
 #### Decision: Programme PC teaching event CRUD before compliance
-- **Status:** ✅ Confirmed requirement, planned implementation
-- **Decision:** Add pre-compliance roadmap item `4B - Programme PC Teaching Event CRUD`. Programme PCs must be able to create, list, edit, delete, duplicate, and manage recurrence for scheduled teaching events for their own programmes where practical, similar to department secretary event CRUD.
-- **Ownership model:** PC-created teaching events are scheduled teaching events, not ad-hoc submissions. They must carry explicit programme ownership/scope, with planned nullable field `teaching_events.created_for_programme_code`: required for PC-created programme-owned events and null for normal secretary-created posting-owned/programme-neutral events unless an explicit future use case sets it.
-- **Scope and auth:** Backend authorization is mandatory: `role = admin`, requested `programme_code IN programme_scope`, and null/empty `programme_scope` means no programme access. Master admin all-programme access must be explicit and is never inferred from null programme scope.
+- **Status:** Implemented in Phase 4B
+- **Implementation phase:** Implemented in Phase 4B.
+- **Decision:** Add pre-compliance roadmap item `4B - Programme PC Teaching Event CRUD`. Programme PCs must be able to create, list, edit, delete, duplicate, and manage scheduled teaching events for their own programmes where practical, similar to department secretary event CRUD.
+- **Ownership model:** PC-created teaching events are scheduled teaching events, not ad-hoc submissions. They carry explicit programme ownership/scope via nullable field `teaching_events.created_for_programme_code`: required for PC-created programme-owned events and null for normal secretary-created posting-owned/programme-neutral events unless an explicit future use case sets it.
+- **Scope and auth:** Backend authorization is mandatory: `role = admin`, requested `programme_code IN programme_scope`, and null/empty `programme_scope` means no programme access. Master admin is rejected from Programme PC teaching event CRUD.
 - **Visibility:** Secretary-created events remain posting-owned and programme-neutral. PC-created events must not be visible to other programmes unless explicitly intended. Resident event discovery must treat `created_for_programme_code IS NULL` as normal posting-owned visibility, and a set value as programme-owned visibility requiring resident `programme_code` match plus normal posting/date/catalogue checks.
 - **Options source:** PC-created teaching options come from that programme's TTF Column K via `teaching_name_catalogue`.
-- **Validation:** Public holiday hard-block applies. Delete is blocked if any native or external attendance exists. Audit actor is PC/admin, not secretary.
-- **Implementation status:** Planned documentation contract only. Current models/migrations do not contain `created_for_programme_code`.
-- **Reference file and section:** `schema.md` § `teaching_events`; `api.md` § Planned `4B` Programme PC Teaching Event CRUD endpoints; `business-logic.md` § PC-created teaching event visibility
+- **Validation:** Public holiday hard-block applies. Edit/delete is blocked if any native or external attendance exists. `created_by_role` is source-role metadata only and uses `programme_pc` for PC-created rows.
+- **Implementation status:** Implemented with `teaching_events.created_for_programme_code`, Programme PC CRUD endpoints, secretary shared schedule visibility, and resident programme-owned visibility filtering.
+- **Implemented reference:** `schema.md` table `teaching_events`; `api.md` section `4B` Programme PC Teaching Event CRUD endpoints; `business-logic.md` PC-created teaching event visibility.
+- **Reference file and section:** `schema.md` § `teaching_events`; `api.md` § `4B` Programme PC Teaching Event CRUD endpoints; `business-logic.md` § PC-created teaching event visibility
 - **Do not change without PM/stakeholder approval:** Yes
 ---
 
@@ -1125,7 +1127,7 @@ These are implementation errors that would fail silently — no exception thrown
 | 31 | TTSH pilot visibility: non-TTSH postings use ad-hoc-only path when secretary list is unavailable | Preserves pilot operations without blocking attendance capture | PM / Programme Director | Future resident event visibility logic |
 | 32 | Bulk TTF upload deferred; one-programme-at-a-time remains current workflow | Avoids premature high-risk parser/mapping complexity | PM | Existing `POST /admin/upload/ttf` scope flow |
 | 33 | Latest uploaded TTF export/email deferred to end-of-roadmap and staged | Prevents premature storage/email coupling before core stabilization | PM / IT | Future admin productivity module |
-| 34 | Programme PC teaching event CRUD is roadmap item `4B` before compliance; PC-created scheduled events are programme-owned | Lets PCs seed/manage programme teachings before compliance while preserving secretary programme-neutral event model | PM / Programme Director | Planned admin programme-teaching endpoints; planned `teaching_events.created_for_programme_code` |
+| 34 | Programme PC teaching event CRUD is roadmap item `4B` before compliance; PC-created scheduled events are programme-owned | Lets PCs seed/manage programme teachings before compliance while preserving secretary programme-neutral event model | PM / Programme Director | Implemented admin programme-teaching endpoints; implemented `teaching_events.created_for_programme_code` |
 | 35 | External ad-hoc dropdown derives host programme from current NHG posting where possible, e.g. `KTPHDiagRd -> DR` | Removes unnecessary manual host-programme selection while keeping ambiguous/no-match cases explicit | PM / Programme Director | External ad-hoc option endpoint; BL-12 |
 
 > **⚠️ Most likely LLM mistake:** Changing the 70% threshold to 75% or 65% because it "seems more reasonable." The threshold is a regulatory requirement. The silent consequence is every compliance calculation being wrong for every resident.

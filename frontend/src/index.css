@@ -1516,18 +1516,154 @@ small {
   min-width: 0;
 }
 
-.pc-programme-lock-chip {
-  display: inline-flex;
+.pc-teaching-events-page {
+  gap: 16px;
+}
+
+.pc-teaching-events-controls,
+.pc-teaching-events-table-card {
+  min-width: 0;
+}
+
+.pc-teaching-events-control-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 14px;
+  align-items: end;
+}
+
+.pc-teaching-events-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.pc-teaching-events-callout {
+  margin-top: 12px;
+}
+
+.pc-teaching-events-heading {
+  padding-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.pc-teaching-events-heading h2 {
+  margin: 0;
+}
+
+.pc-teaching-events-table-card {
+  overflow: hidden;
+}
+
+.pc-teaching-events-table-wrap {
+  border-radius: 0;
+  border-inline: none;
+  border-bottom: none;
+  box-shadow: none;
+}
+
+.pc-teaching-events-table-wrap .table {
+  min-width: 1260px;
+}
+
+.pc-teaching-events-table th,
+.pc-teaching-events-table td {
+  padding-inline: 10px;
+}
+
+.pc-teaching-events-table th {
+  padding-block: 10px;
+}
+
+.pc-teaching-events-table td {
+  padding-block: 10px;
+}
+
+.pc-teaching-events-table .col-check,
+.pc-teaching-events-table td:first-child {
+  width: 34px;
+  min-width: 34px;
+  padding-right: 6px;
+}
+
+.pc-teaching-events-nowrap {
+  white-space: nowrap;
+}
+
+.pc-teaching-events-session-cell {
+  width: 300px;
+  min-width: 300px;
+  max-width: none;
+}
+
+.pc-teaching-events-session-cell .secretary-type-pill {
+  max-width: none;
+}
+
+.pc-teaching-events-table .secretary-teaching-name {
+  width: 170px;
+  min-width: 180px;
+}
+
+.pc-teaching-events-posting-cell {
+  width: 92px;
+}
+
+.pc-teaching-events-date-cell,
+.pc-teaching-events-created-cell {
+  width: 106px;
+}
+
+.pc-teaching-events-time-cell {
+  width: 82px;
+}
+
+.pc-teaching-events-duration-cell {
+  width: 58px;
+}
+
+.pc-teaching-events-cme-cell {
+  width: 74px;
+}
+
+.pc-teaching-events-smc-cell {
+  width: 76px;
+}
+
+.pc-teaching-events-created-by-cell {
+  width: 145px;
+}
+
+.pc-teaching-events-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.pc-teaching-events-form-grid label {
+  min-width: 0;
+}
+
+.pc-teaching-events-checkbox {
+  display: flex;
+  flex-direction: row;
   align-items: center;
-  width: fit-content;
-  max-width: 100%;
-  min-height: 40px;
-  gap: 6px;
-  padding: 9px 12px;
-  border: 1px solid var(--line-2);
-  border-radius: var(--radius-input);
-  background: var(--purple-tint-2);
-  color: var(--purple-deep);
+  gap: 10px;
+  min-height: 42px;
+}
+
+.pc-teaching-events-checkbox input {
+  width: auto;
+}
+
+.pc-programme-readonly-field {
+  cursor: default;
+}
+
+input.pc-programme-readonly-field {
+  background: #fff;
+  color: var(--ink);
 }
 
 .callout-info {
@@ -3256,7 +3392,8 @@ tr:last-child td {
     display: none;
   }
 
-  .secretary-table-wrap {
+  .secretary-table-wrap,
+  .pc-teaching-events-table-wrap {
     display: none;
   }
 
@@ -4875,6 +5012,24 @@ tr:last-child td {
 }
 
 @media (max-width: 720px) {
+  .pc-teaching-events-control-grid,
+  .pc-teaching-events-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .pc-teaching-events-actions {
+    flex-wrap: nowrap;
+    gap: 12px;
+    justify-content: stretch;
+    width: 100%;
+  }
+
+  .pc-teaching-events-actions .button {
+    flex: 1 1 100%;
+    min-width: 0;
+    width: 100%;
+  }
+
   .multi-posting-empty-banner {
     padding: 18px;
   }

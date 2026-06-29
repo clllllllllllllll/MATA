@@ -55,6 +55,9 @@ from app.schemas import (
     PostingGroupMutationResponse,
     PostingGroupResponse,
     PostingCodeResponse,
+    ProgrammeTeachingEventCreateRequest,
+    ProgrammeTeachingEventDuplicateRequest,
+    ProgrammeTeachingEventUpdateRequest,
     ProgrammeUpdateRequest,
     ProgrammeMutationResponse,
     ProgrammeResponse,
@@ -98,6 +101,7 @@ from app.services import (
     cache_invalidation,
     data_revalidation_service,
     parsed_data,
+    programme_teaching_events,
 )
 from app.services.admin_logs_service import (
     get_admin_log as get_admin_log_read_model,
@@ -224,6 +228,31 @@ def _require_programme_in_scope(admin_context: AdminContext, programme_code: str
             detail="Forbidden - admin programme scope is empty",
             error_code=ErrorCode.FORBIDDEN.value,
         )
+    if programme_code not in admin_context.programme_scope:
+        raise ApiError(
+            status_code=403,
+            detail="Forbidden - programme not in admin scope",
+            error_code=ErrorCode.FORBIDDEN.value,
+        )
+
+
+def _require_programme_pc_context(admin_context: AdminContext) -> None:
+    if admin_context.is_master_admin:
+        raise ApiError(
+            status_code=403,
+            detail="Forbidden - programme PC access required",
+            error_code=ErrorCode.FORBIDDEN.value,
+        )
+    if not admin_context.programme_scope:
+        raise ApiError(
+            status_code=403,
+            detail="Forbidden - admin programme scope is empty",
+            error_code=ErrorCode.FORBIDDEN.value,
+        )
+
+
+def _require_programme_pc_scope(admin_context: AdminContext, programme_code: str) -> None:
+    _require_programme_pc_context(admin_context)
     if programme_code not in admin_context.programme_scope:
         raise ApiError(
             status_code=403,
@@ -2455,6 +2484,138 @@ async def delete_global_session_type(
             data_revalidation=data_revalidation,
         )
     )
+
+
+@router.get("/programme-teaching-events")
+async def list_programme_teaching_events(
+    programme_code: str | None = Query(default=None),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    posting_code: str | None = Query(default=None),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> dict[str, Any]:
+    _require_programme_pc_context(admin_context)
+    if programme_code is not None:
+        _require_programme_pc_scope(admin_context, programme_code)
+    if db is None:
+        return {"events": []}
+    events = await programme_teaching_events.list_teaching_events(
+        db,
+        programme_scope=admin_context.programme_scope,
+        programme_code=programme_code,
+        date_from=date_from,
+        date_to=date_to,
+        posting_code=posting_code,
+    )
+    return {"events": events}
+
+
+@router.post("/programme-teaching-events")
+async def create_programme_teaching_event(
+    request: ProgrammeTeachingEventCreateRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> dict[str, Any]:
+    _require_programme_pc_scope(admin_context, request.programme_code)
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    return await programme_teaching_events.create_teaching_event(
+        db,
+        **request.model_dump(mode="python"),
+    )
+
+
+@router.put("/programme-teaching-events/{event_id}")
+async def update_programme_teaching_event(
+    event_id: UUID,
+    request: ProgrammeTeachingEventUpdateRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> dict[str, Any]:
+    _require_programme_pc_scope(admin_context, request.programme_code)
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    return await programme_teaching_events.update_teaching_event(
+        db,
+        event_id=event_id,
+        **request.model_dump(mode="python"),
+    )
+
+
+@router.post("/programme-teaching-events/{event_id}/duplicate")
+async def duplicate_programme_teaching_event(
+    event_id: UUID,
+    request: ProgrammeTeachingEventDuplicateRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> dict[str, Any]:
+    _require_programme_pc_scope(admin_context, request.programme_code)
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    return await programme_teaching_events.duplicate_teaching_event(
+        db,
+        event_id=event_id,
+        **request.model_dump(mode="python"),
+    )
+
+
+@router.delete("/programme-teaching-events/{event_id}")
+async def delete_programme_teaching_event(
+    event_id: UUID,
+    programme_code: str | None = Query(default=None),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> dict[str, int]:
+    _require_programme_pc_context(admin_context)
+    if programme_code is None and len(admin_context.programme_scope) == 1:
+        programme_code = next(iter(admin_context.programme_scope))
+    if programme_code is None:
+        raise ApiError(
+            status_code=422,
+            detail="programme_code is required when admin has multiple programmes",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
+    _require_programme_pc_scope(admin_context, programme_code)
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    return await programme_teaching_events.delete_teaching_event(
+        db,
+        event_id=event_id,
+        programme_code=programme_code,
+    )
+
+
+@router.get("/programme-teaching-name-options")
+async def list_programme_teaching_name_options(
+    programme_code: str = Query(...),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> dict[str, Any]:
+    _require_programme_pc_scope(admin_context, programme_code)
+    if db is None:
+        return {"options": []}
+    options = await programme_teaching_events.teaching_name_options(
+        db,
+        programme_code=programme_code,
+    )
+    return {"options": options}
 
 
 @router.get("/secretary-events", response_model=AdminSecretaryEventListResponse)

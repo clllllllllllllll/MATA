@@ -139,9 +139,12 @@ export const PcUploadTtfPage = () => {
               <label>
                 Programme
                 {programmeScope.mode === 'locked' ? (
-                  <span className="pc-programme-lock-chip safe-wrap">
-                    Assigned programme: <strong>{programmeScope.selectedProgrammeLabel}</strong>
-                  </span>
+                  <input
+                    type="text"
+                    className="pc-programme-readonly-field"
+                    value={programmeScope.selectedProgrammeLabel}
+                    readOnly
+                  />
                 ) : null}
                 {programmeScope.mode === 'select' ? (
                   <select
@@ -160,13 +163,6 @@ export const PcUploadTtfPage = () => {
                     No programme scope is available for this Programme PC.
                   </span>
                 ) : null}
-                <small>
-                  {programmeScope.mode === 'select'
-                    ? 'Select one of your assigned programmes before uploading.'
-                    : programmeScope.mode === 'locked'
-                      ? 'A single assigned programme is locked for this upload.'
-                      : 'Programme scope is required before upload.'}
-                </small>
               </label>
 
               <label>
