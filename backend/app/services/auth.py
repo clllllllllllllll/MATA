@@ -17,6 +17,14 @@ def _auth_failure() -> ApiError:
     )
 
 
+def _stub_login_allowed(*, auth_mode: str, allow_demo_role_switcher: bool) -> bool:
+    if auth_mode == "supabase":
+        return False
+    if auth_mode == "demo" and not allow_demo_role_switcher:
+        return False
+    return True
+
+
 def _stub_access_token(*, role: str, subject_id: Any) -> str:
     return f"stub.{role}.{subject_id}"
 
@@ -73,7 +81,15 @@ async def login(
     email: str | None,
     password: str | None,
     mcr: str | None,
+    auth_mode: str = "stub",
+    allow_demo_role_switcher: bool = False,
 ) -> dict[str, Any]:
+    if not _stub_login_allowed(
+        auth_mode=auth_mode,
+        allow_demo_role_switcher=allow_demo_role_switcher,
+    ):
+        raise _auth_failure()
+
     if role in {"resident", "external_resident"}:
         normalised_mcr = _normalise_mcr(mcr)
         if not normalised_mcr:

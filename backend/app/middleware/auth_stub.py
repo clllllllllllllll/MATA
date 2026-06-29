@@ -5,9 +5,11 @@ from uuid import UUID
 
 from fastapi import Request
 from sqlalchemy import select
+from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
+from app.config import Settings, get_settings
 from app.database import AsyncSessionLocal
 from app.errors import ErrorCode, build_error_response
 from app.models import ExternalResident, Resident, User
@@ -31,6 +33,10 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         "/redoc",
     }
 
+    def __init__(self, app: Starlette, settings: Settings | None = None) -> None:
+        super().__init__(app)
+        self._settings = settings or get_settings()
+
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
         if (
@@ -41,24 +47,25 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         ):
             return await call_next(request)
 
+        if self._settings.auth_mode == "supabase":
+            return self._unauthorized_response()
+
+        if (
+            self._settings.auth_mode == "demo"
+            and not self._settings.allow_demo_role_switcher
+        ):
+            return self._unauthorized_response()
+
         role = (request.headers.get("X-User-Role") or "").strip().lower()
         raw_subject = (request.headers.get("X-User-Id") or "").strip()
 
         if not role or not raw_subject:
-            return build_error_response(
-                status_code=401,
-                detail="Unauthorized",
-                error_code=ErrorCode.UNAUTHORIZED.value,
-            )
+            return self._unauthorized_response()
 
         try:
             subject_id = UUID(raw_subject)
         except ValueError:
-            return build_error_response(
-                status_code=401,
-                detail="Unauthorized",
-                error_code=ErrorCode.UNAUTHORIZED.value,
-            )
+            return self._unauthorized_response()
 
         if role in {"admin", "secretary"}:
             identity_or_error = await self._resolve_user_identity(request, role, subject_id)
@@ -67,11 +74,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         elif role == "external_resident":
             identity_or_error = await self._resolve_external_resident_identity(subject_id)
         else:
-            return build_error_response(
-                status_code=401,
-                detail="Unauthorized",
-                error_code=ErrorCode.UNAUTHORIZED.value,
-            )
+            return self._unauthorized_response()
 
         if isinstance(identity_or_error, Response):
             return identity_or_error
@@ -182,6 +185,14 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             role="external_resident",
             subject_id=str(resident.id),
             mcr=resident.mcr,
+        )
+
+    @staticmethod
+    def _unauthorized_response() -> Response:
+        return build_error_response(
+            status_code=401,
+            detail="Unauthorized",
+            error_code=ErrorCode.UNAUTHORIZED.value,
         )
 
     @staticmethod

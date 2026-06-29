@@ -4,7 +4,7 @@ from json import JSONDecodeError, loads
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -13,11 +13,17 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     project_name: str = "MATA Backend"
-    environment: Literal["development", "test", "production"] = "development"
+    environment: Literal["development", "test", "production"] = Field(
+        default="development",
+        validation_alias=AliasChoices("ENVIRONMENT", "ENV"),
+    )
     api_prefix: str = "/api/v1"
+    auth_mode: Literal["stub", "demo", "supabase"] = "stub"
+    allow_demo_role_switcher: bool = False
 
     database_url: str = Field(
         default="postgresql+asyncpg://postgres:postgres@localhost:5432/mata_db",
@@ -37,6 +43,8 @@ class Settings(BaseSettings):
 
     csp_default_src: str = "default-src 'self'"
     referrer_policy: str = "strict-origin-when-cross-origin"
+    supabase_url: str | None = None
+    supabase_service_role_key: str | None = None
 
     max_upload_size_mb: int = 10
 

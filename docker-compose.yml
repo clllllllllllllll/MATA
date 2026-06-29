@@ -24,7 +24,9 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/mata_db
       SYNC_DATABASE_URL: postgresql://postgres:postgres@db:5432/mata_db
-      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080
+      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://localhost:8080,http://127.0.0.1:8080
+      AUTH_MODE: stub
+      ALLOW_DEMO_ROLE_SWITCHER: "true"
     depends_on:
       db:
         condition: service_healthy
@@ -36,15 +38,22 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
+        VITE_APP_ENV: ${VITE_APP_ENV:-local}
+        VITE_AUTH_MODE: ${VITE_AUTH_MODE:-stub}
+        VITE_ENABLE_ROLE_SWITCHER: ${VITE_ENABLE_ROLE_SWITCHER:-true}
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
+
         VITE_DEMO_ADMIN_USER_ID: ${VITE_DEMO_ADMIN_USER_ID}
         VITE_DEMO_ADMIN_PROGRAMME_SCOPE: ${VITE_DEMO_ADMIN_PROGRAMME_SCOPE:-DR,GERI}
+
         VITE_DEMO_SECRETARY_USER_ID: ${VITE_DEMO_SECRETARY_USER_ID}
         VITE_DEMO_SECRETARY_SITE: ${VITE_DEMO_SECRETARY_SITE:-TTSHGerMed}
         VITE_DEMO_SECRETARY_SCOPE_LABEL: ${VITE_DEMO_SECRETARY_SCOPE_LABEL:-TTSH Geriatric Medicine}
+
         VITE_DEMO_RESIDENT_USER_ID: ${VITE_DEMO_RESIDENT_USER_ID}
         VITE_DEMO_RESIDENT_MCR: ${VITE_DEMO_RESIDENT_MCR:-M64471D}
         VITE_DEMO_RESIDENT_PROGRAMME: ${VITE_DEMO_RESIDENT_PROGRAMME:-GERI}
+
         VITE_DEFAULT_PROGRAMME_CODE: ${VITE_DEFAULT_PROGRAMME_CODE:-DR}
         VITE_DEFAULT_REPORTING_PERIOD_ID: ${VITE_DEFAULT_REPORTING_PERIOD_ID:-}
     depends_on:

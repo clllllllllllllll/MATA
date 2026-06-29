@@ -1,4 +1,26 @@
 import type { UploadType } from '../types/app'
+import type { AuthMode, FrontendAppEnv } from '../types/auth'
+
+const parseBooleanFlag = (input: string | undefined, fallback: boolean): boolean => {
+  if (input === undefined) {
+    return fallback
+  }
+  return input.trim().toLowerCase() === 'true'
+}
+
+const parseAppEnv = (input: string | undefined): FrontendAppEnv => {
+  if (input === 'preview' || input === 'production') {
+    return input
+  }
+  return 'local'
+}
+
+const parseAuthMode = (input: string | undefined): AuthMode => {
+  if (input === 'demo' || input === 'supabase') {
+    return input
+  }
+  return 'stub'
+}
 
 const parseProgrammeList = (input: string | undefined): string[] => {
   if (!input) {
@@ -43,6 +65,9 @@ const defaultResidentScopeLabel =
   `TTSH Geriatric Medicine - MCR ${defaultResidentMcr}`
 
 export const frontendConfig = {
+  appEnv: parseAppEnv(import.meta.env.VITE_APP_ENV),
+  authMode: parseAuthMode(import.meta.env.VITE_AUTH_MODE),
+  enableRoleSwitcher: parseBooleanFlag(import.meta.env.VITE_ENABLE_ROLE_SWITCHER, true),
   apiBaseUrl: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1',
   defaultRole: 'master_admin' as const,
   defaultProgrammeCode,
@@ -56,6 +81,11 @@ export const frontendConfig = {
   demoResidentMcr: defaultResidentMcr,
   demoResidentProgramme: defaultResidentProgramme,
   demoResidentScopeLabel: defaultResidentScopeLabel,
+  supabaseUrl: import.meta.env.VITE_SUPABASE_URL ?? '',
+  supabaseAnonKey: import.meta.env.VITE_SUPABASE_ANON_KEY ?? '',
+  get devIdentityHeadersEnabled() {
+    return this.authMode !== 'supabase' && this.enableRoleSwitcher
+  },
 }
 
 export const uploadLabels: Record<UploadType, string> = {

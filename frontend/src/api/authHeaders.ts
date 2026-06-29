@@ -12,6 +12,9 @@ export const buildAdminDemoHeaders = (
   _actorName?: string,
 ): Record<string, string> => {
   void _actorName
+  if (!frontendConfig.devIdentityHeadersEnabled) {
+    return {}
+  }
   const headers: Record<string, string> = {
     'X-User-Role': 'admin',
     'X-User-Id': adminId,
@@ -28,6 +31,9 @@ export const buildSecretaryDemoHeaders = (overrides?: {
   secretarySite?: string
   actorName?: string
 }): Record<string, string> => {
+  if (!frontendConfig.devIdentityHeadersEnabled) {
+    return {}
+  }
   const secretarySiteHeader = ['X', 'User', 'Site'].join('-')
   return {
     'X-User-Role': 'secretary',
@@ -40,9 +46,14 @@ export const buildResidentDemoHeaders = (overrides?: {
   residentId?: string
   residentProgramme?: string
   residentMcr?: string
-}): Record<string, string> => ({
-  'X-User-Role': 'resident',
-  'X-User-Id': overrides?.residentId ?? frontendConfig.demoResidentId,
-  'X-User-Programme': overrides?.residentProgramme ?? frontendConfig.demoResidentProgramme,
-  'X-User-MCR': overrides?.residentMcr ?? frontendConfig.demoResidentMcr,
-})
+}): Record<string, string> => {
+  if (!frontendConfig.devIdentityHeadersEnabled) {
+    return {}
+  }
+  return {
+    'X-User-Role': 'resident',
+    'X-User-Id': overrides?.residentId ?? frontendConfig.demoResidentId,
+    'X-User-Programme': overrides?.residentProgramme ?? frontendConfig.demoResidentProgramme,
+    'X-User-MCR': overrides?.residentMcr ?? frontendConfig.demoResidentMcr,
+  }
+}

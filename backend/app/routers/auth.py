@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings, get_settings
 from app.errors import ApiError, ErrorCode
 from app.schemas.auth import LoginRequest
 from app.services import auth as auth_service
@@ -44,6 +45,7 @@ def _parse_subject(raw_value: str | None) -> UUID:
 async def login(
     request: LoginRequest,
     db: AsyncSession = Depends(get_db_session),
+    settings: Settings = Depends(get_settings),
 ) -> dict:
     return await auth_service.login(
         db,
@@ -51,6 +53,8 @@ async def login(
         email=request.email,
         password=request.password,
         mcr=request.mcr,
+        auth_mode=settings.auth_mode,
+        allow_demo_role_switcher=settings.allow_demo_role_switcher,
     )
 
 
@@ -59,7 +63,15 @@ async def me(
     x_user_role: Annotated[str | None, Header(alias="X-User-Role")] = None,
     x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     db: AsyncSession = Depends(get_db_session),
+    settings: Settings = Depends(get_settings),
 ) -> dict:
+    if settings.auth_mode == "supabase":
+        raise ApiError(
+            status_code=401,
+            detail="Unauthorized",
+            error_code=ErrorCode.UNAUTHORIZED.value,
+        )
+
     role = (x_user_role or "").strip().lower()
     if role not in {"admin", "secretary", "resident", "external_resident"}:
         raise ApiError(

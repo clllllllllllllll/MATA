@@ -1,6 +1,7 @@
 ﻿import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { breadcrumbMap, navItems, roleOptions } from '../config/navigation'
+import { frontendConfig } from '../config/frontendConfig'
+import { breadcrumbMap, navItems, roleFromPathname, roleOptions } from '../config/navigation'
 import { useAppState } from '../context/useAppState'
 import type { AppRole } from '../types/app'
 import { clearMemoryCache } from '../utils/memoryReadCache'
@@ -23,25 +24,6 @@ const roleNameById: Record<AppRole, string> = {
   external_resident: 'Demo Non-NHG',
 }
 
-const roleFromPathname = (pathname: string): AppRole | null => {
-  if (pathname.startsWith('/secretary')) {
-    return 'secretary'
-  }
-  if (pathname.startsWith('/resident')) {
-    return 'resident'
-  }
-  if (pathname.startsWith('/external')) {
-    return 'external_resident'
-  }
-  if (pathname.startsWith('/pc')) {
-    return 'programme_pc'
-  }
-  if (pathname.startsWith('/admin')) {
-    return 'master_admin'
-  }
-  return null
-}
-
 export const AppShell = () => {
   const { role, setRole } = useAppState()
   const location = useLocation()
@@ -53,6 +35,7 @@ export const AppShell = () => {
   const activeRole = forcedRole ?? role
   const isRoleMenuOpen = roleMenuOpenPath === location.pathname
   const isMobileNavOpen = mobileNavOpenPath === location.pathname
+  const roleSwitcherEnabled = frontendConfig.enableRoleSwitcher
 
   const currentRoleOption = roleOptions.find((option) => option.id === activeRole) ?? roleOptions[0]
   const breadcrumbs = breadcrumbMap[location.pathname] ?? [currentRoleOption.label]
@@ -146,23 +129,28 @@ export const AppShell = () => {
           <button
             type="button"
             className="sidebar-user"
-            onClick={() =>
+            onClick={() => {
+              if (!roleSwitcherEnabled) {
+                return
+              }
               setRoleMenuOpenPath((prev) => (prev === location.pathname ? null : location.pathname))
-            }
-            aria-haspopup="menu"
-            aria-expanded={isRoleMenuOpen}
+            }}
+            aria-haspopup={roleSwitcherEnabled ? 'menu' : undefined}
+            aria-expanded={roleSwitcherEnabled ? isRoleMenuOpen : undefined}
           >
             <div className="avatar">{roleNameById[activeRole].slice(0, 2).toUpperCase()}</div>
             <div className="sidebar-user-details">
-              <strong>{roleNameById[activeRole]}</strong>
-              <p>{currentRoleOption.label}</p>
+              <strong>{roleSwitcherEnabled ? roleNameById[activeRole] : currentRoleOption.label}</strong>
+              <p>{roleSwitcherEnabled ? currentRoleOption.label : currentRoleOption.scopeLabel}</p>
             </div>
-            <span className={`sidebar-user-chevron ${isRoleMenuOpen ? 'is-open' : ''}`} aria-hidden="true">
-              <IconChevDown size={16} />
-            </span>
+            {roleSwitcherEnabled ? (
+              <span className={`sidebar-user-chevron ${isRoleMenuOpen ? 'is-open' : ''}`} aria-hidden="true">
+                <IconChevDown size={16} />
+              </span>
+            ) : null}
           </button>
 
-          {isRoleMenuOpen ? (
+          {roleSwitcherEnabled && isRoleMenuOpen ? (
             <div className="role-switcher-popover" role="menu" aria-label="Role Switcher">
               <p className="role-switcher-title">SWITCH ROLE (DEMO AID)</p>
               <div className="role-switcher-list">

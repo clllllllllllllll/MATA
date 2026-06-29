@@ -1,5 +1,6 @@
 ﻿import type { NavItem, RoleOption } from '../types/app'
 import { frontendConfig } from './frontendConfig'
+import type { AppRole } from '../types/app'
 
 export const roleOptions: RoleOption[] = [
   {
@@ -33,6 +34,33 @@ export const roleOptions: RoleOption[] = [
     defaultPath: '/external',
   },
 ]
+
+export const defaultPathForRole = (role: AppRole): string =>
+  roleOptions.find((option) => option.id === role)?.defaultPath ?? '/login'
+
+export const roleFromPathname = (pathname: string): AppRole | null => {
+  if (pathname.startsWith('/secretary')) {
+    return 'secretary'
+  }
+  if (pathname.startsWith('/resident')) {
+    return 'resident'
+  }
+  if (pathname.startsWith('/external')) {
+    return 'external_resident'
+  }
+  if (pathname.startsWith('/pc')) {
+    return 'programme_pc'
+  }
+  if (pathname.startsWith('/admin')) {
+    return 'master_admin'
+  }
+  return null
+}
+
+export const isPathAllowedForRole = (pathname: string, role: AppRole): boolean => {
+  const routeRole = roleFromPathname(pathname)
+  return routeRole === null || routeRole === role
+}
 
 export const navItems: NavItem[] = [
   {

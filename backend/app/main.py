@@ -28,7 +28,7 @@ def create_app() -> FastAPI:
     app.add_middleware(SecurityHeadersMiddleware, settings=settings)
     app.add_middleware(RateLimitMiddleware, settings=settings)
     app.add_middleware(UploadGuardMiddleware, settings=settings)
-    app.add_middleware(AuthStubMiddleware)
+    app.add_middleware(AuthStubMiddleware, settings=settings)
 
     app.include_router(auth.router, prefix=settings.api_prefix)
     app.include_router(external_residents.router, prefix=settings.api_prefix)
