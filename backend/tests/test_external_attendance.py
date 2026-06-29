@@ -38,8 +38,10 @@ def test_external_events_visible_when_supports_secretary_events_true() -> None:
     response = client.get("/resident/events", headers=_external_headers(fake_db))
 
     assert response.status_code == 200
-    ids = {row["id"] for row in response.json()["events"]}
+    events = response.json()["events"]
+    ids = {row["id"] for row in events}
     assert fake_db.event_id in ids
+    assert all("created_by_role" not in row for row in events)
 
 
 def test_external_events_hidden_when_supports_secretary_events_false() -> None:
@@ -105,7 +107,9 @@ def test_external_attendance_creates_external_record_only() -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["submitted"] == 1
+    payload = response.json()
+    assert payload["submitted"] == 1
+    assert all("created_by_role" not in row for row in payload["submitted_events"])
     assert len(fake_db.external_attendance) == before_external + 1
     assert len(fake_db.attendance) == before_native
 

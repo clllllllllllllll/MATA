@@ -12,6 +12,7 @@ import { AdminUploadPage } from './pages/admin/AdminUploadPage'
 import { AdminWarningsPage } from './pages/admin/AdminWarningsPage'
 import { PcTeachingEventsPage } from './pages/pc/PcTeachingEventsPage'
 import { PcUploadTtfPage } from './pages/pc/PcUploadTtfPage'
+import { ResidentAttendancePage } from './pages/resident/ResidentAttendancePage'
 import { ResidentSubmissionPage } from './pages/resident/ResidentSubmissionPage'
 import { SecretaryTeachingSchedulePage } from './pages/secretary/SecretaryTeachingSchedulePage'
 import { StubPage } from './pages/StubPage'
@@ -39,6 +40,7 @@ function App() {
         <Route path="/secretary/events" element={<SecretaryTeachingSchedulePage />} />
         <Route path="/resident" element={<Navigate to="/resident/submissions" replace />} />
         <Route path="/resident/submissions" element={<ResidentSubmissionPage />} />
+        <Route path="/resident/attendance" element={<ResidentAttendancePage />} />
         <Route
           path="/external"
           element={

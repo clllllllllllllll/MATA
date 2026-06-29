@@ -48,7 +48,7 @@ def test_external_adhoc_creates_event_and_external_attendance() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["event"]["is_adhoc"] is True
-    assert payload["event"]["created_by_role"] == "external_resident"
+    assert "created_by_role" not in payload["event"]
     assert payload["attendance"]["external_resident_id"] == fake_db.external_resident_id
     assert len(fake_db.events) == before_events + 1
     assert len(fake_db.external_attendance) == before_attendance + 1

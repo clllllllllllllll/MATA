@@ -24,8 +24,8 @@ def _event_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"],
         "posting_code": row["posting_code"],
-        "created_for_programme_code": row.get("created_for_programme_code"),
         "teaching_name": row["teaching_name"],
+        "details_of_session": row.get("details_of_session"),
         "event_date": row["event_date"],
         "start_time": row["start_time"],
         "end_time": row.get("end_time"),
@@ -35,7 +35,6 @@ def _event_row(row: dict[str, Any]) -> dict[str, Any]:
         "cme_points_awarded": row.get("cme_points_awarded", False),
         "smc_event_code": row.get("smc_event_code"),
         "is_adhoc": row.get("is_adhoc", False),
-        "created_by_role": row.get("created_by_role"),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
@@ -56,6 +55,7 @@ def _available_event_row(
         "session_type": resolved.get("session_type"),
         "session_type_name": resolved.get("session_type"),
         "duration_hours": event.get("duration_hours") or resolved.get("duration_hours"),
+        "details_of_session": event.get("details_of_session"),
         "is_global": bool(resolved.get("is_global")),
         "is_adhoc": bool(event.get("is_adhoc", False)),
         "already_submitted": False,
@@ -69,6 +69,7 @@ def _attendance_row(row: dict[str, Any]) -> dict[str, Any]:
         "teaching_event_id": row["teaching_event_id"],
         "status": row["status"],
         "posting_code": row.get("posting_code"),
+        "submitted_at": row.get("submitted_at"),
     }
 
 
@@ -79,6 +80,7 @@ def _external_attendance_row(row: dict[str, Any]) -> dict[str, Any]:
         "teaching_event_id": row["teaching_event_id"],
         "status": row["status"],
         "posting_code": row.get("posting_code"),
+        "submitted_at": row.get("submitted_at"),
     }
 
 
@@ -350,6 +352,190 @@ async def _resolve_teaching_name(
     return dict(row) if row is not None else None
 
 
+async def _posting_display_label(db: AsyncSession, posting_code: str) -> str:
+    result = await db.execute(
+        text(
+            """
+            SELECT display_name
+            FROM posting_codes
+            WHERE code = :posting_code
+            """
+        ),
+        {"posting_code": posting_code},
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        return posting_code
+    return row.get("display_name") or posting_code
+
+
+async def _teaching_options_for_context(
+    db: AsyncSession,
+    *,
+    posting_code: str,
+    programme_code: str,
+    r_year: str,
+    reporting_period_id: UUID | str,
+) -> list[dict[str, Any]]:
+    global_result = await db.execute(
+        text(
+            """
+            SELECT
+                name AS teaching_name,
+                name AS keyword,
+                NULL AS session_type_id,
+                name AS session_type,
+                name AS session_type_name,
+                duration_hours,
+                false AS is_tracked,
+                true AS is_global
+            FROM global_session_types
+            WHERE is_active = true
+            ORDER BY name ASC
+            """
+        )
+    )
+    catalogue_result = await db.execute(
+        text(
+            """
+            SELECT
+                tnc.keyword AS teaching_name,
+                tnc.keyword AS keyword,
+                tnc.session_type_id,
+                st.name AS session_type,
+                st.name AS session_type_name,
+                tnc.duration_hours,
+                tnc.is_tracked,
+                false AS is_global
+            FROM teaching_name_catalogue tnc
+            JOIN session_types st ON st.id = tnc.session_type_id
+            WHERE tnc.posting_code = :posting_code
+              AND tnc.programme_code = :programme_code
+              AND tnc.reporting_period_id = :reporting_period_id
+              AND tnc.r_year IN (:r_year, 'ALL')
+            ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
+            """
+        ),
+        {
+            "posting_code": posting_code,
+            "programme_code": programme_code,
+            "reporting_period_id": str(reporting_period_id),
+            "r_year": r_year,
+        },
+    )
+    rows = [dict(row) for row in global_result.mappings().all()]
+    rows.extend(dict(row) for row in catalogue_result.mappings().all())
+    rows.sort(key=lambda row: str(row["teaching_name"]).casefold())
+    return rows
+
+
+def _adhoc_options_response(
+    *,
+    teaching_date: date,
+    available: bool,
+    reason: str | None,
+    message: str | None,
+    reporting_period_id: UUID | str | None = None,
+    posting_code: str | None = None,
+    posting_label: str | None = None,
+    r_year: str | None = None,
+    options: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "date": teaching_date,
+        "teaching_date": teaching_date,
+        "available": available,
+        "reason": reason,
+        "message": message,
+        "reporting_period_id": str(reporting_period_id) if reporting_period_id else None,
+        "posting_code": posting_code,
+        "posting_label": posting_label,
+        "r_year": r_year,
+        "options": options or [],
+    }
+
+
+async def list_adhoc_teaching_options(
+    db: AsyncSession,
+    *,
+    resident_id: UUID,
+    teaching_date: date,
+    today: date | None = None,
+) -> dict[str, Any]:
+    today = today or date.today()
+    resident = await _resident(db, resident_id)
+    period = await _active_reporting_period(db, as_of_date=today)
+    if period is None:
+        return _adhoc_options_response(
+            teaching_date=teaching_date,
+            available=False,
+            reason="active_reporting_period_unavailable",
+            message="No active reporting period is available yet.",
+        )
+    await _ensure_not_public_holiday(db, teaching_date)
+    contexts = await _posting_contexts(
+        db,
+        resident_id=resident_id,
+        reporting_period_id=period["id"],
+        on_date=teaching_date,
+    )
+    if not contexts:
+        return _adhoc_options_response(
+            teaching_date=teaching_date,
+            available=False,
+            reason="posting_unavailable",
+            message="No active resident posting is available for the selected teaching date.",
+            reporting_period_id=period["id"],
+        )
+    if len(contexts) > 1:
+        return _adhoc_options_response(
+            teaching_date=teaching_date,
+            available=False,
+            reason="posting_disambiguation_required",
+            message="Multiple resident postings match the selected teaching date.",
+            reporting_period_id=period["id"],
+        )
+
+    context = contexts[0]
+    posting_code = context["posting_code"]
+    posting_label = await _posting_display_label(db, posting_code)
+    raw_options = await _teaching_options_for_context(
+        db,
+        posting_code=posting_code,
+        programme_code=resident["programme_code"],
+        r_year=context["r_year"],
+        reporting_period_id=period["id"],
+    )
+    options = [
+        {
+            "teaching_name": row["teaching_name"],
+            "keyword": row["keyword"],
+            "session_type": row.get("session_type"),
+            "session_type_name": row.get("session_type_name") or row.get("session_type"),
+            "session_type_id": row.get("session_type_id"),
+            "duration_hours": row.get("duration_hours"),
+            "posting_code": posting_code,
+            "posting_label": posting_label,
+            "reporting_period_id": str(period["id"]),
+            "r_year": context["r_year"],
+            "is_tracked": bool(row.get("is_tracked")),
+            "is_global": bool(row.get("is_global")),
+        }
+        for row in raw_options
+    ]
+    return _adhoc_options_response(
+        teaching_date=teaching_date,
+        available=bool(options),
+        reason=None if options else "no_catalogue_options",
+        message=None if options else "No teaching options are available for this posting and date.",
+        reporting_period_id=period["id"],
+        posting_code=posting_code,
+        posting_label=posting_label,
+        r_year=context["r_year"],
+        options=options,
+    )
+
+
 async def _get_event(db: AsyncSession, event_id: UUID) -> dict[str, Any]:
     result = await db.execute(
         text(
@@ -359,6 +545,7 @@ async def _get_event(db: AsyncSession, event_id: UUID) -> dict[str, Any]:
                 posting_code,
                 created_for_programme_code,
                 teaching_name,
+                details_of_session,
                 event_date,
                 start_time,
                 end_time,
@@ -445,7 +632,10 @@ async def _events_for_postings(
     period_end: date,
     date_from: date | None,
     date_to: date | None,
+    teaching_name: str | None = None,
 ) -> list[dict[str, Any]]:
+    if not posting_codes:
+        return []
     params: dict[str, Any] = {
         "resident_id": str(resident_id),
         "posting_codes": sorted(posting_codes),
@@ -475,6 +665,9 @@ async def _events_for_postings(
     if date_to is not None:
         params["date_to"] = date_to
         where.append("event_date <= :date_to")
+    if teaching_name:
+        params["teaching_name"] = teaching_name.strip()
+        where.append("teaching_name = :teaching_name")
 
     result = await db.execute(
         text(
@@ -484,6 +677,7 @@ async def _events_for_postings(
                 posting_code,
                 created_for_programme_code,
                 teaching_name,
+                details_of_session,
                 event_date,
                 start_time,
                 end_time,
@@ -514,6 +708,7 @@ async def _events_for_external_posting(
     today: date,
     date_from: date | None,
     date_to: date | None,
+    teaching_name: str | None = None,
 ) -> list[dict[str, Any]]:
     params: dict[str, Any] = {
         "external_resident_id": str(external_resident_id),
@@ -539,6 +734,9 @@ async def _events_for_external_posting(
     if date_to is not None:
         params["date_to"] = date_to
         where.append("event_date <= :date_to")
+    if teaching_name:
+        params["teaching_name"] = teaching_name.strip()
+        where.append("teaching_name = :teaching_name")
 
     result = await db.execute(
         text(
@@ -548,6 +746,7 @@ async def _events_for_external_posting(
                 posting_code,
                 created_for_programme_code,
                 teaching_name,
+                details_of_session,
                 event_date,
                 start_time,
                 end_time,
@@ -595,6 +794,47 @@ def _matching_context_for_event(
     )
 
 
+def _normalise_optional_filter(value: str | None) -> str | None:
+    if value is None:
+        return None
+    trimmed = value.strip()
+    return trimmed or None
+
+
+def _effective_event_range(
+    *,
+    period_start: date,
+    period_end: date,
+    today: date,
+    date_from: date | None,
+    date_to: date | None,
+) -> tuple[date, date]:
+    start = max(date_from or period_start, period_start)
+    end = min(date_to or today, today, period_end)
+    return start, end
+
+
+def _context_overlaps_range(context: dict[str, Any], *, start: date, end: date) -> bool:
+    return context["start_date"] <= end and context["end_date"] >= start
+
+
+def _posting_filter_options(
+    contexts: list[dict[str, Any]],
+    *,
+    start: date,
+    end: date,
+) -> list[dict[str, str]]:
+    posting_codes = {
+        row["posting_code"]
+        for row in contexts
+        if row.get("posting_code") and _context_overlaps_range(row, start=start, end=end)
+    }
+    return [
+        {"posting_code": posting_code, "label": posting_code}
+        for posting_code in sorted(posting_codes)
+    ]
+
+
 async def list_available_events(
     db: AsyncSession,
     *,
@@ -604,8 +844,12 @@ async def list_available_events(
     today: date | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    teaching_name: str | None = None,
+    posting_code: str | None = None,
 ) -> dict[str, Any]:
     today = today or date.today()
+    teaching_name = _normalise_optional_filter(teaching_name)
+    posting_code = _normalise_optional_filter(posting_code)
     if role == "external_resident":
         if external_resident_id is None:
             raise ApiError(
@@ -625,6 +869,7 @@ async def list_available_events(
             today=today,
             date_from=date_from,
             date_to=date_to,
+            teaching_name=teaching_name,
         )
         return {"events": [_event_row(row) for row in events]}
 
@@ -662,8 +907,22 @@ async def list_available_events(
             "posting_capabilities": [],
         }
 
-    posting_codes = {row["posting_code"] for row in contexts if row.get("posting_code")}
-    posting_capabilities = await _posting_capabilities(db, posting_codes=posting_codes)
+    range_start, range_end = _effective_event_range(
+        period_start=period["start_date"],
+        period_end=period["end_date"],
+        today=today,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    eligible_posting_codes = {
+        row["posting_code"]
+        for row in contexts
+        if row.get("posting_code") and _context_overlaps_range(row, start=range_start, end=range_end)
+    }
+    posting_codes = set(eligible_posting_codes)
+    if posting_code is not None:
+        posting_codes = {posting_code} if posting_code in eligible_posting_codes else set()
+    posting_capabilities = await _posting_capabilities(db, posting_codes=eligible_posting_codes)
     raw_events = await _events_for_postings(
         db,
         resident_id=resident_id,
@@ -674,6 +933,7 @@ async def list_available_events(
         period_end=period["end_date"],
         date_from=date_from,
         date_to=date_to,
+        teaching_name=teaching_name,
     )
 
     events: list[dict[str, Any]] = []
@@ -699,12 +959,57 @@ async def list_available_events(
         if resolved is not None:
             events.append(_available_event_row(event, resolved=resolved))
 
+    option_raw_events = await _events_for_postings(
+        db,
+        resident_id=resident_id,
+        programme_code=resident["programme_code"],
+        posting_codes=posting_codes or eligible_posting_codes,
+        today=today,
+        period_start=period["start_date"],
+        period_end=period["end_date"],
+        date_from=date_from,
+        date_to=date_to,
+        teaching_name=None,
+    )
+    option_names: set[str] = set()
+    for event in option_raw_events:
+        context = _matching_context_for_event(
+            contexts,
+            posting_code=event["posting_code"],
+            event_date=event["event_date"],
+        )
+        if context is None:
+            continue
+        resolved = await _resolve_teaching_name(
+            db,
+            posting_code=event["posting_code"],
+            programme_code=resident["programme_code"],
+            r_year=context["r_year"],
+            reporting_period_id=period["id"],
+            teaching_name=event["teaching_name"],
+        )
+        if resolved is not None:
+            option_names.add(event["teaching_name"])
+    filter_options = {
+        "date_from": range_start.isoformat(),
+        "date_to": range_end.isoformat(),
+        "posting_options": _posting_filter_options(
+            contexts,
+            start=range_start,
+            end=range_end,
+        ),
+        "teaching_name_options": [
+            {"teaching_name": name, "label": name}
+            for name in sorted(option_names, key=str.casefold)
+        ],
+    }
+
     capabilities = [
         {
             "posting_code": posting_code,
             "supports_secretary_events": posting_capabilities.get(posting_code, False),
         }
-        for posting_code in sorted(posting_codes)
+        for posting_code in sorted(eligible_posting_codes)
     ]
     if events:
         return {
@@ -713,6 +1018,7 @@ async def list_available_events(
             "ad_hoc_allowed": True,
             "message": None,
             "posting_capabilities": capabilities,
+            "filter_options": filter_options,
         }
 
     has_secretary_support_hint = any(item["supports_secretary_events"] for item in capabilities)
@@ -729,29 +1035,30 @@ async def list_available_events(
             )
         ),
         "posting_capabilities": capabilities,
+        "filter_options": filter_options,
     }
 
 
-async def _duplicate_attendance_exists(
+async def _attendance_for_event(
     db: AsyncSession,
     *,
     resident_id: UUID,
     event_id: UUID | str,
-) -> bool:
+) -> dict[str, Any] | None:
     result = await db.execute(
         text(
             """
-            SELECT 1
+            SELECT id, resident_id, teaching_event_id, status, posting_code, submitted_at
             FROM attendance_records
             WHERE resident_id = :resident_id
               AND teaching_event_id = :event_id
-              AND status = 'submitted'
             LIMIT 1
             """
         ),
         {"resident_id": str(resident_id), "event_id": str(event_id)},
     )
-    return result.scalar_one_or_none() is not None
+    row = result.mappings().one_or_none()
+    return dict(row) if row is not None else None
 
 
 async def _insert_attendance(
@@ -776,12 +1083,41 @@ async def _insert_attendance(
                 'submitted',
                 :posting_code
             )
-            RETURNING id, resident_id, teaching_event_id, status, posting_code
+            RETURNING id, resident_id, teaching_event_id, status, posting_code, submitted_at
             """
         ),
         {
             "resident_id": str(resident_id),
             "event_id": str(event_id),
+            "posting_code": posting_code,
+        },
+    )
+    return _attendance_row(dict(result.mappings().one()))
+
+
+async def _restore_removed_attendance(
+    db: AsyncSession,
+    *,
+    attendance_id: UUID | str,
+    resident_id: UUID,
+    posting_code: str,
+) -> dict[str, Any]:
+    result = await db.execute(
+        text(
+            """
+            UPDATE attendance_records
+            SET status = 'submitted',
+                submitted_at = now(),
+                posting_code = :posting_code
+            WHERE id = :attendance_id
+              AND resident_id = :resident_id
+              AND status = 'removed'
+            RETURNING id, resident_id, teaching_event_id, status, posting_code, submitted_at
+            """
+        ),
+        {
+            "attendance_id": str(attendance_id),
+            "resident_id": str(resident_id),
             "posting_code": posting_code,
         },
     )
@@ -1112,19 +1448,37 @@ async def submit_attendance(
                 detail="Teaching event is not visible for this resident",
                 error_code=ErrorCode.VALIDATION_FAILED.value,
             )
-        if await _duplicate_attendance_exists(db, resident_id=resident_id, event_id=event_id):
+        existing_attendance = await _attendance_for_event(
+            db,
+            resident_id=resident_id,
+            event_id=event_id,
+        )
+        if existing_attendance and existing_attendance["status"] == "submitted":
             raise ApiError(
                 status_code=409,
                 detail="Attendance already submitted for this teaching event",
                 error_code=ErrorCode.CONFLICT.value,
             )
-
-        await _insert_attendance(
-            db,
-            resident_id=resident_id,
-            event_id=event_id,
-            posting_code=event["posting_code"],
-        )
+        if existing_attendance and existing_attendance["status"] == "removed":
+            await _restore_removed_attendance(
+                db,
+                attendance_id=existing_attendance["id"],
+                resident_id=resident_id,
+                posting_code=event["posting_code"],
+            )
+        elif existing_attendance:
+            raise ApiError(
+                status_code=409,
+                detail="Attendance already exists for this teaching event",
+                error_code=ErrorCode.CONFLICT.value,
+            )
+        else:
+            await _insert_attendance(
+                db,
+                resident_id=resident_id,
+                event_id=event_id,
+                posting_code=event["posting_code"],
+            )
         submitted += 1
         submitted_events.append(_available_event_row(event, resolved=resolved))
         touched_postings.add(event["posting_code"])
@@ -1165,6 +1519,7 @@ async def submit_adhoc_teaching(
     event_date: date,
     start_time: time,
     teaching_name: str,
+    details_of_session: str | None = None,
 ) -> dict[str, Any]:
     if role == "external_resident":
         if external_resident_id is None:
@@ -1193,6 +1548,7 @@ async def submit_adhoc_teaching(
                 INSERT INTO teaching_events (
                     posting_code,
                     teaching_name,
+                    details_of_session,
                     event_date,
                     start_time,
                     end_time,
@@ -1204,6 +1560,7 @@ async def submit_adhoc_teaching(
                 VALUES (
                     :posting_code,
                     :teaching_name,
+                    :details_of_session,
                     :event_date,
                     :start_time,
                     :end_time,
@@ -1216,6 +1573,7 @@ async def submit_adhoc_teaching(
                     id,
                     posting_code,
                     teaching_name,
+                    details_of_session,
                     event_date,
                     start_time,
                     end_time,
@@ -1233,6 +1591,7 @@ async def submit_adhoc_teaching(
             {
                 "posting_code": posting_code,
                 "teaching_name": teaching_name,
+                "details_of_session": details_of_session,
                 "event_date": event_date,
                 "start_time": start_time,
                 "end_time": end_time,
@@ -1323,6 +1682,7 @@ async def submit_adhoc_teaching(
             INSERT INTO teaching_events (
                 posting_code,
                 teaching_name,
+                details_of_session,
                 event_date,
                 start_time,
                 end_time,
@@ -1334,6 +1694,7 @@ async def submit_adhoc_teaching(
             VALUES (
                 :posting_code,
                 :teaching_name,
+                :details_of_session,
                 :event_date,
                 :start_time,
                 :end_time,
@@ -1346,6 +1707,7 @@ async def submit_adhoc_teaching(
                 id,
                 posting_code,
                 teaching_name,
+                details_of_session,
                 event_date,
                 start_time,
                 end_time,
@@ -1363,6 +1725,7 @@ async def submit_adhoc_teaching(
         {
             "posting_code": context["posting_code"],
             "teaching_name": teaching_name,
+            "details_of_session": details_of_session,
             "event_date": event_date,
             "start_time": start_time,
             "end_time": end_time,
@@ -1403,7 +1766,32 @@ async def remove_attendance(
     *,
     resident_id: UUID,
     attendance_id: UUID,
-) -> dict[str, int]:
+) -> dict[str, Any]:
+    existing_result = await db.execute(
+        text(
+            """
+            SELECT id, resident_id, teaching_event_id, status, posting_code, submitted_at
+            FROM attendance_records
+            WHERE id = :attendance_id
+              AND resident_id = :resident_id
+            """
+        ),
+        {"attendance_id": str(attendance_id), "resident_id": str(resident_id)},
+    )
+    existing = existing_result.mappings().one_or_none()
+    if existing is None:
+        raise ApiError(
+            status_code=404,
+            detail="Attendance record not found",
+            error_code=ErrorCode.NOT_FOUND.value,
+        )
+    if existing["status"] == "removed":
+        return {
+            "attendance_id": existing["id"],
+            "status": "removed",
+            "removed_count": 0,
+        }
+
     result = await db.execute(
         text(
             """
@@ -1412,22 +1800,31 @@ async def remove_attendance(
             WHERE id = :attendance_id
               AND resident_id = :resident_id
               AND status = 'submitted'
+            RETURNING id, resident_id, teaching_event_id, status, posting_code, submitted_at
             """
         ),
         {"attendance_id": str(attendance_id), "resident_id": str(resident_id)},
     )
-    if result.rowcount != 1:
+    row = result.mappings().one_or_none()
+    if row is None:
         raise ApiError(
-            status_code=404,
-            detail="Attendance record not found",
-            error_code=ErrorCode.NOT_FOUND.value,
+            status_code=409,
+            detail="Attendance record cannot be removed from its current status",
+            error_code=ErrorCode.CONFLICT.value,
         )
     await db.commit()
-    invalidate_resident_caches(resident_id=resident_id, posting_codes=set())
-    return {"removed_count": 1}
+    invalidate_resident_caches(
+        resident_id=resident_id,
+        posting_codes={row["posting_code"]} if row.get("posting_code") else set(),
+    )
+    return {
+        "attendance_id": row["id"],
+        "status": row["status"],
+        "removed_count": 1,
+    }
 
 
-async def list_attendance_history(
+async def list_attendance_records(
     db: AsyncSession,
     *,
     role: str = "resident",
@@ -1435,10 +1832,32 @@ async def list_attendance_history(
     external_resident_id: UUID | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    posting_code: str | None = None,
+    teaching_name: str | None = None,
+    source: str | None = None,
     status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    include_removed: bool = True,
 ) -> dict[str, Any]:
     params: dict[str, Any] = {}
-    where = ["attendance.status != 'removed'"]
+    where: list[str] = []
+    source = _normalise_optional_filter(source)
+    status = _normalise_optional_filter(status)
+    posting_code = _normalise_optional_filter(posting_code)
+    teaching_name = _normalise_optional_filter(teaching_name)
+    if status and status not in {"submitted", "removed"}:
+        raise ApiError(
+            status_code=422,
+            detail="status must be submitted or removed",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
+    if source and source not in {"scheduled", "adhoc"}:
+        raise ApiError(
+            status_code=422,
+            detail="source must be scheduled or adhoc",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
     if role == "external_resident":
         if external_resident_id is None:
             raise ApiError(
@@ -1462,15 +1881,30 @@ async def list_attendance_history(
         id_column = "resident_id"
         params["subject_id"] = str(resident_id)
     where.append(f"attendance.{id_column} = :subject_id")
+    if status:
+        params["status"] = status
+        where.append("attendance.status = :status")
+    elif include_removed:
+        where.append("attendance.status IN ('submitted', 'removed')")
+    else:
+        where.append("attendance.status != 'removed'")
     if date_from is not None:
         params["date_from"] = date_from
         where.append("events.event_date >= :date_from")
     if date_to is not None:
         params["date_to"] = date_to
         where.append("events.event_date <= :date_to")
-    if status:
-        params["status"] = status.strip().lower()
-        where.append("attendance.status = :status")
+    if posting_code:
+        params["posting_code"] = posting_code
+        where.append("events.posting_code = :posting_code")
+    if teaching_name:
+        params["teaching_name"] = teaching_name
+        where.append("events.teaching_name = :teaching_name")
+    if source:
+        params["is_adhoc"] = source == "adhoc"
+        where.append("events.is_adhoc = :is_adhoc")
+    params["limit"] = max(1, min(limit, 500))
+    params["offset"] = max(0, offset)
 
     result = await db.execute(
         text(
@@ -1479,7 +1913,9 @@ async def list_attendance_history(
                 attendance.id AS attendance_id,
                 attendance.teaching_event_id,
                 events.teaching_name,
+                events.details_of_session,
                 events.is_adhoc,
+                CASE WHEN events.is_adhoc THEN 'adhoc' ELSE 'scheduled' END AS source,
                 events.event_date,
                 events.start_time,
                 events.end_time,
@@ -1491,13 +1927,41 @@ async def list_attendance_history(
             JOIN teaching_events events
               ON events.id = attendance.teaching_event_id
             WHERE {' AND '.join(where)}
-            ORDER BY events.event_date DESC, attendance.submitted_at DESC
+            ORDER BY events.event_date DESC, events.start_time DESC, attendance.submitted_at DESC, attendance.id DESC
+            LIMIT :limit OFFSET :offset
             """
         ),
         params,
     )
     rows = [dict(row) for row in result.mappings().all()]
-    return {"attendance": rows}
+    return {
+        "attendance": rows,
+        "limit": params["limit"],
+        "offset": params["offset"],
+        "count": len(rows),
+    }
+
+
+async def list_attendance_history(
+    db: AsyncSession,
+    *,
+    role: str = "resident",
+    resident_id: UUID | None = None,
+    external_resident_id: UUID | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    status: str | None = None,
+) -> dict[str, Any]:
+    return await list_attendance_records(
+        db,
+        role=role,
+        resident_id=resident_id,
+        external_resident_id=external_resident_id,
+        date_from=date_from,
+        date_to=date_to,
+        status=status,
+        include_removed=False,
+    )
 
 
 async def dashboard_placeholder(

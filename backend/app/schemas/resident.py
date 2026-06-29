@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, time
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 class ResidentAttendanceSubmitRequest(BaseModel):
@@ -13,11 +13,12 @@ class ResidentAttendanceSubmitRequest(BaseModel):
 
 
 class ResidentAdhocTeachingRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    date: date
+    teaching_date: date = Field(validation_alias=AliasChoices("teaching_date", "date"))
     start_time: time
     teaching_name: str = Field(min_length=1, max_length=200)
+    details_of_session: str | None = Field(default=None, max_length=2000)
 
     @field_validator("teaching_name")
     @classmethod
@@ -26,3 +27,11 @@ class ResidentAdhocTeachingRequest(BaseModel):
         if not trimmed:
             raise ValueError("teaching_name is required")
         return trimmed
+
+    @field_validator("details_of_session")
+    @classmethod
+    def _trim_details_of_session(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None

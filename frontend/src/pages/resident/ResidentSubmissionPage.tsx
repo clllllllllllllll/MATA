@@ -1,15 +1,20 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { ApiRequestError } from '../../api/http'
 import {
-  listResidentAttendanceHistory,
+  getResidentAdhocTeachingOptions,
+  listResidentAttendance,
   listResidentEvents,
+  removeResidentAttendance,
   submitResidentAdhocTeaching,
   submitResidentAttendance,
+  type ResidentAdhocOptionsResponse,
   type ResidentAttendanceHistoryRow,
+  type ResidentEventFilters,
   type ResidentEventsResponse,
 } from '../../api/residentSubmissions'
 import { PageHero } from '../../components/PageHero'
-import { IconCalendar, IconSend } from '../../components/icons'
+import { IconCalendar, IconRefresh, IconSend, IconX } from '../../components/icons'
 import { frontendConfig } from '../../config/frontendConfig'
 
 const START_TIME_OPTIONS = Array.from({ length: 24 * 4 }, (_, index) => {
@@ -18,6 +23,19 @@ const START_TIME_OPTIONS = Array.from({ length: 24 * 4 }, (_, index) => {
   const minutes = totalMinutes % 60
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
 })
+
+const EMPTY_ADHOC_OPTIONS: ResidentAdhocOptionsResponse = {
+  date: '',
+  teachingDate: '',
+  available: false,
+  reason: null,
+  message: null,
+  reportingPeriodId: null,
+  postingCode: null,
+  postingLabel: null,
+  rYear: null,
+  options: [],
+}
 
 const formatDate = (value?: string) => {
   if (!value) {
@@ -99,6 +117,17 @@ const getAttendanceStatusBadgeClass = (status: string) => {
   return 'status-badge-neutral'
 }
 
+const formatAttendanceStatus = (status: string) => {
+  const normalised = status.trim().toLowerCase()
+  if (normalised === 'submitted') {
+    return 'Submitted'
+  }
+  if (normalised === 'removed') {
+    return 'Removed'
+  }
+  return status
+}
+
 const normaliseResidentApiError = (error: ApiRequestError): string => {
   if (error.status === 401 || error.status === 403) {
     return 'Resident authentication is invalid. Check demo resident headers.'
@@ -116,12 +145,17 @@ const normaliseResidentApiError = (error: ApiRequestError): string => {
 }
 
 export const ResidentSubmissionPage = () => {
+  const [filters, setFilters] = useState<ResidentEventFilters>({})
   const [eventsResponse, setEventsResponse] = useState<ResidentEventsResponse>({
     events: [],
     reason: null,
     adHocAllowed: false,
     message: null,
     postingCapabilities: [],
+    filterOptions: {
+      postingOptions: [],
+      teachingNameOptions: [],
+    },
   })
   const [eventsLoading, setEventsLoading] = useState(true)
   const [eventsError, setEventsError] = useState<string | null>(null)
@@ -132,8 +166,11 @@ export const ResidentSubmissionPage = () => {
   const [complianceWarning, setComplianceWarning] = useState<string | null>(null)
 
   const [adhocDate, setAdhocDate] = useState('')
+  const [adhocOptions, setAdhocOptions] = useState<ResidentAdhocOptionsResponse>(EMPTY_ADHOC_OPTIONS)
+  const [adhocOptionsLoading, setAdhocOptionsLoading] = useState(false)
   const [adhocStartTime, setAdhocStartTime] = useState('')
   const [adhocTeachingName, setAdhocTeachingName] = useState('')
+  const [detailsOfSession, setDetailsOfSession] = useState('')
   const [adhocState, setAdhocState] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle')
   const [adhocMessage, setAdhocMessage] = useState<string | null>(null)
 
@@ -145,7 +182,7 @@ export const ResidentSubmissionPage = () => {
     setEventsLoading(true)
     setEventsError(null)
     try {
-      const response = await listResidentEvents()
+      const response = await listResidentEvents(filters)
       setEventsResponse(response)
       setSelectedEventIds(new Set())
     } catch (error) {
@@ -160,16 +197,20 @@ export const ResidentSubmissionPage = () => {
         adHocAllowed: false,
         message: null,
         postingCapabilities: [],
+        filterOptions: {
+          postingOptions: [],
+          teachingNameOptions: [],
+        },
       })
     } finally {
       setEventsLoading(false)
     }
-  }, [])
+  }, [filters])
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true)
     try {
-      const rows = await listResidentAttendanceHistory()
+      const rows = await listResidentAttendance({ limit: 6, offset: 0 })
       setHistory(rows)
       setHistoryUnavailable(false)
     } catch (error) {
@@ -185,6 +226,47 @@ export const ResidentSubmissionPage = () => {
     }
   }, [])
 
+  const loadAdhocOptions = useCallback(async () => {
+    if (!adhocDate) {
+      setAdhocOptions(EMPTY_ADHOC_OPTIONS)
+      setAdhocTeachingName('')
+      setAdhocMessage(null)
+      return
+    }
+    setAdhocOptionsLoading(true)
+    setAdhocMessage(null)
+    try {
+      const response = await getResidentAdhocTeachingOptions(adhocDate)
+      setAdhocOptions(response)
+      setAdhocTeachingName('')
+      if (!response.available) {
+        setAdhocMessage(response.message ?? 'No ad-hoc teaching options are available for this date.')
+      }
+    } catch (error) {
+      const message =
+        error instanceof ApiRequestError
+          ? normaliseResidentApiError(error)
+          : 'Unable to load ad-hoc options for this date.'
+      setAdhocOptions({
+        ...EMPTY_ADHOC_OPTIONS,
+        date: adhocDate,
+        teachingDate: adhocDate,
+        reason:
+          error instanceof ApiRequestError &&
+          error.status === 422 &&
+          String(error.message).toLowerCase().includes('public holiday')
+            ? 'public_holiday'
+            : null,
+        message,
+      })
+      setAdhocTeachingName('')
+      setAdhocState('error')
+      setAdhocMessage(message)
+    } finally {
+      setAdhocOptionsLoading(false)
+    }
+  }, [adhocDate])
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadResidentEvents()
@@ -195,8 +277,21 @@ export const ResidentSubmissionPage = () => {
     }
   }, [loadResidentEvents, loadHistory])
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadAdhocOptions()
+    }, 0)
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [loadAdhocOptions])
+
   const selectedCount = selectedEventIds.size
   const availableEvents = eventsResponse.events
+  const filterOptions = eventsResponse.filterOptions
+  const displayedDateFrom = filters.dateFrom ?? filterOptions.dateFrom ?? ''
+  const displayedDateTo = filters.dateTo ?? filterOptions.dateTo ?? ''
+  const selectedAdhocOption = adhocOptions.options.find((option) => option.teachingName === adhocTeachingName)
 
   const toggleSelected = (eventId: string) => {
     const targetEvent = availableEvents.find((event) => event.id === eventId)
@@ -231,6 +326,7 @@ export const ResidentSubmissionPage = () => {
       setComplianceWarning(response.complianceWarning ?? null)
       setSubmitState('success')
       setSubmitMessage(`${response.submitted} attendance submission(s) recorded.`)
+      await loadResidentEvents()
       await loadHistory()
     } catch (error) {
       const message =
@@ -246,25 +342,28 @@ export const ResidentSubmissionPage = () => {
     if (adhocState === 'submitting') {
       return
     }
-    if (!adhocDate || !adhocStartTime || !adhocTeachingName.trim()) {
+    if (!adhocDate || !adhocStartTime || !adhocTeachingName || !selectedAdhocOption) {
       setAdhocState('error')
-      setAdhocMessage('Date, start time, and teaching name are required.')
+      setAdhocMessage('Date, teaching/session, and start time are required.')
       return
     }
     setAdhocState('submitting')
     setAdhocMessage(null)
     try {
       const response = await submitResidentAdhocTeaching({
-        date: adhocDate,
+        teachingDate: adhocDate,
         startTime: adhocStartTime,
-        teachingName: adhocTeachingName.trim(),
+        teachingName: selectedAdhocOption.teachingName,
+        detailsOfSession: detailsOfSession.trim() || undefined,
       })
       setAdhocState('success')
       setAdhocMessage(`Ad-hoc teaching submitted for ${response.event.postingCode}.`)
       setComplianceWarning(response.complianceWarning ?? null)
       setAdhocDate('')
+      setAdhocOptions(EMPTY_ADHOC_OPTIONS)
       setAdhocStartTime('')
       setAdhocTeachingName('')
+      setDetailsOfSession('')
       await loadResidentEvents()
       await loadHistory()
     } catch (error) {
@@ -275,6 +374,39 @@ export const ResidentSubmissionPage = () => {
       setAdhocState('error')
       setAdhocMessage(message)
     }
+  }
+
+  const handleDeleteAttendance = async (row: ResidentAttendanceHistoryRow) => {
+    if (row.status.toLowerCase() !== 'submitted') {
+      return
+    }
+    const confirmed = window.confirm(`Delete submission for ${row.teachingName}?`)
+    if (!confirmed) {
+      return
+    }
+    try {
+      await removeResidentAttendance(row.attendanceId)
+      await loadResidentEvents()
+      await loadHistory()
+    } catch (error) {
+      const message =
+        error instanceof ApiRequestError
+          ? normaliseResidentApiError(error)
+          : 'Unable to delete submission right now.'
+      setSubmitState('error')
+      setSubmitMessage(message)
+    }
+  }
+
+  const updateFilter = (key: keyof ResidentEventFilters, value: string) => {
+    setFilters((previous) => ({
+      ...previous,
+      [key]: value || undefined,
+    }))
+  }
+
+  const clearFilters = () => {
+    setFilters({})
   }
 
   return (
@@ -333,9 +465,56 @@ export const ResidentSubmissionPage = () => {
       </section>
 
       <section className="card resident-events-card">
-        <div className="section-header">
-          <h2>Available Scheduled Events</h2>
-          <span className="inline-muted">{availableEvents.length} event(s)</span>
+        <div className="section-header resident-events-header">
+          <div className="resident-section-title">
+            <h2>Available Scheduled Events</h2>
+            <span className="inline-muted">{availableEvents.length} event(s)</span>
+          </div>
+          <div className="resident-filter-actions resident-filter-actions-top">
+            <button type="button" className="button button-secondary" onClick={clearFilters}>
+              <IconX size={14} />
+              Clear filters
+            </button>
+            <button type="button" className="button button-secondary" onClick={() => void loadResidentEvents()}>
+              <IconRefresh size={14} />
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div className="resident-filter-card" aria-label="Scheduled filters">
+          <div className="resident-filter-grid">
+            <label>
+              Start date
+              <input type="date" value={displayedDateFrom} onChange={(event) => updateFilter('dateFrom', event.target.value)} />
+            </label>
+            <label>
+              End date
+              <input type="date" value={displayedDateTo} onChange={(event) => updateFilter('dateTo', event.target.value)} />
+            </label>
+            <label>
+              Teaching/session name
+              <select value={filters.teachingName ?? ''} onChange={(event) => updateFilter('teachingName', event.target.value)}>
+                <option value="">All teachings</option>
+                {filterOptions.teachingNameOptions.map((option) => (
+                  <option key={option.teachingName ?? option.label} value={option.teachingName ?? ''}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Posting
+              <select value={filters.postingCode ?? ''} onChange={(event) => updateFilter('postingCode', event.target.value)}>
+                <option value="">All postings</option>
+                {filterOptions.postingOptions.map((option) => (
+                  <option key={option.postingCode ?? option.label} value={option.postingCode ?? ''}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         </div>
 
         {eventsLoading ? (
@@ -361,7 +540,6 @@ export const ResidentSubmissionPage = () => {
                     <th>Date</th>
                     <th>Time</th>
                     <th>Posting</th>
-                    <th>Status</th>
                     <th>Tags</th>
                   </tr>
                 </thead>
@@ -396,11 +574,6 @@ export const ResidentSubmissionPage = () => {
                         </td>
                         <td className="mono">{event.postingCode}</td>
                         <td>
-                          <span className={`status-badge ${submitted ? 'status-badge-success' : 'status-badge-warning'}`}>
-                            {submitted ? 'Submitted' : 'Pending'}
-                          </span>
-                        </td>
-                        <td>
                           <span className={`status-badge ${event.isGlobal ? 'status-badge-info' : 'status-badge-neutral'}`}>
                             {sourceLabel}
                           </span>
@@ -432,15 +605,10 @@ export const ResidentSubmissionPage = () => {
                   aria-pressed={selected}
                   aria-label={`${selected ? 'Deselect' : 'Select'} ${event.teachingName}, ${formatDate(
                     event.eventDate,
-                  )}, ${formatTime(event.startTime)} to ${formatTime(event.endTime)}, ${event.postingCode}, ${
-                    submitted ? 'Submitted' : 'Pending'
-                  }`}
+                  )}, ${formatTime(event.startTime)} to ${formatTime(event.endTime)}, ${event.postingCode}`}
                 >
                   <span className="resident-event-card-header">
                     <span className="resident-event-card-title safe-wrap">{event.teachingName}</span>
-                    <span className={`status-badge ${submitted ? 'status-badge-success' : 'status-badge-warning'}`}>
-                      {submitted ? 'Submitted' : 'Pending'}
-                    </span>
                   </span>
                   <span className="resident-event-card-meta">
                     <span className="resident-event-card-line">
@@ -457,7 +625,7 @@ export const ResidentSubmissionPage = () => {
                   </span>
                   <span className="resident-event-card-footer">
                     <span className="resident-card-select-indicator" aria-hidden="true">
-                      {submitted ? 'Submitted' : selected ? 'Selected' : 'Select'}
+                      {submitted ? 'Unavailable' : selected ? 'Selected' : 'Select'}
                     </span>
                   </span>
                 </button>
@@ -474,16 +642,36 @@ export const ResidentSubmissionPage = () => {
             <span className="status-badge status-badge-info">Date-first</span>
           </div>
           <div className="resident-empty resident-adhoc-help">
-            <p>
-              Please ensure your current submission is not an already scheduled event. There are no CME Pts tagged to
-              adhoc teachings.
-            </p>
-            <p>Availability is checked after you select a teaching date.</p>
+            <p>Please ensure your current submission is not an already scheduled event. There are no CME Pts tagged to adhoc teachings.</p>
           </div>
           <div className="resident-form-grid">
             <label>
               Teaching date
               <input type="date" value={adhocDate} onChange={(event) => setAdhocDate(event.target.value)} />
+            </label>
+            <label>
+              Derived posting
+              <input
+                type="text"
+                value={adhocOptions.postingLabel ?? adhocOptions.postingCode ?? ''}
+                readOnly
+                placeholder={adhocDate ? 'Unavailable for selected date' : 'Select a date first'}
+              />
+            </label>
+            <label>
+              Teaching/session
+              <select
+                value={adhocTeachingName}
+                onChange={(event) => setAdhocTeachingName(event.target.value)}
+                disabled={!adhocOptions.available || adhocOptionsLoading}
+              >
+                <option value="">{adhocOptionsLoading ? 'Loading options...' : 'Select teaching/session'}</option>
+                {adhocOptions.options.map((option) => (
+                  <option key={`${option.teachingName}-${option.sessionTypeName ?? ''}`} value={option.teachingName}>
+                    {option.teachingName} - {option.sessionTypeName ?? option.sessionType ?? formatDuration(option.durationHours)}
+                  </option>
+                ))}
+              </select>
             </label>
             <label>
               Start time
@@ -496,27 +684,38 @@ export const ResidentSubmissionPage = () => {
                 ))}
               </select>
             </label>
-            <label>
-              Teaching name
-              <input
-                type="text"
-                value={adhocTeachingName}
-                onChange={(event) => setAdhocTeachingName(event.target.value)}
-                placeholder="e.g. Journal Club"
+            <label className="resident-details-field">
+              Details of session
+              <textarea
+                value={detailsOfSession}
+                onChange={(event) => setDetailsOfSession(event.target.value)}
+                rows={3}
+                placeholder="Optional context"
               />
-              <small>Teaching name must match your posting visibility catalogue.</small>
             </label>
           </div>
-          {adhocMessage ? (
-            <div className={`inline-callout ${adhocState === 'error' ? 'callout-error' : 'callout-success'}`}>
-              <span>{adhocMessage}</span>
+          {selectedAdhocOption ? (
+            <div className="resident-derived-summary">
+              <span>{selectedAdhocOption.sessionTypeName ?? selectedAdhocOption.sessionType}</span>
+              <span>{formatDuration(selectedAdhocOption.durationHours)}</span>
+              <span>{selectedAdhocOption.isGlobal ? 'Global Type' : selectedAdhocOption.isTracked ? 'Tracked' : 'Untracked'}</span>
             </div>
           ) : null}
-          <div className="resident-adhoc-footer">
+          <div className="resident-adhoc-actions">
+            {adhocMessage ? (
+              <div className={`inline-callout ${adhocState === 'error' ? 'callout-error' : 'callout-success'}`}>
+                <span>{adhocMessage}</span>
+              </div>
+            ) : null}
             <button
               type="button"
               className="button button-resident-submit"
-              disabled={adhocState === 'submitting'}
+              disabled={
+                adhocState === 'submitting' ||
+                !adhocOptions.available ||
+                !adhocTeachingName ||
+                adhocOptions.reason === 'public_holiday'
+              }
               onClick={() => void handleSubmitAdhoc()}
             >
               {adhocState === 'submitting' ? 'Submitting...' : 'Submit Ad-hoc Teaching'}
@@ -525,37 +724,60 @@ export const ResidentSubmissionPage = () => {
         </article>
 
         <article className="card resident-history-card">
-          <div className="section-header">
+          <div className="section-header resident-history-card-header">
             <h2>Recent Submissions</h2>
+            <Link className="button button-secondary" to="/resident/attendance">
+              View all past submissions
+            </Link>
           </div>
           {historyLoading ? (
             <div className="resident-empty">Loading submission history...</div>
           ) : historyUnavailable ? (
             <div className="resident-empty">
               <p className="resident-empty-title">History endpoint unavailable</p>
-              <p>Submission history will appear when the resident attendance-history API is available.</p>
+              <p>Submission history will appear when the resident attendance API is available.</p>
             </div>
           ) : history.length === 0 ? (
             <div className="resident-empty">No past submissions yet.</div>
           ) : (
             <div className="resident-history-list responsive-card-list">
               {history.slice(0, 6).map((row) => {
-                const sourceLabel = row.isAdhoc ? 'Ad-hoc' : 'Scheduled'
+                const sourceLabel = row.source === 'adhoc' || row.isAdhoc ? 'Ad-hoc' : 'Scheduled'
+                const canDelete = row.status.toLowerCase() === 'submitted'
                 return (
-                  <div className="resident-history-row mobile-record-card" key={row.attendanceId}>
-                    <div className="resident-history-header">
-                      <p className="resident-history-title safe-wrap">{row.teachingName}</p>
-                      <span className={`status-badge resident-history-status ${getAttendanceStatusBadgeClass(row.status)}`}>
-                        {row.status}
-                      </span>
-                    </div>
-                    <div className="resident-history-compact-meta">
-                      <span>
-                        {formatShortDate(row.eventDate)} | {formatTime(row.startTime)} | {formatDuration(row.durationHours)}
-                      </span>
-                      <span>
-                        <span className="mono">{row.postingCode}</span> | {sourceLabel}
-                      </span>
+                  <div
+                    className={`resident-history-row mobile-record-card ${
+                      row.status.toLowerCase() === 'removed' ? 'is-removed' : ''
+                    }`}
+                    key={row.attendanceId}
+                  >
+                    <div className="resident-history-main">
+                      <div className="resident-history-copy">
+                        <p className="resident-history-title safe-wrap">{row.teachingName}</p>
+                        <div className="resident-history-compact-meta">
+                          <span>
+                            {formatShortDate(row.eventDate)} | {formatTime(row.startTime)} | {formatDuration(row.durationHours)}
+                          </span>
+                          <span>
+                            <span className="mono">{row.postingCode}</span> | {sourceLabel}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="resident-history-side">
+                        <span className={`status-badge resident-history-status ${getAttendanceStatusBadgeClass(row.status)}`}>
+                          {formatAttendanceStatus(row.status)}
+                        </span>
+                        {canDelete ? (
+                          <button
+                            type="button"
+                            className="button button-danger resident-delete-button"
+                            onClick={() => void handleDeleteAttendance(row)}
+                          >
+                            <IconX size={14} />
+                            Delete submission
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
                 )

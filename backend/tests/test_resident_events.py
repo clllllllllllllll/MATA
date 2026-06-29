@@ -327,3 +327,55 @@ def test_events_exclude_submitted_event_in_active_period_window() -> None:
     payload = response.json()
     assert payload["events"] == []
     assert payload["reason"] == "no_eligible_scheduled_events"
+
+
+def test_events_support_scheduled_filters_without_widening_visibility() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.resident_postings.append(
+        {
+            "resident_id": fake_db.resident_id,
+            "reporting_period_id": fake_db.period_id,
+            "posting_code": "TTSHNeuro",
+            "r_year": "R2",
+            "start_date": fake_db.today - timedelta(days=10),
+            "end_date": fake_db.today + timedelta(days=10),
+            "status": "active",
+        }
+    )
+    client = _client(fake_db)
+
+    response = client.get(
+        "/resident/events",
+        headers=_headers(fake_db),
+        params={
+            "date_from": (fake_db.today - timedelta(days=3)).isoformat(),
+            "date_to": (fake_db.today + timedelta(days=20)).isoformat(),
+            "teaching_name": "Skills Teaching",
+            "posting_code": "TTSHNeuro",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    ids = {row["id"] for row in payload["events"]}
+    assert fake_db.other_posting_event_id in ids
+    assert fake_db.event_id not in ids
+    assert fake_db.future_event_id not in ids
+    posting_options = {row["posting_code"] for row in payload["filter_options"]["posting_options"]}
+    assert posting_options == {"TTSHCardio", "TTSHNeuro"}
+    teaching_options = [row["teaching_name"] for row in payload["filter_options"]["teaching_name_options"]]
+    assert teaching_options == sorted(teaching_options)
+
+
+def test_events_posting_filter_cannot_widen_beyond_resident_postings() -> None:
+    fake_db = FakeResidentSession()
+    client = _client(fake_db)
+
+    response = client.get(
+        "/resident/events",
+        headers=_headers(fake_db),
+        params={"posting_code": "TTSHNeuro"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["events"] == []

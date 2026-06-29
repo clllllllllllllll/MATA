@@ -6,7 +6,7 @@ from datetime import date
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
@@ -69,6 +69,8 @@ async def require_resident_context(
 async def list_events(
     date_from: date | None = None,
     date_to: date | None = None,
+    teaching_name: str | None = None,
+    posting_code: str | None = None,
     resident_context: ResidentContext = Depends(require_resident_context),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
@@ -79,6 +81,8 @@ async def list_events(
             external_resident_id=resident_context.subject_id,
             date_from=date_from,
             date_to=date_to,
+            teaching_name=teaching_name,
+            posting_code=posting_code,
         )
     return await resident_submission.list_available_events(
         db,
@@ -86,6 +90,8 @@ async def list_events(
         resident_id=resident_context.subject_id,
         date_from=date_from,
         date_to=date_to,
+        teaching_name=teaching_name,
+        posting_code=posting_code,
     )
 
 
@@ -110,6 +116,48 @@ async def submit_attendance(
     )
 
 
+@router.get("/attendance")
+async def list_attendance(
+    date_from: date | None = None,
+    date_to: date | None = None,
+    posting_code: str | None = None,
+    teaching_name: str | None = None,
+    source: str | None = None,
+    status: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    resident_context: ResidentContext = Depends(require_resident_context),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict:
+    if resident_context.role == "external_resident":
+        return await resident_submission.list_attendance_records(
+            db,
+            role="external_resident",
+            external_resident_id=resident_context.subject_id,
+            date_from=date_from,
+            date_to=date_to,
+            posting_code=posting_code,
+            teaching_name=teaching_name,
+            source=source,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
+    return await resident_submission.list_attendance_records(
+        db,
+        role="resident",
+        resident_id=resident_context.subject_id,
+        date_from=date_from,
+        date_to=date_to,
+        posting_code=posting_code,
+        teaching_name=teaching_name,
+        source=source,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+
+
 @router.delete("/attendance/{attendance_id}")
 async def delete_attendance(
     attendance_id: UUID,
@@ -129,6 +177,52 @@ async def delete_attendance(
     )
 
 
+@router.get("/adhoc-teaching-options")
+async def adhoc_teaching_options(
+    teaching_date: Annotated[date, Query(alias="date")],
+    resident_context: ResidentContext = Depends(require_resident_context),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict:
+    if resident_context.role == "external_resident":
+        raise ApiError(
+            status_code=403,
+            detail="Forbidden - native resident role required",
+            error_code=ErrorCode.FORBIDDEN.value,
+        )
+    return await resident_submission.list_adhoc_teaching_options(
+        db,
+        resident_id=resident_context.subject_id,
+        teaching_date=teaching_date,
+    )
+
+
+@router.get("/adhoc-teaching/options")
+async def adhoc_teaching_options_alias(
+    teaching_date: Annotated[date | None, Query(alias="teaching_date")] = None,
+    date_alias: Annotated[date | None, Query(alias="date")] = None,
+    resident_context: ResidentContext = Depends(require_resident_context),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict:
+    resolved_date = teaching_date or date_alias
+    if resolved_date is None:
+        raise ApiError(
+            status_code=422,
+            detail="teaching_date or date is required",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
+    if teaching_date is not None and date_alias is not None and teaching_date != date_alias:
+        raise ApiError(
+            status_code=422,
+            detail="teaching_date and date must match when both are provided",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
+    return await adhoc_teaching_options(
+        teaching_date=resolved_date,
+        resident_context=resident_context,
+        db=db,
+    )
+
+
 @router.post("/adhoc-teaching")
 async def submit_adhoc_teaching(
     request: ResidentAdhocTeachingRequest,
@@ -140,17 +234,19 @@ async def submit_adhoc_teaching(
             db,
             role="external_resident",
             external_resident_id=resident_context.subject_id,
-            event_date=request.date,
+            event_date=request.teaching_date,
             start_time=request.start_time,
             teaching_name=request.teaching_name,
+            details_of_session=request.details_of_session,
         )
     return await resident_submission.submit_adhoc_teaching(
         db,
         role="resident",
         resident_id=resident_context.subject_id,
-        event_date=request.date,
+        event_date=request.teaching_date,
         start_time=request.start_time,
         teaching_name=request.teaching_name,
+        details_of_session=request.details_of_session,
     )
 
 

@@ -1095,6 +1095,18 @@ a {
   border-color: var(--line-2);
 }
 
+.button-danger {
+  background: var(--red-tint);
+  color: var(--red);
+  border-color: var(--red-tint);
+}
+
+.button-danger:hover {
+  background: #fecdca;
+  border-color: #fecdca;
+  color: var(--red);
+}
+
 .button-ghost,
 .btn-ghost {
   color: var(--ink-3);
@@ -2658,6 +2670,14 @@ tr:last-child td {
   padding-bottom: 14px;
 }
 
+.resident-history-card-header {
+  padding-bottom: 10px;
+}
+
+.resident-history-card-header .button {
+  align-self: flex-start;
+}
+
 .resident-form-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -2670,25 +2690,43 @@ tr:last-child td {
   grid-column: 1 / -1;
 }
 
-.resident-adhoc-footer {
-  display: flex;
-  justify-content: flex-end;
+.resident-adhoc-actions {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
   padding: 0 22px;
   min-width: 0;
 }
 
+.resident-adhoc-actions .inline-callout {
+  width: 100%;
+}
+
 .resident-history-list {
   gap: 8px;
-  padding: 0 22px;
+  padding: 0 22px 16px;
 }
 
 .resident-history-row {
   display: grid;
   align-items: flex-start;
-  gap: 6px;
+  gap: 4px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  padding: 10px 12px;
+  padding: 10px 12px 9px;
+  min-width: 0;
+}
+
+.resident-history-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  min-width: 0;
+}
+
+.resident-history-copy {
+  display: grid;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -2711,6 +2749,14 @@ tr:last-child td {
 
 .resident-history-status {
   flex: 0 0 auto;
+}
+
+.resident-history-side {
+  display: grid;
+  justify-items: end;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
 }
 
 .resident-history-compact-meta {
@@ -2862,6 +2908,104 @@ tr:last-child td {
   display: grid;
   gap: 8px;
   padding-top: 0;
+}
+
+.resident-events-header {
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.resident-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.resident-filter-card,
+.resident-attendance-filter-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px 22px 12px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: #fbfbfe;
+}
+
+.resident-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.resident-filter-grid label,
+.resident-details-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.resident-filter-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.resident-filter-actions-top {
+  flex: 0 0 auto;
+  transform: translateY(-7px);
+}
+
+.resident-derived-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 22px 10px;
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
+.resident-derived-summary span {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+}
+
+.resident-delete-button {
+  justify-self: end;
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.resident-history-row.is-removed,
+.resident-row-removed td,
+.resident-attendance-card.is-removed {
+  color: var(--ink-4);
+  background: #fafafd;
+}
+
+.resident-attendance-table-card {
+  overflow: hidden;
+}
+
+.resident-attendance-table {
+  min-width: 980px;
+}
+
+.resident-attendance-card-list {
+  display: none;
 }
 
 .stub-page {
@@ -3450,6 +3594,58 @@ tr:last-child td {
 
   .resident-table-wrap {
     display: none;
+  }
+
+  .resident-filter-card,
+  .resident-attendance-filter-card {
+    padding: 12px 14px;
+  }
+
+  .resident-filter-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .resident-filter-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .resident-events-header {
+    align-items: stretch;
+  }
+
+  .resident-section-title {
+    display: grid;
+    gap: 2px;
+  }
+
+  .resident-history-main {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .resident-history-side {
+    justify-items: start;
+  }
+
+  .resident-delete-button {
+    justify-self: start;
+  }
+
+  .resident-adhoc-actions {
+    padding: 0 14px;
+    justify-items: stretch;
+  }
+
+  .resident-attendance-card-list {
+    display: grid;
+    gap: 8px;
+    padding: 0 14px 14px;
+  }
+
+  .resident-attendance-card {
+    gap: 6px;
   }
 
   .resident-event-card-list {

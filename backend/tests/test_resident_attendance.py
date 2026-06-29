@@ -209,6 +209,72 @@ def test_deleted_attendance_no_longer_excludes_event_visibility() -> None:
     assert fake_db.second_event_id in ids
 
 
+def test_delete_attendance_is_idempotent_for_already_removed_row() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.attendance[0]["status"] = "removed"
+    client = _client(fake_db)
+
+    response = client.delete(
+        f"/resident/attendance/{fake_db.existing_attendance_id}",
+        headers=_headers(fake_db),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "removed"
+    assert len(fake_db.attendance) == 2
+
+
+def test_removed_scheduled_attendance_can_be_resubmitted_without_duplicate_row() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.attendance[0]["status"] = "removed"
+    before_count = len(fake_db.attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [fake_db.second_event_id]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["submitted"] == 1
+    assert len(fake_db.attendance) == before_count
+    row = next(row for row in fake_db.attendance if row["id"] == fake_db.existing_attendance_id)
+    assert row["status"] == "submitted"
+
+
+def test_adhoc_delete_leaves_teaching_event_row_intact() -> None:
+    fake_db = FakeResidentSession()
+    adhoc_event = fake_db._event(  # noqa: SLF001
+        str(uuid4()),
+        "TTSHCardio",
+        "Journal Club",
+        fake_db.today - timedelta(days=1),
+    )
+    adhoc_event["is_adhoc"] = True
+    fake_db.events.append(adhoc_event)
+    attendance_id = str(uuid4())
+    fake_db.attendance.append(
+        {
+            "id": attendance_id,
+            "resident_id": fake_db.resident_id,
+            "teaching_event_id": adhoc_event["id"],
+            "status": "submitted",
+            "posting_code": "TTSHCardio",
+        }
+    )
+    client = _client(fake_db)
+
+    response = client.delete(
+        f"/resident/attendance/{attendance_id}",
+        headers=_headers(fake_db),
+    )
+
+    assert response.status_code == 200
+    assert any(row["id"] == adhoc_event["id"] for row in fake_db.events)
+    assert next(row for row in fake_db.attendance if row["id"] == attendance_id)["status"] == "removed"
+
+
 def test_future_event_attendance_is_rejected() -> None:
     fake_db = FakeResidentSession()
     client = _client(fake_db)

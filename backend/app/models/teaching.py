@@ -207,6 +207,7 @@ class TeachingEvent(UUIDTimestampMixin, Base):
         nullable=True,
     )
     teaching_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    details_of_session: Mapped[str | None] = mapped_column(Text, nullable=True)
     event_date: Mapped[date] = mapped_column(Date, nullable=False)
     start_time: Mapped[time] = mapped_column(Time, nullable=False)
     end_time: Mapped[time | None] = mapped_column(Time, nullable=True)

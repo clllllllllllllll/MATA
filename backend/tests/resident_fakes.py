@@ -114,9 +114,9 @@ class FakeResidentSession:
             },
         ]
         self.posting_codes = [
-            {"code": "TTSHCardio", "supports_secretary_events": True},
-            {"code": "TTSHNeuro", "supports_secretary_events": True},
-            {"code": "KTPHGerMed", "supports_secretary_events": False},
+            {"code": "TTSHCardio", "display_name": "TTSH Cardiology", "supports_secretary_events": True},
+            {"code": "TTSHNeuro", "display_name": "TTSH Neurology", "supports_secretary_events": True},
+            {"code": "KTPHGerMed", "display_name": "KTPH Geriatric Medicine", "supports_secretary_events": False},
         ]
         self.external_residents = [
             {
@@ -257,7 +257,9 @@ class FakeResidentSession:
         return {
             "id": event_id,
             "posting_code": posting_code,
+            "created_for_programme_code": None,
             "teaching_name": teaching_name,
+            "details_of_session": None,
             "event_date": event_date,
             "start_time": start_time,
             "end_time": time(11, 0),
@@ -330,6 +332,17 @@ class FakeResidentSession:
             )
             return FakeResult(rows=[posting] if posting else [])
 
+        if "SELECT display_name" in sql and "FROM posting_codes" in sql:
+            posting = next(
+                (
+                    row
+                    for row in self.posting_codes
+                    if row["code"] == payload.get("posting_code")
+                ),
+                None,
+            )
+            return FakeResult(rows=[posting] if posting else [])
+
         if "SELECT code, supports_secretary_events" in sql and "FROM posting_codes" in sql:
             codes = set(payload.get("posting_codes") or [])
             rows = [row for row in self.posting_codes if row["code"] in codes]
@@ -374,9 +387,11 @@ class FakeResidentSession:
         if "FROM global_session_types" in sql:
             rows = [
                 {
+                    "teaching_name": row["name"],
                     "keyword": row["name"],
                     "session_type_id": None,
                     "session_type": row["name"],
+                    "session_type_name": row["name"],
                     "duration_hours": row["duration_hours"],
                     "is_tracked": False,
                     "is_global": True,
@@ -391,9 +406,11 @@ class FakeResidentSession:
             if "programme_code" in payload:
                 rows = [
                     {
+                        "teaching_name": row["keyword"],
                         "keyword": row["keyword"],
                         "session_type_id": row["session_type_id"],
                         "session_type": row["session_type"],
+                        "session_type_name": row["session_type"],
                         "duration_hours": row["duration_hours"],
                         "is_tracked": row["is_tracked"],
                         "is_global": False,
@@ -408,9 +425,11 @@ class FakeResidentSession:
             else:
                 rows = [
                     {
+                        "teaching_name": row["keyword"],
                         "keyword": row["keyword"],
                         "session_type_id": row["session_type_id"],
                         "session_type": row["session_type"],
+                        "session_type_name": row["session_type"],
                         "duration_hours": row["duration_hours"],
                         "is_tracked": row["is_tracked"],
                         "is_global": False,
@@ -466,12 +485,14 @@ class FakeResidentSession:
                 and row["event_date"] >= payload.get("period_start", date.min)
                 and row["event_date"] <= payload.get("period_end", date.max)
                 and row["id"] not in submitted
-                and row.get("created_by_role") == "secretary"
+                and row.get("created_by_role") in {"secretary", "programme_pc", None}
             ]
             if "date_from" in payload and payload["date_from"] is not None:
                 rows = [row for row in rows if row["event_date"] >= payload["date_from"]]
             if "date_to" in payload and payload["date_to"] is not None:
                 rows = [row for row in rows if row["event_date"] <= payload["date_to"]]
+            if "teaching_name" in payload and payload["teaching_name"]:
+                rows = [row for row in rows if row["teaching_name"] == payload["teaching_name"]]
             rows.sort(key=lambda row: (row["event_date"], row["start_time"], row["teaching_name"]))
             return FakeResult(rows=rows)
 
@@ -485,15 +506,23 @@ class FakeResidentSession:
             ]
             return FakeResult(rows=rows)
 
-        if "SELECT 1" in sql and "FROM attendance_records" in sql:
-            exists = any(
+        if "FROM attendance_records" in sql and "teaching_event_id = :event_id" in sql:
+            rows = [
                 row
                 for row in self.attendance
                 if row["resident_id"] == str(payload.get("resident_id"))
                 and row["teaching_event_id"] == str(payload.get("event_id"))
-                and row["status"] == "submitted"
-            )
-            return FakeResult(scalar=1 if exists else None)
+            ]
+            return FakeResult(rows=rows[:1])
+
+        if "FROM attendance_records" in sql and "id = :attendance_id" in sql:
+            rows = [
+                row
+                for row in self.attendance
+                if row["id"] == str(payload.get("attendance_id"))
+                and row["resident_id"] == str(payload.get("resident_id"))
+            ]
+            return FakeResult(rows=rows[:1])
 
         if "SELECT 1" in sql and "FROM external_attendance_records" in sql:
             exists = any(
@@ -511,7 +540,6 @@ class FakeResidentSession:
                 for row in self.attendance
                 if row["resident_id"] == str(payload["resident_id"])
                 and row["teaching_event_id"] == str(payload["event_id"])
-                and row["status"] == "submitted"
             )
             if duplicate:
                 raise AssertionError("duplicate insert attempted")
@@ -521,6 +549,7 @@ class FakeResidentSession:
                 "teaching_event_id": str(payload["event_id"]),
                 "status": "submitted",
                 "posting_code": payload.get("posting_code"),
+                "submitted_at": self.now,
             }
             self.attendance.append(row)
             return FakeResult(rows=[row])
@@ -547,12 +576,29 @@ class FakeResidentSession:
             return FakeResult(rows=[row])
 
         if "UPDATE attendance_records" in sql:
-            updated = 0
+            rows: list[dict] = []
+            if "SET status = 'submitted'" in sql:
+                for row in self.attendance:
+                    if (
+                        row["id"] == str(payload["attendance_id"])
+                        and row["resident_id"] == str(payload["resident_id"])
+                        and row["status"] == "removed"
+                    ):
+                        row["status"] = "submitted"
+                        row["posting_code"] = payload.get("posting_code")
+                        row["submitted_at"] = self.now
+                        rows.append(row)
+                return FakeResult(rows=rows, rowcount=len(rows))
             for row in self.attendance:
-                if row["id"] == str(payload["attendance_id"]) and row["resident_id"] == str(payload["resident_id"]):
+                if (
+                    row["id"] == str(payload["attendance_id"])
+                    and row["resident_id"] == str(payload["resident_id"])
+                    and row["status"] == "submitted"
+                ):
                     row["status"] = "removed"
-                    updated += 1
-            return FakeResult(rowcount=updated)
+                    row["submitted_at"] = self.now
+                    rows.append(row)
+            return FakeResult(rows=rows, rowcount=len(rows))
 
         if "INSERT INTO teaching_events" in sql:
             row = self._event(
@@ -567,6 +613,7 @@ class FakeResidentSession:
             row["session_type_id"] = (
                 str(payload["session_type_id"]) if payload.get("session_type_id") else None
             )
+            row["details_of_session"] = payload.get("details_of_session")
             row["is_adhoc"] = True
             row["created_by_role"] = (
                 "external_resident"
@@ -620,12 +667,19 @@ class FakeResidentSession:
             return FakeResult(rows=rows)
 
         if "FROM external_attendance_records attendance" in sql:
+            include_removed = (
+                "attendance.status IN ('submitted', 'removed')" in sql
+                or payload.get("status") == "removed"
+            )
             rows = [
                 {
                     "attendance_id": row["id"],
                     "teaching_event_id": row["teaching_event_id"],
                     "status": row["status"],
                     "submitted_at": row["submitted_at"],
+                    "source": "adhoc"
+                    if next(event for event in self.events if event["id"] == row["teaching_event_id"])["is_adhoc"]
+                    else "scheduled",
                     **next(
                         event
                         for event in self.events
@@ -634,7 +688,7 @@ class FakeResidentSession:
                 }
                 for row in self.external_attendance
                 if row["external_resident_id"] == str(payload["subject_id"])
-                and row["status"] != "removed"
+                and (include_removed or row["status"] != "removed")
             ]
             if "status" in payload:
                 rows = [row for row in rows if row["status"] == payload["status"]]
@@ -642,16 +696,32 @@ class FakeResidentSession:
                 rows = [row for row in rows if row["event_date"] >= payload["date_from"]]
             if "date_to" in payload:
                 rows = [row for row in rows if row["event_date"] <= payload["date_to"]]
+            if "posting_code" in payload:
+                rows = [row for row in rows if row["posting_code"] == payload["posting_code"]]
+            if "teaching_name" in payload:
+                rows = [row for row in rows if row["teaching_name"] == payload["teaching_name"]]
+            if "is_adhoc" in payload:
+                rows = [row for row in rows if row["is_adhoc"] is payload["is_adhoc"]]
+            for row in rows:
+                row.pop("created_by_role", None)
+                row.pop("created_for_programme_code", None)
             rows.sort(key=lambda row: (row["event_date"], row["submitted_at"]), reverse=True)
-            return FakeResult(rows=rows)
+            return FakeResult(rows=rows[payload.get("offset", 0) : payload.get("offset", 0) + payload.get("limit", len(rows))])
 
         if "FROM attendance_records attendance" in sql:
+            include_removed = (
+                "attendance.status IN ('submitted', 'removed')" in sql
+                or payload.get("status") == "removed"
+            )
             rows = [
                 {
                     "attendance_id": row["id"],
                     "teaching_event_id": row["teaching_event_id"],
                     "status": row["status"],
-                    "submitted_at": self.now,
+                    "submitted_at": row.get("submitted_at", self.now),
+                    "source": "adhoc"
+                    if next(event for event in self.events if event["id"] == row["teaching_event_id"])["is_adhoc"]
+                    else "scheduled",
                     **next(
                         event
                         for event in self.events
@@ -660,7 +730,7 @@ class FakeResidentSession:
                 }
                 for row in self.attendance
                 if row["resident_id"] == str(payload["subject_id"])
-                and row["status"] != "removed"
+                and (include_removed or row["status"] != "removed")
             ]
             if "status" in payload:
                 rows = [row for row in rows if row["status"] == payload["status"]]
@@ -668,7 +738,16 @@ class FakeResidentSession:
                 rows = [row for row in rows if row["event_date"] >= payload["date_from"]]
             if "date_to" in payload:
                 rows = [row for row in rows if row["event_date"] <= payload["date_to"]]
-            rows.sort(key=lambda row: (row["event_date"], row["submitted_at"]), reverse=True)
-            return FakeResult(rows=rows)
+            if "posting_code" in payload:
+                rows = [row for row in rows if row["posting_code"] == payload["posting_code"]]
+            if "teaching_name" in payload:
+                rows = [row for row in rows if row["teaching_name"] == payload["teaching_name"]]
+            if "is_adhoc" in payload:
+                rows = [row for row in rows if row["is_adhoc"] is payload["is_adhoc"]]
+            for row in rows:
+                row.pop("created_by_role", None)
+                row.pop("created_for_programme_code", None)
+            rows.sort(key=lambda row: (row["event_date"], row["start_time"], row["submitted_at"]), reverse=True)
+            return FakeResult(rows=rows[payload.get("offset", 0) : payload.get("offset", 0) + payload.get("limit", len(rows))])
 
         raise AssertionError(f"Unhandled SQL: {sql}\nparams={payload}")
