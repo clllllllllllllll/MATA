@@ -1553,7 +1553,7 @@ Looks up `residents` table by MCR. Validates `status != 'inactive'`. **No passwo
 Return current identity from validated JWT.
 
 - Resident: returns `residents` row fields + current posting (derived live from `resident_postings`)
-- Admin/Secretary: returns `users` row fields + scope
+- Admin/Secretary: returns `users` row fields + scope, including `admin_level` for admin accounts
 
 ### PUT `/auth/settings`
 

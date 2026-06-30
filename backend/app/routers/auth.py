@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.dependencies.auth import require_authenticated
 from app.errors import ApiError, ErrorCode
+from app.middleware.auth_stub import AuthIdentity
 from app.schemas.auth import LoginRequest
 from app.services import auth as auth_service
 
@@ -60,19 +61,10 @@ async def login(
 
 @router.get("/me")
 async def me(
-    x_user_role: Annotated[str | None, Header(alias="X-User-Role")] = None,
-    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    identity: AuthIdentity = Depends(require_authenticated),
     db: AsyncSession = Depends(get_db_session),
-    settings: Settings = Depends(get_settings),
 ) -> dict:
-    if settings.auth_mode == "supabase":
-        raise ApiError(
-            status_code=401,
-            detail="Unauthorized",
-            error_code=ErrorCode.UNAUTHORIZED.value,
-        )
-
-    role = (x_user_role or "").strip().lower()
+    role = identity.role
     if role not in {"admin", "secretary", "resident", "external_resident"}:
         raise ApiError(
             status_code=401,
@@ -82,5 +74,5 @@ async def me(
     return await auth_service.get_current_identity(
         db,
         role=role,
-        subject_id=_parse_subject(x_user_id),
+        subject_id=_parse_subject(identity.subject_id),
     )

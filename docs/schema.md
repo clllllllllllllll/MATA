@@ -651,6 +651,7 @@ For admin and secretary authentication **only**. Residents are **not** stored he
 | name | VARCHAR(100) | NOT NULL | |
 | posting_code | VARCHAR(50) | FK → posting_codes.code, nullable | Secretary's assigned site. NULL for admin. |
 | programme_scope | TEXT[] | | Array of programme codes e.g. `{DR,GRM}`. Scopes the admin to specific programmes. NULL = no access (not all-access). |
+| admin_level | VARCHAR(20) | NOT NULL DEFAULT `programme`, CHECK IN (`programme`, `master`) | Explicit admin level marker. Master admin access is `role = admin` and `admin_level = master`; never infer it from `programme_scope = NULL`. |
 | is_active | BOOLEAN | DEFAULT true | |
 
 **Secretary provisioning:** At launch, one account per TTSH posting code (e.g. TTSHAnaes, TTSHGerMed, TTSHCardio). Architecture is flexible — when other institutions onboard, provision new secretary accounts scoped to their posting codes (e.g. KTPHAnaes, SGHGerMed) with no schema change required.

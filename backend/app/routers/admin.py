@@ -6,16 +6,18 @@ from decimal import Decimal
 from typing import Annotated, Any, AsyncIterator, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, Query, Request, UploadFile
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dependencies.auth import is_master_admin
 from app.dependencies.staff_actor import (
     STAFF_ACTOR_FALLBACK_NAME,
     StaffActorContext,
     require_staff_actor,
 )
 from app.errors import ApiError, ErrorCode, UploadValidationApiError
+from app.middleware.auth_stub import AuthIdentity
 from app.schemas import (
     AcademicMonthBoundaryResponse,
     AdminResidentSubmissionDetailResponse,
@@ -170,12 +172,39 @@ def _admin_actor_context(admin_context: AdminContext) -> StaffActorContext:
     )
 
 
+def _admin_context_from_identity(identity: AuthIdentity) -> AdminContext:
+    if identity.role != "admin":
+        raise ApiError(
+            status_code=403,
+            detail="Forbidden - admin role required",
+            error_code=ErrorCode.FORBIDDEN.value,
+        )
+    try:
+        user_id = UUID(identity.subject_id)
+    except ValueError as exc:
+        raise ApiError(
+            status_code=401,
+            detail="Unauthorized",
+            error_code=ErrorCode.UNAUTHORIZED.value,
+        ) from exc
+    return AdminContext(
+        user_id=user_id,
+        programme_scope=set(identity.programme_scope or []),
+        is_master_admin=is_master_admin(identity),
+    )
+
+
 async def require_admin_context(
+    request: Request,
     x_user_role: Annotated[str | None, Header(alias="X-User-Role")] = None,
     x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     x_user_programme: Annotated[str | None, Header(alias="X-User-Programme")] = None,
     x_admin_level: Annotated[str | None, Header(alias="X-Admin-Level")] = None,
 ) -> AdminContext:
+    identity = getattr(request.state, "identity", None)
+    if isinstance(identity, AuthIdentity):
+        return _admin_context_from_identity(identity)
+
     if x_user_role != "admin":
         raise ApiError(
             status_code=403,

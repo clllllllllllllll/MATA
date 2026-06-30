@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dependencies.auth import require_external_resident
 from app.errors import ApiError, ErrorCode
+from app.middleware.auth_stub import AuthIdentity
 from app.schemas.external_resident import (
     ExternalResidentPostingUpdateRequest,
     ExternalResidentRegisterRequest,
@@ -33,23 +34,10 @@ class ExternalResidentContext:
 
 
 async def require_external_resident_context(
-    x_user_role: Annotated[str | None, Header(alias="X-User-Role")] = None,
-    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    identity: AuthIdentity = Depends(require_external_resident),
 ) -> ExternalResidentContext:
-    if x_user_role != "external_resident":
-        raise ApiError(
-            status_code=403,
-            detail="Forbidden - external_resident role required",
-            error_code=ErrorCode.FORBIDDEN.value,
-        )
-    if not x_user_id:
-        raise ApiError(
-            status_code=401,
-            detail="Unauthorized",
-            error_code=ErrorCode.UNAUTHORIZED.value,
-        )
     try:
-        return ExternalResidentContext(external_resident_id=UUID(x_user_id))
+        return ExternalResidentContext(external_resident_id=UUID(identity.subject_id))
     except ValueError as exc:
         raise ApiError(
             status_code=401,

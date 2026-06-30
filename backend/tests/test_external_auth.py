@@ -3,14 +3,24 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.middleware.auth_stub import AuthIdentity
 from app.middleware.errors import install_error_handlers
 from app.routers import auth
 from tests.resident_fakes import FakeResidentSession
 
 
-def _client(fake_db: FakeResidentSession) -> TestClient:
+def _client(
+    fake_db: FakeResidentSession,
+    identity: AuthIdentity | None = None,
+) -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
+
+    @app.middleware("http")
+    async def inject_identity(request, call_next):
+        if identity is not None:
+            request.state.identity = identity
+        return await call_next(request)
 
     async def _db_override():
         yield fake_db
@@ -52,15 +62,17 @@ def test_external_login_rejects_unknown_mcr() -> None:
 
 def test_auth_me_returns_external_identity_without_posting_claim() -> None:
     fake_db = FakeResidentSession()
-    client = _client(fake_db)
-
-    response = client.get(
-        "/auth/me",
-        headers={
-            "X-User-Role": "external_resident",
-            "X-User-Id": fake_db.external_resident_id,
-        },
+    client = _client(
+        fake_db,
+        AuthIdentity(
+            role="external_resident",
+            subject_id=fake_db.external_resident_id,
+            mcr="E12345A",
+            home_cluster="NUH",
+        ),
     )
+
+    response = client.get("/auth/me")
 
     assert response.status_code == 200
     payload = response.json()

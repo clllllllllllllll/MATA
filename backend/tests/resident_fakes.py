@@ -82,6 +82,7 @@ class FakeResidentSession:
                 "name": "Programme Coordinator",
                 "posting_code": None,
                 "programme_scope": ["GRM", "DR"],
+                "admin_level": "programme",
                 "is_active": True,
             },
             {
@@ -92,6 +93,7 @@ class FakeResidentSession:
                 "name": "Department Secretary",
                 "posting_code": "TTSHCardio",
                 "programme_scope": None,
+                "admin_level": "programme",
                 "is_active": True,
             },
         ]

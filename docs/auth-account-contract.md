@@ -1,6 +1,6 @@
 # Auth and Account Contract
 
-Status: 5B-A foundation, June 29, 2026.
+Status: 5B-A foundation plus 5B-B1 backend identity foundation, June 29, 2026.
 
 This document defines the Supabase-ready auth/account contract for upcoming 5B login/register work. It is also a repo audit: source-of-truth docs describe the intended design, while the implementation has partial stub/demo and Non-NHG resident support already present.
 
@@ -42,8 +42,9 @@ Backend:
 - `backend/app/services/auth.py` currently issues `stub.<role>.<id>` tokens only in stub/demo mode. Supabase mode does not issue stub tokens.
 - `backend/app/routers/external_residents.py` and `backend/app/services/external_residents.py` already implement partial Non-NHG self-enrolment and posting update.
 - The current Non-NHG service writes `external_residents` and `external_resident_postings`, but the authorization-sensitive source remains `external_residents.current_nhg_posting_code` unless a later phase explicitly wires date-specific external posting semantics.
-- `users` has no persisted `admin_level` or `is_master_admin` column yet. Some routes currently treat `X-Admin-Level: master` as explicit master admin in stub/demo mode. This must become a persisted/server-derived account property before production.
-- Several routers still read headers directly after middleware validation. Future Supabase work must replace this with a central verified identity dependency.
+- `users.admin_level` is now the persisted explicit master marker with allowed values `programme` and `master`. Some local/demo paths still accept `X-Admin-Level: master` only when the role switcher is explicitly enabled, but runtime admin context and staff actor audit metadata now prefer `request.state.identity` when middleware provides it.
+- `backend/app/dependencies/auth.py` provides central typed identity helpers over `request.state.identity`.
+- Several legacy route/test compatibility paths still read headers directly after middleware validation. Future Supabase work must finish replacing those with central verified identity dependencies.
 
 Frontend:
 - `frontend/src/components/AppShell.tsx` contains the role switcher.
@@ -150,7 +151,7 @@ Secretary claims:
 
 Source: backend-created or seeded staff account.
 
-Required final representation: explicit persisted field, for example `users.admin_level = 'master' | 'programme'` or an equivalent non-null, server-owned marker.
+Representation: explicit persisted field `users.admin_level = 'master' | 'programme'`.
 
 Claims:
 
@@ -297,11 +298,17 @@ Planned Non-NHG registration:
 
 ## Implementation TODOs
 
-5B-B:
-- Add real backend identity dependency that reads `request.state.identity` rather than direct headers.
-- Replace route-level direct header parsing for protected routers.
-- Persist explicit master admin marker in `users` or an equivalent server-owned account table.
-- Ensure Programme PC endpoints reject master admin where required.
+5B-B1 implemented:
+- Added `users.admin_level` as a non-null explicit master marker.
+- Added central backend identity dependencies that read `request.state.identity`.
+- Converted `/auth/me`, external resident current-posting update, the admin context choke point, and staff actor audit metadata to use the verified identity when available.
+- Kept local/demo role-switcher compatibility environment-gated.
+
+5B-B remaining:
+- Replace remaining route-level direct header parsing and legacy isolated-router compatibility branches with central dependencies.
+- Convert resident and secretary dependencies after targeted route tests are in place.
+- Ensure every Programme PC endpoint rejects master admin where required.
+- Seed/create the actual backend-owned Master Admin account in the target environment.
 
 5B-C:
 - Add real frontend `/login` and auth/session provider.

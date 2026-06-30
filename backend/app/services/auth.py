@@ -62,6 +62,7 @@ def _user_identity(row: dict[str, Any]) -> dict[str, Any]:
     }
     if row["role"] == "admin":
         payload["programme_scope"] = row.get("programme_scope") or []
+        payload["admin_level"] = row.get("admin_level") or "programme"
     if row["role"] == "secretary":
         payload["posting_code"] = row.get("posting_code")
     return payload
@@ -135,6 +136,7 @@ async def login(
                 name,
                 posting_code,
                 programme_scope,
+                admin_level,
                 is_active
             FROM users
             WHERE lower(email) = lower(:email)
@@ -205,6 +207,7 @@ async def get_current_identity(
                 name,
                 posting_code,
                 programme_scope,
+                admin_level,
                 is_active
             FROM users
             WHERE id = :user_id

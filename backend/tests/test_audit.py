@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.dialects import postgresql
 
 from app.errors import ApiError
+from app.middleware.auth_stub import AuthIdentity
 from app.middleware.errors import install_error_handlers
 from app.models import Base
 from app.routers import admin
@@ -184,11 +185,17 @@ def test_write_audit_log_rejects_blank_action_and_entity_type() -> None:
     asyncio.run(_exercise())
 
 
-def _staff_actor_client() -> TestClient:
+def _staff_actor_client(identity: AuthIdentity | None = None) -> TestClient:
     from app.dependencies.staff_actor import require_staff_actor
 
     app = FastAPI()
     install_error_handlers(app)
+
+    @app.middleware("http")
+    async def inject_identity(request, call_next):
+        if identity is not None:
+            request.state.identity = identity
+        return await call_next(request)
 
     @app.post("/test/staff-actor")
     async def test_route(actor=Depends(require_staff_actor)):
@@ -231,6 +238,27 @@ def test_staff_actor_dependency_uses_authenticated_scope_and_fallback_actor_name
     assert payload["actor_site"] == "TTSHCardio"
     assert payload["actor_admin_level"] == "master"
     assert payload["raw_scope_metadata"]["programme_scope"] == ["DR", "GRM"]
+
+
+def test_staff_actor_dependency_prefers_verified_identity_for_master_admin() -> None:
+    subject_id = uuid4()
+    client = _staff_actor_client(
+        AuthIdentity(
+            role="admin",
+            subject_id=str(subject_id),
+            programme_scope=[],
+            admin_level="master",
+        ),
+    )
+
+    response = client.post("/test/staff-actor")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["actor_user_id"] == str(subject_id)
+    assert payload["actor_role"] == "admin"
+    assert payload["actor_admin_level"] == "master"
+    assert payload["raw_scope_metadata"]["admin_level"] == "master"
 
 
 def test_staff_actor_dependency_ignores_legacy_actor_name_header() -> None:

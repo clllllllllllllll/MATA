@@ -209,6 +209,10 @@ class ExternalResidentPosting(UUIDTimestampMixin, Base):
 class User(UUIDTimestampMixin, Base):
     __tablename__ = "users"
     __table_args__ = (
+        CheckConstraint(
+            "admin_level IN ('programme', 'master')",
+            name="ck_users_admin_level",
+        ),
         Index("idx_users_role", "role"),
         Index(
             "idx_users_posting_code",
@@ -234,6 +238,11 @@ class User(UUIDTimestampMixin, Base):
     programme_scope: Mapped[list[str] | None] = mapped_column(
         ARRAY(String()),
         nullable=True,
+    )
+    admin_level: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        server_default=text("'programme'"),
     )
     is_active: Mapped[bool] = mapped_column(
         Boolean,

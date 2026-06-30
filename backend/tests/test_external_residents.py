@@ -3,14 +3,24 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.middleware.auth_stub import AuthIdentity
 from app.middleware.errors import install_error_handlers
 from app.routers import external_residents
 from tests.resident_fakes import FakeResidentSession
 
 
-def _client(fake_db: FakeResidentSession) -> TestClient:
+def _client(
+    fake_db: FakeResidentSession,
+    identity: AuthIdentity | None = None,
+) -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
+
+    @app.middleware("http")
+    async def inject_identity(request, call_next):
+        if identity is not None:
+            request.state.identity = identity
+        return await call_next(request)
 
     async def _db_override():
         yield fake_db
@@ -153,14 +163,17 @@ def test_external_posting_update_closes_old_and_creates_new_current_row() -> Non
     fake_db = FakeResidentSession()
     before = len(fake_db.external_resident_postings)
     current_row = next(row for row in fake_db.external_resident_postings if row["is_current"])
-    client = _client(fake_db)
+    client = _client(
+        fake_db,
+        AuthIdentity(
+            role="external_resident",
+            subject_id=fake_db.external_resident_id,
+            home_cluster="NUH",
+        ),
+    )
 
     response = client.put(
         "/external-residents/me/posting",
-        headers={
-            "X-User-Role": "external_resident",
-            "X-User-Id": fake_db.external_resident_id,
-        },
         json={"current_nhg_posting_code": "KTPHGerMed"},
     )
 
@@ -177,14 +190,17 @@ def test_external_posting_update_closes_old_and_creates_new_current_row() -> Non
 def test_external_posting_update_same_posting_is_idempotent() -> None:
     fake_db = FakeResidentSession()
     before = len(fake_db.external_resident_postings)
-    client = _client(fake_db)
+    client = _client(
+        fake_db,
+        AuthIdentity(
+            role="external_resident",
+            subject_id=fake_db.external_resident_id,
+            home_cluster="NUH",
+        ),
+    )
 
     response = client.put(
         "/external-residents/me/posting",
-        headers={
-            "X-User-Role": "external_resident",
-            "X-User-Id": fake_db.external_resident_id,
-        },
         json={"current_nhg_posting_code": "TTSHCardio"},
     )
 
@@ -196,14 +212,17 @@ def test_external_posting_update_same_posting_is_idempotent() -> None:
 
 def test_native_resident_cannot_update_external_posting() -> None:
     fake_db = FakeResidentSession()
-    client = _client(fake_db)
+    client = _client(
+        fake_db,
+        AuthIdentity(
+            role="resident",
+            subject_id=fake_db.resident_id,
+            programme_code="GRM",
+        ),
+    )
 
     response = client.put(
         "/external-residents/me/posting",
-        headers={
-            "X-User-Role": "resident",
-            "X-User-Id": fake_db.resident_id,
-        },
         json={"current_nhg_posting_code": "KTPHGerMed"},
     )
 

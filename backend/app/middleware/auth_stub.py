@@ -22,7 +22,9 @@ class AuthIdentity:
     programme_scope: list[str] | None = None
     programme_code: str | None = None
     posting_code: str | None = None
+    admin_level: str | None = None
     mcr: str | None = None
+    home_cluster: str | None = None
 
 
 class AuthStubMiddleware(BaseHTTPMiddleware):
@@ -105,6 +107,10 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
                 request.headers.get("X-User-Programme"),
             )
             allowed_programmes = user.programme_scope or []
+            admin_level = self._resolve_admin_level(
+                request,
+                persisted_admin_level=getattr(user, "admin_level", None),
+            )
             if requested_programmes:
                 if not allowed_programmes or not set(requested_programmes).issubset(
                     set(allowed_programmes),
@@ -119,6 +125,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
                 subject_id=str(user.id),
                 programme_scope=allowed_programmes,
                 programme_code=",".join(requested_programmes) if requested_programmes else None,
+                admin_level=admin_level,
             )
 
         # secretary role
@@ -185,6 +192,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             role="external_resident",
             subject_id=str(resident.id),
             mcr=resident.mcr,
+            home_cluster=resident.home_cluster,
         )
 
     @staticmethod
@@ -200,3 +208,34 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         if not raw_value:
             return []
         return [token.strip() for token in raw_value.split(",") if token.strip()]
+
+    def _resolve_admin_level(
+        self,
+        request: Request,
+        *,
+        persisted_admin_level: str | None,
+    ) -> str:
+        persisted = self._normalise_admin_level(persisted_admin_level) or "programme"
+        if persisted == "master":
+            return "master"
+
+        requested = self._normalise_admin_level(request.headers.get("X-Admin-Level"))
+        if (
+            requested == "master"
+            and self._settings.auth_mode in {"stub", "demo"}
+            and self._settings.allow_demo_role_switcher
+        ):
+            return "master"
+
+        return persisted
+
+    @staticmethod
+    def _normalise_admin_level(raw_value: str | None) -> str | None:
+        if not raw_value:
+            return None
+        value = raw_value.strip().lower()
+        if value == "master_admin":
+            return "master"
+        if value in {"programme", "master"}:
+            return value
+        return None
