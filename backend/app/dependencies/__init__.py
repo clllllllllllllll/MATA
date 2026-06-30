@@ -7,6 +7,7 @@ from app.dependencies.auth import (
     require_master_admin,
     require_programme_pc,
     require_resident,
+    require_resident_or_external,
     require_secretary,
 )
 from app.dependencies.staff_actor import StaffActorContext, require_staff_actor
@@ -21,6 +22,7 @@ __all__ = [
     "require_master_admin",
     "require_programme_pc",
     "require_resident",
+    "require_resident_or_external",
     "require_secretary",
     "require_staff_actor",
 ]

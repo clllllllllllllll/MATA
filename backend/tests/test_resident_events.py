@@ -6,14 +6,21 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.middleware.auth_stub import AuthIdentity
 from app.middleware.errors import install_error_handlers
 from app.routers import resident
+from tests.auth_identity_test_helpers import install_stub_header_identity_middleware
 from tests.resident_fakes import FakeResidentSession
 
 
-def _client(fake_db: FakeResidentSession) -> TestClient:
+def _client(
+    fake_db: FakeResidentSession,
+    *,
+    identity: AuthIdentity | None = None,
+) -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
+    install_stub_header_identity_middleware(app, default_identity=identity)
 
     async def _db_override():
         yield fake_db
@@ -204,6 +211,39 @@ def test_events_reject_non_resident_role() -> None:
         "/resident/events",
         headers={"X-User-Role": "admin", "X-User-Id": str(uuid4())},
     )
+
+    assert response.status_code == 403
+
+
+def test_events_accept_verified_resident_identity_without_raw_headers() -> None:
+    fake_db = FakeResidentSession()
+    client = _client(
+        fake_db,
+        identity=AuthIdentity(
+            role="resident",
+            subject_id=fake_db.resident_id,
+            programme_code="GRM",
+        ),
+    )
+
+    response = client.get("/resident/events")
+
+    assert response.status_code == 200
+    assert fake_db.event_id in {row["id"] for row in response.json()["events"]}
+
+
+def test_events_reject_verified_staff_identity() -> None:
+    fake_db = FakeResidentSession()
+    client = _client(
+        fake_db,
+        identity=AuthIdentity(
+            role="secretary",
+            subject_id=str(uuid4()),
+            posting_code="TTSHCardio",
+        ),
+    )
+
+    response = client.get("/resident/events")
 
     assert response.status_code == 403
 

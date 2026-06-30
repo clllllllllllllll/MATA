@@ -1,6 +1,6 @@
 # Auth and Account Contract
 
-Status: 5B-A foundation plus 5B-B1 backend identity foundation, June 29, 2026.
+Status: 5B-A foundation plus 5B-B1/5B-B2 backend identity foundation, June 30, 2026.
 
 This document defines the Supabase-ready auth/account contract for upcoming 5B login/register work. It is also a repo audit: source-of-truth docs describe the intended design, while the implementation has partial stub/demo and Non-NHG resident support already present.
 
@@ -27,6 +27,10 @@ References checked:
 - NHG Resident current posting is always derived server-side from `resident_postings` at request time.
 - Non-NHG Resident current posting is not derived from native `resident_postings`.
 - User-facing labels are NHG Resident and Non-NHG Resident. Existing backend/internal names such as `resident`, `external_resident`, `/external/*`, and `external_attendance_records` remain acceptable.
+- MCR-only resident login is a legacy low-assurance identity flow, not strong authentication. It is preserved for resident UX compatibility and must be tightly scoped to the resident's own NHG Resident or Non-NHG Resident APIs.
+- Staff/admin/secretary authentication remains separate from resident MCR identity and should use stronger Supabase-backed authentication later.
+- Resident second factor is deferred. Future MCR + email OTP, magic link, phone OTP, or equivalent verification can be added before identity construction without changing protected-route authorization, because resident routes depend on central backend identity.
+- Backend authorization remains the final authority. Frontend route guards and role switchers are UX/dev conveniences only.
 
 ## Current Repo State
 
@@ -44,7 +48,11 @@ Backend:
 - The current Non-NHG service writes `external_residents` and `external_resident_postings`, but the authorization-sensitive source remains `external_residents.current_nhg_posting_code` unless a later phase explicitly wires date-specific external posting semantics.
 - `users.admin_level` is now the persisted explicit master marker with allowed values `programme` and `master`. Some local/demo paths still accept `X-Admin-Level: master` only when the role switcher is explicitly enabled, but runtime admin context and staff actor audit metadata now prefer `request.state.identity` when middleware provides it.
 - `backend/app/dependencies/auth.py` provides central typed identity helpers over `request.state.identity`.
-- Several legacy route/test compatibility paths still read headers directly after middleware validation. Future Supabase work must finish replacing those with central verified identity dependencies.
+- As of 5B-B2, resident and secretary route contexts read central verified identity dependencies instead of raw route-level `X-*` headers.
+- Remaining direct header reads are intentionally limited to middleware/infrastructure or legacy fallback choke points:
+  - `AuthStubMiddleware` reads local stub/demo headers and validates subjects before setting `request.state.identity`.
+  - `require_admin_context` and `require_staff_actor` prefer `request.state.identity`; their direct-header branches remain only for isolated legacy test/demo compatibility.
+  - rate-limit middleware may read headers for request bucketing only, not authorization.
 
 Frontend:
 - `frontend/src/components/AppShell.tsx` contains the role switcher.
@@ -304,10 +312,15 @@ Planned Non-NHG registration:
 - Converted `/auth/me`, external resident current-posting update, the admin context choke point, and staff actor audit metadata to use the verified identity when available.
 - Kept local/demo role-switcher compatibility environment-gated.
 
+5B-B2 implemented:
+- Converted resident route context to central verified identity with native/external resident role enforcement.
+- Converted secretary route context to central verified identity with posting-code scope from the verified identity.
+- Preserved local stub/demo compatibility through middleware-provided `request.state.identity`.
+- Confirmed Programme PC teaching-event CRUD rejects Master Admin and empty programme scope.
+
 5B-B remaining:
-- Replace remaining route-level direct header parsing and legacy isolated-router compatibility branches with central dependencies.
-- Convert resident and secretary dependencies after targeted route tests are in place.
-- Ensure every Programme PC endpoint rejects master admin where required.
+- Continue retiring isolated legacy header fallback branches when surrounding tests no longer need them.
+- Audit additional PC-only endpoints only where the intended Programme PC-only boundary is explicit.
 - Seed/create the actual backend-owned Master Admin account in the target environment.
 
 5B-C:
@@ -337,7 +350,7 @@ Planned Non-NHG registration:
 - Add rate-limit hardening for login/register and mutation surfaces before UAT/public use.
 
 Still deferred beyond 5B-A:
-- Production Supabase deployment, Vercel/backend deployment, exports/email, bulk upload, compliance, surplus, snapshots, clawback, STP upload/parser, password reset, and staff account management UI.
+- Real Supabase JWT verification, `/login` UI, frontend session provider, resident second factor, RLS, staff account UI, password reset, production Supabase deployment, Vercel/backend deployment, Master Admin seed/provisioning script, Non-NHG workflow parity, exports/email, bulk upload, compliance, surplus, snapshots, clawback, and STP upload/parser.
 
 ## 5A Guardrails Preserved
 

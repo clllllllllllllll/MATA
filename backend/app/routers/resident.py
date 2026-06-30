@@ -6,10 +6,12 @@ from datetime import date
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dependencies.auth import require_resident_or_external
 from app.errors import ApiError, ErrorCode
+from app.middleware.auth_stub import AuthIdentity
 from app.schemas.resident import ResidentAdhocTeachingRequest, ResidentAttendanceSubmitRequest
 from app.services import resident_submission
 
@@ -33,25 +35,10 @@ class ResidentContext:
 
 
 async def require_resident_context(
-    x_user_role: Annotated[str | None, Header(alias="X-User-Role")] = None,
-    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
-    x_user_programme: Annotated[str | None, Header(alias="X-User-Programme")] = None,
+    identity: AuthIdentity = Depends(require_resident_or_external),
 ) -> ResidentContext:
-    role = (x_user_role or "").strip().lower()
-    if role not in {"resident", "external_resident"}:
-        raise ApiError(
-            status_code=403,
-            detail="Forbidden - resident role required",
-            error_code=ErrorCode.FORBIDDEN.value,
-        )
-    if not x_user_id:
-        raise ApiError(
-            status_code=401,
-            detail="Unauthorized",
-            error_code=ErrorCode.UNAUTHORIZED.value,
-        )
     try:
-        resident_id = UUID(x_user_id)
+        resident_id = UUID(identity.subject_id)
     except ValueError as exc:
         raise ApiError(
             status_code=401,
@@ -59,9 +46,9 @@ async def require_resident_context(
             error_code=ErrorCode.UNAUTHORIZED.value,
         ) from exc
     return ResidentContext(
-        role=role,
+        role=identity.role,
         subject_id=resident_id,
-        programme_code=(x_user_programme or "").strip() or None,
+        programme_code=identity.programme_code,
     )
 
 

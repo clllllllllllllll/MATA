@@ -6,12 +6,14 @@ from datetime import date
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dependencies.auth import require_secretary
 from app.dependencies.staff_actor import StaffActorContext, require_staff_actor
 from app.errors import ApiError, ErrorCode
+from app.middleware.auth_stub import AuthIdentity
 from app.schemas.secretary import (
     SecretaryTeachingEventCreateRequest,
     SecretaryTeachingEventUpdateRequest,
@@ -289,31 +291,10 @@ async def _write_secretary_series_audit(
 
 
 async def require_secretary_context(
-    x_user_role: Annotated[str | None, Header(alias="X-User-Role")] = None,
-    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
-    x_user_site: Annotated[str | None, Header(alias="X-User-Site")] = None,
+    identity: AuthIdentity = Depends(require_secretary),
 ) -> SecretaryContext:
-    if x_user_role != "secretary":
-        raise ApiError(
-            status_code=403,
-            detail="Forbidden - secretary role required",
-            error_code=ErrorCode.FORBIDDEN.value,
-        )
-    if not x_user_id:
-        raise ApiError(
-            status_code=401,
-            detail="Unauthorized",
-            error_code=ErrorCode.UNAUTHORIZED.value,
-        )
-    if not x_user_site or not x_user_site.strip():
-        raise ApiError(
-            status_code=403,
-            detail="Forbidden - secretary posting scope is required",
-            error_code=ErrorCode.FORBIDDEN.value,
-        )
-
     try:
-        user_id = UUID(x_user_id)
+        user_id = UUID(identity.subject_id)
     except ValueError as exc:
         raise ApiError(
             status_code=401,
@@ -321,7 +302,7 @@ async def require_secretary_context(
             error_code=ErrorCode.UNAUTHORIZED.value,
         ) from exc
 
-    return SecretaryContext(user_id=user_id, posting_code=x_user_site.strip())
+    return SecretaryContext(user_id=user_id, posting_code=identity.posting_code or "")
 
 
 @router.get("/teaching-events")

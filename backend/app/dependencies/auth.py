@@ -104,6 +104,14 @@ async def require_resident(
     return identity
 
 
+async def require_resident_or_external(
+    identity: AuthIdentity = Depends(require_authenticated),
+) -> AuthIdentity:
+    if identity.role not in {"resident", "external_resident"}:
+        raise _forbidden("Forbidden - resident role required")
+    return identity
+
+
 async def require_external_resident(
     identity: AuthIdentity = Depends(require_authenticated),
 ) -> AuthIdentity:

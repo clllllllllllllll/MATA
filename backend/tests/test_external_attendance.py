@@ -7,14 +7,21 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.middleware.auth_stub import AuthIdentity
 from app.middleware.errors import install_error_handlers
 from app.routers import resident
+from tests.auth_identity_test_helpers import install_stub_header_identity_middleware
 from tests.resident_fakes import FakeResidentSession
 
 
-def _client(fake_db: FakeResidentSession) -> TestClient:
+def _client(
+    fake_db: FakeResidentSession,
+    *,
+    identity: AuthIdentity | None = None,
+) -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
+    install_stub_header_identity_middleware(app, default_identity=identity)
 
     async def _db_override():
         yield fake_db
@@ -42,6 +49,23 @@ def test_external_events_visible_when_supports_secretary_events_true() -> None:
     ids = {row["id"] for row in events}
     assert fake_db.event_id in ids
     assert all("created_by_role" not in row for row in events)
+
+
+def test_external_events_accept_verified_external_identity_without_raw_headers() -> None:
+    fake_db = FakeResidentSession()
+    client = _client(
+        fake_db,
+        identity=AuthIdentity(
+            role="external_resident",
+            subject_id=fake_db.external_resident_id,
+            home_cluster="NUH",
+        ),
+    )
+
+    response = client.get("/resident/events")
+
+    assert response.status_code == 200
+    assert fake_db.event_id in {row["id"] for row in response.json()["events"]}
 
 
 def test_external_events_hidden_when_supports_secretary_events_false() -> None:

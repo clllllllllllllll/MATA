@@ -5,12 +5,14 @@ from fastapi.testclient import TestClient
 
 from app.middleware.errors import install_error_handlers
 from app.routers import resident
+from tests.auth_identity_test_helpers import install_stub_header_identity_middleware
 from tests.resident_fakes import FakeResidentSession
 
 
 def _client(fake_db: FakeResidentSession) -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
+    install_stub_header_identity_middleware(app)
 
     async def _db_override():
         yield fake_db

@@ -9,8 +9,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 
+from app.middleware.auth_stub import AuthIdentity
 from app.middleware.errors import install_error_handlers
 from app.routers import secretary
+from tests.auth_identity_test_helpers import install_stub_header_identity_middleware
 
 
 class _FakeResult:
@@ -665,9 +667,14 @@ class FakeSecretarySession:
         raise AssertionError(f"Unhandled SQL: {sql}\nparams={payload}")
 
 
-def _client(fake_db: FakeSecretarySession) -> TestClient:
+def _client(
+    fake_db: FakeSecretarySession,
+    *,
+    identity: AuthIdentity | None = None,
+) -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
+    install_stub_header_identity_middleware(app, default_identity=identity)
 
     async def _db_override():
         yield fake_db
@@ -699,6 +706,25 @@ def test_non_secretary_access_rejected() -> None:
     response = client.get("/secretary/teaching-events", headers=_headers(fake_db, role="admin"))
 
     assert response.status_code == 403
+
+
+def test_secretary_context_uses_verified_identity_posting_without_raw_headers() -> None:
+    fake_db = FakeSecretarySession()
+    client = _client(
+        fake_db,
+        identity=AuthIdentity(
+            role="secretary",
+            subject_id=fake_db.secretary_id,
+            posting_code="TTSHGerMed",
+        ),
+    )
+
+    response = client.get("/secretary/teaching-name-options")
+
+    assert response.status_code == 200
+    keywords = [row["keyword"] for row in response.json()["options"]]
+    assert "GERI Demo Row 22" in keywords
+    assert "Journal Club" not in keywords
 
 
 def test_secretary_mutation_endpoint_allows_missing_actor_name_and_writes_audit() -> None:
