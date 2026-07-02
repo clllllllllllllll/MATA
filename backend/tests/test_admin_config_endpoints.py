@@ -466,6 +466,40 @@ def test_programme_pc_cannot_read_global_programmes_config() -> None:
     assert response.status_code == 403
 
 
+def test_programme_pc_can_read_reporting_periods_for_ttf_upload_selection() -> None:
+    client = _build_client_with_session(FakeAdminConfigSession())
+    response = client.get("/admin/reporting-periods", headers=_admin_headers("DR"))
+
+    assert response.status_code == 200
+    assert [row["label"] for row in response.json()] == ["Jul - Dec 2025"]
+
+
+def test_non_admin_identities_cannot_read_reporting_periods() -> None:
+    client = _build_client_with_session(FakeAdminConfigSession())
+    headers_by_role = [
+        {
+            "X-User-Role": "secretary",
+            "X-User-Id": str(uuid4()),
+            "X-User-Site": "TTSHGerMed",
+        },
+        {
+            "X-User-Role": "resident",
+            "X-User-Id": str(uuid4()),
+        },
+        {
+            "X-User-Role": "external_resident",
+            "X-User-Id": str(uuid4()),
+        },
+    ]
+
+    responses = [
+        client.get("/admin/reporting-periods", headers=headers)
+        for headers in headers_by_role
+    ]
+
+    assert [response.status_code for response in responses] == [403, 403, 403]
+
+
 def test_programme_scope_null_returns_no_scoped_data() -> None:
     client = _build_client_with_session(FakeAdminConfigSession())
     headers = _admin_headers(scope=None)

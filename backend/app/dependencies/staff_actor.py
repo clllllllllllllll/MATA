@@ -4,8 +4,9 @@ from dataclasses import dataclass, field
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import Header, Request
+from fastapi import Depends, Header, Request
 
+from app.config import Settings, get_settings
 from app.dependencies.auth import is_master_admin
 from app.errors import ApiError, ErrorCode
 from app.middleware.auth_stub import AuthIdentity
@@ -95,8 +96,13 @@ def _staff_actor_from_identity(identity: AuthIdentity) -> StaffActorContext:
     )
 
 
+def _stub_header_fallback_allowed(settings: Settings) -> bool:
+    return settings.environment != "production" and settings.auth_mode in {"stub", "demo"}
+
+
 async def require_staff_actor(
     request: Request,
+    settings: Settings = Depends(get_settings),
     x_user_role: Annotated[str | None, Header(alias="X-User-Role")] = None,
     x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     x_user_site: Annotated[str | None, Header(alias="X-User-Site")] = None,
@@ -106,6 +112,13 @@ async def require_staff_actor(
     identity = getattr(request.state, "identity", None)
     if isinstance(identity, AuthIdentity):
         return _staff_actor_from_identity(identity)
+
+    if not _stub_header_fallback_allowed(settings):
+        raise ApiError(
+            status_code=401,
+            detail="Unauthorized",
+            error_code=ErrorCode.UNAUTHORIZED.value,
+        )
 
     actor_role = (_normalise_optional_header(x_user_role) or "").lower()
     if actor_role not in {"admin", "secretary"}:

@@ -80,7 +80,7 @@ mata/
 
 ## Auth Stub (Phase 1)
 
-Until Supabase Auth is integrated, use a simple middleware that reads role and identity from request headers:
+Until Supabase Auth is integrated, local `AUTH_MODE=stub` and non-production `AUTH_MODE=demo` use a simple middleware that reads role and identity from request headers:
 
 ```
 X-User-Role: admin | secretary | resident | external_resident
@@ -90,7 +90,7 @@ X-User-Site: <posting_code>        # secretary only
 X-User-Programme: <programme_code> # admin only, comma-separated for multiple e.g. DR,GRM
 ```
 
-All endpoints check these headers for authorization. When Supabase Auth is wired in, the middleware is replaced — the rest of the app doesn't change.
+These headers are local stub/demo only and must not be trusted in `AUTH_MODE=supabase` or production-like modes. When Supabase Auth is wired in, the middleware derives the same identity shape from verified JWT/server-side state — the rest of the app doesn't change.
 
 ## System Initialisation Order
 
@@ -208,7 +208,7 @@ Read these files in `docs/` before writing code for any domain:
 - Identity is derived exclusively from the verified JWT on the server. Never trust client-provided user IDs, roles, or programme codes.
 - All protected endpoints validate the JWT and check role + scope before any DB operation.
 - Admin endpoints check `role = 'admin'` AND `programme_code IN programme_scope`.
-- Secretary endpoints check `role = 'secretary'` AND `posting_code = X-User-Site`.
+- Secretary endpoints check `role = 'secretary'` AND the verified identity posting code; in local stub/demo this comes from `X-User-Site`.
 - Resident endpoints check `role = 'resident'` AND all DB queries are scoped to `resident_id` from JWT `sub`.
 - Residents authenticate with MCR only (Phase 1). This is an intentional design choice for this system — no upgrade path needed.
 

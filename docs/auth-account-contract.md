@@ -1,6 +1,6 @@
 # Auth and Account Contract
 
-Status: 5B-A foundation plus 5B-B1/5B-B2 backend identity foundation, June 30, 2026.
+Status: 5B-A foundation plus 5B-B1/5B-B2 backend identity foundation and 5B-C frontend auth/session shell, June 30, 2026.
 
 This document defines the Supabase-ready auth/account contract for upcoming 5B login/register work. It is also a repo audit: source-of-truth docs describe the intended design, while the implementation has partial stub/demo and Non-NHG resident support already present.
 
@@ -30,23 +30,22 @@ References checked:
 - MCR-only resident login is a legacy low-assurance identity flow, not strong authentication. It is preserved for resident UX compatibility and must be tightly scoped to the resident's own NHG Resident or Non-NHG Resident APIs.
 - Staff/admin/secretary authentication remains separate from resident MCR identity and should use stronger Supabase-backed authentication later.
 - Resident second factor is deferred. Future MCR + email OTP, magic link, phone OTP, or equivalent verification can be added before identity construction without changing protected-route authorization, because resident routes depend on central backend identity.
-- Backend authorization remains the final authority. Frontend route guards and role switchers are UX/dev conveniences only.
+- Backend authorization remains the final authority. Frontend route guards are UX convenience only.
 
 ## Current Repo State
 
 Backend:
 - `backend/app/middleware/auth_stub.py` contains `AuthStubMiddleware` and `AuthIdentity`.
-- Protected requests currently rely on Phase 1 headers: `X-User-Role`, `X-User-Id`, `X-User-Programme`, `X-User-Site`, and for some admin routes `X-Admin-Level`.
+- Protected local stub/demo requests currently use Phase 1 headers derived from the authenticated session identity: `X-User-Role`, `X-User-Id`, `X-User-Programme`, `X-User-Site`, and for some admin routes `X-Admin-Level`.
 - The middleware validates staff/resident/external resident subjects against DB tables before routers run in stub/demo modes.
-- As of 5B-A, backend auth is mode-gated:
-  - `AUTH_MODE=stub`: local header identity accepted.
-  - `AUTH_MODE=demo`: header identity accepted only when `ALLOW_DEMO_ROLE_SWITCHER=true`.
-  - `AUTH_MODE=supabase`: mock/dev identity headers are rejected for protected routes.
+- As of 5B-C cleanup, backend auth is mode-gated:
+  - `AUTH_MODE=stub` or `AUTH_MODE=demo` with non-production `ENV`: local header identity is accepted and validated against database rows before routers run.
+  - `AUTH_MODE=supabase` or production `ENV`: raw `X-User-*` identity headers are not trusted for protected routes.
 - `backend/app/routers/auth.py` has `POST /auth/login` and `GET /auth/me`.
 - `backend/app/services/auth.py` currently issues `stub.<role>.<id>` tokens only in stub/demo mode. Supabase mode does not issue stub tokens.
 - `backend/app/routers/external_residents.py` and `backend/app/services/external_residents.py` already implement partial Non-NHG self-enrolment and posting update.
 - The current Non-NHG service writes `external_residents` and `external_resident_postings`, but the authorization-sensitive source remains `external_residents.current_nhg_posting_code` unless a later phase explicitly wires date-specific external posting semantics.
-- `users.admin_level` is now the persisted explicit master marker with allowed values `programme` and `master`. Some local/demo paths still accept `X-Admin-Level: master` only when the role switcher is explicitly enabled, but runtime admin context and staff actor audit metadata now prefer `request.state.identity` when middleware provides it.
+- `users.admin_level` is now the persisted explicit master marker with allowed values `programme` and `master`. Runtime admin context and staff actor audit metadata prefer `request.state.identity` when middleware provides it; direct-header fallback branches are limited to local stub/demo compatibility.
 - `backend/app/dependencies/auth.py` provides central typed identity helpers over `request.state.identity`.
 - As of 5B-B2, resident and secretary route contexts read central verified identity dependencies instead of raw route-level `X-*` headers.
 - Remaining direct header reads are intentionally limited to middleware/infrastructure or legacy fallback choke points:
@@ -55,17 +54,17 @@ Backend:
   - rate-limit middleware may read headers for request bucketing only, not authorization.
 
 Frontend:
-- `frontend/src/components/AppShell.tsx` contains the role switcher.
+- `frontend/src/components/AppShell.tsx` displays the authenticated identity and logout action; it no longer exposes a role switcher.
 - `frontend/src/config/navigation.ts` defines role options, route-role mapping, and redirect targets.
-- `frontend/src/api/authHeaders.ts` builds local/demo stub headers.
-- As of 5B-A, demo headers are emitted only when `VITE_AUTH_MODE !== supabase` and `VITE_ENABLE_ROLE_SWITCHER=true`.
-- As of 5B-A, the role switcher is visible only when `VITE_ENABLE_ROLE_SWITCHER=true`.
+- `frontend/src/api/authHeaders.ts` builds local/demo stub headers only from a stored authenticated session identity.
+- As of 5B-C cleanup, the frontend no longer synthesizes pre-login demo identity headers and no longer has a visible role switcher.
 - `frontend/src/types/auth.ts` defines the typed frontend auth/session identity contract for later real session wiring.
-- There is no real Supabase client/session provider or production login page yet.
+- As of 5B-C, the frontend has a universal `/login`, frontend auth/session provider, role-aware route guards, logout/session clearing, and Non-NHG Resident registration plus confirmation UI.
+- Real Supabase client/session verification remains deferred to 5B-D.
 
 Docker/env:
-- `docker-compose.yml` has local backend `AUTH_MODE=stub`, `ALLOW_DEMO_ROLE_SWITCHER=true`, Docker DB URLs using host `db`, and frontend build args for local stub mode.
-- `frontend/Dockerfile` now passes `VITE_APP_ENV`, `VITE_AUTH_MODE`, `VITE_ENABLE_ROLE_SWITCHER`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` into the Vite build.
+- `docker-compose.yml` has local backend `AUTH_MODE=stub`, Docker DB URLs using host `db`, and frontend build args for local stub mode.
+- `frontend/Dockerfile` now passes `VITE_APP_ENV`, `VITE_AUTH_MODE`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` into the Vite build.
 - `frontend/nginx.conf` proxies `/api/v1/` to the backend service, so local Docker frontend can use `VITE_API_BASE_URL=/api/v1`.
 
 ## Identity Paths
@@ -123,11 +122,12 @@ Do not trust `current_nhg_posting_code` from JWT for authorization-sensitive rea
 
 ### Staff/Admin Username or Email Login
 
-Input: role `admin` or `secretary`, plus username/email and password.
+Input: role `staff`, plus username/email and password. Legacy role-specific `admin` and `secretary` payloads remain accepted for local/demo compatibility, but the universal login frontend submits the neutral staff path.
 
 Source table: `users`.
 
 Server behaviour:
+- Look up active `users` by email and derive the staff role from the stored row after password verification.
 - Reject inactive users.
 - Staff users are never residents.
 - Secretary identity carries exactly one `posting_code`.
@@ -193,7 +193,6 @@ Backend:
 ```env
 ENV=development
 AUTH_MODE=stub
-ALLOW_DEMO_ROLE_SWITCHER=true
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/mata_db
 SYNC_DATABASE_URL=postgresql://postgres:postgres@db:5432/mata_db
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://localhost:8080,http://127.0.0.1:8080
@@ -204,7 +203,6 @@ Frontend:
 ```env
 VITE_APP_ENV=local
 VITE_AUTH_MODE=stub
-VITE_ENABLE_ROLE_SWITCHER=true
 VITE_API_BASE_URL=/api/v1
 ```
 
@@ -217,19 +215,15 @@ Recommended default:
 ```env
 ENV=development
 AUTH_MODE=supabase
-ALLOW_DEMO_ROLE_SWITCHER=false
 VITE_APP_ENV=preview
 VITE_AUTH_MODE=supabase
-VITE_ENABLE_ROLE_SWITCHER=false
 ```
 
 If a production-like demo/UAT mode is needed later, it must use both backend and frontend explicit flags and must not point at real production data:
 
 ```env
 AUTH_MODE=demo
-ALLOW_DEMO_ROLE_SWITCHER=true
 VITE_AUTH_MODE=demo
-VITE_ENABLE_ROLE_SWITCHER=true
 ```
 
 ### Production
@@ -239,7 +233,6 @@ Backend:
 ```env
 ENV=production
 AUTH_MODE=supabase
-ALLOW_DEMO_ROLE_SWITCHER=false
 DATABASE_URL=<supabase production database url>
 SYNC_DATABASE_URL=<supabase production sync database url>
 SUPABASE_SERVICE_ROLE_KEY=<server-only key>
@@ -251,7 +244,6 @@ Frontend:
 ```env
 VITE_APP_ENV=production
 VITE_AUTH_MODE=supabase
-VITE_ENABLE_ROLE_SWITCHER=false
 VITE_API_BASE_URL=<deployed backend api base>
 VITE_SUPABASE_URL=<production Supabase URL>
 VITE_SUPABASE_ANON_KEY=<production Supabase anon/publishable key>
@@ -273,7 +265,7 @@ Server-only variables must not use the `VITE_` prefix.
 ```
 
 Responsibilities:
-- Stub/demo mode may derive identity from the role switcher.
+- Stub/demo mode derives frontend identity from `/auth/login` and `/auth/me`; local header emission is based on the stored session identity.
 - Supabase mode must derive identity from verified Supabase session state and backend `/auth/me`.
 - Route guards are UX only. Backend remains the security boundary.
 - The frontend must redirect after login by role:
@@ -293,10 +285,10 @@ Current helper surface:
 Planned `/login`:
 - One universal login surface.
 - NHG Resident panel: MCR login.
-- Staff/Admin panel: username/email + password login.
+- Staff/Admin panel: username/email + password login; backend derives Master Admin, Programme PC, or Secretary from `users`.
 - Non-NHG Resident CTA using user-facing label "Non-NHG Resident".
 - Successful login stores/loads the real session identity and redirects using the target table above.
-- Stub/demo local mode may keep using the role switcher and demo identities.
+- Stub/demo local mode keeps using session-derived stub headers after login, without a user-facing role switcher.
 
 Planned Non-NHG registration:
 - User-facing label: Non-NHG Resident.
@@ -310,7 +302,7 @@ Planned Non-NHG registration:
 - Added `users.admin_level` as a non-null explicit master marker.
 - Added central backend identity dependencies that read `request.state.identity`.
 - Converted `/auth/me`, external resident current-posting update, the admin context choke point, and staff actor audit metadata to use the verified identity when available.
-- Kept local/demo role-switcher compatibility environment-gated.
+- Kept local/demo header compatibility environment-gated and moved runtime contexts toward `request.state.identity`.
 
 5B-B2 implemented:
 - Converted resident route context to central verified identity with native/external resident role enforcement.
@@ -323,10 +315,11 @@ Planned Non-NHG registration:
 - Audit additional PC-only endpoints only where the intended Programme PC-only boundary is explicit.
 - Seed/create the actual backend-owned Master Admin account in the target environment.
 
-5B-C:
-- Add real frontend `/login` and auth/session provider.
-- Wire route guards to session state.
-- Use role-aware redirects.
+5B-C implemented:
+- Added universal frontend `/login` with NHG Resident MCR login, registered Non-NHG Resident MCR login, and separate staff login for Master Admin, Programme PC, and Secretary accounts.
+- Added frontend auth/session provider, session hydration through `/auth/me` where available, role-aware redirects, protected route guards, and logout/session clearing.
+- Added Non-NHG Resident self-registration UI and screenshot-matched registration confirmation state. Registration does not assume immediate login unless the backend returns a session-like response.
+- Removed the visible role switcher and kept stub/demo session headers disabled in `VITE_AUTH_MODE=supabase`.
 
 5B-D:
 - Complete Supabase Auth JWT verification in backend.
@@ -349,8 +342,8 @@ Planned Non-NHG registration:
 5B-H:
 - Add rate-limit hardening for login/register and mutation surfaces before UAT/public use.
 
-Still deferred beyond 5B-A:
-- Real Supabase JWT verification, `/login` UI, frontend session provider, resident second factor, RLS, staff account UI, password reset, production Supabase deployment, Vercel/backend deployment, Master Admin seed/provisioning script, Non-NHG workflow parity, exports/email, bulk upload, compliance, surplus, snapshots, clawback, and STP upload/parser.
+Still deferred beyond 5B-C:
+- Real Supabase JWT verification, resident second factor, RLS, staff account UI, password reset, production Supabase deployment, Vercel/backend deployment, Master Admin seed/provisioning script, Non-NHG workflow parity beyond the login/register shell, exports/email, bulk upload, compliance, surplus, snapshots, clawback, and STP upload/parser.
 
 ## 5A Guardrails Preserved
 

@@ -1,6 +1,7 @@
 ﻿import type { NavItem, RoleOption } from '../types/app'
 import { frontendConfig } from './frontendConfig'
 import type { AppRole } from '../types/app'
+import { defaultPathForGuardRole, isRoutePathAllowedForRole, roleForRoutePath } from '../routeGuards'
 
 export const roleOptions: RoleOption[] = [
   {
@@ -13,7 +14,7 @@ export const roleOptions: RoleOption[] = [
     id: 'programme_pc',
     label: 'Programme PC',
     scopeLabel: 'Geriatric Medicine',
-    defaultPath: '/pc/upload-ttf',
+    defaultPath: '/pc/teaching-events',
   },
   {
     id: 'secretary',
@@ -35,31 +36,12 @@ export const roleOptions: RoleOption[] = [
   },
 ]
 
-export const defaultPathForRole = (role: AppRole): string =>
-  roleOptions.find((option) => option.id === role)?.defaultPath ?? '/login'
+export const defaultPathForRole = (role: AppRole): string => defaultPathForGuardRole(role)
 
-export const roleFromPathname = (pathname: string): AppRole | null => {
-  if (pathname.startsWith('/secretary')) {
-    return 'secretary'
-  }
-  if (pathname.startsWith('/resident')) {
-    return 'resident'
-  }
-  if (pathname.startsWith('/external')) {
-    return 'external_resident'
-  }
-  if (pathname.startsWith('/pc')) {
-    return 'programme_pc'
-  }
-  if (pathname.startsWith('/admin')) {
-    return 'master_admin'
-  }
-  return null
-}
+export const roleFromPathname = (pathname: string): AppRole | null => roleForRoutePath(pathname)
 
 export const isPathAllowedForRole = (pathname: string, role: AppRole): boolean => {
-  const routeRole = roleFromPathname(pathname)
-  return routeRole === null || routeRole === role
+  return isRoutePathAllowedForRole(pathname, role)
 }
 
 export const navItems: NavItem[] = [

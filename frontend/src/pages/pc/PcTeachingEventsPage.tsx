@@ -10,11 +10,11 @@ import {
   type ProgrammeTeachingEvent,
   type ProgrammeTeachingNameOption,
 } from '../../api/programmeTeachingEvents'
-import { listProgrammes, type Programme } from '../../api/programmes'
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconPlus, IconRefresh } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
 import { useAppState } from '../../context/useAppState'
+import { useAuth } from '../../context/useAuth'
 import {
   buildProgrammeTeachingEventPayload,
   canMutateProgrammeTeachingEvent,
@@ -99,10 +99,9 @@ export const PcTeachingEventsPage = () => {
     selectedProgrammeCode,
     setSelectedProgrammeCode,
     demoAdminId,
-    demoAdminProgrammes,
   } = useAppState()
+  const { identity } = useAuth()
 
-  const [programmeCatalogue, setProgrammeCatalogue] = useState<Programme[]>([])
   const [events, setEvents] = useState<ProgrammeTeachingEvent[]>([])
   const [eventsLoading, setEventsLoading] = useState(true)
   const [eventsError, setEventsError] = useState<string | null>(null)
@@ -119,10 +118,15 @@ export const PcTeachingEventsPage = () => {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectionMessage, setSelectionMessage] = useState<string | null>(null)
   const [selectionMessageTone, setSelectionMessageTone] = useState<'success' | 'warning'>('warning')
+  const pcProgrammeScope = useMemo(
+    () => (identity?.role === 'programme_pc' ? identity.programmeScope : []),
+    [identity],
+  )
+  const pcAdminId = identity?.role === 'programme_pc' ? identity.subjectId : demoAdminId
 
   const programmeScope = useMemo(
-    () => resolvePcProgrammeScope(demoAdminProgrammes, selectedProgrammeCode, programmeCatalogue),
-    [demoAdminProgrammes, programmeCatalogue, selectedProgrammeCode],
+    () => resolvePcProgrammeScope(pcProgrammeScope, selectedProgrammeCode),
+    [pcProgrammeScope, selectedProgrammeCode],
   )
   const selectedPcProgrammeCode = programmeScope.selectedProgrammeCode
   const selectedPeriod = useMemo(
@@ -191,8 +195,8 @@ export const PcTeachingEventsPage = () => {
     setEventsError(null)
     try {
       const rows = await listProgrammeTeachingEvents({
-        adminId: demoAdminId,
-        adminProgrammes: demoAdminProgrammes,
+        adminId: pcAdminId,
+        adminProgrammes: pcProgrammeScope,
         programmeCode: selectedPcProgrammeCode,
         ...dateRange,
       })
@@ -205,31 +209,7 @@ export const PcTeachingEventsPage = () => {
     } finally {
       setEventsLoading(false)
     }
-  }, [dateRange, demoAdminId, demoAdminProgrammes, selectedPcProgrammeCode])
-
-  useEffect(() => {
-    let active = true
-    ;(async () => {
-      try {
-        const programmes = await listProgrammes({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
-          adminLevel: 'master',
-        })
-        if (active) {
-          setProgrammeCatalogue(programmes)
-        }
-      } catch {
-        if (active) {
-          setProgrammeCatalogue([])
-        }
-      }
-    })()
-
-    return () => {
-      active = false
-    }
-  }, [demoAdminId, demoAdminProgrammes])
+  }, [dateRange, pcAdminId, pcProgrammeScope, selectedPcProgrammeCode])
 
   useEffect(() => {
     if (selectedPcProgrammeCode && selectedProgrammeCode !== selectedPcProgrammeCode) {
@@ -253,8 +233,8 @@ export const PcTeachingEventsPage = () => {
       }
       try {
         const rows = await listProgrammeTeachingEvents({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
+          adminId: pcAdminId,
+          adminProgrammes: pcProgrammeScope,
           programmeCode: selectedPcProgrammeCode,
           ...dateRange,
         })
@@ -278,7 +258,7 @@ export const PcTeachingEventsPage = () => {
     return () => {
       active = false
     }
-  }, [dateRange, demoAdminId, demoAdminProgrammes, selectedPcProgrammeCode])
+  }, [dateRange, pcAdminId, pcProgrammeScope, selectedPcProgrammeCode])
 
   useEffect(() => {
     let active = true
@@ -295,8 +275,8 @@ export const PcTeachingEventsPage = () => {
       }
       try {
         const options = await listProgrammeTeachingNameOptions({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
+          adminId: pcAdminId,
+          adminProgrammes: pcProgrammeScope,
           programmeCode: selectedPcProgrammeCode,
         })
         if (active) {
@@ -317,7 +297,7 @@ export const PcTeachingEventsPage = () => {
     return () => {
       active = false
     }
-  }, [demoAdminId, demoAdminProgrammes, selectedPcProgrammeCode])
+  }, [pcAdminId, pcProgrammeScope, selectedPcProgrammeCode])
 
   const toggleSelected = (id: string) => {
     setSelectedIds((previous) => {
@@ -429,8 +409,8 @@ export const PcTeachingEventsPage = () => {
     const deleteAttempts = await Promise.allSettled(
       deletableRows.map((event) =>
         deleteProgrammeTeachingEvent({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
+          adminId: pcAdminId,
+          adminProgrammes: pcProgrammeScope,
           eventId: event.id,
           programmeCode: event.createdForProgrammeCode || selectedPcProgrammeCode,
         }),
@@ -515,22 +495,22 @@ export const PcTeachingEventsPage = () => {
     try {
       if (drawerMode === 'edit' && sourceEvent) {
         await updateProgrammeTeachingEvent({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
+          adminId: pcAdminId,
+          adminProgrammes: pcProgrammeScope,
           eventId: sourceEvent.id,
           payload,
         })
       } else if (drawerMode === 'duplicate' && sourceEvent) {
         await duplicateProgrammeTeachingEvent({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
+          adminId: pcAdminId,
+          adminProgrammes: pcProgrammeScope,
           eventId: sourceEvent.id,
           payload,
         })
       } else {
         await createProgrammeTeachingEvent({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
+          adminId: pcAdminId,
+          adminProgrammes: pcProgrammeScope,
           payload,
         })
       }

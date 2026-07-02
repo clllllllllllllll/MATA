@@ -23,7 +23,6 @@ class Settings(BaseSettings):
     )
     api_prefix: str = "/api/v1"
     auth_mode: Literal["stub", "demo", "supabase"] = "stub"
-    allow_demo_role_switcher: bool = False
 
     database_url: str = Field(
         default="postgresql+asyncpg://postgres:postgres@localhost:5432/mata_db",

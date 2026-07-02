@@ -886,13 +886,13 @@ Delete a global session type.
 
 List all reporting periods.
 
-- **Auth:** admin only
+- **Auth:** Master Admin and scoped Programme PC, read-only. Programme PC access is for selecting a reporting period for programme-scoped flows such as TTF upload; empty/null `programme_scope` is not all-access.
 
 ### POST `/admin/reporting-periods`
 
 Create a new reporting period.
 
-- **Auth:** admin only
+- **Auth:** Master Admin only
 - **Body:**
 ```json
 {
@@ -911,7 +911,7 @@ Create a new reporting period.
 
 Update a reporting period label, date range, stored status, or scheduled transition dates.
 
-- **Auth:** admin only
+- **Auth:** Master Admin only
 - **Body:** any subset of `label`, `start_date`, `end_date`, `status`, `activate_on`, `deactivate_on`.
 - **Validation:** `start_date <= end_date`, `status` is `active` or `inactive`, and the resolved `activate_on/deactivate_on` pair must satisfy `activate_on <= deactivate_on` when both are set.
 - **Response:** existing reporting-period entity fields plus `data_revalidation`.
@@ -920,14 +920,14 @@ Update a reporting period label, date range, stored status, or scheduled transit
 
 Set `reporting_periods.status = 'active'`.
 
-- **Auth:** admin only
+- **Auth:** Master Admin only
 - **Response:** existing reporting-period entity fields plus `data_revalidation`.
 
 ### PUT `/admin/reporting-periods/{id}/deactivate`
 
 Set `reporting_periods.status = 'inactive'`.
 
-- **Auth:** admin only
+- **Auth:** Master Admin only
 - **Important:** Deactivation is an operational status change only. It does not generate snapshots, clawback rows, or surplus hibernation.
 - **Response:** existing reporting-period entity fields plus `data_revalidation`.
 
@@ -935,7 +935,7 @@ Set `reporting_periods.status = 'inactive'`.
 
 Delete an unused reporting period.
 
-- **Auth:** admin only
+- **Auth:** Master Admin only
 - **Response:** `200` with `{ "entity_type": "reporting_period", "entity_id": "...", "deleted": true, "data_revalidation": {...} }`.
 
 ### Reporting-period effective status

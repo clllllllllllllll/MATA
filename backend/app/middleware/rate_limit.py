@@ -9,6 +9,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import Settings
 from app.errors import ErrorCode, build_error_response
+from app.middleware.auth_stub import AuthIdentity
 
 
 @dataclass
@@ -94,12 +95,27 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return True, int(bucket.reset_at - now)
 
     def _build_bucket_key(self, request: Request, group: str) -> str:
-        role = (request.headers.get("X-User-Role") or "anonymous").strip().lower()
-        user_id = (request.headers.get("X-User-Id") or "unknown").strip()
-        programme = (request.headers.get("X-User-Programme") or "").strip()
-        site = (request.headers.get("X-User-Site") or "").strip()
+        identity = getattr(request.state, "identity", None)
+        if isinstance(identity, AuthIdentity):
+            role = identity.role
+            user_id = identity.subject_id
+            programme = ",".join(identity.programme_scope or [])
+            site = identity.posting_code or ""
+        elif self._stub_header_fallback_allowed():
+            role = (request.headers.get("X-User-Role") or "anonymous").strip().lower()
+            user_id = (request.headers.get("X-User-Id") or "unknown").strip()
+            programme = (request.headers.get("X-User-Programme") or "").strip()
+            site = (request.headers.get("X-User-Site") or "").strip()
+        else:
+            role = "anonymous"
+            user_id = "unknown"
+            programme = ""
+            site = ""
         client_ip = request.client.host if request.client else "unknown"
         path = request.url.path
         return (
             f"{group}|ip={client_ip}|role={role}|user={user_id}|programme={programme}|site={site}|path={path}"
         )
+
+    def _stub_header_fallback_allowed(self) -> bool:
+        return self._settings.environment != "production" and self._settings.auth_mode in {"stub", "demo"}

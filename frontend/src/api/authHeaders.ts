@@ -1,9 +1,29 @@
 import { frontendConfig } from '../config/frontendConfig'
+import type { AuthIdentity } from '../types/auth'
+import { readStoredAuthSession, toStubIdentityHeaders } from './auth'
 
 export type AdminDemoLevel = 'master' | 'programme'
 
 const defaultAdminDemoLevel: AdminDemoLevel =
   frontendConfig.defaultRole === 'master_admin' ? 'master' : 'programme'
+
+const sessionHeadersFor = (predicate: (identity: AuthIdentity) => boolean): Record<string, string> => {
+  if (frontendConfig.authMode === 'supabase') {
+    return {}
+  }
+  const identity = readStoredAuthSession()?.identity
+  if (!identity || !predicate(identity)) {
+    return {}
+  }
+  return toStubIdentityHeaders(identity)
+}
+
+export const getSessionAuthHeaders = (): Record<string, string> => {
+  if (frontendConfig.authMode === 'supabase') {
+    return {}
+  }
+  return toStubIdentityHeaders(readStoredAuthSession()?.identity ?? null)
+}
 
 export const buildAdminDemoHeaders = (
   adminId: string,
@@ -11,19 +31,17 @@ export const buildAdminDemoHeaders = (
   adminLevel: AdminDemoLevel = defaultAdminDemoLevel,
   _actorName?: string,
 ): Record<string, string> => {
+  void adminId
+  void adminProgrammes
+  void adminLevel
   void _actorName
-  if (!frontendConfig.devIdentityHeadersEnabled) {
-    return {}
+  const sessionHeaders = sessionHeadersFor((identity) =>
+    identity.role === 'master_admin' || identity.role === 'programme_pc',
+  )
+  if (Object.keys(sessionHeaders).length > 0) {
+    return sessionHeaders
   }
-  const headers: Record<string, string> = {
-    'X-User-Role': 'admin',
-    'X-User-Id': adminId,
-    'X-User-Programme': adminProgrammes.join(','),
-  }
-  if (adminLevel === 'master') {
-    headers['X-Admin-Level'] = 'master'
-  }
-  return headers
+  return {}
 }
 
 export const buildSecretaryDemoHeaders = (overrides?: {
@@ -31,15 +49,12 @@ export const buildSecretaryDemoHeaders = (overrides?: {
   secretarySite?: string
   actorName?: string
 }): Record<string, string> => {
-  if (!frontendConfig.devIdentityHeadersEnabled) {
-    return {}
+  void overrides
+  const sessionHeaders = sessionHeadersFor((identity) => identity.role === 'secretary')
+  if (Object.keys(sessionHeaders).length > 0) {
+    return sessionHeaders
   }
-  const secretarySiteHeader = ['X', 'User', 'Site'].join('-')
-  return {
-    'X-User-Role': 'secretary',
-    'X-User-Id': overrides?.secretaryId ?? frontendConfig.demoSecretaryId,
-    [secretarySiteHeader]: overrides?.secretarySite ?? frontendConfig.demoSecretarySite,
-  }
+  return {}
 }
 
 export const buildResidentDemoHeaders = (overrides?: {
@@ -47,13 +62,24 @@ export const buildResidentDemoHeaders = (overrides?: {
   residentProgramme?: string
   residentMcr?: string
 }): Record<string, string> => {
-  if (!frontendConfig.devIdentityHeadersEnabled) {
-    return {}
+  void overrides
+  const sessionHeaders = sessionHeadersFor((identity) =>
+    identity.role === 'resident' || identity.role === 'external_resident',
+  )
+  if (Object.keys(sessionHeaders).length > 0) {
+    return sessionHeaders
   }
-  return {
-    'X-User-Role': 'resident',
-    'X-User-Id': overrides?.residentId ?? frontendConfig.demoResidentId,
-    'X-User-Programme': overrides?.residentProgramme ?? frontendConfig.demoResidentProgramme,
-    'X-User-MCR': overrides?.residentMcr ?? frontendConfig.demoResidentMcr,
+  return {}
+}
+
+export const buildExternalResidentDemoHeaders = (overrides?: {
+  externalResidentId?: string
+  residentMcr?: string
+}): Record<string, string> => {
+  void overrides
+  const sessionHeaders = sessionHeadersFor((identity) => identity.role === 'external_resident')
+  if (Object.keys(sessionHeaders).length > 0) {
+    return sessionHeaders
   }
+  return {}
 }

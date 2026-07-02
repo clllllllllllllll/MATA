@@ -84,6 +84,81 @@ def test_admin_and_secretary_login_still_work() -> None:
     assert secretary.json()["user"]["posting_code"] == "TTSHCardio"
 
 
+def test_staff_login_derives_master_admin_identity_from_email() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.users.append(
+        {
+            "id": "00000000-0000-0000-0000-0000000000aa",
+            "email": "master@nhg.com.sg",
+            "password_hash": "password",
+            "role": "admin",
+            "name": "Master Admin",
+            "posting_code": None,
+            "programme_scope": None,
+            "admin_level": "master",
+            "is_active": True,
+        },
+    )
+    client = _client(fake_db)
+
+    response = client.post(
+        "/auth/login",
+        json={"role": "staff", "email": "master@nhg.com.sg", "password": "password"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["access_token"] == "stub.admin.00000000-0000-0000-0000-0000000000aa"
+    assert payload["user"]["role"] == "admin"
+    assert payload["user"]["admin_level"] == "master"
+    assert payload["user"]["programme_scope"] == []
+
+
+def test_staff_login_derives_programme_pc_identity_from_email() -> None:
+    fake_db = FakeResidentSession()
+    client = _client(fake_db)
+
+    response = client.post(
+        "/auth/login",
+        json={"role": "staff", "email": "pc@nhg.com.sg", "password": "password"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["access_token"] == f"stub.admin.{fake_db.admin_id}"
+    assert payload["user"]["role"] == "admin"
+    assert payload["user"]["admin_level"] == "programme"
+    assert payload["user"]["programme_scope"] == ["GRM", "DR"]
+
+
+def test_staff_login_derives_secretary_identity_from_email() -> None:
+    fake_db = FakeResidentSession()
+    client = _client(fake_db)
+
+    response = client.post(
+        "/auth/login",
+        json={"role": "staff", "email": "sec@nhg.com.sg", "password": "password"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["access_token"] == f"stub.secretary.{fake_db.secretary_id}"
+    assert payload["user"]["role"] == "secretary"
+    assert payload["user"]["posting_code"] == "TTSHCardio"
+
+
+def test_staff_login_wrong_password_returns_401() -> None:
+    fake_db = FakeResidentSession()
+    client = _client(fake_db)
+
+    response = client.post(
+        "/auth/login",
+        json={"role": "staff", "email": "sec@nhg.com.sg", "password": "wrong"},
+    )
+
+    assert response.status_code == 401
+
+
 def test_auth_me_returns_resident_identity_without_posting_code() -> None:
     fake_db = FakeResidentSession()
     client = _client(

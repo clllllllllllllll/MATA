@@ -1,13 +1,11 @@
 ﻿import { useEffect, useRef, useState } from 'react'
+import type { PropsWithChildren } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { frontendConfig } from '../config/frontendConfig'
-import { breadcrumbMap, navItems, roleFromPathname, roleOptions } from '../config/navigation'
+import { breadcrumbMap, navItems, roleOptions } from '../config/navigation'
+import { useAuth } from '../context/useAuth'
 import { useAppState } from '../context/useAppState'
 import type { AppRole } from '../types/app'
-import { clearMemoryCache } from '../utils/memoryReadCache'
 import {
-  IconCheck,
-  IconChevDown,
   IconChevRight,
   IconLogOut,
   IconMenu,
@@ -24,20 +22,38 @@ const roleNameById: Record<AppRole, string> = {
   external_resident: 'Demo Non-NHG',
 }
 
-export const AppShell = () => {
-  const { role, setRole } = useAppState()
+export const AppShell = ({ children }: PropsWithChildren) => {
+  const { role } = useAppState()
+  const { identity, logout } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
-  const [roleMenuOpenPath, setRoleMenuOpenPath] = useState<string | null>(null)
   const [mobileNavOpenPath, setMobileNavOpenPath] = useState<string | null>(null)
   const roleMenuRef = useRef<HTMLDivElement | null>(null)
-  const forcedRole = roleFromPathname(location.pathname)
-  const activeRole = forcedRole ?? role
-  const isRoleMenuOpen = roleMenuOpenPath === location.pathname
+  const activeRole = identity?.role ?? role
   const isMobileNavOpen = mobileNavOpenPath === location.pathname
-  const roleSwitcherEnabled = frontendConfig.enableRoleSwitcher
 
   const currentRoleOption = roleOptions.find((option) => option.id === activeRole) ?? roleOptions[0]
+  const currentDisplayName = identity?.role === activeRole && identity.name
+    ? identity.name
+    : roleNameById[activeRole]
+  const currentScopeLabel = (() => {
+    if (identity?.role === 'master_admin' && activeRole === 'master_admin') {
+      return 'All Programmes'
+    }
+    if (identity?.role === 'programme_pc' && activeRole === 'programme_pc') {
+      return identity.programmeScope.length > 0 ? identity.programmeScope.join(', ') : 'No programme scope'
+    }
+    if (identity?.role === 'secretary' && activeRole === 'secretary') {
+      return identity.postingCode
+    }
+    if (identity?.role === 'resident' && activeRole === 'resident') {
+      return `${identity.programmeCode} - MCR ${identity.mcr}`
+    }
+    if (identity?.role === 'external_resident' && activeRole === 'external_resident') {
+      return `${identity.homeCluster} - MCR ${identity.mcr}`
+    }
+    return currentRoleOption.scopeLabel
+  })()
   const breadcrumbs = breadcrumbMap[location.pathname] ?? [currentRoleOption.label]
   const visibleNavItems = navItems.filter((item) => item.roles.includes(activeRole))
 
@@ -65,30 +81,16 @@ export const AppShell = () => {
   }
 
   useEffect(() => {
-    const onPointerDown = (event: MouseEvent) => {
-      if (!roleMenuRef.current?.contains(event.target as Node)) {
-        setRoleMenuOpenPath(null)
-      }
-    }
     const onEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setRoleMenuOpenPath(null)
         setMobileNavOpenPath(null)
       }
     }
-    document.addEventListener('mousedown', onPointerDown)
     document.addEventListener('keydown', onEscape)
     return () => {
-      document.removeEventListener('mousedown', onPointerDown)
       document.removeEventListener('keydown', onEscape)
     }
   }, [])
-
-  useEffect(() => {
-    if (forcedRole && role !== forcedRole) {
-      setRole(forcedRole)
-    }
-  }, [forcedRole, role, setRole])
 
   useEffect(() => {
     if (!isMobileNavOpen) {
@@ -126,74 +128,13 @@ export const AppShell = () => {
         </button>
 
         <div className="sidebar-user-wrap" ref={roleMenuRef}>
-          <button
-            type="button"
-            className="sidebar-user"
-            onClick={() => {
-              if (!roleSwitcherEnabled) {
-                return
-              }
-              setRoleMenuOpenPath((prev) => (prev === location.pathname ? null : location.pathname))
-            }}
-            aria-haspopup={roleSwitcherEnabled ? 'menu' : undefined}
-            aria-expanded={roleSwitcherEnabled ? isRoleMenuOpen : undefined}
-          >
-            <div className="avatar">{roleNameById[activeRole].slice(0, 2).toUpperCase()}</div>
+          <div className="sidebar-user" aria-label="Current user">
+            <div className="avatar">{currentDisplayName.slice(0, 2).toUpperCase()}</div>
             <div className="sidebar-user-details">
-              <strong>{roleSwitcherEnabled ? roleNameById[activeRole] : currentRoleOption.label}</strong>
-              <p>{roleSwitcherEnabled ? currentRoleOption.label : currentRoleOption.scopeLabel}</p>
+              <strong>{currentDisplayName}</strong>
+              <p>{currentRoleOption.label}</p>
             </div>
-            {roleSwitcherEnabled ? (
-              <span className={`sidebar-user-chevron ${isRoleMenuOpen ? 'is-open' : ''}`} aria-hidden="true">
-                <IconChevDown size={16} />
-              </span>
-            ) : null}
-          </button>
-
-          {roleSwitcherEnabled && isRoleMenuOpen ? (
-            <div className="role-switcher-popover" role="menu" aria-label="Role Switcher">
-              <p className="role-switcher-title">SWITCH ROLE (DEMO AID)</p>
-              <div className="role-switcher-list">
-                {roleOptions.map((option) => {
-                  const isCurrent = option.id === activeRole
-                  return (
-                    <button
-                      key={option.id}
-                      type="button"
-                      className={`role-switcher-option ${isCurrent ? 'is-current' : ''}`}
-                      onClick={() => {
-                        const nextPath =
-                          location.pathname === '/admin/config' ||
-                          location.pathname.startsWith('/admin/config/') ||
-                          location.pathname === '/pc/config'
-                            ? option.id === 'programme_pc'
-                              ? '/pc/config'
-                              : option.id === 'master_admin'
-                                ? '/admin/config'
-                                : option.defaultPath
-                            : option.defaultPath
-                        setRole(option.id)
-                        setRoleMenuOpenPath(null)
-                        setMobileNavOpenPath(null)
-                        navigate(nextPath)
-                      }}
-                      role="menuitemradio"
-                      aria-checked={isCurrent}
-                    >
-                      <span className="role-switcher-option-main">{option.label}</span>
-                      <span className="role-switcher-option-scope">{option.scopeLabel}</span>
-                      {isCurrent ? (
-                        <span className="role-switcher-check" aria-hidden="true">
-                          <IconCheck size={14} />
-                        </span>
-                      ) : null}
-                    </button>
-                  )
-                })}
-              </div>
-              <p className="role-switcher-note">Demo aid only - not in production.</p>
-            </div>
-          ) : null}
+          </div>
         </div>
 
         <nav className="sidebar-nav">
@@ -214,17 +155,25 @@ export const AppShell = () => {
 
         <div className="sidebar-scope">
           <span>Scope</span>
-          <strong>{currentRoleOption.scopeLabel}</strong>
+          <strong>{currentScopeLabel}</strong>
         </div>
 
         <div className="sidebar-footer-links">
-          <button type="button">
+          <button type="button" aria-label="Settings" title="Settings">
             <span className="sidebar-footer-icon" aria-hidden="true">
               <IconSettings size={16} />
             </span>
             <span>Settings</span>
           </button>
-          <button type="button" onClick={() => clearMemoryCache()}>
+          <button
+            type="button"
+            aria-label="Log out"
+            title="Log out"
+            onClick={() => {
+              logout()
+              navigate('/login', { replace: true })
+            }}
+          >
             <span className="sidebar-footer-icon" aria-hidden="true">
               <IconLogOut size={16} />
             </span>
@@ -263,7 +212,7 @@ export const AppShell = () => {
         </header>
 
         <main className="content">
-          <Outlet />
+          {children ?? <Outlet />}
         </main>
       </div>
     </div>

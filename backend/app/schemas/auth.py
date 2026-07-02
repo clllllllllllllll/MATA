@@ -23,9 +23,9 @@ class LoginRequest(BaseModel):
     @classmethod
     def _normalise_role(cls, value: str) -> str:
         lowered = value.strip().lower()
-        if lowered not in {"admin", "secretary", "resident", "external_resident"}:
+        if lowered not in {"staff", "admin", "secretary", "resident", "external_resident"}:
             raise ValueError(
-                "role must be one of: admin, secretary, resident, external_resident"
+                "role must be one of: staff, admin, secretary, resident, external_resident"
             )
         return lowered
 
@@ -36,5 +36,5 @@ class LoginRequest(BaseModel):
                 raise ValueError("mcr is required for resident login")
             return self
         if not self.email or not self.password:
-            raise ValueError("email and password are required for admin/secretary login")
+            raise ValueError("email and password are required for staff login")
         return self

@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { listProgrammes, type Programme } from '../../api/programmes'
 import { uploadWorkbook } from '../../api/uploads'
 import { IconGrid } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
 import { UploadCard } from '../../components/UploadCard'
+import { useAuth } from '../../context/useAuth'
 import { useAppState } from '../../context/useAppState'
 import { buildPcTtfWarningsPath, resolvePcProgrammeScope } from './pcUploadTtfPageLogic'
 
@@ -35,6 +35,7 @@ const latestLocalTtfUpload = (
 
 export const PcUploadTtfPage = () => {
   const navigate = useNavigate()
+  const { identity } = useAuth()
   const {
     reportingPeriodId,
     setReportingPeriodId,
@@ -45,16 +46,18 @@ export const PcUploadTtfPage = () => {
     reloadReportingPeriods,
     selectedProgrammeCode,
     setSelectedProgrammeCode,
-    demoAdminId,
-    demoAdminProgrammes,
     uploadHistory,
     addUploadResult,
   } = useAppState()
-  const [programmeCatalogue, setProgrammeCatalogue] = useState<Programme[]>([])
 
+  const pcProgrammeScope = useMemo(
+    () => (identity?.role === 'programme_pc' ? identity.programmeScope : []),
+    [identity],
+  )
+  const pcAdminId = identity?.role === 'programme_pc' ? identity.subjectId : ''
   const programmeScope = useMemo(
-    () => resolvePcProgrammeScope(demoAdminProgrammes, selectedProgrammeCode, programmeCatalogue),
-    [demoAdminProgrammes, programmeCatalogue, selectedProgrammeCode],
+    () => resolvePcProgrammeScope(pcProgrammeScope, selectedProgrammeCode),
+    [pcProgrammeScope, selectedProgrammeCode],
   )
   const selectedPcProgrammeCode = programmeScope.selectedProgrammeCode
   const selectedPeriod = useMemo(
@@ -64,30 +67,6 @@ export const PcUploadTtfPage = () => {
   const activeReportingPeriodId =
     reportingPeriods.length > 0 && reportingPeriodId.trim().length > 0 ? reportingPeriodId : ''
   const localLatestTtfUpload = latestLocalTtfUpload(uploadHistory, selectedPcProgrammeCode)
-
-  useEffect(() => {
-    let active = true
-    ;(async () => {
-      try {
-        const programmes = await listProgrammes({
-          adminId: demoAdminId,
-          adminProgrammes: demoAdminProgrammes,
-          adminLevel: 'master',
-        })
-        if (active) {
-          setProgrammeCatalogue(programmes)
-        }
-      } catch {
-        if (active) {
-          setProgrammeCatalogue([])
-        }
-      }
-    })()
-
-    return () => {
-      active = false
-    }
-  }, [demoAdminId, demoAdminProgrammes])
 
   useEffect(() => {
     if (selectedPcProgrammeCode && selectedProgrammeCode !== selectedPcProgrammeCode) {
@@ -108,8 +87,8 @@ export const PcUploadTtfPage = () => {
       file,
       reportingPeriodId: activeReportingPeriodId,
       programmeCode: selectedPcProgrammeCode,
-      adminId: demoAdminId,
-      adminProgrammes: demoAdminProgrammes,
+      adminId: pcAdminId,
+      adminProgrammes: programmeScope.programmeScope,
       adminLevel: 'programme',
     })
 
@@ -197,7 +176,6 @@ export const PcUploadTtfPage = () => {
           <UploadCard
             icon={<IconGrid size={18} />}
             title="Teaching Target File"
-            subtitle="Upload one .xlsx Teaching Target File for the selected programme."
             lastUploadedText={localLatestTtfUpload ? formatDateTime(localLatestTtfUpload.uploadedAtIso) : undefined}
             accept=".xlsx"
             requiresReportingPeriod

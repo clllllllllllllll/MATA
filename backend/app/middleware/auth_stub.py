@@ -49,13 +49,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         ):
             return await call_next(request)
 
-        if self._settings.auth_mode == "supabase":
-            return self._unauthorized_response()
-
-        if (
-            self._settings.auth_mode == "demo"
-            and not self._settings.allow_demo_role_switcher
-        ):
+        if not self._stub_header_auth_allowed():
             return self._unauthorized_response()
 
         role = (request.headers.get("X-User-Role") or "").strip().lower()
@@ -108,7 +102,6 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             )
             allowed_programmes = user.programme_scope or []
             admin_level = self._resolve_admin_level(
-                request,
                 persisted_admin_level=getattr(user, "admin_level", None),
             )
             if requested_programmes:
@@ -211,7 +204,6 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
 
     def _resolve_admin_level(
         self,
-        request: Request,
         *,
         persisted_admin_level: str | None,
     ) -> str:
@@ -219,15 +211,13 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         if persisted == "master":
             return "master"
 
-        requested = self._normalise_admin_level(request.headers.get("X-Admin-Level"))
-        if (
-            requested == "master"
-            and self._settings.auth_mode in {"stub", "demo"}
-            and self._settings.allow_demo_role_switcher
-        ):
-            return "master"
-
         return persisted
+
+    def _stub_header_auth_allowed(self) -> bool:
+        return (
+            self._settings.environment != "production"
+            and self._settings.auth_mode in {"stub", "demo"}
+        )
 
     @staticmethod
     def _normalise_admin_level(raw_value: str | None) -> str | None:

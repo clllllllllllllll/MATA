@@ -20,8 +20,10 @@ import {
 import {
   makeUploadMeta,
 } from '../utils/warnings'
+import { authSessionChangedEvent, readStoredAuthSession } from '../api/auth'
 import { listReportingPeriods } from '../api/reportingPeriods'
 import { ApiRequestError } from '../api/http'
+import type { AuthIdentity } from '../types/auth'
 import {
   clearMemoryCache,
   clearMemoryCacheResource,
@@ -30,8 +32,29 @@ import {
   type CacheScope,
 } from '../utils/memoryReadCache'
 
+const canIdentityLoadReportingPeriodData = (identity: AuthIdentity | null): boolean => {
+  if (!identity) {
+    return false
+  }
+  if (identity.role === 'master_admin') {
+    return true
+  }
+  return identity.role === 'programme_pc' && identity.programmeScope.length > 0
+}
+
+const reportingPeriodProgrammeScope = (identity: AuthIdentity | null): string[] => {
+  if (identity?.role === 'master_admin' || identity?.role === 'programme_pc') {
+    return identity.programmeScope
+  }
+  return []
+}
+
 export const AppStateProvider = ({ children }: PropsWithChildren) => {
   const [role, setRole] = useState<AppRole>(frontendConfig.defaultRole)
+  const [sessionIdentity, setSessionIdentity] = useState<AuthIdentity | null>(
+    () => readStoredAuthSession()?.identity ?? null,
+  )
+  const canLoadReportingPeriodData = canIdentityLoadReportingPeriodData(sessionIdentity)
   const [selectedProgrammeCode, setSelectedProgrammeCode] = useState<string>(
     frontendConfig.defaultProgrammeCode,
   )
@@ -39,15 +62,18 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
     frontendConfig.defaultReportingPeriodId,
   )
   const [reportingPeriods, setReportingPeriods] = useState<ReportingPeriodOption[]>([])
-  const [reportingPeriodsLoading, setReportingPeriodsLoading] = useState(true)
+  const [reportingPeriodsLoading, setReportingPeriodsLoading] = useState(canLoadReportingPeriodData)
   const [reportingPeriodsError, setReportingPeriodsError] = useState<string | null>(null)
   const [uploadHistory, setUploadHistory] = useState<UploadMeta[]>(loadUploadHistory)
 
   const adminCacheScope = useMemo<CacheScope>(() => ({
     role,
-    userId: frontendConfig.demoAdminId,
-    programmeScope: frontendConfig.demoAdminProgrammes,
-  }), [role])
+    userId: sessionIdentity?.subjectId ?? frontendConfig.demoAdminId,
+    programmeScope:
+      sessionIdentity?.role === 'master_admin' || sessionIdentity?.role === 'programme_pc'
+        ? sessionIdentity.programmeScope
+        : [],
+  }), [role, sessionIdentity])
 
   const updateRole = useCallback((nextRole: AppRole) => {
     clearMemoryCache()
@@ -75,21 +101,30 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
 
   const fetchReportingPeriods = useCallback(
     async () => {
+      if (!canLoadReportingPeriodData) {
+        return []
+      }
       const { data } = await readThroughMemoryCache(
         makeScopedCacheKey(adminCacheScope, 'admin.reporting-periods.list', {}),
         () => listReportingPeriods({
-          adminId: frontendConfig.demoAdminId,
-          adminProgrammes: frontendConfig.demoAdminProgrammes,
+          adminId: sessionIdentity?.subjectId ?? frontendConfig.demoAdminId,
+          adminProgrammes: reportingPeriodProgrammeScope(sessionIdentity),
         }),
       )
       return data
     },
-    [adminCacheScope],
+    [adminCacheScope, canLoadReportingPeriodData, sessionIdentity],
   )
 
   const reloadReportingPeriods = useCallback(async () => {
     setReportingPeriodsLoading(true)
     setReportingPeriodsError(null)
+    if (!canLoadReportingPeriodData) {
+      setReportingPeriods([])
+      setReportingPeriodId('')
+      setReportingPeriodsLoading(false)
+      return
+    }
     try {
       clearMemoryCache((key) => key === makeScopedCacheKey(adminCacheScope, 'admin.reporting-periods.list', {}))
       const periods = await fetchReportingPeriods()
@@ -108,9 +143,12 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
     } finally {
       setReportingPeriodsLoading(false)
     }
-  }, [adminCacheScope, fetchReportingPeriods, selectDefaultReportingPeriod])
+  }, [adminCacheScope, canLoadReportingPeriodData, fetchReportingPeriods, selectDefaultReportingPeriod])
 
   useEffect(() => {
+    if (!canLoadReportingPeriodData) {
+      return
+    }
     let active = true
     ;(async () => {
       try {
@@ -142,7 +180,21 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
     return () => {
       active = false
     }
-  }, [fetchReportingPeriods, selectDefaultReportingPeriod])
+  }, [canLoadReportingPeriodData, fetchReportingPeriods, selectDefaultReportingPeriod])
+
+  useEffect(() => {
+    const onAuthSessionChanged = () => {
+      const nextIdentity = readStoredAuthSession()?.identity ?? null
+      setSessionIdentity(nextIdentity)
+      if (!canIdentityLoadReportingPeriodData(nextIdentity)) {
+        setReportingPeriods([])
+        setReportingPeriodsError(null)
+        setReportingPeriodsLoading(false)
+      }
+    }
+    window.addEventListener(authSessionChangedEvent, onAuthSessionChanged)
+    return () => window.removeEventListener(authSessionChangedEvent, onAuthSessionChanged)
+  }, [])
 
   const reportingPeriodLabel = useMemo(
     () => reportingPeriods.find((item) => item.id === reportingPeriodId)?.label,

@@ -166,14 +166,16 @@ All technical specifications live in `docs/`:
 
 ### Auth (Phase 1)
 
-Real JWT middleware is not yet wired in. Identity is passed via request headers for local development:
+Real JWT middleware is not yet wired in. In `AUTH_MODE=stub` or local `AUTH_MODE=demo`, identity is passed via request headers for local development and tests only:
 
 ```
-X-User-Role: admin | secretary | resident
-X-User-Id: <uuid>
+X-User-Role: admin | secretary | resident | external_resident
+X-User-Id: <users.id for admin/secretary> | <residents.id for resident> | <external_residents.id for external_resident>
 X-User-Site: <posting_code>        # secretary only
 X-User-Programme: <programme_code> # admin/resident
 ```
+
+Production-like `AUTH_MODE=supabase` must not trust these headers. Frontend route guards are UX only; backend authorization remains authoritative.
 
 ### Running Tests
 

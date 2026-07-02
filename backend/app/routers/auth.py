@@ -55,7 +55,6 @@ async def login(
         password=request.password,
         mcr=request.mcr,
         auth_mode=settings.auth_mode,
-        allow_demo_role_switcher=settings.allow_demo_role_switcher,
     )
 
 

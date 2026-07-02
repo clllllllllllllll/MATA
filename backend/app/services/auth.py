@@ -17,20 +17,23 @@ def _auth_failure() -> ApiError:
     )
 
 
-def _stub_login_allowed(*, auth_mode: str, allow_demo_role_switcher: bool) -> bool:
-    if auth_mode == "supabase":
-        return False
-    if auth_mode == "demo" and not allow_demo_role_switcher:
-        return False
-    return True
+def _stub_login_allowed(*, auth_mode: str) -> bool:
+    return auth_mode in {"stub", "demo"}
 
 
 def _stub_access_token(*, role: str, subject_id: Any) -> str:
     return f"stub.{role}.{subject_id}"
 
 
+def local_demo_password_hash(supplied_password: str) -> str:
+    return f"plain:{supplied_password}"
+
+
 def _password_matches(stored_hash: str, supplied_password: str) -> bool:
-    return stored_hash == supplied_password or stored_hash == f"plain:{supplied_password}"
+    return (
+        stored_hash == supplied_password
+        or stored_hash == local_demo_password_hash(supplied_password)
+    )
 
 
 def _resident_user(row: dict[str, Any]) -> dict[str, Any]:
@@ -83,12 +86,8 @@ async def login(
     password: str | None,
     mcr: str | None,
     auth_mode: str = "stub",
-    allow_demo_role_switcher: bool = False,
 ) -> dict[str, Any]:
-    if not _stub_login_allowed(
-        auth_mode=auth_mode,
-        allow_demo_role_switcher=allow_demo_role_switcher,
-    ):
+    if not _stub_login_allowed(auth_mode=auth_mode):
         raise _auth_failure()
 
     if role in {"resident", "external_resident"}:
@@ -140,7 +139,7 @@ async def login(
                 is_active
             FROM users
             WHERE lower(email) = lower(:email)
-              AND role = :role
+              AND (:role = 'staff' OR role = :role)
               AND is_active = true
             """
         ),
@@ -152,7 +151,7 @@ async def login(
 
     user = _user_identity(dict(user_row))
     return {
-        "access_token": _stub_access_token(role=role, subject_id=user["id"]),
+        "access_token": _stub_access_token(role=user["role"], subject_id=user["id"]),
         "token_type": "bearer",
         "user": user,
     }

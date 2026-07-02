@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, File, Form, Header, Query, Request, Uplo
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings, get_settings
 from app.dependencies.auth import is_master_admin
 from app.dependencies.staff_actor import (
     STAFF_ACTOR_FALLBACK_NAME,
@@ -194,8 +195,13 @@ def _admin_context_from_identity(identity: AuthIdentity) -> AdminContext:
     )
 
 
+def _stub_header_fallback_allowed(settings: Settings) -> bool:
+    return settings.environment != "production" and settings.auth_mode in {"stub", "demo"}
+
+
 async def require_admin_context(
     request: Request,
+    settings: Settings = Depends(get_settings),
     x_user_role: Annotated[str | None, Header(alias="X-User-Role")] = None,
     x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     x_user_programme: Annotated[str | None, Header(alias="X-User-Programme")] = None,
@@ -204,6 +210,13 @@ async def require_admin_context(
     identity = getattr(request.state, "identity", None)
     if isinstance(identity, AuthIdentity):
         return _admin_context_from_identity(identity)
+
+    if not _stub_header_fallback_allowed(settings):
+        raise ApiError(
+            status_code=401,
+            detail="Unauthorized",
+            error_code=ErrorCode.UNAUTHORIZED.value,
+        )
 
     if x_user_role != "admin":
         raise ApiError(
@@ -240,6 +253,17 @@ def _require_master_admin(admin_context: AdminContext) -> None:
         raise ApiError(
             status_code=403,
             detail="Forbidden - master admin access required",
+            error_code=ErrorCode.FORBIDDEN.value,
+        )
+
+
+def _require_reporting_period_read_access(admin_context: AdminContext) -> None:
+    if admin_context.is_master_admin:
+        return
+    if not admin_context.programme_scope:
+        raise ApiError(
+            status_code=403,
+            detail="Forbidden - admin programme scope is empty",
             error_code=ErrorCode.FORBIDDEN.value,
         )
 
@@ -1131,7 +1155,7 @@ async def list_reporting_periods(
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> list[ReportingPeriodResponse]:
-    _require_master_admin(admin_context)
+    _require_reporting_period_read_access(admin_context)
     if db is None:
         return []
     rows = await admin_config.list_reporting_periods(

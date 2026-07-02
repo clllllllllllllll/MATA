@@ -290,7 +290,10 @@ class FakeResidentSession:
             rows = [
                 row
                 for row in self.users
-                if row["role"] == payload.get("role")
+                if (
+                    payload.get("role") == "staff"
+                    or row["role"] == payload.get("role")
+                )
                 and row["email"].lower() == payload.get("email", "").lower()
                 and row["is_active"]
             ]

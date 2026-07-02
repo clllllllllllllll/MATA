@@ -1991,6 +1991,36 @@ def test_programme_pc_cannot_mutate_global_config_endpoints() -> None:
     assert [response.status_code for response in attempts] == [403, 403, 403, 403, 403, 403, 403]
 
 
+def test_programme_pc_cannot_mutate_reporting_periods() -> None:
+    session = FakeMutationSession()
+    client = _build_client_with_session(session)
+    period_id = session.reporting_periods[0]["id"]
+
+    attempts = [
+        client.post(
+            "/admin/reporting-periods",
+            headers=_admin_headers("DR"),
+            json={"label": "Jul - Dec 2026", "start_date": "2026-07-01", "end_date": "2026-12-31"},
+        ),
+        client.put(
+            f"/admin/reporting-periods/{period_id}",
+            headers=_admin_headers("DR"),
+            json={"label": "Renamed"},
+        ),
+        client.put(
+            f"/admin/reporting-periods/{period_id}/activate",
+            headers=_admin_headers("DR"),
+        ),
+        client.put(
+            f"/admin/reporting-periods/{period_id}/deactivate",
+            headers=_admin_headers("DR"),
+        ),
+        client.delete(f"/admin/reporting-periods/{period_id}", headers=_admin_headers("DR")),
+    ]
+
+    assert [response.status_code for response in attempts] == [403, 403, 403, 403, 403]
+
+
 def test_weekend_exception_crud_allows_nullable_clears_and_both_day_type() -> None:
     session = FakeMutationSession()
     client = _build_client_with_session(session)
