@@ -13,6 +13,7 @@ from app.config import Settings, get_settings
 from app.database import AsyncSessionLocal
 from app.errors import ErrorCode, build_error_response
 from app.models import ExternalResident, Resident, User
+from app.services.supabase_jwt import SupabaseJwtError, SupabaseJwtVerifier
 
 
 @dataclass
@@ -38,6 +39,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: Starlette, settings: Settings | None = None) -> None:
         super().__init__(app)
         self._settings = settings or get_settings()
+        self._supabase_verifier: SupabaseJwtVerifier | None = None
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -50,6 +52,14 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if not self._stub_header_auth_allowed():
+            if self._supabase_auth_required():
+                identity_or_error = await self._resolve_supabase_identity(request)
+                if isinstance(identity_or_error, Response):
+                    return identity_or_error
+
+                request.state.identity = identity_or_error
+                return await call_next(request)
+
             return self._unauthorized_response()
 
         role = (request.headers.get("X-User-Role") or "").strip().lower()
@@ -77,6 +87,63 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
 
         request.state.identity = identity_or_error
         return await call_next(request)
+
+    async def _resolve_supabase_identity(self, request: Request) -> AuthIdentity | Response:
+        try:
+            claims = await self._get_supabase_verifier().verify_authorization_header(
+                request.headers.get("Authorization"),
+            )
+        except SupabaseJwtError:
+            return self._unauthorized_response()
+
+        raw_subject = claims.get("sub")
+        if not isinstance(raw_subject, str):
+            return self._unauthorized_response()
+
+        try:
+            supabase_user_id = UUID(raw_subject)
+        except ValueError:
+            return self._unauthorized_response()
+
+        return await self._resolve_supabase_user_identity(supabase_user_id)
+
+    async def _resolve_supabase_user_identity(
+        self,
+        supabase_user_id: UUID,
+    ) -> AuthIdentity | Response:
+        async with AsyncSessionLocal() as session:
+            user = await session.scalar(
+                select(User).where(
+                    User.supabase_user_id == supabase_user_id,
+                    User.is_active.is_(True),
+                ),
+            )
+
+        if user is None or user.role not in {"admin", "secretary"}:
+            return self._unauthorized_response()
+
+        if user.role == "admin":
+            return AuthIdentity(
+                role="admin",
+                subject_id=str(user.id),
+                programme_scope=user.programme_scope or [],
+                admin_level=self._resolve_admin_level(
+                    persisted_admin_level=getattr(user, "admin_level", None),
+                ),
+            )
+
+        if not user.posting_code:
+            return build_error_response(
+                status_code=403,
+                detail="Forbidden",
+                error_code=ErrorCode.FORBIDDEN.value,
+            )
+
+        return AuthIdentity(
+            role="secretary",
+            subject_id=str(user.id),
+            posting_code=user.posting_code,
+        )
 
     async def _resolve_user_identity(
         self,
@@ -218,6 +285,14 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             self._settings.environment != "production"
             and self._settings.auth_mode in {"stub", "demo"}
         )
+
+    def _supabase_auth_required(self) -> bool:
+        return self._settings.environment == "production" or self._settings.auth_mode == "supabase"
+
+    def _get_supabase_verifier(self) -> SupabaseJwtVerifier:
+        if self._supabase_verifier is None:
+            self._supabase_verifier = SupabaseJwtVerifier(self._settings)
+        return self._supabase_verifier
 
     @staticmethod
     def _normalise_admin_level(raw_value: str | None) -> str | None:

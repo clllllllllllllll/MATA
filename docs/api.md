@@ -238,6 +238,8 @@ Frontend-facing `data_revalidation` responses expose stable summary fields at th
 }
 ```
 
+In `AUTH_MODE=supabase`, protected requests use a Supabase Auth access token. The Supabase token `sub` is `auth.users.id` and maps to `users.supabase_user_id`; the backend then derives `role`, `admin_level`, `programme_scope`, and `posting_code` from the active `users` row. Raw client headers and Supabase `user_metadata` are not authorization sources.
+
 When `warning_candidate_limit_reached = true`, the backend has capped the warning candidate scan. `affected_warning_count_is_partial = true` means `affected_warning_count` is the capped count, not an exact total. `affected_warning_details_are_partial = true` means `affected_warning_issue_ids` and `affected_warning_summaries` are intentionally bounded for response size.
 
 Config mutation responses keep the entity fields at the top level and add `data_revalidation`:

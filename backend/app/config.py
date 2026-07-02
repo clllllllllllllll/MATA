@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     csp_default_src: str = "default-src 'self'"
     referrer_policy: str = "strict-origin-when-cross-origin"
     supabase_url: str | None = None
+    supabase_jwks_url: str | None = None
+    supabase_jwt_issuer: str | None = None
+    supabase_jwt_audience: str = "authenticated"
+    supabase_publishable_key: str | None = None
+    supabase_anon_key: str | None = None
+    supabase_jwks_cache_ttl_seconds: int = 600
     supabase_service_role_key: str | None = None
 
     max_upload_size_mb: int = 10

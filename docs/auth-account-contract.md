@@ -41,6 +41,8 @@ Backend:
 - As of 5B-C cleanup, backend auth is mode-gated:
   - `AUTH_MODE=stub` or `AUTH_MODE=demo` with non-production `ENV`: local header identity is accepted and validated against database rows before routers run.
   - `AUTH_MODE=supabase` or production `ENV`: raw `X-User-*` identity headers are not trusted for protected routes.
+- As of 5B-D1, backend Supabase Auth JWT verification is implemented for staff accounts. Protected Supabase-mode requests require `Authorization: Bearer <Supabase access token>`, verify the token, map `claims.sub` to `users.supabase_user_id`, and derive MATA role/scope from the active `users` row.
+- Supabase `user_metadata` is ignored for MATA authorization. `role`, `admin_level`, `programme_scope`, and `posting_code` remain server-owned in the database.
 - `backend/app/routers/auth.py` has `POST /auth/login` and `GET /auth/me`.
 - `backend/app/services/auth.py` currently issues `stub.<role>.<id>` tokens only in stub/demo mode. Supabase mode does not issue stub tokens.
 - `backend/app/routers/external_residents.py` and `backend/app/services/external_residents.py` already implement partial Non-NHG self-enrolment and posting update.
@@ -215,6 +217,8 @@ Recommended default:
 ```env
 ENV=development
 AUTH_MODE=supabase
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_JWT_AUDIENCE=authenticated
 VITE_APP_ENV=preview
 VITE_AUTH_MODE=supabase
 ```
@@ -235,6 +239,11 @@ ENV=production
 AUTH_MODE=supabase
 DATABASE_URL=<supabase production database url>
 SYNC_DATABASE_URL=<supabase production sync database url>
+SUPABASE_URL=<supabase project url>
+SUPABASE_JWKS_URL=<optional explicit JWKS url>
+SUPABASE_JWT_ISSUER=<optional explicit issuer, defaults to SUPABASE_URL/auth/v1>
+SUPABASE_JWT_AUDIENCE=authenticated
+SUPABASE_PUBLISHABLE_KEY=<optional publishable/anon key for legacy HS256 Auth-server validation>
 SUPABASE_SERVICE_ROLE_KEY=<server-only key>
 CORS_ORIGINS=<production frontend origin>
 ```
@@ -249,7 +258,7 @@ VITE_SUPABASE_URL=<production Supabase URL>
 VITE_SUPABASE_ANON_KEY=<production Supabase anon/publishable key>
 ```
 
-Server-only variables must not use the `VITE_` prefix.
+`SUPABASE_SERVICE_ROLE_KEY` is server-only and is not used for JWT verification. Server-only variables must not use the `VITE_` prefix.
 
 ## Frontend Auth State Contract
 
@@ -321,9 +330,15 @@ Planned Non-NHG registration:
 - Added Non-NHG Resident self-registration UI and screenshot-matched registration confirmation state. Registration does not assume immediate login unless the backend returns a session-like response.
 - Removed the visible role switcher and kept stub/demo session headers disabled in `VITE_AUTH_MODE=supabase`.
 
-5B-D:
-- Complete Supabase Auth JWT verification in backend.
-- Decide exact custom claims source: app metadata hook, backend session exchange, or backend lookup after token verification.
+5B-D1 implemented:
+- Added backend Supabase Auth JWT verification for protected routes in `AUTH_MODE=supabase` or production.
+- Added nullable unique `users.supabase_user_id` for staff-account mapping from Supabase access-token `sub`.
+- Verifies asymmetric Supabase JWTs with the project JWKS endpoint and bounded JWKS cache.
+- Uses Supabase Auth `/auth/v1/user` with a publishable/anon key as the legacy HS256 fallback; does not use the service role key for JWT verification.
+- Derives final MATA staff identity from active `users` rows and ignores `user_metadata` plus all raw `X-User-*` authorization headers in Supabase mode.
+
+5B-D remaining:
+- Decide exact staff custom claims source if a future Supabase custom access-token hook is introduced; authorization must still remain server-owned.
 - Do not trust Supabase user metadata for authorization.
 
 5B-E:
@@ -342,8 +357,8 @@ Planned Non-NHG registration:
 5B-H:
 - Add rate-limit hardening for login/register and mutation surfaces before UAT/public use.
 
-Still deferred beyond 5B-C:
-- Real Supabase JWT verification, resident second factor, RLS, staff account UI, password reset, production Supabase deployment, Vercel/backend deployment, Master Admin seed/provisioning script, Non-NHG workflow parity beyond the login/register shell, exports/email, bulk upload, compliance, surplus, snapshots, clawback, and STP upload/parser.
+Still deferred beyond 5B-D1:
+- Resident Supabase provisioning, resident second factor, RLS, staff account UI, password reset, production Supabase deployment, Vercel/backend deployment, Master Admin seed/provisioning script, Non-NHG workflow parity beyond the login/register shell, exports/email, bulk upload, compliance, surplus, snapshots, clawback, and STP upload/parser.
 
 ## 5A Guardrails Preserved
 

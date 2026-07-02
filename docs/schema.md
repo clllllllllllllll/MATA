@@ -646,6 +646,7 @@ For admin and secretary authentication **only**. Residents are **not** stored he
 |--------|------|-------------|-------|
 | id | UUID | PK | |
 | email | VARCHAR(100) | UNIQUE, NOT NULL | |
+| supabase_user_id | UUID | UNIQUE, nullable | Supabase Auth `auth.users.id` / access-token `sub` mapping for staff accounts in `AUTH_MODE=supabase`. Nullable so local stub/demo accounts and not-yet-provisioned staff rows remain valid. |
 | password_hash | VARCHAR(255) | NOT NULL | Stubbed in Phase 1 |
 | role | VARCHAR(20) | NOT NULL | `admin`, `secretary` — never `resident` |
 | name | VARCHAR(100) | NOT NULL | |

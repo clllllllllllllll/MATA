@@ -164,9 +164,9 @@ All technical specifications live in `docs/`:
 
 ## Development Notes
 
-### Auth (Phase 1)
+### Auth
 
-Real JWT middleware is not yet wired in. In `AUTH_MODE=stub` or local `AUTH_MODE=demo`, identity is passed via request headers for local development and tests only:
+In `AUTH_MODE=stub` or local `AUTH_MODE=demo`, identity is passed via request headers for local development and tests only:
 
 ```
 X-User-Role: admin | secretary | resident | external_resident
@@ -175,7 +175,9 @@ X-User-Site: <posting_code>        # secretary only
 X-User-Programme: <programme_code> # admin/resident
 ```
 
-Production-like `AUTH_MODE=supabase` must not trust these headers. Frontend route guards are UX only; backend authorization remains authoritative.
+In `AUTH_MODE=supabase` or `ENV=production`, protected requests must send `Authorization: Bearer <Supabase access token>`. The backend verifies the Supabase JWT, maps `claims.sub` to `users.supabase_user_id`, and derives staff role/scope from the `users` row. It does not trust `X-User-*` or `X-Admin-Level` headers in Supabase mode. `SUPABASE_SERVICE_ROLE_KEY` remains server-only and is not required for JWT verification.
+
+Frontend route guards are UX only; backend authorization remains authoritative.
 
 ### Running Tests
 

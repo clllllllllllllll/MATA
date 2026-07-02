@@ -16,7 +16,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, UUIDTimestampMixin
@@ -227,6 +227,11 @@ class User(UUIDTimestampMixin, Base):
     )
 
     email: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    supabase_user_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        unique=True,
+        nullable=True,
+    )
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
