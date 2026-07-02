@@ -9,7 +9,7 @@ export interface AuthContextValue {
   isLoading: boolean
   hydrateSession: () => Promise<void>
   loginWithSession: (session: StoredAuthSession) => void
-  logout: () => void
+  logout: () => Promise<void>
 }
 
 export const AuthContext = createContext<AuthContextValue | undefined>(undefined)

@@ -62,7 +62,7 @@ Frontend:
 - As of 5B-C cleanup, the frontend no longer synthesizes pre-login demo identity headers and no longer has a visible role switcher.
 - `frontend/src/types/auth.ts` defines the typed frontend auth/session identity contract for later real session wiring.
 - As of 5B-C, the frontend has a universal `/login`, frontend auth/session provider, role-aware route guards, logout/session clearing, and Non-NHG Resident registration plus confirmation UI.
-- Real Supabase client/session verification remains deferred to 5B-D.
+- As of 5B-D2, `VITE_AUTH_MODE=supabase` uses the Supabase browser session for staff login, hydration, API bearer transport, and logout. MATA role/scope still comes only from backend `/auth/me`.
 
 Docker/env:
 - `docker-compose.yml` has local backend `AUTH_MODE=stub`, Docker DB URLs using host `db`, and frontend build args for local stub mode.
@@ -255,7 +255,8 @@ VITE_APP_ENV=production
 VITE_AUTH_MODE=supabase
 VITE_API_BASE_URL=<deployed backend api base>
 VITE_SUPABASE_URL=<production Supabase URL>
-VITE_SUPABASE_ANON_KEY=<production Supabase anon/publishable key>
+VITE_SUPABASE_PUBLISHABLE_KEY=<production Supabase publishable key>
+# VITE_SUPABASE_ANON_KEY=<legacy anon key fallback>
 ```
 
 `SUPABASE_SERVICE_ROLE_KEY` is server-only and is not used for JWT verification. Server-only variables must not use the `VITE_` prefix.
@@ -336,6 +337,14 @@ Planned Non-NHG registration:
 - Verifies asymmetric Supabase JWTs with the project JWKS endpoint and bounded JWKS cache.
 - Uses Supabase Auth `/auth/v1/user` with a publishable/anon key as the legacy HS256 fallback; does not use the service role key for JWT verification.
 - Derives final MATA staff identity from active `users` rows and ignores `user_metadata` plus all raw `X-User-*` authorization headers in Supabase mode.
+
+5B-D2 implemented:
+- Added frontend Supabase session transport for staff login in `VITE_AUTH_MODE=supabase`.
+- Staff login calls Supabase Auth email/password sign-in, then backend `/auth/me` with `Authorization: Bearer <access_token>` to derive Master Admin, Programme PC, or Secretary identity.
+- Shared frontend API transport attaches the latest Supabase access token as `Authorization: Bearer ...` and strips local/demo identity headers in Supabase mode.
+- Supabase hydration reads the current Supabase browser session and validates it through backend `/auth/me`; invalid backend identity clears local app state and signs out locally from Supabase.
+- Supabase logout signs out of the local Supabase browser session and clears the MATA AuthContext/session state.
+- Resident and Non-NHG MCR-only Supabase login/provisioning remains deferred; local stub/demo resident login is unchanged.
 
 5B-D remaining:
 - Decide exact staff custom claims source if a future Supabase custom access-token hook is introduced; authorization must still remain server-owned.

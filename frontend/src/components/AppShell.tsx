@@ -170,8 +170,10 @@ export const AppShell = ({ children }: PropsWithChildren) => {
             aria-label="Log out"
             title="Log out"
             onClick={() => {
-              logout()
-              navigate('/login', { replace: true })
+              void (async () => {
+                await logout()
+                navigate('/login', { replace: true })
+              })()
             }}
           >
             <span className="sidebar-footer-icon" aria-hidden="true">

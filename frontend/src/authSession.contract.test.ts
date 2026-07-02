@@ -18,6 +18,7 @@ const redirectTarget = (decision: { kind: string; to?: string }) =>
 const appSource = read('./App.tsx')
 const mainSource = read('./main.tsx')
 const authApiSource = read('./api/auth.ts')
+const httpSource = read('./api/http.ts')
 const authContextSource = read('./context/AuthContext.tsx')
 const loginPageSource = read('./pages/auth/LoginPage.tsx')
 const registrationPageSource = read('./pages/auth/NonNhgRegistrationPage.tsx')
@@ -25,6 +26,8 @@ const shellSource = read('./components/AppShell.tsx')
 const navigationSource = read('./config/navigation.ts')
 const frontendConfigSource = read('./config/frontendConfig.ts')
 const authHeadersSource = read('./api/authHeaders.ts')
+const packageSource = read('../package.json')
+const envExampleSource = read('../.env.example')
 const appStateSource = read('./context/AppContext.tsx')
 const pcTeachingEventsSource = read('./pages/pc/PcTeachingEventsPage.tsx')
 const pcUploadTtfSource = read('./pages/pc/PcUploadTtfPage.tsx')
@@ -36,6 +39,9 @@ const residentSubmissionPageSource = read('./pages/resident/ResidentSubmissionPa
 const stubPageSource = read('./pages/StubPage.tsx')
 const routeGuardsSource = read('./routeGuards.ts')
 const routeTracePath = fileURLToPath(new URL('./utils/routeTrace.ts', import.meta.url))
+const supabaseClientPath = fileURLToPath(new URL('./api/supabaseClient.ts', import.meta.url))
+assert(existsSync(supabaseClientPath), 'Supabase browser client module exists')
+const supabaseClientSource = read('./api/supabaseClient.ts')
 const appSourceLf = appSource.replace(/\r\n/g, '\n')
 const obsoleteRolePopoverClass = ['role', 'switcher', 'popover'].join('-')
 const obsoleteSwitchCopy = ['SWITCH', 'ROLE'].join(' ')
@@ -97,10 +103,73 @@ assert(authContextSource.includes('logout'), 'auth context exposes logout')
 assert(authApiSource.includes("'/auth/login'"), 'auth API posts to /auth/login')
 assert(authApiSource.includes("'/auth/me'"), 'auth API can hydrate from /auth/me')
 assert(authApiSource.includes("'/external-residents/register'"), 'auth API registers Non-NHG residents')
+assert(packageSource.includes('"@supabase/supabase-js": "2.110.0"'), 'Supabase JS dependency is pinned exactly')
+assert(
+  supabaseClientSource.includes("from '@supabase/supabase-js'") &&
+    supabaseClientSource.includes('createClient('),
+  'Supabase client module creates the browser client through @supabase/supabase-js',
+)
+assert(
+  supabaseClientSource.includes('VITE_AUTH_MODE=supabase') &&
+    supabaseClientSource.includes('VITE_SUPABASE_URL') &&
+    supabaseClientSource.includes('VITE_SUPABASE_ANON_KEY'),
+  'Supabase client fails clearly when required public frontend env vars are missing',
+)
+assert(
+  frontendConfigSource.includes('VITE_SUPABASE_PUBLISHABLE_KEY') &&
+    envExampleSource.includes('VITE_SUPABASE_PUBLISHABLE_KEY'),
+  'frontend Supabase config supports publishable key naming without service-role exposure',
+)
+assert(
+  authApiSource.includes('loginStaffWithSupabase') &&
+    authApiSource.includes('signInWithSupabasePassword') &&
+    authApiSource.includes('meFromBearerToken'),
+  'supabase staff login signs in with Supabase then resolves MATA identity through backend /auth/me',
+)
+assert(
+  authApiSource.includes('SupabaseConfigurationError') &&
+    loginPageSource.includes('VITE_AUTH_MODE=supabase requires'),
+  'missing Supabase public env config surfaces a clear frontend login error',
+)
+assert(
+  authApiSource.includes('hydrateSupabaseSession') &&
+    authContextSource.includes('hydrateSupabaseSession'),
+  'supabase session hydration calls backend /auth/me from the current Supabase browser session',
+)
+assert(
+  authApiSource.includes('Resident MCR-only sign-in is not available in Supabase mode yet.'),
+  'supabase mode keeps resident and Non-NHG MCR login safely unsupported',
+)
+assert(
+  httpSource.includes('getCurrentSupabaseAccessToken') &&
+    httpSource.includes("request.headers.Authorization = `Bearer ${accessToken}`"),
+  'shared HTTP client attaches latest Supabase Authorization bearer before protected API calls',
+)
+assert(
+  httpSource.includes("delete request.headers['X-User-Role']") &&
+    httpSource.includes("delete request.headers['X-Admin-Level']"),
+  'supabase HTTP transport strips local/demo identity headers before requests leave the frontend',
+)
+assert(
+  authContextSource.includes('signOutFromSupabase') &&
+    shellSource.includes('await logout()'),
+  'supabase logout signs out of Supabase and clears local app identity before redirect',
+)
+assert(
+  !authApiSource.includes('user_metadata') &&
+    !authContextSource.includes('user_metadata') &&
+    !supabaseClientSource.includes('user_metadata'),
+  'frontend never derives MATA authorization from Supabase user_metadata',
+)
 assert(loginPageSource.includes('NHG Resident'), 'login page uses NHG Resident terminology')
 assert(loginPageSource.includes('Non-NHG Resident'), 'login page uses Non-NHG Resident terminology')
 assert(loginPageSource.includes('Unable to sign in. Check your details and try again.'), 'login page uses generic failure copy')
 assert(loginPageSource.includes('loginStaff'), 'staff login is separate from MCR resident login')
+assert(
+  loginPageSource.includes('residentSupabaseUnsupported') &&
+    loginPageSource.includes('MCR-only resident sign-in is available in local/demo mode. Supabase staff sessions are enabled here.'),
+  'login page disables resident MCR login clearly in supabase mode',
+)
 assert(!loginPageSource.includes('auth-login-grid'), 'login page does not use the three-equal-card layout')
 assert(!loginPageSource.includes('auth-login-panel'), 'login page does not render Staff/NHG/Non-NHG as equal cards')
 assert(!loginPageSource.includes('auth-draft'), 'login page does not show a DRAFT stamp')

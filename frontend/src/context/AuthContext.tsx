@@ -8,10 +8,12 @@ import {
 import {
   authSessionChangedEvent,
   clearAuthSession,
+  hydrateSupabaseSession,
   me,
   readStoredAuthSession,
   saveAuthSession,
 } from '../api/auth'
+import { signOutFromSupabase } from '../api/supabaseClient'
 import { frontendConfig } from '../config/frontendConfig'
 import type { AuthIdentity, AuthSessionState, StoredAuthSession } from '../types/auth'
 import { clearMemoryCache } from '../utils/memoryReadCache'
@@ -20,10 +22,40 @@ import { useAppState } from './useAppState'
 
 export const AuthProvider = ({ children }: PropsWithChildren) => {
   const { setRole } = useAppState()
-  const [session, setSession] = useState<StoredAuthSession | null>(() => readStoredAuthSession())
-  const [isLoading, setIsLoading] = useState(() => readStoredAuthSession() !== null)
+  const [session, setSession] = useState<StoredAuthSession | null>(() =>
+    frontendConfig.authMode === 'supabase' ? null : readStoredAuthSession(),
+  )
+  const [isLoading, setIsLoading] = useState(() =>
+    frontendConfig.authMode === 'supabase' || readStoredAuthSession() !== null,
+  )
 
   const hydrateSession = useCallback(async () => {
+    if (frontendConfig.authMode === 'supabase') {
+      setIsLoading(true)
+      try {
+        const hydratedSession = await hydrateSupabaseSession()
+        if (!hydratedSession) {
+          clearAuthSession()
+          setSession(null)
+          return
+        }
+        saveAuthSession(hydratedSession)
+        setSession(hydratedSession)
+        setRole(hydratedSession.identity.role)
+      } catch {
+        try {
+          await signOutFromSupabase()
+        } catch {
+          // Keep the local fail-closed state even if Supabase sign-out cannot complete.
+        }
+        clearAuthSession()
+        setSession(null)
+      } finally {
+        setIsLoading(false)
+      }
+      return
+    }
+
     const storedSession = readStoredAuthSession()
     if (!storedSession) {
       setSession(null)
@@ -50,14 +82,30 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
   }, [setRole])
 
   useEffect(() => {
-    const storedSession = readStoredAuthSession()
-    if (!storedSession) {
-      return
-    }
-
     let active = true
     ;(async () => {
       try {
+        if (frontendConfig.authMode === 'supabase') {
+          const hydratedSession = await hydrateSupabaseSession()
+          if (!active) {
+            return
+          }
+          if (!hydratedSession) {
+            clearAuthSession()
+            setSession(null)
+            return
+          }
+          saveAuthSession(hydratedSession)
+          setSession(hydratedSession)
+          setRole(hydratedSession.identity.role)
+          return
+        }
+
+        const storedSession = readStoredAuthSession()
+        if (!storedSession) {
+          return
+        }
+
         const hydratedIdentity = await me(storedSession)
         if (!active) {
           return
@@ -71,6 +119,13 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
         setRole(hydratedIdentity.role)
       } catch {
         if (active) {
+          if (frontendConfig.authMode === 'supabase') {
+            try {
+              await signOutFromSupabase()
+            } catch {
+              // Keep the local fail-closed state even if Supabase sign-out cannot complete.
+            }
+          }
           clearAuthSession()
           setSession(null)
         }
@@ -104,7 +159,14 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     [setRole],
   )
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    if (frontendConfig.authMode === 'supabase') {
+      try {
+        await signOutFromSupabase()
+      } catch {
+        // A local logout must still clear the MATA session if the network is unavailable.
+      }
+    }
     clearAuthSession()
     setSession(null)
     clearMemoryCache()

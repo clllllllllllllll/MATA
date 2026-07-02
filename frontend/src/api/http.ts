@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { frontendConfig } from '../config/frontendConfig'
 import { clearMemoryCache } from '../utils/memoryReadCache'
+import { getCurrentSupabaseAccessToken } from './supabaseClient'
 
 declare module 'axios' {
   interface AxiosRequestConfig {
@@ -28,6 +29,26 @@ export class ApiRequestError extends Error {
 export const httpClient = axios.create({
   baseURL: frontendConfig.apiBaseUrl,
   timeout: 60000,
+})
+
+httpClient.interceptors.request.use(async (request) => {
+  if (frontendConfig.authMode !== 'supabase') {
+    return request
+  }
+
+  request.headers = request.headers ?? {}
+  delete request.headers['X-User-Role']
+  delete request.headers['X-User-Id']
+  delete request.headers['X-User-Programme']
+  delete request.headers['X-User-Site']
+  delete request.headers['X-Admin-Level']
+
+  const accessToken = await getCurrentSupabaseAccessToken()
+  if (accessToken) {
+    request.headers.Authorization = `Bearer ${accessToken}`
+  }
+
+  return request
 })
 
 httpClient.interceptors.response.use((response) => {

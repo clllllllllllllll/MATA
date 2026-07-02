@@ -74,6 +74,7 @@ export const frontendConfig = {
   demoResidentProgramme: defaultResidentProgramme,
   demoResidentScopeLabel: defaultResidentScopeLabel,
   supabaseUrl: import.meta.env.VITE_SUPABASE_URL ?? '',
+  supabasePublishableKey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? '',
   supabaseAnonKey: import.meta.env.VITE_SUPABASE_ANON_KEY ?? '',
 }
 

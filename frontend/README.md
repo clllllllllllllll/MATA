@@ -19,6 +19,8 @@ React + Vite + TypeScript frontend for the Master Admin upload workflow demo pat
 Create `frontend/.env` (or `frontend/.env.local`) with:
 
 ```bash
+VITE_APP_ENV=local
+VITE_AUTH_MODE=stub
 VITE_API_BASE_URL=http://localhost:8000/api/v1
 VITE_DEMO_ADMIN_USER_ID=5635c7b4-e0f1-4f59-88e1-f0b976b62d29
 VITE_DEMO_ADMIN_PROGRAMME_SCOPE=DR,GERI
@@ -28,11 +30,18 @@ VITE_DEFAULT_REPORTING_PERIOD_ID=
 
 Notes:
 - `VITE_API_BASE_URL` defaults to `http://localhost:8000/api/v1` if not set.
+- Local Vite and Docker full-stack development remain `VITE_AUTH_MODE=stub`.
 - Demo upload requests use Phase 1 stub headers:
   - `X-User-Role: admin`
   - `X-User-Id: <VITE_DEMO_ADMIN_USER_ID>`
   - `X-User-Programme: <VITE_DEMO_ADMIN_PROGRAMME_SCOPE>`
 - TTF upload requires the selected `programme_code` to be inside `X-User-Programme`.
+- Supabase frontend mode requires only public browser-safe variables:
+  - `VITE_AUTH_MODE=supabase`
+  - `VITE_SUPABASE_URL=https://<project-ref>.supabase.co`
+  - `VITE_SUPABASE_PUBLISHABLE_KEY=<publishable-key>` or `VITE_SUPABASE_ANON_KEY=<anon-key>`
+- Never add server-only Supabase secrets to frontend env vars.
+- In Supabase mode, staff sign in through Supabase Auth and MATA identity is loaded from backend `/auth/me`. Resident and Non-NHG MCR-only Supabase login remains deferred.
 - Backward-compatible fallbacks still supported:
   - `VITE_DEMO_ADMIN_ID`
   - `VITE_DEMO_ADMIN_PROGRAMMES`

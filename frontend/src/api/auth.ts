@@ -1,7 +1,12 @@
 import { frontendConfig } from '../config/frontendConfig'
 import type { AppRole } from '../types/app'
 import type { AuthIdentity, StoredAuthSession } from '../types/auth'
-import { httpClient, toApiRequestError } from './http'
+import { ApiRequestError, httpClient, toApiRequestError } from './http'
+import {
+  getCurrentSupabaseSessionToken,
+  signInWithSupabasePassword,
+  SupabaseConfigurationError,
+} from './supabaseClient'
 
 const AUTH_SESSION_KEY = 'mata.auth.session.v1'
 const AUTH_SESSION_CHANGED_EVENT = 'mata-auth-session-change'
@@ -135,6 +140,17 @@ export const createStoredSession = (response: BackendLoginResponse): StoredAuthS
   createdAt: new Date().toISOString(),
 })
 
+const createSupabaseStoredSession = (
+  accessToken: string,
+  identity: AuthIdentity,
+): StoredAuthSession => ({
+  mode: 'supabase',
+  accessToken,
+  tokenType: 'Bearer',
+  identity,
+  createdAt: new Date().toISOString(),
+})
+
 const notifySessionChanged = () => {
   if (isBrowser()) {
     window.dispatchEvent(new Event(AUTH_SESSION_CHANGED_EVENT))
@@ -240,14 +256,65 @@ export const login = async (payload: LoginPayload): Promise<StoredAuthSession> =
   }
 }
 
-export const loginResident = (mcr: string, role: 'resident' | 'external_resident' = 'resident') =>
-  login({ role, mcr })
+export const loginResident = (mcr: string, role: 'resident' | 'external_resident' = 'resident') => {
+  if (frontendConfig.authMode === 'supabase') {
+    throw new ApiRequestError('Resident MCR-only sign-in is not available in Supabase mode yet.')
+  }
+  return login({ role, mcr })
+}
 
-export const loginStaff = (email: string, password: string): Promise<StoredAuthSession> =>
-  login({ role: 'staff', email, password })
+export const loginStaffWithSupabase = async (email: string, password: string): Promise<StoredAuthSession> => {
+  try {
+    const supabaseSession = await signInWithSupabasePassword(email, password)
+    const identity = await meFromBearerToken(supabaseSession.accessToken)
+    return createSupabaseStoredSession(supabaseSession.accessToken, identity)
+  } catch (error) {
+    if (error instanceof SupabaseConfigurationError) {
+      throw new ApiRequestError(error.message)
+    }
+    throw toApiRequestError(error)
+  }
+}
+
+export const loginStaff = (email: string, password: string): Promise<StoredAuthSession> => {
+  if (frontendConfig.authMode === 'supabase') {
+    return loginStaffWithSupabase(email, password)
+  }
+  return login({ role: 'staff', email, password })
+}
+
+export const meFromBearerToken = async (accessToken: string): Promise<AuthIdentity> => {
+  try {
+    const response = await httpClient.get<Record<string, unknown>>('/auth/me', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    return toAuthIdentity(response.data)
+  } catch (error) {
+    throw toApiRequestError(error)
+  }
+}
+
+export const hydrateSupabaseSession = async (): Promise<StoredAuthSession | null> => {
+  const supabaseSession = await getCurrentSupabaseSessionToken()
+  if (!supabaseSession) {
+    return null
+  }
+
+  const identity = await meFromBearerToken(supabaseSession.accessToken)
+  return createSupabaseStoredSession(supabaseSession.accessToken, identity)
+}
 
 export const me = async (session: StoredAuthSession): Promise<AuthIdentity> => {
   try {
+    if (frontendConfig.authMode === 'supabase') {
+      const supabaseSession = await getCurrentSupabaseSessionToken()
+      const accessToken = supabaseSession?.accessToken ?? session.accessToken
+      if (!accessToken) {
+        throw new ApiRequestError('Missing Supabase access token.')
+      }
+      return await meFromBearerToken(accessToken)
+    }
+
     const response = await httpClient.get<Record<string, unknown>>('/auth/me', {
       headers: toSessionRequestHeaders(session),
     })

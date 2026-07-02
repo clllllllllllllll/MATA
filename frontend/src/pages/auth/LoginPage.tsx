@@ -1,7 +1,9 @@
 import { useState, type FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { loginResident, loginStaff } from '../../api/auth'
+import { ApiRequestError } from '../../api/http'
 import { IconChevRight } from '../../components/icons'
+import { frontendConfig } from '../../config/frontendConfig'
 import { defaultPathForRole, isPathAllowedForRole } from '../../config/navigation'
 import { useAuth } from '../../context/useAuth'
 import type { AppRole } from '../../types/app'
@@ -10,6 +12,9 @@ type ResidentLoginRole = 'resident' | 'external_resident'
 type LoginFormId = 'staff' | 'resident'
 
 const LOGIN_ERROR = 'Unable to sign in. Check your details and try again.'
+const RESIDENT_SUPABASE_UNSUPPORTED =
+  'MCR-only resident sign-in is available in local/demo mode. Supabase staff sessions are enabled here.'
+const SUPABASE_CONFIGURATION_ERROR_MARKER = 'VITE_AUTH_MODE=supabase requires'
 
 const getRedirectPath = (role: AppRole, from?: string) => {
   if (from && isPathAllowedForRole(from, role)) {
@@ -30,6 +35,7 @@ export const LoginPage = () => {
   const [error, setError] = useState<{ formId: LoginFormId; message: string } | null>(null)
   const [submittingForm, setSubmittingForm] = useState<LoginFormId | null>(null)
   const isSubmitting = submittingForm !== null
+  const residentSupabaseUnsupported = frontendConfig.authMode === 'supabase'
 
   const submitStaffLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -40,14 +46,19 @@ export const LoginPage = () => {
 
     setSubmittingForm('staff')
     setError(null)
-    logout()
+    await logout()
     try {
       const session = await loginStaff(staffEmail, staffPassword)
       loginWithSession(session)
       navigate(getRedirectPath(session.identity.role, fromPath), { replace: true })
-    } catch {
-      logout()
-      setError({ formId: 'staff', message: LOGIN_ERROR })
+    } catch (loginError) {
+      await logout()
+      const message =
+        loginError instanceof ApiRequestError &&
+        loginError.message.includes(SUPABASE_CONFIGURATION_ERROR_MARKER)
+          ? loginError.message
+          : LOGIN_ERROR
+      setError({ formId: 'staff', message })
     } finally {
       setSubmittingForm(null)
     }
@@ -55,6 +66,10 @@ export const LoginPage = () => {
 
   const submitResidentLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (residentSupabaseUnsupported) {
+      setError({ formId: 'resident', message: RESIDENT_SUPABASE_UNSUPPORTED })
+      return
+    }
     if (!residentMcr.trim()) {
       setError({ formId: 'resident', message: LOGIN_ERROR })
       return
@@ -67,7 +82,7 @@ export const LoginPage = () => {
 
     setSubmittingForm('resident')
     setError(null)
-    logout()
+    await logout()
     try {
       for (const role of loginOrder) {
         try {
@@ -79,10 +94,10 @@ export const LoginPage = () => {
           // Try the other resident identity table before showing the generic failure.
         }
       }
-      logout()
+      await logout()
       setError({ formId: 'resident', message: LOGIN_ERROR })
     } catch {
-      logout()
+      await logout()
       setError({ formId: 'resident', message: LOGIN_ERROR })
     } finally {
       setSubmittingForm(null)
@@ -164,12 +179,18 @@ export const LoginPage = () => {
           </label>
 
           <p className="auth-help">
-            NHG Resident and registered Non-NHG Resident MCR-only sign-in opens only your own resident routes.
+            {residentSupabaseUnsupported
+              ? RESIDENT_SUPABASE_UNSUPPORTED
+              : 'NHG Resident and registered Non-NHG Resident MCR-only sign-in opens only your own resident routes.'}
           </p>
 
           {formError('resident')}
 
-          <button className="auth-primary-action auth-primary-action-resident" type="submit" disabled={isSubmitting}>
+          <button
+            className="auth-primary-action auth-primary-action-resident"
+            type="submit"
+            disabled={isSubmitting || residentSupabaseUnsupported}
+          >
             {submittingForm === 'resident' ? 'Signing in...' : 'Continue'}
             <IconChevRight size={15} />
           </button>
@@ -177,13 +198,22 @@ export const LoginPage = () => {
 
         <div className="auth-divider">or</div>
 
-        <Link className="auth-register-cta" to="/register/non-nhg">
-          <span>
-            <strong>I am a Non-NHG Resident posted to NHG</strong>
-            <small>First-time NUH / SingHealth residents register here. Future logins use MCR only.</small>
-          </span>
-          <IconChevRight size={16} />
-        </Link>
+        {residentSupabaseUnsupported ? (
+          <div className="auth-register-cta is-disabled" aria-disabled="true">
+            <span>
+              <strong>I am a Non-NHG Resident posted to NHG</strong>
+              <small>Registration and MCR-only Supabase sessions remain deferred.</small>
+            </span>
+          </div>
+        ) : (
+          <Link className="auth-register-cta" to="/register/non-nhg">
+            <span>
+              <strong>I am a Non-NHG Resident posted to NHG</strong>
+              <small>First-time NUH / SingHealth residents register here. Future logins use MCR only.</small>
+            </span>
+            <IconChevRight size={16} />
+          </Link>
+        )}
       </section>
     </main>
   )
