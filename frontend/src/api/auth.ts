@@ -75,6 +75,13 @@ const toStringArray = (value: unknown): string[] => {
 const toHomeCluster = (value: unknown): 'NUH' | 'SingHealth' =>
   String(value).toLowerCase() === 'singhealth' ? 'SingHealth' : 'NUH'
 
+const toStaffActorFields = (rawUser: Record<string, unknown>) => ({
+  currentStaffActorName: optionalString(rawUser.current_staff_actor_name),
+  staffActorNameRequired: rawUser.staff_actor_name_required === true,
+  staffActorNameUpdatedAt: optionalString(rawUser.staff_actor_name_updated_at),
+  staffActorNameUpdatedByUserId: optionalString(rawUser.staff_actor_name_updated_by_user_id),
+})
+
 const toAuthIdentity = (rawUser: Record<string, unknown>): AuthIdentity => {
   const backendRole = String(rawUser.role ?? '')
   const subjectId = requiredString(rawUser.id)
@@ -91,6 +98,7 @@ const toAuthIdentity = (rawUser: Record<string, unknown>): AuthIdentity => {
         email,
         adminLevel,
         programmeScope: toStringArray(rawUser.programme_scope),
+        ...toStaffActorFields(rawUser),
       }
     }
     return {
@@ -100,6 +108,7 @@ const toAuthIdentity = (rawUser: Record<string, unknown>): AuthIdentity => {
       email,
       adminLevel,
       programmeScope: toStringArray(rawUser.programme_scope),
+      ...toStaffActorFields(rawUser),
     }
   }
 
@@ -110,6 +119,7 @@ const toAuthIdentity = (rawUser: Record<string, unknown>): AuthIdentity => {
       name,
       email,
       postingCode: requiredString(rawUser.posting_code),
+      ...toStaffActorFields(rawUser),
     }
   }
 
@@ -318,6 +328,22 @@ export const me = async (session: StoredAuthSession): Promise<AuthIdentity> => {
     const response = await httpClient.get<Record<string, unknown>>('/auth/me', {
       headers: toSessionRequestHeaders(session),
     })
+    return toAuthIdentity(response.data)
+  } catch (error) {
+    throw toApiRequestError(error)
+  }
+}
+
+export const updateStaffActorName = async (
+  session: StoredAuthSession,
+  fullName: string,
+): Promise<AuthIdentity> => {
+  try {
+    const response = await httpClient.post<Record<string, unknown>>(
+      '/auth/staff-actor-name',
+      { full_name: fullName },
+      { headers: toSessionRequestHeaders(session) },
+    )
     return toAuthIdentity(response.data)
   } catch (error) {
     throw toApiRequestError(error)

@@ -141,6 +141,137 @@ class ConfigMutationDeleteResponse(BaseModel):
     data_revalidation: DataRevalidationImpactSummary
 
 
+StaffAccountType = Literal["master_admin", "programme_pc", "secretary"]
+
+
+def _trim_optional(value: str | None) -> str | None:
+    if value is None:
+        return None
+    trimmed = value.strip()
+    return trimmed or None
+
+
+def _trim_required(value: object, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} is required")
+    trimmed = value.strip()
+    if not trimmed:
+        raise ValueError(f"{field_name} is required")
+    return trimmed
+
+
+def _normalise_scope(value: list[str] | None) -> list[str] | None:
+    if value is None:
+        return None
+    seen: set[str] = set()
+    scope: list[str] = []
+    for item in value:
+        text = item.strip() if isinstance(item, str) else ""
+        if text and text not in seen:
+            seen.add(text)
+            scope.append(text)
+    return scope
+
+
+class StaffAccountResponse(BaseModel):
+    id: UUID
+    account_display_name: str
+    email: str
+    account_type: StaffAccountType
+    role: str
+    name: str
+    admin_level: str
+    programme_scope: list[str] = Field(default_factory=list)
+    posting_code: str | None = None
+    is_active: bool
+    supabase_user_id: UUID | None = None
+    current_staff_actor_name: str | None = None
+    staff_actor_name_updated_at: datetime | None = None
+    staff_actor_name_updated_by_user_id: UUID | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class StaffAccountListResponse(BaseModel):
+    items: list[StaffAccountResponse]
+
+
+class StaffAccountCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_display_name: str | None = Field(default=None, max_length=100)
+    name: str | None = Field(default=None, max_length=100)
+    email: str = Field(min_length=1, max_length=100)
+    account_type: StaffAccountType
+    password: str = Field(min_length=8, max_length=255)
+    is_active: bool = True
+    programme_scope: list[str] | None = None
+    posting_code: str | None = Field(default=None, max_length=50)
+
+    @field_validator("account_display_name", "name", "posting_code")
+    @classmethod
+    def _trim_strings(cls, value: str | None) -> str | None:
+        return _trim_optional(value)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _trim_required_email(cls, value: object) -> str:
+        return _trim_required(value, field_name="email")
+
+    @field_validator("password", mode="before")
+    @classmethod
+    def _trim_required_password(cls, value: object) -> str:
+        return _trim_required(value, field_name="password")
+
+    @field_validator("programme_scope")
+    @classmethod
+    def _trim_scope(cls, value: list[str] | None) -> list[str] | None:
+        return _normalise_scope(value)
+
+    @model_validator(mode="after")
+    def _validate_shape(self) -> "StaffAccountCreateRequest":
+        if not (self.account_display_name or self.name):
+            raise ValueError("account_display_name is required")
+        if self.account_type == "programme_pc" and not self.programme_scope:
+            raise ValueError("programme_scope is required for Programme PC accounts")
+        if self.account_type == "secretary" and not self.posting_code:
+            raise ValueError("posting_code is required for Secretary accounts")
+        return self
+
+
+class StaffAccountUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_display_name: str | None = Field(default=None, max_length=100)
+    name: str | None = Field(default=None, max_length=100)
+    email: str | None = Field(default=None, max_length=100)
+    account_type: StaffAccountType | None = None
+    is_active: bool | None = None
+    programme_scope: list[str] | None = None
+    posting_code: str | None = Field(default=None, max_length=50)
+
+    @field_validator("account_display_name", "name", "email", "posting_code")
+    @classmethod
+    def _trim_strings(cls, value: str | None) -> str | None:
+        return _trim_optional(value)
+
+    @field_validator("programme_scope")
+    @classmethod
+    def _trim_scope(cls, value: list[str] | None) -> list[str] | None:
+        return _normalise_scope(value)
+
+
+class StaffAccountResetPasswordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    password: str = Field(min_length=8, max_length=255)
+
+    @field_validator("password", mode="before")
+    @classmethod
+    def _trim_password(cls, value: object) -> str:
+        return _trim_required(value, field_name="password")
+
+
 class UploadLogListItem(BaseModel):
     id: UUID
     upload_type: str

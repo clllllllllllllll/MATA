@@ -12,6 +12,7 @@ import {
   me,
   readStoredAuthSession,
   saveAuthSession,
+  updateStaffActorName as updateStaffActorNameApi,
 } from '../api/auth'
 import { signOutFromSupabase } from '../api/supabaseClient'
 import { frontendConfig } from '../config/frontendConfig'
@@ -172,6 +173,25 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     clearMemoryCache()
   }, [])
 
+  const updateStaffActorName = useCallback(
+    async (fullName: string) => {
+      if (!session) {
+        throw new Error('No active staff session.')
+      }
+      const updatedIdentity = await updateStaffActorNameApi(session, fullName)
+      const updatedSession: StoredAuthSession = {
+        ...session,
+        identity: updatedIdentity,
+      }
+      saveAuthSession(updatedSession)
+      setSession(updatedSession)
+      setRole(updatedIdentity.role)
+      clearMemoryCache()
+      return updatedIdentity
+    },
+    [session, setRole],
+  )
+
   const effectiveIdentity = useMemo<AuthIdentity | null>(() => {
     if (session?.identity) {
       return session.identity
@@ -186,22 +206,34 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     isAuthenticated: effectiveIdentity !== null,
   }), [effectiveIdentity])
 
+  const staffActorNameRequired = Boolean(
+    effectiveIdentity &&
+      (effectiveIdentity.role === 'master_admin' ||
+        effectiveIdentity.role === 'programme_pc' ||
+        effectiveIdentity.role === 'secretary') &&
+      effectiveIdentity.staffActorNameRequired,
+  )
+
   const value = useMemo<AuthContextValue>(() => ({
     authState,
     identity: effectiveIdentity,
     session,
     hasExplicitSession: session !== null,
     isLoading,
+    staffActorNameRequired,
     hydrateSession,
     loginWithSession,
+    updateStaffActorName,
     logout,
   }), [
     authState,
     effectiveIdentity,
     session,
     isLoading,
+    staffActorNameRequired,
     hydrateSession,
     loginWithSession,
+    updateStaffActorName,
     logout,
   ])
 

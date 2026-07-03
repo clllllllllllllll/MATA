@@ -78,6 +78,11 @@ from app.schemas import (
     ReportingPeriodResponse,
     ReportingPeriodUpdateRequest,
     SessionTypeResponse,
+    StaffAccountCreateRequest,
+    StaffAccountListResponse,
+    StaffAccountResetPasswordRequest,
+    StaffAccountResponse,
+    StaffAccountUpdateRequest,
     TeachingNameCatalogueResponse,
     TeachingTargetResponse,
     UploadLogDetailResponse,
@@ -105,6 +110,7 @@ from app.services import (
     data_revalidation_service,
     parsed_data,
     programme_teaching_events,
+    staff_accounts,
 )
 from app.services.admin_logs_service import (
     get_admin_log as get_admin_log_read_model,
@@ -155,6 +161,7 @@ class AdminContext:
     user_id: UUID
     programme_scope: set[str]
     is_master_admin: bool
+    current_staff_actor_name: str | None = None
 
 
 def _admin_actor_context(admin_context: AdminContext) -> StaffActorContext:
@@ -166,7 +173,12 @@ def _admin_actor_context(admin_context: AdminContext) -> StaffActorContext:
     return StaffActorContext(
         actor_user_id=admin_context.user_id,
         actor_role="admin",
-        actor_name=STAFF_ACTOR_FALLBACK_NAME,
+        actor_name=(
+            admin_context.current_staff_actor_name.strip()
+            if admin_context.current_staff_actor_name
+            and admin_context.current_staff_actor_name.strip()
+            else STAFF_ACTOR_FALLBACK_NAME
+        ),
         actor_programme=",".join(sorted(admin_context.programme_scope)) or None,
         actor_admin_level="master" if admin_context.is_master_admin else None,
         raw_scope_metadata=scope_metadata,
@@ -192,6 +204,7 @@ def _admin_context_from_identity(identity: AuthIdentity) -> AdminContext:
         user_id=user_id,
         programme_scope=set(identity.programme_scope or []),
         is_master_admin=is_master_admin(identity),
+        current_staff_actor_name=identity.current_staff_actor_name,
     )
 
 
@@ -943,6 +956,68 @@ async def _write_config_audit(
         ),
     )
     await db.commit()
+
+
+@router.get("/staff-accounts", response_model=StaffAccountListResponse)
+async def list_staff_accounts(
+    db: AsyncSession = Depends(get_db_session),
+    admin_context: AdminContext = Depends(require_admin_context),
+) -> dict:
+    _require_master_admin(admin_context)
+    return await staff_accounts.list_staff_accounts(db)
+
+
+@router.post("/staff-accounts", response_model=StaffAccountResponse)
+async def create_staff_account(
+    payload: StaffAccountCreateRequest,
+    db: AsyncSession = Depends(get_db_session),
+    admin_context: AdminContext = Depends(require_admin_context),
+    actor: StaffActorContext = Depends(require_staff_actor),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    _require_master_admin(admin_context)
+    return await staff_accounts.create_staff_account(
+        db,
+        payload=payload,
+        actor=actor,
+        settings=settings,
+    )
+
+
+@router.patch("/staff-accounts/{user_id}", response_model=StaffAccountResponse)
+async def update_staff_account(
+    user_id: UUID,
+    payload: StaffAccountUpdateRequest,
+    db: AsyncSession = Depends(get_db_session),
+    admin_context: AdminContext = Depends(require_admin_context),
+    actor: StaffActorContext = Depends(require_staff_actor),
+) -> dict:
+    _require_master_admin(admin_context)
+    return await staff_accounts.update_staff_account(
+        db,
+        user_id=user_id,
+        payload=payload,
+        actor=actor,
+    )
+
+
+@router.post("/staff-accounts/{user_id}/reset-password", response_model=StaffAccountResponse)
+async def reset_staff_account_password(
+    user_id: UUID,
+    payload: StaffAccountResetPasswordRequest,
+    db: AsyncSession = Depends(get_db_session),
+    admin_context: AdminContext = Depends(require_admin_context),
+    actor: StaffActorContext = Depends(require_staff_actor),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    _require_master_admin(admin_context)
+    return await staff_accounts.reset_staff_account_password(
+        db,
+        user_id=user_id,
+        payload=payload,
+        actor=actor,
+        settings=settings,
+    )
 
 
 @router.post("/upload/rdb")

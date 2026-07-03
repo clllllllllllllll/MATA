@@ -540,7 +540,7 @@ export const PcTeachingEventsPage = () => {
     <div className="page pc-teaching-events-page">
       <PageHero
         title="Teaching Events"
-        subtitle="Programme PC - scheduled teaching events"
+        subtitle="PC - scheduled teaching events"
         actions={
           <div className="pc-teaching-events-actions">
             <button type="button" className="button button-secondary" onClick={() => void loadEvents()}>

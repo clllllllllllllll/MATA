@@ -3,6 +3,13 @@ import type { AppRole } from './app'
 export type FrontendAppEnv = 'local' | 'preview' | 'production'
 export type AuthMode = 'stub' | 'demo' | 'supabase'
 
+interface StaffActorIdentityFields {
+  currentStaffActorName?: string
+  staffActorNameRequired: boolean
+  staffActorNameUpdatedAt?: string
+  staffActorNameUpdatedByUserId?: string
+}
+
 export type AuthIdentity =
   | {
       role: 'master_admin'
@@ -11,7 +18,7 @@ export type AuthIdentity =
       email?: string
       adminLevel: 'master'
       programmeScope: string[]
-    }
+    } & StaffActorIdentityFields
   | {
       role: 'programme_pc'
       subjectId: string
@@ -19,14 +26,14 @@ export type AuthIdentity =
       email?: string
       adminLevel: 'programme'
       programmeScope: string[]
-    }
+    } & StaffActorIdentityFields
   | {
       role: 'secretary'
       subjectId: string
       name?: string
       email?: string
       postingCode: string
-    }
+    } & StaffActorIdentityFields
   | {
       role: 'resident'
       subjectId: string

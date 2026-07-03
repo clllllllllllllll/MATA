@@ -60,6 +60,7 @@ export const routeAccessRules = [
   { path: '/admin/upload-logs', kind: 'protected', allowedRoles: ['master_admin'] },
   { path: '/admin/parsed-data', kind: 'protected', allowedRoles: ['master_admin'] },
   { path: '/admin/secretary-events', kind: 'protected', allowedRoles: ['master_admin'] },
+  { path: '/admin/staff-accounts', kind: 'protected', allowedRoles: ['master_admin'] },
   { path: '/admin/submissions', kind: 'protected', allowedRoles: ['master_admin'] },
   { path: '/pc', kind: 'protected', allowedRoles: ['programme_pc'] },
   { path: '/pc/teaching-events', kind: 'protected', allowedRoles: ['programme_pc'] },

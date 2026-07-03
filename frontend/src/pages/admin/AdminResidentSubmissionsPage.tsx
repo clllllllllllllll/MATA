@@ -185,7 +185,7 @@ export const AdminResidentSubmissionsPage = () => {
     reportingPeriodsError,
   } = useAppState()
   const adminLevel = role === 'programme_pc' ? 'programme' : 'master'
-  const roleLabel = role === 'programme_pc' ? 'Programme PC' : 'Master Admin'
+  const roleLabel = role === 'programme_pc' ? 'PC' : 'Master Admin'
   const [filters, setFilters] = useState<FilterState>({
     reportingPeriodId: reportingPeriodId || '',
     programmeCode: 'all',

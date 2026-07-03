@@ -107,7 +107,7 @@ export const PcUploadTtfPage = () => {
     <div className="page pc-upload-ttf-page">
       <PageHero
         title="Upload Teaching Target File"
-        subtitle="Programme PC - Teaching Target File upload"
+        subtitle="PC - Teaching Target File upload"
       />
 
       <section className="pc-upload-layout">
@@ -139,7 +139,7 @@ export const PcUploadTtfPage = () => {
                 ) : null}
                 {programmeScope.mode === 'none' ? (
                   <span className="upload-validation-text">
-                    No programme scope is available for this Programme PC.
+                    No programme scope is available for this PC.
                   </span>
                 ) : null}
               </label>

@@ -1,5 +1,5 @@
 ﻿import { Navigate, Route, Routes } from 'react-router-dom'
-import type { ReactElement } from 'react'
+import { useState, type FormEvent, type ReactElement } from 'react'
 import { AppShell } from './components/AppShell'
 import { useLocation } from 'react-router-dom'
 import { AdminConfigPage } from './pages/admin/AdminConfigPage'
@@ -9,6 +9,7 @@ import { AdminMultiPostingPage } from './pages/admin/AdminMultiPostingPage'
 import { AdminParsedDataPage } from './pages/admin/AdminParsedDataPage'
 import { AdminResidentSubmissionsPage } from './pages/admin/AdminResidentSubmissionsPage'
 import { AdminSecretaryEventsPage } from './pages/admin/AdminSecretaryEventsPage'
+import { AdminStaffAccountsPage } from './pages/admin/AdminStaffAccountsPage'
 import { AdminUploadLogsPage } from './pages/admin/AdminUploadLogsPage'
 import { AdminUploadPage } from './pages/admin/AdminUploadPage'
 import { AdminWarningsPage } from './pages/admin/AdminWarningsPage'
@@ -29,8 +30,71 @@ const AuthLoadingScreen = () => (
   </div>
 )
 
+const isStaffIdentity = (identity: ReturnType<typeof useAuth>['identity']) =>
+  identity?.role === 'master_admin' ||
+  identity?.role === 'programme_pc' ||
+  identity?.role === 'secretary'
+
+const StaffActorNameGate = () => {
+  const { logout, updateStaffActorName } = useAuth()
+  const [fullName, setFullName] = useState('')
+  const [isSaving, setIsSaving] = useState(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const trimmedName = fullName.trim()
+    if (!trimmedName) {
+      setErrorMessage('Full name is required.')
+      return
+    }
+
+    setIsSaving(true)
+    setErrorMessage(null)
+    try {
+      await updateStaffActorName(trimmedName)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to save staff name.')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  return (
+    <div className="staff-actor-gate">
+      <form className="staff-actor-card" onSubmit={(event) => void handleSubmit(event)}>
+        <h1>Set staff name</h1>
+        <p>This name will be recorded on actions performed using this shared staff account. You can change it later from Settings.</p>
+        <label className="auth-field">
+          <span>Full name</span>
+          <input
+            value={fullName}
+            onChange={(event) => setFullName(event.target.value)}
+            autoComplete="name"
+            disabled={isSaving}
+          />
+        </label>
+        {errorMessage ? <div className="auth-error">{errorMessage}</div> : null}
+        <div className="staff-actor-actions">
+          <button type="submit" className="button button-primary" disabled={isSaving}>
+            {isSaving ? 'Saving' : 'Save and continue'}
+          </button>
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => void logout()}
+            disabled={isSaving}
+          >
+            Log out
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
 const AccessControlledRoutes = () => {
-  const { authState, hasExplicitSession, isLoading } = useAuth()
+  const { authState, hasExplicitSession, identity, isLoading, staffActorNameRequired } = useAuth()
   const location = useLocation()
   const decision = getRouteAccessDecision({
     pathname: location.pathname,
@@ -61,6 +125,10 @@ const AccessControlledRoutes = () => {
     return null
   }
 
+  if (staffActorNameRequired && isStaffIdentity(identity)) {
+    return <StaffActorNameGate />
+  }
+
   return <AppRoutes />
 }
 
@@ -82,6 +150,7 @@ const AppRoutes = () => {
       <Route path="/admin/upload-logs" element={shellElement(<AdminUploadLogsPage />)} />
       <Route path="/admin/parsed-data" element={shellElement(<AdminParsedDataPage />)} />
       <Route path="/admin/secretary-events" element={shellElement(<AdminSecretaryEventsPage />)} />
+      <Route path="/admin/staff-accounts" element={shellElement(<AdminStaffAccountsPage />)} />
       <Route path="/admin/submissions" element={shellElement(<AdminResidentSubmissionsPage />)} />
       <Route path="/pc" element={shellElement(<Navigate to="/pc/teaching-events" replace />)} />
       <Route path="/pc/upload-ttf" element={shellElement(<PcUploadTtfPage />)} />

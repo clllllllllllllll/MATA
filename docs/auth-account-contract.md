@@ -1,6 +1,6 @@
 # Auth and Account Contract
 
-Status: 5B-A foundation plus 5B-B1/5B-B2 backend identity foundation and 5B-C frontend auth/session shell, June 30, 2026.
+Status: 5B-A through 5B-E auth/account foundation, July 3, 2026.
 
 This document defines the Supabase-ready auth/account contract for upcoming 5B login/register work. It is also a repo audit: source-of-truth docs describe the intended design, while the implementation has partial stub/demo and Non-NHG resident support already present.
 
@@ -63,6 +63,8 @@ Frontend:
 - `frontend/src/types/auth.ts` defines the typed frontend auth/session identity contract for later real session wiring.
 - As of 5B-C, the frontend has a universal `/login`, frontend auth/session provider, role-aware route guards, logout/session clearing, and Non-NHG Resident registration plus confirmation UI.
 - As of 5B-D2, `VITE_AUTH_MODE=supabase` uses the Supabase browser session for staff login, hydration, API bearer transport, and logout. MATA role/scope still comes only from backend `/auth/me`.
+- As of 5B-E, staff accounts are generic pass-down role accounts. Master Admin can manage staff accounts at `/admin/staff-accounts`; Supabase-mode create/reset calls are backend-only service-role operations and are mocked in tests.
+- As of 5B-E, staff users save `current_staff_actor_name` once after login and can change it from Settings. This is self-declared audit/display metadata only and never an authorization source. Resetting a staff account password clears the saved actor name for handover.
 
 Docker/env:
 - `docker-compose.yml` has local backend `AUTH_MODE=stub`, Docker DB URLs using host `db`, and frontend build args for local stub mode.
@@ -175,6 +177,20 @@ Claims:
 ```
 
 Master access must never be inferred from `programme_scope = NULL`, empty scope, missing scope, or a special programme code.
+
+### 5B-E Generic Staff Role Accounts and Actor Names
+
+Staff accounts are shared role accounts, not personal workforce identities:
+
+- `users.name` remains the generic account display name, such as `Master Admin`, `Programme PC - DR`, or `Secretary - TTSHCardio`.
+- `users.current_staff_actor_name` stores the current human using the account. It is self-declared POC audit metadata only.
+- `current_staff_actor_name` must not grant or override `role`, `admin_level`, `programme_scope`, `posting_code`, or any authorization decision.
+- `/auth/me` returns `current_staff_actor_name` and `staff_actor_name_required` for staff only.
+- Staff users with no saved non-blank actor name are blocked in the frontend by the "Set staff name" flow until they save one. Residents are not prompted.
+- Staff can update the saved actor name later from AppShell Settings.
+- Master Admin can create, edit, activate/deactivate, and reset password for staff accounts at `/admin/staff-accounts`.
+- Password reset/handover clears the saved actor name and timestamps; no new local user is created.
+- Production should eventually replace self-declared actor names with SSO/corporate identity. Until then, these names are audit context, not strong identity proof.
 
 ## Supabase-Ready Claim Rules
 
@@ -351,9 +367,13 @@ Planned Non-NHG registration:
 - Do not trust Supabase user metadata for authorization.
 
 5B-E:
-- Complete staff/admin credential handling and account provisioning flows.
-- Master Admin remains backend-created/seeded.
-- Secretary and Programme PC accounts can later be created by Master Admin through UI.
+5B-E implemented:
+- Added generic staff role-account management for Master Admin at `/admin/staff-accounts`.
+- Added backend-only Supabase Admin user create/password reset using `SUPABASE_SERVICE_ROLE_KEY`; the service role key remains server-only and must not appear in frontend/Vite variables.
+- Added nullable `users.current_staff_actor_name`, `staff_actor_name_updated_at`, and `staff_actor_name_updated_by_user_id`.
+- Added `/auth/staff-actor-name`, `/auth/me` actor-name fields, frontend first-login actor-name gate, and AppShell Settings update flow.
+- Reset password/handover clears the saved actor name and updates the local password hash; passwords are not returned or logged.
+- The frontend still transports Supabase access tokens as browser-visible bearer tokens from the Supabase browser session. This is an accepted temporary 5B-D2/5B-E limitation.
 
 5B-F:
 - Complete Non-NHG resident submission parity where not already implemented.
@@ -365,9 +385,10 @@ Planned Non-NHG registration:
 
 5B-H:
 - Add rate-limit hardening for login/register and mutation surfaces before UAT/public use.
+- Replace browser-visible Supabase bearer transport with backend-managed `HttpOnly`, `Secure`, `SameSite` cookies or BFF session transport plus CSRF protection.
 
-Still deferred beyond 5B-D1:
-- Resident Supabase provisioning, resident second factor, RLS, staff account UI, password reset, production Supabase deployment, Vercel/backend deployment, Master Admin seed/provisioning script, Non-NHG workflow parity beyond the login/register shell, exports/email, bulk upload, compliance, surplus, snapshots, clawback, and STP upload/parser.
+Still deferred beyond 5B-E:
+- Resident Supabase provisioning, resident second factor, RLS, production Supabase deployment, Vercel/backend deployment, Master Admin seed/provisioning script, Non-NHG workflow parity beyond the login/register shell, exports/email, bulk upload, compliance, surplus, snapshots, clawback, STP upload/parser, and SSO/corporate identity replacement for self-declared staff actor names.
 
 ## 5A Guardrails Preserved
 

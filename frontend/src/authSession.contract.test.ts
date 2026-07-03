@@ -20,6 +20,7 @@ const mainSource = read('./main.tsx')
 const authApiSource = read('./api/auth.ts')
 const httpSource = read('./api/http.ts')
 const authContextSource = read('./context/AuthContext.tsx')
+const authContextTypeSource = read('./context/authContext.ts')
 const loginPageSource = read('./pages/auth/LoginPage.tsx')
 const registrationPageSource = read('./pages/auth/NonNhgRegistrationPage.tsx')
 const shellSource = read('./components/AppShell.tsx')
@@ -34,8 +35,13 @@ const pcUploadTtfSource = read('./pages/pc/PcUploadTtfPage.tsx')
 const adminUploadPageSource = read('./pages/admin/AdminUploadPage.tsx')
 const adminConfigPageSource = read('./pages/admin/AdminConfigPage.tsx')
 const adminLogsPageSource = read('./pages/admin/AdminLogsPage.tsx')
+const staffAccountsApiPath = fileURLToPath(new URL('./api/staffAccounts.ts', import.meta.url))
+const staffAccountsPagePath = fileURLToPath(new URL('./pages/admin/AdminStaffAccountsPage.tsx', import.meta.url))
+const staffAccountsPageSource = read('./pages/admin/AdminStaffAccountsPage.tsx')
 const secretarySchedulePageSource = read('./pages/secretary/SecretaryTeachingSchedulePage.tsx')
 const residentSubmissionPageSource = read('./pages/resident/ResidentSubmissionPage.tsx')
+const adminResidentSubmissionsPageSource = read('./pages/admin/AdminResidentSubmissionsPage.tsx')
+const stylesSource = read('./index.css')
 const stubPageSource = read('./pages/StubPage.tsx')
 const routeGuardsSource = read('./routeGuards.ts')
 const routeTracePath = fileURLToPath(new URL('./utils/routeTrace.ts', import.meta.url))
@@ -43,12 +49,14 @@ const supabaseClientPath = fileURLToPath(new URL('./api/supabaseClient.ts', impo
 assert(existsSync(supabaseClientPath), 'Supabase browser client module exists')
 const supabaseClientSource = read('./api/supabaseClient.ts')
 const appSourceLf = appSource.replace(/\r\n/g, '\n')
+const stylesSourceLf = stylesSource.replace(/\r\n/g, '\n')
 const obsoleteRolePopoverClass = ['role', 'switcher', 'popover'].join('-')
 const obsoleteSwitchCopy = ['SWITCH', 'ROLE'].join(' ')
 const obsoleteRoleMutation = ['setRole', '(option.id)'].join('')
 const obsoleteRoleSwitcherEnv = ['VITE', 'ENABLE', 'ROLE', 'SWITCHER'].join('_')
 const obsoleteRoleSwitcherConfig = ['enable', 'Role', 'Switcher'].join('')
 const obsoleteIdentityHeaderFallback = ['dev', 'Identity', 'Headers', 'Enabled'].join('')
+const obsoleteProgrammePcLabel = ['Programme', 'PC'].join(' ')
 
 const {
   getRouteAccessDecision,
@@ -100,8 +108,10 @@ for (const source of diagnosticSources) {
 assert(mainSource.includes('<AuthProvider>'), 'AuthProvider wraps the app')
 assert(authContextSource.includes('hydrateSession'), 'auth context hydrates or validates the stored session')
 assert(authContextSource.includes('logout'), 'auth context exposes logout')
+assert(authContextTypeSource.includes('updateStaffActorName'), 'auth context exposes saved staff actor name updates')
 assert(authApiSource.includes("'/auth/login'"), 'auth API posts to /auth/login')
 assert(authApiSource.includes("'/auth/me'"), 'auth API can hydrate from /auth/me')
+assert(authApiSource.includes("'/auth/staff-actor-name'"), 'auth API can save the current staff actor name')
 assert(authApiSource.includes("'/external-residents/register'"), 'auth API registers Non-NHG residents')
 assert(packageSource.includes('"@supabase/supabase-js": "2.110.0"'), 'Supabase JS dependency is pinned exactly')
 assert(
@@ -118,7 +128,7 @@ assert(
 assert(
   frontendConfigSource.includes('VITE_SUPABASE_PUBLISHABLE_KEY') &&
     envExampleSource.includes('VITE_SUPABASE_PUBLISHABLE_KEY'),
-  'frontend Supabase config supports publishable key naming without service-role exposure',
+  'frontend Supabase config supports publishable key naming without private backend credential exposure',
 )
 assert(
   authApiSource.includes('loginStaffWithSupabase') &&
@@ -135,6 +145,25 @@ assert(
   authApiSource.includes('hydrateSupabaseSession') &&
     authContextSource.includes('hydrateSupabaseSession'),
   'supabase session hydration calls backend /auth/me from the current Supabase browser session',
+)
+assert(
+  authApiSource.includes('current_staff_actor_name') &&
+    authApiSource.includes('staff_actor_name_required') &&
+    authContextSource.includes('staffActorNameRequired'),
+  'frontend auth identity carries saved staff actor-name fields from backend /auth/me',
+)
+assert(
+  appSource.includes('StaffActorNameGate') &&
+    appSource.includes('Set staff name') &&
+    appSource.includes('Save and continue') &&
+    appSource.includes('This name will be recorded on actions performed using this shared staff account.'),
+  'staff users missing a saved actor name are blocked by the set-staff-name flow',
+)
+assert(
+  shellSource.includes('Staff account settings') &&
+    shellSource.includes('Current staff name') &&
+    shellSource.includes('updateStaffActorName'),
+  'AppShell provides saved staff actor-name settings for staff identities',
 )
 assert(
   authApiSource.includes('Resident MCR-only sign-in is not available in Supabase mode yet.'),
@@ -179,7 +208,7 @@ assert(!loginPageSource.includes('Production authentication'), 'login page omits
 assert(!loginPageSource.includes('auth-tab-list'), 'login page does not show a Resident/Staff segmented toggle')
 assert(!loginPageSource.includes('staffLoginRole'), 'login page does not let users choose a staff implementation role')
 assert(
-  !loginPageSource.includes('Master Admin / Programme PC'),
+  !loginPageSource.includes(`Master Admin / ${obsoleteProgrammePcLabel}`),
   'login page does not expose staff implementation role chooser copy',
 )
 assert(
@@ -219,7 +248,63 @@ assert(!shellSource.includes(obsoleteSwitchCopy), 'AppShell does not render demo
 assert(!shellSource.includes(obsoleteRoleMutation), 'AppShell role display cannot mutate the app role')
 assert(!frontendConfigSource.includes(obsoleteRoleSwitcherEnv), 'obsolete role chooser Vite config is removed')
 assert(!frontendConfigSource.includes(obsoleteRoleSwitcherConfig), 'obsolete role chooser config flag is removed')
-assert(navigationSource.includes("defaultPath: '/pc/teaching-events'"), 'Programme PC default route is teaching events')
+assert(navigationSource.includes("defaultPath: '/pc/teaching-events'"), 'PC default route is teaching events')
+assert(
+  existsSync(staffAccountsApiPath) &&
+    existsSync(staffAccountsPagePath) &&
+    appSource.includes('AdminStaffAccountsPage') &&
+    routeGuardsSource.includes("'/admin/staff-accounts'") &&
+    navigationSource.includes("path: '/admin/staff-accounts'") &&
+    navigationSource.includes("label: 'Staff Accounts'"),
+  'Master Admin Staff Accounts route, navigation, page, and API client are present',
+)
+assert(
+  navigationSource.indexOf("label: 'Staff Accounts'") <
+    navigationSource.indexOf("label: 'Secretary Events'"),
+  'Master Admin nav shows Staff Accounts above Secretary Events',
+)
+assert(
+  staffAccountsPageSource.includes("programme_pc: 'PC'") &&
+    staffAccountsPageSource.includes('<option value="programme_pc">PC</option>') &&
+    staffAccountsPageSource.includes("'PC requires at least one programme.'"),
+  'Staff Accounts page displays Programme Coordinator accounts as PC',
+)
+assert(
+  staffAccountsPageSource.includes('staff-account-action-button') &&
+    staffAccountsPageSource.includes('button button-ghost danger staff-account-action-button') &&
+    !staffAccountsPageSource.includes('className="button button-secondary" onClick={() => {'),
+  'Staff Accounts row actions use aligned admin row button styles',
+)
+assert(
+  !staffAccountsPageSource.includes('selectedOptions') &&
+    !staffAccountsPageSource.includes('multiple') &&
+    staffAccountsPageSource.includes("value={formState.programmeScope[0] ?? ''}") &&
+    staffAccountsPageSource.includes('event.target.value ? [event.target.value] : []'),
+  'Staff Accounts PC programme scope uses one clean dropdown while preserving programme_scope as an array',
+)
+assert(
+  !staffAccountsPageSource.includes('checkbox-row') &&
+    staffAccountsPageSource.includes('secretary-toggle-block staff-account-toggle-block') &&
+    staffAccountsPageSource.includes('secretary-yes-no') &&
+    staffAccountsPageSource.includes("className={formState.isActive ? 'is-active' : ''}") &&
+    staffAccountsPageSource.includes("className={!formState.isActive ? 'is-active' : ''}"),
+  'Staff Accounts active state uses the Add Teaching yes/no segmented selector',
+)
+assert(
+  /\.admin-staff-accounts-page table tbody td \{\n\s+vertical-align: middle;/.test(stylesSourceLf),
+  'Staff Accounts table body cells are vertically centered',
+)
+for (const source of [
+  navigationSource,
+  staffAccountsPageSource,
+  pcUploadTtfSource,
+  pcTeachingEventsSource,
+  adminLogsPageSource,
+  adminConfigPageSource,
+  adminResidentSubmissionsPageSource,
+]) {
+  assert(!source.includes(obsoleteProgrammePcLabel), 'frontend user-facing copy uses PC terminology')
+}
 assert(authHeadersSource.includes('getSessionAuthHeaders'), 'demo/header builder can use active session identity')
 assert(authHeadersSource.includes("authMode === 'supabase'"), 'auth headers suppress stub/demo identity in supabase mode')
 assert(!authHeadersSource.includes(obsoleteIdentityHeaderFallback), 'auth headers do not emit pre-login demo identity headers')
@@ -238,7 +323,7 @@ assert(
   pcUploadTtfSource.includes('useAuth') &&
     pcUploadTtfSource.includes("identity?.role === 'programme_pc'") &&
     pcUploadTtfSource.includes('identity.programmeScope'),
-  'PC upload TTF page derives programme options from the authenticated Programme PC session scope',
+  'PC upload TTF page derives programme options from the authenticated PC session scope',
 )
 assert(
   !pcUploadTtfSource.includes('resolvePcProgrammeScope(demoAdminProgrammes'),
@@ -248,7 +333,7 @@ assert(
   appStateSource.includes("identity.role === 'master_admin'") &&
     appStateSource.includes("identity.role === 'programme_pc'") &&
     appStateSource.includes('identity.programmeScope.length > 0'),
-  'reporting periods auto-load only for Master Admin or scoped Programme PC sessions',
+  'reporting periods auto-load only for Master Admin or scoped PC sessions',
 )
 assert(
   pcUploadTtfSource.includes('reportingPeriods') && pcUploadTtfSource.includes('reportingPeriodId'),
@@ -315,7 +400,7 @@ assert(
     hasExplicitSession: true,
     role: 'programme_pc',
   })) === '/pc/teaching-events',
-  'Programme PC /admin navigation redirects before Master Admin content renders',
+  'PC /admin navigation redirects before Master Admin content renders',
 )
 assert(
   resolveProtectedRoute({
@@ -362,7 +447,7 @@ assert(
     hasExplicitSession: true,
     role: 'programme_pc',
   })) === '/pc/teaching-events',
-  'single route decision redirects Programme PC /admin to PC default',
+  'single route decision redirects PC /admin to PC default',
 )
 assert(
   redirectTarget(getRouteAccessDecision({
@@ -372,7 +457,7 @@ assert(
     hasExplicitSession: true,
     role: 'programme_pc',
   })) === '/pc/teaching-events',
-  'single route decision redirects Programme PC /secretary/events to PC default',
+  'single route decision redirects PC /secretary/events to PC default',
 )
 assert(
   redirectTarget(getRouteAccessDecision({
@@ -422,7 +507,7 @@ assert(
     hasExplicitSession: true,
     role: 'programme_pc',
   })) === '/pc/teaching-events',
-  'single route decision redirects authenticated Programme PC away from registration',
+  'single route decision redirects authenticated PC away from registration',
 )
 assert(
   getRouteAccessDecision({
@@ -451,6 +536,7 @@ const implementedProtectedRoutesByRole = {
     '/admin/upload-logs',
     '/admin/parsed-data',
     '/admin/secretary-events',
+    '/admin/staff-accounts',
     '/admin/submissions',
   ],
   programme_pc: [

@@ -91,7 +91,7 @@ const actorRoleOptions = [
 
 const actorRoleLabels: Record<string, string> = {
   master_admin: 'Master Admin',
-  programme_pc: 'Programme PC',
+  programme_pc: 'PC',
   admin: 'Admin',
   secretary: 'Secretary',
   resident: 'NHG Resident',

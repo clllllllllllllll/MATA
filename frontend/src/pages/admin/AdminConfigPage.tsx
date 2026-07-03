@@ -3696,7 +3696,7 @@ export const AdminConfigPage = ({ configViewRole }: AdminConfigPageProps) => {
     configSections[0]
   const subtitle =
     configRole === 'programme_pc'
-      ? `Programme PC - ${demoAdminProgrammes.join(', ')}`
+      ? `PC - ${demoAdminProgrammes.join(', ')}`
       : 'Master Admin - All programmes'
 
   useEffect(() => {

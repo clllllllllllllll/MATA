@@ -38,3 +38,17 @@ class LoginRequest(BaseModel):
         if not self.email or not self.password:
             raise ValueError("email and password are required for staff login")
         return self
+
+
+class StaffActorNameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: str = Field(min_length=1, max_length=120)
+
+    @field_validator("full_name")
+    @classmethod
+    def _trim_and_require_name(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("full_name is required")
+        return trimmed

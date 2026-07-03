@@ -10,7 +10,7 @@ from app.config import Settings, get_settings
 from app.dependencies.auth import require_authenticated
 from app.errors import ApiError, ErrorCode
 from app.middleware.auth_stub import AuthIdentity
-from app.schemas.auth import LoginRequest
+from app.schemas.auth import LoginRequest, StaffActorNameRequest
 from app.services import auth as auth_service
 
 
@@ -74,4 +74,24 @@ async def me(
         db,
         role=role,
         subject_id=_parse_subject(identity.subject_id),
+    )
+
+
+@router.post("/staff-actor-name")
+async def update_staff_actor_name(
+    request: StaffActorNameRequest,
+    identity: AuthIdentity = Depends(require_authenticated),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict:
+    if identity.role not in {"admin", "secretary"}:
+        raise ApiError(
+            status_code=403,
+            detail="Forbidden - staff role required",
+            error_code=ErrorCode.FORBIDDEN.value,
+        )
+    return await auth_service.update_staff_actor_name(
+        db,
+        user_id=_parse_subject(identity.subject_id),
+        role=identity.role,
+        full_name=request.full_name,
     )

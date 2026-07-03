@@ -7,8 +7,10 @@ export interface AuthContextValue {
   session: StoredAuthSession | null
   hasExplicitSession: boolean
   isLoading: boolean
+  staffActorNameRequired: boolean
   hydrateSession: () => Promise<void>
   loginWithSession: (session: StoredAuthSession) => void
+  updateStaffActorName: (fullName: string) => Promise<AuthIdentity>
   logout: () => Promise<void>
 }
 

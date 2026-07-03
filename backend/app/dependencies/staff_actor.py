@@ -63,6 +63,14 @@ def _actor_user_id_from_identity(identity: AuthIdentity) -> UUID:
         ) from exc
 
 
+def _actor_name_from_identity(identity: AuthIdentity) -> str:
+    value = identity.current_staff_actor_name
+    if value is None:
+        return STAFF_ACTOR_FALLBACK_NAME
+    trimmed = value.strip()
+    return trimmed or STAFF_ACTOR_FALLBACK_NAME
+
+
 def _staff_actor_from_identity(identity: AuthIdentity) -> StaffActorContext:
     actor_role = identity.role
     if actor_role not in {"admin", "secretary"}:
@@ -88,7 +96,7 @@ def _staff_actor_from_identity(identity: AuthIdentity) -> StaffActorContext:
     return StaffActorContext(
         actor_user_id=_actor_user_id_from_identity(identity),
         actor_role=actor_role,
-        actor_name=STAFF_ACTOR_FALLBACK_NAME,
+        actor_name=_actor_name_from_identity(identity),
         actor_site=actor_site,
         actor_programme=actor_programme,
         actor_admin_level=actor_admin_level,

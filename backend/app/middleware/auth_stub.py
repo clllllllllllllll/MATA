@@ -26,6 +26,7 @@ class AuthIdentity:
     admin_level: str | None = None
     mcr: str | None = None
     home_cluster: str | None = None
+    current_staff_actor_name: str | None = None
 
 
 class AuthStubMiddleware(BaseHTTPMiddleware):
@@ -130,6 +131,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
                 admin_level=self._resolve_admin_level(
                     persisted_admin_level=getattr(user, "admin_level", None),
                 ),
+                current_staff_actor_name=getattr(user, "current_staff_actor_name", None),
             )
 
         if not user.posting_code:
@@ -143,6 +145,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             role="secretary",
             subject_id=str(user.id),
             posting_code=user.posting_code,
+            current_staff_actor_name=getattr(user, "current_staff_actor_name", None),
         )
 
     async def _resolve_user_identity(
@@ -186,6 +189,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
                 programme_scope=allowed_programmes,
                 programme_code=",".join(requested_programmes) if requested_programmes else None,
                 admin_level=admin_level,
+                current_staff_actor_name=getattr(user, "current_staff_actor_name", None),
             )
 
         # secretary role
@@ -200,6 +204,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             role=role,
             subject_id=str(user.id),
             posting_code=user.posting_code,
+            current_staff_actor_name=getattr(user, "current_staff_actor_name", None),
         )
 
     async def _resolve_resident_identity(

@@ -654,10 +654,15 @@ For admin and secretary authentication **only**. Residents are **not** stored he
 | programme_scope | TEXT[] | | Array of programme codes e.g. `{DR,GRM}`. Scopes the admin to specific programmes. NULL = no access (not all-access). |
 | admin_level | VARCHAR(20) | NOT NULL DEFAULT `programme`, CHECK IN (`programme`, `master`) | Explicit admin level marker. Master admin access is `role = admin` and `admin_level = master`; never infer it from `programme_scope = NULL`. |
 | is_active | BOOLEAN | DEFAULT true | |
+| current_staff_actor_name | TEXT | nullable | Self-declared current human using this shared staff role account. Audit/display metadata only; never an authorization source. |
+| staff_actor_name_updated_at | TIMESTAMPTZ | nullable | Last time the saved staff actor name was changed. |
+| staff_actor_name_updated_by_user_id | UUID | FK -> users.id, nullable | Staff account that last updated the saved actor name. Usually the same role account. |
 
 **Secretary provisioning:** At launch, one account per TTSH posting code (e.g. TTSHAnaes, TTSHGerMed, TTSHCardio). Architecture is flexible — when other institutions onboard, provision new secretary accounts scoped to their posting codes (e.g. KTPHAnaes, SGHGerMed) with no schema change required.
 
 **Admin/PC provisioning:** Account count is flexible. `programme_scope TEXT[]` supports multiple programmes per account, allowing PCs who manage several programmes to use a single login.
+
+**5B-E role-account note:** Staff accounts are generic pass-down role accounts. `users.name` remains the generic account display name (for example `Programme PC - DR`), while `current_staff_actor_name` stores the current human's self-declared name for audit context. Password reset/handover clears the saved actor name. Master Admin is explicit via `admin_level = 'master'`; Programme PC access requires `admin_level = 'programme'` and non-empty `programme_scope`; Secretary access requires `posting_code`.
 
 ---
 

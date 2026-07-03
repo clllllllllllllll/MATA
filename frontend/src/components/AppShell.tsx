@@ -1,5 +1,5 @@
 ﻿import { useEffect, useRef, useState } from 'react'
-import type { PropsWithChildren } from 'react'
+import type { FormEvent, PropsWithChildren } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { breadcrumbMap, navItems, roleOptions } from '../config/navigation'
 import { useAuth } from '../context/useAuth'
@@ -24,13 +24,21 @@ const roleNameById: Record<AppRole, string> = {
 
 export const AppShell = ({ children }: PropsWithChildren) => {
   const { role } = useAppState()
-  const { identity, logout } = useAuth()
+  const { identity, logout, updateStaffActorName } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
   const [mobileNavOpenPath, setMobileNavOpenPath] = useState<string | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsName, setSettingsName] = useState('')
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [settingsError, setSettingsError] = useState<string | null>(null)
   const roleMenuRef = useRef<HTMLDivElement | null>(null)
   const activeRole = identity?.role ?? role
   const isMobileNavOpen = mobileNavOpenPath === location.pathname
+  const isStaffIdentity =
+    identity?.role === 'master_admin' ||
+    identity?.role === 'programme_pc' ||
+    identity?.role === 'secretary'
 
   const currentRoleOption = roleOptions.find((option) => option.id === activeRole) ?? roleOptions[0]
   const currentDisplayName = identity?.role === activeRole && identity.name
@@ -107,6 +115,35 @@ export const AppShell = ({ children }: PropsWithChildren) => {
 
   const closeMobileNav = () => setMobileNavOpenPath(null)
 
+  const openSettings = () => {
+    if (!isStaffIdentity) {
+      return
+    }
+    setSettingsName(identity?.currentStaffActorName ?? '')
+    setSettingsError(null)
+    setSettingsOpen(true)
+  }
+
+  const handleSettingsSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const trimmedName = settingsName.trim()
+    if (!trimmedName) {
+      setSettingsError('Full name is required.')
+      return
+    }
+
+    setSettingsSaving(true)
+    setSettingsError(null)
+    try {
+      await updateStaffActorName(trimmedName)
+      setSettingsOpen(false)
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : 'Unable to save staff name.')
+    } finally {
+      setSettingsSaving(false)
+    }
+  }
+
   return (
     <div className={`app app-root ${isMobileNavOpen ? 'mobile-nav-is-open' : ''}`}>
       {isMobileNavOpen ? (
@@ -159,7 +196,13 @@ export const AppShell = ({ children }: PropsWithChildren) => {
         </div>
 
         <div className="sidebar-footer-links">
-          <button type="button" aria-label="Settings" title="Settings">
+          <button
+            type="button"
+            aria-label="Settings"
+            title="Settings"
+            onClick={openSettings}
+            disabled={!isStaffIdentity}
+          >
             <span className="sidebar-footer-icon" aria-hidden="true">
               <IconSettings size={16} />
             </span>
@@ -217,6 +260,69 @@ export const AppShell = ({ children }: PropsWithChildren) => {
           {children ?? <Outlet />}
         </main>
       </div>
+      {settingsOpen && isStaffIdentity && identity ? (
+        <>
+          <button
+            type="button"
+            className="scrim staff-settings-backdrop"
+            aria-label="Close settings"
+            onClick={() => setSettingsOpen(false)}
+          />
+          <section
+            className="staff-settings-modal"
+            aria-modal="true"
+            aria-labelledby="staff-settings-title"
+            role="dialog"
+          >
+            <form onSubmit={(event) => void handleSettingsSubmit(event)}>
+              <header className="staff-settings-header">
+                <h2 id="staff-settings-title">Staff account settings</h2>
+                <button
+                  type="button"
+                  className="button button-ghost"
+                  onClick={() => setSettingsOpen(false)}
+                  disabled={settingsSaving}
+                >
+                  <IconX size={18} />
+                </button>
+              </header>
+              <div className="staff-settings-body">
+                <div className="staff-settings-row">
+                  <span>Account</span>
+                  <strong>{identity.name ?? currentDisplayName}</strong>
+                </div>
+                <div className="staff-settings-row">
+                  <span>Current staff name</span>
+                  <strong>{identity.currentStaffActorName ?? 'Not set'}</strong>
+                </div>
+                <label className="auth-field">
+                  <span>Full name</span>
+                  <input
+                    value={settingsName}
+                    onChange={(event) => setSettingsName(event.target.value)}
+                    autoComplete="name"
+                    disabled={settingsSaving}
+                  />
+                </label>
+                {settingsError ? <div className="auth-error">{settingsError}</div> : null}
+              </div>
+              <footer className="staff-settings-footer">
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={() => setSettingsOpen(false)}
+                  disabled={settingsSaving}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="button button-primary" disabled={settingsSaving}>
+                  {settingsSaving ? 'Saving' : 'Save'}
+                </button>
+              </footer>
+            </form>
+          </section>
+        </>
+      ) : null}
     </div>
   )
 }

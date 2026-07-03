@@ -238,7 +238,9 @@ Frontend-facing `data_revalidation` responses expose stable summary fields at th
 }
 ```
 
-In `AUTH_MODE=supabase`, protected requests use a Supabase Auth access token. The Supabase token `sub` is `auth.users.id` and maps to `users.supabase_user_id`; the backend then derives `role`, `admin_level`, `programme_scope`, and `posting_code` from the active `users` row. Raw client headers and Supabase `user_metadata` are not authorization sources.
+In `AUTH_MODE=supabase`, protected requests use a Supabase Auth access token. The Supabase token `sub` is `auth.users.id` and maps to `users.supabase_user_id`; the backend then derives `role`, `admin_level`, `programme_scope`, `posting_code`, and saved staff actor metadata from the active `users` row. Raw client headers and Supabase `user_metadata` are not authorization sources.
+
+5B-E staff accounts are generic role accounts. `users.name` is the account display name. `current_staff_actor_name` is a self-declared current human name used for audit/display context only; it never grants role, programme scope, admin level, or posting scope. Browser-visible `Authorization: Bearer <Supabase access token>` transport remains the temporary 5B-D2/5B-E implementation. TODO 5B-H: replace browser-visible bearer transport with backend-managed `HttpOnly`, `Secure`, `SameSite` cookies/BFF flow plus CSRF protection.
 
 When `warning_candidate_limit_reached = true`, the backend has capped the warning candidate scan. `affected_warning_count_is_partial = true` means `affected_warning_count` is the capped count, not an exact total. `affected_warning_details_are_partial = true` means `affected_warning_issue_ids` and `affected_warning_summaries` are intentionally bounded for response size.
 
@@ -1555,7 +1557,73 @@ Looks up `residents` table by MCR. Validates `status != 'inactive'`. **No passwo
 Return current identity from validated JWT.
 
 - Resident: returns `residents` row fields + current posting (derived live from `resident_postings`)
-- Admin/Secretary: returns `users` row fields + scope, including `admin_level` for admin accounts
+- Admin/Secretary: returns `users` row fields + scope, including `admin_level` for admin accounts and saved staff actor metadata:
+  - `current_staff_actor_name`
+  - `staff_actor_name_required` (`true` when the staff account has no saved non-blank actor name)
+  - `staff_actor_name_updated_at`
+  - `staff_actor_name_updated_by_user_id`
+
+### POST `/auth/staff-actor-name`
+
+Save the current human name for a shared staff role account.
+
+- **Auth:** authenticated staff only (`admin` or `secretary`); residents and external residents receive `403`.
+- **Body:**
+```json
+{
+  "full_name": "Dr Priya Tan"
+}
+```
+- **Behaviour:** trims and stores a non-empty name in `users.current_staff_actor_name`, updates `staff_actor_name_updated_at` and `staff_actor_name_updated_by_user_id`, and returns the updated `/auth/me` identity shape.
+- **Authorization note:** this value is audit/display metadata only. It does not affect `role`, `admin_level`, `programme_scope`, `posting_code`, or any authorization decision.
+- **Errors:** `401` unauthenticated, `403` non-staff, `422` blank/invalid name.
+
+### Master Admin Staff Account Endpoints
+
+These endpoints are Master Admin-only. Programme PCs and Secretaries receive `403`.
+
+#### GET `/admin/staff-accounts`
+
+Returns `{ "items": [...] }` for staff role accounts in `users`.
+
+Each item includes `account_display_name`, `email`, `account_type` (`master_admin`, `programme_pc`, `secretary`), `programme_scope`, `posting_code`, `current_staff_actor_name`, and `is_active`.
+
+#### POST `/admin/staff-accounts`
+
+Create a generic staff role account.
+
+```json
+{
+  "account_display_name": "Programme PC - DR",
+  "email": "pc-dr@example.com",
+  "account_type": "programme_pc",
+  "password": "temporary working password",
+  "is_active": true,
+  "programme_scope": ["DR", "GRM"],
+  "posting_code": null
+}
+```
+
+- `master_admin`: stores `role = admin`, `admin_level = master`, no programme scope or posting code.
+- `programme_pc`: stores `role = admin`, `admin_level = programme`, and requires non-empty `programme_scope`; empty scope grants no access and is rejected here.
+- `secretary`: stores `role = secretary` and requires `posting_code`; programme scope is not used.
+- In `AUTH_MODE=supabase`, the backend uses the server-only Supabase service role key to create the Supabase Auth user and stores returned `auth.users.id` in `users.supabase_user_id`.
+- In stub/demo, only the local row/password hash is created.
+- Passwords are never returned or logged. `current_staff_actor_name` starts empty.
+
+#### PATCH `/admin/staff-accounts/{user_id}`
+
+Edit account display name, account type/scope fields, posting code, and `is_active`. Email changes may be rejected. Hard delete is not supported. The backend rejects deactivating or demoting the last active Master Admin.
+
+#### POST `/admin/staff-accounts/{user_id}/reset-password`
+
+```json
+{
+  "password": "new working password"
+}
+```
+
+Updates the Supabase Auth password in Supabase mode when `supabase_user_id` exists, updates the local password hash, and clears `current_staff_actor_name` plus actor-name timestamps for handover. The password is not returned or logged.
 
 ### PUT `/auth/settings`
 
