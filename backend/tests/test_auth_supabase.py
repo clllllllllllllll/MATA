@@ -15,7 +15,7 @@ from jwt.algorithms import RSAAlgorithm
 from app.config import Settings
 from app.middleware import install_error_handlers
 from app.middleware.auth_stub import AuthIdentity, AuthStubMiddleware
-from app.routers import auth
+from app.routers import admin, auth
 from app.services.supabase_jwt import SupabaseJwtVerifier
 from tests.resident_fakes import FakeResidentSession
 
@@ -23,11 +23,17 @@ from tests.resident_fakes import FakeResidentSession
 ISSUER = "https://mata-test.supabase.co/auth/v1"
 AUDIENCE = "authenticated"
 KID = "mata-test-key"
+RESIDENT_SECRET = "unit-test-resident-session-secret"
 
 
 class _FakeScalarSession:
-    def __init__(self, user: SimpleNamespace | None) -> None:
+    def __init__(
+        self,
+        user: SimpleNamespace | None,
+        resident: SimpleNamespace | None = None,
+    ) -> None:
         self.user = user
+        self.resident = resident
 
     async def __aenter__(self) -> "_FakeScalarSession":
         return self
@@ -36,6 +42,8 @@ class _FakeScalarSession:
         return None
 
     async def scalar(self, statement) -> SimpleNamespace | None:  # noqa: ANN001
+        if "FROM residents" in str(statement):
+            return self.resident
         return self.user
 
 
@@ -71,10 +79,35 @@ def _token(
     return jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": KID})
 
 
+def _resident_token(
+    fake_db: FakeResidentSession,
+    *,
+    secret: str = RESIDENT_SECRET,
+    expires_delta: timedelta = timedelta(minutes=15),
+) -> str:
+    now = datetime.now(UTC)
+    return jwt.encode(
+        {
+            "iss": "mata-api",
+            "aud": "mata-resident-session",
+            "sub": fake_db.resident_id,
+            "role": "resident",
+            "app_role": "resident",
+            "mcr": "M12345A",
+            "programme_code": "GRM",
+            "iat": now,
+            "exp": now + expires_delta,
+        },
+        secret,
+        algorithm="HS256",
+    )
+
+
 def _settings() -> Settings:
     return Settings(
         auth_mode="supabase",
         supabase_url="https://mata-test.supabase.co",
+        mata_resident_session_secret=RESIDENT_SECRET,
     )
 
 
@@ -97,11 +130,52 @@ def _user(
     )
 
 
+def _resident(fake_db: FakeResidentSession, *, status: str = "active") -> SimpleNamespace:
+    return SimpleNamespace(
+        id=UUID(fake_db.resident_id),
+        name="Resident One",
+        mcr="M12345A",
+        programme_code="GRM",
+        status=status,
+    )
+
+
 def _auth_me_client(
     monkeypatch: pytest.MonkeyPatch,
     *,
     jwks: dict,
     middleware_user: SimpleNamespace | None,
+    fake_db: FakeResidentSession,
+    middleware_resident: SimpleNamespace | None = None,
+) -> TestClient:
+    app = FastAPI()
+    install_error_handlers(app)
+    settings = _settings()
+
+    async def _fetch_jwks(self: SupabaseJwtVerifier) -> dict:
+        return jwks
+
+    monkeypatch.setattr(SupabaseJwtVerifier, "_fetch_jwks", _fetch_jwks)
+    monkeypatch.setattr(
+        "app.middleware.auth_stub.AsyncSessionLocal",
+        lambda: _FakeScalarSession(middleware_user, middleware_resident),
+    )
+
+    async def _db_override():
+        yield fake_db
+
+    app.dependency_overrides[auth.get_db_session] = _db_override
+    app.add_middleware(AuthStubMiddleware, settings=settings)
+    app.include_router(auth.router, prefix="/api/v1")
+    return TestClient(app)
+
+
+def _auth_admin_client(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    jwks: dict,
+    middleware_user: SimpleNamespace | None,
+    middleware_resident: SimpleNamespace | None,
     fake_db: FakeResidentSession,
 ) -> TestClient:
     app = FastAPI()
@@ -114,15 +188,18 @@ def _auth_me_client(
     monkeypatch.setattr(SupabaseJwtVerifier, "_fetch_jwks", _fetch_jwks)
     monkeypatch.setattr(
         "app.middleware.auth_stub.AsyncSessionLocal",
-        lambda: _FakeScalarSession(middleware_user),
+        lambda: _FakeScalarSession(middleware_user, middleware_resident),
     )
 
     async def _db_override():
         yield fake_db
 
     app.dependency_overrides[auth.get_db_session] = _db_override
+    app.dependency_overrides[admin.get_db_session] = _db_override
+    app.dependency_overrides[admin.get_settings] = lambda: settings
     app.add_middleware(AuthStubMiddleware, settings=settings)
     app.include_router(auth.router, prefix="/api/v1")
+    app.include_router(admin.router, prefix="/api/v1")
     return TestClient(app)
 
 
@@ -448,3 +525,104 @@ def test_supabase_user_metadata_cannot_grant_authorization(
     assert response.json()["role"] == "secretary"
     assert response.json()["admin_level"] is None
     assert response.json()["programme_scope"] is None
+
+
+def test_mata_resident_token_maps_to_auth_me_without_staff_or_posting_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    fake_db = FakeResidentSession()
+    client = _auth_me_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=None,
+        middleware_resident=_resident(fake_db),
+        fake_db=fake_db,
+    )
+
+    response = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {_resident_token(fake_db)}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "id": fake_db.resident_id,
+        "role": "resident",
+        "name": "Resident One",
+        "programme_code": "GRM",
+        "mcr": "M12345A",
+    }
+    assert "posting_code" not in payload
+    assert "staff_actor_name_required" not in payload
+    assert "current_staff_actor_name" not in payload
+
+
+def test_mata_resident_token_cannot_access_admin_staff_accounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    fake_db = FakeResidentSession()
+    client = _auth_admin_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=None,
+        middleware_resident=_resident(fake_db),
+        fake_db=fake_db,
+    )
+
+    response = client.get(
+        "/api/v1/admin/staff-accounts",
+        headers={"Authorization": f"Bearer {_resident_token(fake_db)}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "FORBIDDEN"
+
+
+def test_mata_resident_token_rejects_inactive_resident(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    fake_db = FakeResidentSession()
+    client = _auth_me_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=None,
+        middleware_resident=_resident(fake_db, status="inactive"),
+        fake_db=fake_db,
+    )
+
+    response = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {_resident_token(fake_db)}"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error_code"] == "UNAUTHORIZED"
+
+
+def test_expired_mata_resident_token_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    fake_db = FakeResidentSession()
+    client = _auth_me_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=None,
+        middleware_resident=_resident(fake_db),
+        fake_db=fake_db,
+    )
+
+    response = client.get(
+        "/api/v1/auth/me",
+        headers={
+            "Authorization": "Bearer "
+            + _resident_token(fake_db, expires_delta=timedelta(minutes=-1)),
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error_code"] == "UNAUTHORIZED"

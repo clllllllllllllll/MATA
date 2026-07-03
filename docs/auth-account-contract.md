@@ -1,6 +1,6 @@
 # Auth and Account Contract
 
-Status: 5B-A through 5B-E auth/account foundation, July 3, 2026.
+Status: 5B-A through 5B-F-A auth/account foundation, July 3, 2026.
 
 This document defines the Supabase-ready auth/account contract for upcoming 5B login/register work. It is also a repo audit: source-of-truth docs describe the intended design, while the implementation has partial stub/demo and Non-NHG resident support already present.
 
@@ -63,6 +63,7 @@ Frontend:
 - `frontend/src/types/auth.ts` defines the typed frontend auth/session identity contract for later real session wiring.
 - As of 5B-C, the frontend has a universal `/login`, frontend auth/session provider, role-aware route guards, logout/session clearing, and Non-NHG Resident registration plus confirmation UI.
 - As of 5B-D2, `VITE_AUTH_MODE=supabase` uses the Supabase browser session for staff login, hydration, API bearer transport, and logout. MATA role/scope still comes only from backend `/auth/me`.
+- As of 5B-F-A, `AUTH_MODE=supabase` also supports NHG Resident MCR login without creating Supabase Auth users. The backend validates MCR against `residents`, issues a backend-signed MATA resident session token, and reloads the active `residents` row on protected requests.
 - As of 5B-E, staff accounts are generic pass-down role accounts. Master Admin can manage staff accounts at `/admin/staff-accounts`; Supabase-mode create/reset calls are backend-only service-role operations and are mocked in tests.
 - As of 5B-E, staff users save `current_staff_actor_name` once after login and can change it from Settings. This is self-declared audit/display metadata only and never an authorization source. Resetting a staff account password clears the saved actor name for handover.
 
@@ -86,17 +87,26 @@ Server behaviour:
 - Return/log in as subject `residents.id`.
 - Include resident `programme_code` as a native programme claim.
 - Do not put current posting in the token. Resolve posting from `resident_postings` on each request.
+- In `AUTH_MODE=supabase`, do not create a Supabase Auth user for the resident and do not write residents into `users`.
+- In `AUTH_MODE=supabase`, return a backend-signed MATA resident session token for `Authorization: Bearer <token>` on resident API calls. The token is signed with server-only `MATA_RESIDENT_SESSION_SECRET`, uses a MATA issuer/audience distinct from Supabase Auth JWTs, and is accepted only for `role/app_role = resident`.
 
 JWT/session claims:
 
 ```json
 {
+  "iss": "mata-api",
+  "aud": "mata-resident-session",
   "sub": "<residents.id>",
+  "role": "resident",
   "app_role": "resident",
   "mcr": "M12345A",
-  "programme_code": "GRM"
+  "programme_code": "GRM",
+  "iat": 12345678,
+  "exp": 12345678
 }
 ```
+
+The MATA resident session token must not contain `posting_code`, current posting, staff actor name, `admin_level`, or `programme_scope`. Protected requests reload the resident by `sub` and reject inactive rows; current posting remains a resident route/service concern derived from `resident_postings`.
 
 ### Non-NHG Resident Register + MCR Login
 
@@ -261,6 +271,7 @@ SUPABASE_JWT_ISSUER=<optional explicit issuer, defaults to SUPABASE_URL/auth/v1>
 SUPABASE_JWT_AUDIENCE=authenticated
 SUPABASE_PUBLISHABLE_KEY=<optional publishable/anon key for legacy HS256 Auth-server validation>
 SUPABASE_SERVICE_ROLE_KEY=<server-only key>
+MATA_RESIDENT_SESSION_SECRET=<server-only random secret for NHG Resident MATA sessions>
 CORS_ORIGINS=<production frontend origin>
 ```
 
@@ -292,7 +303,8 @@ VITE_SUPABASE_PUBLISHABLE_KEY=<production Supabase publishable key>
 
 Responsibilities:
 - Stub/demo mode derives frontend identity from `/auth/login` and `/auth/me`; local header emission is based on the stored session identity.
-- Supabase mode must derive identity from verified Supabase session state and backend `/auth/me`.
+- Supabase mode derives staff identity from verified Supabase session state and backend `/auth/me`.
+- Supabase mode derives NHG Resident identity from the stored MATA resident token and backend `/auth/me` when no valid staff Supabase session exists.
 - Route guards are UX only. Backend remains the security boundary.
 - The frontend must redirect after login by role:
   - NHG Resident -> `/resident/submissions`
@@ -360,7 +372,7 @@ Planned Non-NHG registration:
 - Shared frontend API transport attaches the latest Supabase access token as `Authorization: Bearer ...` and strips local/demo identity headers in Supabase mode.
 - Supabase hydration reads the current Supabase browser session and validates it through backend `/auth/me`; invalid backend identity clears local app state and signs out locally from Supabase.
 - Supabase logout signs out of the local Supabase browser session and clears the MATA AuthContext/session state.
-- Resident and Non-NHG MCR-only Supabase login/provisioning remains deferred; local stub/demo resident login is unchanged.
+- Resident and Non-NHG MCR-only Supabase login/provisioning remained deferred in 5B-D2; local stub/demo resident login was unchanged.
 
 5B-D remaining:
 - Decide exact staff custom claims source if a future Supabase custom access-token hook is introduced; authorization must still remain server-owned.
@@ -375,7 +387,16 @@ Planned Non-NHG registration:
 - Reset password/handover clears the saved actor name and updates the local password hash; passwords are not returned or logged.
 - The frontend still transports Supabase access tokens as browser-visible bearer tokens from the Supabase browser session. This is an accepted temporary 5B-D2/5B-E limitation.
 
+5B-F-A implemented:
+- Enabled NHG Resident MCR login in `AUTH_MODE=supabase` / `VITE_AUTH_MODE=supabase` without creating resident Supabase Auth accounts.
+- NHG Residents remain `residents`-table-backed and are not `users`.
+- Backend `/auth/login` validates the MCR against active `residents` rows and issues a backend-signed MATA resident session token with `iss = mata-api`, `aud = mata-resident-session`, `role/app_role = resident`, `sub = residents.id`, `mcr`, `programme_code`, `iat`, and `exp`.
+- Supabase-mode protected routes accept either a verified Supabase staff token or a verified MATA resident token. Raw `X-User-*` headers remain ignored in Supabase mode.
+- `/auth/me` with a MATA resident token returns resident identity only and omits staff actor fields, posting code, admin level, and programme scope.
+- Frontend Supabase mode stores the MATA resident token after NHG Resident login, hydrates it through backend `/auth/me` when no staff Supabase session exists, attaches it as `Authorization: Bearer ...` for resident API calls, and keeps residents out of the staff actor-name gate.
+
 5B-F:
+- Complete Non-NHG Resident Supabase-mode login/register parity in 5B-F-B.
 - Complete Non-NHG resident submission parity where not already implemented.
 - Keep Non-NHG attendance separate from native attendance and compliance.
 
@@ -387,8 +408,9 @@ Planned Non-NHG registration:
 - Add rate-limit hardening for login/register and mutation surfaces before UAT/public use.
 - Replace browser-visible Supabase bearer transport with backend-managed `HttpOnly`, `Secure`, `SameSite` cookies or BFF session transport plus CSRF protection.
 
-Still deferred beyond 5B-E:
-- Resident Supabase provisioning, resident second factor, RLS, production Supabase deployment, Vercel/backend deployment, Master Admin seed/provisioning script, Non-NHG workflow parity beyond the login/register shell, exports/email, bulk upload, compliance, surplus, snapshots, clawback, STP upload/parser, and SSO/corporate identity replacement for self-declared staff actor names.
+Still deferred beyond 5B-F-A:
+- Non-NHG Resident Supabase-mode parity, resident Supabase Auth provisioning, resident second factor, RLS, production Supabase deployment, Vercel/backend deployment, Master Admin seed/provisioning script, exports/email, bulk upload, compliance, surplus, snapshots, clawback, STP upload/parser, and SSO/corporate identity replacement for self-declared staff actor names.
+- 5B-H must replace browser-visible bearer transport with backend-managed `HttpOnly`, `Secure`, `SameSite` cookies or BFF session transport plus CSRF protection.
 
 ## 5A Guardrails Preserved
 

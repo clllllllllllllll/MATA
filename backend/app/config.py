@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     supabase_anon_key: str | None = None
     supabase_jwks_cache_ttl_seconds: int = 600
     supabase_service_role_key: str | None = None
+    mata_resident_session_secret: str | None = None
+    mata_resident_session_issuer: str = "mata-api"
+    mata_resident_session_audience: str = "mata-resident-session"
+    mata_resident_session_ttl_minutes: int = 60
 
     max_upload_size_mb: int = 10
 

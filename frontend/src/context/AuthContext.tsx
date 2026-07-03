@@ -8,6 +8,7 @@ import {
 import {
   authSessionChangedEvent,
   clearAuthSession,
+  hydrateMataResidentSession,
   hydrateSupabaseSession,
   me,
   readStoredAuthSession,
@@ -34,7 +35,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     if (frontendConfig.authMode === 'supabase') {
       setIsLoading(true)
       try {
-        const hydratedSession = await hydrateSupabaseSession()
+        const hydratedSession = await hydrateSupabaseSession() ?? await hydrateMataResidentSession()
         if (!hydratedSession) {
           clearAuthSession()
           setSession(null)
@@ -87,7 +88,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     ;(async () => {
       try {
         if (frontendConfig.authMode === 'supabase') {
-          const hydratedSession = await hydrateSupabaseSession()
+          const hydratedSession = await hydrateSupabaseSession() ?? await hydrateMataResidentSession()
           if (!active) {
             return
           }

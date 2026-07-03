@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { frontendConfig } from '../config/frontendConfig'
 import { clearMemoryCache } from '../utils/memoryReadCache'
+import { readStoredAuthSession } from './authSessionStore'
 import { getCurrentSupabaseAccessToken } from './supabaseClient'
 
 declare module 'axios' {
@@ -42,6 +43,20 @@ httpClient.interceptors.request.use(async (request) => {
   delete request.headers['X-User-Programme']
   delete request.headers['X-User-Site']
   delete request.headers['X-Admin-Level']
+
+  if (request.headers.Authorization || request.headers.authorization) {
+    return request
+  }
+
+  const storedSession = readStoredAuthSession()
+  if (
+    storedSession?.mode === 'supabase' &&
+    storedSession.identity.role === 'resident' &&
+    storedSession.accessToken
+  ) {
+    request.headers.Authorization = `Bearer ${storedSession.accessToken}`
+    return request
+  }
 
   const accessToken = await getCurrentSupabaseAccessToken()
   if (accessToken) {

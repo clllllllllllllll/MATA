@@ -13,6 +13,12 @@ from app.config import Settings, get_settings
 from app.database import AsyncSessionLocal
 from app.errors import ErrorCode, build_error_response
 from app.models import ExternalResident, Resident, User
+from app.services.mata_resident_token import (
+    MataResidentTokenError,
+    extract_bearer_token,
+    is_mata_resident_token,
+    verify_mata_resident_token,
+)
 from app.services.supabase_jwt import SupabaseJwtError, SupabaseJwtVerifier
 
 
@@ -91,9 +97,27 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
 
     async def _resolve_supabase_identity(self, request: Request) -> AuthIdentity | Response:
         try:
-            claims = await self._get_supabase_verifier().verify_authorization_header(
-                request.headers.get("Authorization"),
-            )
+            bearer_token = extract_bearer_token(request.headers.get("Authorization"))
+        except MataResidentTokenError:
+            return self._unauthorized_response()
+
+        if is_mata_resident_token(bearer_token, settings=self._settings):
+            try:
+                claims = verify_mata_resident_token(bearer_token, settings=self._settings)
+            except MataResidentTokenError:
+                return self._unauthorized_response()
+
+            raw_subject = claims.get("sub")
+            if not isinstance(raw_subject, str):
+                return self._unauthorized_response()
+            try:
+                resident_id = UUID(raw_subject)
+            except ValueError:
+                return self._unauthorized_response()
+            return await self._resolve_mata_resident_identity(resident_id)
+
+        try:
+            claims = await self._get_supabase_verifier().verify(bearer_token)
         except SupabaseJwtError:
             return self._unauthorized_response()
 
@@ -107,6 +131,23 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             return self._unauthorized_response()
 
         return await self._resolve_supabase_user_identity(supabase_user_id)
+
+    async def _resolve_mata_resident_identity(
+        self,
+        resident_id: UUID,
+    ) -> AuthIdentity | Response:
+        async with AsyncSessionLocal() as session:
+            resident = await session.scalar(select(Resident).where(Resident.id == resident_id))
+
+        if resident is None or resident.status == "inactive":
+            return self._unauthorized_response()
+
+        return AuthIdentity(
+            role="resident",
+            subject_id=str(resident.id),
+            programme_code=resident.programme_code,
+            mcr=resident.mcr,
+        )
 
     async def _resolve_supabase_user_identity(
         self,

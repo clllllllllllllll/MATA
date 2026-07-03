@@ -27,12 +27,19 @@ Residents are **not** in the `users` table. They authenticate with their **MCR n
 
 ```json
 {
+  "iss": "mata-api",
+  "aud": "mata-resident-session",
   "sub": "<residents.id>",
   "role": "resident",
+  "app_role": "resident",
   "mcr": "M12345A",
-  "programme_code": "GRM"
+  "programme_code": "GRM",
+  "iat": 12345678,
+  "exp": 12345678
 }
 ```
+
+In stub/demo mode this is represented by the local session/header shim. In `AUTH_MODE=supabase`, NHG Residents still do not get Supabase Auth accounts; backend `/auth/login` validates MCR against active `residents` rows and issues a backend-signed MATA resident session token using server-only `MATA_RESIDENT_SESSION_SECRET`. The MATA resident token must not include current posting, staff actor name, `admin_level`, or `programme_scope`.
 
 `programme_code` is embedded at login time from `residents.programme_code`. It scopes all compliance lookups to the resident's native programme. **`posting_code` is NOT in the JWT** — current posting is always derived at request time from `resident_postings`.
 
@@ -238,9 +245,9 @@ Frontend-facing `data_revalidation` responses expose stable summary fields at th
 }
 ```
 
-In `AUTH_MODE=supabase`, protected requests use a Supabase Auth access token. The Supabase token `sub` is `auth.users.id` and maps to `users.supabase_user_id`; the backend then derives `role`, `admin_level`, `programme_scope`, `posting_code`, and saved staff actor metadata from the active `users` row. Raw client headers and Supabase `user_metadata` are not authorization sources.
+In `AUTH_MODE=supabase`, protected staff requests use a Supabase Auth access token. The Supabase token `sub` is `auth.users.id` and maps to `users.supabase_user_id`; the backend then derives `role`, `admin_level`, `programme_scope`, `posting_code`, and saved staff actor metadata from the active `users` row. Protected NHG Resident requests use the backend-signed MATA resident token issued by `/auth/login`; the backend verifies its MATA issuer/audience/signature/expiry, reloads the active `residents` row by `sub`, and derives resident identity from that row. Raw client headers and Supabase `user_metadata` are not authorization sources.
 
-5B-E staff accounts are generic role accounts. `users.name` is the account display name. `current_staff_actor_name` is a self-declared current human name used for audit/display context only; it never grants role, programme scope, admin level, or posting scope. Browser-visible `Authorization: Bearer <Supabase access token>` transport remains the temporary 5B-D2/5B-E implementation. TODO 5B-H: replace browser-visible bearer transport with backend-managed `HttpOnly`, `Secure`, `SameSite` cookies/BFF flow plus CSRF protection.
+5B-E staff accounts are generic role accounts. `users.name` is the account display name. `current_staff_actor_name` is a self-declared current human name used for audit/display context only; it never grants role, programme scope, admin level, or posting scope. Browser-visible `Authorization: Bearer <Supabase access token>` and `Authorization: Bearer <MATA resident token>` transport remains the temporary 5B-D2/5B-F-A implementation. TODO 5B-H: replace browser-visible bearer transport with backend-managed `HttpOnly`, `Secure`, `SameSite` cookies/BFF flow plus CSRF protection.
 
 When `warning_candidate_limit_reached = true`, the backend has capped the warning candidate scan. `affected_warning_count_is_partial = true` means `affected_warning_count` is the capped count, not an exact total. `affected_warning_details_are_partial = true` means `affected_warning_issue_ids` and `affected_warning_summaries` are intentionally bounded for response size.
 
@@ -1556,7 +1563,8 @@ Looks up `residents` table by MCR. Validates `status != 'inactive'`. **No passwo
 
 Return current identity from validated JWT.
 
-- Resident: returns `residents` row fields + current posting (derived live from `resident_postings`)
+- Resident: returns `residents` row identity fields only (`id`, `role`, `name`, `programme_code`, `mcr`). It does not return `posting_code` or current posting.
+- Resident current posting is resolved by resident endpoints/services from `resident_postings` at request time.
 - Admin/Secretary: returns `users` row fields + scope, including `admin_level` for admin accounts and saved staff actor metadata:
   - `current_staff_actor_name`
   - `staff_actor_name_required` (`true` when the staff account has no saved non-blank actor name)

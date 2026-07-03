@@ -6,9 +6,14 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings
 from app.dependencies.staff_actor import StaffActorContext
 from app.errors import ApiError, ErrorCode
 from app.services.audit import write_audit_log
+from app.services.mata_resident_token import (
+    MataResidentTokenError,
+    sign_mata_resident_token,
+)
 
 
 def _auth_failure() -> ApiError:
@@ -25,6 +30,14 @@ def _stub_login_allowed(*, auth_mode: str) -> bool:
 
 def _stub_access_token(*, role: str, subject_id: Any) -> str:
     return f"stub.{role}.{subject_id}"
+
+
+def _auth_config_failure() -> ApiError:
+    return ApiError(
+        status_code=500,
+        detail="Resident session configuration is missing",
+        error_code=ErrorCode.INTERNAL_ERROR.value,
+    )
 
 
 def local_demo_password_hash(supplied_password: str) -> str:
@@ -150,11 +163,14 @@ async def login(
     password: str | None,
     mcr: str | None,
     auth_mode: str = "stub",
+    settings: Settings | None = None,
 ) -> dict[str, Any]:
-    if not _stub_login_allowed(auth_mode=auth_mode):
-        raise _auth_failure()
-
     if role in {"resident", "external_resident"}:
+        if not _stub_login_allowed(auth_mode=auth_mode) and not (
+            auth_mode == "supabase" and role == "resident"
+        ):
+            raise _auth_failure()
+
         normalised_mcr = _normalise_mcr(mcr)
         if not normalised_mcr:
             raise _auth_failure()
@@ -179,11 +195,24 @@ async def login(
             if role == "resident"
             else _external_resident_user(dict(identity_row))
         )
+        if auth_mode == "supabase":
+            try:
+                access_token = sign_mata_resident_token(
+                    dict(identity_row),
+                    settings=settings or Settings(auth_mode=auth_mode),
+                )
+            except MataResidentTokenError as exc:
+                raise _auth_config_failure() from exc
+        else:
+            access_token = _stub_access_token(role=role, subject_id=user["id"])
         return {
-            "access_token": _stub_access_token(role=role, subject_id=user["id"]),
+            "access_token": access_token,
             "token_type": "bearer",
             "user": user,
         }
+
+    if not _stub_login_allowed(auth_mode=auth_mode):
+        raise _auth_failure()
 
     if not email or not password:
         raise _auth_failure()

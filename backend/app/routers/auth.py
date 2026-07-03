@@ -55,6 +55,7 @@ async def login(
         password=request.password,
         mcr=request.mcr,
         auth_mode=settings.auth_mode,
+        settings=settings,
     )
 
 

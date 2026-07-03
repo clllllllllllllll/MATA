@@ -147,6 +147,11 @@ assert(
   'supabase session hydration calls backend /auth/me from the current Supabase browser session',
 )
 assert(
+  authApiSource.includes('hydrateMataResidentSession') &&
+    authContextSource.includes('hydrateMataResidentSession'),
+  'supabase-mode hydration falls back to a stored MATA resident token when no staff Supabase session exists',
+)
+assert(
   authApiSource.includes('current_staff_actor_name') &&
     authApiSource.includes('staff_actor_name_required') &&
     authContextSource.includes('staffActorNameRequired'),
@@ -166,13 +171,27 @@ assert(
   'AppShell provides saved staff actor-name settings for staff identities',
 )
 assert(
-  authApiSource.includes('Resident MCR-only sign-in is not available in Supabase mode yet.'),
-  'supabase mode keeps resident and Non-NHG MCR login safely unsupported',
+  authApiSource.includes("if (frontendConfig.authMode === 'supabase' && role === 'external_resident')") &&
+    authApiSource.includes('Non-NHG Resident MCR-only sign-in is not available in Supabase mode yet.') &&
+    !authApiSource.includes("new ApiRequestError('Resident MCR-only sign-in is not available in Supabase mode yet.')"),
+  'supabase mode enables NHG Resident MCR login while keeping Non-NHG Resident login deferred',
+)
+assert(
+  httpSource.includes('readStoredAuthSession') &&
+    httpSource.includes("storedSession.identity.role === 'resident'") &&
+    httpSource.includes('request.headers.Authorization = `Bearer ${storedSession.accessToken}`'),
+  'shared HTTP client attaches stored resident MATA bearer before protected resident API calls',
 )
 assert(
   httpSource.includes('getCurrentSupabaseAccessToken') &&
+    httpSource.includes('const accessToken = await getCurrentSupabaseAccessToken()') &&
     httpSource.includes("request.headers.Authorization = `Bearer ${accessToken}`"),
-  'shared HTTP client attaches latest Supabase Authorization bearer before protected API calls',
+  'shared HTTP client attaches the latest Supabase bearer for staff API calls',
+)
+assert(
+  authApiSource.includes('updateStaffActorName') &&
+    !/updateStaffActorName[\s\S]*headers:\s*toSessionRequestHeaders\(session\)/.test(authApiSource),
+  'staff actor-name update relies on the shared HTTP interceptor instead of a stored session Authorization header',
 )
 assert(
   httpSource.includes("delete request.headers['X-User-Role']") &&
@@ -195,9 +214,10 @@ assert(loginPageSource.includes('Non-NHG Resident'), 'login page uses Non-NHG Re
 assert(loginPageSource.includes('Unable to sign in. Check your details and try again.'), 'login page uses generic failure copy')
 assert(loginPageSource.includes('loginStaff'), 'staff login is separate from MCR resident login')
 assert(
-  loginPageSource.includes('residentSupabaseUnsupported') &&
-    loginPageSource.includes('MCR-only resident sign-in is available in local/demo mode. Supabase staff sessions are enabled here.'),
-  'login page disables resident MCR login clearly in supabase mode',
+  !loginPageSource.includes('residentSupabaseUnsupported') &&
+    !loginPageSource.includes('MCR-only resident sign-in is available in local/demo mode. Supabase staff sessions are enabled here.') &&
+    loginPageSource.includes('NHG Resident MCR-only sign-in opens only your own resident routes.'),
+  'login page enables NHG Resident MCR login in supabase mode',
 )
 assert(!loginPageSource.includes('auth-login-grid'), 'login page does not use the three-equal-card layout')
 assert(!loginPageSource.includes('auth-login-panel'), 'login page does not render Staff/NHG/Non-NHG as equal cards')

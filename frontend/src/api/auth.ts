@@ -3,13 +3,16 @@ import type { AppRole } from '../types/app'
 import type { AuthIdentity, StoredAuthSession } from '../types/auth'
 import { ApiRequestError, httpClient, toApiRequestError } from './http'
 import {
+  authSessionChangedEvent,
+  clearAuthSession,
+  readStoredAuthSession,
+  saveAuthSession,
+} from './authSessionStore'
+import {
   getCurrentSupabaseSessionToken,
   signInWithSupabasePassword,
   SupabaseConfigurationError,
 } from './supabaseClient'
-
-const AUTH_SESSION_KEY = 'mata.auth.session.v1'
-const AUTH_SESSION_CHANGED_EVENT = 'mata-auth-session-change'
 
 type BackendLoginRole = 'staff' | 'admin' | 'secretary' | 'resident' | 'external_resident'
 
@@ -49,8 +52,6 @@ export interface NonNhgRegistrationResult {
   postingHistory?: Record<string, unknown>
   session?: StoredAuthSession
 }
-
-const isBrowser = () => typeof window !== 'undefined'
 
 const optionalString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0 ? value : undefined
@@ -161,46 +162,7 @@ const createSupabaseStoredSession = (
   createdAt: new Date().toISOString(),
 })
 
-const notifySessionChanged = () => {
-  if (isBrowser()) {
-    window.dispatchEvent(new Event(AUTH_SESSION_CHANGED_EVENT))
-  }
-}
-
-export const authSessionChangedEvent = AUTH_SESSION_CHANGED_EVENT
-
-export const readStoredAuthSession = (): StoredAuthSession | null => {
-  if (!isBrowser()) {
-    return null
-  }
-  const rawValue = window.sessionStorage.getItem(AUTH_SESSION_KEY)
-  if (!rawValue) {
-    return null
-  }
-  try {
-    const parsed = JSON.parse(rawValue) as StoredAuthSession
-    if (!parsed?.identity?.role || !parsed.accessToken) {
-      return null
-    }
-    return parsed
-  } catch {
-    return null
-  }
-}
-
-export const saveAuthSession = (session: StoredAuthSession) => {
-  if (isBrowser()) {
-    window.sessionStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(session))
-  }
-  notifySessionChanged()
-}
-
-export const clearAuthSession = () => {
-  if (isBrowser()) {
-    window.sessionStorage.removeItem(AUTH_SESSION_KEY)
-  }
-  notifySessionChanged()
-}
+export { authSessionChangedEvent, clearAuthSession, readStoredAuthSession, saveAuthSession }
 
 export const roleToBackendRole = (role: AppRole): BackendLoginRole => {
   if (role === 'master_admin' || role === 'programme_pc') {
@@ -267,8 +229,8 @@ export const login = async (payload: LoginPayload): Promise<StoredAuthSession> =
 }
 
 export const loginResident = (mcr: string, role: 'resident' | 'external_resident' = 'resident') => {
-  if (frontendConfig.authMode === 'supabase') {
-    throw new ApiRequestError('Resident MCR-only sign-in is not available in Supabase mode yet.')
+  if (frontendConfig.authMode === 'supabase' && role === 'external_resident') {
+    throw new ApiRequestError('Non-NHG Resident MCR-only sign-in is not available in Supabase mode yet.')
   }
   return login({ role, mcr })
 }
@@ -314,9 +276,39 @@ export const hydrateSupabaseSession = async (): Promise<StoredAuthSession | null
   return createSupabaseStoredSession(supabaseSession.accessToken, identity)
 }
 
+export const hydrateMataResidentSession = async (): Promise<StoredAuthSession | null> => {
+  if (frontendConfig.authMode !== 'supabase') {
+    return null
+  }
+
+  const storedSession = readStoredAuthSession()
+  if (
+    !storedSession ||
+    storedSession.mode !== 'supabase' ||
+    storedSession.identity.role !== 'resident' ||
+    !storedSession.accessToken
+  ) {
+    return null
+  }
+
+  const identity = await meFromBearerToken(storedSession.accessToken)
+  if (identity.role !== 'resident') {
+    throw new ApiRequestError('Stored MATA resident session resolved to a non-resident identity.')
+  }
+  return {
+    ...storedSession,
+    tokenType: 'Bearer',
+    identity,
+  }
+}
+
 export const me = async (session: StoredAuthSession): Promise<AuthIdentity> => {
   try {
     if (frontendConfig.authMode === 'supabase') {
+      if (session.identity.role === 'resident') {
+        return await meFromBearerToken(session.accessToken)
+      }
+
       const supabaseSession = await getCurrentSupabaseSessionToken()
       const accessToken = supabaseSession?.accessToken ?? session.accessToken
       if (!accessToken) {
@@ -334,6 +326,13 @@ export const me = async (session: StoredAuthSession): Promise<AuthIdentity> => {
   }
 }
 
+const toStaffActorNameRequestConfig = (session: StoredAuthSession) => {
+  if (frontendConfig.authMode === 'supabase') {
+    return undefined
+  }
+  return { headers: toSessionRequestHeaders(session) }
+}
+
 export const updateStaffActorName = async (
   session: StoredAuthSession,
   fullName: string,
@@ -342,7 +341,7 @@ export const updateStaffActorName = async (
     const response = await httpClient.post<Record<string, unknown>>(
       '/auth/staff-actor-name',
       { full_name: fullName },
-      { headers: toSessionRequestHeaders(session) },
+      toStaffActorNameRequestConfig(session),
     )
     return toAuthIdentity(response.data)
   } catch (error) {

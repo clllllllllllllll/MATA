@@ -183,14 +183,15 @@ def test_supabase_rate_limit_bucket_ignores_raw_identity_headers() -> None:
 async def test_supabase_mode_login_does_not_issue_stub_token() -> None:
     fake_db = FakeResidentSession()
 
-    with pytest.raises(Exception) as exc_info:
-        await auth_service.login(
-            fake_db,
-            role="resident",
-            email=None,
-            password=None,
-            mcr="M12345A",
-            auth_mode="supabase",
-        )
+    response = await auth_service.login(
+        fake_db,
+        role="resident",
+        email=None,
+        password=None,
+        mcr="M12345A",
+        auth_mode="supabase",
+    )
 
-    assert getattr(exc_info.value, "status_code", None) == 401
+    assert response["user"]["role"] == "resident"
+    assert response["access_token"]
+    assert not response["access_token"].startswith("stub.")
