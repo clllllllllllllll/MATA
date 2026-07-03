@@ -43,9 +43,9 @@ In stub/demo mode this is represented by the local session/header shim. In `AUTH
 
 `programme_code` is embedded at login time from `residents.programme_code`. It scopes all compliance lookups to the resident's native programme. **`posting_code` is NOT in the JWT** — current posting is always derived at request time from `resident_postings`.
 
-### Path 3 — External Residents (`external_residents` table)
+### Path 3 — Non-NHG Residents (`external_residents` table)
 
-External/cross-cluster residents are **not** in the `users` table and are **not** native `residents`. They self-register first, then authenticate with their **MCR number only**. Allowed `home_cluster` values are strictly `NUH` and `SingHealth`. The JWT payload carries:
+Non-NHG/cross-cluster residents are **not** in the `users` table and are **not** native `residents`. They self-register first, then authenticate with their **MCR number only**. Allowed `home_cluster` values are strictly `NUH` and `SingHealth`. The JWT payload carries:
 
 ```json
 {
@@ -56,7 +56,7 @@ External/cross-cluster residents are **not** in the `users` table and are **not*
 }
 ```
 
-`current_nhg_posting_code` is not trusted from JWT for authorization-sensitive reads; fetch it from `external_residents` at request time. External residents do not receive NHG compliance or clawback surfaces.
+Posting state and posting schedule are not trusted from JWT for authorization-sensitive reads. Fetch the Non-NHG Resident from `external_residents` and derive date-specific posting from `external_resident_postings` where relevant. `external_residents.current_nhg_posting_code` may remain a current/cache/backward-compatibility pointer, but must not be the only trusted source once the forecast schedule is implemented. Non-NHG Residents do not receive NHG compliance or clawback surfaces.
 
 **Global MCR uniqueness:** `POST /external-residents/register` must reject an MCR that already exists in either native `residents` or `external_residents`.
 
@@ -1381,15 +1381,23 @@ List teaching events available for submission.
 
 - **Auth:** resident only
 - **Visibility gating:**
-  1. If resident has no `resident_postings` rows for the current period → return empty list with `reason: "posting_schedule_unavailable"`
-  2. Current posting: from `resident_postings` where today falls within `start_date..end_date` AND `status IN ('active', 'loa_working')`. Use `ORDER BY start_date DESC LIMIT 1` as tie-breaker.
-  3. Native programme posting: posting(s) associated with the resident's `programme_code`
-  4. Fetch events from the UNION of both posting codes
-  5. Filter to `event_date <= today` (no future events)
-  6. Exclude events already submitted by this resident
-  7. Filter by `teaching_name_catalogue` for the resident's `(posting_code, programme_code, r_year, reporting_period_id)` — only show events whose `teaching_name` exists in their catalogue
-  8. Apply programme ownership visibility: if `teaching_events.created_for_programme_code IS NULL`, treat the event as normal posting-owned/programme-neutral; if it is set, show only when it equals the resident's `programme_code`, and only after the posting/date/catalogue checks above pass.
+  1. If resident has no `resident_postings` rows for the current/effectively active period → no assigned-posting visibility; return empty list with `reason: "posting_schedule_unavailable"` if no other allowed source can produce events.
+  2. Assigned/current posting secretary events: derive assigned posting from `resident_postings` for the selected/current date with `status IN ('active', 'loa_working')`. Secretary-created events at that `posting_code` are eligible.
+  3. Native programme TTSH department secretary events: derive the native programme teaching posting from explicit config/mapping, for example `programmes.native_teaching_posting_code` or `programme_teaching_posting_map`. Do not infer this mapping by string manipulation.
+  4. Native programme PC-created events: include events where `teaching_events.created_for_programme_code = resident.programme_code`.
+  5. Deduplicate rows by `teaching_events.id` across all sources.
+  6. Filter to `event_date <= today` (no future events).
+  7. Exclude events already submitted by this resident.
+  8. Apply active/effectively active reporting-period checks.
+  9. Apply `teaching_name_catalogue` / global-session matching. For catalogue-backed events, only show events whose `teaching_name` exists in the resident's catalogue for `(event posting context, resident.programme_code, resident_postings.r_year, reporting_period_id)`. Global session type exclusion/visibility follows the same source eligibility rules.
+  10. Do not show PC-created events for non-native programmes.
+  11. Do not show secretary-created events from arbitrary TTSH departments unless they are either the resident's assigned/current posting or the resident's native programme department.
 - **Query params:** `date_from`, `date_to`
+
+**Native visibility examples:**
+- **Scenario A:** Native GRM Resident John is posted to TTSH Geriatric Medicine. John sees TTSH GRM Department Secretary events because he is posted there and GRM PC events because GRM is his native programme. The TTSH GRM secretary event source is deduped if it is both assigned posting and native programme department.
+- **Scenario B:** Native GRM Resident John is posted to TTSH Rehab. John sees TTSH Rehab Department Secretary events because he is posted there, TTSH GRM Department Secretary events because GRM is his native programme department, and GRM PC events because GRM is his native programme.
+- **Scenario C:** Native Rehab Resident Mary is posted to TTSH GRM. Mary sees TTSH GRM Department Secretary events because she is posted there, TTSH Rehab Department Secretary events because Rehab is her native programme department, and Rehab PC events because Rehab is her native programme.
 
 ### POST `/resident/attendance`
 
@@ -1398,7 +1406,7 @@ Submit attendance for one or more events.
 - **Auth:** resident only
 - **Body:** `{ "event_ids": ["uuid1", "uuid2"] }`
 - **Backend:**
-  1. Validates event exists and is at resident's current or native posting
+  1. Validates event exists and is visible through the resident's allowed scheduled-event sources: assigned/current posting secretary event, native programme TTSH department secretary event, or native programme PC-created event
   2. Validates `event_date` falls within a `resident_postings` row with `status IN ('active', 'loa_working')` → `422` if outside tenure
   3. Validates `teaching_name` exists in `teaching_name_catalogue` for resident's `(posting_code, programme_code, r_year, reporting_period_id)` → `422` if no match
   4. Validates programme ownership: events with `created_for_programme_code` set must match the resident's `programme_code`
@@ -1424,32 +1432,52 @@ Delete own submitted attendance.
 
 ### Planned GET `/resident/adhoc-teaching-options`
 
-Return catalogue-backed teaching options for the ad-hoc form after the resident selects a teaching date.
+Return assigned-posting context, attended TTSH department options, and catalogue-backed teaching options for the ad-hoc form.
 
-- **Auth:** native resident or external resident
-- **Query params:** `date` required. External residents may also pass `host_programme_code` when multiple candidate programmes map to their current posting, and `host_r_year` when the selected/derived programme has `r_year_required = true`.
-- **Native resident backend:**
-  1. Derives posting from `resident_postings` for the selected date.
-  2. Uses resident `programme_code`, derived posting, resident r_year for that date, and active/effectively active `reporting_period_id`.
-  3. Returns options from TTF Column K via `teaching_name_catalogue`.
-- **External resident backend:**
-  1. Uses `external_residents.current_nhg_posting_code` unless date-specific external posting history through `external_resident_postings` is explicitly enabled later.
-  2. Derives candidate host programme from active/effectively active `teaching_name_catalogue` / `teaching_targets`, or a future explicit posting-to-programme mapping.
-  3. If exactly one programme maps to the posting, defaults `host_programme_code`.
-  4. If multiple programmes map to the posting, returns a response requiring explicit host programme selection.
-  5. If no programme maps to the posting, returns a clear unavailable-options response and must not guess.
-  6. If the derived/selected programme has `r_year_required = false`, uses `r_year = 'ALL'`.
-  7. If the derived/selected programme has `r_year_required = true`, requires `host_r_year` before returning catalogue-backed options unless a later decision approves all-r-year option pooling.
+- **Auth:** NHG Resident or Non-NHG Resident (`resident` or `external_resident` role)
+- **Query params:**
+  - `teaching_date` required.
+  - `attended_posting_code` optional. This is the selected TTSH department/programme posting from the attended department dropdown. Older/alternate client field name `attended_department_posting_code` is equivalent if retained for compatibility.
+- **NHG Resident backend:**
+  1. Derives `assigned_posting_code` from `resident_postings` for `teaching_date` with `status IN ('active', 'loa_working')`.
+  2. Uses resident native `programme_code` from `residents.programme_code`.
+  3. Builds `attended_posting_options[]` from validated TTSH department/programme posting codes backed by `posting_codes` and configured mapping. Do not generate posting codes by string concatenation or regex.
+  4. When `attended_posting_code` is provided, returns `teaching_options[]` from TTF Column K / `teaching_name_catalogue` for the selected attended department posting, scoped to resident native programme where applicable.
+  5. Sets `compliance_posting_code = assigned_posting_code`.
+  6. Sets `compliance_session_type_name = "Department/Programme Teaching [1h]"`.
+  7. Resolves the fixed compliance session type against a tracked target for assigned posting, resident native programme, resident `r_year` for the selected date, and active/effectively active `reporting_period_id`.
+  8. If assigned posting or the required fixed target cannot be resolved, return `countable = false` with a clear `reason`/`message`; do not guess.
+- **Non-NHG Resident backend:**
+  1. Derives date-specific host posting from `external_resident_postings` for `teaching_date` once forecast posting schedule is implemented.
+  2. If no schedule row matches the date, returns `countable = false` and `reason = "posting_unavailable_for_date"`.
+  3. Uses attended department selection only for option filtering/export context.
+  4. Returns no NHG compliance attribution: `compliance_posting_code = null`, `compliance_session_type_name = null`, and `countable = false`.
 - **Response example:**
 ```json
 {
-  "date": "2026-04-15",
-  "posting_code": "KTPHDiagRd",
-  "host_programme_code": "DR",
-  "host_r_year_required": true,
-  "requires_host_programme_selection": false,
-  "requires_host_r_year_selection": true,
-  "options": []
+  "teaching_date": "2026-04-15",
+  "assigned_posting_code": "TTSHRehab",
+  "assigned_posting_label": "TTSH Rehabilitation Medicine",
+  "attended_posting_options": [
+    {
+      "posting_code": "TTSHGerMed",
+      "label": "TTSH Geriatric Medicine",
+      "programme_code": "GERI",
+      "programme_name": "Geriatric Medicine"
+    }
+  ],
+  "selected_attended_posting_code": "TTSHGerMed",
+  "teaching_options": [
+    {
+      "catalogue_id": "uuid",
+      "teaching_name": "Journal Club"
+    }
+  ],
+  "compliance_session_type_name": "Department/Programme Teaching [1h]",
+  "compliance_posting_code": "TTSHRehab",
+  "countable": true,
+  "reason": null,
+  "message": null
 }
 ```
 - **Frontend helper copy:** `Please ensure your current submission is not an already scheduled event. There are no CME Pts tagged to adhoc teachings.`
@@ -1458,28 +1486,37 @@ Return catalogue-backed teaching options for the ad-hoc form after the resident 
 
 Submit an ad-hoc teaching not pre-created by a secretary.
 
-- **Auth:** native resident or external resident
+- **Auth:** NHG Resident or Non-NHG Resident (`resident` or `external_resident` role)
 - **Body:**
 ```json
 {
-  "date": "2026-04-15",
+  "teaching_date": "2026-04-15",
   "start_time": "10:00",
   "teaching_name": "Journal Club",
-  "details_of_session": "Case discussion after ward teaching",
-  "host_programme_code": null,
-  "host_r_year": null
+  "catalogue_id": "uuid",
+  "attended_posting_code": "TTSHGerMed",
+  "details_of_session": "Case discussion after ward teaching"
 }
 ```
 - **Backend:**
-  1. Validates `date` is not a public holiday → `422` if PH
-  2. Derives `posting_code` from `resident_postings` for native residents, or from `external_residents.current_nhg_posting_code` for external residents unless date-specific external posting history through `external_resident_postings` is explicitly enabled later.
-  3. Validates submitted `teaching_name` was selected from the catalogue-backed options for the selected date/posting/programme/r_year/reporting period. Arbitrary free-text teaching names must not drive compliance mapping.
-  4. Creates `teaching_events` row with `is_adhoc = true`, `cme_points_awarded = false`, `smc_event_code = null`, and planned `details_of_session` when provided.
-  5. Creates `attendance_records` for native residents or `external_attendance_records` for external residents in the same transaction.
-  6. `end_time` = `start_time + session_type.duration_hours`
-  7. Checks weekend exception — returns `compliance_warning` if session will not count for native compliance.
-- **Compliance treatment:** Native ad-hoc sessions are treated identically to secretary-created sessions. External ad-hoc sessions are stored/exportable only and never enter NHG numerator, denominator, surplus, snapshots, clawback, or native reports.
-- **Planned schema/API note:** `details_of_session` is not present in current models/migrations. It is display/audit-only and must have no operational or compliance use.
+  1. Validates `teaching_date` is not a public holiday → `422` if PH.
+  2. Derives assigned posting for the selected date:
+     - NHG Resident: `resident_postings` date match with `status IN ('active', 'loa_working')`.
+     - Non-NHG Resident: `external_resident_postings` date match once forecast posting schedule is implemented.
+  3. Validates `attended_posting_code` / selected TTSH department posting against `posting_codes` and configured mapping. Do not generate codes by string concatenation or regex.
+  4. Validates submitted `teaching_name` or `catalogue_id` was selected from the catalogue-backed options for the selected date and attended posting context. Arbitrary free-text teaching names must not drive compliance mapping.
+  5. For NHG Residents, resolves fixed compliance attribution:
+     - `compliance_posting_code = assigned_posting_code`
+     - `compliance_session_type_name = "Department/Programme Teaching [1h]"`
+     - required tracked target exists for assigned posting, resident native programme, `resident_postings.r_year`, and active/effectively active `reporting_period_id`
+  6. If the required assigned-posting `Department/Programme Teaching [1h]` target cannot be resolved, return a clear unavailable/not-countable response rather than guessing.
+  7. Creates `teaching_events` row with `is_adhoc = true`, `posting_code = assigned/compliance posting for NHG Resident ad-hoc`, `created_by_role = 'resident'` or `'external_resident'`, `cme_points_awarded = false`, `smc_event_code = null`, and planned `details_of_session` when provided.
+  8. Creates `attendance_records` for NHG Residents or `external_attendance_records` for Non-NHG Residents in the same transaction.
+  9. `end_time` = `start_time + 1 hour` for countable NHG ad-hoc compliance attribution. Display duration for the attended catalogue option must not override fixed NHG compliance attribution.
+  10. Checks weekend exception — returns `compliance_warning` if session will not count for native compliance.
+- **NHG compliance treatment:** All countable NHG Resident ad-hoc sessions map to `Department/Programme Teaching [1h]` and count under the assigned posting for the selected date. They do not count under the attended TTSH department unless that department is also the assigned posting.
+- **Non-NHG treatment:** Non-NHG ad-hoc sessions create `external_attendance_records` only for attendance storage. They do not create native `attendance_records`, receive no NHG compliance attribution, and never enter NHG numerator, denominator, surplus, snapshots, clawback, or native reports.
+- **Planned schema/API note:** `details_of_session` is not present in current models/migrations. It is display/audit-only and must have no operational or compliance use. `attended_posting_code` is planned audit/display metadata; if current schema does not support it, keep it as pending schema/API field and do not overload `teaching_events.posting_code`.
 
 ### GET `/resident/dashboard`
 
@@ -1575,7 +1612,7 @@ Return current identity from validated JWT.
 
 Save the current human name for a shared staff role account.
 
-- **Auth:** authenticated staff only (`admin` or `secretary`); residents and external residents receive `403`.
+- **Auth:** authenticated staff only (`admin` or `secretary`); NHG Residents and Non-NHG Residents receive `403`.
 - **Body:**
 ```json
 {
@@ -1640,13 +1677,13 @@ Update password. Admin/secretary only.
 
 ---
 
-## External Resident Endpoints
+## Non-NHG Resident Endpoints
 
-External residents are Phase 5B pre-compliance scope. They use separate identity and attendance tables. They are never stored in `users`, never stored in native `residents`, and never represented through native `resident_postings`.
+Non-NHG Residents are Phase 5B pre-compliance scope. They use separate identity and attendance tables. They are never stored in `users`, never stored in native `residents`, and never represented through native `resident_postings`. Backend/internal route and table names may continue to use `external_resident`.
 
 ### POST `/external-residents/register`
 
-Self-register an external/cross-cluster resident.
+Self-register a Non-NHG/cross-cluster resident.
 
 - **Auth:** public/self-service with rate limiting
 - **Body:**
@@ -1655,108 +1692,129 @@ Self-register an external/cross-cluster resident.
   "name": "Resident Name",
   "mcr": "M12345A",
   "home_cluster": "NUH",
-  "current_nhg_posting_code": "TTSHGerMed"
+  "posting_schedule": [
+    {
+      "start_date": "2026-01-08",
+      "end_date": "2026-02-07",
+      "programme_code": "GERI",
+      "institution": "TTSH",
+      "posting_code": "TTSHGerMed"
+    }
+  ]
 }
 ```
 - **Validation:**
   1. `home_cluster` must be `NUH` or `SingHealth`.
   2. `mcr` must not exist in native `residents`.
   3. `mcr` must not exist in `external_residents`.
-  4. `current_nhg_posting_code` must exist in `posting_codes`.
-- **Writes:** `external_residents` only. Do not create `users`, native `residents`, or `resident_postings` rows.
+  4. `posting_schedule` must contain at least one row.
+  5. Each row requires `start_date <= end_date`.
+  6. Rows for the same Non-NHG Resident must not overlap. Gaps are allowed.
+  7. `posting_code` must exist in `posting_codes`.
+  8. `institution` must be one of `TTSH`, `WH`, or `KTPH`.
+  9. Selected programme/institution must be consistent with the resolved `posting_code` or controlled mapping.
+  10. Posting codes must not be generated from strings; resolve against `posting_codes`. If multiple codes match selected values, require explicit user selection. If no code matches, return a clear unavailable/invalid selection response.
+- **Writes:** `external_residents` plus date-bounded `external_resident_postings`. Do not create `users`, native `residents`, or native `resident_postings` rows.
+- **Response convenience:** May return `current_nhg_posting_code` as today's derived/current posting for display/backward compatibility.
 - **Duplicate/conflict:** `409` when MCR already exists.
 
 ### PUT `/external-residents/me/posting`
 
-Update the external resident's current NHG posting.
+Update the Non-NHG Resident's upcoming NHG posting schedule. Route name remains for compatibility.
 
-- **Auth:** external resident only
+- **Auth:** Non-NHG Resident only (`external_resident` role)
 - **Body:**
 ```json
 {
-  "current_nhg_posting_code": "KTPHGerMed"
+  "posting_schedule": [
+    {
+      "start_date": "2026-03-01",
+      "end_date": "2026-03-31",
+      "programme_code": "DR",
+      "institution": "KTPH",
+      "posting_code": "KTPHDiagRd"
+    }
+  ]
 }
 ```
-- **Validation:** posting code must exist in `posting_codes`.
-- **Behaviour:** updates `external_residents.current_nhg_posting_code`. No native `resident_postings` rows are created.
+- **Validation:** same schedule validation as registration.
+- **Behaviour:** updates `external_resident_postings` for the authenticated Non-NHG Resident. `external_residents.current_nhg_posting_code` may be refreshed as today's derived/current posting for cache/backward compatibility. No native `resident_postings` rows are created.
 
-### GET `/resident/events` for external residents
+### GET `/resident/events` for Non-NHG Residents
 
-The same route may support native and external residents through identity branching.
+The same route may support NHG and Non-NHG Residents through identity branching.
 
 - For native `role = resident`, use native Phase 5A behaviour from `resident_postings`.
-- For `role = external_resident`, derive current posting from `external_residents.current_nhg_posting_code`.
+- For `role = external_resident`, derive date-specific posting from `external_resident_postings` for the event listing date/window once the forecast posting schedule is implemented. `external_residents.current_nhg_posting_code` may be used only as a current/cache/backward-compatibility pointer.
+- If no `external_resident_postings` row matches a requested date, return unavailable/no posting for that date.
 - If the posting's `posting_codes.supports_secretary_events = true`, return eligible secretary-created events for that posting.
 - If `supports_secretary_events = false`, return no secretary-created event list but keep ad-hoc submission available in the frontend.
-- Programme-owned PC events (`created_for_programme_code IS NOT NULL`) are not shown to external residents unless a future explicit requirement defines external visibility for that host programme.
+- Programme-owned PC events (`created_for_programme_code IS NOT NULL`) are not shown to Non-NHG Residents unless a future explicit requirement defines external visibility for that host programme.
 - Filter `event_date <= today`.
-- Exclude events already submitted by that external resident in `external_attendance_records`.
-- Do not apply native NHG compliance catalogue/denominator logic to external residents.
+- Exclude events already submitted by that Non-NHG Resident in `external_attendance_records`.
+- Do not apply native NHG compliance catalogue/denominator logic to Non-NHG Residents.
 
-### POST `/resident/attendance` for external residents
+### POST `/resident/attendance` for Non-NHG Residents
 
-The same route may support native and external residents through identity branching.
+The same route may support NHG and Non-NHG Residents through identity branching.
 
-- For `role = external_resident`, validate the event belongs to the external resident's current NHG posting.
+- For `role = external_resident`, validate the event belongs to the Non-NHG Resident's date-matched NHG posting.
 - Create `external_attendance_records`, not native `attendance_records`.
 - Duplicate protected by `UNIQUE(external_resident_id, teaching_event_id)`.
 - Weekend non-exception attendance is stored and returns `compliance_warning`.
 - Do not store `session_type_id`.
 - Do not include the row in NHG compliance.
 
-### POST `/resident/adhoc-teaching` for external residents
+### POST `/resident/adhoc-teaching` for Non-NHG Residents
 
-The same route may support native and external residents through identity branching.
+The same route may support NHG and Non-NHG Residents through identity branching.
 
-- For `role = external_resident`, derive posting from `external_residents.current_nhg_posting_code` unless date-specific external posting history through `external_resident_postings` is explicitly enabled later.
-- Teaching options come from the planned `GET /resident/adhoc-teaching-options` date-first catalogue-backed flow.
-- Derive candidate `host_programme_code` from active/effectively active `teaching_name_catalogue` / `teaching_targets`, or a future explicit posting-to-programme mapping.
-- Example: `current_nhg_posting_code = KTPHDiagRd` derives `host_programme_code = DR` when that posting maps to exactly one programme.
-- If multiple programmes map to the posting, require explicit `host_programme_code`.
-- If no programme maps to the posting, return unavailable options and do not guess.
-- If the derived/selected programme has `r_year_required = false`, use `r_year = 'ALL'`.
-- If the derived/selected programme has `r_year_required = true`, require `host_r_year` before showing catalogue-backed options unless a later decision approves all-r-year option pooling.
+- For `role = external_resident`, derive host posting from `external_resident_postings` for `teaching_date` once the forecast posting schedule is implemented.
+- If no schedule row matches `teaching_date`, return unavailable/no posting for selected date.
+- Teaching options come from the planned `GET /resident/adhoc-teaching-options` date-first catalogue-backed flow and the selected attended TTSH department/programme.
+- Attended department/programme selection is for option filtering/export context only.
+- Resolve selected attended posting against `posting_codes` using validated/configured mapping. Do not concatenate strings or infer codes by regex.
 - PH hard-block with `422`.
-- Create `teaching_events` with `is_adhoc = true`, `created_by_role = 'external_resident'`, `posting_code = current_nhg_posting_code`, `cme_points_awarded = false`, `smc_event_code = null`, and planned display/audit-only `details_of_session` when provided.
+- Create `teaching_events` with `is_adhoc = true`, `created_by_role = 'external_resident'`, `posting_code = derived host posting`, `cme_points_awarded = false`, `smc_event_code = null`, and planned display/audit-only `details_of_session` when provided.
 - Create `external_attendance_records` in the same transaction.
 - Weekend non-exception attendance is stored and returns `compliance_warning`.
 - Do not create native `attendance_records`.
-- Host programme derivation is for option filtering only; it must not include external attendance in native NHG compliance.
+- No NHG compliance attribution, numerator, denominator, surplus, snapshots, clawback, or native reports.
 
 ### GET `/resident/attendance-history`
 
 Return the authenticated resident's past submitted attendance.
 
-- **Auth:** native resident or external resident
-- **Native resident:** read from `attendance_records` scoped by `resident_id`.
-- **External resident:** read from `external_attendance_records` scoped by `external_resident_id`.
+- **Auth:** NHG Resident or Non-NHG Resident (`resident` or `external_resident` role)
+- **NHG Resident:** read from `attendance_records` scoped by `resident_id`.
+- **Non-NHG Resident:** read from `external_attendance_records` scoped by `external_resident_id`.
 - **Filters:** `date_from`, `date_to`, `status` optional.
 
-### GET `/resident/dashboard` for external residents
+### GET `/resident/dashboard` for Non-NHG Residents
 
-External residents do not receive an NHG compliance dashboard.
+Non-NHG Residents do not receive an NHG compliance dashboard.
 
-- **Auth:** external resident only
+- **Auth:** Non-NHG Resident only (`external_resident` role)
 - **Response:**
 ```json
 {
   "compliance_status": "not_applicable",
   "reason": "external_resident_excluded_from_nhg_compliance",
-  "message": "External resident attendance is stored for future export to the home cluster PC. NHG compliance and clawback do not apply."
+  "message": "Non-NHG Resident attendance is stored for future export to the home cluster PC. NHG compliance and clawback do not apply."
 }
 ```
 
-### External attendance export
+### Non-NHG attendance export
 
-External attendance list/read and Excel export are planned Phase 5B contracts that must be completed before Phase 6 compliance. External attendance remains recording/export-only and never enters NHG compliance.
+Non-NHG attendance list/read and Excel export are planned Phase 5B contracts that must be completed before Phase 6 compliance. External attendance tables remain recording/export-only and never enter NHG compliance.
 
 ### Planned GET `/admin/external-attendance`
 
-List external attendance for authorized admin/PC users.
+List Non-NHG attendance for authorized admin/PC users.
 
 - **Auth:** admin/PC only
 - **Scope:** Programme-scoped where the event posting maps to a programme in `programme_scope` through active/effectively active catalogue/target data or a future explicit posting-to-programme mapping. Explicit master admin may access all programmes. Null/empty `programme_scope` means no access.
-- **Filters:** `home_cluster`, `posting_code`, `host_programme_code`, `date_from`, `date_to`, `mcr`, `status`.
+- **Filters:** `home_cluster`, `posting_code`, `attended_posting_code` where supported, `date_from`, `date_to`, `mcr`, `status`.
 - **Compliance exclusion:** Results are for audit/forwarding only and must not be joined into native compliance reports.
 
 ### Planned GET `/admin/external-attendance/{id}`
@@ -1774,7 +1832,7 @@ Export filtered external attendance to Excel for forwarding to NUH/SingHealth PC
 - **Scope:** Same as list endpoint.
 - **Filters:** Same as list endpoint.
 - **Format:** `.xlsx`
-- **Content:** External resident identity, `home_cluster`, current/event posting, teaching event details, submitted status/timestamps, and any planned `details_of_session` captured on ad-hoc event rows.
+- **Content:** Non-NHG Resident identity, `home_cluster`, current/event posting, teaching event details, submitted status/timestamps, and any planned `details_of_session` captured on ad-hoc event rows.
 - **Not included:** Native `attendance_records`, native compliance percentages, surplus, snapshots, or clawback rows.
 
 TODO: Confirm exact workbook columns, sheet partitioning by `home_cluster`, and whether host programme/r_year values are exported as derived metadata or only used for filtering.

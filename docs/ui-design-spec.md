@@ -166,7 +166,7 @@ Top to bottom:
 
 1. **User block.** Avatar (36px circle, gradient fill, initials), full name, italic role label, chevron-down. Click opens the **role switcher popover**. Small bell glyph floats top-left of the avatar with a notification dot (decorative only).
 2. **Primary nav.** Icon + label rows. Active item is a white rounded pill with purple text. Inactive items are sidebar-text color and lighten on hover. Optional count chip on the right of each item.
-3. **Workspace block.** Lower section. Eyebrow label varies per role: *Scope*, *Assigned Programme*, *Posting Site*, *Current Posting*, *External Resident*. Value line shows the resident's MCR / programme / posting with a small purple dot.
+3. **Workspace block.** Lower section. Eyebrow label varies per role: *Scope*, *Assigned Programme*, *Posting Site*, *Current Posting*, *Non-NHG Resident*. Value line shows the resident's MCR / programme / posting with a small purple dot.
 4. **Footer.** Settings, Log out — small underlined links.
 
 ### 2.2 Role Switcher (demo aid)
@@ -176,8 +176,8 @@ Top to bottom:
   - Master Admin
   - Programme PC
   - Secretary
-  - Native Resident
-  - External Resident
+  - NHG Resident
+  - Non-NHG Resident
 - Current role is highlighted with a purple-tinted background and a check icon.
 - Each option shows the scope label (e.g. *TTSH Geriatric Medicine*).
 - Footer note inside the popover (italic, muted): "Demo aid only — not in production."
@@ -450,11 +450,11 @@ Fields (top to bottom):
 
 ---
 
-### S8 — Native Resident Submission Portal
+### S8 — NHG Resident Submission Portal
 
 Closest to the original draft screenshot, modernised.
 
-**Hero.** Title: *Submission Portal*. Subtitle: *Posting: TTSH Geriatric Medicine*. Meta: MCR chip (mono, e.g. `MCR M00001A`). Action: secondary *Submit Ad-hoc Teaching*.
+**Hero.** Title: *Submission Portal*. Subtitle: *Assigned posting: TTSH Geriatric Medicine*. Meta: MCR chip (mono, e.g. `MCR M00001A`) + native programme chip. Action: secondary *Submit Ad-hoc Teaching*.
 
 **Filter row.**
 
@@ -467,6 +467,7 @@ Closest to the original draft screenshot, modernised.
 - Each row: name (weight 500), mono date, mono time, type tag, status badge.
 - Status: *Pending* (amber outline), *Submitted* (success outline).
 - Selected rows are tinted purple. Submitted rows are dimmed and unselectable.
+- Event source can appear as a small muted label: *Assigned posting*, *Native department*, or *Programme teaching*. Duplicate rows are not shown if one event qualifies through multiple sources.
 
 **Weekend warning banner.** When any selected event falls on a Saturday or Sunday without a configured weekend exception, an amber callout appears above the footer:
 
@@ -488,7 +489,7 @@ Closest to the original draft screenshot, modernised.
 
 ---
 
-### S9 — Native Resident Ad-hoc Teaching Modal
+### S9 — NHG Resident Ad-hoc Teaching Modal
 
 Modal (640px wide). Three-step flow.
 
@@ -502,13 +503,16 @@ Modal (640px wide). Three-step flow.
 
 **Step 2 — Session.**
 
-- Two-column row: Start time + Duration.
-- Session type dropdown (from Global Session Types).
-- Reminder card showing the derived posting again.
+- Two-column row: Start time + fixed compliance type readout.
+- TTSH department/programme dropdown appears after the date-derived assigned posting is available.
+- Teaching/session dropdown is disabled until a TTSH department/programme is selected; options are catalogue-backed from TTF Column K / `teaching_name_catalogue`.
+- Optional details text area for display/audit notes only.
+- Reminder card shows assigned posting for compliance and selected attended TTSH department for audit/display.
+- Inline copy: *"Ad-hoc teachings count as Department/Programme Teaching [1h] under your assigned posting."*
 
 **Step 3 — Review.**
 
-- Recap card with mono date, start, duration, session, posting.
+- Recap card with mono date, start, selected teaching/session, assigned posting for compliance, attended TTSH department, and fixed compliance type *Department/Programme Teaching [1h]*.
 - Purple-tinted *Confirm submission* callout.
 - *Back* and dark-green *Submit* button.
 
@@ -516,13 +520,13 @@ Modal (640px wide). Three-step flow.
 
 - Large green check icon.
 - Heading: *"Submitted — your ad-hoc teaching is recorded."*
-- Subtext: *"Excluded from NHG compliance"* (or, for external residents, *"Routed to [home cluster] · Excluded from NHG compliance for your records."*).
+- Subtext: *"Counted as Department/Programme Teaching [1h] under your assigned posting when the target is available."*
 - Summary card.
 - Actions: *Submit another* (ghost) · *Close* / *View past attendance →* (primary).
 
 ---
 
-### S10 — Native Resident Past Attendance
+### S10 — NHG Resident Past Attendance
 
 **Hero.** Title: *Past Attendance*. Subtitle: *Your submitted teachings*. Meta: record count.
 
@@ -550,7 +554,7 @@ Modal (640px wide). Three-step flow.
 
 ---
 
-### S11 — External Resident Entry / Login Choice
+### S11 — Non-NHG Resident Entry / Login Choice
 
 Full-bleed login page. No sidebar. No app bar.
 
@@ -558,108 +562,110 @@ Full-bleed login page. No sidebar. No app bar.
 
 - Brand row at top: mark (square purple-on-navy "M"), product name *MATA*, subtitle *Medical Attendance Tracking*, DRAFT stamp on the right.
 - Heading: *Sign in*.
-- Helper text: *"NHG residents and secretaries sign in with MCR. External residents (NUH / SingHealth) use the option below."*
+- Helper text: *"NHG residents and secretaries sign in with MCR. Non-NHG residents (NUH / SingHealth) use the option below."*
 - MCR field (mono input, placeholder *e.g. M00001A*).
 - Primary *Continue* button.
 - **"or" divider**.
-- **External CTA.** Large dashed-purple panel:
+- **Non-NHG CTA.** Large dashed-purple panel:
   - Title: *"I am a NUH / SingHealth resident posted to NHG"*.
-  - Subtitle: *"First-time external residents register here. Future logins use MCR only."*
+  - Subtitle: *"First-time Non-NHG residents register here. Future logins use MCR only."*
   - Right-aligned arrow icon.
 - Footer copy: *"By signing in you confirm you are an authorised user. Demo build — no production credentials accepted."*
 
 ---
 
-### S12 — External Resident Self-Registration
+### S12 — Non-NHG Resident Self-Registration
 
 Full-bleed page (no shell). Card width **540px**.
 
-**Header.** Brand row + DRAFT stamp + purple-outline badge *"External Resident · First-time registration"*.
+**Header.** Brand row + DRAFT stamp + purple-outline badge *"Non-NHG Resident · First-time registration"*.
 
 **Heading.** *Tell us about your posting*.
 
-**Helper.** *"External residents from NUH and SingHealth posted to NHG departments register once. After this, you sign in with MCR only."*
+**Helper.** *"Non-NHG residents from NUH and SingHealth posted to NHG departments register once. After this, you sign in with MCR only."*
 
 **Form fields:**
 
 1. Full name (text).
 2. MCR number (mono, helper *"Will be your login identifier going forward."*).
 3. Home cluster — two large radio cards: **NUH** and **SingHealth**. Selected card has a purple border and tint + check icon.
-4. Current NHG posting — two-column row: Hospital dropdown, Department dropdown.
+4. Upcoming NHG Postings — repeatable row group:
+   - Date range picker.
+   - Programme dropdown showing code plus full programme name.
+   - Institution dropdown limited to **TTSH**, **WH**, **KTPH**.
+   - Resolved posting selection/display backed by `posting_codes`.
+   - Icon buttons for add row and remove row.
+   - Inline validation for overlapping ranges, missing posting resolution, or invalid programme/institution pairing.
 
-**Info callout.** *"What happens next — Your account is created as an External Resident. You'll log in with MCR only from now on. Your attendance is recorded against your NHG posting and forwarded to your home cluster PC — not included in NHG compliance."*
+**Info callout.** *"What happens next — Your account is created as a Non-NHG Resident. You'll log in with MCR only from now on. Your attendance is recorded for forwarding to your home cluster PC — not included in NHG compliance."*
 
-**Footer.** *Cancel* · *Create external account*.
+**Footer.** *Cancel* · *Create Non-NHG account*.
 
 **Success state** (replaces form):
 
 - Green check disc.
 - Heading: *"You're registered"*.
 - Body: *"Welcome to MATA. From now on, sign in with just your MCR — no need to re-enter cluster or posting."*
-- Recap card: Name, MCR (mono), Home cluster (badge), NHG posting.
+- Recap card: Name, MCR (mono), Home cluster (badge), upcoming NHG postings table.
 - Two callouts:
   - Info: *"Future login — MCR only. Next time, enter [MCR] on the sign-in screen and you'll go straight to your portal."*
-  - Purple: *"Attendance routing. Your attendance is recorded for your NHG posting and forwarded to [cluster] PC. NHG compliance and clawback do not apply to external residents."*
+  - Purple: *"Attendance routing. Your attendance is recorded for forwarding to [cluster] PC. NHG compliance and clawback do not apply to Non-NHG residents."*
 - *Continue to Submission Portal* primary button.
 
 ---
 
-### S13 — External Resident Submission Portal
+### S13 — Non-NHG Resident Submission Portal
 
 Same shell pattern as S8, with the external scope made explicit.
 
-**Hero.** Title: *Submission Portal*. Subtitle: *External Resident · [cluster] · Posting: [NHG posting]*. Meta: MCR chip + purple-outline badge *"External · [cluster]"*. Action: *Submit Ad-hoc Teaching*.
+**Hero.** Title: *Submission Portal*. Subtitle: *Non-NHG Resident · [cluster] · Posting today: [derived NHG posting]*. Meta: MCR chip + purple-outline badge *"Non-NHG · [cluster]"*. Action: *Submit Ad-hoc Teaching*.
 
-**Top callout (purple, always visible).** *"External attendance routing. Your attendance is recorded for forwarding to your home cluster PC at [cluster]. It is not included in NHG compliance or clawback."*
+**Top callout (purple, always visible).** *"Non-NHG attendance routing. Your attendance is recorded for forwarding to your home cluster PC at [cluster]. It is not included in NHG compliance or clawback."*
 
-**TTSH posting branch.** Identical events table, filter row, weekend banner, and submit footer as S8.
+**Supported posting branch.** Identical events table, filter row, weekend banner, and submit footer as S8 when the date-matched posting supports secretary-created events.
 
-**Non-TTSH posting branch.** Events card is replaced with a card-pad **empty state**:
+**Unsupported posting or schedule gap branch.** Events card is replaced with a card-pad **empty state**:
 
 - Icon: bolt (purple).
 - Heading: *"Secretary-scheduled teachings unavailable for this posting"*.
-- Body: *"You are posted to a non-TTSH department during the pilot. Use ad-hoc submission to record sessions you attended."*
+- Body: *"Use ad-hoc submission to record sessions you attended. Dates without a posting schedule row will show as unavailable."*
 - Primary action: *Submit Ad-hoc Teaching*.
+
+**Non-NHG ad-hoc copy.** The ad-hoc modal uses the same date → attended TTSH department/programme → teaching/session → review shape, but the review and success copy must state: *"Recorded for forwarding to your home cluster. Not included in NHG compliance."*
 
 ---
 
-### S14 — External Resident Update Current NHG Posting
+### S14 — Non-NHG Resident Update Upcoming NHG Postings
 
-**Hero.** Title: *Update NHG Posting*. Subtitle: *External Resident · [cluster] · MCR [MCR]*. Meta: purple-outline cluster badge.
+**Hero.** Title: *Update Upcoming NHG Postings*. Subtitle: *Non-NHG Resident · [cluster] · MCR [MCR]*. Meta: purple-outline cluster badge.
 
-**Top callout (info).** *"Self-service update. External residents can update their current NHG posting themselves. Your home cluster ([cluster]) is fixed at registration and cannot be changed here."*
+**Top callout (info).** *"Self-service update. Non-NHG residents can update their upcoming NHG posting schedule themselves. Your home cluster ([cluster]) is fixed at registration and cannot be changed here."*
 
-**Two-column layout (8 / 4 or 1 / 1).**
+**Single schedule editor layout.**
 
-- **Left card — Current posting.**
-  - Eyebrow label *"Current posting"*.
-  - Hospital glyph + posting name + active-from date.
-  - Divider.
-  - Field list: Home cluster (badge), MCR (mono), Resident type *External*.
-- **Right card — New posting.**
-  - Eyebrow label *"New posting"*.
-  - Hospital dropdown.
-  - Department dropdown.
-  - Divider.
-  - When changed: purple-tinted *Confirm change* callout *"Future event visibility will use this updated posting. Previous attendance records are not rewritten."*. Otherwise: muted hint *"Choose a different hospital or department to enable Save."*.
-  - Buttons: *Reset* · *Save change* (primary, disabled until changed).
+- Top summary strip: Home cluster (badge), MCR (mono), derived current posting for today, resident type *Non-NHG*.
+- Schedule table with editable rows: date range, programme, institution, resolved posting, row actions.
+- Add row button appears below the table; remove row uses icon button with confirmation when the row has saved data.
+- Inline validations: overlap, missing posting code, programme/institution mismatch, no posting code match, multiple posting code matches requiring explicit selection.
+- When changed: purple-tinted *Confirm changes* callout *"Future event visibility will use this posting schedule. Previous attendance records are not rewritten."*. Otherwise: muted hint *"Edit a schedule row or add a new row to enable Save."*.
+- Footer buttons: *Reset* · *Save schedule* (primary, disabled until changed and valid).
 
 **Confirmation modal.**
 
-- Heading: *"Update NHG posting?"*.
-- Body shows the transition visually: *[old posting]* `→` *[new posting]* (both mono).
-- Footer note: *"Future event visibility will use this updated posting. Previous attendance records are not rewritten."*
-- Footer: *Cancel* · *Update posting*.
+- Heading: *"Update posting schedule?"*.
+- Body shows the changed rows as a compact before/after table.
+- Footer note: *"Future event visibility will use this posting schedule. Previous attendance records are not rewritten."*
+- Footer: *Cancel* · *Update schedule*.
 
-**Bottom callout (info).** *"Backend assumption — External resident data model is pending: this could be the existing `residents` table with a resident-type flag, or a separate `external_residents` table. Field names like `home_cluster`, `nhg_posting` are placeholders pending integration contract."*
+**Bottom callout (info).** *"Backend assumption — Non-NHG resident data is stored in external resident tables. Posting schedule rows resolve to `posting_codes` through backend validation."*
 
 ---
 
-### S15 — External Resident Past Attendance
+### S15 — Non-NHG Resident Past Attendance
 
 Same shell as S10 with two differences.
 
-**Top callout (purple).** *"External resident attendance is recorded for forwarding to the resident's home cluster PC. It is not included in NHG compliance or clawback."*
+**Top callout (purple).** *"Non-NHG attendance is recorded for forwarding to the resident's home cluster PC. It is not included in NHG compliance or clawback."*
 
 **Additional column.** **Home cluster** between *NHG posting* and *Source*. Renders as a badge: *NUH* (info blue) or *SingHealth* (purple outline).
 
@@ -667,9 +673,9 @@ Same shell as S10 with two differences.
 
 ---
 
-### S16 — Programme PC External Attendance Export Preview
+### S16 — Programme PC Non-NHG Attendance Export Preview
 
-**Hero.** Title: *External Attendance Export*. Subtitle: *Programme PC · For forwarding to NUH / SingHealth PCs*. Meta: record count, per-cluster counts. Actions: *Refresh*, primary *Export external attendance*.
+**Hero.** Title: *Non-NHG Attendance Export*. Subtitle: *Programme PC · For forwarding to NUH / SingHealth PCs*. Meta: record count, per-cluster counts. Actions: *Refresh*, primary *Export Non-NHG attendance*.
 
 **Top callout (purple).** *"Export-ready preview. This screen previews what will be exported. The actual export endpoint and file format are pending integration contract with the NUH / SingHealth PC workflow. Email export is intentionally excluded."*
 
@@ -695,7 +701,7 @@ Same shell as S10 with two differences.
 
 **Empty.** *"No records match these filters — adjust filters to see external attendance for export."*
 
-**Bottom callout (info — backend assumption).** *"External resident attendance is excluded from NHG compliance numerator and denominator. The export shape (CSV vs JSON, field names, partitioning by cluster) is not finalised. Codex will receive an integration contract before wiring."*
+**Bottom callout (info — backend assumption).** *"Non-NHG attendance is excluded from NHG compliance numerator and denominator. The export shape (CSV vs JSON, field names, partitioning by cluster) is not finalised. Codex will receive an integration contract before wiring."*
 
 ---
 
@@ -760,7 +766,7 @@ Same shell as S10 with two differences.
 - SeverityBadge — *Critical* / *Warning* / *Info* / *Resolved*.
 - WarningTypeTag — mono, colour-coded per type.
 - SourceBadge — *Secretary Event* / *Ad-hoc*.
-- RoleBadge — *Master Admin* / *Programme PC* / *Secretary* / *Native Resident* / *External Resident*.
+- RoleBadge — *Master Admin* / *Programme PC* / *Secretary* / *NHG Resident* / *Non-NHG Resident*.
 - ScopeChip — programme / posting / MCR.
 - ClusterBadge — *NUH* / *SingHealth*.
 - LockBadge — *Master Admin only*.
@@ -820,10 +826,10 @@ Idle → FileSelected → Uploading → Parsing → Success / Failure. Cancelabl
 ### 5.2 Role-Specific Sidebar Navigation
 
 - **Master Admin.** Home · Upload Files · Warnings · Configuration · Upload Logs · Parsed Data · Secretary Events · Submissions · Settings.
-- **Programme PC.** Home · Upload TTF · Warnings · Configuration · Parsed Data · External Export · Settings.
+- **Programme PC.** Home · Upload TTF · Warnings · Configuration · Parsed Data · Non-NHG Export · Settings.
 - **Secretary.** Teaching Schedule · Dashboard · Structured Plan · Settings.
-- **Native Resident.** Submission Portal · Past Attendance · Settings. *Submit Ad-hoc* lives as a button inside the portal, not as a nav item.
-- **External Resident.** Submission Portal · Past Attendance · Update NHG Posting · Settings.
+- **NHG Resident.** Submission Portal · Past Attendance · Settings. *Submit Ad-hoc* lives as a button inside the portal, not as a nav item.
+- **Non-NHG Resident.** Submission Portal · Past Attendance · Update Upcoming NHG Postings · Settings.
 
 ### 5.3 Key Interactions
 
@@ -835,7 +841,7 @@ Idle → FileSelected → Uploading → Parsing → Success / Failure. Cancelabl
 6. **Add Teaching** — date picker live-validates against the public holidays list; picking a PH date triggers the error state and disables save.
 7. **Resident select + submit** — checkboxes update the footer counter; weekend banner appears if any selected row is a weekend without an exception.
 8. **Ad-hoc flow** — stepped 1 → 2 → 3 → success. Back is allowed until submit.
-9. **External entry → register → portal** — selecting *External Resident* in the role switcher takes the user to the entry screen; registering completes to the external portal with the new profile applied.
+9. **Non-NHG entry → register → portal** — selecting *Non-NHG Resident* in the role switcher takes the user to the entry screen; registering completes to the Non-NHG portal with the new profile applied.
 10. **Past attendance row click** — opens a read-only drawer using the same traceability layout as the warning drawer for visual consistency.
 
 ### 5.4 Modal / Drawer Rules
@@ -857,10 +863,10 @@ This sequence is for the live demo. All names, MCRs, and counts below are synthe
 3. **Warning review** (`/admin/upload/warnings`). Filter to `unmatched_multi_posting`. Open a row. Show traceability: *Sheet Phase 3 · Row 42 · Cell J42*. Subject: *Resident A · MCR M00001A · May 2026*. Suggested action: *"Define a multi-posting rule for [demo posting] + [demo posting] in Configuration → Multi-Posting Rules → Main Posting."*
 4. **Resolve via config** — click *Open related config →*. Lands on Multi-Posting Rules with the edit drawer open and the resolution callout visible. Fill `combined_label = "Demo Combined"`, click **Save & resolve warning**. Drawer closes. Success toast. Back on the warnings table the row is now *Resolved*.
 5. **Switch role to Secretary**. Land on Teaching Schedule. Click **+ Add Teaching**. Pick a public holiday date — red error appears. Pick a valid date, fill remaining fields, save. The new row flashes briefly at the top of the table.
-6. **Switch role to Native Resident**. Submission Portal shows secretary events including the one just added. Select two events; selecting a weekend event triggers the amber compliance banner. Uncheck the weekend event. Click the green **Submit**. Rows transition to *Submitted* with a flash. Toast confirms.
-7. **Switch role to External Resident**. The full-bleed entry screen appears. Click *"I am a NUH / SingHealth resident posted to NHG"*. Fill the registration form (*Demo Resident*, MCR `M12345X`, cluster *NUH*, posting *TTSH Geriatric Medicine*). Success screen appears. Click *Continue to Submission Portal*.
-8. **External submission**. Portal shows the same secretary events plus the purple "external routing" banner. Submit an event. Open *Past Attendance* — same events appear with a *Home cluster* column and a routing banner. Show the *Submitted* / *Removed* status set with no `Flagged`.
-9. **(Optional) Programme PC export.** Switch to Programme PC. Open *External Export*. Filter by *NUH*. Show table of external attendance ready for forwarding. Click *Export external attendance* — toast indicates the actual endpoint is pending. Close on this state to highlight the integration boundary.
+6. **Switch role to NHG Resident**. Submission Portal shows eligible secretary/programme events including the one just added. Select two events; selecting a weekend event triggers the amber compliance banner. Uncheck the weekend event. Click the green **Submit**. Rows transition to *Submitted* with a flash. Toast confirms.
+7. **Switch role to Non-NHG Resident**. The full-bleed entry screen appears. Click *"I am a NUH / SingHealth resident posted to NHG"*. Fill the registration form with synthetic data, cluster *NUH*, and one upcoming NHG posting row. Success screen appears. Click *Continue to Submission Portal*.
+8. **Non-NHG submission**. Portal shows eligible secretary events plus the purple "Non-NHG routing" banner. Submit an event. Open *Past Attendance* — same events appear with a *Home cluster* column and a routing banner. Show the *Submitted* / *Removed* status set with no `Flagged`.
+9. **(Optional) Programme PC export.** Switch to Programme PC. Open *Non-NHG Export*. Filter by *NUH*. Show table of Non-NHG attendance ready for forwarding. Click *Export Non-NHG attendance* — toast indicates the actual endpoint is pending. Close on this state to highlight the integration boundary.
 
 ---
 
@@ -881,8 +887,8 @@ The items below are **assumptions for visual demo purposes only**. They are not 
 | A-09 | Multi-Posting Rules apply **on next RDB re-upload**; the UI states this in a banner. The re-upload is a manual Master Admin action. |
 | A-10 | SMC event codes are free-text mono inputs in this UI; no external SMC registry validation. |
 | A-11 | Notifications (bell icon) are decorative for the demo only. |
-| A-12 | External resident data model is **pending**. May be the existing `residents` table with a resident-type flag, or a separate `external_residents` table. Field names like `home_cluster`, `nhg_posting` are placeholders. |
-| A-13 | External attendance export endpoint and file format are **pending integration contract** with NUH / SingHealth PC workflow. Email export is intentionally excluded. |
+| A-12 | Non-NHG resident data uses `external_residents`, `external_resident_postings`, and `external_attendance_records`; user-facing labels should say Non-NHG Resident. |
+| A-13 | Non-NHG attendance export endpoint and file format are **pending integration contract** with NUH / SingHealth PC workflow. Email export is intentionally excluded. |
 
 ---
 
@@ -901,15 +907,15 @@ Screenshots live under `docs/assets/demo-ui/` and are referenced from this docum
 | 5 | Multi-Posting Rules CRUD | `docs/assets/demo-ui/multi-posting-rules.png` |
 | 6 | Programme PC TTF Upload | `docs/assets/demo-ui/programme-pc-ttf-upload.png` |
 | 7 | Secretary Teaching Schedule | `docs/assets/demo-ui/secretary-teaching-schedule.png` |
-| 8 | Native Resident Submission Portal | `docs/assets/demo-ui/native-resident-submission.png` |
-| 9 | Native Resident Ad-hoc Teaching Modal | `docs/assets/demo-ui/native-resident-adhoc.png` |
-| 10 | Native Resident Past Attendance | `docs/assets/demo-ui/native-resident-past-attendance.png` |
-| 11 | External Resident Entry / Login Choice | `docs/assets/demo-ui/external-resident-entry.png` |
-| 12 | External Resident Self-Registration | `docs/assets/demo-ui/external-resident-registration.png` |
-| 13 | External Resident Submission Portal | `docs/assets/demo-ui/external-resident-submission.png` |
-| 14 | External Resident Update Current NHG Posting | `docs/assets/demo-ui/external-resident-update-posting.png` |
-| 15 | External Resident Past Attendance | `docs/assets/demo-ui/external-resident-past-attendance.png` |
-| 16 | Programme PC External Attendance Export Preview | `docs/assets/demo-ui/external-attendance-export.png` |
+| 8 | NHG Resident Submission Portal | `docs/assets/demo-ui/native-resident-submission.png` |
+| 9 | NHG Resident Ad-hoc Teaching Modal | `docs/assets/demo-ui/native-resident-adhoc.png` |
+| 10 | NHG Resident Past Attendance | `docs/assets/demo-ui/native-resident-past-attendance.png` |
+| 11 | Non-NHG Resident Entry / Login Choice | `docs/assets/demo-ui/external-resident-entry.png` |
+| 12 | Non-NHG Resident Self-Registration | `docs/assets/demo-ui/external-resident-registration.png` |
+| 13 | Non-NHG Resident Submission Portal | `docs/assets/demo-ui/external-resident-submission.png` |
+| 14 | Non-NHG Resident Update Upcoming NHG Postings | `docs/assets/demo-ui/external-resident-update-posting.png` |
+| 15 | Non-NHG Resident Past Attendance | `docs/assets/demo-ui/external-resident-past-attendance.png` |
+| 16 | Programme PC Non-NHG Attendance Export Preview | `docs/assets/demo-ui/external-attendance-export.png` |
 
 ### Minimum high-value subset
 

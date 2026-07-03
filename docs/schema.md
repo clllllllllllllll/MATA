@@ -66,6 +66,8 @@ Master list of residency programmes.
 
 **Note:** FM uses the standard compliance engine. There is no `compliance_variant` column — FM compliance is handled through FM-specific rule annotations within the standard path. See `docs/business-logic.md` § BL-FM.
 
+**Native teaching posting mapping (planned / required for Phase 5B):** NHG Resident visibility for native programme department secretary events requires an explicit native-programme-to-TTSH-posting mapping. Preferred single-default schema is a nullable `programmes.native_teaching_posting_code` FK to `posting_codes.code`. If a programme can have multiple default teaching postings, use a separate `programme_teaching_posting_map` table with `programme_code`, `posting_code`, and optional display/order metadata. Do not infer this mapping by string manipulation.
+
 **Seed data (from Programme_ABBREV.xlsx — 28 programmes):**
 
 | code | name | ay_date_category | r_year_required | is_subspecialty | rdb_alias |
@@ -128,7 +130,7 @@ Canonical registry of all posting sites. Seeded from both RDB (active sites) and
 
 **Important:** Posting codes are NOT derivable by regex from institution+department. Real codes like `MOHHGTG1`, `AICAIC`, `RenCiCommHosp`, `NHGPlyNHGPly` break any uniform pattern. This table is the source of truth — no string parsing.
 
-**Secretary-event visibility capability:** `supports_secretary_events` is a scalable onboarding/capability signal and useful UI metadata. Native resident event visibility must stay data-driven (current posting context + valid events/catalogue/global matching) and must not be hardcoded to institution names.
+**Secretary-event visibility capability:** `supports_secretary_events` is a scalable onboarding/capability signal and useful UI metadata. NHG Resident event visibility must stay data-driven (assigned/native source context + valid events/catalogue/global matching) and must not be hardcoded to institution names.
 
 ---
 
@@ -314,10 +316,10 @@ Teaching sessions created by secretaries, Programme PC CRUD, or ad-hoc submissio
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
 | id | UUID | PK | |
-| posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Posting/site context for the event. Secretary-created events are posting-owned; PC-created events also carry explicit programme ownership in `created_for_programme_code`. |
+| posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Posting/site context for the event. Secretary-created events are posting-owned; PC-created events also carry explicit programme ownership in `created_for_programme_code`. For NHG Resident ad-hoc submissions, this is the assigned/compliance posting for the selected date, not necessarily the attended TTSH department. |
 | created_for_programme_code | VARCHAR(20) | FK → programmes.code, nullable | Explicit programme ownership for PC-created scheduled events. Required for PC-created programme-owned events. Null for secretary-created posting-owned/programme-neutral events unless explicitly set by a future workflow. |
-| teaching_name | VARCHAR(200) | NOT NULL | Stored teaching keyword/name. Secretary and PC scheduled events use approved dropdown options; planned ad-hoc rework requires resident/external resident selections to come from catalogue-backed options, not arbitrary free text for compliance mapping. |
-| details_of_session | TEXT | nullable | **Planned, not yet in current models/migrations.** Display/audit-only free text for ad-hoc session context. No operational use and no compliance use. Preferred storage is on `teaching_events` because ad-hoc submission creates an event row for both native and external residents. |
+| teaching_name | VARCHAR(200) | NOT NULL | Stored teaching keyword/name. Secretary and PC scheduled events use approved dropdown options; planned ad-hoc rework requires NHG/Non-NHG Resident selections to come from catalogue-backed options, not arbitrary free text for compliance mapping. |
+| details_of_session | TEXT | nullable | **Planned, not yet in current models/migrations.** Display/audit-only free text for ad-hoc session context. No operational use and no compliance use. Preferred storage is on `teaching_events` because ad-hoc submission creates an event row for both NHG and Non-NHG Residents. |
 | event_date | DATE | NOT NULL | |
 | start_time | TIME | NOT NULL | |
 | end_time | TIME | | Server-computed from start_time + session_type.duration_hours at creation |
@@ -330,12 +332,14 @@ Teaching sessions created by secretaries, Programme PC CRUD, or ad-hoc submissio
 | created_by_role | VARCHAR(20) | | `secretary`, `programme_pc`, `resident`, or `external_resident` depending on creator/source role. This is role/source metadata only, not an actor-name field. |
 
 **Programme ownership visibility rule:**
-- `created_for_programme_code IS NULL` → treat the event as normal posting-owned/programme-neutral. Resident visibility still requires posting/date/catalogue checks.
-- `created_for_programme_code IS NOT NULL` → show only to residents whose `programme_code` equals that value, and only if the event also passes posting/date/catalogue visibility checks.
+- `created_for_programme_code IS NULL` → treat the event as normal posting-owned/programme-neutral secretary/ad-hoc visibility. For NHG Residents, secretary-created events may qualify through assigned posting visibility or through the resident's explicit native-programme TTSH department posting mapping. Resident visibility still requires date/catalogue checks.
+- `created_for_programme_code IS NOT NULL` → show only to residents whose `programme_code` equals that value, and only if the event also passes normal date/catalogue checks. PC-created events are programme-owned, not TTSH site-owned.
 
 **PC-created event contract:** Programme PC CRUD creates scheduled teaching events, not ad-hoc submissions. PC-created rows must set `created_for_programme_code`, use options from that programme's TTF Column K / `teaching_name_catalogue`, be public-holiday blocked, and be edit/delete-blocked when native or external attendance exists.
 
 **Ad-hoc detail contract (planned):** `details_of_session` is optional context text only. It must not participate in event visibility, session type resolution, denominator/numerator calculation, surplus, snapshots, or clawback.
+
+**Ad-hoc attended posting metadata (planned / pending schema choice):** Phase 5B ad-hoc UX captures the attended TTSH department/programme separately from the assigned/compliance posting. If audit/display requires persistence, add a dedicated field such as `attended_posting_code` FK → `posting_codes.code` or an equivalent audit table. Until then, selected attended posting is API/request context for option filtering and export/audit display only. It must not replace `posting_code` for NHG compliance attribution.
 
 ---
 
@@ -380,7 +384,7 @@ One row per (resident, teaching_event) submission.
 
 ## Table: `external_residents`
 
-One row per external/cross-cluster resident who self-registers to submit attendance for NHG/TTSH-posted teaching. External residents are **not** native NHG residents, are **not** `users`, and are **not** RDB-backed.
+One row per Non-NHG/cross-cluster resident who self-registers to submit attendance for NHG-posted teaching. Backend/internal table names use `external_residents`; user-facing text should say Non-NHG Resident. Non-NHG Residents are **not** native NHG residents, are **not** `users`, and are **not** RDB-backed.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
@@ -388,39 +392,44 @@ One row per external/cross-cluster resident who self-registers to submit attenda
 | name | VARCHAR(100) | NOT NULL | Self-registered display name |
 | mcr | VARCHAR(20) | UNIQUE, NOT NULL | MCR is the login credential. Service layer must also reject MCRs already present in native `residents`. |
 | home_cluster | VARCHAR(20) | NOT NULL, CHECK IN (`NUH`, `SingHealth`) | External home cluster only. No other values accepted. |
-| current_nhg_posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Current NHG posting selected/updated by the external resident. Not derived from `resident_postings`. |
+| current_nhg_posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Current/cache/backward-compatibility pointer selected/updated by the Non-NHG Resident. Not derived from native `resident_postings`. Phase 5B date-specific event/ad-hoc derivation uses `external_resident_postings` once the forecast posting schedule is implemented. |
 | status | VARCHAR(20) | DEFAULT 'active' | `active`, `inactive` |
 
 **Global MCR uniqueness:** MCR is a unique identifier for every doctor. Because native and external identities live in separate tables, enforce cross-table uniqueness in the service layer: registration must reject if the MCR exists in either `residents.mcr` or `external_residents.mcr`.
 
-**Compliance exclusion:** External residents are excluded from NHG compliance, NHG numerator/denominator, surplus, period snapshots, and clawback. Do not join this table into native compliance queries.
+**Compliance exclusion:** Non-NHG Residents are excluded from NHG compliance, NHG numerator/denominator, surplus, period snapshots, and clawback. Do not join this table into native compliance queries.
 
-**External ad-hoc dropdown derivation (planned):** `current_nhg_posting_code` is the source for deriving a candidate `host_programme_code` for external ad-hoc teaching options. Preferred derivation source is the active/effectively active reporting period `teaching_name_catalogue` / `teaching_targets`, or a future explicit posting-to-programme mapping if needed. Example: `KTPHDiagRd -> DR` when that posting maps to exactly one programme.
+**Non-NHG date-specific derivation:** `current_nhg_posting_code` is no longer the long-term sole source for Phase 5B event/ad-hoc option derivation. Once forecast posting schedule support is implemented, use the `external_resident_postings` row matching the selected event/ad-hoc date. If no row matches, return unavailable/no posting for selected date.
 
-**Implementation-pending external option fields:** Current models/migrations do not contain `host_programme_code` or `host_r_year`. Preferred direction is to calculate/default `host_programme_code` at read time for dropdown options; storage may be added later only if audit or workflow requirements need it. If multiple programmes map to the current posting, the API must require explicit `host_programme_code`. If the selected/derived programme has `r_year_required = true`, the API must require `host_r_year` before showing catalogue-backed options; if `r_year_required = false`, use `r_year = 'ALL'`.
+**Implementation-pending external option fields:** Current models/migrations do not contain `attended_posting_code`. For Phase 5B, attended department/programme selection should resolve to a real `posting_codes.code` through validated lookup/config and can remain request/audit context until a dedicated storage field is approved. Do not create posting codes by concatenating strings or regex.
 
 ---
 
 ## Table: `external_resident_postings`
 
-Date-bounded posting history table for external residents. This table exists in current models/migrations, but the confirmed ad-hoc dropdown contract still uses `external_residents.current_nhg_posting_code` unless/until date-specific external posting history semantics are explicitly wired and approved.
+Confirmed Phase 5B source for Non-NHG forecasted/date-specific posting derivation. Date-bounded rows are created during registration and editable by the Non-NHG Resident. They are used to derive posting for event listing and ad-hoc options by selected date.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
 | id | UUID | PK | |
 | external_resident_id | UUID | FK → external_residents.id, NOT NULL | |
-| posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | |
+| posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Resolved posting code only after backend validation against `posting_codes` and configured mapping from selected institution/programme/department. No string-derived codes. |
 | start_date | DATE | NOT NULL | |
 | end_date | DATE | nullable | |
 | is_current | BOOLEAN | DEFAULT true | |
 
-TODO: Confirm whether Phase 5B should use `external_resident_postings` for date-specific external event/ad-hoc option derivation or keep it as future/audit-ready storage while using `external_residents.current_nhg_posting_code`.
+**Phase 5B schedule rules:**
+- Rows for the same `external_resident_id` must not overlap in date range. Enforce in service validation and preferably with a DB exclusion/constraint when migrations are added.
+- Gaps are allowed. Event/ad-hoc options for a date in a gap return unavailable/no posting for selected date.
+- Date ranges may cross calendar months.
+- Registration/update UI may collect institution (`TTSH`, `WH`, `KTPH`) and programme, but storage must keep the resolved `posting_code` as the operational source.
+- Current schema does not include `programme_code` or `institution` columns. Preferred implementation is to avoid storing them and derive display metadata from `posting_codes`/`programmes`; add planned audit/display metadata only if later requirements need it.
 
 ---
 
 ## Table: `external_attendance_records`
 
-One row per external resident attendance submission. Stored separately from native `attendance_records` so external attendance cannot enter NHG compliance joins accidentally.
+One row per Non-NHG Resident attendance submission. Stored separately from native `attendance_records` so external attendance cannot enter NHG compliance joins accidentally.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
@@ -919,7 +928,7 @@ At compliance read time, before any `teaching_name_catalogue` lookup, the engine
 The `GET /secretary/teaching-name-options` endpoint returns a unified dropdown combining `teaching_name_catalogue` keywords (TTF-derived, programme/posting-specific) AND active `global_session_types` entries. The secretary sees one list — the distinction is transparent to them.
 
 **How it interacts with resident event visibility:**
-Visibility follows the same rule as all other events — residents only see events created at their current posting. A Department Meeting created by TTSHGerMed secretary is only visible to residents currently posted at TTSHGerMed.
+Visibility follows the same rule as all other events. A global session type does not bypass source eligibility: NHG Residents only see secretary-created events from their assigned/current posting or their explicit native-programme TTSH department posting mapping, plus PC-created events for their native programme. A Department Meeting created by TTSHGerMed secretary is visible only to residents for whom TTSHGerMed is an allowed source.
 
 **Admin CRUD UI:** Managed alongside `loa_types`, `weekend_exceptions`, `multi_posting_rules`, `posting_groups` in the admin configuration panel. Same access level, same UI pattern.
 
