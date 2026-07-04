@@ -136,8 +136,16 @@ class FakeResidentSession:
             },
         ]
         self.programmes = [
-            {"code": "GRM", "name": "Geriatric Medicine"},
-            {"code": "DR", "name": "Diagnostic Radiology"},
+            {
+                "code": "GRM",
+                "name": "Geriatric Medicine",
+                "native_teaching_posting_code": None,
+            },
+            {
+                "code": "DR",
+                "name": "Diagnostic Radiology",
+                "native_teaching_posting_code": None,
+            },
         ]
         self.external_residents = [
             {
@@ -403,6 +411,14 @@ class FakeResidentSession:
         if "SELECT 1" in sql and "FROM programmes" in sql:
             exists = any(row for row in self.programmes if row["code"] == payload.get("programme_code"))
             return FakeResult(scalar=1 if exists else None)
+
+        if "SELECT native_teaching_posting_code" in sql and "FROM programmes" in sql:
+            rows = [
+                row
+                for row in self.programmes
+                if row["code"] == payload.get("programme_code")
+            ]
+            return FakeResult(rows=rows[:1])
 
         if "FROM reporting_periods" in sql:
             rows = [

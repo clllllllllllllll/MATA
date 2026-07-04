@@ -257,6 +257,27 @@ async def _posting_contexts_for_period(
     return [dict(row) for row in result.mappings().all()]
 
 
+async def _native_teaching_posting_code(
+    db: AsyncSession,
+    *,
+    programme_code: str,
+) -> str | None:
+    result = await db.execute(
+        text(
+            """
+            SELECT native_teaching_posting_code
+            FROM programmes
+            WHERE code = :programme_code
+            """
+        ),
+        {"programme_code": programme_code},
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        return None
+    return row.get("native_teaching_posting_code")
+
+
 async def _public_holiday_name(db: AsyncSession, event_date: date) -> str | None:
     result = await db.execute(
         text(
@@ -867,6 +888,23 @@ def _context_overlaps_range(context: dict[str, Any], *, start: date, end: date) 
     return context["start_date"] <= end and context_end >= start
 
 
+def _native_visibility_contexts(
+    contexts: list[dict[str, Any]],
+    *,
+    native_posting_code: str | None,
+) -> list[dict[str, Any]]:
+    if not native_posting_code:
+        return []
+    return [
+        {
+            **context,
+            "posting_code": native_posting_code,
+        }
+        for context in contexts
+        if context.get("posting_code")
+    ]
+
+
 def _posting_filter_options(
     contexts: list[dict[str, Any]],
     *,
@@ -1005,9 +1043,21 @@ async def list_available_events(
         date_from=date_from,
         date_to=date_to,
     )
+    native_posting_code = await _native_teaching_posting_code(
+        db,
+        programme_code=resident["programme_code"],
+    )
+    visibility_contexts = [
+        *contexts,
+        *_native_visibility_contexts(
+            contexts,
+            native_posting_code=native_posting_code,
+        ),
+    ]
+
     eligible_posting_codes = {
         row["posting_code"]
-        for row in contexts
+        for row in visibility_contexts
         if row.get("posting_code") and _context_overlaps_range(row, start=range_start, end=range_end)
     }
     posting_codes = set(eligible_posting_codes)
@@ -1033,7 +1083,7 @@ async def list_available_events(
         if owner is not None and owner != resident["programme_code"]:
             continue
         context = _matching_context_for_event(
-            contexts,
+            visibility_contexts,
             posting_code=event["posting_code"],
             event_date=event["event_date"],
         )
@@ -1048,7 +1098,9 @@ async def list_available_events(
             teaching_name=event["teaching_name"],
         )
         if resolved is not None:
-            events.append(_available_event_row(event, resolved=resolved))
+            event_row = _available_event_row(event, resolved=resolved)
+            if all(existing["id"] != event_row["id"] for existing in events):
+                events.append(event_row)
 
     option_raw_events = await _events_for_postings(
         db,
@@ -1065,7 +1117,7 @@ async def list_available_events(
     option_names: set[str] = set()
     for event in option_raw_events:
         context = _matching_context_for_event(
-            contexts,
+            visibility_contexts,
             posting_code=event["posting_code"],
             event_date=event["event_date"],
         )
@@ -1085,7 +1137,7 @@ async def list_available_events(
         "date_from": range_start.isoformat(),
         "date_to": range_end.isoformat(),
         "posting_options": _posting_filter_options(
-            contexts,
+            visibility_contexts,
             start=range_start,
             end=range_end,
         ),
