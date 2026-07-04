@@ -12,6 +12,7 @@ from app.errors import ApiError, ErrorCode
 from app.services.audit import write_audit_log
 from app.services.mata_resident_token import (
     MataResidentTokenError,
+    sign_mata_external_resident_token,
     sign_mata_resident_token,
 )
 
@@ -155,6 +156,36 @@ def _normalise_mcr(raw_mcr: str | None) -> str | None:
     return cleaned or None
 
 
+async def _lookup_resident_login_rows(
+    db: AsyncSession,
+    normalised_mcr: str,
+) -> tuple[Any | None, Any | None]:
+    resident_result = await db.execute(
+        text(
+            """
+            SELECT *
+            FROM residents
+            WHERE mcr = :mcr
+            """
+        ),
+        {"mcr": normalised_mcr},
+    )
+    external_result = await db.execute(
+        text(
+            """
+            SELECT *
+            FROM external_residents
+            WHERE mcr = :mcr
+            """
+        ),
+        {"mcr": normalised_mcr},
+    )
+    return (
+        resident_result.mappings().one_or_none(),
+        external_result.mappings().one_or_none(),
+    )
+
+
 async def login(
     db: AsyncSession,
     *,
@@ -167,27 +198,21 @@ async def login(
 ) -> dict[str, Any]:
     if role in {"resident", "external_resident"}:
         if not _stub_login_allowed(auth_mode=auth_mode) and not (
-            auth_mode == "supabase" and role == "resident"
+            auth_mode == "supabase" and role in {"resident", "external_resident"}
         ):
             raise _auth_failure()
 
         normalised_mcr = _normalise_mcr(mcr)
         if not normalised_mcr:
             raise _auth_failure()
-        table_name = "residents" if role == "resident" else "external_residents"
-        result = await db.execute(
-            text(
-                """
-                SELECT *
-                FROM """
-                + table_name
-                + """
-                WHERE mcr = :mcr
-                """
-            ),
-            {"mcr": normalised_mcr},
+        resident_row, external_resident_row = await _lookup_resident_login_rows(
+            db,
+            normalised_mcr,
         )
-        identity_row = result.mappings().one_or_none()
+        if resident_row is not None and external_resident_row is not None:
+            # Defensive guard for a violated global MCR uniqueness invariant.
+            raise _auth_failure()
+        identity_row = resident_row if role == "resident" else external_resident_row
         if identity_row is None or identity_row.get("status") == "inactive":
             raise _auth_failure()
         user = (
@@ -197,7 +222,12 @@ async def login(
         )
         if auth_mode == "supabase":
             try:
-                access_token = sign_mata_resident_token(
+                signer = (
+                    sign_mata_resident_token
+                    if role == "resident"
+                    else sign_mata_external_resident_token
+                )
+                access_token = signer(
                     dict(identity_row),
                     settings=settings or Settings(auth_mode=auth_mode),
                 )

@@ -41,7 +41,7 @@ Notes:
   - `VITE_SUPABASE_URL=https://<project-ref>.supabase.co`
   - `VITE_SUPABASE_PUBLISHABLE_KEY=<publishable-key>` or `VITE_SUPABASE_ANON_KEY=<anon-key>`
 - Never add server-only Supabase secrets to frontend env vars.
-- In Supabase mode, staff sign in through Supabase Auth and MATA identity is loaded from backend `/auth/me`. Resident and Non-NHG MCR-only Supabase login remains deferred.
+- In Supabase mode, staff sign in through Supabase Auth and MATA identity is loaded from backend `/auth/me`. NHG and registered Non-NHG Resident MCR-only login use backend-signed MATA resident session tokens.
 - Backward-compatible fallbacks still supported:
   - `VITE_DEMO_ADMIN_ID`
   - `VITE_DEMO_ADMIN_PROGRAMMES`

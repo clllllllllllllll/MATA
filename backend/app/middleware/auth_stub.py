@@ -114,6 +114,8 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
                 resident_id = UUID(raw_subject)
             except ValueError:
                 return self._unauthorized_response()
+            if claims.get("app_role") == "external_resident":
+                return await self._resolve_mata_external_resident_identity(resident_id)
             return await self._resolve_mata_resident_identity(resident_id)
 
         try:
@@ -148,6 +150,12 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             programme_code=resident.programme_code,
             mcr=resident.mcr,
         )
+
+    async def _resolve_mata_external_resident_identity(
+        self,
+        external_resident_id: UUID,
+    ) -> AuthIdentity | Response:
+        return await self._resolve_external_resident_identity(external_resident_id)
 
     async def _resolve_supabase_user_identity(
         self,

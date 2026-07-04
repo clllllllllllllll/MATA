@@ -49,12 +49,19 @@ Non-NHG/cross-cluster residents are **not** in the `users` table and are **not**
 
 ```json
 {
+  "iss": "mata-api",
+  "aud": "mata-resident-session",
   "sub": "<external_residents.id>",
   "role": "external_resident",
-  "mcr": "M12345A",
-  "home_cluster": "NUH"
+  "app_role": "external_resident",
+  "mcr": "E12345A",
+  "home_cluster": "NUH",
+  "iat": 12345678,
+  "exp": 12345678
 }
 ```
+
+In `AUTH_MODE=supabase`, Non-NHG Residents do not get Supabase Auth accounts. Backend `/auth/login` validates MCR against active `external_residents` rows and issues a backend-signed MATA resident session token using server-only `MATA_RESIDENT_SESSION_SECRET`. The token must not include current posting, posting schedule, staff actor name, `admin_level`, `programme_code`, `programme_scope`, or `posting_code`.
 
 Posting state and posting schedule are not trusted from JWT for authorization-sensitive reads. Fetch the Non-NHG Resident from `external_residents` and derive date-specific posting from `external_resident_postings` where relevant. `external_residents.current_nhg_posting_code` may remain a current/cache/backward-compatibility pointer, but must not be the only trusted source once the forecast schedule is implemented. Non-NHG Residents do not receive NHG compliance or clawback surfaces.
 
@@ -245,9 +252,9 @@ Frontend-facing `data_revalidation` responses expose stable summary fields at th
 }
 ```
 
-In `AUTH_MODE=supabase`, protected staff requests use a Supabase Auth access token. The Supabase token `sub` is `auth.users.id` and maps to `users.supabase_user_id`; the backend then derives `role`, `admin_level`, `programme_scope`, `posting_code`, and saved staff actor metadata from the active `users` row. Protected NHG Resident requests use the backend-signed MATA resident token issued by `/auth/login`; the backend verifies its MATA issuer/audience/signature/expiry, reloads the active `residents` row by `sub`, and derives resident identity from that row. Raw client headers and Supabase `user_metadata` are not authorization sources.
+In `AUTH_MODE=supabase`, protected staff requests use a Supabase Auth access token. The Supabase token `sub` is `auth.users.id` and maps to `users.supabase_user_id`; the backend then derives `role`, `admin_level`, `programme_scope`, `posting_code`, and saved staff actor metadata from the active `users` row. Protected NHG Resident requests use the backend-signed MATA resident token issued by `/auth/login`; the backend verifies its MATA issuer/audience/signature/expiry, reloads the active `residents` row by `sub`, and derives resident identity from that row. Protected Non-NHG Resident requests use the same MATA issuer/audience/signature/expiry path with `role/app_role = external_resident`; the backend reloads the active `external_residents` row by `sub` and derives external resident identity from that row. Raw client headers and Supabase `user_metadata` are not authorization sources.
 
-5B-E staff accounts are generic role accounts. `users.name` is the account display name. `current_staff_actor_name` is a self-declared current human name used for audit/display context only; it never grants role, programme scope, admin level, or posting scope. Browser-visible `Authorization: Bearer <Supabase access token>` and `Authorization: Bearer <MATA resident token>` transport remains the temporary 5B-D2/5B-F-A implementation. TODO 5B-H: replace browser-visible bearer transport with backend-managed `HttpOnly`, `Secure`, `SameSite` cookies/BFF flow plus CSRF protection.
+5B-E staff accounts are generic role accounts. `users.name` is the account display name. `current_staff_actor_name` is a self-declared current human name used for audit/display context only; it never grants role, programme scope, admin level, or posting scope. Browser-visible `Authorization: Bearer <Supabase access token>` and `Authorization: Bearer <MATA resident token>` transport remains the temporary 5B-D2/5B-F-B implementation. TODO 5B-H: replace browser-visible bearer transport with backend-managed `HttpOnly`, `Secure`, `SameSite` cookies/BFF flow plus CSRF protection.
 
 When `warning_candidate_limit_reached = true`, the backend has capped the warning candidate scan. `affected_warning_count_is_partial = true` means `affected_warning_count` is the capped count, not an exact total. `affected_warning_details_are_partial = true` means `affected_warning_issue_ids` and `affected_warning_summaries` are intentionally bounded for response size.
 
@@ -1602,6 +1609,7 @@ Return current identity from validated JWT.
 
 - Resident: returns `residents` row identity fields only (`id`, `role`, `name`, `programme_code`, `mcr`). It does not return `posting_code` or current posting.
 - Resident current posting is resolved by resident endpoints/services from `resident_postings` at request time.
+- Non-NHG Resident: returns `external_residents` row identity fields only (`id`, `role`, `name`, `mcr`, `home_cluster`). It does not return `current_nhg_posting_code`, `posting_code`, posting schedule, staff actor metadata, `admin_level`, `programme_code`, or `programme_scope`.
 - Admin/Secretary: returns `users` row fields + scope, including `admin_level` for admin accounts and saved staff actor metadata:
   - `current_staff_actor_name`
   - `staff_actor_name_required` (`true` when the staff account has no saved non-blank actor name)
@@ -1690,55 +1698,35 @@ Self-register a Non-NHG/cross-cluster resident.
 ```json
 {
   "name": "Resident Name",
-  "mcr": "M12345A",
+  "mcr": "E12345A",
   "home_cluster": "NUH",
-  "posting_schedule": [
-    {
-      "start_date": "2026-01-08",
-      "end_date": "2026-02-07",
-      "programme_code": "GERI",
-      "institution": "TTSH",
-      "posting_code": "TTSHGerMed"
-    }
-  ]
+  "current_nhg_posting_code": "TTSHGerMed"
 }
 ```
 - **Validation:**
   1. `home_cluster` must be `NUH` or `SingHealth`.
   2. `mcr` must not exist in native `residents`.
   3. `mcr` must not exist in `external_residents`.
-  4. `posting_schedule` must contain at least one row.
-  5. Each row requires `start_date <= end_date`.
-  6. Rows for the same Non-NHG Resident must not overlap. Gaps are allowed.
-  7. `posting_code` must exist in `posting_codes`.
-  8. `institution` must be one of `TTSH`, `WH`, or `KTPH`.
-  9. Selected programme/institution must be consistent with the resolved `posting_code` or controlled mapping.
-  10. Posting codes must not be generated from strings; resolve against `posting_codes`. If multiple codes match selected values, require explicit user selection. If no code matches, return a clear unavailable/invalid selection response.
-- **Writes:** `external_residents` plus date-bounded `external_resident_postings`. Do not create `users`, native `residents`, or native `resident_postings` rows.
+  4. `current_nhg_posting_code` must exist in `posting_codes`.
+- **Writes:** `external_residents` plus the current/backward-compatible `external_resident_postings` row. Do not create `users`, native `residents`, or native `resident_postings` rows.
 - **Response convenience:** May return `current_nhg_posting_code` as today's derived/current posting for display/backward compatibility.
 - **Duplicate/conflict:** `409` when MCR already exists.
+- **Deferred:** Forecast `posting_schedule[]` registration rows, institution/programme selectors, overlap validation, and no-gap/date-specific forecast UI remain planned later work. They are not part of 5B-F-B.
 
 ### PUT `/external-residents/me/posting`
 
-Update the Non-NHG Resident's upcoming NHG posting schedule. Route name remains for compatibility.
+Update the Non-NHG Resident's current NHG posting pointer. Route name remains for compatibility.
 
 - **Auth:** Non-NHG Resident only (`external_resident` role)
 - **Body:**
 ```json
 {
-  "posting_schedule": [
-    {
-      "start_date": "2026-03-01",
-      "end_date": "2026-03-31",
-      "programme_code": "DR",
-      "institution": "KTPH",
-      "posting_code": "KTPHDiagRd"
-    }
-  ]
+  "current_nhg_posting_code": "KTPHDiagRd"
 }
 ```
-- **Validation:** same schedule validation as registration.
-- **Behaviour:** updates `external_resident_postings` for the authenticated Non-NHG Resident. `external_residents.current_nhg_posting_code` may be refreshed as today's derived/current posting for cache/backward compatibility. No native `resident_postings` rows are created.
+- **Validation:** `current_nhg_posting_code` must exist in `posting_codes`.
+- **Behaviour:** updates the authenticated Non-NHG Resident's current/cache pointer and current `external_resident_postings` row. No native `resident_postings` rows are created.
+- **Deferred:** Forecast `posting_schedule[]` replacement for this route remains later work.
 
 ### GET `/resident/events` for Non-NHG Residents
 

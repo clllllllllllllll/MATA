@@ -15,6 +15,19 @@ class MataResidentTokenError(Exception):
     """Raised when a MATA resident session token cannot be trusted."""
 
 
+MATA_RESIDENT_SESSION_ROLES = {"resident", "external_resident"}
+EXTERNAL_FORBIDDEN_CLAIMS = {
+    "current_nhg_posting_code",
+    "current_posting",
+    "posting_code",
+    "posting_schedule",
+    "programme_code",
+    "programme_scope",
+    "admin_level",
+    "current_staff_actor_name",
+}
+
+
 def extract_bearer_token(authorization: str | None) -> str:
     if not authorization:
         raise MataResidentTokenError("Missing Authorization header")
@@ -66,6 +79,45 @@ def sign_mata_resident_token(
     )
 
 
+def sign_mata_external_resident_token(
+    external_resident: Mapping[str, Any],
+    *,
+    settings: Settings,
+) -> str:
+    external_resident_id = str(external_resident.get("id") or "")
+    mcr = str(external_resident.get("mcr") or "").strip().upper()
+    home_cluster = _normalise_home_cluster(external_resident.get("home_cluster"))
+    if not external_resident_id or not mcr or home_cluster is None:
+        raise MataResidentTokenError("External resident token claims are incomplete")
+
+    now = datetime.now(UTC)
+    expires_at = now + timedelta(minutes=max(1, settings.mata_resident_session_ttl_minutes))
+    return jwt.encode(
+        {
+            "iss": settings.mata_resident_session_issuer,
+            "aud": settings.mata_resident_session_audience,
+            "sub": external_resident_id,
+            "role": "external_resident",
+            "app_role": "external_resident",
+            "mcr": mcr,
+            "home_cluster": home_cluster,
+            "iat": now,
+            "exp": expires_at,
+        },
+        _resident_secret(settings),
+        algorithm="HS256",
+    )
+
+
+def _normalise_home_cluster(raw_value: object) -> str | None:
+    value = str(raw_value or "").strip()
+    if value.upper() == "NUH":
+        return "NUH"
+    if value.lower() == "singhealth":
+        return "SingHealth"
+    return None
+
+
 def verify_mata_resident_token(
     token: str,
     *,
@@ -85,7 +137,9 @@ def verify_mata_resident_token(
 
     if not isinstance(claims, dict):
         raise MataResidentTokenError("Invalid MATA resident claims")
-    if claims.get("role") != "resident" or claims.get("app_role") != "resident":
+    role = claims.get("role")
+    app_role = claims.get("app_role")
+    if role != app_role or role not in MATA_RESIDENT_SESSION_ROLES:
         raise MataResidentTokenError("Invalid MATA resident role")
     if not isinstance(claims.get("sub"), str):
         raise MataResidentTokenError("Invalid MATA resident subject")
@@ -95,11 +149,17 @@ def verify_mata_resident_token(
         raise MataResidentTokenError("Invalid MATA resident subject") from exc
     if not isinstance(claims.get("mcr"), str) or not claims["mcr"].strip():
         raise MataResidentTokenError("Invalid MATA resident MCR")
-    if (
-        not isinstance(claims.get("programme_code"), str)
-        or not claims["programme_code"].strip()
-    ):
-        raise MataResidentTokenError("Invalid MATA resident programme")
+    if role == "resident":
+        if (
+            not isinstance(claims.get("programme_code"), str)
+            or not claims["programme_code"].strip()
+        ):
+            raise MataResidentTokenError("Invalid MATA resident programme")
+    if role == "external_resident":
+        if _normalise_home_cluster(claims.get("home_cluster")) is None:
+            raise MataResidentTokenError("Invalid MATA external resident home cluster")
+        if any(claim in claims for claim in EXTERNAL_FORBIDDEN_CLAIMS):
+            raise MataResidentTokenError("Invalid MATA external resident claims")
     return claims
 
 
@@ -130,5 +190,5 @@ def is_mata_resident_token(token: str, *, settings: Settings) -> bool:
     return (
         claims.get("iss") == settings.mata_resident_session_issuer
         and has_audience
-        and claims.get("app_role") == "resident"
+        and claims.get("app_role") in MATA_RESIDENT_SESSION_ROLES
     )

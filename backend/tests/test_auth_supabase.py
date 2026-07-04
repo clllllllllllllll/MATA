@@ -31,9 +31,11 @@ class _FakeScalarSession:
         self,
         user: SimpleNamespace | None,
         resident: SimpleNamespace | None = None,
+        external_resident: SimpleNamespace | None = None,
     ) -> None:
         self.user = user
         self.resident = resident
+        self.external_resident = external_resident
 
     async def __aenter__(self) -> "_FakeScalarSession":
         return self
@@ -42,6 +44,8 @@ class _FakeScalarSession:
         return None
 
     async def scalar(self, statement) -> SimpleNamespace | None:  # noqa: ANN001
+        if "FROM external_residents" in str(statement):
+            return self.external_resident
         if "FROM residents" in str(statement):
             return self.resident
         return self.user
@@ -103,6 +107,30 @@ def _resident_token(
     )
 
 
+def _external_resident_token(
+    fake_db: FakeResidentSession,
+    *,
+    secret: str = RESIDENT_SECRET,
+    expires_delta: timedelta = timedelta(minutes=15),
+) -> str:
+    now = datetime.now(UTC)
+    return jwt.encode(
+        {
+            "iss": "mata-api",
+            "aud": "mata-resident-session",
+            "sub": fake_db.external_resident_id,
+            "role": "external_resident",
+            "app_role": "external_resident",
+            "mcr": "E12345A",
+            "home_cluster": "NUH",
+            "iat": now,
+            "exp": now + expires_delta,
+        },
+        secret,
+        algorithm="HS256",
+    )
+
+
 def _settings() -> Settings:
     return Settings(
         auth_mode="supabase",
@@ -140,6 +168,20 @@ def _resident(fake_db: FakeResidentSession, *, status: str = "active") -> Simple
     )
 
 
+def _external_resident(
+    fake_db: FakeResidentSession,
+    *,
+    status: str = "active",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=UUID(fake_db.external_resident_id),
+        name="External Resident One",
+        mcr="E12345A",
+        home_cluster="NUH",
+        status=status,
+    )
+
+
 def _auth_me_client(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -147,6 +189,7 @@ def _auth_me_client(
     middleware_user: SimpleNamespace | None,
     fake_db: FakeResidentSession,
     middleware_resident: SimpleNamespace | None = None,
+    middleware_external_resident: SimpleNamespace | None = None,
 ) -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
@@ -158,7 +201,11 @@ def _auth_me_client(
     monkeypatch.setattr(SupabaseJwtVerifier, "_fetch_jwks", _fetch_jwks)
     monkeypatch.setattr(
         "app.middleware.auth_stub.AsyncSessionLocal",
-        lambda: _FakeScalarSession(middleware_user, middleware_resident),
+        lambda: _FakeScalarSession(
+            middleware_user,
+            middleware_resident,
+            middleware_external_resident,
+        ),
     )
 
     async def _db_override():
@@ -176,6 +223,7 @@ def _auth_admin_client(
     jwks: dict,
     middleware_user: SimpleNamespace | None,
     middleware_resident: SimpleNamespace | None,
+    middleware_external_resident: SimpleNamespace | None = None,
     fake_db: FakeResidentSession,
 ) -> TestClient:
     app = FastAPI()
@@ -188,7 +236,11 @@ def _auth_admin_client(
     monkeypatch.setattr(SupabaseJwtVerifier, "_fetch_jwks", _fetch_jwks)
     monkeypatch.setattr(
         "app.middleware.auth_stub.AsyncSessionLocal",
-        lambda: _FakeScalarSession(middleware_user, middleware_resident),
+        lambda: _FakeScalarSession(
+            middleware_user,
+            middleware_resident,
+            middleware_external_resident,
+        ),
     )
 
     async def _db_override():
@@ -208,6 +260,8 @@ def _identity_client(
     *,
     jwks: dict,
     middleware_user: SimpleNamespace | None,
+    middleware_resident: SimpleNamespace | None = None,
+    middleware_external_resident: SimpleNamespace | None = None,
 ) -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
@@ -219,7 +273,11 @@ def _identity_client(
     monkeypatch.setattr(SupabaseJwtVerifier, "_fetch_jwks", _fetch_jwks)
     monkeypatch.setattr(
         "app.middleware.auth_stub.AsyncSessionLocal",
-        lambda: _FakeScalarSession(middleware_user),
+        lambda: _FakeScalarSession(
+            middleware_user,
+            middleware_resident,
+            middleware_external_resident,
+        ),
     )
 
     app.add_middleware(AuthStubMiddleware, settings=settings)
@@ -232,6 +290,8 @@ def _identity_client(
             "programme_scope": identity.programme_scope,
             "admin_level": identity.admin_level,
             "posting_code": identity.posting_code,
+            "mcr": identity.mcr,
+            "home_cluster": identity.home_cluster,
         }
 
     return TestClient(app)
@@ -559,6 +619,67 @@ def test_mata_resident_token_maps_to_auth_me_without_staff_or_posting_fields(
     assert "current_staff_actor_name" not in payload
 
 
+def test_mata_external_resident_token_populates_external_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    fake_db = FakeResidentSession()
+    client = _identity_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=None,
+        middleware_external_resident=_external_resident(fake_db),
+    )
+
+    response = client.get(
+        "/api/v1/identity",
+        headers={"Authorization": f"Bearer {_external_resident_token(fake_db)}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["role"] == "external_resident"
+    assert payload["subject_id"] == fake_db.external_resident_id
+    assert payload["mcr"] == "E12345A"
+    assert payload["home_cluster"] == "NUH"
+    assert payload["posting_code"] is None
+    assert payload["programme_scope"] is None
+    assert payload["admin_level"] is None
+
+
+def test_mata_external_resident_token_maps_to_auth_me_without_staff_or_posting_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    fake_db = FakeResidentSession()
+    client = _auth_me_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=None,
+        middleware_external_resident=_external_resident(fake_db),
+        fake_db=fake_db,
+    )
+
+    response = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {_external_resident_token(fake_db)}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "id": fake_db.external_resident_id,
+        "role": "external_resident",
+        "name": "External Resident One",
+        "mcr": "E12345A",
+        "home_cluster": "NUH",
+    }
+    assert "current_nhg_posting_code" not in payload
+    assert "posting_code" not in payload
+    assert "staff_actor_name_required" not in payload
+    assert "current_staff_actor_name" not in payload
+
+
 def test_mata_resident_token_cannot_access_admin_staff_accounts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -575,6 +696,29 @@ def test_mata_resident_token_cannot_access_admin_staff_accounts(
     response = client.get(
         "/api/v1/admin/staff-accounts",
         headers={"Authorization": f"Bearer {_resident_token(fake_db)}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "FORBIDDEN"
+
+
+def test_mata_external_resident_token_cannot_access_admin_staff_accounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    fake_db = FakeResidentSession()
+    client = _auth_admin_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=None,
+        middleware_resident=None,
+        middleware_external_resident=_external_resident(fake_db),
+        fake_db=fake_db,
+    )
+
+    response = client.get(
+        "/api/v1/admin/staff-accounts",
+        headers={"Authorization": f"Bearer {_external_resident_token(fake_db)}"},
     )
 
     assert response.status_code == 403
@@ -603,6 +747,28 @@ def test_mata_resident_token_rejects_inactive_resident(
     assert response.json()["error_code"] == "UNAUTHORIZED"
 
 
+def test_mata_external_resident_token_rejects_inactive_external_resident(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    fake_db = FakeResidentSession()
+    client = _auth_me_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=None,
+        middleware_external_resident=_external_resident(fake_db, status="inactive"),
+        fake_db=fake_db,
+    )
+
+    response = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {_external_resident_token(fake_db)}"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error_code"] == "UNAUTHORIZED"
+
+
 def test_expired_mata_resident_token_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -621,6 +787,31 @@ def test_expired_mata_resident_token_is_rejected(
         headers={
             "Authorization": "Bearer "
             + _resident_token(fake_db, expires_delta=timedelta(minutes=-1)),
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error_code"] == "UNAUTHORIZED"
+
+
+def test_expired_mata_external_resident_token_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    fake_db = FakeResidentSession()
+    client = _auth_me_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=None,
+        middleware_external_resident=_external_resident(fake_db),
+        fake_db=fake_db,
+    )
+
+    response = client.get(
+        "/api/v1/auth/me",
+        headers={
+            "Authorization": "Bearer "
+            + _external_resident_token(fake_db, expires_delta=timedelta(minutes=-1)),
         },
     )
 

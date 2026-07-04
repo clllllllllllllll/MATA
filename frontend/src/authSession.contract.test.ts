@@ -171,16 +171,17 @@ assert(
   'AppShell provides saved staff actor-name settings for staff identities',
 )
 assert(
-  authApiSource.includes("if (frontendConfig.authMode === 'supabase' && role === 'external_resident')") &&
-    authApiSource.includes('Non-NHG Resident MCR-only sign-in is not available in Supabase mode yet.') &&
+  !authApiSource.includes('Non-NHG Resident MCR-only sign-in is not available in Supabase mode yet.') &&
+    !authApiSource.includes("if (frontendConfig.authMode === 'supabase' && role === 'external_resident')") &&
     !authApiSource.includes("new ApiRequestError('Resident MCR-only sign-in is not available in Supabase mode yet.')"),
-  'supabase mode enables NHG Resident MCR login while keeping Non-NHG Resident login deferred',
+  'supabase mode enables NHG and registered Non-NHG Resident MCR login through the backend',
 )
 assert(
   httpSource.includes('readStoredAuthSession') &&
-    httpSource.includes("storedSession.identity.role === 'resident'") &&
+    httpSource.includes('isMataResidentSessionRole') &&
+    httpSource.includes("role === 'resident' || role === 'external_resident'") &&
     httpSource.includes('request.headers.Authorization = `Bearer ${storedSession.accessToken}`'),
-  'shared HTTP client attaches stored resident MATA bearer before protected resident API calls',
+  'shared HTTP client attaches stored MATA bearer before protected NHG and Non-NHG resident API calls',
 )
 assert(
   httpSource.includes('getCurrentSupabaseAccessToken') &&
@@ -216,8 +217,9 @@ assert(loginPageSource.includes('loginStaff'), 'staff login is separate from MCR
 assert(
   !loginPageSource.includes('residentSupabaseUnsupported') &&
     !loginPageSource.includes('MCR-only resident sign-in is available in local/demo mode. Supabase staff sessions are enabled here.') &&
-    loginPageSource.includes('NHG Resident MCR-only sign-in opens only your own resident routes.'),
-  'login page enables NHG Resident MCR login in supabase mode',
+    !loginPageSource.includes('Non-NHG Resident sign-in remains deferred') &&
+    loginPageSource.includes('NHG and registered Non-NHG Residents use MCR-only sign-in'),
+  'login page enables NHG and registered Non-NHG Resident MCR login in supabase mode',
 )
 assert(!loginPageSource.includes('auth-login-grid'), 'login page does not use the three-equal-card layout')
 assert(!loginPageSource.includes('auth-login-panel'), 'login page does not render Staff/NHG/Non-NHG as equal cards')
@@ -238,6 +240,7 @@ assert(
 assert(
   loginPageSource.includes("'resident', 'external_resident'") &&
     loginPageSource.includes("'external_resident', 'resident'") &&
+    !loginPageSource.includes("frontendConfig.authMode === 'supabase'\n      ? ['resident']") &&
     loginPageSource.includes('loginResident(normalisedMcr, role)'),
   'single resident MCR form supports NHG and registered Non-NHG resident login without a visible mode toggle',
 )
@@ -246,6 +249,11 @@ assert(registrationPageSource.includes('registration-confirmation'), 'registrati
 assert(registrationPageSource.includes('registerNonNhgResident'), 'registration page submits through auth API helper')
 assert(registrationPageSource.includes('Continue to login'), 'confirmation continues to login when no session is returned')
 assert(!registrationPageSource.includes('auth-draft'), 'Non-NHG registration and confirmation pages do not show DRAFT stamps')
+assert(
+  !loginPageSource.includes('auth-register-cta is-disabled') &&
+    !loginPageSource.includes('Registration and MCR-only Supabase sessions remain deferred.'),
+  'Non-NHG registration CTA remains available in supabase mode',
+)
 assert(
   !registrationPageSource.includes('listPostingCodes'),
   'public Non-NHG registration page does not call admin posting-code APIs before login',

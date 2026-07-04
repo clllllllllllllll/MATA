@@ -167,7 +167,7 @@ const AppRoutes = () => {
         element={shellElement((
           <StubPage
             title="Non-NHG Resident Portal"
-            subtitle="Optional visual stub. Non-NHG Resident implementation is deferred."
+            subtitle="Optional visual stub. Non-NHG Resident submission workflows remain deferred."
             variant="non_nhg"
           />
         ))}

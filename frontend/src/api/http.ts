@@ -32,6 +32,9 @@ export const httpClient = axios.create({
   timeout: 60000,
 })
 
+const isMataResidentSessionRole = (role: string) =>
+  role === 'resident' || role === 'external_resident'
+
 httpClient.interceptors.request.use(async (request) => {
   if (frontendConfig.authMode !== 'supabase') {
     return request
@@ -51,7 +54,7 @@ httpClient.interceptors.request.use(async (request) => {
   const storedSession = readStoredAuthSession()
   if (
     storedSession?.mode === 'supabase' &&
-    storedSession.identity.role === 'resident' &&
+    isMataResidentSessionRole(storedSession.identity.role) &&
     storedSession.accessToken
   ) {
     request.headers.Authorization = `Bearer ${storedSession.accessToken}`

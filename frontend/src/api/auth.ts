@@ -174,6 +174,9 @@ export const roleToBackendRole = (role: AppRole): BackendLoginRole => {
   return role
 }
 
+const isMataResidentSessionRole = (role: AppRole): role is 'resident' | 'external_resident' =>
+  role === 'resident' || role === 'external_resident'
+
 export const toStubIdentityHeaders = (identity: AuthIdentity | null): Record<string, string> => {
   if (!identity || frontendConfig.authMode === 'supabase') {
     return {}
@@ -229,9 +232,6 @@ export const login = async (payload: LoginPayload): Promise<StoredAuthSession> =
 }
 
 export const loginResident = (mcr: string, role: 'resident' | 'external_resident' = 'resident') => {
-  if (frontendConfig.authMode === 'supabase' && role === 'external_resident') {
-    throw new ApiRequestError('Non-NHG Resident MCR-only sign-in is not available in Supabase mode yet.')
-  }
   return login({ role, mcr })
 }
 
@@ -285,14 +285,14 @@ export const hydrateMataResidentSession = async (): Promise<StoredAuthSession | 
   if (
     !storedSession ||
     storedSession.mode !== 'supabase' ||
-    storedSession.identity.role !== 'resident' ||
+    !isMataResidentSessionRole(storedSession.identity.role) ||
     !storedSession.accessToken
   ) {
     return null
   }
 
   const identity = await meFromBearerToken(storedSession.accessToken)
-  if (identity.role !== 'resident') {
+  if (!isMataResidentSessionRole(identity.role)) {
     throw new ApiRequestError('Stored MATA resident session resolved to a non-resident identity.')
   }
   return {
@@ -305,7 +305,7 @@ export const hydrateMataResidentSession = async (): Promise<StoredAuthSession | 
 export const me = async (session: StoredAuthSession): Promise<AuthIdentity> => {
   try {
     if (frontendConfig.authMode === 'supabase') {
-      if (session.identity.role === 'resident') {
+      if (isMataResidentSessionRole(session.identity.role)) {
         return await meFromBearerToken(session.accessToken)
       }
 
