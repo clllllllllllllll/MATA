@@ -8,6 +8,7 @@ import {
 } from '../../api/residentSubmissions'
 import { PageHero } from '../../components/PageHero'
 import { IconRefresh, IconX } from '../../components/icons'
+import { useAuth } from '../../context/useAuth'
 
 const formatDate = (value?: string) => {
   if (!value) {
@@ -78,6 +79,8 @@ const normaliseError = (error: unknown) => {
 }
 
 export const ResidentAttendancePage = () => {
+  const { identity } = useAuth()
+  const isExternalResident = identity?.role === 'external_resident'
   const [rows, setRows] = useState<ResidentAttendanceHistoryRow[]>([])
   const [filters, setFilters] = useState<ResidentAttendanceFilters>({ limit: 100, offset: 0 })
   const [loading, setLoading] = useState(true)
@@ -147,7 +150,11 @@ export const ResidentAttendancePage = () => {
     <div className="page resident-page resident-attendance-page">
       <PageHero
         title="Past Submissions"
-        subtitle="NHG Resident - Your submitted teachings"
+        subtitle={
+          isExternalResident
+            ? 'Non-NHG Resident - Attendance stored for forwarding only, outside NHG compliance'
+            : 'NHG Resident - Your submitted teachings'
+        }
         actions={
           <button type="button" className="button button-secondary" onClick={() => void loadRows()}>
             <IconRefresh size={14} />
@@ -240,12 +247,12 @@ export const ResidentAttendancePage = () => {
                     <th>Posting</th>
                     <th>Source</th>
                     <th>Status</th>
-                    <th>Action</th>
+                    {!isExternalResident ? <th>Action</th> : null}
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((row) => {
-                    const canDelete = row.status.toLowerCase() === 'submitted'
+                    const canDelete = !isExternalResident && row.status.toLowerCase() === 'submitted'
                     return (
                       <tr key={row.attendanceId} className={row.status.toLowerCase() === 'removed' ? 'resident-row-removed' : ''}>
                         <td className="resident-teaching-name">{row.teachingName}</td>
@@ -260,18 +267,20 @@ export const ResidentAttendancePage = () => {
                             {formatAttendanceStatus(row.status)}
                           </span>
                         </td>
-                        <td>
-                          {canDelete ? (
-                            <button
-                              type="button"
-                              className="button button-danger resident-delete-button"
-                              onClick={() => void handleDeleteAttendance(row)}
-                            >
-                              <IconX size={14} />
-                              Delete submission
-                            </button>
-                          ) : null}
-                        </td>
+                        {!isExternalResident ? (
+                          <td>
+                            {canDelete ? (
+                              <button
+                                type="button"
+                                className="button button-danger resident-delete-button"
+                                onClick={() => void handleDeleteAttendance(row)}
+                              >
+                                <IconX size={14} />
+                                Delete submission
+                              </button>
+                            ) : null}
+                          </td>
+                        ) : null}
                       </tr>
                     )
                   })}
@@ -283,7 +292,7 @@ export const ResidentAttendancePage = () => {
         {!loading && rows.length > 0 ? (
           <div className="resident-attendance-card-list responsive-card-list">
             {rows.map((row) => {
-              const canDelete = row.status.toLowerCase() === 'submitted'
+              const canDelete = !isExternalResident && row.status.toLowerCase() === 'submitted'
               return (
                 <div
                   className={`resident-history-row resident-attendance-card mobile-record-card ${

@@ -421,7 +421,7 @@ assert(
     isLoading: false,
     hasExplicitSession: true,
     role: 'external_resident',
-  })) === '/external',
+  })) === '/external/submissions',
   'Non-NHG resident /admin navigation redirects before admin content renders',
 )
 assert(
@@ -526,7 +526,7 @@ assert(
     isLoading: false,
     hasExplicitSession: true,
     role: 'external_resident',
-  })) === '/external',
+  })) === '/external/submissions',
   'single route decision redirects Non-NHG Resident /resident/submissions to Non-NHG default',
 )
 assert(
@@ -578,6 +578,7 @@ const implementedProtectedRoutesByRole = {
     '/admin/secretary-events',
     '/admin/staff-accounts',
     '/admin/submissions',
+    '/admin/external-attendance',
   ],
   programme_pc: [
     '/pc',
@@ -585,6 +586,7 @@ const implementedProtectedRoutesByRole = {
     '/pc/upload-ttf',
     '/pc/warnings',
     '/pc/config',
+    '/pc/external-attendance',
   ],
   secretary: [
     '/secretary',
@@ -597,6 +599,8 @@ const implementedProtectedRoutesByRole = {
   ],
   external_resident: [
     '/external',
+    '/external/submissions',
+    '/external/attendance',
   ],
 } as const
 
@@ -605,7 +609,7 @@ const expectedDefaultPathByRole = {
   programme_pc: '/pc/teaching-events',
   secretary: '/secretary/events',
   resident: '/resident/submissions',
-  external_resident: '/external',
+  external_resident: '/external/submissions',
 } as const
 
 const matrixRoles = Object.keys(implementedProtectedRoutesByRole) as Array<keyof typeof implementedProtectedRoutesByRole>
@@ -627,6 +631,8 @@ const protectedNamespaceSamples = [
   '/resident/submissions',
   '/resident/anything',
   '/external',
+  '/external/submissions',
+  '/external/attendance',
   '/external/anything',
 ] as const
 
@@ -699,7 +705,7 @@ const namespaceExpectations = [
   },
   {
     role: 'external_resident',
-    allowed: ['/external'],
+    allowed: ['/external', '/external/submissions', '/external/attendance'],
     denied: ['/admin', '/admin/upload', '/pc/upload-ttf', '/secretary/events', '/resident', '/resident/submissions'],
   },
 ] as const

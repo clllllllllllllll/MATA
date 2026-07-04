@@ -16,6 +16,7 @@ import {
 import { PageHero } from '../../components/PageHero'
 import { IconCalendar, IconRefresh, IconSend, IconX } from '../../components/icons'
 import { frontendConfig } from '../../config/frontendConfig'
+import { useAuth } from '../../context/useAuth'
 
 const START_TIME_OPTIONS = Array.from({ length: 24 * 4 }, (_, index) => {
   const totalMinutes = index * 15
@@ -145,6 +146,8 @@ const normaliseResidentApiError = (error: ApiRequestError): string => {
 }
 
 export const ResidentSubmissionPage = () => {
+  const { identity } = useAuth()
+  const isExternalResident = identity?.role === 'external_resident'
   const [filters, setFilters] = useState<ResidentEventFilters>({})
   const [eventsResponse, setEventsResponse] = useState<ResidentEventsResponse>({
     events: [],
@@ -289,6 +292,7 @@ export const ResidentSubmissionPage = () => {
   const selectedCount = selectedEventIds.size
   const availableEvents = eventsResponse.events
   const filterOptions = eventsResponse.filterOptions
+  const attendanceHistoryPath = isExternalResident ? '/external/attendance' : '/resident/attendance'
   const displayedDateFrom = filters.dateFrom ?? filterOptions.dateFrom ?? ''
   const displayedDateTo = filters.dateTo ?? filterOptions.dateTo ?? ''
   const selectedAdhocOption = adhocOptions.options.find((option) => option.teachingName === adhocTeachingName)
@@ -413,7 +417,11 @@ export const ResidentSubmissionPage = () => {
     <div className="page resident-page">
       <PageHero
         title="Submission Portal"
-        subtitle={`${frontendConfig.demoResidentProgramme} - MCR ${frontendConfig.demoResidentMcr}`}
+        subtitle={
+          isExternalResident
+            ? 'Non-NHG Resident - submissions are stored for home-cluster forwarding only'
+            : `${frontendConfig.demoResidentProgramme} - MCR ${frontendConfig.demoResidentMcr}`
+        }
         actions={
           <div className="resident-hero-actions">
             <span className="scope-chip">
@@ -728,7 +736,7 @@ export const ResidentSubmissionPage = () => {
         <article className="card resident-history-card">
           <div className="section-header resident-history-card-header">
             <h2>Recent Submissions</h2>
-            <Link className="button button-secondary" to="/resident/attendance">
+            <Link className="button button-secondary" to={attendanceHistoryPath}>
               View all past submissions
             </Link>
           </div>

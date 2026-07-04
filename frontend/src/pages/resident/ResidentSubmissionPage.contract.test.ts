@@ -79,7 +79,10 @@ assert(apiSource.includes('teaching_name'), 'scheduled events API sends teaching
 assert(apiSource.includes('posting_code'), 'scheduled events API sends posting_code filter')
 
 assert(pageSource.includes('View all past submissions'), 'recent widget links to all past submissions')
-assert(pageSource.includes("to=\"/resident/attendance\""), 'recent widget link targets /resident/attendance')
+assert(
+  pageSource.includes("'/resident/attendance'") && pageSource.includes("'/external/attendance'"),
+  'recent widget link targets the correct past submissions route for NHG and Non-NHG residents',
+)
 assert(pageSource.includes('resident-history-card-header'), 'recent submissions header has dedicated spacing class')
 assert(appSource.includes("path=\"/resident/attendance\""), '/resident/attendance route is registered')
 assert(navigationSource.includes("label: 'Past Submissions'"), 'Past Submissions appears in resident navigation')

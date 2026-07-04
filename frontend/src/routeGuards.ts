@@ -33,7 +33,7 @@ const defaultPathByRole: Record<AppRole, string> = {
   programme_pc: '/pc/teaching-events',
   secretary: '/secretary/events',
   resident: '/resident/submissions',
-  external_resident: '/external',
+  external_resident: '/external/submissions',
 }
 
 export const defaultPathForGuardRole = (role: AppRole): string => defaultPathByRole[role]
@@ -62,17 +62,21 @@ export const routeAccessRules = [
   { path: '/admin/secretary-events', kind: 'protected', allowedRoles: ['master_admin'] },
   { path: '/admin/staff-accounts', kind: 'protected', allowedRoles: ['master_admin'] },
   { path: '/admin/submissions', kind: 'protected', allowedRoles: ['master_admin'] },
+  { path: '/admin/external-attendance', kind: 'protected', allowedRoles: ['master_admin'] },
   { path: '/pc', kind: 'protected', allowedRoles: ['programme_pc'] },
   { path: '/pc/teaching-events', kind: 'protected', allowedRoles: ['programme_pc'] },
   { path: '/pc/upload-ttf', kind: 'protected', allowedRoles: ['programme_pc'] },
   { path: '/pc/warnings', kind: 'protected', allowedRoles: ['programme_pc'] },
   { path: '/pc/config', kind: 'protected', allowedRoles: ['programme_pc'] },
+  { path: '/pc/external-attendance', kind: 'protected', allowedRoles: ['programme_pc'] },
   { path: '/secretary', kind: 'protected', allowedRoles: ['secretary'] },
   { path: '/secretary/events', kind: 'protected', allowedRoles: ['secretary'] },
   { path: '/resident', kind: 'protected', allowedRoles: ['resident'] },
   { path: '/resident/submissions', kind: 'protected', allowedRoles: ['resident'] },
   { path: '/resident/attendance', kind: 'protected', allowedRoles: ['resident'] },
   { path: '/external', kind: 'protected', allowedRoles: ['external_resident'] },
+  { path: '/external/submissions', kind: 'protected', allowedRoles: ['external_resident'] },
+  { path: '/external/attendance', kind: 'protected', allowedRoles: ['external_resident'] },
 ] as const satisfies readonly RouteAccessRule[]
 
 const normalisePathname = (pathname: string): string => {

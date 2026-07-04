@@ -1141,6 +1141,111 @@ class AdminResidentSubmissionDetailResponse(AdminResidentSubmissionListItem):
     notes: AdminResidentSubmissionNotes
 
 
+class AdminExternalAttendanceListItem(BaseModel):
+    id: UUID
+    external_resident_id: UUID
+    resident_name: str
+    mcr: str
+    home_cluster: str
+    current_nhg_posting_code: str | None = None
+    attendance_posting_code: str | None = None
+    posting_code: str
+    posting_display_name: str | None = None
+    teaching_event_id: UUID
+    teaching_name: str
+    details_of_session: str | None = None
+    event_date: date
+    start_time: time
+    end_time: time | None = None
+    duration_hours: Decimal | None = None
+    source: str
+    is_adhoc: bool
+    status: str
+    submitted_at: datetime
+    session_type_id: UUID | None = None
+    session_type_name: str | None = None
+    cme_points_awarded: bool
+    smc_event_code: str | None = None
+    created_by_role: str | None = None
+
+
+class AdminExternalAttendanceListSummary(BaseModel):
+    total_records: int
+    submitted_count: int
+    flagged_count: int
+    removed_count: int
+    adhoc_count: int
+
+
+class AdminExternalAttendanceListResponse(BaseModel):
+    items: list[AdminExternalAttendanceListItem]
+    total: int
+    limit: int
+    offset: int
+    summary: AdminExternalAttendanceListSummary
+
+
+class AdminExternalAttendanceRecordMetadata(BaseModel):
+    id: UUID
+    external_resident_id: UUID
+    teaching_event_id: UUID
+    status: str
+    attendance_posting_code: str | None = None
+    submitted_at: datetime
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class AdminExternalAttendanceResidentMetadata(BaseModel):
+    id: UUID
+    name: str
+    mcr: str
+    home_cluster: str
+    current_nhg_posting_code: str | None = None
+    status: str | None = None
+    identity_label: str
+
+
+class AdminExternalAttendanceEventMetadata(BaseModel):
+    id: UUID
+    teaching_name: str
+    details_of_session: str | None = None
+    event_date: date
+    start_time: time
+    end_time: time | None = None
+    duration_hours: Decimal | None = None
+    session_type_id: UUID | None = None
+    session_type_name: str | None = None
+    cme_points_awarded: bool
+    smc_event_code: str | None = None
+    is_adhoc: bool
+    source: str
+    created_by_role: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class AdminExternalAttendancePostingMetadata(BaseModel):
+    code: str
+    display_name: str | None = None
+    institution: str | None = None
+    department: str | None = None
+
+
+class AdminExternalAttendanceNotes(BaseModel):
+    identity_scope: str
+    compliance_included: bool
+    export_only: bool
+
+
+class AdminExternalAttendanceDetailResponse(AdminExternalAttendanceListItem):
+    attendance_record: AdminExternalAttendanceRecordMetadata
+    external_resident: AdminExternalAttendanceResidentMetadata
+    event: AdminExternalAttendanceEventMetadata
+    posting: AdminExternalAttendancePostingMetadata
+    notes: AdminExternalAttendanceNotes
+
+
 class ReportingPeriodCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
