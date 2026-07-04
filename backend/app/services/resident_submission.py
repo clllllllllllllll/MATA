@@ -18,6 +18,7 @@ WEEKEND_WARNING = (
     "{count} session(s) submitted on a weekend will not count toward your PTT compliance "
     "as they do not meet the weekend exception rules for your programme."
 )
+ADHOC_COMPLIANCE_TEACHING_NAME = "Department/Programme Teaching [1h]"
 
 
 def _event_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -450,6 +451,55 @@ async def _teaching_options_for_context(
     return rows
 
 
+async def _teaching_options_for_posting(
+    db: AsyncSession,
+    *,
+    posting_code: str,
+) -> list[dict[str, Any]]:
+    global_result = await db.execute(
+        text(
+            """
+            SELECT
+                name AS teaching_name,
+                name AS keyword,
+                NULL AS session_type_id,
+                name AS session_type,
+                name AS session_type_name,
+                duration_hours,
+                false AS is_tracked,
+                true AS is_global
+            FROM global_session_types
+            WHERE is_active = true
+            ORDER BY name ASC
+            """
+        )
+    )
+    catalogue_result = await db.execute(
+        text(
+            """
+            SELECT DISTINCT ON (tnc.keyword)
+                tnc.keyword AS teaching_name,
+                tnc.keyword AS keyword,
+                tnc.session_type_id,
+                st.name AS session_type,
+                st.name AS session_type_name,
+                tnc.duration_hours,
+                tnc.is_tracked,
+                false AS is_global
+            FROM teaching_name_catalogue tnc
+            JOIN session_types st ON st.id = tnc.session_type_id
+            WHERE tnc.posting_code = :posting_code
+            ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
+            """
+        ),
+        {"posting_code": posting_code},
+    )
+    rows = [dict(row) for row in global_result.mappings().all()]
+    rows.extend(dict(row) for row in catalogue_result.mappings().all())
+    rows.sort(key=lambda row: str(row["teaching_name"]).casefold())
+    return rows
+
+
 def _adhoc_options_response(
     *,
     teaching_date: date,
@@ -553,6 +603,58 @@ async def list_adhoc_teaching_options(
         posting_code=posting_code,
         posting_label=posting_label,
         r_year=context["r_year"],
+        options=options,
+    )
+
+
+async def list_external_adhoc_teaching_options(
+    db: AsyncSession,
+    *,
+    external_resident_id: UUID,
+    teaching_date: date,
+) -> dict[str, Any]:
+    await _external_resident(db, external_resident_id)
+    await _ensure_not_public_holiday(db, teaching_date)
+    posting_context = await _external_posting_context_for_date(
+        db,
+        external_resident_id=external_resident_id,
+        on_date=teaching_date,
+    )
+    if posting_context is None:
+        return _adhoc_options_response(
+            teaching_date=teaching_date,
+            available=False,
+            reason="posting_unavailable",
+            message="No Non-NHG posting schedule row is available for the selected teaching date.",
+        )
+
+    posting_code = posting_context["posting_code"]
+    posting_label = await _posting_display_label(db, posting_code)
+    raw_options = await _teaching_options_for_posting(db, posting_code=posting_code)
+    options = [
+        {
+            "teaching_name": row["teaching_name"],
+            "keyword": row["keyword"],
+            "session_type": row.get("session_type"),
+            "session_type_name": row.get("session_type_name") or row.get("session_type"),
+            "session_type_id": row.get("session_type_id"),
+            "duration_hours": row.get("duration_hours"),
+            "posting_code": posting_code,
+            "posting_label": posting_label,
+            "reporting_period_id": None,
+            "r_year": None,
+            "is_tracked": bool(row.get("is_tracked")),
+            "is_global": bool(row.get("is_global")),
+        }
+        for row in raw_options
+    ]
+    return _adhoc_options_response(
+        teaching_date=teaching_date,
+        available=bool(options),
+        reason=None if options else "no_catalogue_options",
+        message=None if options else "No teaching options are available for this posting and date.",
+        posting_code=posting_code,
+        posting_label=posting_label,
         options=options,
     )
 
@@ -1700,6 +1802,12 @@ async def submit_adhoc_teaching(
             posting_code=posting_code,
             teaching_name=teaching_name,
         )
+        if resolved is None:
+            raise ApiError(
+                status_code=422,
+                detail="teaching_name must be selected from catalogue-backed ad-hoc teaching options",
+                error_code=ErrorCode.VALIDATION_FAILED.value,
+            )
         duration_hours = resolved["duration_hours"] if resolved is not None else None
         end_time = (
             _compute_end_time(event_date, start_time, duration_hours)
@@ -1823,7 +1931,7 @@ async def submit_adhoc_teaching(
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
     context = contexts[0]
-    resolved = await _resolve_teaching_name(
+    selected = await _resolve_teaching_name(
         db,
         posting_code=context["posting_code"],
         programme_code=resident["programme_code"],
@@ -1831,10 +1939,27 @@ async def submit_adhoc_teaching(
         reporting_period_id=period["id"],
         teaching_name=teaching_name,
     )
-    if resolved is None:
+    if selected is None:
         raise ApiError(
             status_code=422,
-            detail="teaching_name is not available for this resident posting",
+            detail="teaching_name must be selected from catalogue-backed ad-hoc teaching options",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
+    resolved = await _resolve_teaching_name(
+        db,
+        posting_code=context["posting_code"],
+        programme_code=resident["programme_code"],
+        r_year=context["r_year"],
+        reporting_period_id=period["id"],
+        teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
+    )
+    if resolved is None or resolved.get("is_global") or not bool(resolved.get("is_tracked")):
+        raise ApiError(
+            status_code=422,
+            detail=(
+                f"{ADHOC_COMPLIANCE_TEACHING_NAME} is unavailable for countable "
+                "ad-hoc teaching on this resident posting"
+            ),
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
 
@@ -1888,7 +2013,7 @@ async def submit_adhoc_teaching(
         ),
         {
             "posting_code": context["posting_code"],
-            "teaching_name": teaching_name,
+            "teaching_name": ADHOC_COMPLIANCE_TEACHING_NAME,
             "details_of_session": details_of_session,
             "event_date": event_date,
             "start_time": start_time,

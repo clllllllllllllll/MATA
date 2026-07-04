@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -57,8 +58,71 @@ def test_external_adhoc_creates_event_and_external_attendance() -> None:
     assert len(fake_db.external_attendance) == before_attendance + 1
 
 
+def test_external_adhoc_options_use_date_matched_posting_schedule() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.catalogue.append(
+        fake_db._catalogue(  # noqa: SLF001
+            "KTPH Case Teaching",
+            "KTPHGerMed",
+            fake_db.session_type_id,
+            Decimal("1.0"),
+        )
+    )
+    fake_db.external_residents[0]["current_nhg_posting_code"] = "TTSHCardio"
+    fake_db.external_resident_postings = [
+        {
+            "id": str(uuid4()),
+            "external_resident_id": fake_db.external_resident_id,
+            "posting_code": "KTPHGerMed",
+            "start_date": date(2026, 5, 18),
+            "end_date": date(2026, 5, 18),
+            "is_current": True,
+        }
+    ]
+    client = _client(fake_db)
+
+    response = client.get(
+        "/resident/adhoc-teaching-options",
+        headers=_external_headers(fake_db),
+        params={"date": "2026-05-18"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is True
+    assert payload["posting_code"] == "KTPHGerMed"
+    assert payload["r_year"] is None
+    option_names = {row["teaching_name"] for row in payload["options"]}
+    assert "KTPH Case Teaching" in option_names
+
+
+def test_external_adhoc_options_no_schedule_row_returns_unavailable() -> None:
+    fake_db = FakeResidentSession()
+    client = _client(fake_db)
+
+    response = client.get(
+        "/resident/adhoc-teaching-options",
+        headers=_external_headers(fake_db),
+        params={"date": "2026-04-15"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is False
+    assert payload["reason"] == "posting_unavailable"
+    assert payload["options"] == []
+
+
 def test_external_adhoc_uses_date_matched_posting_schedule() -> None:
     fake_db = FakeResidentSession()
+    fake_db.catalogue.append(
+        fake_db._catalogue(  # noqa: SLF001
+            "Journal Club",
+            "KTPHGerMed",
+            fake_db.session_type_id,
+            Decimal("1.0"),
+        )
+    )
     fake_db.external_residents[0]["current_nhg_posting_code"] = "TTSHCardio"
     fake_db.external_resident_postings = [
         {
@@ -86,8 +150,10 @@ def test_external_adhoc_uses_date_matched_posting_schedule() -> None:
     assert response.json()["event"]["posting_code"] == "KTPHGerMed"
 
 
-def test_external_adhoc_does_not_require_teaching_name_catalogue() -> None:
+def test_external_adhoc_requires_teaching_name_catalogue() -> None:
     fake_db = FakeResidentSession()
+    before_events = len(fake_db.events)
+    before_attendance = len(fake_db.external_attendance)
     fake_db.external_residents[0]["current_nhg_posting_code"] = "KTPHGerMed"
     fake_db.external_resident_postings = [
         {
@@ -111,9 +177,10 @@ def test_external_adhoc_does_not_require_teaching_name_catalogue() -> None:
         },
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["event"]["teaching_name"] == "Completely New Topic"
+    assert response.status_code == 422
+    assert "catalogue-backed" in response.json()["detail"].lower()
+    assert len(fake_db.events) == before_events
+    assert len(fake_db.external_attendance) == before_attendance
 
 
 def test_external_adhoc_public_holiday_returns_422_and_writes_nothing() -> None:

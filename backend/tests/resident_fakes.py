@@ -60,6 +60,7 @@ class FakeResidentSession:
         self.secretary_id = str(uuid4())
         self.session_type_id = str(uuid4())
         self.second_session_type_id = str(uuid4())
+        self.adhoc_session_type_id = str(uuid4())
         self.existing_attendance_id = str(uuid4())
         self.other_attendance_id = str(uuid4())
         self.event_id = str(uuid4())
@@ -209,6 +210,13 @@ class FakeResidentSession:
         self.catalogue = [
             self._catalogue("Journal Club", "TTSHCardio", self.session_type_id, Decimal("1.0")),
             self._catalogue("Skills Teaching", "TTSHNeuro", self.second_session_type_id, Decimal("2.0")),
+            self._catalogue(
+                "Department/Programme Teaching [1h]",
+                "TTSHCardio",
+                self.adhoc_session_type_id,
+                Decimal("1.0"),
+                session_type="Department/Programme Teaching [1h]",
+            ),
         ]
         self.global_session_types = [
             {"name": "Department Meeting [1h]", "duration_hours": Decimal("1.0"), "is_active": True}
@@ -260,6 +268,8 @@ class FakeResidentSession:
         posting_code: str,
         session_type_id: str,
         duration_hours: Decimal,
+        *,
+        session_type: str | None = None,
     ) -> dict:
         return {
             "keyword": keyword,
@@ -268,7 +278,7 @@ class FakeResidentSession:
             "r_year": "R2",
             "reporting_period_id": self.period_id,
             "session_type_id": session_type_id,
-            "session_type": f"{keyword} [{duration_hours}h]",
+            "session_type": session_type or f"{keyword} [{duration_hours}h]",
             "duration_hours": duration_hours,
             "is_tracked": True,
         }

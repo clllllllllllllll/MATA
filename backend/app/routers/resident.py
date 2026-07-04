@@ -171,10 +171,10 @@ async def adhoc_teaching_options(
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
     if resident_context.role == "external_resident":
-        raise ApiError(
-            status_code=403,
-            detail="Forbidden - native resident role required",
-            error_code=ErrorCode.FORBIDDEN.value,
+        return await resident_submission.list_external_adhoc_teaching_options(
+            db,
+            external_resident_id=resident_context.subject_id,
+            teaching_date=teaching_date,
         )
     return await resident_submission.list_adhoc_teaching_options(
         db,

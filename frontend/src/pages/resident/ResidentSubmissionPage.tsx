@@ -643,6 +643,7 @@ export const ResidentSubmissionPage = () => {
           </div>
           <div className="resident-empty resident-adhoc-help">
             <p>Please ensure your current submission is not an already scheduled event. There are no CME Pts tagged to adhoc teachings.</p>
+            <p>NHG ad-hoc submissions count as Department/Programme Teaching [1h] under your assigned posting when the target is available. Non-NHG submissions are stored for forwarding and do not enter NHG compliance.</p>
           </div>
           <div className="resident-form-grid">
             <label>
@@ -699,6 +700,7 @@ export const ResidentSubmissionPage = () => {
               <span>{selectedAdhocOption.sessionTypeName ?? selectedAdhocOption.sessionType}</span>
               <span>{formatDuration(selectedAdhocOption.durationHours)}</span>
               <span>{selectedAdhocOption.isGlobal ? 'Global Type' : selectedAdhocOption.isTracked ? 'Tracked' : 'Untracked'}</span>
+              <span>Counts as Department/Programme Teaching [1h] for NHG</span>
             </div>
           ) : null}
           <div className="resident-adhoc-actions">
