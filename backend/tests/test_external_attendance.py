@@ -51,6 +51,29 @@ def test_external_events_visible_when_supports_secretary_events_true() -> None:
     assert all("created_by_role" not in row for row in events)
 
 
+def test_external_events_use_date_matched_posting_schedule() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.external_residents[0]["current_nhg_posting_code"] = "TTSHCardio"
+    fake_db.external_resident_postings = [
+        {
+            "id": str(uuid4()),
+            "external_resident_id": fake_db.external_resident_id,
+            "posting_code": "TTSHNeuro",
+            "start_date": fake_db.today - date.resolution,
+            "end_date": fake_db.today + date.resolution,
+            "is_current": True,
+        }
+    ]
+    client = _client(fake_db)
+
+    response = client.get("/resident/events", headers=_external_headers(fake_db))
+
+    assert response.status_code == 200
+    ids = {row["id"] for row in response.json()["events"]}
+    assert fake_db.other_posting_event_id in ids
+    assert fake_db.event_id not in ids
+
+
 def test_external_events_accept_verified_external_identity_without_raw_headers() -> None:
     fake_db = FakeResidentSession()
     client = _client(
@@ -71,6 +94,16 @@ def test_external_events_accept_verified_external_identity_without_raw_headers()
 def test_external_events_hidden_when_supports_secretary_events_false() -> None:
     fake_db = FakeResidentSession()
     fake_db.external_residents[0]["current_nhg_posting_code"] = "KTPHGerMed"
+    fake_db.external_resident_postings = [
+        {
+            "id": str(uuid4()),
+            "external_resident_id": fake_db.external_resident_id,
+            "posting_code": "KTPHGerMed",
+            "start_date": date(2026, 5, 1),
+            "end_date": None,
+            "is_current": True,
+        }
+    ]
     fake_db.events.append(
         fake_db._event(  # noqa: SLF001
             str(uuid4()),
@@ -102,6 +135,16 @@ def test_external_events_exclude_already_submitted_records() -> None:
 def test_external_event_visibility_does_not_require_teaching_name_catalogue() -> None:
     fake_db = FakeResidentSession()
     fake_db.external_residents[0]["current_nhg_posting_code"] = "KTPHGerMed"
+    fake_db.external_resident_postings = [
+        {
+            "id": str(uuid4()),
+            "external_resident_id": fake_db.external_resident_id,
+            "posting_code": "KTPHGerMed",
+            "start_date": date(2026, 5, 1),
+            "end_date": None,
+            "is_current": True,
+        }
+    ]
     for row in fake_db.posting_codes:
         if row["code"] == "KTPHGerMed":
             row["supports_secretary_events"] = True
@@ -138,6 +181,34 @@ def test_external_attendance_creates_external_record_only() -> None:
     assert len(fake_db.attendance) == before_native
 
 
+def test_external_attendance_uses_event_date_matched_posting_schedule() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.external_residents[0]["current_nhg_posting_code"] = "TTSHCardio"
+    event = next(row for row in fake_db.events if row["id"] == fake_db.other_posting_event_id)
+    fake_db.external_resident_postings = [
+        {
+            "id": str(uuid4()),
+            "external_resident_id": fake_db.external_resident_id,
+            "posting_code": "TTSHNeuro",
+            "start_date": event["event_date"],
+            "end_date": event["event_date"],
+            "is_current": True,
+        }
+    ]
+    before_external = len(fake_db.external_attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_external_headers(fake_db),
+        json={"event_ids": [fake_db.other_posting_event_id]},
+    )
+
+    assert response.status_code == 200
+    assert len(fake_db.external_attendance) == before_external + 1
+    assert fake_db.external_attendance[-1]["posting_code"] == "TTSHNeuro"
+
+
 def test_external_duplicate_attendance_is_rejected() -> None:
     fake_db = FakeResidentSession()
     client = _client(fake_db)
@@ -167,6 +238,16 @@ def test_external_cannot_submit_attendance_for_event_outside_current_posting() -
 def test_external_cannot_submit_secretary_event_when_support_disabled() -> None:
     fake_db = FakeResidentSession()
     fake_db.external_residents[0]["current_nhg_posting_code"] = "KTPHGerMed"
+    fake_db.external_resident_postings = [
+        {
+            "id": str(uuid4()),
+            "external_resident_id": fake_db.external_resident_id,
+            "posting_code": "KTPHGerMed",
+            "start_date": date(2026, 5, 1),
+            "end_date": None,
+            "is_current": True,
+        }
+    ]
     event_id = str(uuid4())
     event = fake_db._event(event_id, "KTPHGerMed", "Secretary Teaching", date(2026, 5, 18))  # noqa: SLF001
     event["created_by_role"] = "secretary"

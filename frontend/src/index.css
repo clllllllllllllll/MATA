@@ -7405,6 +7405,61 @@ button:disabled,
   overflow-wrap: anywhere;
 }
 
+.auth-schedule-list {
+  display: grid;
+  gap: 10px;
+}
+
+.auth-schedule-row {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.auth-schedule-row-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.auth-schedule-row-heading strong {
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.auth-schedule-row-heading button,
+.auth-schedule-add {
+  min-height: 32px;
+  padding: 7px 11px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  color: var(--purple);
+  font-size: 12px;
+  font-weight: 800;
+  background: #fff;
+}
+
+.auth-schedule-row-heading button:hover,
+.auth-schedule-add:hover {
+  border-color: var(--purple);
+  background: var(--purple-tint-2);
+}
+
+.auth-schedule-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.auth-schedule-posting {
+  grid-column: 1 / -1;
+}
+
 .auth-primary-action,
 .auth-confirmation-action {
   display: inline-flex;
@@ -7838,6 +7893,7 @@ button:disabled,
   }
 
   .auth-choice-grid,
+  .auth-schedule-grid,
   .auth-tab-list {
     grid-template-columns: minmax(0, 1fr);
   }

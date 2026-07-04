@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -56,9 +57,48 @@ def test_external_adhoc_creates_event_and_external_attendance() -> None:
     assert len(fake_db.external_attendance) == before_attendance + 1
 
 
+def test_external_adhoc_uses_date_matched_posting_schedule() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.external_residents[0]["current_nhg_posting_code"] = "TTSHCardio"
+    fake_db.external_resident_postings = [
+        {
+            "id": str(uuid4()),
+            "external_resident_id": fake_db.external_resident_id,
+            "posting_code": "KTPHGerMed",
+            "start_date": date(2026, 5, 18),
+            "end_date": date(2026, 5, 18),
+            "is_current": True,
+        }
+    ]
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_external_headers(fake_db),
+        json={
+            "date": "2026-05-18",
+            "start_time": "10:00",
+            "teaching_name": "Journal Club",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["event"]["posting_code"] == "KTPHGerMed"
+
+
 def test_external_adhoc_does_not_require_teaching_name_catalogue() -> None:
     fake_db = FakeResidentSession()
     fake_db.external_residents[0]["current_nhg_posting_code"] = "KTPHGerMed"
+    fake_db.external_resident_postings = [
+        {
+            "id": str(uuid4()),
+            "external_resident_id": fake_db.external_resident_id,
+            "posting_code": "KTPHGerMed",
+            "start_date": date(2026, 5, 1),
+            "end_date": None,
+            "is_current": True,
+        }
+    ]
     client = _client(fake_db)
 
     response = client.post(

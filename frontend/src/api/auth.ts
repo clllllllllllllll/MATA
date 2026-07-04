@@ -37,7 +37,13 @@ export interface NonNhgRegistrationPayload {
   name: string
   mcr: string
   homeCluster: 'NUH' | 'SingHealth'
-  currentNhgPostingCode: string
+  postingSchedule: Array<{
+    startDate: string
+    endDate: string
+    programmeCode: string
+    institution: 'TTSH' | 'WH' | 'KTPH'
+    postingCode: string
+  }>
 }
 
 export interface NonNhgRegistrationResult {
@@ -49,7 +55,7 @@ export interface NonNhgRegistrationResult {
     currentNhgPostingCode: string
     status?: string
   }
-  postingHistory?: Record<string, unknown>
+  postingSchedule?: Array<Record<string, unknown>>
   session?: StoredAuthSession
 }
 
@@ -357,7 +363,13 @@ export const registerNonNhgResident = async (
       name: payload.name,
       mcr: payload.mcr,
       home_cluster: payload.homeCluster,
-      current_nhg_posting_code: payload.currentNhgPostingCode,
+      posting_schedule: payload.postingSchedule.map((row) => ({
+        start_date: row.startDate,
+        end_date: row.endDate,
+        programme_code: row.programmeCode,
+        institution: row.institution,
+        posting_code: row.postingCode,
+      })),
     })
     const resident = (response.data.resident ?? {}) as Record<string, unknown>
     const loginLikeResponse = response.data.access_token && response.data.user
@@ -372,7 +384,7 @@ export const registerNonNhgResident = async (
         currentNhgPostingCode: requiredString(resident.current_nhg_posting_code),
         status: optionalString(resident.status),
       },
-      postingHistory: response.data.posting_history as Record<string, unknown> | undefined,
+      postingSchedule: response.data.posting_schedule as Array<Record<string, unknown>> | undefined,
       session: loginLikeResponse,
     }
   } catch (error) {

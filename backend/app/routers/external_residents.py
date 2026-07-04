@@ -11,6 +11,7 @@ from app.dependencies.auth import require_external_resident
 from app.errors import ApiError, ErrorCode
 from app.middleware.auth_stub import AuthIdentity
 from app.schemas.external_resident import (
+    ExternalResidentPostingScheduleUpdateRequest,
     ExternalResidentPostingUpdateRequest,
     ExternalResidentRegisterRequest,
 )
@@ -57,6 +58,7 @@ async def register_external_resident(
         mcr=request.mcr,
         home_cluster=request.home_cluster,
         current_nhg_posting_code=request.current_nhg_posting_code,
+        posting_schedule=request.posting_schedule,
     )
 
 
@@ -72,4 +74,19 @@ async def update_my_posting(
         db,
         external_resident_id=external_context.external_resident_id,
         current_nhg_posting_code=request.current_nhg_posting_code,
+    )
+
+
+@router.put("/me/posting-schedule")
+async def replace_my_posting_schedule(
+    request: ExternalResidentPostingScheduleUpdateRequest,
+    external_context: ExternalResidentContext = Depends(
+        require_external_resident_context
+    ),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict:
+    return await external_residents.replace_my_posting_schedule(
+        db,
+        external_resident_id=external_context.external_resident_id,
+        posting_schedule=request.posting_schedule,
     )

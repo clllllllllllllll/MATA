@@ -250,6 +250,18 @@ assert(registrationPageSource.includes('registerNonNhgResident'), 'registration 
 assert(registrationPageSource.includes('Continue to login'), 'confirmation continues to login when no session is returned')
 assert(!registrationPageSource.includes('auth-draft'), 'Non-NHG registration and confirmation pages do not show DRAFT stamps')
 assert(
+  registrationPageSource.includes('Upcoming NHG Postings') &&
+    registrationPageSource.includes('postingSchedule') &&
+    registrationPageSource.includes('addScheduleRow') &&
+    !registrationPageSource.includes('Current NHG posting'),
+  'Non-NHG registration uses repeatable upcoming posting schedule rows instead of a single current posting field',
+)
+assert(
+  authApiSource.includes('posting_schedule: payload.postingSchedule.map') &&
+    !authApiSource.includes('current_nhg_posting_code: payload.currentNhgPostingCode'),
+  'Non-NHG registration API sends posting_schedule rows instead of the legacy single current posting field',
+)
+assert(
   !loginPageSource.includes('auth-register-cta is-disabled') &&
     !loginPageSource.includes('Registration and MCR-only Supabase sessions remain deferred.'),
   'Non-NHG registration CTA remains available in supabase mode',

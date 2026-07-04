@@ -788,10 +788,58 @@ def _matching_context_for_event(
             row
             for row in contexts
             if row["posting_code"] == posting_code
-            and row["start_date"] <= event_date <= row["end_date"]
+            and row["start_date"] <= event_date
+            and (row.get("end_date") is None or event_date <= row["end_date"])
         ),
         None,
     )
+
+
+async def _external_posting_contexts(
+    db: AsyncSession,
+    *,
+    external_resident_id: UUID,
+    start_date: date,
+    end_date: date,
+) -> list[dict[str, Any]]:
+    result = await db.execute(
+        text(
+            """
+            SELECT
+                external_resident_id,
+                posting_code,
+                start_date,
+                end_date,
+                is_current
+            FROM external_resident_postings
+            WHERE external_resident_id = :external_resident_id
+              AND start_date <= :end_date
+              AND (end_date IS NULL OR end_date >= :start_date)
+            ORDER BY start_date ASC, posting_code ASC
+            """
+        ),
+        {
+            "external_resident_id": str(external_resident_id),
+            "start_date": start_date,
+            "end_date": end_date,
+        },
+    )
+    return [dict(row) for row in result.mappings().all()]
+
+
+async def _external_posting_context_for_date(
+    db: AsyncSession,
+    *,
+    external_resident_id: UUID,
+    on_date: date,
+) -> dict[str, Any] | None:
+    contexts = await _external_posting_contexts(
+        db,
+        external_resident_id=external_resident_id,
+        start_date=on_date,
+        end_date=on_date,
+    )
+    return contexts[0] if contexts else None
 
 
 def _normalise_optional_filter(value: str | None) -> str | None:
@@ -815,7 +863,8 @@ def _effective_event_range(
 
 
 def _context_overlaps_range(context: dict[str, Any], *, start: date, end: date) -> bool:
-    return context["start_date"] <= end and context["end_date"] >= start
+    context_end = context.get("end_date") or date.max
+    return context["start_date"] <= end and context_end >= start
 
 
 def _posting_filter_options(
@@ -857,19 +906,61 @@ async def list_available_events(
                 detail="Unauthorized",
                 error_code=ErrorCode.UNAUTHORIZED.value,
             )
-        resident = await _external_resident(db, external_resident_id)
-        posting_code = resident["current_nhg_posting_code"]
-        supports_secretary_events = await _posting_supports_secretary_events(db, posting_code)
-        if not supports_secretary_events:
-            return {"events": [], "reason": "secretary_events_not_supported"}
-        events = await _events_for_external_posting(
+        await _external_resident(db, external_resident_id)
+        range_start = date_from or date.min
+        range_end = date_to or today
+        contexts = await _external_posting_contexts(
             db,
             external_resident_id=external_resident_id,
-            posting_code=posting_code,
-            today=today,
-            date_from=date_from,
-            date_to=date_to,
-            teaching_name=teaching_name,
+            start_date=range_start,
+            end_date=range_end,
+        )
+        if not contexts:
+            return {"events": [], "reason": "posting_schedule_unavailable"}
+
+        eligible_posting_codes = {
+            row["posting_code"]
+            for row in contexts
+            if row.get("posting_code")
+            and _context_overlaps_range(row, start=range_start, end=range_end)
+        }
+        if posting_code is not None:
+            eligible_posting_codes = (
+                {posting_code} if posting_code in eligible_posting_codes else set()
+            )
+        posting_capabilities = await _posting_capabilities(
+            db,
+            posting_codes=eligible_posting_codes,
+        )
+        supported_posting_codes = {
+            code for code, supports in posting_capabilities.items() if supports
+        }
+        if not supported_posting_codes:
+            return {"events": [], "reason": "secretary_events_not_supported"}
+        raw_events: list[dict[str, Any]] = []
+        for external_posting_code in sorted(supported_posting_codes):
+            raw_events.extend(
+                await _events_for_external_posting(
+                    db,
+                    external_resident_id=external_resident_id,
+                    posting_code=external_posting_code,
+                    today=today,
+                    date_from=date_from,
+                    date_to=date_to,
+                    teaching_name=teaching_name,
+                )
+            )
+        deduped_events: dict[str, dict[str, Any]] = {}
+        for event in raw_events:
+            if _matching_context_for_event(
+                contexts,
+                posting_code=event["posting_code"],
+                event_date=event["event_date"],
+            ):
+                deduped_events[str(event["id"])] = event
+        events = sorted(
+            deduped_events.values(),
+            key=lambda row: (row["event_date"], row["start_time"], row["teaching_name"]),
         )
         return {"events": [_event_row(row) for row in events]}
 
@@ -1301,8 +1392,7 @@ async def submit_attendance(
                 detail="Unauthorized",
                 error_code=ErrorCode.UNAUTHORIZED.value,
             )
-        resident = await _external_resident(db, external_resident_id)
-        posting_code = resident["current_nhg_posting_code"]
+        await _external_resident(db, external_resident_id)
         submitted = 0
         submitted_events: list[dict[str, Any]] = []
         weekend_warning_count = 0
@@ -1315,7 +1405,18 @@ async def submit_attendance(
                     detail="Future teaching events cannot be submitted",
                     error_code=ErrorCode.VALIDATION_FAILED.value,
                 )
-            if event["posting_code"] != posting_code:
+            posting_context = await _external_posting_context_for_date(
+                db,
+                external_resident_id=external_resident_id,
+                on_date=event["event_date"],
+            )
+            if posting_context is None:
+                raise ApiError(
+                    status_code=422,
+                    detail="No external resident posting is available for the teaching date",
+                    error_code=ErrorCode.VALIDATION_FAILED.value,
+                )
+            if event["posting_code"] != posting_context["posting_code"]:
                 raise ApiError(
                     status_code=422,
                     detail="Teaching event is outside the resident posting scope",
@@ -1329,7 +1430,7 @@ async def submit_attendance(
                 )
             supports_secretary_events = await _posting_supports_secretary_events(
                 db,
-                posting_code,
+                posting_context["posting_code"],
             )
             if event.get("created_by_role") == "secretary" and not supports_secretary_events:
                 raise ApiError(
@@ -1528,9 +1629,20 @@ async def submit_adhoc_teaching(
                 detail="Unauthorized",
                 error_code=ErrorCode.UNAUTHORIZED.value,
             )
-        resident = await _external_resident(db, external_resident_id)
+        await _external_resident(db, external_resident_id)
         await _ensure_not_public_holiday(db, event_date)
-        posting_code = resident["current_nhg_posting_code"]
+        posting_context = await _external_posting_context_for_date(
+            db,
+            external_resident_id=external_resident_id,
+            on_date=event_date,
+        )
+        if posting_context is None:
+            raise ApiError(
+                status_code=422,
+                detail="No external resident posting is available for the submitted teaching date",
+                error_code=ErrorCode.VALIDATION_FAILED.value,
+            )
+        posting_code = posting_context["posting_code"]
         resolved = await _resolve_teaching_name_for_posting(
             db,
             posting_code=posting_code,
