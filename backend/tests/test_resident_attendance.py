@@ -127,6 +127,195 @@ def test_attendance_outside_posting_window_is_rejected() -> None:
     assert response.status_code == 422
 
 
+def test_attendance_accepts_visible_native_department_event_when_posted_elsewhere() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.programmes[0]["native_teaching_posting_code"] = "TTSHCardio"
+    fake_db.resident_postings[0]["posting_code"] = "TTSHNeuro"
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [fake_db.event_id]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["submitted"] == 1
+    assert any(
+        row["resident_id"] == fake_db.resident_id
+        and row["teaching_event_id"] == fake_db.event_id
+        and row["posting_code"] == "TTSHCardio"
+        for row in fake_db.attendance
+    )
+
+
+def test_attendance_accepts_visible_native_pc_event_when_posted_elsewhere() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.programmes[0]["native_teaching_posting_code"] = "TTSHCardio"
+    fake_db.resident_postings[0]["posting_code"] = "TTSHNeuro"
+    pc_event = fake_db._event(  # noqa: SLF001
+        str(uuid4()),
+        "TTSHCardio",
+        "Journal Club",
+        fake_db.today - timedelta(days=1),
+    )
+    pc_event["created_by_role"] = "programme_pc"
+    pc_event["created_for_programme_code"] = "GRM"
+    fake_db.events.append(pc_event)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [pc_event["id"]]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["submitted"] == 1
+    assert any(
+        row["resident_id"] == fake_db.resident_id
+        and row["teaching_event_id"] == pc_event["id"]
+        for row in fake_db.attendance
+    )
+
+
+def test_attendance_accepts_rehab_native_department_event_when_posted_to_grm() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.residents[0]["programme_code"] = "REHAB"
+    fake_db.programmes.append(
+        {
+            "code": "REHAB",
+            "name": "Rehabilitation Medicine",
+            "native_teaching_posting_code": "TTSHNeuro",
+        }
+    )
+    fake_db.catalogue.append(
+        {
+            "keyword": "Skills Teaching",
+            "posting_code": "TTSHNeuro",
+            "programme_code": "REHAB",
+            "r_year": "R2",
+            "reporting_period_id": fake_db.period_id,
+            "session_type_id": fake_db.second_session_type_id,
+            "session_type": "Skills Teaching [2.0h]",
+            "duration_hours": 2.0,
+            "is_tracked": True,
+        }
+    )
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [fake_db.other_posting_event_id]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["submitted"] == 1
+    assert any(
+        row["resident_id"] == fake_db.resident_id
+        and row["teaching_event_id"] == fake_db.other_posting_event_id
+        and row["posting_code"] == "TTSHNeuro"
+        for row in fake_db.attendance
+    )
+
+
+def test_attendance_rejects_unrelated_pc_event_even_when_posting_is_native() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.programmes[0]["native_teaching_posting_code"] = "TTSHCardio"
+    fake_db.resident_postings[0]["posting_code"] = "TTSHNeuro"
+    pc_event = fake_db._event(  # noqa: SLF001
+        str(uuid4()),
+        "TTSHCardio",
+        "Journal Club",
+        fake_db.today - timedelta(days=1),
+    )
+    pc_event["created_by_role"] = "programme_pc"
+    pc_event["created_for_programme_code"] = "REHAB"
+    fake_db.events.append(pc_event)
+    before_count = len(fake_db.attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [pc_event["id"]]},
+    )
+
+    assert response.status_code == 422
+    assert "programme scope" in response.json()["detail"].lower()
+    assert len(fake_db.attendance) == before_count
+
+
+def test_attendance_rejects_arbitrary_ttsh_secretary_event() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.programmes[0]["native_teaching_posting_code"] = "TTSHCardio"
+    fake_db.posting_codes.append(
+        {
+            "code": "TTSHOrtho",
+            "display_name": "TTSH Orthopaedic Surgery",
+            "institution": "TTSH",
+            "supports_secretary_events": True,
+        }
+    )
+    fake_db.catalogue.append(
+        {
+            "keyword": "Ortho Teaching",
+            "posting_code": "TTSHOrtho",
+            "programme_code": "GRM",
+            "r_year": "R2",
+            "reporting_period_id": fake_db.period_id,
+            "session_type_id": fake_db.session_type_id,
+            "session_type": "Ortho Teaching [1.0h]",
+            "duration_hours": 1.0,
+            "is_tracked": True,
+        }
+    )
+    arbitrary_event = fake_db._event(  # noqa: SLF001
+        str(uuid4()),
+        "TTSHOrtho",
+        "Ortho Teaching",
+        fake_db.today - timedelta(days=1),
+    )
+    fake_db.events.append(arbitrary_event)
+    before_count = len(fake_db.attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [arbitrary_event["id"]]},
+    )
+
+    assert response.status_code == 422
+    assert "posting" in response.json()["detail"].lower()
+    assert len(fake_db.attendance) == before_count
+
+
+def test_attendance_duplicate_native_event_remains_blocked() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.programmes[0]["native_teaching_posting_code"] = "TTSHCardio"
+    fake_db.resident_postings[0]["posting_code"] = "TTSHNeuro"
+    fake_db.attendance.append(
+        {
+            "id": str(uuid4()),
+            "resident_id": fake_db.resident_id,
+            "teaching_event_id": fake_db.event_id,
+            "status": "submitted",
+            "posting_code": "TTSHCardio",
+        }
+    )
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [fake_db.event_id]},
+    )
+
+    assert response.status_code == 409
+
+
 def test_attendance_accepts_valid_secretary_event_even_when_supports_flag_is_false() -> None:
     fake_db = FakeResidentSession()
     fake_db.resident_postings[0]["posting_code"] = "KTPHGerMed"

@@ -480,6 +480,53 @@ class FakeResidentSession:
             ]
             return FakeResult(rows=rows)
 
+        if "pc.code AS posting_code" in sql and "FROM teaching_name_catalogue" in sql:
+            if "programme_code" in payload:
+                catalogue_rows = [
+                    row
+                    for row in self.catalogue
+                    if row["programme_code"] == payload.get("programme_code")
+                    and row["r_year"] in {payload.get("r_year"), "ALL"}
+                    and row["reporting_period_id"] == str(payload.get("reporting_period_id"))
+                ]
+            else:
+                catalogue_rows = list(self.catalogue)
+            rows = []
+            seen: set[tuple[str, str]] = set()
+            for catalogue_row in catalogue_rows:
+                posting = next(
+                    (
+                        row
+                        for row in self.posting_codes
+                        if row["code"] == catalogue_row["posting_code"]
+                    ),
+                    None,
+                )
+                if posting is None:
+                    continue
+                key = (posting["code"], catalogue_row["programme_code"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                programme = next(
+                    (
+                        row
+                        for row in self.programmes
+                        if row["code"] == catalogue_row["programme_code"]
+                    ),
+                    None,
+                )
+                rows.append(
+                    {
+                        "posting_code": posting["code"],
+                        "label": posting.get("display_name") or posting["code"],
+                        "programme_code": catalogue_row["programme_code"],
+                        "programme_name": programme.get("name") if programme else None,
+                    }
+                )
+            rows.sort(key=lambda row: (row["label"], row["posting_code"], row["programme_code"]))
+            return FakeResult(rows=rows)
+
         if "FROM teaching_name_catalogue" in sql:
             if "programme_code" in payload:
                 rows = [

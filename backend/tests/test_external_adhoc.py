@@ -96,6 +96,35 @@ def test_external_adhoc_options_use_date_matched_posting_schedule() -> None:
     assert "KTPH Case Teaching" in option_names
 
 
+def test_external_adhoc_options_filter_by_selected_attended_posting() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.external_residents[0]["current_nhg_posting_code"] = "KTPHGerMed"
+    fake_db.external_resident_postings = [
+        {
+            "id": str(uuid4()),
+            "external_resident_id": fake_db.external_resident_id,
+            "posting_code": "KTPHGerMed",
+            "start_date": date(2026, 5, 18),
+            "end_date": date(2026, 5, 18),
+            "is_current": True,
+        }
+    ]
+    client = _client(fake_db)
+
+    response = client.get(
+        "/resident/adhoc-teaching-options",
+        headers=_external_headers(fake_db),
+        params={"date": "2026-05-18", "attended_posting_code": "TTSHCardio"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["posting_code"] == "KTPHGerMed"
+    assert payload["selected_attended_posting_code"] == "TTSHCardio"
+    option_names = {row["teaching_name"] for row in payload["options"]}
+    assert "Journal Club" in option_names
+
+
 def test_external_adhoc_options_no_schedule_row_returns_unavailable() -> None:
     fake_db = FakeResidentSession()
     client = _client(fake_db)
@@ -111,6 +140,28 @@ def test_external_adhoc_options_no_schedule_row_returns_unavailable() -> None:
     assert payload["available"] is False
     assert payload["reason"] == "posting_unavailable"
     assert payload["options"] == []
+
+
+def test_external_adhoc_missing_schedule_error_uses_non_nhg_label() -> None:
+    fake_db = FakeResidentSession()
+    before_events = len(fake_db.events)
+    before_external_attendance = len(fake_db.external_attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_external_headers(fake_db),
+        json={
+            "date": "2026-04-15",
+            "start_time": "10:00",
+            "teaching_name": "Journal Club",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Non-NHG Resident posting" in response.json()["detail"]
+    assert len(fake_db.events) == before_events
+    assert len(fake_db.external_attendance) == before_external_attendance
 
 
 def test_external_adhoc_uses_date_matched_posting_schedule() -> None:
@@ -148,6 +199,42 @@ def test_external_adhoc_uses_date_matched_posting_schedule() -> None:
 
     assert response.status_code == 200
     assert response.json()["event"]["posting_code"] == "KTPHGerMed"
+
+
+def test_external_adhoc_uses_attended_posting_options_but_writes_external_only() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.external_residents[0]["current_nhg_posting_code"] = "KTPHGerMed"
+    fake_db.external_resident_postings = [
+        {
+            "id": str(uuid4()),
+            "external_resident_id": fake_db.external_resident_id,
+            "posting_code": "KTPHGerMed",
+            "start_date": date(2026, 5, 18),
+            "end_date": date(2026, 5, 18),
+            "is_current": True,
+        }
+    ]
+    before_native_attendance = len(fake_db.attendance)
+    before_external_attendance = len(fake_db.external_attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_external_headers(fake_db),
+        json={
+            "date": "2026-05-18",
+            "start_time": "10:00",
+            "attended_posting_code": "TTSHCardio",
+            "teaching_name": "Journal Club",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["event"]["posting_code"] == "KTPHGerMed"
+    assert payload["event"]["teaching_name"] == "Journal Club"
+    assert len(fake_db.external_attendance) == before_external_attendance + 1
+    assert len(fake_db.attendance) == before_native_attendance
 
 
 def test_external_adhoc_requires_teaching_name_catalogue() -> None:

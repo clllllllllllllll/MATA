@@ -42,19 +42,34 @@ assert(
 )
 assertOrdered(
   adhocSectionSource,
-  ['Teaching date', 'Derived posting', 'Teaching/session', 'Start time', 'Details of session'],
-  'ad-hoc flow is date-first with derived posting before teaching selection',
+  ['Teaching date', 'Derived posting', 'Attended department/programme', 'Teaching/session', 'Start time', 'Details of session'],
+  'ad-hoc flow is date-first with derived posting and attended posting before teaching selection',
 )
 assert(pageSource.includes('loadAdhocOptions'), 'ad-hoc options load after date selection')
 assert(pageSource.includes('readOnly'), 'derived posting display is read-only')
+assert(pageSource.includes('selectedAttendedPostingCode'), 'ad-hoc flow tracks selected attended posting')
+assert(pageSource.includes('attendedPostingOptions'), 'ad-hoc flow renders attended posting options from backend')
 assert(pageSource.includes('adhocOptions.options.map'), 'ad-hoc teaching/session options come from backend options')
 assert(!pageSource.includes('placeholder="e.g. Journal Club"'), 'ad-hoc teaching no longer uses free text teaching input')
 assert(pageSource.includes('detailsOfSession'), 'details_of_session is represented as optional free text state')
 assert(apiSource.includes('/resident/adhoc-teaching-options'), 'API loads canonical ad-hoc options endpoint')
 assert(apiSource.includes('/resident/adhoc-teaching/options'), 'API retains compatibility alias path constant or fallback')
 assert(apiSource.includes('teaching_date'), 'ad-hoc submit payload is date-first')
+assert(apiSource.includes('attended_posting_code'), 'ad-hoc API sends selected attended posting code')
 assert(apiSource.includes('details_of_session'), 'ad-hoc submit payload includes optional details_of_session')
-assert(!apiSource.includes('posting_code: payload'), 'ad-hoc submit API does not send trusted posting_code')
+assert(!apiSource.includes('\n        posting_code: payload'), 'ad-hoc submit API does not send trusted posting_code')
+assert(
+  pageSource.includes("isExternalResident ? 'Non-NHG Resident' : 'NHG Resident'"),
+  'scope chip uses role-specific NHG/Non-NHG labels',
+)
+assert(
+  pageSource.includes('Non-NHG submissions are recorded for forwarding only and are not included in NHG compliance.'),
+  'Non-NHG ad-hoc helper copy is forwarding-only and compliance-excluded',
+)
+assert(
+  !pageSource.includes('<span>Counts as Department/Programme Teaching [1h] for NHG</span>'),
+  'NHG compliance attribution summary is not rendered unconditionally for Non-NHG residents',
+)
 
 assert(!pageSource.includes('resident-filter-title'), 'scheduled filters subheading is removed')
 assert(!pageSource.includes('Scheduled filters</div>'), 'scheduled filters heading text is not rendered')

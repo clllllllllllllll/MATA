@@ -258,6 +258,41 @@ async def _posting_contexts_for_period(
     return [dict(row) for row in result.mappings().all()]
 
 
+async def _resident_visibility_contexts(
+    db: AsyncSession,
+    *,
+    resident_id: UUID,
+    resident: dict[str, Any],
+    reporting_period_id: UUID | str,
+    on_date: date | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    contexts = (
+        await _posting_contexts(
+            db,
+            resident_id=resident_id,
+            reporting_period_id=reporting_period_id,
+            on_date=on_date,
+        )
+        if on_date is not None
+        else await _posting_contexts_for_period(
+            db,
+            resident_id=resident_id,
+            reporting_period_id=reporting_period_id,
+        )
+    )
+    native_posting_code = await _native_teaching_posting_code(
+        db,
+        programme_code=resident["programme_code"],
+    )
+    return contexts, [
+        *contexts,
+        *_native_visibility_contexts(
+            contexts,
+            native_posting_code=native_posting_code,
+        ),
+    ]
+
+
 async def _native_teaching_posting_code(
     db: AsyncSession,
     *,
@@ -500,6 +535,84 @@ async def _teaching_options_for_posting(
     return rows
 
 
+async def _attended_posting_options_for_resident(
+    db: AsyncSession,
+    *,
+    programme_code: str,
+    r_year: str,
+    reporting_period_id: UUID | str,
+) -> list[dict[str, Any]]:
+    result = await db.execute(
+        text(
+            """
+            SELECT DISTINCT
+                pc.code AS posting_code,
+                COALESCE(pc.display_name, pc.code) AS label,
+                tnc.programme_code,
+                p.name AS programme_name
+            FROM teaching_name_catalogue tnc
+            JOIN posting_codes pc ON pc.code = tnc.posting_code
+            LEFT JOIN programmes p ON p.code = tnc.programme_code
+            WHERE tnc.programme_code = :programme_code
+              AND tnc.reporting_period_id = :reporting_period_id
+              AND tnc.r_year IN (:r_year, 'ALL')
+            ORDER BY label ASC, pc.code ASC
+            """
+        ),
+        {
+            "programme_code": programme_code,
+            "reporting_period_id": str(reporting_period_id),
+            "r_year": r_year,
+        },
+    )
+    return [dict(row) for row in result.mappings().all()]
+
+
+async def _attended_posting_options_for_external(
+    db: AsyncSession,
+) -> list[dict[str, Any]]:
+    result = await db.execute(
+        text(
+            """
+            SELECT DISTINCT
+                pc.code AS posting_code,
+                COALESCE(pc.display_name, pc.code) AS label,
+                tnc.programme_code,
+                p.name AS programme_name
+            FROM teaching_name_catalogue tnc
+            JOIN posting_codes pc ON pc.code = tnc.posting_code
+            LEFT JOIN programmes p ON p.code = tnc.programme_code
+            ORDER BY label ASC, pc.code ASC, tnc.programme_code ASC
+            """
+        )
+    )
+    return [dict(row) for row in result.mappings().all()]
+
+
+def _select_attended_posting(
+    options: list[dict[str, Any]],
+    *,
+    requested_posting_code: str | None,
+    default_posting_code: str,
+) -> dict[str, Any] | None:
+    if requested_posting_code:
+        selected = next(
+            (row for row in options if row["posting_code"] == requested_posting_code),
+            None,
+        )
+        if selected is None:
+            raise ApiError(
+                status_code=422,
+                detail="attended_posting_code must be selected from attended posting options",
+                error_code=ErrorCode.VALIDATION_FAILED.value,
+            )
+        return selected
+    return next(
+        (row for row in options if row["posting_code"] == default_posting_code),
+        options[0] if options else None,
+    )
+
+
 def _adhoc_options_response(
     *,
     teaching_date: date,
@@ -510,6 +623,8 @@ def _adhoc_options_response(
     posting_code: str | None = None,
     posting_label: str | None = None,
     r_year: str | None = None,
+    attended_posting_options: list[dict[str, Any]] | None = None,
+    selected_attended_posting: dict[str, Any] | None = None,
     options: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -522,6 +637,17 @@ def _adhoc_options_response(
         "posting_code": posting_code,
         "posting_label": posting_label,
         "r_year": r_year,
+        "attended_posting_options": attended_posting_options or [],
+        "selected_attended_posting_code": (
+            selected_attended_posting.get("posting_code")
+            if selected_attended_posting
+            else None
+        ),
+        "selected_attended_posting_label": (
+            selected_attended_posting.get("label")
+            if selected_attended_posting
+            else None
+        ),
         "options": options or [],
     }
 
@@ -531,6 +657,7 @@ async def list_adhoc_teaching_options(
     *,
     resident_id: UUID,
     teaching_date: date,
+    attended_posting_code: str | None = None,
     today: date | None = None,
 ) -> dict[str, Any]:
     today = today or date.today()
@@ -568,11 +695,34 @@ async def list_adhoc_teaching_options(
         )
 
     context = contexts[0]
-    posting_code = context["posting_code"]
-    posting_label = await _posting_display_label(db, posting_code)
+    assigned_posting_code = context["posting_code"]
+    posting_label = await _posting_display_label(db, assigned_posting_code)
+    attended_posting_options = await _attended_posting_options_for_resident(
+        db,
+        programme_code=resident["programme_code"],
+        r_year=context["r_year"],
+        reporting_period_id=period["id"],
+    )
+    selected_attended_posting = _select_attended_posting(
+        attended_posting_options,
+        requested_posting_code=attended_posting_code,
+        default_posting_code=assigned_posting_code,
+    )
+    if selected_attended_posting is None:
+        return _adhoc_options_response(
+            teaching_date=teaching_date,
+            available=False,
+            reason="attended_posting_unavailable",
+            message="No attended department/programme options are available for this date.",
+            reporting_period_id=period["id"],
+            posting_code=assigned_posting_code,
+            posting_label=posting_label,
+            r_year=context["r_year"],
+            attended_posting_options=attended_posting_options,
+        )
     raw_options = await _teaching_options_for_context(
         db,
-        posting_code=posting_code,
+        posting_code=selected_attended_posting["posting_code"],
         programme_code=resident["programme_code"],
         r_year=context["r_year"],
         reporting_period_id=period["id"],
@@ -585,8 +735,8 @@ async def list_adhoc_teaching_options(
             "session_type_name": row.get("session_type_name") or row.get("session_type"),
             "session_type_id": row.get("session_type_id"),
             "duration_hours": row.get("duration_hours"),
-            "posting_code": posting_code,
-            "posting_label": posting_label,
+            "posting_code": selected_attended_posting["posting_code"],
+            "posting_label": selected_attended_posting["label"],
             "reporting_period_id": str(period["id"]),
             "r_year": context["r_year"],
             "is_tracked": bool(row.get("is_tracked")),
@@ -600,9 +750,11 @@ async def list_adhoc_teaching_options(
         reason=None if options else "no_catalogue_options",
         message=None if options else "No teaching options are available for this posting and date.",
         reporting_period_id=period["id"],
-        posting_code=posting_code,
+        posting_code=assigned_posting_code,
         posting_label=posting_label,
         r_year=context["r_year"],
+        attended_posting_options=attended_posting_options,
+        selected_attended_posting=selected_attended_posting,
         options=options,
     )
 
@@ -612,6 +764,7 @@ async def list_external_adhoc_teaching_options(
     *,
     external_resident_id: UUID,
     teaching_date: date,
+    attended_posting_code: str | None = None,
 ) -> dict[str, Any]:
     await _external_resident(db, external_resident_id)
     await _ensure_not_public_holiday(db, teaching_date)
@@ -630,7 +783,26 @@ async def list_external_adhoc_teaching_options(
 
     posting_code = posting_context["posting_code"]
     posting_label = await _posting_display_label(db, posting_code)
-    raw_options = await _teaching_options_for_posting(db, posting_code=posting_code)
+    attended_posting_options = await _attended_posting_options_for_external(db)
+    selected_attended_posting = _select_attended_posting(
+        attended_posting_options,
+        requested_posting_code=attended_posting_code,
+        default_posting_code=posting_code,
+    )
+    if selected_attended_posting is None:
+        return _adhoc_options_response(
+            teaching_date=teaching_date,
+            available=False,
+            reason="attended_posting_unavailable",
+            message="No attended department/programme options are available for this date.",
+            posting_code=posting_code,
+            posting_label=posting_label,
+            attended_posting_options=attended_posting_options,
+        )
+    raw_options = await _teaching_options_for_posting(
+        db,
+        posting_code=selected_attended_posting["posting_code"],
+    )
     options = [
         {
             "teaching_name": row["teaching_name"],
@@ -639,8 +811,8 @@ async def list_external_adhoc_teaching_options(
             "session_type_name": row.get("session_type_name") or row.get("session_type"),
             "session_type_id": row.get("session_type_id"),
             "duration_hours": row.get("duration_hours"),
-            "posting_code": posting_code,
-            "posting_label": posting_label,
+            "posting_code": selected_attended_posting["posting_code"],
+            "posting_label": selected_attended_posting["label"],
             "reporting_period_id": None,
             "r_year": None,
             "is_tracked": bool(row.get("is_tracked")),
@@ -655,6 +827,8 @@ async def list_external_adhoc_teaching_options(
         message=None if options else "No teaching options are available for this posting and date.",
         posting_code=posting_code,
         posting_label=posting_label,
+        attended_posting_options=attended_posting_options,
+        selected_attended_posting=selected_attended_posting,
         options=options,
     )
 
@@ -892,14 +1066,6 @@ async def _events_for_external_posting(
     return [dict(row) for row in result.mappings().all()]
 
 
-def _matching_context(
-    contexts: list[dict[str, Any]],
-    *,
-    posting_code: str,
-) -> dict[str, Any] | None:
-    return next((row for row in contexts if row["posting_code"] == posting_code), None)
-
-
 def _matching_context_for_event(
     contexts: list[dict[str, Any]],
     *,
@@ -1121,9 +1287,10 @@ async def list_available_events(
             "posting_capabilities": [],
         }
 
-    contexts = await _posting_contexts_for_period(
+    contexts, visibility_contexts = await _resident_visibility_contexts(
         db,
         resident_id=resident_id,
+        resident=resident,
         reporting_period_id=period["id"],
     )
     if not contexts:
@@ -1145,17 +1312,6 @@ async def list_available_events(
         date_from=date_from,
         date_to=date_to,
     )
-    native_posting_code = await _native_teaching_posting_code(
-        db,
-        programme_code=resident["programme_code"],
-    )
-    visibility_contexts = [
-        *contexts,
-        *_native_visibility_contexts(
-            contexts,
-            native_posting_code=native_posting_code,
-        ),
-    ]
 
     eligible_posting_codes = {
         row["posting_code"]
@@ -1567,7 +1723,7 @@ async def submit_attendance(
             if posting_context is None:
                 raise ApiError(
                     status_code=422,
-                    detail="No external resident posting is available for the teaching date",
+                    detail="No Non-NHG Resident posting is available for the teaching date",
                     error_code=ErrorCode.VALIDATION_FAILED.value,
                 )
             if event["posting_code"] != posting_context["posting_code"]:
@@ -1579,7 +1735,7 @@ async def submit_attendance(
             if event.get("created_for_programme_code") is not None or event.get("created_by_role") not in {"secretary", None}:
                 raise ApiError(
                     status_code=422,
-                    detail="Teaching event is outside the external resident scope",
+                    detail="Teaching event is outside the Non-NHG Resident scope",
                     error_code=ErrorCode.VALIDATION_FAILED.value,
                 )
             supports_secretary_events = await _posting_supports_secretary_events(
@@ -1676,13 +1832,18 @@ async def submit_attendance(
                 detail="Teaching event is outside the resident programme scope",
                 error_code=ErrorCode.VALIDATION_FAILED.value,
             )
-        contexts = await _posting_contexts(
+        _, visibility_contexts = await _resident_visibility_contexts(
             db,
             resident_id=resident_id,
+            resident=resident,
             reporting_period_id=period["id"],
             on_date=event["event_date"],
         )
-        context = _matching_context(contexts, posting_code=event["posting_code"])
+        context = _matching_context_for_event(
+            visibility_contexts,
+            posting_code=event["posting_code"],
+            event_date=event["event_date"],
+        )
         if context is None:
             raise ApiError(
                 status_code=422,
@@ -1774,6 +1935,7 @@ async def submit_adhoc_teaching(
     event_date: date,
     start_time: time,
     teaching_name: str,
+    attended_posting_code: str | None = None,
     details_of_session: str | None = None,
 ) -> dict[str, Any]:
     if role == "external_resident":
@@ -1793,13 +1955,25 @@ async def submit_adhoc_teaching(
         if posting_context is None:
             raise ApiError(
                 status_code=422,
-                detail="No external resident posting is available for the submitted teaching date",
+                detail="No Non-NHG Resident posting is available for the submitted teaching date",
                 error_code=ErrorCode.VALIDATION_FAILED.value,
             )
         posting_code = posting_context["posting_code"]
+        attended_posting_options = await _attended_posting_options_for_external(db)
+        selected_attended_posting = _select_attended_posting(
+            attended_posting_options,
+            requested_posting_code=attended_posting_code,
+            default_posting_code=posting_code,
+        )
+        if selected_attended_posting is None:
+            raise ApiError(
+                status_code=422,
+                detail="No attended department/programme options are available for this teaching date",
+                error_code=ErrorCode.VALIDATION_FAILED.value,
+            )
         resolved = await _resolve_teaching_name_for_posting(
             db,
-            posting_code=posting_code,
+            posting_code=selected_attended_posting["posting_code"],
             teaching_name=teaching_name,
         )
         if resolved is None:
@@ -1924,16 +2098,32 @@ async def submit_adhoc_teaching(
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
     if len(contexts) > 1:
-        # TODO: Add request-level posting disambiguation once the API contract defines it.
         raise ApiError(
             status_code=422,
             detail="Posting disambiguation is required for this teaching date",
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
     context = contexts[0]
+    attended_posting_options = await _attended_posting_options_for_resident(
+        db,
+        programme_code=resident["programme_code"],
+        r_year=context["r_year"],
+        reporting_period_id=period["id"],
+    )
+    selected_attended_posting = _select_attended_posting(
+        attended_posting_options,
+        requested_posting_code=attended_posting_code,
+        default_posting_code=context["posting_code"],
+    )
+    if selected_attended_posting is None:
+        raise ApiError(
+            status_code=422,
+            detail="No attended department/programme options are available for this teaching date",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
     selected = await _resolve_teaching_name(
         db,
-        posting_code=context["posting_code"],
+        posting_code=selected_attended_posting["posting_code"],
         programme_code=resident["programme_code"],
         r_year=context["r_year"],
         reporting_period_id=period["id"],
@@ -2272,7 +2462,7 @@ async def dashboard_placeholder(
             "compliance_status": "not_applicable",
             "reason": "external_resident_excluded_from_nhg_compliance",
             "message": (
-                "External resident attendance is stored for future export to the home "
+                "Non-NHG Resident attendance is stored for future export to the home "
                 "cluster PC. NHG compliance and clawback do not apply."
             ),
         }
