@@ -137,6 +137,19 @@ assert(
   'supabase staff login signs in with Supabase then resolves MATA identity through backend /auth/me',
 )
 assert(
+  /const supabaseSession = await signInWithSupabasePassword\(email, password\)[\s\S]*await meFromBearerToken\(supabaseSession\.accessToken\)/.test(authApiSource),
+  'supabase staff login uses the returned Supabase access_token for the immediate backend /auth/me call',
+)
+assert(
+  /if \(frontendConfig\.authMode === 'supabase'\) \{\s*return loginStaffWithSupabase\(email, password\)\s*\}\s*return login\(\{ role: 'staff', email, password \}\)/.test(authApiSource),
+  'supabase staff login bypasses backend /auth/login while stub staff login still uses the neutral backend discriminator',
+)
+assert(
+  authApiSource.includes('STAFF_SUPABASE_BACKEND_AUTH_ERROR') &&
+    loginPageSource.includes('STAFF_SUPABASE_BACKEND_AUTH_ERROR'),
+  'backend /auth/me failure after successful Supabase sign-in is shown separately from invalid-password failure copy',
+)
+assert(
   authApiSource.includes('SupabaseConfigurationError') &&
     loginPageSource.includes('VITE_AUTH_MODE=supabase requires'),
   'missing Supabase public env config surfaces a clear frontend login error',
@@ -205,6 +218,17 @@ assert(
   'supabase logout signs out of Supabase and clears local app identity before redirect',
 )
 assert(
+  authContextSource.includes('authRequestGenerationRef') &&
+    authContextSource.includes('nextAuthRequestGeneration') &&
+    authContextSource.includes('isCurrentAuthRequest') &&
+    authContextSource.includes('!isCurrentAuthRequest(generation)'),
+  'auth context guards hydration state writes so stale /auth/me failures cannot overwrite newer login success',
+)
+assert(
+  /const logout = useCallback\(async \(\) => \{[\s\S]*nextAuthRequestGeneration\(\)[\s\S]*await signOutFromSupabase\(\)[\s\S]*clearAuthSession\(\)[\s\S]*setSession\(null\)/.test(authContextSource),
+  'logout still invalidates in-flight auth requests, clears Supabase, and clears local app session',
+)
+assert(
   !authApiSource.includes('user_metadata') &&
     !authContextSource.includes('user_metadata') &&
     !supabaseClientSource.includes('user_metadata'),
@@ -269,6 +293,12 @@ assert(
 assert(
   !registrationPageSource.includes('listPostingCodes'),
   'public Non-NHG registration page does not call admin posting-code APIs before login',
+)
+assert(
+  navigationSource.includes("id: 'master_admin'") &&
+    navigationSource.includes("defaultPath: '/admin'") &&
+    loginPageSource.includes('navigate(getRedirectPath(session.identity.role, fromPath), { replace: true })'),
+  'successful staff /auth/me response redirects master admins to /admin through the role default path',
 )
 assert(
   appSource.includes('const AccessControlledRoutes = () =>') &&
@@ -351,6 +381,10 @@ assert(!authHeadersSource.includes(obsoleteIdentityHeaderFallback), 'auth header
 assert(!authHeadersSource.includes("'X-User-Role':"), 'authHeaders does not synthesize raw frontend role headers')
 assert(!authContextSource.includes('demoIdentityForRole'), 'local app role does not create implicit authenticated identity')
 assert(loginPageSource.includes('logout()'), 'failed login clears stale auth session')
+assert(
+  /setSubmittingForm\('staff'\)[\s\S]*setError\(null\)[\s\S]*await logout\(\)/.test(loginPageSource),
+  'staff login clears stale login error and session state before a new login attempt',
+)
 assert(
   !pcTeachingEventsSource.includes('listProgrammes'),
   'PC teaching-events page does not call master-admin programme list',

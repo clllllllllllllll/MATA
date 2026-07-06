@@ -183,6 +183,9 @@ export const roleToBackendRole = (role: AppRole): BackendLoginRole => {
 const isMataResidentSessionRole = (role: AppRole): role is 'resident' | 'external_resident' =>
   role === 'resident' || role === 'external_resident'
 
+export const STAFF_SUPABASE_BACKEND_AUTH_ERROR =
+  'Supabase sign-in succeeded, but MATA could not authorize this staff account.'
+
 export const toStubIdentityHeaders = (identity: AuthIdentity | null): Record<string, string> => {
   if (!identity || frontendConfig.authMode === 'supabase') {
     return {}
@@ -244,9 +247,24 @@ export const loginResident = (mcr: string, role: 'resident' | 'external_resident
 export const loginStaffWithSupabase = async (email: string, password: string): Promise<StoredAuthSession> => {
   try {
     const supabaseSession = await signInWithSupabasePassword(email, password)
-    const identity = await meFromBearerToken(supabaseSession.accessToken)
-    return createSupabaseStoredSession(supabaseSession.accessToken, identity)
+    try {
+      const identity = await meFromBearerToken(supabaseSession.accessToken)
+      return createSupabaseStoredSession(supabaseSession.accessToken, identity)
+    } catch (error) {
+      const backendError = toApiRequestError(error)
+      throw new ApiRequestError(`${STAFF_SUPABASE_BACKEND_AUTH_ERROR} ${backendError.message}`, {
+        status: backendError.status,
+        details: backendError.details,
+        isNetworkError: backendError.isNetworkError,
+      })
+    }
   } catch (error) {
+    if (
+      error instanceof ApiRequestError &&
+      error.message.includes(STAFF_SUPABASE_BACKEND_AUTH_ERROR)
+    ) {
+      throw error
+    }
     if (error instanceof SupabaseConfigurationError) {
       throw new ApiRequestError(error.message)
     }

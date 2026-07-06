@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { loginResident, loginStaff } from '../../api/auth'
+import { STAFF_SUPABASE_BACKEND_AUTH_ERROR, loginResident, loginStaff } from '../../api/auth'
 import { ApiRequestError } from '../../api/http'
 import { IconChevRight } from '../../components/icons'
 import { defaultPathForRole, isPathAllowedForRole } from '../../config/navigation'
@@ -20,6 +20,19 @@ const getRedirectPath = (role: AppRole, from?: string) => {
     return from
   }
   return defaultPathForRole(role)
+}
+
+const getStaffLoginErrorMessage = (loginError: unknown) => {
+  if (!(loginError instanceof ApiRequestError)) {
+    return LOGIN_ERROR
+  }
+  if (
+    loginError.message.includes(SUPABASE_CONFIGURATION_ERROR_MARKER) ||
+    loginError.message.includes(STAFF_SUPABASE_BACKEND_AUTH_ERROR)
+  ) {
+    return loginError.message
+  }
+  return LOGIN_ERROR
 }
 
 export const LoginPage = () => {
@@ -51,12 +64,7 @@ export const LoginPage = () => {
       navigate(getRedirectPath(session.identity.role, fromPath), { replace: true })
     } catch (loginError) {
       await logout()
-      const message =
-        loginError instanceof ApiRequestError &&
-        loginError.message.includes(SUPABASE_CONFIGURATION_ERROR_MARKER)
-          ? loginError.message
-          : LOGIN_ERROR
-      setError({ formId: 'staff', message })
+      setError({ formId: 'staff', message: getStaffLoginErrorMessage(loginError) })
     } finally {
       setSubmittingForm(null)
     }

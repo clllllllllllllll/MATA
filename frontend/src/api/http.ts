@@ -84,6 +84,10 @@ httpClient.interceptors.response.use((response) => {
 })
 
 export const toApiRequestError = (error: unknown): ApiRequestError => {
+  if (error instanceof ApiRequestError) {
+    return error
+  }
+
   if (axios.isAxiosError(error)) {
     if (!error.response) {
       return new ApiRequestError(
