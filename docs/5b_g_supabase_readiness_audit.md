@@ -8,7 +8,7 @@ Last updated: 2026-07-06
 
 This audit covers Phase 5B-G-A/B/C: Supabase-hosted Postgres readiness, Supabase Auth/staff mapping readiness, MATA resident token readiness, raw-header rejection, frontend/env secret exposure, RLS planning, Non-NHG data separation, environment documentation hardening, and targeted auth guardrail tests.
 
-This audit does not enable RLS, add RLS policies, implement compliance, or implement Phase 5B-H cookie/BFF/CSRF/session hardening. Supabase internet documentation was not fetched because this chained task explicitly says not to rely on internet access; local source-of-truth docs and implementation were used.
+This audit does not enable RLS, add RLS policies, implement compliance, or implement Phase 5B-H cookie/BFF/CSRF/session hardening. Phase 5B-G-A/B/C used local source-of-truth docs and implementation only. Phase 5B-G-D/E/F/G also checked current Supabase docs/changelog for RLS, grants, and Data API planning context; MATA source-of-truth docs remain authoritative for app behavior.
 
 ## Files Inspected
 
@@ -347,3 +347,25 @@ Verification result:
 - Resident/external/secretary chunk: 162 passed.
 - Parser/upload/read-model chunk: 357 passed.
 - Full backend suite: 712 passed in 309.77s.
+
+## 5B-G-D Staff Bootstrap Runbook Update
+
+Status: Ready
+
+Files changed:
+
+- `docs/5b_g_staff_bootstrap_runbook.md`
+- `docs/5b_g_supabase_readiness_audit.md`
+
+Summary:
+
+- Added a production first-staff bootstrap runbook for the initial Master Admin role account.
+- Documented the staff identity bridge: Supabase Auth `auth.users.id` maps to `users.supabase_user_id`, while MATA role, admin level, programme scope, posting scope, active state, and staff actor metadata remain DB-owned.
+- Documented safe bootstrap options, recommended manual or one-time-script approach, SQL verification snippets, rollback/disable handling, and edge cases.
+- Reaffirmed that Master Admin is explicit via `users.admin_level = 'master'`; `programme_scope = NULL`, empty, blank, or missing never implies master access.
+
+Review notes:
+
+- No scripts, users, migrations, frontend changes, RLS, RLS policies, cookie/BFF/CSRF work, or compliance logic were added.
+- The runbook uses placeholders only and does not contain real credentials.
+- `SUPABASE_SERVICE_ROLE_KEY`, `MATA_RESIDENT_SESSION_SECRET`, database URLs/passwords, and backend-only secrets remain backend-only and forbidden in `VITE_*`.
