@@ -1,6 +1,6 @@
 # Phase 5B-G Supabase Production Readiness Audit
 
-Status: Ready for 5B-G-G
+Status: Complete for Phase 5B-G D/E/F/G docs and audit package
 
 Last updated: 2026-07-06
 
@@ -202,14 +202,14 @@ Non-NHG identity and attendance storage are separated from native NHG storage:
 
 Some event-management services check both native and external attendance tables before allowing destructive event edits/deletes. That is an acceptable operational guard, not a compliance join. Phase 6 compliance must continue to read native `attendance_records` only and must never join `external_attendance_records`.
 
-## Recommended 5B-G Follow-up Subphases
+## Completed 5B-G Follow-up Subphases
 
 Status: Ready
 
-- `5B-G-D`: define production staff bootstrap/runbook for first Master Admin and `users.supabase_user_id` mapping.
-- `5B-G-E`: write an RLS policy matrix and Supabase exposed-schema grant plan.
-- `5B-G-F`: deployment smoke plan for clean Supabase database migrations, extension availability, and seed ordering.
-- `5B-G-G`: service-role / privileged backend access review for admin reports, uploads, staff provisioning, and exports.
+- `5B-G-D`: documented production staff bootstrap/runbook for first Master Admin and `users.supabase_user_id` mapping.
+- `5B-G-E`: documented RLS policy matrix and Supabase exposed-schema grant/Data API plan.
+- `5B-G-F`: documented deployment smoke plan for clean Supabase database migrations, extension availability, and seed ordering.
+- `5B-G-G`: documented service-role / privileged backend access review for staff provisioning, JWT verification, admin reports, uploads, exports, frontend boundaries, and future jobs.
 
 ## Blocking Issues
 
@@ -222,10 +222,10 @@ No blocking issue was found that requires stopping before 5B-G-B or 5B-G-C. No r
 Status: Follow-up required
 
 - OpenAPI/generated API docs can still expose legacy raw header parameters for dependencies that retain stub/demo fallback branches.
-- First production Master Admin / staff `supabase_user_id` bootstrap is not documented or automated.
-- RLS policy/grant/Data API plan is not yet written, by design.
+- First production Master Admin / staff `supabase_user_id` bootstrap is documented but not executed or automated.
+- RLS policy/grant/Data API planning is documented, but RLS enablement/policy SQL remains deferred by design.
 - Supabase migration smoke plan exists; actual clean-db/staging execution remains a deployment follow-up.
-- Service-role / privileged backend access paths still need a dedicated review.
+- Service-role / privileged backend access paths are reviewed; production log redaction/orphan Supabase Auth user reconciliation remain follow-up hardening items.
 
 ## Explicitly Deferred to 5B-H
 
@@ -237,6 +237,25 @@ Status: Deferred
 - Server-side session invalidation/logout.
 - Replacing browser-visible Supabase and MATA bearer token transport.
 - Resident second factor or stronger resident identity proof.
+- Production CORS tightening beyond docs.
+- Rate-limit hardening beyond current baseline.
+- Upload/XLSX/XML exploit hardening.
+- Formula-injection export audit across all export surfaces.
+
+## Explicitly Deferred Beyond 5B-G
+
+Status: Deferred
+
+- RLS enablement and policy SQL.
+- Supabase exposed-schema grant changes.
+- Production staff bootstrap execution.
+- Clean Supabase migration rehearsal execution.
+- Phase 6 compliance engine.
+- Period final close/freeze.
+- Period snapshots.
+- Clawback generation.
+- Historical migration.
+- Email/export productivity features unless already implemented and separately tested.
 
 ## Verification Commands
 
@@ -412,3 +431,61 @@ Review notes:
 
 - No migrations, backend code, frontend code, RLS, RLS policy SQL, cookie/BFF/CSRF work, service-role key material, or compliance logic were added.
 - The plan uses placeholders only and warns operators to stop if real production targets or credentials are ambiguous.
+
+## 5B-G-G Service-Role And Privileged Backend Access Review Update
+
+Status: Ready
+
+Files changed:
+
+- `docs/5b_g_service_role_access_review.md`
+- `docs/5b_g_supabase_readiness_audit.md`
+
+Summary:
+
+- Added a service-role and privileged backend access review covering staff provisioning/reset, first Master Admin bootstrap, JWT verification, central auth mapping, uploads/admin ops, upload logs/warnings, data revalidation, native reports, Non-NHG attendance export, event edit/delete guards, resident submissions, audit logs, future final close/snapshots/clawback jobs, frontend env boundaries, and deployment docs.
+- Confirmed the only current Supabase service-role key use is `backend/app/services/supabase_admin.py` for Supabase Auth Admin create/update-password operations, behind Master Admin gated backend endpoints.
+- Confirmed Supabase JWT verification does not use the service-role key; it uses JWKS for asymmetric tokens and publishable/anon Auth-server validation only for legacy HS256 compatibility.
+- Documented follow-up risks: orphan Supabase Auth users after partial staff create failure, log/header redaction, upload/audit raw data sensitivity, future RLS impact on broad backend jobs, and Non-NHG export scoping verification with real catalogue data.
+
+Review notes:
+
+- No service-role usage was added or broadened.
+- No RLS was enabled, no RLS policy SQL was added, and no backend/frontend/migration code was changed.
+- Non-NHG attendance remains export-only and separate from NHG compliance, surplus, snapshots, and clawback.
+
+## Final 5B-G-D/E/F/G Readiness Status
+
+Status: Ready for next phase planning
+
+Files created:
+
+- `docs/5b_g_staff_bootstrap_runbook.md`
+- `docs/5b_g_rls_grants_matrix.md`
+- `docs/5b_g_supabase_migration_smoke_plan.md`
+- `docs/5b_g_service_role_access_review.md`
+
+Files updated:
+
+- `docs/5b_g_supabase_readiness_audit.md`
+
+Blocking issues:
+
+- None found in this docs/audit package.
+
+Non-blocking issues:
+
+- Production staff bootstrap is documented but still must be executed and verified outside this phase.
+- Clean Supabase migration rehearsal is documented but still must be run against a disposable or staging database.
+- RLS/grant/Data API exposure remains planning-only.
+- Cookie/BFF/CSRF/session invalidation and bearer-token transport replacement remain 5B-H work.
+
+Pending decisions:
+
+- Production bootstrap operator, exact execution window, and whether to automate Auth orphan cleanup.
+- Future RLS/grants implementation approach for backend-wide uploads, reports, final close, snapshots, clawback, and Non-NHG export.
+- Production log redaction policy and export/formula-injection audit scope across all export surfaces.
+
+Recommended next task:
+
+- Start Phase 5B-H auth/session hardening with cookie/BFF transport, CSRF, logout/session invalidation, and removal of browser-stored bearer-token reliance.
