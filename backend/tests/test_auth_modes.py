@@ -81,6 +81,29 @@ def test_supabase_mode_rejects_mock_identity_headers() -> None:
     assert response.json()["error_code"] == "UNAUTHORIZED"
 
 
+def test_production_rejects_raw_identity_headers_even_if_auth_mode_is_stub() -> None:
+    client = _protected_client(
+        Settings(
+            environment="production",
+            auth_mode="stub",
+            supabase_url="https://mata-test.supabase.co",
+        ),
+    )
+
+    response = client.get(
+        "/api/v1/protected",
+        headers={
+            "X-User-Role": "admin",
+            "X-User-Id": "00000000-0000-0000-0000-000000000001",
+            "X-User-Programme": "DR,GERI",
+            "X-Admin-Level": "master",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error_code"] == "UNAUTHORIZED"
+
+
 @pytest.mark.asyncio
 async def test_demo_mode_login_allows_local_stub_identity_without_role_switcher_flag() -> None:
     fake_db = FakeResidentSession()

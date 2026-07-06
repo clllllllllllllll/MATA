@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import Depends, Header, Request
 
 from app.config import Settings, get_settings
-from app.dependencies.auth import is_master_admin
+from app.dependencies.auth import is_master_admin, normalise_programme_scope
 from app.errors import ApiError, ErrorCode
 from app.middleware.auth_stub import AuthIdentity
 
@@ -82,7 +82,7 @@ def _staff_actor_from_identity(identity: AuthIdentity) -> StaffActorContext:
 
     raw_scope_metadata: dict[str, Any] = {}
     actor_site = identity.posting_code if actor_role == "secretary" else None
-    programme_scope = identity.programme_scope or []
+    programme_scope = normalise_programme_scope(identity.programme_scope)
     actor_programme = ",".join(programme_scope) or identity.programme_code
     actor_admin_level = "master" if is_master_admin(identity) else None
 

@@ -206,7 +206,7 @@ def _admin_context_from_identity(identity: AuthIdentity) -> AdminContext:
         ) from exc
     return AdminContext(
         user_id=user_id,
-        programme_scope=set(identity.programme_scope or []),
+        programme_scope=normalise_scope_values(identity.programme_scope),
         is_master_admin=is_master_admin(identity),
         current_staff_actor_name=identity.current_staff_actor_name,
     )

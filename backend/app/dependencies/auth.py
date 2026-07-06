@@ -33,6 +33,12 @@ def _normalise_admin_level(raw_value: str | None) -> str | None:
     return None
 
 
+def normalise_programme_scope(raw_scope: list[str] | None) -> list[str]:
+    if raw_scope is None:
+        return []
+    return [value for raw in raw_scope if (value := str(raw).strip())]
+
+
 async def get_current_identity(request: Request) -> AuthIdentity:
     identity = getattr(request.state, "identity", None)
     if not isinstance(identity, AuthIdentity):
@@ -74,12 +80,14 @@ async def require_programme_pc(
 ) -> AuthIdentity:
     if is_master_admin(identity):
         raise _forbidden("Forbidden - programme PC access required")
+    identity.programme_scope = normalise_programme_scope(identity.programme_scope)
     if not identity.programme_scope:
         raise _forbidden("Forbidden - admin programme scope is empty")
     return identity
 
 
 def ensure_programme_in_scope(identity: AuthIdentity, programme_code: str) -> None:
+    identity.programme_scope = normalise_programme_scope(identity.programme_scope)
     if not identity.programme_scope:
         raise _forbidden("Forbidden - admin programme scope is empty")
     if programme_code not in identity.programme_scope:

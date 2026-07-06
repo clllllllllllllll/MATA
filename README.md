@@ -105,15 +105,26 @@ The backend runs on `http://localhost:8000` and the frontend on `http://localhos
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql+asyncpg://user:pass@localhost/mata` |
-| `SECRET_KEY` | JWT signing secret | `your-secret-key` |
-| `ENVIRONMENT` | `development` or `production` | `development` |
+| `ENV` | `development`, `test`, or `production` | `development` |
+| `AUTH_MODE` | `stub`, `demo`, or `supabase` | `stub` |
+| `DATABASE_URL` | Backend-only async PostgreSQL connection string | `postgresql+asyncpg://user:pass@localhost/mata` |
+| `SYNC_DATABASE_URL` | Backend-only sync PostgreSQL URL for Alembic | `postgresql://user:pass@localhost/mata` |
+| `SUPABASE_URL` | Backend Supabase project URL for Supabase mode | `https://<project-ref>.supabase.co` |
+| `SUPABASE_PUBLISHABLE_KEY` | Publishable/anon key for legacy JWT validation fallback | `<publishable-or-anon-key>` |
+| `SUPABASE_SERVICE_ROLE_KEY` | Backend-only Supabase Admin/service-role key | `<server-only-service-role-key>` |
+| `MATA_RESIDENT_SESSION_SECRET` | Backend-only signing secret for MATA resident tokens | `<backend-only-random-secret>` |
 
 ### Frontend (`.env`)
 
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `VITE_API_BASE_URL` | Backend API base URL | `http://localhost:8000/api/v1` |
+| `VITE_AUTH_MODE` | Frontend auth mode | `stub` |
+| `VITE_SUPABASE_URL` | Public Supabase project URL for browser Supabase mode | `https://<project-ref>.supabase.co` |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | Public Supabase publishable key | `<public-publishable-key>` |
+| `VITE_SUPABASE_ANON_KEY` | Legacy public anon-key fallback | `<legacy-public-anon-key>` |
+
+All `VITE_*` variables are public browser-exposed values. Never put `SUPABASE_SERVICE_ROLE_KEY`, `MATA_RESIDENT_SESSION_SECRET`, database passwords, JWT signing secrets, private keys, or other backend-only secrets in frontend env files or Vite build args.
 
 ---
 

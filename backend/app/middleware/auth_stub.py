@@ -186,7 +186,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             return AuthIdentity(
                 role="admin",
                 subject_id=str(user.id),
-                programme_scope=user.programme_scope or [],
+                programme_scope=self._normalise_programme_scope(user.programme_scope),
                 admin_level=self._resolve_admin_level(
                     persisted_admin_level=getattr(user, "admin_level", None),
                 ),
@@ -229,7 +229,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             requested_programmes = self._parse_programme_header(
                 request.headers.get("X-User-Programme"),
             )
-            allowed_programmes = user.programme_scope or []
+            allowed_programmes = self._normalise_programme_scope(user.programme_scope)
             admin_level = self._resolve_admin_level(
                 persisted_admin_level=getattr(user, "admin_level", None),
             )
@@ -338,6 +338,12 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         if not raw_value:
             return []
         return [token.strip() for token in raw_value.split(",") if token.strip()]
+
+    @staticmethod
+    def _normalise_programme_scope(raw_scope: list[str] | None) -> list[str]:
+        if raw_scope is None:
+            return []
+        return [value for raw in raw_scope if (value := str(raw).strip())]
 
     def _resolve_admin_level(
         self,
