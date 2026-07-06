@@ -21,6 +21,21 @@ const emptySummary: AdminExternalAttendanceSummary = {
   adhocCount: 0,
 }
 
+const MetricTile = ({
+  label,
+  value,
+  className = '',
+}: {
+  label: string
+  value: number
+  className?: string
+}) => (
+  <div className={['secretary-event-metric', className].filter(Boolean).join(' ')}>
+    <span>{label}</span>
+    <strong>{value}</strong>
+  </div>
+)
+
 const formatDate = (value?: string | null) => {
   if (!value) {
     return '-'
@@ -53,18 +68,8 @@ const formatTime = (value?: string | null) => {
   return `${hour12}:${parts[1]} ${suffix}`
 }
 
-const statusTone = (status: string): 'success' | 'warning' | 'critical' | 'neutral' => {
-  if (status === 'submitted') {
-    return 'success'
-  }
-  if (status === 'flagged') {
-    return 'warning'
-  }
-  if (status === 'removed') {
-    return 'critical'
-  }
-  return 'neutral'
-}
+const sourceTone = (source?: string): 'warning' | 'info' =>
+  source?.toLowerCase().includes('ad-hoc') || source?.toLowerCase().includes('adhoc') ? 'warning' : 'info'
 
 const normaliseError = (error: unknown) => {
   if (error instanceof ApiRequestError) {
@@ -173,85 +178,94 @@ export const AdminExternalAttendancePage = () => {
         </section>
       ) : null}
 
-      <section className="grid metrics-grid resident-submissions-metrics">
-        <div className="metric-tile">
-          <span>Total</span>
-          <strong>{summary.totalRecords}</strong>
+      <section
+        className="card filter-bar admin-resident-submissions-filters external-attendance-filters"
+        aria-label="Non-NHG attendance filters"
+      >
+        <div className="admin-filter-summary">
+          <span>Filters</span>
+          <strong>Non-NHG attendance records</strong>
         </div>
-        <div className="metric-tile">
-          <span>Submitted</span>
-          <strong>{summary.submittedCount}</strong>
-        </div>
-        <div className="metric-tile">
-          <span>Ad-hoc</span>
-          <strong>{summary.adhocCount}</strong>
-        </div>
-      </section>
-
-      <section className="card resident-attendance-filter-card filter" aria-label="Non-NHG attendance filters">
-        <div className="resident-filter-grid">
-          <label>
-            Start date
-            <input type="date" value={filters.dateFrom ?? ''} onChange={(event) => updateFilter('dateFrom', event.target.value)} />
-          </label>
-          <label>
-            End date
-            <input type="date" value={filters.dateTo ?? ''} onChange={(event) => updateFilter('dateTo', event.target.value)} />
-          </label>
-          <label>
-            Home cluster
-            <select value={filters.homeCluster ?? ''} onChange={(event) => updateFilter('homeCluster', event.target.value)}>
-              <option value="">All clusters</option>
-              <option value="NUH">NUH</option>
-              <option value="SingHealth">SingHealth</option>
-            </select>
-          </label>
-          <label>
-            Posting
-            <select value={filters.postingCode ?? ''} onChange={(event) => updateFilter('postingCode', event.target.value)}>
-              <option value="">All postings</option>
-              {postingOptions.map((postingCode) => (
-                <option key={postingCode} value={postingCode}>
-                  {postingCode}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            MCR
-            <input value={filters.mcr ?? ''} onChange={(event) => updateFilter('mcr', event.target.value)} />
-          </label>
-          <label>
-            Status
-            <select value={filters.status ?? ''} onChange={(event) => updateFilter('status', event.target.value)}>
-              <option value="">Active records</option>
-              <option value="submitted">Submitted</option>
-              <option value="flagged">Flagged</option>
-              <option value="removed">Removed</option>
-            </select>
-          </label>
-        </div>
-        <div className="resident-filter-actions">
-          <button type="button" className="button button-secondary" onClick={clearFilters}>
+        <label>
+          Start date
+          <input type="date" value={filters.dateFrom ?? ''} onChange={(event) => updateFilter('dateFrom', event.target.value)} />
+        </label>
+        <label>
+          End date
+          <input type="date" value={filters.dateTo ?? ''} onChange={(event) => updateFilter('dateTo', event.target.value)} />
+        </label>
+        <label>
+          Home cluster
+          <select value={filters.homeCluster ?? ''} onChange={(event) => updateFilter('homeCluster', event.target.value)}>
+            <option value="">All clusters</option>
+            <option value="NUH">NUH</option>
+            <option value="SingHealth">SingHealth</option>
+          </select>
+        </label>
+        <label>
+          Posting
+          <select value={filters.postingCode ?? ''} onChange={(event) => updateFilter('postingCode', event.target.value)}>
+            <option value="">All postings</option>
+            {postingOptions.map((postingCode) => (
+              <option key={postingCode} value={postingCode}>
+                {postingCode}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          MCR
+          <input value={filters.mcr ?? ''} onChange={(event) => updateFilter('mcr', event.target.value)} />
+        </label>
+        <label>
+          Status
+          <select value={filters.status ?? ''} onChange={(event) => updateFilter('status', event.target.value)}>
+            <option value="">Active records</option>
+            <option value="submitted">Submitted</option>
+            <option value="flagged">Flagged</option>
+            <option value="removed">Removed</option>
+          </select>
+        </label>
+        <div className="admin-secretary-events-filter-actions external-attendance-filter-actions">
+          <button type="button" className="button button-ghost" onClick={clearFilters}>
             <IconX size={14} />
             Clear filters
           </button>
         </div>
       </section>
 
-      <section className="card">
-        <div className="section-header">
-          <h2>Attendance Records</h2>
-          <span className="inline-muted">{rows.length} row(s)</span>
+      <section
+        className="secretary-event-metrics admin-resident-submissions-metrics external-attendance-metrics"
+        aria-label="Non-NHG attendance counts"
+      >
+        <div className="resident-submissions-mobile-summary-card" aria-label="Non-NHG attendance summary">
+          <span className="resident-submissions-summary-label">Attendance summary</span>
+          <span className="resident-submissions-summary-values">
+            <strong>Submitted: {summary.submittedCount}</strong>
+            <span>Flagged: {summary.flaggedCount}</span>
+            <span>Ad-hoc: {summary.adhocCount}</span>
+          </span>
+        </div>
+        <MetricTile className="resident-submissions-desktop-metric" label="Submitted" value={summary.submittedCount} />
+        <MetricTile className="resident-submissions-desktop-metric" label="Flagged" value={summary.flaggedCount} />
+        <MetricTile className="resident-submissions-desktop-metric" label="Ad-hoc" value={summary.adhocCount} />
+      </section>
+
+      <section className="warning-group-card admin-resident-submissions-table-card external-attendance-table-card">
+        <div className="warning-group-header">
+          <div>
+            <span className="warning-group-kicker">Attendance Submissions</span>
+            <h2>Non-NHG Resident Attendance Records</h2>
+          </div>
+          <span className="warning-count-pill">{rows.length} row(s)</span>
         </div>
         {loading ? (
           <div className="resident-empty">Loading Non-NHG attendance...</div>
         ) : rows.length === 0 ? (
           <div className="resident-empty">No Non-NHG attendance found.</div>
         ) : (
-          <div className="table-wrap resident-table-wrap">
-            <div className="table-scroll">
-              <table className="table">
+          <div className="table-scroll">
+              <table className="table admin-resident-submissions-table external-attendance-table">
                 <thead>
                   <tr>
                     <th>Resident</th>
@@ -260,35 +274,43 @@ export const AdminExternalAttendancePage = () => {
                     <th>Date</th>
                     <th>Posting</th>
                     <th>Source</th>
-                    <th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((row) => (
                     <tr key={row.id}>
                       <td>
-                        <strong>{row.residentName}</strong>
-                        <div className="inline-muted mono">{row.mcr}</div>
+                        <div className="secretary-event-title-cell">
+                          <strong>{row.residentName}</strong>
+                          <span className="mono">{row.mcr}</span>
+                        </div>
                       </td>
-                      <td>{row.homeCluster}</td>
+                      <td><StatusBadge tone="neutral" label={row.homeCluster} /></td>
                       <td>
-                        <span className="safe-wrap">{row.teachingName}</span>
-                        {row.detailsOfSession ? <div className="inline-muted safe-wrap">{row.detailsOfSession}</div> : null}
+                        <div className="secretary-event-stack">
+                          <strong>{row.teachingName}</strong>
+                          {row.detailsOfSession ? <span>{row.detailsOfSession}</span> : null}
+                        </div>
                       </td>
-                      <td className="mono">
-                        {formatDate(row.eventDate)}
-                        <div>{formatTime(row.startTime)}</div>
-                      </td>
-                      <td className="mono">{row.postingCode}</td>
-                      <td>{row.source}</td>
                       <td>
-                        <StatusBadge tone={statusTone(row.status)} label={row.status} />
+                        <div className="secretary-event-stack admin-resident-submissions-datetime">
+                          <strong>{formatDate(row.eventDate)}</strong>
+                          <span>{formatTime(row.startTime)}</span>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="secretary-event-stack admin-resident-submissions-posting">
+                          <strong>{row.postingCode}</strong>
+                          <span>{row.postingDisplayName ?? '-'}</span>
+                        </div>
+                      </td>
+                      <td className="secretary-event-source-cell">
+                        <StatusBadge tone={sourceTone(row.source)} label={row.source} />
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            </div>
           </div>
         )}
       </section>

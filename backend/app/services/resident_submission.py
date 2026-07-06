@@ -2303,6 +2303,76 @@ async def remove_attendance(
     }
 
 
+async def remove_external_attendance(
+    db: AsyncSession,
+    *,
+    external_resident_id: UUID,
+    attendance_id: UUID,
+) -> dict[str, Any]:
+    existing_result = await db.execute(
+        text(
+            """
+            SELECT id, external_resident_id, teaching_event_id, status, posting_code, submitted_at
+            FROM external_attendance_records
+            WHERE id = :attendance_id
+              AND external_resident_id = :external_resident_id
+            """
+        ),
+        {
+            "attendance_id": str(attendance_id),
+            "external_resident_id": str(external_resident_id),
+        },
+    )
+    existing = existing_result.mappings().one_or_none()
+    if existing is None:
+        raise ApiError(
+            status_code=404,
+            detail="Attendance record not found",
+            error_code=ErrorCode.NOT_FOUND.value,
+        )
+    if existing["status"] == "removed":
+        return {
+            "attendance_id": existing["id"],
+            "status": "removed",
+            "removed_count": 0,
+        }
+
+    result = await db.execute(
+        text(
+            """
+            UPDATE external_attendance_records
+            SET status = 'removed'
+            WHERE id = :attendance_id
+              AND external_resident_id = :external_resident_id
+              AND status = 'submitted'
+            RETURNING id, external_resident_id, teaching_event_id, status, posting_code, submitted_at
+            """
+        ),
+        {
+            "attendance_id": str(attendance_id),
+            "external_resident_id": str(external_resident_id),
+        },
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        raise ApiError(
+            status_code=409,
+            detail="Attendance record cannot be removed from its current status",
+            error_code=ErrorCode.CONFLICT.value,
+        )
+    await db.commit()
+    invalidate_resident_caches(
+        external_resident_id=external_resident_id,
+        posting_codes={row["posting_code"]} if row.get("posting_code") else set(),
+        include_secretary_events=True,
+    )
+    return {
+        "attendance_id": row["id"],
+        "status": row["status"],
+        "removed_count": 1,
+    }
+
+
 async def list_attendance_records(
     db: AsyncSession,
     *,

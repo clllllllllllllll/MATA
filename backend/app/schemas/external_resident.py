@@ -12,15 +12,6 @@ class ExternalResidentPostingScheduleRow(BaseModel):
     end_date: date
     programme_code: str = Field(min_length=1, max_length=20)
     institution: str = Field(min_length=1, max_length=20)
-    posting_code: str = Field(min_length=1, max_length=50)
-
-    @field_validator("posting_code")
-    @classmethod
-    def _trim_non_empty(cls, value: str) -> str:
-        trimmed = value.strip()
-        if not trimmed:
-            raise ValueError("value is required")
-        return trimmed
 
     @field_validator("programme_code", "institution")
     @classmethod

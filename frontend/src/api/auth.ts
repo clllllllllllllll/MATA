@@ -42,7 +42,6 @@ export interface NonNhgRegistrationPayload {
     endDate: string
     programmeCode: string
     institution: 'TTSH' | 'WH' | 'KTPH'
-    postingCode: string
   }>
 }
 
@@ -137,6 +136,8 @@ const toAuthIdentity = (rawUser: Record<string, unknown>): AuthIdentity => {
       name,
       mcr: requiredString(rawUser.mcr),
       homeCluster: toHomeCluster(rawUser.home_cluster),
+      currentPostingCode: optionalString(rawUser.current_posting_code),
+      currentPostingLabel: optionalString(rawUser.current_posting_label),
     }
   }
 
@@ -146,6 +147,8 @@ const toAuthIdentity = (rawUser: Record<string, unknown>): AuthIdentity => {
     name,
     mcr: requiredString(rawUser.mcr),
     programmeCode: requiredString(rawUser.programme_code),
+    currentPostingCode: optionalString(rawUser.current_posting_code),
+    currentPostingLabel: optionalString(rawUser.current_posting_label),
   }
 }
 
@@ -185,6 +188,27 @@ const isMataResidentSessionRole = (role: AppRole): role is 'resident' | 'externa
 
 export const STAFF_SUPABASE_BACKEND_AUTH_ERROR =
   'Supabase sign-in succeeded, but MATA could not authorize this staff account.'
+export const LOGIN_RATE_LIMIT_ERROR = 'Too many sign-in attempts. Please try again in 1 minute.'
+const DEFAULT_LOGIN_RATE_LIMIT_RETRY_AFTER_SECONDS = 60
+
+const formatRetryAfter = (seconds: number): string => {
+  if (seconds <= 60) {
+    return '1 minute'
+  }
+  const minutes = Math.ceil(seconds / 60)
+  return `${minutes} minutes`
+}
+
+export const isRateLimitError = (error: unknown): error is ApiRequestError =>
+  error instanceof ApiRequestError && error.status === 429
+
+export const getRateLimitLoginErrorMessage = (error: unknown): string | null => {
+  if (!isRateLimitError(error)) {
+    return null
+  }
+  const retryAfterSeconds = error.retryAfterSeconds ?? DEFAULT_LOGIN_RATE_LIMIT_RETRY_AFTER_SECONDS
+  return `Too many sign-in attempts. Please try again in ${formatRetryAfter(retryAfterSeconds)}.`
+}
 
 export const toStubIdentityHeaders = (identity: AuthIdentity | null): Record<string, string> => {
   if (!identity || frontendConfig.authMode === 'supabase') {
@@ -240,11 +264,17 @@ export const login = async (payload: LoginPayload): Promise<StoredAuthSession> =
   }
 }
 
-export const loginResident = (mcr: string, role: 'resident' | 'external_resident' = 'resident') => {
+export const loginResident = (
+  mcr: string,
+  role: 'resident' | 'external_resident' = 'resident',
+) => {
   return login({ role, mcr })
 }
 
-export const loginStaffWithSupabase = async (email: string, password: string): Promise<StoredAuthSession> => {
+export const loginStaffWithSupabase = async (
+  email: string,
+  password: string,
+): Promise<StoredAuthSession> => {
   try {
     const supabaseSession = await signInWithSupabasePassword(email, password)
     try {
@@ -272,22 +302,49 @@ export const loginStaffWithSupabase = async (email: string, password: string): P
   }
 }
 
-export const loginStaff = (email: string, password: string): Promise<StoredAuthSession> => {
+export const loginStaff = (
+  email: string,
+  password: string,
+): Promise<StoredAuthSession> => {
   if (frontendConfig.authMode === 'supabase') {
     return loginStaffWithSupabase(email, password)
   }
   return login({ role: 'staff', email, password })
 }
 
-export const meFromBearerToken = async (accessToken: string): Promise<AuthIdentity> => {
+const AUTH_ME_PATH = '/auth/me'
+
+const hasHeaderValue = (headers: Record<string, string>, name: string): boolean => {
+  const lowerName = name.toLowerCase()
+  return Object.entries(headers).some(([key, value]) =>
+    key.toLowerCase() === lowerName && value.trim().length > 0)
+}
+
+const hasAuthMeCredentials = (headers: Record<string, string>): boolean =>
+  hasHeaderValue(headers, 'Authorization') ||
+  (hasHeaderValue(headers, 'X-User-Role') && hasHeaderValue(headers, 'X-User-Id'))
+
+const requestAuthMe = async (headers: Record<string, string>): Promise<AuthIdentity> => {
+  if (!hasAuthMeCredentials(headers)) {
+    throw new ApiRequestError('Missing authentication token.')
+  }
+
   try {
-    const response = await httpClient.get<Record<string, unknown>>('/auth/me', {
-      headers: { Authorization: `Bearer ${accessToken}` },
+    const response = await httpClient.get<Record<string, unknown>>(AUTH_ME_PATH, {
+      headers,
     })
     return toAuthIdentity(response.data)
   } catch (error) {
     throw toApiRequestError(error)
   }
+}
+
+export const meFromBearerToken = async (accessToken: string): Promise<AuthIdentity> => {
+  return requestAuthMe({ Authorization: `Bearer ${accessToken}` })
+}
+
+const meFromStoredSession = async (session: StoredAuthSession): Promise<AuthIdentity> => {
+  return requestAuthMe(toSessionRequestHeaders(session))
 }
 
 export const hydrateSupabaseSession = async (): Promise<StoredAuthSession | null> => {
@@ -341,10 +398,7 @@ export const me = async (session: StoredAuthSession): Promise<AuthIdentity> => {
       return await meFromBearerToken(accessToken)
     }
 
-    const response = await httpClient.get<Record<string, unknown>>('/auth/me', {
-      headers: toSessionRequestHeaders(session),
-    })
-    return toAuthIdentity(response.data)
+    return await meFromStoredSession(session)
   } catch (error) {
     throw toApiRequestError(error)
   }
@@ -386,7 +440,6 @@ export const registerNonNhgResident = async (
         end_date: row.endDate,
         programme_code: row.programmeCode,
         institution: row.institution,
-        posting_code: row.postingCode,
       })),
     })
     const resident = (response.data.resident ?? {}) as Record<string, unknown>

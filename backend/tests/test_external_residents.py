@@ -108,16 +108,14 @@ def test_external_registration_creates_forecast_posting_schedule_rows() -> None:
                 {
                     "start_date": "2026-07-01",
                     "end_date": "2026-07-31",
-                    "programme_code": "GRM",
+                    "programme_code": "GERI",
                     "institution": "TTSH",
-                    "posting_code": "TTSHCardio",
                 },
                 {
                     "start_date": "2026-08-01",
                     "end_date": "2026-08-31",
-                    "programme_code": "GRM",
+                    "programme_code": "GERI",
                     "institution": "KTPH",
-                    "posting_code": "KTPHGerMed",
                 },
             ],
         },
@@ -149,16 +147,14 @@ def test_external_registration_rejects_overlapping_forecast_rows() -> None:
                 {
                     "start_date": "2026-07-01",
                     "end_date": "2026-07-31",
-                    "programme_code": "GRM",
+                    "programme_code": "GERI",
                     "institution": "TTSH",
-                    "posting_code": "TTSHCardio",
                 },
                 {
                     "start_date": "2026-07-15",
                     "end_date": "2026-08-15",
-                    "programme_code": "GRM",
+                    "programme_code": "GERI",
                     "institution": "KTPH",
-                    "posting_code": "KTPHGerMed",
                 },
             ],
         },
@@ -181,9 +177,8 @@ def test_external_registration_rejects_invalid_forecast_date_range() -> None:
                 {
                     "start_date": "2026-08-01",
                     "end_date": "2026-07-31",
-                    "programme_code": "GRM",
+                    "programme_code": "GERI",
                     "institution": "TTSH",
-                    "posting_code": "TTSHCardio",
                 },
             ],
         },
@@ -208,7 +203,6 @@ def test_external_registration_rejects_invalid_forecast_programme() -> None:
                     "end_date": "2026-07-31",
                     "programme_code": "UNKNOWN",
                     "institution": "TTSH",
-                    "posting_code": "TTSHCardio",
                 },
             ],
         },
@@ -231,9 +225,8 @@ def test_external_registration_rejects_invalid_forecast_institution() -> None:
                 {
                     "start_date": "2026-07-01",
                     "end_date": "2026-07-31",
-                    "programme_code": "GRM",
+                    "programme_code": "GERI",
                     "institution": "SGH",
-                    "posting_code": "TTSHCardio",
                 },
             ],
         },
@@ -310,29 +303,65 @@ def test_external_registration_rejects_invalid_current_posting() -> None:
     assert response.status_code == 422
 
 
-def test_external_registration_rejects_invalid_forecast_posting() -> None:
+def test_external_registration_rejects_unresolved_forecast_posting_without_partial_rows() -> None:
     fake_db = FakeResidentSession()
+    before_residents = len(fake_db.external_residents)
+    before_postings = len(fake_db.external_resident_postings)
     client = _client(fake_db)
 
     response = client.post(
         "/external-residents/register",
         json={
-            "name": "Bad Schedule Posting",
+            "name": "Bad Schedule Match",
             "mcr": "E55556E",
             "home_cluster": "NUH",
             "posting_schedule": [
                 {
                     "start_date": "2026-07-01",
                     "end_date": "2026-07-31",
-                    "programme_code": "GRM",
-                    "institution": "TTSH",
-                    "posting_code": "UNKNOWN",
+                    "programme_code": "GERI",
+                    "institution": "WH",
                 },
             ],
         },
     )
 
     assert response.status_code == 422
+    assert response.json()["detail"] == "No posting could be resolved for this programme and institution. Contact an administrator."
+    assert len(fake_db.external_residents) == before_residents
+    assert len(fake_db.external_resident_postings) == before_postings
+
+
+def test_external_registration_rejects_ambiguous_forecast_posting() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.secretary_programme_pools.append(
+        {
+            "posting_code": "TTSHNeuro",
+            "programme_code": "GERI",
+            "is_active": True,
+        },
+    )
+    client = _client(fake_db)
+
+    response = client.post(
+        "/external-residents/register",
+        json={
+            "name": "Ambiguous Schedule Match",
+            "mcr": "E55557E",
+            "home_cluster": "NUH",
+            "posting_schedule": [
+                {
+                    "start_date": "2026-07-01",
+                    "end_date": "2026-07-31",
+                    "programme_code": "GERI",
+                    "institution": "TTSH",
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Multiple postings could be resolved for this programme and institution. Contact an administrator."
 
 
 def test_external_posting_update_closes_old_and_creates_new_current_row() -> None:
@@ -404,16 +433,14 @@ def test_external_posting_schedule_update_replaces_rows() -> None:
                 {
                     "start_date": "2026-09-01",
                     "end_date": "2026-09-30",
-                    "programme_code": "GRM",
+                    "programme_code": "GERI",
                     "institution": "TTSH",
-                    "posting_code": "TTSHCardio",
                 },
                 {
                     "start_date": "2026-10-01",
                     "end_date": "2026-10-31",
-                    "programme_code": "GRM",
+                    "programme_code": "GERI",
                     "institution": "KTPH",
-                    "posting_code": "KTPHGerMed",
                 },
             ],
         },
@@ -433,6 +460,75 @@ def test_external_posting_schedule_update_replaces_rows() -> None:
         if row["external_resident_id"] == fake_db.external_resident_id
     ]
     assert [row["posting_code"] for row in rows] == ["TTSHCardio", "KTPHGerMed"]
+
+
+def test_external_posting_schedule_update_rejects_unresolved_posting_without_deleting_rows() -> None:
+    fake_db = FakeResidentSession()
+    before = list(fake_db.external_resident_postings)
+    client = _client(
+        fake_db,
+        AuthIdentity(
+            role="external_resident",
+            subject_id=fake_db.external_resident_id,
+            home_cluster="NUH",
+        ),
+    )
+
+    response = client.put(
+        "/external-residents/me/posting-schedule",
+        json={
+            "posting_schedule": [
+                {
+                    "start_date": "2026-09-01",
+                    "end_date": "2026-09-30",
+                    "programme_code": "DR",
+                    "institution": "TTSH",
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "No posting could be resolved for this programme and institution. Contact an administrator."
+    assert fake_db.external_resident_postings == before
+
+
+def test_external_posting_schedule_update_rejects_ambiguous_posting_without_deleting_rows() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.secretary_programme_pools.append(
+        {
+            "posting_code": "TTSHNeuro",
+            "programme_code": "GERI",
+            "is_active": True,
+        }
+    )
+    before = list(fake_db.external_resident_postings)
+    client = _client(
+        fake_db,
+        AuthIdentity(
+            role="external_resident",
+            subject_id=fake_db.external_resident_id,
+            home_cluster="NUH",
+        ),
+    )
+
+    response = client.put(
+        "/external-residents/me/posting-schedule",
+        json={
+            "posting_schedule": [
+                {
+                    "start_date": "2026-09-01",
+                    "end_date": "2026-09-30",
+                    "programme_code": "GERI",
+                    "institution": "TTSH",
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Multiple postings could be resolved for this programme and institution. Contact an administrator."
+    assert fake_db.external_resident_postings == before
 
 
 def test_native_resident_cannot_update_external_posting() -> None:

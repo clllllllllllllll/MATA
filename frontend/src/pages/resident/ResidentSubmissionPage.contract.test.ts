@@ -63,7 +63,7 @@ assert(
   'scope chip uses role-specific NHG/Non-NHG labels',
 )
 assert(
-  pageSource.includes('Non-NHG submissions are recorded for forwarding only and are not included in NHG compliance.'),
+  pageSource.includes("Submissions are recorded for home-cluster's records only"),
   'Non-NHG ad-hoc helper copy is forwarding-only and compliance-excluded',
 )
 assert(
@@ -108,8 +108,9 @@ assertOrdered(
   ['await removeResidentAttendance(row.attendanceId)', 'await loadResidentEvents()', 'await loadHistory()'],
   'delete flow refreshes available scheduled events and recent submissions',
 )
-assert(pageSource.includes('formatAttendanceStatus(row.status)'), 'recent widget capitalizes resident-facing status labels')
-assert(pageSource.includes('resident-history-side'), 'recent delete action is grouped with status area')
+assert(!pageSource.includes('formatAttendanceStatus(row.status)'), 'recent widget does not render visible status values')
+assert(!pageSource.includes('resident-history-status'), 'recent widget omits status badge styling')
+assert(pageSource.includes('resident-history-side'), 'recent delete action stays grouped in the side action area')
 assert(pageSource.includes('button-danger resident-delete-button'), 'recent delete action uses danger styling')
 assert(pageSource.includes('resident-adhoc-actions'), 'ad-hoc message and submit action use contained form-width wrapper')
 assert(pageSource.includes("reason === 'public_holiday'"), 'PH blocked ad-hoc state disables submit through unavailable options')

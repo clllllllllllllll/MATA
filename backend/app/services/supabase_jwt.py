@@ -15,6 +15,7 @@ from app.config import Settings
 ASYMMETRIC_ALGORITHMS = {"RS256", "ES256", "EdDSA"}
 LEGACY_SHARED_SECRET_ALGORITHMS = {"HS256"}
 MAX_JWKS_CACHE_TTL_SECONDS = 600
+SUPABASE_JWT_CLOCK_SKEW_LEEWAY_SECONDS = 10
 
 
 class SupabaseJwtError(Exception):
@@ -78,6 +79,7 @@ class SupabaseJwtVerifier:
                 audience=self._config.audience,
                 issuer=self._config.issuer,
                 options={"require": ["iss", "aud", "sub", "exp", "iat"]},
+                leeway=SUPABASE_JWT_CLOCK_SKEW_LEEWAY_SECONDS,
             )
         except InvalidTokenError as exc:
             raise SupabaseJwtError("Invalid Supabase JWT") from exc

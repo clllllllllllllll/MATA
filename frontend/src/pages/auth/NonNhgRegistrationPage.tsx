@@ -15,7 +15,6 @@ interface PostingScheduleRowState {
   endDate: string
   programmeCode: string
   institution: ScheduleInstitution
-  postingCode: string
 }
 
 interface RegistrationFormState {
@@ -64,7 +63,6 @@ const createScheduleRow = (id: string): PostingScheduleRowState => ({
   endDate: '',
   programmeCode: '',
   institution: 'TTSH',
-  postingCode: '',
 })
 
 const INITIAL_FORM: RegistrationFormState = {
@@ -93,8 +91,7 @@ export const NonNhgRegistrationPage = () => {
       row.endDate &&
       row.startDate <= row.endDate &&
       row.programmeCode &&
-      row.institution &&
-      row.postingCode.trim().length > 0,
+      row.institution,
     )
 
   const updateForm = <Key extends keyof RegistrationFormState>(
@@ -160,15 +157,17 @@ export const NonNhgRegistrationPage = () => {
           endDate: row.endDate,
           programmeCode: row.programmeCode,
           institution: row.institution,
-          postingCode: row.postingCode,
         })),
       })
       setRegistrationResult(result)
       setSubmitState('success')
     } catch (error) {
       const message =
-        error instanceof ApiRequestError && error.status === 422
-          ? REGISTER_ERROR
+        error instanceof ApiRequestError &&
+        error.status === 422 &&
+        (error.message.includes('No posting could be resolved') ||
+          error.message.includes('Multiple postings could be resolved'))
+          ? error.message
           : REGISTER_ERROR
       setSubmitError(message)
       setSubmitState('error')
@@ -182,6 +181,24 @@ export const NonNhgRegistrationPage = () => {
       return
     }
     navigate('/login', { replace: true })
+  }
+
+  const postingResolutionError =
+    submitError &&
+    (submitError.includes('No posting could be resolved') ||
+      submitError.includes('Multiple postings could be resolved'))
+      ? submitError
+      : null
+
+  const formatSchedulePosting = (row: Record<string, unknown>) => {
+    const postingCode = typeof row.posting_code === 'string' ? row.posting_code : ''
+    const programmeCode = typeof row.programme_code === 'string' ? row.programme_code : ''
+    const institution = typeof row.institution === 'string' ? row.institution : ''
+    const startDate = typeof row.start_date === 'string' ? row.start_date : ''
+    const endDate = typeof row.end_date === 'string' ? row.end_date : ''
+    const scope = [programmeCode, institution].filter(Boolean).join(' - ')
+    const dates = [startDate, endDate].filter(Boolean).join(' to ')
+    return [postingCode, scope, dates].filter(Boolean).join(' | ')
   }
 
   if (submitState === 'success' && registrationResult) {
@@ -221,9 +238,17 @@ export const NonNhgRegistrationPage = () => {
             <div>
               <dt>NHG posting schedule</dt>
               <dd>
-                {registrationResult.postingSchedule?.length
-                  ? `${registrationResult.postingSchedule.length} upcoming row${registrationResult.postingSchedule.length === 1 ? '' : 's'}`
-                  : resident.currentNhgPostingCode}
+                {registrationResult.postingSchedule?.length ? (
+                  <ul className="auth-confirmation-schedule">
+                    {registrationResult.postingSchedule.map((row, index) => (
+                      <li key={`${String(row.posting_code ?? 'posting')}-${index}`}>
+                        {formatSchedulePosting(row)}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  resident.currentNhgPostingCode
+                )}
               </dd>
             </div>
           </dl>
@@ -369,16 +394,12 @@ export const NonNhgRegistrationPage = () => {
                         ))}
                       </select>
                     </label>
-                    <label className="auth-field auth-schedule-posting">
-                      <span>Posting code</span>
-                      <input
-                        className="mono"
-                        value={row.postingCode}
-                        onChange={(event) => updateScheduleRow(row.id, 'postingCode', event.target.value.trim())}
-                        placeholder="e.g. TTSHGerMed"
-                      />
-                    </label>
                   </div>
+                  {postingResolutionError ? (
+                    <div className="auth-schedule-row-error" role="alert">
+                      {postingResolutionError}
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>

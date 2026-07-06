@@ -279,3 +279,50 @@ def test_external_weekend_non_exception_stores_and_returns_warning() -> None:
     assert payload["submitted"] == 1
     assert payload["compliance_warning"].startswith("1 session(s) submitted on a weekend")
     assert len(fake_db.external_attendance) == before + 1
+
+
+def test_external_resident_can_remove_own_external_attendance() -> None:
+    fake_db = FakeResidentSession()
+    before_native = list(fake_db.attendance)
+    client = _client(fake_db)
+
+    response = client.delete(
+        f"/resident/attendance/{fake_db.external_existing_attendance_id}",
+        headers=_external_headers(fake_db),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "removed"
+    assert response.json()["removed_count"] == 1
+    assert next(
+        row
+        for row in fake_db.external_attendance
+        if row["id"] == fake_db.external_existing_attendance_id
+    )["status"] == "removed"
+    assert fake_db.attendance == before_native
+
+
+def test_external_resident_cannot_remove_another_external_residents_attendance() -> None:
+    fake_db = FakeResidentSession()
+    other_attendance_id = str(uuid4())
+    fake_db.external_attendance.append(
+        {
+            "id": other_attendance_id,
+            "external_resident_id": fake_db.other_external_resident_id,
+            "teaching_event_id": fake_db.second_event_id,
+            "status": "submitted",
+            "posting_code": "TTSHCardio",
+            "submitted_at": fake_db.now,
+        }
+    )
+    client = _client(fake_db)
+
+    response = client.delete(
+        f"/resident/attendance/{other_attendance_id}",
+        headers=_external_headers(fake_db),
+    )
+
+    assert response.status_code == 404
+    assert next(row for row in fake_db.external_attendance if row["id"] == other_attendance_id)[
+        "status"
+    ] == "submitted"

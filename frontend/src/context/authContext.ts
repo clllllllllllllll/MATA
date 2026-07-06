@@ -9,6 +9,9 @@ export interface AuthContextValue {
   isLoading: boolean
   staffActorNameRequired: boolean
   hydrateSession: () => Promise<void>
+  beginLoginAttempt: () => number
+  isAuthRequestCurrent: (generation: number) => boolean
+  clearCurrentAuthRequest: (generation: number, options?: { signOutSupabase?: boolean }) => Promise<boolean>
   loginWithSession: (session: StoredAuthSession) => void
   updateStaffActorName: (fullName: string) => Promise<AuthIdentity>
   logout: () => Promise<void>

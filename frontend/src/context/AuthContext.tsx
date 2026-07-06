@@ -43,18 +43,52 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     [],
   )
 
+  const clearLocalAuthState = useCallback(() => {
+    clearAuthSession()
+    setSession(null)
+    setIsLoading(false)
+    clearMemoryCache()
+  }, [])
+
+  const beginLoginAttempt = useCallback(() => {
+    const generation = nextAuthRequestGeneration()
+    clearLocalAuthState()
+    return generation
+  }, [clearLocalAuthState, nextAuthRequestGeneration])
+
+  const clearCurrentAuthRequest = useCallback(
+    async (generation: number, options?: { signOutSupabase?: boolean }) => {
+      if (!isCurrentAuthRequest(generation)) {
+        return false
+      }
+      if (options?.signOutSupabase && frontendConfig.authMode === 'supabase') {
+        try {
+          await signOutFromSupabase()
+        } catch {
+          // A latest-request cleanup must still clear local MATA state if Supabase sign-out fails.
+        }
+        if (!isCurrentAuthRequest(generation)) {
+          return false
+        }
+      }
+      clearLocalAuthState()
+      return true
+    },
+    [clearLocalAuthState, isCurrentAuthRequest],
+  )
+
   const hydrateSession = useCallback(async () => {
     const generation = nextAuthRequestGeneration()
     if (frontendConfig.authMode === 'supabase') {
       setIsLoading(true)
       try {
-        const hydratedSession = await hydrateSupabaseSession() ?? await hydrateMataResidentSession()
+        const hydratedSession =
+          await hydrateSupabaseSession() ?? await hydrateMataResidentSession()
         if (!isCurrentAuthRequest(generation)) {
           return
         }
         if (!hydratedSession) {
-          clearAuthSession()
-          setSession(null)
+          clearLocalAuthState()
           return
         }
         saveAuthSession(hydratedSession)
@@ -64,16 +98,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
         if (!isCurrentAuthRequest(generation)) {
           return
         }
-        try {
-          await signOutFromSupabase()
-        } catch {
-          // Keep the local fail-closed state even if Supabase sign-out cannot complete.
-        }
-        if (!isCurrentAuthRequest(generation)) {
-          return
-        }
-        clearAuthSession()
-        setSession(null)
+        clearLocalAuthState()
       } finally {
         if (isCurrentAuthRequest(generation)) {
           setIsLoading(false)
@@ -85,8 +110,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     const storedSession = readStoredAuthSession()
     if (!storedSession) {
       if (isCurrentAuthRequest(generation)) {
-        setSession(null)
-        setIsLoading(false)
+        clearLocalAuthState()
       }
       return
     }
@@ -106,15 +130,14 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
       setRole(hydratedIdentity.role)
     } catch {
       if (isCurrentAuthRequest(generation)) {
-        clearAuthSession()
-        setSession(null)
+        clearLocalAuthState()
       }
     } finally {
       if (isCurrentAuthRequest(generation)) {
         setIsLoading(false)
       }
     }
-  }, [isCurrentAuthRequest, nextAuthRequestGeneration, setRole])
+  }, [clearLocalAuthState, isCurrentAuthRequest, nextAuthRequestGeneration, setRole])
 
   useEffect(() => {
     let active = true
@@ -122,13 +145,14 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     ;(async () => {
       try {
         if (frontendConfig.authMode === 'supabase') {
-          const hydratedSession = await hydrateSupabaseSession() ?? await hydrateMataResidentSession()
+          const hydratedSession =
+            await hydrateSupabaseSession() ??
+            await hydrateMataResidentSession()
           if (!active || !isCurrentAuthRequest(generation)) {
             return
           }
           if (!hydratedSession) {
-            clearAuthSession()
-            setSession(null)
+            clearLocalAuthState()
             return
           }
           saveAuthSession(hydratedSession)
@@ -155,18 +179,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
         setRole(hydratedIdentity.role)
       } catch {
         if (active && isCurrentAuthRequest(generation)) {
-          if (frontendConfig.authMode === 'supabase') {
-            try {
-              await signOutFromSupabase()
-            } catch {
-              // Keep the local fail-closed state even if Supabase sign-out cannot complete.
-            }
-          }
-          if (!isCurrentAuthRequest(generation)) {
-            return
-          }
-          clearAuthSession()
-          setSession(null)
+          clearLocalAuthState()
         }
       } finally {
         if (active && isCurrentAuthRequest(generation)) {
@@ -178,7 +191,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     return () => {
       active = false
     }
-  }, [isCurrentAuthRequest, nextAuthRequestGeneration, setRole])
+  }, [clearLocalAuthState, isCurrentAuthRequest, nextAuthRequestGeneration, setRole])
 
   useEffect(() => {
     const onSessionChanged = () => {
@@ -264,16 +277,22 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     isLoading,
     staffActorNameRequired,
     hydrateSession,
+    beginLoginAttempt,
+    isAuthRequestCurrent: isCurrentAuthRequest,
+    clearCurrentAuthRequest,
     loginWithSession,
     updateStaffActorName,
     logout,
   }), [
     authState,
+    beginLoginAttempt,
+    clearCurrentAuthRequest,
     effectiveIdentity,
     session,
     isLoading,
     staffActorNameRequired,
     hydrateSession,
+    isCurrentAuthRequest,
     loginWithSession,
     updateStaffActorName,
     logout,

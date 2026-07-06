@@ -63,7 +63,7 @@ Non-NHG/cross-cluster residents are **not** in the `users` table and are **not**
 
 In `AUTH_MODE=supabase`, Non-NHG Residents do not get Supabase Auth accounts. Backend `/auth/login` validates MCR against active `external_residents` rows and issues a backend-signed MATA resident session token using server-only `MATA_RESIDENT_SESSION_SECRET`. The token must not include current posting, posting schedule, staff actor name, `admin_level`, `programme_code`, `programme_scope`, or `posting_code`.
 
-Posting state and posting schedule are not trusted from JWT for authorization-sensitive reads. Fetch the Non-NHG Resident from `external_residents` and derive date-specific posting from `external_resident_postings` where relevant. `external_residents.current_nhg_posting_code` may remain a current/cache/backward-compatibility pointer, but must not be the only trusted source once the forecast schedule is implemented. Non-NHG Residents do not receive NHG compliance or clawback surfaces.
+Posting state and posting schedule are not trusted from JWT for authorization-sensitive reads. Fetch the Non-NHG Resident from `external_residents` and derive date-specific posting from `external_resident_postings` where relevant. `external_residents.current_nhg_posting_code` may remain a current/cache/backward-compatibility pointer, but schedule-aware resident flows use `external_resident_postings`. Non-NHG Residents do not receive NHG compliance or clawback surfaces.
 
 **Global MCR uniqueness:** `POST /external-residents/register` must reject an MCR that already exists in either native `residents` or `external_residents`.
 
@@ -1607,9 +1607,9 @@ Looks up `residents` table by MCR. Validates `status != 'inactive'`. **No passwo
 
 Return current identity from validated JWT.
 
-- Resident: returns `residents` row identity fields only (`id`, `role`, `name`, `programme_code`, `mcr`). It does not return `posting_code` or current posting.
-- Resident current posting is resolved by resident endpoints/services from `resident_postings` at request time.
-- Non-NHG Resident: returns `external_residents` row identity fields only (`id`, `role`, `name`, `mcr`, `home_cluster`). It does not return `current_nhg_posting_code`, `posting_code`, posting schedule, staff actor metadata, `admin_level`, `programme_code`, or `programme_scope`.
+- Resident: returns `residents` row identity fields (`id`, `role`, `name`, `programme_code`, `mcr`) plus display-only `current_posting_code` and `current_posting_label` when a usable `resident_postings` row exists. Display resolution prefers today's row, then a row overlapping an effectively active reporting period, then the nearest future row, then the nearest recent past row. It does not return a trusted `posting_code` claim.
+- Resident current posting for authorization-sensitive endpoints is still resolved server-side from `resident_postings` at request time.
+- Non-NHG Resident: returns `external_residents` row identity fields (`id`, `role`, `name`, `mcr`, `home_cluster`) plus display-only `current_posting_code` and `current_posting_label` when a usable `external_resident_postings` row exists. Display resolution prefers today's row, then a row overlapping an effectively active reporting period, then the nearest future row, then the nearest recent past row. It does not return `current_nhg_posting_code`, trusted `posting_code`, posting schedule, staff actor metadata, `admin_level`, `programme_code`, or `programme_scope`.
 - Admin/Secretary: returns `users` row fields + scope, including `admin_level` for admin accounts and saved staff actor metadata:
   - `current_staff_actor_name`
   - `staff_actor_name_required` (`true` when the staff account has no saved non-blank actor name)
@@ -1700,22 +1700,29 @@ Self-register a Non-NHG/cross-cluster resident.
   "name": "Resident Name",
   "mcr": "E12345A",
   "home_cluster": "NUH",
-  "current_nhg_posting_code": "TTSHGerMed"
+  "posting_schedule": [
+    {
+      "start_date": "2026-07-01",
+      "end_date": "2026-07-31",
+      "programme_code": "GERI",
+      "institution": "TTSH"
+    }
+  ]
 }
 ```
 - **Validation:**
   1. `home_cluster` must be `NUH` or `SingHealth`.
   2. `mcr` must not exist in native `residents`.
   3. `mcr` must not exist in `external_residents`.
-  4. `current_nhg_posting_code` must exist in `posting_codes`.
-- **Writes:** `external_residents` plus the current/backward-compatible `external_resident_postings` row. Do not create `users`, native `residents`, or native `resident_postings` rows.
+  4. Each schedule row must have `start_date <= end_date`; schedule rows must not overlap.
+  5. Each schedule row resolves exactly one posting code from trusted programme/institution posting configuration. The client must not send or choose `posting_code`.
+- **Writes:** `external_residents` plus one `external_resident_postings` row per resolved schedule row. Do not create `users`, native `residents`, or native `resident_postings` rows.
 - **Response convenience:** May return `current_nhg_posting_code` as today's derived/current posting for display/backward compatibility.
 - **Duplicate/conflict:** `409` when MCR already exists.
-- **Deferred:** Forecast `posting_schedule[]` registration rows, institution/programme selectors, overlap validation, and no-gap/date-specific forecast UI remain planned later work. They are not part of 5B-F-B.
 
 ### PUT `/external-residents/me/posting`
 
-Update the Non-NHG Resident's current NHG posting pointer. Route name remains for compatibility.
+Update the Non-NHG Resident's current NHG posting pointer. Route name remains for compatibility with older clients; schedule-aware clients should use `/external-residents/me/posting-schedule`.
 
 - **Auth:** Non-NHG Resident only (`external_resident` role)
 - **Body:**
@@ -1726,14 +1733,34 @@ Update the Non-NHG Resident's current NHG posting pointer. Route name remains fo
 ```
 - **Validation:** `current_nhg_posting_code` must exist in `posting_codes`.
 - **Behaviour:** updates the authenticated Non-NHG Resident's current/cache pointer and current `external_resident_postings` row. No native `resident_postings` rows are created.
-- **Deferred:** Forecast `posting_schedule[]` replacement for this route remains later work.
+
+### PUT `/external-residents/me/posting-schedule`
+
+Replace the authenticated Non-NHG Resident's date-specific NHG posting schedule.
+
+- **Auth:** Non-NHG Resident only (`external_resident` role)
+- **Body:**
+```json
+{
+  "posting_schedule": [
+    {
+      "start_date": "2026-07-01",
+      "end_date": "2026-07-31",
+      "programme_code": "GERI",
+      "institution": "TTSH"
+    }
+  ]
+}
+```
+- **Validation:** same schedule-row validation and trusted posting-code resolution as registration. If no single safe posting can be resolved, return `422` and keep the existing schedule.
+- **Behaviour:** replaces `external_resident_postings`, updates the current/cache pointer from the resolved schedule, and never creates native `resident_postings`.
 
 ### GET `/resident/events` for Non-NHG Residents
 
 The same route may support NHG and Non-NHG Residents through identity branching.
 
 - For native `role = resident`, use native Phase 5A behaviour from `resident_postings`.
-- For `role = external_resident`, derive date-specific posting from `external_resident_postings` for the event listing date/window once the forecast posting schedule is implemented. `external_residents.current_nhg_posting_code` may be used only as a current/cache/backward-compatibility pointer.
+- For `role = external_resident`, derive date-specific posting from `external_resident_postings` for the event listing date/window. `external_residents.current_nhg_posting_code` may be used only as a current/cache/backward-compatibility pointer.
 - If no `external_resident_postings` row matches a requested date, return unavailable/no posting for that date.
 - If the posting's `posting_codes.supports_secretary_events = true`, return eligible secretary-created events for that posting.
 - If `supports_secretary_events = false`, return no secretary-created event list but keep ad-hoc submission available in the frontend.
@@ -1757,9 +1784,9 @@ The same route may support NHG and Non-NHG Residents through identity branching.
 
 The same route may support NHG and Non-NHG Residents through identity branching.
 
-- For `role = external_resident`, derive host posting from `external_resident_postings` for `teaching_date` once the forecast posting schedule is implemented.
+- For `role = external_resident`, derive host posting from `external_resident_postings` for `teaching_date`.
 - If no schedule row matches `teaching_date`, return unavailable/no posting for selected date.
-- Teaching options come from the planned `GET /resident/adhoc-teaching-options` date-first catalogue-backed flow and the selected attended TTSH department/programme.
+- Teaching options come from `GET /resident/adhoc-teaching-options` using the selected teaching date and attended department/programme.
 - Attended department/programme selection is for option filtering/export context only.
 - Resolve selected attended posting against `posting_codes` using validated/configured mapping. Do not concatenate strings or infer codes by regex.
 - PH hard-block with `422`.
@@ -1794,9 +1821,9 @@ Non-NHG Residents do not receive an NHG compliance dashboard.
 
 ### Non-NHG attendance export
 
-Non-NHG attendance list/read and Excel export are planned Phase 5B contracts that must be completed before Phase 6 compliance. External attendance tables remain recording/export-only and never enter NHG compliance.
+Non-NHG attendance list/read and Excel export are Phase 5B-F admin/PC tools. External attendance tables remain recording/export-only and never enter NHG compliance.
 
-### Planned GET `/admin/external-attendance`
+### GET `/admin/external-attendance`
 
 List Non-NHG attendance for authorized admin/PC users.
 
@@ -1805,14 +1832,14 @@ List Non-NHG attendance for authorized admin/PC users.
 - **Filters:** `home_cluster`, `posting_code`, `attended_posting_code` where supported, `date_from`, `date_to`, `mcr`, `status`.
 - **Compliance exclusion:** Results are for audit/forwarding only and must not be joined into native compliance reports.
 
-### Planned GET `/admin/external-attendance/{id}`
+### GET `/admin/external-attendance/{id}`
 
 Read one external attendance record with resident, event, posting, and routing context.
 
 - **Auth:** admin/PC only
 - **Scope:** Same as list endpoint.
 
-### Planned GET `/admin/external-attendance/export.xlsx`
+### GET `/admin/external-attendance/export.xlsx`
 
 Export filtered external attendance to Excel for forwarding to NUH/SingHealth PCs.
 
@@ -1823,7 +1850,7 @@ Export filtered external attendance to Excel for forwarding to NUH/SingHealth PC
 - **Content:** Non-NHG Resident identity, `home_cluster`, current/event posting, teaching event details, submitted status/timestamps, and any planned `details_of_session` captured on ad-hoc event rows.
 - **Not included:** Native `attendance_records`, native compliance percentages, surplus, snapshots, or clawback rows.
 
-TODO: Confirm exact workbook columns, sheet partitioning by `home_cluster`, and whether host programme/r_year values are exported as derived metadata or only used for filtering.
+Workbook columns and programme/r_year routing metadata remain implementation-owned by the export service; the export must remain formula-safe and forwarding-only.
 
 ---
 

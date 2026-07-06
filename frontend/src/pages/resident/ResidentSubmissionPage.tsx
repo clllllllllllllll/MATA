@@ -110,28 +110,6 @@ const getEventSourceLabel = (event: ResidentEventsResponse['events'][number]) =>
   return 'Scheduled'
 }
 
-const getAttendanceStatusBadgeClass = (status: string) => {
-  const normalised = status.trim().toLowerCase()
-  if (normalised === 'removed') {
-    return 'status-badge-warning'
-  }
-  if (normalised === 'submitted') {
-    return 'status-badge-success'
-  }
-  return 'status-badge-neutral'
-}
-
-const formatAttendanceStatus = (status: string) => {
-  const normalised = status.trim().toLowerCase()
-  if (normalised === 'submitted') {
-    return 'Submitted'
-  }
-  if (normalised === 'removed') {
-    return 'Removed'
-  }
-  return status
-}
-
 const normaliseResidentApiError = (error: ApiRequestError): string => {
   if (error.status === 401 || error.status === 403) {
     return 'Resident authentication is invalid. Check demo resident headers.'
@@ -434,7 +412,7 @@ export const ResidentSubmissionPage = () => {
         title="Submission Portal"
         subtitle={
           isExternalResident
-            ? 'Non-NHG Resident - submissions are stored for home-cluster forwarding only'
+            ? "Submissions are recorded for home-cluster's records only"
             : `${frontendConfig.demoResidentProgramme} - MCR ${frontendConfig.demoResidentMcr}`
         }
         actions={
@@ -668,7 +646,7 @@ export const ResidentSubmissionPage = () => {
             <p>Please ensure your current submission is not an already scheduled event. There are no CME Pts tagged to adhoc teachings.</p>
             <p>
               {isExternalResident
-                ? 'Non-NHG submissions are recorded for forwarding only and are not included in NHG compliance.'
+                ? "Submissions are recorded for home-cluster's records only and are not included in NHG compliance."
                 : 'NHG ad-hoc submissions count as Department/Programme Teaching [1h] under your assigned posting when the target is available.'}
             </p>
           </div>
@@ -759,7 +737,7 @@ export const ResidentSubmissionPage = () => {
               <span>{selectedAdhocOption.isGlobal ? 'Global Type' : selectedAdhocOption.isTracked ? 'Tracked' : 'Untracked'}</span>
               <span>
                 {isExternalResident
-                  ? 'Forwarding only - not included in NHG compliance'
+                  ? "Home-cluster's records only - not included in NHG compliance"
                   : 'Counts as Department/Programme Teaching [1h] under assigned posting'}
               </span>
             </div>
@@ -828,9 +806,6 @@ export const ResidentSubmissionPage = () => {
                         </div>
                       </div>
                       <div className="resident-history-side">
-                        <span className={`status-badge resident-history-status ${getAttendanceStatusBadgeClass(row.status)}`}>
-                          {formatAttendanceStatus(row.status)}
-                        </span>
                         {canDelete ? (
                           <button
                             type="button"

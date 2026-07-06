@@ -12,6 +12,12 @@ from app.errors import ApiError, ErrorCode
 
 ALLOWED_HOME_CLUSTERS = {"NUH", "SingHealth"}
 ALLOWED_SCHEDULE_INSTITUTIONS = {"TTSH", "WH", "KTPH"}
+POSTING_RESOLUTION_NOT_FOUND = (
+    "No posting could be resolved for this programme and institution. Contact an administrator."
+)
+POSTING_RESOLUTION_AMBIGUOUS = (
+    "Multiple postings could be resolved for this programme and institution. Contact an administrator."
+)
 
 
 def normalise_mcr(raw_mcr: str) -> str:
@@ -69,6 +75,117 @@ async def _programme_exists(db: AsyncSession, programme_code: str) -> bool:
         {"programme_code": programme_code},
     )
     return result.scalar_one_or_none() is not None
+
+
+async def _native_programme_posting(
+    db: AsyncSession,
+    *,
+    programme_code: str,
+    institution: str,
+) -> str | None:
+    result = await db.execute(
+        text(
+            """
+            SELECT p.native_teaching_posting_code
+            FROM programmes p
+            JOIN posting_codes pc
+              ON pc.code = p.native_teaching_posting_code
+            WHERE p.code = :programme_code
+              AND p.native_teaching_posting_code IS NOT NULL
+              AND pc.institution = :institution
+            LIMIT 1
+            """
+        ),
+        {"programme_code": programme_code, "institution": institution},
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        return None
+    return row.get("native_teaching_posting_code")
+
+
+async def _resolve_posting_candidates_from_secretary_pool(
+    db: AsyncSession,
+    *,
+    programme_code: str,
+    institution: str,
+) -> list[str]:
+    result = await db.execute(
+        text(
+            """
+            SELECT DISTINCT pc.code AS posting_code
+            FROM secretary_programme_pools spp
+            JOIN posting_codes pc
+              ON pc.code = spp.posting_code
+            WHERE spp.programme_code = :programme_code
+              AND spp.is_active = true
+              AND pc.institution = :institution
+            ORDER BY pc.code
+            """
+        ),
+        {"programme_code": programme_code, "institution": institution},
+    )
+    return [str(row["posting_code"]) for row in result.mappings().all()]
+
+
+async def _resolve_posting_candidates_from_targets(
+    db: AsyncSession,
+    *,
+    programme_code: str,
+    institution: str,
+) -> list[str]:
+    result = await db.execute(
+        text(
+            """
+            SELECT DISTINCT pc.code AS posting_code
+            FROM teaching_targets tt
+            JOIN posting_codes pc
+              ON pc.code = tt.posting_code
+            WHERE tt.programme_code = :programme_code
+              AND pc.institution = :institution
+            ORDER BY pc.code
+            """
+        ),
+        {"programme_code": programme_code, "institution": institution},
+    )
+    return [str(row["posting_code"]) for row in result.mappings().all()]
+
+
+async def _resolve_posting_code(
+    db: AsyncSession,
+    *,
+    programme_code: str,
+    institution: str,
+) -> str:
+    native_posting = await _native_programme_posting(
+        db,
+        programme_code=programme_code,
+        institution=institution,
+    )
+    if native_posting:
+        return native_posting
+
+    candidates = await _resolve_posting_candidates_from_secretary_pool(
+        db,
+        programme_code=programme_code,
+        institution=institution,
+    )
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        raise _schedule_validation_error(POSTING_RESOLUTION_AMBIGUOUS)
+
+    candidates = await _resolve_posting_candidates_from_targets(
+        db,
+        programme_code=programme_code,
+        institution=institution,
+    )
+    if candidates:
+        if len(candidates) == 1:
+            return candidates[0]
+        raise _schedule_validation_error(POSTING_RESOLUTION_AMBIGUOUS)
+
+    raise _schedule_validation_error(POSTING_RESOLUTION_NOT_FOUND)
 
 
 async def _mcr_exists_in_native_residents(db: AsyncSession, mcr: str) -> bool:
@@ -148,7 +265,6 @@ async def _validate_posting_schedule(
             row.programme_code if hasattr(row, "programme_code") else row["programme_code"]
         )
         institution = row.institution if hasattr(row, "institution") else row["institution"]
-        posting_code = row.posting_code if hasattr(row, "posting_code") else row["posting_code"]
 
         if start_date > end_date:
             raise _schedule_validation_error("posting_schedule start_date must be on or before end_date")
@@ -157,12 +273,11 @@ async def _validate_posting_schedule(
         if not await _programme_exists(db, programme_code):
             raise _schedule_validation_error("programme_code is not valid")
 
-        posting = await _posting_metadata(db, posting_code)
-        if posting is None:
-            raise _schedule_validation_error("posting_code is not valid")
-        posting_institution = posting.get("institution")
-        if posting_institution and posting_institution != institution:
-            raise _schedule_validation_error("posting_code does not match institution")
+        posting_code = await _resolve_posting_code(
+            db,
+            programme_code=programme_code,
+            institution=institution,
+        )
 
         normalised.append(
             {

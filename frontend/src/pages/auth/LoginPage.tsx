@@ -1,6 +1,12 @@
 import { useState, type FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { STAFF_SUPABASE_BACKEND_AUTH_ERROR, loginResident, loginStaff } from '../../api/auth'
+import {
+  STAFF_SUPABASE_BACKEND_AUTH_ERROR,
+  getRateLimitLoginErrorMessage,
+  isRateLimitError,
+  loginResident,
+  loginStaff,
+} from '../../api/auth'
 import { ApiRequestError } from '../../api/http'
 import { IconChevRight } from '../../components/icons'
 import { defaultPathForRole, isPathAllowedForRole } from '../../config/navigation'
@@ -23,6 +29,10 @@ const getRedirectPath = (role: AppRole, from?: string) => {
 }
 
 const getStaffLoginErrorMessage = (loginError: unknown) => {
+  const rateLimitMessage = getRateLimitLoginErrorMessage(loginError)
+  if (rateLimitMessage) {
+    return rateLimitMessage
+  }
   if (!(loginError instanceof ApiRequestError)) {
     return LOGIN_ERROR
   }
@@ -38,7 +48,7 @@ const getStaffLoginErrorMessage = (loginError: unknown) => {
 export const LoginPage = () => {
   const navigate = useNavigate()
   const location = useLocation()
-  const { loginWithSession, logout } = useAuth()
+  const { beginLoginAttempt, isAuthRequestCurrent, clearCurrentAuthRequest, loginWithSession, logout } = useAuth()
   const fromPath = (location.state as { from?: string } | null)?.from
 
   const [staffEmail, setStaffEmail] = useState('')
@@ -50,6 +60,9 @@ export const LoginPage = () => {
 
   const submitStaffLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (submittingForm === 'staff') {
+      return
+    }
     if (!staffEmail.trim() || !staffPassword) {
       setError({ formId: 'staff', message: LOGIN_ERROR })
       return
@@ -57,16 +70,28 @@ export const LoginPage = () => {
 
     setSubmittingForm('staff')
     setError(null)
-    await logout()
+    const loginGeneration = beginLoginAttempt()
     try {
       const session = await loginStaff(staffEmail, staffPassword)
+      if (!isAuthRequestCurrent(loginGeneration)) {
+        return
+      }
+      setSubmittingForm(null)
       loginWithSession(session)
       navigate(getRedirectPath(session.identity.role, fromPath), { replace: true })
     } catch (loginError) {
-      await logout()
+      if (!isAuthRequestCurrent(loginGeneration)) {
+        return
+      }
+      const clearedCurrentRequest = await clearCurrentAuthRequest(loginGeneration, { signOutSupabase: true })
+      if (!clearedCurrentRequest) {
+        return
+      }
       setError({ formId: 'staff', message: getStaffLoginErrorMessage(loginError) })
     } finally {
-      setSubmittingForm(null)
+      if (isAuthRequestCurrent(loginGeneration)) {
+        setSubmittingForm(null)
+      }
     }
   }
 
@@ -92,15 +117,18 @@ export const LoginPage = () => {
           loginWithSession(session)
           navigate(getRedirectPath(session.identity.role, fromPath), { replace: true })
           return
-        } catch {
+        } catch (loginError) {
+          if (isRateLimitError(loginError)) {
+            throw loginError
+          }
           // Try the other resident identity table before showing the generic failure.
         }
       }
       await logout()
       setError({ formId: 'resident', message: LOGIN_ERROR })
-    } catch {
+    } catch (loginError) {
       await logout()
-      setError({ formId: 'resident', message: LOGIN_ERROR })
+      setError({ formId: 'resident', message: getRateLimitLoginErrorMessage(loginError) ?? LOGIN_ERROR })
     } finally {
       setSubmittingForm(null)
     }

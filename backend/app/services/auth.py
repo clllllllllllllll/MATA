@@ -53,23 +53,37 @@ def _password_matches(stored_hash: str, supplied_password: str) -> bool:
 
 
 def _resident_user(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+    current_posting_code = row.get("current_posting_code")
+    current_posting_label = row.get("current_posting_label") or current_posting_code
+    payload = {
         "id": row["id"],
         "role": "resident",
         "name": row["name"],
         "programme_code": row.get("programme_code"),
         "mcr": row["mcr"],
     }
+    if current_posting_code:
+        payload["current_posting_code"] = current_posting_code
+    if current_posting_label:
+        payload["current_posting_label"] = current_posting_label
+    return payload
 
 
 def _external_resident_user(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+    current_posting_code = row.get("current_posting_code")
+    current_posting_label = row.get("current_posting_label") or current_posting_code
+    payload = {
         "id": row["id"],
         "role": "external_resident",
         "name": row["name"],
         "mcr": row["mcr"],
         "home_cluster": row["home_cluster"],
     }
+    if current_posting_code:
+        payload["current_posting_code"] = current_posting_code
+    if current_posting_label:
+        payload["current_posting_label"] = current_posting_label
+    return payload
 
 
 def _staff_actor_name_required(row: dict[str, Any]) -> bool:
@@ -163,9 +177,56 @@ async def _lookup_resident_login_rows(
     resident_result = await db.execute(
         text(
             """
-            SELECT *
-            FROM residents
-            WHERE mcr = :mcr
+            SELECT r.id,
+                   r.name,
+                   r.mcr,
+                   r.programme_code,
+                   r.status,
+                   current_posting.posting_code AS current_posting_code,
+                   COALESCE(pc.display_name, current_posting.posting_code) AS current_posting_label
+            FROM residents r
+            LEFT JOIN LATERAL (
+                SELECT rp.posting_code
+                FROM resident_postings rp
+                LEFT JOIN reporting_periods period
+                  ON rp.reporting_period_id = period.id
+                 AND (
+                    CASE
+                      WHEN period.deactivate_on IS NOT NULL
+                       AND CURRENT_DATE >= period.deactivate_on
+                       AND (period.activate_on IS NULL OR period.deactivate_on >= period.activate_on)
+                        THEN 'inactive'
+                      WHEN period.activate_on IS NOT NULL
+                       AND CURRENT_DATE >= period.activate_on
+                        THEN 'active'
+                      ELSE period.status
+                    END
+                 ) = 'active'
+                WHERE rp.resident_id = r.id
+                  AND rp.status IN ('active', 'loa_working')
+                ORDER BY
+                  CASE
+                    WHEN rp.start_date <= CURRENT_DATE
+                     AND (rp.end_date IS NULL OR rp.end_date >= CURRENT_DATE)
+                      THEN 0
+                    WHEN period.id IS NOT NULL
+                      THEN 1
+                    WHEN rp.start_date > CURRENT_DATE
+                      THEN 2
+                    ELSE 3
+                  END,
+                  CASE
+                    WHEN rp.start_date > CURRENT_DATE
+                      THEN rp.start_date - CURRENT_DATE
+                    ELSE CURRENT_DATE - COALESCE(rp.end_date, rp.start_date)
+                  END,
+                  rp.start_date DESC,
+                  rp.posting_code
+                LIMIT 1
+            ) current_posting ON true
+            LEFT JOIN posting_codes pc
+              ON pc.code = current_posting.posting_code
+            WHERE r.mcr = :mcr
             """
         ),
         {"mcr": normalised_mcr},
@@ -173,9 +234,56 @@ async def _lookup_resident_login_rows(
     external_result = await db.execute(
         text(
             """
-            SELECT *
-            FROM external_residents
-            WHERE mcr = :mcr
+            SELECT er.id,
+                   er.name,
+                   er.mcr,
+                   er.home_cluster,
+                   er.status,
+                   current_posting.posting_code AS current_posting_code,
+                   COALESCE(pc.display_name, current_posting.posting_code) AS current_posting_label
+            FROM external_residents er
+            LEFT JOIN LATERAL (
+                SELECT erp.posting_code
+                FROM external_resident_postings erp
+                LEFT JOIN reporting_periods rp
+                  ON erp.start_date <= rp.end_date
+                 AND (erp.end_date IS NULL OR erp.end_date >= rp.start_date)
+                 AND (
+                    CASE
+                      WHEN rp.deactivate_on IS NOT NULL
+                       AND CURRENT_DATE >= rp.deactivate_on
+                       AND (rp.activate_on IS NULL OR rp.deactivate_on >= rp.activate_on)
+                        THEN 'inactive'
+                      WHEN rp.activate_on IS NOT NULL
+                       AND CURRENT_DATE >= rp.activate_on
+                        THEN 'active'
+                      ELSE rp.status
+                    END
+                 ) = 'active'
+                WHERE erp.external_resident_id = er.id
+                ORDER BY
+                  CASE
+                    WHEN erp.start_date <= CURRENT_DATE
+                     AND (erp.end_date IS NULL OR erp.end_date >= CURRENT_DATE)
+                      THEN 0
+                    WHEN rp.id IS NOT NULL
+                      THEN 1
+                    WHEN erp.start_date > CURRENT_DATE
+                      THEN 2
+                    ELSE 3
+                  END,
+                  CASE
+                    WHEN erp.start_date > CURRENT_DATE
+                      THEN erp.start_date - CURRENT_DATE
+                    ELSE CURRENT_DATE - COALESCE(erp.end_date, erp.start_date)
+                  END,
+                  erp.start_date DESC,
+                  erp.posting_code
+                LIMIT 1
+            ) current_posting ON true
+            LEFT JOIN posting_codes pc
+              ON pc.code = current_posting.posting_code
+            WHERE er.mcr = :mcr
             """
         ),
         {"mcr": normalised_mcr},
@@ -293,9 +401,56 @@ async def get_current_identity(
         result = await db.execute(
             text(
                 """
-                SELECT id, name, mcr, programme_code, status
-                FROM residents
-                WHERE id = :resident_id
+                SELECT r.id,
+                       r.name,
+                       r.mcr,
+                       r.programme_code,
+                       r.status,
+                       current_posting.posting_code AS current_posting_code,
+                       COALESCE(pc.display_name, current_posting.posting_code) AS current_posting_label
+                FROM residents r
+                LEFT JOIN LATERAL (
+                    SELECT rp.posting_code
+                    FROM resident_postings rp
+                    LEFT JOIN reporting_periods period
+                      ON rp.reporting_period_id = period.id
+                     AND (
+                        CASE
+                          WHEN period.deactivate_on IS NOT NULL
+                           AND CURRENT_DATE >= period.deactivate_on
+                           AND (period.activate_on IS NULL OR period.deactivate_on >= period.activate_on)
+                            THEN 'inactive'
+                          WHEN period.activate_on IS NOT NULL
+                           AND CURRENT_DATE >= period.activate_on
+                            THEN 'active'
+                          ELSE period.status
+                        END
+                     ) = 'active'
+                    WHERE rp.resident_id = r.id
+                      AND rp.status IN ('active', 'loa_working')
+                    ORDER BY
+                      CASE
+                        WHEN rp.start_date <= CURRENT_DATE
+                         AND (rp.end_date IS NULL OR rp.end_date >= CURRENT_DATE)
+                          THEN 0
+                        WHEN period.id IS NOT NULL
+                          THEN 1
+                        WHEN rp.start_date > CURRENT_DATE
+                          THEN 2
+                        ELSE 3
+                      END,
+                      CASE
+                        WHEN rp.start_date > CURRENT_DATE
+                          THEN rp.start_date - CURRENT_DATE
+                        ELSE CURRENT_DATE - COALESCE(rp.end_date, rp.start_date)
+                      END,
+                      rp.start_date DESC,
+                      rp.posting_code
+                    LIMIT 1
+                ) current_posting ON true
+                LEFT JOIN posting_codes pc
+                  ON pc.code = current_posting.posting_code
+                WHERE r.id = :resident_id
                 """
             ),
             {"resident_id": str(subject_id)},
@@ -309,9 +464,56 @@ async def get_current_identity(
         result = await db.execute(
             text(
                 """
-                SELECT id, name, mcr, home_cluster, status
-                FROM external_residents
-                WHERE id = :external_resident_id
+                SELECT er.id,
+                       er.name,
+                       er.mcr,
+                       er.home_cluster,
+                       er.status,
+                       current_posting.posting_code AS current_posting_code,
+                       COALESCE(pc.display_name, current_posting.posting_code) AS current_posting_label
+                FROM external_residents er
+                LEFT JOIN LATERAL (
+                    SELECT erp.posting_code
+                    FROM external_resident_postings erp
+                    LEFT JOIN reporting_periods rp
+                      ON erp.start_date <= rp.end_date
+                     AND (erp.end_date IS NULL OR erp.end_date >= rp.start_date)
+                     AND (
+                        CASE
+                          WHEN rp.deactivate_on IS NOT NULL
+                           AND CURRENT_DATE >= rp.deactivate_on
+                           AND (rp.activate_on IS NULL OR rp.deactivate_on >= rp.activate_on)
+                            THEN 'inactive'
+                          WHEN rp.activate_on IS NOT NULL
+                           AND CURRENT_DATE >= rp.activate_on
+                            THEN 'active'
+                          ELSE rp.status
+                        END
+                     ) = 'active'
+                    WHERE erp.external_resident_id = er.id
+                    ORDER BY
+                      CASE
+                        WHEN erp.start_date <= CURRENT_DATE
+                         AND (erp.end_date IS NULL OR erp.end_date >= CURRENT_DATE)
+                          THEN 0
+                        WHEN rp.id IS NOT NULL
+                          THEN 1
+                        WHEN erp.start_date > CURRENT_DATE
+                          THEN 2
+                        ELSE 3
+                      END,
+                      CASE
+                        WHEN erp.start_date > CURRENT_DATE
+                          THEN erp.start_date - CURRENT_DATE
+                        ELSE CURRENT_DATE - COALESCE(erp.end_date, erp.start_date)
+                      END,
+                      erp.start_date DESC,
+                      erp.posting_code
+                    LIMIT 1
+                ) current_posting ON true
+                LEFT JOIN posting_codes pc
+                  ON pc.code = current_posting.posting_code
+                WHERE er.id = :external_resident_id
                 """
             ),
             {"external_resident_id": str(subject_id)},

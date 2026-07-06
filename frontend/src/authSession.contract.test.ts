@@ -38,6 +38,7 @@ const adminLogsPageSource = read('./pages/admin/AdminLogsPage.tsx')
 const staffAccountsApiPath = fileURLToPath(new URL('./api/staffAccounts.ts', import.meta.url))
 const staffAccountsPagePath = fileURLToPath(new URL('./pages/admin/AdminStaffAccountsPage.tsx', import.meta.url))
 const staffAccountsPageSource = read('./pages/admin/AdminStaffAccountsPage.tsx')
+const adminExternalAttendancePageSource = read('./pages/admin/AdminExternalAttendancePage.tsx')
 const secretarySchedulePageSource = read('./pages/secretary/SecretaryTeachingSchedulePage.tsx')
 const residentSubmissionPageSource = read('./pages/resident/ResidentSubmissionPage.tsx')
 const adminResidentSubmissionsPageSource = read('./pages/admin/AdminResidentSubmissionsPage.tsx')
@@ -136,6 +137,20 @@ assert(
     authApiSource.includes('meFromBearerToken'),
   'supabase staff login signs in with Supabase then resolves MATA identity through backend /auth/me',
 )
+const rawAuthMeCallMatches = [
+  ...authApiSource.matchAll(/httpClient\.get<Record<string, unknown>>\(AUTH_ME_PATH/g),
+]
+assert(
+  authApiSource.includes("const AUTH_ME_PATH = '/auth/me'") &&
+    authApiSource.includes('const requestAuthMe = async') &&
+    rawAuthMeCallMatches.length === 1,
+  'all frontend /auth/me calls go through the single auth-owned request helper',
+)
+assert(
+  authApiSource.includes('const hasAuthMeCredentials =') &&
+    /if \(!hasAuthMeCredentials\(headers\)\) \{[\s\S]*throw new ApiRequestError\('Missing authentication token\.'\)[\s\S]*\}/.test(authApiSource),
+  'auth-owned /auth/me helper refuses to call the backend when no token or stub identity headers exist',
+)
 assert(
   /const supabaseSession = await signInWithSupabasePassword\(email, password\)[\s\S]*await meFromBearerToken\(supabaseSession\.accessToken\)/.test(authApiSource),
   'supabase staff login uses the returned Supabase access_token for the immediate backend /auth/me call',
@@ -159,10 +174,43 @@ assert(
     authContextSource.includes('hydrateSupabaseSession'),
   'supabase session hydration calls backend /auth/me from the current Supabase browser session',
 )
+const hydrateSupabaseSessionSource = authApiSource.slice(
+  authApiSource.indexOf('export const hydrateSupabaseSession'),
+  authApiSource.indexOf('export const hydrateMataResidentSession'),
+)
+assert(
+  hydrateSupabaseSessionSource.includes('if (!supabaseSession)') &&
+    hydrateSupabaseSessionSource.indexOf('return null') <
+      hydrateSupabaseSessionSource.indexOf('meFromBearerToken'),
+  'hydration with no Supabase token returns locally instead of calling /auth/me',
+)
 assert(
   authApiSource.includes('hydrateMataResidentSession') &&
     authContextSource.includes('hydrateMataResidentSession'),
   'supabase-mode hydration falls back to a stored MATA resident token when no staff Supabase session exists',
+)
+const hydrateMataResidentSessionSource = authApiSource.slice(
+  authApiSource.indexOf('export const hydrateMataResidentSession'),
+  authApiSource.indexOf('export const me = async'),
+)
+assert(
+  hydrateMataResidentSessionSource.includes('!storedSession.accessToken') &&
+    hydrateMataResidentSessionSource.indexOf('return null') <
+      hydrateMataResidentSessionSource.indexOf('meFromBearerToken'),
+  'hydration with no stored MATA resident token returns locally instead of calling /auth/me',
+)
+assert(
+  !routeGuardsSource.includes('/auth/me') &&
+    !/\bme\s*\(/.test(routeGuardsSource) &&
+    !routeGuardsSource.includes('meFromBearerToken') &&
+    !routeGuardsSource.includes('hydrateSession'),
+  'route guards redirect from local auth state and never call /auth/me without a token',
+)
+assert(
+  !httpSource.includes('X-MATA-Auth-' + 'Debug') &&
+    !httpSource.includes(['auth', 'Debug'].join('')) &&
+    !httpSource.includes('MATA_AUTH_' + 'DEBUG'),
+  'temporary auth debug headers and logs are not part of normal HTTP transport',
 )
 assert(
   authApiSource.includes('current_staff_actor_name') &&
@@ -190,16 +238,16 @@ assert(
   'supabase mode enables NHG and registered Non-NHG Resident MCR login through the backend',
 )
 assert(
-  httpSource.includes('readStoredAuthSession') &&
+    httpSource.includes('readStoredAuthSession') &&
     httpSource.includes('isMataResidentSessionRole') &&
     httpSource.includes("role === 'resident' || role === 'external_resident'") &&
-    httpSource.includes('request.headers.Authorization = `Bearer ${storedSession.accessToken}`'),
+    httpSource.includes("setHeaderValue(request.headers, 'Authorization', `Bearer ${storedSession.accessToken}`)"),
   'shared HTTP client attaches stored MATA bearer before protected NHG and Non-NHG resident API calls',
 )
 assert(
   httpSource.includes('getCurrentSupabaseAccessToken') &&
     httpSource.includes('const accessToken = await getCurrentSupabaseAccessToken()') &&
-    httpSource.includes("request.headers.Authorization = `Bearer ${accessToken}`"),
+    httpSource.includes("setHeaderValue(request.headers, 'Authorization', `Bearer ${accessToken}`)"),
   'shared HTTP client attaches the latest Supabase bearer for staff API calls',
 )
 assert(
@@ -224,6 +272,20 @@ assert(
     authContextSource.includes('!isCurrentAuthRequest(generation)'),
   'auth context guards hydration state writes so stale /auth/me failures cannot overwrite newer login success',
 )
+const hydrateSessionSource = authContextSource.slice(
+  authContextSource.indexOf('const hydrateSession = useCallback'),
+  authContextSource.indexOf('useEffect(() => {'),
+)
+const initialHydrationEffectSource = authContextSource.slice(
+  authContextSource.indexOf('useEffect(() => {'),
+  authContextSource.indexOf('useEffect(() => {\n    const onSessionChanged'),
+)
+assert(
+  authContextSource.includes('clearCurrentAuthRequest') &&
+    !hydrateSessionSource.includes('signOutFromSupabase') &&
+    !initialHydrationEffectSource.includes('signOutFromSupabase'),
+  'hydration /auth/me failures clear only local MATA state and cannot fire a stale Supabase logout during a newer login',
+)
 assert(
   /const logout = useCallback\(async \(\) => \{[\s\S]*nextAuthRequestGeneration\(\)[\s\S]*await signOutFromSupabase\(\)[\s\S]*clearAuthSession\(\)[\s\S]*setSession\(null\)/.test(authContextSource),
   'logout still invalidates in-flight auth requests, clears Supabase, and clears local app session',
@@ -237,6 +299,28 @@ assert(
 assert(loginPageSource.includes('NHG Resident'), 'login page uses NHG Resident terminology')
 assert(loginPageSource.includes('Non-NHG Resident'), 'login page uses Non-NHG Resident terminology')
 assert(loginPageSource.includes('Unable to sign in. Check your details and try again.'), 'login page uses generic failure copy')
+assert(
+  authApiSource.includes('Too many sign-in attempts. Please try again in 1 minute.') &&
+    loginPageSource.includes('getRateLimitLoginErrorMessage') &&
+    /const getStaffLoginErrorMessage = \(loginError: unknown\) => \{\s*const rateLimitMessage = getRateLimitLoginErrorMessage\(loginError\)[\s\S]*?if \(rateLimitMessage\) \{[\s\S]*?return rateLimitMessage[\s\S]*?STAFF_SUPABASE_BACKEND_AUTH_ERROR/.test(loginPageSource),
+  'login page shows a specific too-many-requests message before staff errors fall back to generic or backend-auth copy',
+)
+assert(
+  httpSource.includes('retryAfterSeconds') &&
+    httpSource.includes("'retry-after'") &&
+    httpSource.includes('parseRetryAfterSeconds'),
+  'HTTP error conversion preserves Retry-After seconds for backend login rate-limit feedback',
+)
+assert(
+  authApiSource.includes('isRateLimitError') &&
+    authApiSource.includes('getRateLimitLoginErrorMessage') &&
+    authApiSource.includes('error.status === 429'),
+  'auth API exposes shared rate-limit detection and one-minute fallback messaging for backend and Supabase auth errors',
+)
+assert(
+  /catch \(loginError\) \{[\s\S]*if \(isRateLimitError\(loginError\)\) \{[\s\S]*throw loginError[\s\S]*\}/.test(loginPageSource),
+  'resident login fallback preserves backend 429 instead of trying the other resident table and showing invalid-details copy',
+)
 assert(loginPageSource.includes('loginStaff'), 'staff login is separate from MCR resident login')
 assert(
   !loginPageSource.includes('residentSupabaseUnsupported') &&
@@ -282,8 +366,29 @@ assert(
 )
 assert(
   authApiSource.includes('posting_schedule: payload.postingSchedule.map') &&
+    !authApiSource.includes('posting_code: row.postingCode') &&
     !authApiSource.includes('current_nhg_posting_code: payload.currentNhgPostingCode'),
-  'Non-NHG registration API sends posting_schedule rows instead of the legacy single current posting field',
+  'Non-NHG registration API sends programme/institution schedule rows without trusting client-entered posting_code',
+)
+assert(
+  !registrationPageSource.includes('postingCode: string') &&
+    !registrationPageSource.includes("'postingCode'") &&
+    !registrationPageSource.includes('Posting code') &&
+    !registrationPageSource.includes('placeholder="e.g. TTSHGerMed"') &&
+    !registrationPageSource.includes('Resolved by MATA after submission') &&
+    !registrationPageSource.includes('auth-schedule-resolved'),
+  'Non-NHG registration form ends schedule rows after programme and institution without editable or placeholder posting UI',
+)
+assert(
+  registrationPageSource.includes('postingResolutionError') &&
+    registrationPageSource.includes('No posting could be resolved') &&
+    registrationPageSource.includes('auth-schedule-row-error'),
+  'Non-NHG registration shows posting-resolution validation near schedule rows',
+)
+assert(
+  registrationPageSource.includes('formatSchedulePosting') &&
+    registrationPageSource.includes('auth-confirmation-schedule'),
+  'Non-NHG registration success recap displays resolved posting codes as read-only output',
 )
 assert(
   !loginPageSource.includes('auth-register-cta is-disabled') &&
@@ -380,10 +485,82 @@ assert(authHeadersSource.includes("authMode === 'supabase'"), 'auth headers supp
 assert(!authHeadersSource.includes(obsoleteIdentityHeaderFallback), 'auth headers do not emit pre-login demo identity headers')
 assert(!authHeadersSource.includes("'X-User-Role':"), 'authHeaders does not synthesize raw frontend role headers')
 assert(!authContextSource.includes('demoIdentityForRole'), 'local app role does not create implicit authenticated identity')
-assert(loginPageSource.includes('logout()'), 'failed login clears stale auth session')
+const staffLoginSource = loginPageSource.slice(
+  loginPageSource.indexOf('const submitStaffLogin'),
+  loginPageSource.indexOf('const submitResidentLogin'),
+)
+const staffLoginPreTrySource = staffLoginSource.slice(0, staffLoginSource.indexOf('try {'))
 assert(
-  /setSubmittingForm\('staff'\)[\s\S]*setError\(null\)[\s\S]*await logout\(\)/.test(loginPageSource),
-  'staff login clears stale login error and session state before a new login attempt',
+  authContextSource.includes('beginLoginAttempt') &&
+    staffLoginPreTrySource.includes('beginLoginAttempt()') &&
+    !staffLoginPreTrySource.includes('await logout()'),
+  'staff login invalidates stale hydration and clears local app state before a new attempt without Supabase logout',
+)
+assert(
+  /if \(submittingForm === 'staff'\) \{\s*return\s*\}/.test(staffLoginSource) &&
+    staffLoginSource.includes('isAuthRequestCurrent(loginGeneration)') &&
+    staffLoginSource.includes('clearCurrentAuthRequest(loginGeneration, { signOutSupabase: true })') &&
+    !staffLoginSource.includes('await logout()') &&
+    /catch \(loginError\) \{[\s\S]*if \(!isAuthRequestCurrent\(loginGeneration\)\) \{[\s\S]*return[\s\S]*\}[\s\S]*const clearedCurrentRequest = await clearCurrentAuthRequest\(loginGeneration, \{ signOutSupabase: true \}\)[\s\S]*if \(!clearedCurrentRequest\) \{[\s\S]*return[\s\S]*\}[\s\S]*setError/.test(staffLoginSource),
+  'staff login blocks duplicate submissions and uses generation-scoped failure cleanup before error state changes',
+)
+assert(
+  authApiSource.includes('current_posting_code') &&
+    authApiSource.includes('current_posting_label') &&
+    authApiSource.includes('currentPostingCode') &&
+    authApiSource.includes('currentPostingLabel') &&
+    shellSource.includes('identity.currentPostingLabel ?? identity.currentPostingCode ??') &&
+    shellSource.includes('No current posting'),
+  'resident shell scope uses backend-derived current posting display labels before posting-code fallback',
+)
+assert(
+  shellSource.includes("identity?.role === 'resident' || identity?.role === 'external_resident'") &&
+    shellSource.includes('identity.mcr') &&
+    !shellSource.includes('`${identity.programmeCode} - MCR ${identity.mcr}`') &&
+    !shellSource.includes('`${postingScope} - MCR ${identity.mcr}`'),
+  'NHG and Non-NHG resident sidebar subtext shows only the raw MCR number and scope omits MCR',
+)
+assert(
+  residentSubmissionPageSource.includes("Submissions are recorded for home-cluster's records only") &&
+    !residentSubmissionPageSource.includes('Non-NHG Resident - submissions are stored for home-cluster forwarding only'),
+  'Non-NHG submission portal uses the updated forwarding-only copy',
+)
+assert(
+  adminExternalAttendancePageSource.includes('secretary-event-metrics admin-resident-submissions-metrics external-attendance-metrics') &&
+    adminExternalAttendancePageSource.includes('resident-submissions-mobile-summary-card') &&
+    adminExternalAttendancePageSource.includes('resident-submissions-desktop-metric') &&
+    adminExternalAttendancePageSource.indexOf('label="Submitted"') < adminExternalAttendancePageSource.indexOf('label="Flagged"') &&
+    adminExternalAttendancePageSource.indexOf('label="Flagged"') < adminExternalAttendancePageSource.indexOf('label="Ad-hoc"') &&
+    !adminExternalAttendancePageSource.includes('label="Total"') &&
+    !adminExternalAttendancePageSource.includes('grid metrics-grid resident-submissions-metrics') &&
+    adminExternalAttendancePageSource.indexOf('external-attendance-filters') < adminExternalAttendancePageSource.indexOf('external-attendance-metrics'),
+  'Non-NHG Attendance metrics show Submitted / Flagged / Ad-hoc below filters without a Total card',
+)
+assert(
+  adminExternalAttendancePageSource.includes('card filter-bar admin-resident-submissions-filters external-attendance-filters') &&
+    adminExternalAttendancePageSource.includes('admin-secretary-events-filter-actions external-attendance-filter-actions') &&
+    adminExternalAttendancePageSource.indexOf('Status') < adminExternalAttendancePageSource.indexOf('Clear filters'),
+  'Non-NHG Attendance filters reuse admin filter styling with Clear filters aligned by Status',
+)
+assert(
+  adminExternalAttendancePageSource.includes('<StatusBadge tone="neutral" label={row.homeCluster} />') &&
+    !adminExternalAttendancePageSource.includes('<th>Status</th>') &&
+    !adminExternalAttendancePageSource.includes('StatusBadge tone={statusTone(row.status)}') &&
+    adminExternalAttendancePageSource.includes('admin-resident-submissions-table-card') &&
+    adminExternalAttendancePageSource.includes('admin-resident-submissions-table external-attendance-table') &&
+    adminExternalAttendancePageSource.includes('secretary-event-title-cell') &&
+    adminExternalAttendancePageSource.includes('secretary-event-stack') &&
+    adminExternalAttendancePageSource.includes('secretary-event-source-cell'),
+  'Non-NHG Attendance table reuses resident submission styling and omits visible Status column/values',
+)
+assert(
+  !adminResidentSubmissionsPageSource.includes('label="Submissions"') &&
+    !adminResidentSubmissionsPageSource.includes('<th>Status</th>') &&
+    !adminResidentSubmissionsPageSource.includes('<td>\n                      <StatusBadge label={submission.status}') &&
+    adminResidentSubmissionsPageSource.indexOf('<th>Teaching</th>') < adminResidentSubmissionsPageSource.indexOf('<th>Session Type</th>') &&
+    adminResidentSubmissionsPageSource.indexOf('<th>Session Type</th>') < adminResidentSubmissionsPageSource.indexOf('<th>Posting</th>') &&
+    !adminResidentSubmissionsPageSource.includes("{submission.mcr} / {submission.programmeCode ?? '-'}"),
+  'NHG Resident Submissions removes Submissions metric/status column, puts Session Type before Posting, and shows resident MCR without programme suffix',
 )
 assert(
   !pcTeachingEventsSource.includes('listProgrammes'),

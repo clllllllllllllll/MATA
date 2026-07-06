@@ -152,10 +152,10 @@ async def delete_attendance(
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
     if resident_context.role == "external_resident":
-        raise ApiError(
-            status_code=403,
-            detail="Forbidden - native resident role required",
-            error_code=ErrorCode.FORBIDDEN.value,
+        return await resident_submission.remove_external_attendance(
+            db,
+            external_resident_id=resident_context.subject_id,
+            attendance_id=attendance_id,
         )
     return await resident_submission.remove_attendance(
         db,

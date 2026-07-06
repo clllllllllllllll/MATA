@@ -162,6 +162,32 @@ async def teaching_name_options(
             """
         )
     )
+    global_posting_result = await db.execute(
+        text(
+            """
+            /* programme_teaching_events:global_posting_options */
+            SELECT DISTINCT posting_code
+            FROM (
+                SELECT spp.posting_code
+                FROM secretary_programme_pools spp
+                WHERE spp.programme_code = :programme_code
+                  AND spp.is_active = true
+                UNION
+                SELECT tnc.posting_code
+                FROM teaching_name_catalogue tnc
+                WHERE tnc.programme_code = :programme_code
+            ) safe_postings
+            WHERE posting_code IS NOT NULL
+            ORDER BY posting_code ASC
+            """
+        ),
+        {"programme_code": programme_code},
+    )
+    global_posting_codes = [
+        str(row["posting_code"])
+        for row in global_posting_result.mappings().all()
+        if row.get("posting_code")
+    ]
 
     options_by_keyword: dict[str, dict[str, Any]] = {}
     for raw_row in catalogue_result.mappings().all():
@@ -221,9 +247,43 @@ async def teaching_name_options(
         keyword, row = parsed
         if keyword in options_by_keyword:
             continue
+        row["posting_codes"] = global_posting_codes
         options.append(row)
 
     return sorted(options, key=lambda row: (_natural_sort_key(row["keyword"]), row["is_global"]))
+
+
+async def _posting_available_for_programme(
+    db: AsyncSession,
+    *,
+    programme_code: str,
+    posting_code: str,
+) -> bool:
+    result = await db.execute(
+        text(
+            """
+            /* programme_teaching_events:posting_available */
+            SELECT
+                (
+                    EXISTS (
+                        SELECT 1
+                        FROM secretary_programme_pools spp
+                        WHERE spp.posting_code = :posting_code
+                          AND spp.programme_code = :programme_code
+                          AND spp.is_active = true
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM teaching_name_catalogue tnc
+                        WHERE tnc.posting_code = :posting_code
+                          AND tnc.programme_code = :programme_code
+                    )
+                ) AS is_available
+            """
+        ),
+        {"programme_code": programme_code, "posting_code": posting_code},
+    )
+    return bool(result.scalar_one_or_none())
 
 
 async def resolve_teaching_name(
@@ -282,7 +342,21 @@ async def resolve_teaching_name(
             detail="teaching_name is not available for this programme and posting",
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
-    return dict(row)
+    resolved = dict(row)
+    if resolved.get("is_global") and not await _posting_available_for_programme(
+        db,
+        programme_code=programme_code,
+        posting_code=posting_code,
+    ):
+        raise ApiError(
+            status_code=422,
+            detail=(
+                "No posting is configured for this global teaching name and programme. "
+                "Contact an administrator."
+            ),
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
+    return resolved
 
 
 async def list_teaching_events(

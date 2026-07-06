@@ -81,6 +81,7 @@ const normaliseError = (error: unknown) => {
 export const ResidentAttendancePage = () => {
   const { identity } = useAuth()
   const isExternalResident = identity?.role === 'external_resident'
+  const showStatusColumn = !isExternalResident
   const [rows, setRows] = useState<ResidentAttendanceHistoryRow[]>([])
   const [filters, setFilters] = useState<ResidentAttendanceFilters>({ limit: 100, offset: 0 })
   const [loading, setLoading] = useState(true)
@@ -246,13 +247,13 @@ export const ResidentAttendancePage = () => {
                     <th>Time</th>
                     <th>Posting</th>
                     <th>Source</th>
-                    <th>Status</th>
-                    {!isExternalResident ? <th>Action</th> : null}
+                    {showStatusColumn ? <th>Status</th> : null}
+                    <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((row) => {
-                    const canDelete = !isExternalResident && row.status.toLowerCase() === 'submitted'
+                    const canDelete = row.status.toLowerCase() === 'submitted'
                     return (
                       <tr key={row.attendanceId} className={row.status.toLowerCase() === 'removed' ? 'resident-row-removed' : ''}>
                         <td className="resident-teaching-name">{row.teachingName}</td>
@@ -262,25 +263,25 @@ export const ResidentAttendancePage = () => {
                         </td>
                         <td className="mono">{row.postingCode}</td>
                         <td>{row.source === 'adhoc' ? 'Ad-hoc' : 'Scheduled'}</td>
-                        <td>
-                          <span className={`status-badge ${statusClass(row.status)}`}>
-                            {formatAttendanceStatus(row.status)}
-                          </span>
-                        </td>
-                        {!isExternalResident ? (
+                        {showStatusColumn ? (
                           <td>
-                            {canDelete ? (
-                              <button
-                                type="button"
-                                className="button button-danger resident-delete-button"
-                                onClick={() => void handleDeleteAttendance(row)}
-                              >
-                                <IconX size={14} />
-                                Delete submission
-                              </button>
-                            ) : null}
+                            <span className={`status-badge ${statusClass(row.status)}`}>
+                              {formatAttendanceStatus(row.status)}
+                            </span>
                           </td>
                         ) : null}
+                        <td>
+                          {canDelete ? (
+                            <button
+                              type="button"
+                              className="button button-danger resident-delete-button"
+                              onClick={() => void handleDeleteAttendance(row)}
+                            >
+                              <IconX size={14} />
+                              Delete submission
+                            </button>
+                          ) : null}
+                        </td>
                       </tr>
                     )
                   })}
@@ -292,7 +293,7 @@ export const ResidentAttendancePage = () => {
         {!loading && rows.length > 0 ? (
           <div className="resident-attendance-card-list responsive-card-list">
             {rows.map((row) => {
-              const canDelete = !isExternalResident && row.status.toLowerCase() === 'submitted'
+              const canDelete = row.status.toLowerCase() === 'submitted'
               return (
                 <div
                   className={`resident-history-row resident-attendance-card mobile-record-card ${
@@ -314,9 +315,11 @@ export const ResidentAttendancePage = () => {
                       </div>
                     </div>
                     <div className="resident-history-side">
-                      <span className={`status-badge resident-history-status ${statusClass(row.status)}`}>
-                        {formatAttendanceStatus(row.status)}
-                      </span>
+                      {showStatusColumn ? (
+                        <span className={`status-badge resident-history-status ${statusClass(row.status)}`}>
+                          {formatAttendanceStatus(row.status)}
+                        </span>
+                      ) : null}
                       {canDelete ? (
                         <button
                           type="button"
