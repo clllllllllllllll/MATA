@@ -1,12 +1,18 @@
 # 5B-H Vercel UAT Security Plan
 
-Status: Planned / next phase
+Status: 5B-H-A and 5B-H-B complete; 5B-H-C checklist added; 5B-H-D pending
 
 Last updated: 2026-07-06
 
 ## 1. Purpose
 
 This plan defines the security work needed to deploy MATA to Vercel/Supabase for stakeholder UAT before Phase 6 compliance. It turns the completed 5B-G readiness docs into a deployment-focused security path: audit first, apply only necessary UAT blockers, smoke the protected deployment, then complete deeper session transport hardening before real production or public use.
+
+Related 5B-H outputs:
+
+- `docs/5b_h_uat_security_audit.md`
+- `docs/5b_h_uat_security_fix_log.md`
+- `docs/5b_h_vercel_supabase_uat_smoke.md`
 
 ## 2. Scope
 
