@@ -1,6 +1,6 @@
 # 5B-H Vercel UAT Security Plan
 
-Status: 5B-H-A and 5B-H-B complete; 5B-H-C checklist added; 5B-H-D pending
+Status: 5B-H-A and 5B-H-B complete; 5B-H-C checklist added; 5B-H-D plan added; implementation pending
 
 Last updated: 2026-07-06
 
@@ -13,6 +13,7 @@ Related 5B-H outputs:
 - `docs/5b_h_uat_security_audit.md`
 - `docs/5b_h_uat_security_fix_log.md`
 - `docs/5b_h_vercel_supabase_uat_smoke.md`
+- `docs/5b_h_session_transport_hardening_plan.md`
 
 ## 2. Scope
 

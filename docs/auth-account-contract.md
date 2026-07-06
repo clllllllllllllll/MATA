@@ -430,11 +430,11 @@ Implemented Non-NHG posting schedule work:
 - `5B-H-A`: Vercel UAT security audit and minimal deployment hardening plan.
 - `5B-H-B`: Minimal UAT security fixes.
 - `5B-H-C`: Supabase/Vercel UAT deployment smoke.
-- `5B-H-D`: Full session transport hardening.
+- `5B-H-D`: Full session transport hardening plan in `docs/5b_h_session_transport_hardening_plan.md`; implementation remains required before real production or public use.
 
 5B-H sequencing:
 - `5B-H-A`, `5B-H-B`, and `5B-H-C` are required before stakeholder UAT.
-- `5B-H-D` can be a deeper follow-up if time is tight, but it must be completed before real production or public use.
+- `5B-H-D` planning can be a deeper follow-up if time is tight, but the actual cookie/BFF/CSRF implementation must be completed before real production or public use.
 - Browser-visible bearer-token transport remains a known temporary risk until `5B-H-D`.
 - Full RLS enablement and policy SQL remain a later dedicated RLS/grants phase, not part of `5B-H-A`, `5B-H-B`, or `5B-H-C`.
 - Phase 6 compliance starts only after the protected deployment/security baseline is acceptable.
