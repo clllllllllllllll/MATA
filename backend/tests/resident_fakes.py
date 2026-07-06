@@ -599,14 +599,6 @@ class FakeResidentSession:
                 }
                 for row in self.programmes
                 if row["code"] == payload.get("programme_code")
-                and (
-                    row.get("native_teaching_posting_code") is None
-                    or any(
-                        posting["code"] == row.get("native_teaching_posting_code")
-                        and posting.get("institution") == payload.get("institution")
-                        for posting in self.posting_codes
-                    )
-                )
             ]
             return FakeResult(rows=rows[:1])
 
@@ -766,6 +758,7 @@ class FakeResidentSession:
                     and row["event_date"] <= today
                     and row["id"] not in submitted
                     and row.get("created_by_role") == "secretary"
+                    and row.get("created_for_programme_code") is None
                 ]
                 if "date_from" in payload and payload["date_from"] is not None:
                     rows = [row for row in rows if row["event_date"] >= payload["date_from"]]
@@ -791,6 +784,7 @@ class FakeResidentSession:
                 and row["event_date"] <= payload.get("period_end", date.max)
                 and row["id"] not in submitted
                 and row.get("created_by_role") in {"secretary", "programme_pc", None}
+                and row.get("created_for_programme_code") in {None, payload.get("programme_code")}
             ]
             if "date_from" in payload and payload["date_from"] is not None:
                 rows = [row for row in rows if row["event_date"] >= payload["date_from"]]
