@@ -167,7 +167,11 @@ This file is navigation only. Detailed contracts live in `99_decision_log_and_ga
 - `4B` Programme PC Teaching Event CRUD: planned before compliance. PCs manage scheduled, programme-owned teaching events through admin endpoints. See `api.md` planned `4B` endpoints and `schema.md` planned `teaching_events.created_for_programme_code`.
 - `5A` NHG Resident workflow hardening: includes date-first, catalogue-backed ad-hoc teaching flow and planned `details_of_session`.
 - `5B` Non-NHG Resident Workflow and resident visibility update: must be completed before Phase 6 compliance and includes Non-NHG registration/login, upcoming NHG posting schedule update, event listing, attendance/ad-hoc submission, past attendance, admin/PC list/read, Excel export, native programme department visibility, and fixed ad-hoc attribution.
-- Phase 6 compliance must read native `attendance_records` only and never join `external_attendance_records`.
+- `5B-G` Supabase readiness is complete as documentation/audit work: staff bootstrap runbook, RLS/grants/Data API planning matrix, Supabase migration smoke plan, service-role access review, and readiness audit. It did not enable RLS, write policy SQL, implement cookie/BFF/CSRF, or implement compliance.
+- `5B-H` is next before stakeholder UAT and before Phase 6 compliance. Its immediate focus is Vercel/Supabase UAT security: deployment protection, frontend/backend env separation, backend `ENV=production` plus `AUTH_MODE=supabase`, tight CORS, Supabase table/Data API exposure review, migration smoke, first Master Admin bootstrap, and deployment smoke testing.
+- `5B-H-A`, `5B-H-B`, and `5B-H-C` are deployment-security/UAT phases. Do not treat full RLS policy implementation or Phase 6 compliance as part of those subphases.
+- RLS policy implementation is deferred to a dedicated later RLS/grants phase that uses `docs/5b_g_rls_grants_matrix.md` as input.
+- Phase 6 compliance remains the next major feature phase after the protected deployment/security baseline is acceptable. Phase 6 compliance must read native `attendance_records` only and never join `external_attendance_records`.
 
 ### Open TBDs
 

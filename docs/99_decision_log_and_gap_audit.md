@@ -14,6 +14,28 @@ Every important decision made during the project, with reasoning and consequence
 
 ---
 
+#### Decision: Vercel stakeholder UAT requires a deployment security cut before Phase 6 compliance
+- **Status:** Confirmed roadmap sequencing
+- **Decision:** Stakeholder UAT needs a protected Vercel/Supabase deployment before Phase 6 compliance starts. Vercel deployment must not be treated as safe just because the frontend uses Supabase Auth.
+- **Deployment access control:** The UAT deployment should be protected from public access where possible, for example Vercel Deployment Protection, Vercel Authentication, or password protection depending on project plan availability.
+- **Backend runtime requirement:** Backend must run with `ENV=production` and `AUTH_MODE=supabase` for stakeholder deployment. Raw `X-User-*` identity headers must remain rejected in production/Supabase mode.
+- **CORS requirement:** CORS must be restricted to the exact Vercel frontend origin or approved frontend origins. Wildcard CORS is not acceptable for UAT or production-like deployment.
+- **Frontend env requirement:** Vercel frontend environment variables must be browser-safe `VITE_*` values only. Backend-only secrets must never be placed in Vercel frontend env, including:
+  - `SUPABASE_SERVICE_ROLE_KEY`
+  - `MATA_RESIDENT_SESSION_SECRET`
+  - `DATABASE_URL`
+  - `SYNC_DATABASE_URL`
+  - JWT/private secrets
+  - database passwords
+- **Supabase direct access requirement:** The Supabase frontend client should be used only for Auth unless a later RLS/grants phase explicitly approves direct table access. Supabase app table/Data API exposure must be reviewed before UAT.
+- **Phase boundary:** Full RLS enablement and policy SQL remain deferred to a dedicated RLS phase. Cookie/BFF/CSRF/session hardening remains part of 5B-H, with the deployment-safe cut first.
+- **Compliance sequencing:** Phase 6 compliance should not begin until the protected deployment/security baseline is acceptable.
+- **Non-NHG invariant:** Non-NHG data remains separate and must not enter NHG compliance later.
+- **Reference file and section:** `docs/5b_h_vercel_uat_security_plan.md`; `docs/auth-account-contract.md` 5B-H roadmap alignment; `docs/5b_g_rls_grants_matrix.md`
+- **Do not change without PM/stakeholder approval:** Yes
+
+---
+
 #### Decision: Admin accounts are programme-scoped
 - **Status:** ✅ Confirmed
 - **Decision:** Admin/PC accounts use `users.programme_scope TEXT[]` to restrict access to specific programmes. `NULL` = no access (not all-access).
