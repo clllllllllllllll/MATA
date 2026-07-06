@@ -1,6 +1,6 @@
 # 5B-H-A Vercel/Supabase UAT Security Audit
 
-Status: 5B-H-A audit complete
+Status: 5B-H-A audit complete; 5B-H-B code fixes verified
 Last updated: 2026-07-06
 
 ## 1. Executive Summary
@@ -9,14 +9,14 @@ UAT readiness verdict: CONDITIONAL GO.
 
 No critical or high local-code finding was found that proves auth bypass, committed backend-secret exposure, or direct frontend Supabase app-table access. The current implementation already has the major 5B-G guardrails: production/Supabase mode rejects raw `X-User-*` identity headers, staff Supabase JWTs map through `users.supabase_user_id`, staff role/scope comes from DB-owned `users` rows, and NHG/Non-NHG Resident sessions are backend-signed MATA resident tokens.
 
-Top blockers before stakeholder UAT:
+Top blockers identified before stakeholder UAT:
 
-- H-UPLOAD-001: add a per-file byte-size check after upload read and before workbook/CSV parsing, because the current 10 MB guard depends on `Content-Length`.
-- H-EXPORT-001: sanitize browser-generated secretary CSV cells for spreadsheet formula injection.
+- H-UPLOAD-001: fixed in 5B-H-B with per-file byte-size validation after upload read and before workbook/CSV parsing.
+- H-EXPORT-001: fixed in 5B-H-B with formula-prefix sanitization for browser-generated secretary CSV cells.
 - H-RLSBOUNDARY-001: manually verify the actual Supabase UAT project does not expose sensitive MATA app tables to direct browser/Data API access.
 - H-DEPLOY-001: manually enable and verify Vercel deployment protection, exact CORS origins, UAT `ENV=production` plus `AUTH_MODE=supabase`, first Master Admin bootstrap, and migration/staging DB smoke.
 
-5B-H-B can proceed with minimal fixes. Stakeholder UAT should wait until 5B-H-B is complete and 5B-H-C smoke evidence confirms the deployment controls.
+Stakeholder UAT should still wait until 5B-H-C smoke evidence confirms the deployment controls.
 
 ## 2. Scope Reviewed
 
@@ -76,9 +76,9 @@ Prioritized attacker and failure scenarios:
 | H-SECRETS-001 | Low | Env exposure | `.env.example`, `README.md`, `docker-compose.yml`, `frontend/Dockerfile`, `frontend/src/config/frontendConfig.ts` | Backend-only secrets could be exposed by operator mistake in Vercel frontend env. No committed secret exposure found in reviewed files. | Secret-name scans found backend-only names only in backend/env/docs placeholders; frontend config reads only `VITE_*` public values. | UAT checklist must explicitly review Vercel frontend/backend env separation. | No code fix. | Search commands plus manual Vercel env review. |
 | H-CORS-001 | Medium | CORS/deployment config | `backend/app/middleware/security.py`, `.env.example`, Vercel backend env | Incorrect UAT CORS can either block UAT or overexpose API origins. | Production rejects `*` origins and uses configured allowlist; actual Vercel URL is not known locally. | Set `CORS_ORIGINS` to exact UAT frontend origin(s); smoke approved and unapproved origins. | No code fix unless smoke finds a gap. | 5B-H-C CORS/security smoke. |
 | H-RATE-001 | Medium | Abuse controls | `backend/app/middleware/rate_limit.py`, `backend/app/config.py` | In-memory rate limiting is per-process and not durable across multi-worker/serverless instances. | Login, upload, resident attendance, mutations, report/export, and GET paths have limits; bucket uses verified identity when available and raw headers only in stub/demo. | Accept for protected UAT; plan Redis/platform store before real production/public use. | No B code fix required for protected UAT. | Targeted middleware tests if rate-limit code changes; UAT smoke for `429` where practical. |
-| H-UPLOAD-001 | Medium | Upload size/resource control | `backend/app/middleware/upload_guard.py`, `backend/app/routers/admin.py`, `backend/app/services/parser_common.py` | A missing or misleading `Content-Length` could let an oversized file reach parser validation because routers do not recheck `len(file_bytes)` after `await file.read()`. | Middleware checks `Content-Length`; routers read bytes and validate extension/readability before parser, but `validate_upload_payload` has no max-size argument. | Add per-file byte-size enforcement after read and before workbook/CSV parsing; keep 10 MB setting. | Required B fix. | Add backend tests for oversized upload bytes even when middleware header guard is bypassed/not present. |
+| H-UPLOAD-001 | Medium | Upload size/resource control | `backend/app/middleware/upload_guard.py`, `backend/app/routers/admin.py`, `backend/app/services/parser_common.py` | A missing or misleading `Content-Length` could let an oversized file reach parser validation because routers did not recheck `len(file_bytes)` after `await file.read()`. | 5B-H-B added `max_size_bytes` validation in `validate_upload_payload`; all four admin upload routes pass `settings.max_upload_size_bytes`. | Fixed in 5B-H-B. | Complete. | `python -m pytest tests/test_upload_plumbing.py -q --tb=short`; `python -m compileall app tests`. |
 | H-UPLOAD-002 | Medium | XLSX/XML hardening | `backend/app/services/parser_common.py`, `rdb_parser.py`, `ttf_parser.py`, `formf1_parser.py`, `public_holiday_parser.py` | XLSX ZIP/XML bombs or pathological workbooks can consume parser resources. | Readability check uses `openpyxl.load_workbook(read_only=True, data_only=True)` and parser routes are admin-only/rate-limited/size-limited. No deep ZIP/XML member inspection found. | Accept for protected UAT after H-UPLOAD-001; plan deeper workbook scanning/resource controls before broader public use. | Defer unless UAT fixtures expose failure. | Upload smoke with valid, invalid, unreadable, and oversize files. |
-| H-EXPORT-001 | Medium | Formula injection | `backend/app/services/admin_external_attendance.py`, `frontend/src/pages/secretary/SecretaryTeachingSchedulePage.tsx` | User-controlled values starting with `=`, `+`, `-`, or `@` can execute as formulas when CSV/XLSX is opened. | Backend Non-NHG XLSX export calls `sanitize_spreadsheet_cell`; secretary browser CSV export only quotes cells. | Add frontend CSV formula sanitization for secretary schedule export. | Required B fix. | Add frontend contract/source assertion plus typecheck/build. |
+| H-EXPORT-001 | Medium | Formula injection | `backend/app/services/admin_external_attendance.py`, `frontend/src/pages/secretary/SecretaryTeachingSchedulePage.tsx` | User-controlled values starting with `=`, `+`, `-`, or `@` can execute as formulas when CSV/XLSX is opened. | 5B-H-B added secretary CSV formula-prefix sanitization before quoting; backend Non-NHG XLSX export already calls `sanitize_spreadsheet_cell`. | Fixed in 5B-H-B. | Complete. | `node --experimental-strip-types src/authSession.contract.test.ts`; `npm run typecheck`; `npm run build`. |
 | H-LOG-001 | Low | Error/log redaction | `backend/app/middleware/errors.py`, `backend/app/routers/admin.py`, parser services, `backend/app/services/supabase_admin.py` | Parser/user-facing errors may include workbook-derived messages; unexpected server errors are generic. | SQLAlchemy/unhandled errors log class names and return generic 500; upload metadata strips internal keys; Supabase Admin errors are generic. Upload validation still returns controlled parser error strings. | Keep parser responses scoped to admin; avoid tokens/secrets in logs; revisit production log redaction for `Authorization`, `apikey`, cookies, DB URLs. | No B action unless new code adds logging. | UAT smoke errors should not show stack traces, SQL, paths, tokens, or service-role values. |
 | H-DEPS-001 | Low | Dependency/supply chain | `backend/requirements.txt`, `frontend/package.json`, `frontend/package-lock.json` | Known vulnerabilities could exist but were not audited via networked advisory tooling in this run. | Frontend lockfile exists; backend requirements are pinned but no Python lock/audit report was found. | Run advisory scans in a networked environment; do not upgrade broadly unless high/critical issue is confirmed. | No B dependency change. | Suggested: `npm audit`; suggested Python: `pip-audit -r backend/requirements.txt` in approved environment. |
 | H-RLSBOUNDARY-001 | Medium | Supabase Data API/RLS boundary | `frontend/src/api/supabaseClient.ts`, frontend `rg` search, `docs/5b_g_rls_grants_matrix.md` | Direct browser access to sensitive app tables would be a UAT blocker without RLS/grants mitigation. | Frontend search found `createClient(...)` only; no `supabase.from(...)` or `supabase.rpc(...)` app-table calls. Actual Supabase project grants/Data API exposure cannot be verified locally. | Keep app data backend-mediated; manually inspect Supabase UAT exposed schemas/grants/Data API before stakeholder access. | No local code fix. Stop before UAT if direct sensitive table access is found. | 5B-H-C Data API boundary smoke. |
@@ -319,18 +319,18 @@ Decision: CONDITIONAL GO for continuing the 5B-H sequence; not yet GO for stakeh
 Reasoning:
 
 - No high/critical local code blocker was found for auth bypass, direct frontend table access, or committed real secret exposure.
-- Two medium code findings should be fixed before stakeholder UAT: H-UPLOAD-001 and H-EXPORT-001.
+- Two medium local-code findings from 5B-H-A, H-UPLOAD-001 and H-EXPORT-001, are fixed and verified in 5B-H-B.
 - Operational controls cannot be verified locally and must be completed by 5B-H-C smoke: deployment protection, exact CORS, production/Supabase env, first Master Admin bootstrap, migration/staging DB smoke, and Supabase Data API boundary review.
 
-Stakeholder UAT should wait until 5B-H-B fixes are committed and 5B-H-C smoke evidence is filled in.
+Stakeholder UAT should wait until 5B-H-C smoke evidence is filled in.
 
 ## 17. 5B-H-B Minimal Fix Plan
 
 | Fix | Severity | Files likely affected | Why needed | Verification |
 |---|---:|---|---|---|
-| Enforce per-file upload byte-size after router read and before parser/readability validation. | Medium | `backend/app/services/parser_common.py`, `backend/app/routers/admin.py`, `backend/tests/test_upload_plumbing.py` | Prevent missing/misleading `Content-Length` from letting oversized upload bytes reach workbook/CSV parsing. | Backend targeted upload tests; `python -m compileall app tests`; `git diff --check`. |
-| Sanitize secretary schedule CSV cells before quoting. | Medium | `frontend/src/pages/secretary/SecretaryTeachingSchedulePage.tsx`, `frontend/src/authSession.contract.test.ts` or focused frontend contract test | Prevent spreadsheet formula injection in browser-generated CSV. | Frontend contract/source assertion; `npm run typecheck`; `npm run build`; `git diff --check`. |
-| Record manual deployment controls that remain outside local code. | Medium | `docs/5b_h_uat_security_fix_log.md`, `docs/5b_h_vercel_supabase_uat_smoke.md` | B fixes do not prove Vercel/Supabase deployment controls. | Smoke checklist evidence marked pass/fail/not run. |
+| Enforce per-file upload byte-size after router read and before parser/readability validation. | Medium | `backend/app/services/parser_common.py`, `backend/app/routers/admin.py`, `backend/tests/test_upload_plumbing.py` | Prevent missing/misleading `Content-Length` from letting oversized upload bytes reach workbook/CSV parsing. | Completed in 5B-H-B. |
+| Sanitize secretary schedule CSV cells before quoting. | Medium | `frontend/src/pages/secretary/SecretaryTeachingSchedulePage.tsx`, `frontend/src/authSession.contract.test.ts` | Prevent spreadsheet formula injection in browser-generated CSV. | Completed in 5B-H-B. |
+| Record manual deployment controls that remain outside local code. | Medium | `docs/5b_h_uat_security_fix_log.md`, `docs/5b_h_vercel_supabase_uat_smoke.md` | B fixes do not prove Vercel/Supabase deployment controls. | 5B-H-B fix log created; 5B-H-C smoke checklist required. |
 
 ## 18. Explicit Deferrals
 

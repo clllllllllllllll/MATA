@@ -1031,6 +1031,7 @@ async def upload_rdb(
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
+    settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     file_bytes = await file.read()
     try:
@@ -1038,6 +1039,7 @@ async def upload_rdb(
             upload_type="rdb",
             filename=file.filename,
             file_bytes=file_bytes,
+            max_size_bytes=settings.max_upload_size_bytes,
         )
     except UploadValidationError as exc:
         raise ApiError(
@@ -1089,6 +1091,7 @@ async def upload_ttf(
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
+    settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     _require_programme_in_scope(admin_context, programme_code)
 
@@ -1098,6 +1101,7 @@ async def upload_ttf(
             upload_type="ttf",
             filename=file.filename,
             file_bytes=file_bytes,
+            max_size_bytes=settings.max_upload_size_bytes,
         )
     except UploadValidationError as exc:
         raise ApiError(
@@ -1147,6 +1151,7 @@ async def upload_formf1(
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
+    settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     file_bytes = await file.read()
     try:
@@ -1154,6 +1159,7 @@ async def upload_formf1(
             upload_type="form_f1",
             filename=file.filename,
             file_bytes=file_bytes,
+            max_size_bytes=settings.max_upload_size_bytes,
         )
     except UploadValidationError as exc:
         raise ApiError(
@@ -1191,6 +1197,7 @@ async def upload_public_holidays(
     admin_context: AdminContext = Depends(require_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
+    settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     file_bytes = await file.read()
     try:
@@ -1198,6 +1205,7 @@ async def upload_public_holidays(
             upload_type="public_holidays",
             filename=file.filename,
             file_bytes=file_bytes,
+            max_size_bytes=settings.max_upload_size_bytes,
         )
     except UploadValidationError as exc:
         raise ApiError(

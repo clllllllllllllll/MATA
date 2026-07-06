@@ -107,8 +107,18 @@ def validate_upload_payload(
     upload_type: UploadType,
     filename: str | None,
     file_bytes: bytes,
+    max_size_bytes: int | None = None,
     workbook_hook: WorkbookReadabilityHook | None = None,
 ) -> ValidatedUpload:
+    if max_size_bytes is not None and len(file_bytes) > max_size_bytes:
+        max_size_mb = max_size_bytes / (1024 * 1024)
+        limit_label = (
+            f"{int(max_size_mb)} MB"
+            if max_size_mb.is_integer()
+            else f"{max_size_mb:.1f} MB"
+        )
+        raise UploadValidationError(f"Uploaded file exceeds the {limit_label} limit.")
+
     extension = validate_allowed_extension(upload_type, filename)
     if extension == ".xlsx":
         readability_hook = workbook_hook or default_workbook_readability_hook
