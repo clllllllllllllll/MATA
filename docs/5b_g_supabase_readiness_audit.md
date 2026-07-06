@@ -1,6 +1,6 @@
 # Phase 5B-G Supabase Production Readiness Audit
 
-Status: Ready for 5B-G-D/E/F/G
+Status: Ready for 5B-G-G
 
 Last updated: 2026-07-06
 
@@ -224,7 +224,7 @@ Status: Follow-up required
 - OpenAPI/generated API docs can still expose legacy raw header parameters for dependencies that retain stub/demo fallback branches.
 - First production Master Admin / staff `supabase_user_id` bootstrap is not documented or automated.
 - RLS policy/grant/Data API plan is not yet written, by design.
-- Clean Supabase database migration smoke test remains a deployment follow-up.
+- Supabase migration smoke plan exists; actual clean-db/staging execution remains a deployment follow-up.
 - Service-role / privileged backend access paths still need a dedicated review.
 
 ## Explicitly Deferred to 5B-H
@@ -391,3 +391,24 @@ Review notes:
 - No RLS was enabled, no RLS policy SQL was added, and no migrations/backend/frontend files were changed.
 - App-level authorization remains mandatory even with future RLS.
 - Non-NHG tables remain separate and explicitly excluded from NHG compliance, surplus, snapshots, and clawback.
+
+## 5B-G-F Supabase Migration Smoke Plan Update
+
+Status: Ready
+
+Files changed:
+
+- `docs/5b_g_supabase_migration_smoke_plan.md`
+- `docs/5b_g_supabase_readiness_audit.md`
+
+Summary:
+
+- Added a clean-database Supabase migration smoke plan for Alembic upgrade rehearsal, seed verification, and schema invariant checks.
+- Documented local, staging, and production environment assumptions; required backend-only env vars; secrets-handling rules; preflight checks; migration execution; rollback/recovery; CI/staging recommendations; and stop conditions.
+- Captured verification expectations for baseline programme/LOA/posting/global session/weekend exception seeds, `users.admin_level`, nullable unique `users.supabase_user_id`, separate Non-NHG tables, `teaching_events.created_for_programme_code`, and native teaching posting mapping.
+- Reaffirmed that staff bootstrap is separate from migration smoke testing and must not be inferred from null or empty programme scope.
+
+Review notes:
+
+- No migrations, backend code, frontend code, RLS, RLS policy SQL, cookie/BFF/CSRF work, service-role key material, or compliance logic were added.
+- The plan uses placeholders only and warns operators to stop if real production targets or credentials are ambiguous.
