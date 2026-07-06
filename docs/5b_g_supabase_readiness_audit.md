@@ -369,3 +369,25 @@ Review notes:
 - No scripts, users, migrations, frontend changes, RLS, RLS policies, cookie/BFF/CSRF work, or compliance logic were added.
 - The runbook uses placeholders only and does not contain real credentials.
 - `SUPABASE_SERVICE_ROLE_KEY`, `MATA_RESIDENT_SESSION_SECRET`, database URLs/passwords, and backend-only secrets remain backend-only and forbidden in `VITE_*`.
+
+## 5B-G-E RLS And Grants Matrix Update
+
+Status: Ready
+
+Files changed:
+
+- `docs/5b_g_rls_grants_matrix.md`
+- `docs/5b_g_supabase_readiness_audit.md`
+
+Summary:
+
+- Added a table-by-table RLS, grants, exposed-schema, and Supabase Data API readiness matrix.
+- Classified staff/admin, NHG Resident, Non-NHG Resident, attendance, upload/audit, reference/config, and future compliance/snapshot/clawback tables.
+- Documented direct browser access posture, backend access mode, future RLS posture, policy dimensions, grant/Data API posture, required tests, and risks for each table group.
+- Incorporated current Supabase Data API grant behavior: grants control object reachability, RLS controls row access, and Data API exposure should be explicit and reviewable.
+
+Review notes:
+
+- No RLS was enabled, no RLS policy SQL was added, and no migrations/backend/frontend files were changed.
+- App-level authorization remains mandatory even with future RLS.
+- Non-NHG tables remain separate and explicitly excluded from NHG compliance, surplus, snapshots, and clawback.
