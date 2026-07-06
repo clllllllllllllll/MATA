@@ -6235,6 +6235,23 @@ button:disabled,
   width: 100%;
 }
 
+.external-attendance-filters {
+  grid-template-columns: repeat(6, minmax(112px, 1fr)) minmax(108px, auto);
+  align-items: end;
+  gap: 10px;
+  padding: 12px;
+}
+
+.external-attendance-filter-actions {
+  display: flex;
+  align-items: flex-end;
+  min-width: 0;
+}
+
+.external-attendance-filter-actions .button {
+  width: 100%;
+}
+
 .secretary-event-metrics {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
@@ -6308,37 +6325,40 @@ button:disabled,
 
 .admin-resident-submissions-table th:nth-child(2),
 .admin-resident-submissions-table td:nth-child(2) {
-  width: 240px;
+  width: 270px;
 }
 
 .admin-resident-submissions-table th:nth-child(3),
 .admin-resident-submissions-table td:nth-child(3) {
-  width: 210px;
+  width: 330px;
 }
 
 .admin-resident-submissions-table th:nth-child(4),
 .admin-resident-submissions-table td:nth-child(4) {
-  width: 150px;
+  width: 210px;
 }
 
 .admin-resident-submissions-table th:nth-child(5),
 .admin-resident-submissions-table td:nth-child(5) {
-  width: 128px;
+  width: 150px;
 }
 
 .admin-resident-submissions-table th:nth-child(6),
 .admin-resident-submissions-table td:nth-child(6) {
-  width: 110px;
+  width: 128px;
 }
 
 .admin-resident-submissions-table th:nth-child(7),
 .admin-resident-submissions-table td:nth-child(7) {
-  width: 125px;
+  width: 135px;
 }
 
 .admin-resident-submissions-table th:nth-child(8),
 .admin-resident-submissions-table td:nth-child(8) {
-  width: 215px;
+  width: 42px;
+  padding-left: 4px;
+  padding-right: 10px;
+  text-align: right;
 }
 
 .admin-resident-submissions-table th:last-child,
@@ -6347,6 +6367,48 @@ button:disabled,
   padding-left: 4px;
   padding-right: 10px;
   text-align: right;
+}
+
+.external-attendance-table {
+  min-width: 1180px;
+}
+
+.external-attendance-table th:first-child,
+.external-attendance-table td:first-child {
+  width: 220px;
+}
+
+.external-attendance-table th:nth-child(2),
+.external-attendance-table td:nth-child(2) {
+  width: 128px;
+}
+
+.external-attendance-table th:nth-child(3),
+.external-attendance-table td:nth-child(3) {
+  width: 280px;
+}
+
+.external-attendance-table th:nth-child(4),
+.external-attendance-table td:nth-child(4) {
+  width: 150px;
+}
+
+.external-attendance-table th:nth-child(5),
+.external-attendance-table td:nth-child(5) {
+  width: 220px;
+}
+
+.external-attendance-table th:nth-child(6),
+.external-attendance-table td:nth-child(6) {
+  width: 130px;
+}
+
+.external-attendance-table th:last-child,
+.external-attendance-table td:last-child {
+  width: 120px;
+  padding-left: 12px;
+  padding-right: 16px;
+  text-align: left;
 }
 
 .admin-secretary-events-table th:first-child,
@@ -6428,14 +6490,20 @@ button:disabled,
 .admin-resident-submissions-posting strong,
 .admin-resident-submissions-posting span,
 .admin-resident-submissions-datetime strong,
-.admin-resident-submissions-datetime span,
-.admin-resident-submissions-session-type strong,
-.admin-resident-submissions-session-type span {
+.admin-resident-submissions-datetime span {
   display: block;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.admin-resident-submissions-session-type strong,
+.admin-resident-submissions-session-type span {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .secretary-event-detail .parsed-data-detail-grid {
@@ -6444,6 +6512,10 @@ button:disabled,
 
 @media (max-width: 1120px) {
   .admin-secretary-events-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .external-attendance-filters {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -6458,6 +6530,7 @@ button:disabled,
 
 @media (max-width: 720px) {
   .admin-secretary-events-filters,
+  .external-attendance-filters,
   .secretary-event-metrics,
   .secretary-event-detail .parsed-data-detail-grid {
     grid-template-columns: 1fr;
@@ -7405,6 +7478,76 @@ button:disabled,
   overflow-wrap: anywhere;
 }
 
+.auth-schedule-list {
+  display: grid;
+  gap: 10px;
+}
+
+.auth-schedule-row {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.auth-schedule-row-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.auth-schedule-row-heading strong {
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.auth-schedule-row-heading button,
+.auth-schedule-add {
+  min-height: 32px;
+  padding: 7px 11px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  color: var(--purple);
+  font-size: 12px;
+  font-weight: 800;
+  background: #fff;
+}
+
+.auth-schedule-row-heading button:hover,
+.auth-schedule-add:hover {
+  border-color: var(--purple);
+  background: var(--purple-tint-2);
+}
+
+.auth-schedule-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.auth-schedule-row-error {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(190, 18, 60, 0.18);
+  border-radius: 10px;
+  color: #9f1239;
+  background: #fff1f2;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.auth-confirmation-schedule {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 16px;
+}
+
 .auth-primary-action,
 .auth-confirmation-action {
   display: inline-flex;
@@ -7838,6 +7981,7 @@ button:disabled,
   }
 
   .auth-choice-grid,
+  .auth-schedule-grid,
   .auth-tab-list {
     grid-template-columns: minmax(0, 1fr);
   }

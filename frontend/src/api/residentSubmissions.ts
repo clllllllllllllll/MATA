@@ -98,6 +98,13 @@ export interface ResidentAdhocTeachingOption {
   isGlobal: boolean
 }
 
+export interface ResidentAdhocAttendedPostingOption {
+  postingCode: string
+  label: string
+  programmeCode?: string
+  programmeName?: string
+}
+
 export interface ResidentAdhocOptionsResponse {
   date: string
   teachingDate: string
@@ -108,6 +115,9 @@ export interface ResidentAdhocOptionsResponse {
   postingCode?: string | null
   postingLabel?: string | null
   rYear?: string | null
+  attendedPostingOptions: ResidentAdhocAttendedPostingOption[]
+  selectedAttendedPostingCode?: string | null
+  selectedAttendedPostingLabel?: string | null
   options: ResidentAdhocTeachingOption[]
 }
 
@@ -196,6 +206,13 @@ const toAdhocOption = (value: Record<string, unknown>): ResidentAdhocTeachingOpt
   isGlobal: Boolean(value.is_global),
 })
 
+const toAttendedPostingOption = (value: Record<string, unknown>): ResidentAdhocAttendedPostingOption => ({
+  postingCode: String(value.posting_code ?? ''),
+  label: String(value.label ?? value.posting_code ?? ''),
+  programmeCode: value.programme_code ? String(value.programme_code) : undefined,
+  programmeName: value.programme_name ? String(value.programme_name) : undefined,
+})
+
 const toHistoryRow = (value: Record<string, unknown>): ResidentAttendanceHistoryRow => ({
   attendanceId: String(value.attendance_id ?? ''),
   teachingEventId: String(value.teaching_event_id ?? ''),
@@ -263,13 +280,18 @@ const ADHOC_OPTIONS_ALIAS_PATH = '/resident/adhoc-teaching/options'
 
 export const getResidentAdhocTeachingOptions = async (
   teachingDate: string,
+  attendedPostingCode?: string,
 ): Promise<ResidentAdhocOptionsResponse> => {
   try {
     let response
+    const params = buildParams({
+      date: teachingDate,
+      attended_posting_code: attendedPostingCode,
+    })
     try {
       response = await httpClient.get(ADHOC_OPTIONS_PATH, {
         headers: buildResidentDemoHeaders(),
-        params: { date: teachingDate },
+        params,
       })
     } catch (error) {
       const requestError = toApiRequestError(error)
@@ -278,7 +300,10 @@ export const getResidentAdhocTeachingOptions = async (
       }
       response = await httpClient.get(ADHOC_OPTIONS_ALIAS_PATH, {
         headers: buildResidentDemoHeaders(),
-        params: { teaching_date: teachingDate },
+        params: buildParams({
+          teaching_date: teachingDate,
+          attended_posting_code: attendedPostingCode,
+        }),
       })
     }
     const payload =
@@ -286,6 +311,9 @@ export const getResidentAdhocTeachingOptions = async (
         ? (response.data as Record<string, unknown>)
         : {}
     const options = Array.isArray(payload.options) ? payload.options : []
+    const attendedOptions = Array.isArray(payload.attended_posting_options)
+      ? payload.attended_posting_options
+      : []
     return {
       date: String(payload.date ?? teachingDate),
       teachingDate: String(payload.teaching_date ?? payload.date ?? teachingDate),
@@ -296,6 +324,15 @@ export const getResidentAdhocTeachingOptions = async (
       postingCode: payload.posting_code ? String(payload.posting_code) : null,
       postingLabel: payload.posting_label ? String(payload.posting_label) : null,
       rYear: payload.r_year ? String(payload.r_year) : null,
+      attendedPostingOptions: attendedOptions
+        .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
+        .map(toAttendedPostingOption),
+      selectedAttendedPostingCode: payload.selected_attended_posting_code
+        ? String(payload.selected_attended_posting_code)
+        : null,
+      selectedAttendedPostingLabel: payload.selected_attended_posting_label
+        ? String(payload.selected_attended_posting_label)
+        : null,
       options: options
         .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
         .map(toAdhocOption),
@@ -343,6 +380,7 @@ export const submitResidentAdhocTeaching = async (payload: {
   teachingDate: string
   startTime: string
   teachingName: string
+  attendedPostingCode?: string
   detailsOfSession?: string
 }): Promise<ResidentAdhocSubmitResponse> => {
   try {
@@ -352,6 +390,7 @@ export const submitResidentAdhocTeaching = async (payload: {
         teaching_date: payload.teachingDate,
         start_time: payload.startTime,
         teaching_name: payload.teachingName,
+        attended_posting_code: payload.attendedPostingCode || undefined,
         details_of_session: payload.detailsOfSession || undefined,
       },
       {

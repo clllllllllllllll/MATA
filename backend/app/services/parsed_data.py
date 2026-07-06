@@ -1331,7 +1331,7 @@ async def _validate_resident_changes(
             """,
             {"mcr": merged["mcr"]},
         ):
-            _raise_validation("mcr already exists for an external resident")
+            _raise_validation("mcr already exists for a Non-NHG Resident")
     if "employee_code" in changed and merged.get("employee_code"):
         if await _scalar_exists(
             db,

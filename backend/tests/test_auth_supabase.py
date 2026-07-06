@@ -16,7 +16,7 @@ from app.config import Settings
 from app.middleware import install_error_handlers
 from app.middleware.auth_stub import AuthIdentity, AuthStubMiddleware
 from app.routers import admin, auth
-from app.services.supabase_jwt import SupabaseJwtVerifier
+from app.services.supabase_jwt import SupabaseJwtError, SupabaseJwtVerifier
 from tests.resident_fakes import FakeResidentSession
 
 
@@ -322,6 +322,48 @@ async def test_supabase_jwt_verifier_accepts_valid_rs256_token(monkeypatch: pyte
     assert claims["aud"] == AUDIENCE
 
 
+@pytest.mark.asyncio
+async def test_supabase_jwt_verifier_allows_small_iat_clock_skew(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    jwks = _jwks_for_key(private_key)
+
+    async def _fetch_jwks(self: SupabaseJwtVerifier) -> dict:
+        return jwks
+
+    monkeypatch.setattr(SupabaseJwtVerifier, "_fetch_jwks", _fetch_jwks)
+    verifier = SupabaseJwtVerifier(_settings())
+
+    claims = await verifier.verify(_token(
+        private_key,
+        sub="00000000-0000-0000-0000-000000000001",
+        extra_claims={"iat": datetime.now(UTC) + timedelta(seconds=5)},
+    ))
+
+    assert claims["sub"] == "00000000-0000-0000-0000-000000000001"
+
+
+@pytest.mark.asyncio
+async def test_supabase_jwt_verifier_rejects_large_iat_clock_skew(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    jwks = _jwks_for_key(private_key)
+
+    async def _fetch_jwks(self: SupabaseJwtVerifier) -> dict:
+        return jwks
+
+    monkeypatch.setattr(SupabaseJwtVerifier, "_fetch_jwks", _fetch_jwks)
+    verifier = SupabaseJwtVerifier(_settings())
+
+    with pytest.raises(SupabaseJwtError):
+        await verifier.verify(_token(
+            private_key,
+            extra_claims={"iat": datetime.now(UTC) + timedelta(minutes=1)},
+        ))
+
+
 def test_supabase_mode_rejects_protected_request_without_authorization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -613,6 +655,8 @@ def test_mata_resident_token_maps_to_auth_me_without_staff_or_posting_fields(
         "name": "Resident One",
         "programme_code": "GRM",
         "mcr": "M12345A",
+        "current_posting_code": "TTSHCardio",
+        "current_posting_label": "TTSH Cardiology",
     }
     assert "posting_code" not in payload
     assert "staff_actor_name_required" not in payload
@@ -647,7 +691,7 @@ def test_mata_external_resident_token_populates_external_identity(
     assert payload["admin_level"] is None
 
 
-def test_mata_external_resident_token_maps_to_auth_me_without_staff_or_posting_fields(
+def test_mata_external_resident_token_maps_to_auth_me_with_display_only_current_posting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     private_key = _private_key()
@@ -673,6 +717,8 @@ def test_mata_external_resident_token_maps_to_auth_me_without_staff_or_posting_f
         "name": "External Resident One",
         "mcr": "E12345A",
         "home_cluster": "NUH",
+        "current_posting_code": "TTSHCardio",
+        "current_posting_label": "TTSH Cardiology",
     }
     assert "current_nhg_posting_code" not in payload
     assert "posting_code" not in payload

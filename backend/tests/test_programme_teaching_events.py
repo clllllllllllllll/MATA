@@ -219,6 +219,20 @@ class FakeProgrammeTeachingEventsSession:
                 ]
             )
 
+        if "/* programme_teaching_events:global_posting_options */" in sql:
+            programme_code = payload["programme_code"]
+            codes = {
+                row["posting_code"]
+                for row in self.secretary_programme_pools
+                if row["programme_code"] == programme_code and row["is_active"]
+            }
+            codes.update(
+                row["posting_code"]
+                for row in self.catalogue
+                if row["programme_code"] == programme_code
+            )
+            return _FakeResult(rows=[{"posting_code": code} for code in sorted(codes)])
+
         if "/* programme_teaching_events:public_holiday */" in sql:
             holiday = next(
                 (row for row in self.public_holidays if row["holiday_date"] == payload["event_date"]),
@@ -256,6 +270,16 @@ class FakeProgrammeTeachingEventsSession:
                 and row["keyword"] == payload["teaching_name"]
             ]
             return _FakeResult(rows=rows)
+
+        if "/* programme_teaching_events:posting_available */" in sql:
+            posting_code = payload["posting_code"]
+            programme_code = payload["programme_code"]
+            is_available = bool(self._secretary_programmes(posting_code) & {programme_code}) or any(
+                row["programme_code"] == programme_code
+                and row["posting_code"] == posting_code
+                for row in self.catalogue
+            )
+            return _FakeResult(scalar=is_available)
 
         if "/* programme_teaching_events:insert */" in sql:
             row = self._event(
@@ -404,6 +428,59 @@ def test_pc_can_create_event_for_own_programme() -> None:
     assert payload["end_time"] == "11:00:00"
     assert session.events[-1]["created_for_programme_code"] == "DR"
     assert session.events[-1]["created_by_role"] == "programme_pc"
+
+
+def test_pc_can_create_global_department_meeting_for_safe_programme_posting() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    client = _client(session)
+
+    response = client.post(
+        "/admin/programme-teaching-events",
+        headers=_headers(scope="GERI"),
+        json={
+            "programme_code": "GERI",
+            "posting_code": "TTSHGerMed",
+            "teaching_name": "Department Meeting [1h]",
+            "event_date": "2026-05-20",
+            "start_time": "10:00",
+            "cme_points_awarded": False,
+            "smc_event_code": None,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["posting_code"] == "TTSHGerMed"
+    assert payload["teaching_name"] == "Department Meeting [1h]"
+    assert payload["created_for_programme_code"] == "GERI"
+    assert session.events[-1]["session_type_id"] is None
+
+
+def test_pc_cannot_create_global_department_meeting_for_out_of_scope_posting() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    client = _client(session)
+
+    response = client.post(
+        "/admin/programme-teaching-events",
+        headers=_headers(scope="GERI"),
+        json={
+            "programme_code": "GERI",
+            "posting_code": "TTSHCardio",
+            "teaching_name": "Department Meeting [1h]",
+            "event_date": "2026-05-20",
+            "start_time": "10:00",
+            "cme_points_awarded": False,
+            "smc_event_code": None,
+        },
+    )
+
+    assert response.status_code in {403, 422}
+    assert all(
+        row["teaching_name"] != "Department Meeting [1h]"
+        or row["created_for_programme_code"] != "GERI"
+        or row["posting_code"] != "TTSHCardio"
+        for row in session.events
+    )
 
 
 def test_pc_scope_and_master_admin_mutations_are_denied() -> None:
@@ -560,3 +637,21 @@ def test_teaching_name_options_are_programme_scoped() -> None:
     assert "Grand Round" in keywords
     assert "Department Meeting [1h]" in keywords
     assert "Geri Teaching" not in keywords
+
+
+def test_global_teaching_name_options_include_safe_programme_postings() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    client = _client(session)
+
+    response = client.get(
+        "/admin/programme-teaching-name-options",
+        headers=_headers(scope="GERI"),
+        params={"programme_code": "GERI"},
+    )
+
+    assert response.status_code == 200
+    department_meeting = next(
+        row for row in response.json()["options"] if row["keyword"] == "Department Meeting [1h]"
+    )
+    assert department_meeting["is_global"] is True
+    assert department_meeting["posting_codes"] == ["TTSHGerMed"]

@@ -152,10 +152,10 @@ async def delete_attendance(
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
     if resident_context.role == "external_resident":
-        raise ApiError(
-            status_code=403,
-            detail="Forbidden - native resident role required",
-            error_code=ErrorCode.FORBIDDEN.value,
+        return await resident_submission.remove_external_attendance(
+            db,
+            external_resident_id=resident_context.subject_id,
+            attendance_id=attendance_id,
         )
     return await resident_submission.remove_attendance(
         db,
@@ -167,19 +167,34 @@ async def delete_attendance(
 @router.get("/adhoc-teaching-options")
 async def adhoc_teaching_options(
     teaching_date: Annotated[date, Query(alias="date")],
+    attended_posting_code: str | None = None,
+    attended_department_posting_code: str | None = None,
     resident_context: ResidentContext = Depends(require_resident_context),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    if resident_context.role == "external_resident":
+    selected_attended_posting_code = attended_posting_code or attended_department_posting_code
+    if (
+        attended_posting_code is not None
+        and attended_department_posting_code is not None
+        and attended_posting_code != attended_department_posting_code
+    ):
         raise ApiError(
-            status_code=403,
-            detail="Forbidden - native resident role required",
-            error_code=ErrorCode.FORBIDDEN.value,
+            status_code=422,
+            detail="attended_posting_code and attended_department_posting_code must match when both are provided",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
+    if resident_context.role == "external_resident":
+        return await resident_submission.list_external_adhoc_teaching_options(
+            db,
+            external_resident_id=resident_context.subject_id,
+            teaching_date=teaching_date,
+            attended_posting_code=selected_attended_posting_code,
         )
     return await resident_submission.list_adhoc_teaching_options(
         db,
         resident_id=resident_context.subject_id,
         teaching_date=teaching_date,
+        attended_posting_code=selected_attended_posting_code,
     )
 
 
@@ -187,6 +202,8 @@ async def adhoc_teaching_options(
 async def adhoc_teaching_options_alias(
     teaching_date: Annotated[date | None, Query(alias="teaching_date")] = None,
     date_alias: Annotated[date | None, Query(alias="date")] = None,
+    attended_posting_code: str | None = None,
+    attended_department_posting_code: str | None = None,
     resident_context: ResidentContext = Depends(require_resident_context),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
@@ -205,6 +222,8 @@ async def adhoc_teaching_options_alias(
         )
     return await adhoc_teaching_options(
         teaching_date=resolved_date,
+        attended_posting_code=attended_posting_code,
+        attended_department_posting_code=attended_department_posting_code,
         resident_context=resident_context,
         db=db,
     )
@@ -224,6 +243,7 @@ async def submit_adhoc_teaching(
             event_date=request.teaching_date,
             start_time=request.start_time,
             teaching_name=request.teaching_name,
+            attended_posting_code=request.attended_posting_code,
             details_of_session=request.details_of_session,
         )
     return await resident_submission.submit_adhoc_teaching(
@@ -233,6 +253,7 @@ async def submit_adhoc_teaching(
         event_date=request.teaching_date,
         start_time=request.start_time,
         teaching_name=request.teaching_name,
+        attended_posting_code=request.attended_posting_code,
         details_of_session=request.details_of_session,
     )
 

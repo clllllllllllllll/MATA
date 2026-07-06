@@ -11,6 +11,13 @@ from app.errors import ApiError, ErrorCode
 
 
 ALLOWED_HOME_CLUSTERS = {"NUH", "SingHealth"}
+ALLOWED_SCHEDULE_INSTITUTIONS = {"TTSH", "WH", "KTPH"}
+POSTING_RESOLUTION_NOT_FOUND = (
+    "No posting could be resolved for this programme and institution. Contact an administrator."
+)
+POSTING_RESOLUTION_AMBIGUOUS = (
+    "Multiple postings could be resolved for this programme and institution. Contact an administrator."
+)
 
 
 def normalise_mcr(raw_mcr: str) -> str:
@@ -37,6 +44,148 @@ async def _posting_exists(db: AsyncSession, posting_code: str) -> bool:
         {"posting_code": posting_code},
     )
     return result.scalar_one_or_none() is not None
+
+
+async def _posting_metadata(db: AsyncSession, posting_code: str) -> dict[str, Any] | None:
+    result = await db.execute(
+        text(
+            """
+            SELECT code, institution
+            FROM posting_codes
+            WHERE code = :posting_code
+            LIMIT 1
+            """
+        ),
+        {"posting_code": posting_code},
+    )
+    row = result.mappings().one_or_none()
+    return dict(row) if row is not None else None
+
+
+async def _programme_exists(db: AsyncSession, programme_code: str) -> bool:
+    result = await db.execute(
+        text(
+            """
+            SELECT 1
+            FROM programmes
+            WHERE code = :programme_code
+            LIMIT 1
+            """
+        ),
+        {"programme_code": programme_code},
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def _native_programme_posting(
+    db: AsyncSession,
+    *,
+    programme_code: str,
+    institution: str,
+) -> str | None:
+    result = await db.execute(
+        text(
+            """
+            SELECT p.native_teaching_posting_code
+            FROM programmes p
+            JOIN posting_codes pc
+              ON pc.code = p.native_teaching_posting_code
+            WHERE p.code = :programme_code
+              AND p.native_teaching_posting_code IS NOT NULL
+              AND pc.institution = :institution
+            LIMIT 1
+            """
+        ),
+        {"programme_code": programme_code, "institution": institution},
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        return None
+    return row.get("native_teaching_posting_code")
+
+
+async def _resolve_posting_candidates_from_secretary_pool(
+    db: AsyncSession,
+    *,
+    programme_code: str,
+    institution: str,
+) -> list[str]:
+    result = await db.execute(
+        text(
+            """
+            SELECT DISTINCT pc.code AS posting_code
+            FROM secretary_programme_pools spp
+            JOIN posting_codes pc
+              ON pc.code = spp.posting_code
+            WHERE spp.programme_code = :programme_code
+              AND spp.is_active = true
+              AND pc.institution = :institution
+            ORDER BY pc.code
+            """
+        ),
+        {"programme_code": programme_code, "institution": institution},
+    )
+    return [str(row["posting_code"]) for row in result.mappings().all()]
+
+
+async def _resolve_posting_candidates_from_targets(
+    db: AsyncSession,
+    *,
+    programme_code: str,
+    institution: str,
+) -> list[str]:
+    result = await db.execute(
+        text(
+            """
+            SELECT DISTINCT pc.code AS posting_code
+            FROM teaching_targets tt
+            JOIN posting_codes pc
+              ON pc.code = tt.posting_code
+            WHERE tt.programme_code = :programme_code
+              AND pc.institution = :institution
+            ORDER BY pc.code
+            """
+        ),
+        {"programme_code": programme_code, "institution": institution},
+    )
+    return [str(row["posting_code"]) for row in result.mappings().all()]
+
+
+async def _resolve_posting_code(
+    db: AsyncSession,
+    *,
+    programme_code: str,
+    institution: str,
+) -> str:
+    native_posting = await _native_programme_posting(
+        db,
+        programme_code=programme_code,
+        institution=institution,
+    )
+    if native_posting:
+        return native_posting
+
+    candidates = await _resolve_posting_candidates_from_secretary_pool(
+        db,
+        programme_code=programme_code,
+        institution=institution,
+    )
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        raise _schedule_validation_error(POSTING_RESOLUTION_AMBIGUOUS)
+
+    candidates = await _resolve_posting_candidates_from_targets(
+        db,
+        programme_code=programme_code,
+        institution=institution,
+    )
+    if candidates:
+        if len(candidates) == 1:
+            return candidates[0]
+        raise _schedule_validation_error(POSTING_RESOLUTION_AMBIGUOUS)
+
+    raise _schedule_validation_error(POSTING_RESOLUTION_NOT_FOUND)
 
 
 async def _mcr_exists_in_native_residents(db: AsyncSession, mcr: str) -> bool:
@@ -93,13 +242,124 @@ async def _external_resident_or_unauthorized(
     return dict(row)
 
 
+def _schedule_validation_error(detail: str) -> ApiError:
+    return ApiError(
+        status_code=422,
+        detail=detail,
+        error_code=ErrorCode.VALIDATION_FAILED.value,
+    )
+
+
+async def _validate_posting_schedule(
+    db: AsyncSession,
+    posting_schedule: list[Any],
+) -> list[dict[str, Any]]:
+    if not posting_schedule:
+        raise _schedule_validation_error("posting_schedule must contain at least one row")
+
+    normalised: list[dict[str, Any]] = []
+    for row in posting_schedule:
+        start_date = row.start_date if hasattr(row, "start_date") else row["start_date"]
+        end_date = row.end_date if hasattr(row, "end_date") else row["end_date"]
+        programme_code = (
+            row.programme_code if hasattr(row, "programme_code") else row["programme_code"]
+        )
+        institution = row.institution if hasattr(row, "institution") else row["institution"]
+
+        if start_date > end_date:
+            raise _schedule_validation_error("posting_schedule start_date must be on or before end_date")
+        if institution not in ALLOWED_SCHEDULE_INSTITUTIONS:
+            raise _schedule_validation_error("institution must be TTSH, WH, or KTPH")
+        if not await _programme_exists(db, programme_code):
+            raise _schedule_validation_error("programme_code is not valid")
+
+        posting_code = await _resolve_posting_code(
+            db,
+            programme_code=programme_code,
+            institution=institution,
+        )
+
+        normalised.append(
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "programme_code": programme_code,
+                "institution": institution,
+                "posting_code": posting_code,
+            }
+        )
+
+    normalised.sort(key=lambda item: (item["start_date"], item["end_date"], item["posting_code"]))
+    previous: dict[str, Any] | None = None
+    for row in normalised:
+        if previous is not None and row["start_date"] <= previous["end_date"]:
+            raise _schedule_validation_error("posting_schedule rows must not overlap")
+        previous = row
+    return normalised
+
+
+def _current_posting_from_schedule(
+    posting_schedule: list[dict[str, Any]],
+    today: date,
+) -> str:
+    for row in posting_schedule:
+        if row["start_date"] <= today <= row["end_date"]:
+            return row["posting_code"]
+    return posting_schedule[0]["posting_code"]
+
+
+async def _insert_schedule_rows(
+    db: AsyncSession,
+    *,
+    external_resident_id: UUID | str,
+    posting_schedule: list[dict[str, Any]],
+    current_nhg_posting_code: str,
+) -> list[dict[str, Any]]:
+    inserted: list[dict[str, Any]] = []
+    current_assigned = False
+    for row in posting_schedule:
+        is_current = not current_assigned and row["posting_code"] == current_nhg_posting_code
+        current_assigned = current_assigned or is_current
+        posting_insert = await db.execute(
+            text(
+                """
+                INSERT INTO external_resident_postings (
+                    external_resident_id,
+                    posting_code,
+                    start_date,
+                    end_date,
+                    is_current
+                )
+                VALUES (
+                    :external_resident_id,
+                    :posting_code,
+                    :start_date,
+                    :end_date,
+                    :is_current
+                )
+                RETURNING id, external_resident_id, posting_code, start_date, end_date, is_current
+                """
+            ),
+            {
+                "external_resident_id": str(external_resident_id),
+                "posting_code": row["posting_code"],
+                "start_date": row["start_date"],
+                "end_date": row["end_date"],
+                "is_current": is_current,
+            },
+        )
+        inserted.append(dict(posting_insert.mappings().one()))
+    return inserted
+
+
 async def register_external_resident(
     db: AsyncSession,
     *,
     name: str,
     mcr: str,
     home_cluster: str,
-    current_nhg_posting_code: str,
+    current_nhg_posting_code: str | None = None,
+    posting_schedule: list[Any] | None = None,
     today: date | None = None,
 ) -> dict[str, Any]:
     today = today or date.today()
@@ -118,12 +378,23 @@ async def register_external_resident(
             detail="home_cluster must be NUH or SingHealth",
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
-    if not await _posting_exists(db, current_nhg_posting_code):
-        raise ApiError(
-            status_code=422,
-            detail="current_nhg_posting_code is not valid",
-            error_code=ErrorCode.VALIDATION_FAILED.value,
+    normalised_schedule: list[dict[str, Any]] | None = None
+    if posting_schedule is not None:
+        normalised_schedule = await _validate_posting_schedule(db, posting_schedule)
+        current_nhg_posting_code = _current_posting_from_schedule(
+            normalised_schedule,
+            today,
         )
+    elif current_nhg_posting_code:
+        if not await _posting_exists(db, current_nhg_posting_code):
+            raise ApiError(
+                status_code=422,
+                detail="current_nhg_posting_code is not valid",
+                error_code=ErrorCode.VALIDATION_FAILED.value,
+            )
+    else:
+        raise _schedule_validation_error("posting_schedule is required")
+
     if await _mcr_exists_in_native_residents(db, normalised_mcr):
         raise ApiError(
             status_code=409,
@@ -166,39 +437,53 @@ async def register_external_resident(
     )
     resident = dict(resident_insert.mappings().one())
 
-    posting_insert = await db.execute(
-        text(
-            """
-            INSERT INTO external_resident_postings (
-                external_resident_id,
-                posting_code,
-                start_date,
-                end_date,
-                is_current
-            )
-            VALUES (
-                :external_resident_id,
-                :posting_code,
-                :start_date,
-                NULL,
-                true
-            )
-            RETURNING id, external_resident_id, posting_code, start_date, end_date, is_current
-            """
-        ),
-        {
-            "external_resident_id": str(resident["id"]),
-            "posting_code": current_nhg_posting_code,
-            "start_date": today,
-        },
-    )
-    posting = dict(posting_insert.mappings().one())
+    schedule_rows: list[dict[str, Any]] | None = None
+    if normalised_schedule is not None:
+        schedule_rows = await _insert_schedule_rows(
+            db,
+            external_resident_id=resident["id"],
+            posting_schedule=normalised_schedule,
+            current_nhg_posting_code=current_nhg_posting_code,
+        )
+        posting = schedule_rows[0]
+    else:
+        posting_insert = await db.execute(
+            text(
+                """
+                INSERT INTO external_resident_postings (
+                    external_resident_id,
+                    posting_code,
+                    start_date,
+                    end_date,
+                    is_current
+                )
+                VALUES (
+                    :external_resident_id,
+                    :posting_code,
+                    :start_date,
+                    :end_date,
+                    true
+                )
+                RETURNING id, external_resident_id, posting_code, start_date, end_date, is_current
+                """
+            ),
+            {
+                "external_resident_id": str(resident["id"]),
+                "posting_code": current_nhg_posting_code,
+                "start_date": today,
+                "end_date": None,
+            },
+        )
+        posting = dict(posting_insert.mappings().one())
 
     await db.commit()
-    return {
+    response = {
         "resident": resident,
         "posting_history": posting,
     }
+    if schedule_rows is not None:
+        response["posting_schedule"] = schedule_rows
+    return response
 
 
 async def update_my_posting(
@@ -288,5 +573,55 @@ async def update_my_posting(
     return {
         "resident": updated_resident,
         "posting_history": posting_row,
+        "changed": True,
+    }
+
+
+async def replace_my_posting_schedule(
+    db: AsyncSession,
+    *,
+    external_resident_id: UUID,
+    posting_schedule: list[Any],
+    today: date | None = None,
+) -> dict[str, Any]:
+    today = today or date.today()
+    await _external_resident_or_unauthorized(db, external_resident_id)
+    normalised_schedule = await _validate_posting_schedule(db, posting_schedule)
+    current_nhg_posting_code = _current_posting_from_schedule(normalised_schedule, today)
+
+    await db.execute(
+        text(
+            """
+            DELETE FROM external_resident_postings
+            WHERE external_resident_id = :external_resident_id
+            """
+        ),
+        {"external_resident_id": str(external_resident_id)},
+    )
+    schedule_rows = await _insert_schedule_rows(
+        db,
+        external_resident_id=external_resident_id,
+        posting_schedule=normalised_schedule,
+        current_nhg_posting_code=current_nhg_posting_code,
+    )
+    resident_update = await db.execute(
+        text(
+            """
+            UPDATE external_residents
+            SET current_nhg_posting_code = :posting_code
+            WHERE id = :external_resident_id
+            RETURNING id, name, mcr, home_cluster, current_nhg_posting_code, status
+            """
+        ),
+        {
+            "external_resident_id": str(external_resident_id),
+            "posting_code": current_nhg_posting_code,
+        },
+    )
+    updated_resident = dict(resident_update.mappings().one())
+    await db.commit()
+    return {
+        "resident": updated_resident,
+        "posting_schedule": schedule_rows,
         "changed": True,
     }

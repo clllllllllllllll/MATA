@@ -40,6 +40,8 @@ export type AuthIdentity =
       name?: string
       mcr: string
       programmeCode: string
+      currentPostingCode?: string
+      currentPostingLabel?: string
     }
   | {
       role: 'external_resident'
@@ -47,6 +49,8 @@ export type AuthIdentity =
       name?: string
       mcr: string
       homeCluster: 'NUH' | 'SingHealth'
+      currentPostingCode?: string
+      currentPostingLabel?: string
     }
 
 export interface AuthSessionState {

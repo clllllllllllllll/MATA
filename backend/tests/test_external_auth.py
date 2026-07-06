@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import jwt
 from fastapi import FastAPI
@@ -68,7 +68,90 @@ def test_external_login_accepts_mcr_only() -> None:
     assert payload["user"]["role"] == "external_resident"
     assert payload["user"]["mcr"] == "E12345A"
     assert payload["user"]["home_cluster"] == "NUH"
+    assert payload["user"]["current_posting_code"] == "TTSHCardio"
+    assert payload["user"]["current_posting_label"] == "TTSH Cardiology"
     assert "current_nhg_posting_code" not in payload["user"]
+
+
+def test_external_login_falls_back_to_period_posting_when_no_today_row() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.external_resident_postings = [
+        {
+            "id": "period-posting",
+            "external_resident_id": fake_db.external_resident_id,
+            "posting_code": "TTSHNeuro",
+            "start_date": fake_db.reporting_periods[0]["start_date"],
+            "end_date": fake_db.today - timedelta(days=1),
+            "is_current": False,
+        }
+    ]
+    client = _client(fake_db)
+
+    response = client.post(
+        "/auth/login",
+        json={"role": "external_resident", "mcr": "E12345A"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["user"]["current_posting_code"] == "TTSHNeuro"
+    assert response.json()["user"]["current_posting_label"] == "TTSH Neurology"
+
+
+def test_external_login_falls_back_to_nearest_future_then_recent_past_posting() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.external_resident_postings = [
+        {
+            "id": "recent-past",
+            "external_resident_id": fake_db.external_resident_id,
+            "posting_code": "TTSHCardio",
+            "start_date": fake_db.today - timedelta(days=20),
+            "end_date": fake_db.today - timedelta(days=10),
+            "is_current": False,
+        },
+        {
+            "id": "nearest-future",
+            "external_resident_id": fake_db.external_resident_id,
+            "posting_code": "TTSHNeuro",
+            "start_date": fake_db.today + timedelta(days=5),
+            "end_date": fake_db.today + timedelta(days=30),
+            "is_current": False,
+        },
+    ]
+    client = _client(fake_db)
+
+    response = client.post(
+        "/auth/login",
+        json={"role": "external_resident", "mcr": "E12345A"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["user"]["current_posting_code"] == "TTSHNeuro"
+    assert response.json()["user"]["current_posting_label"] == "TTSH Neurology"
+
+    fake_db.external_resident_postings = [fake_db.external_resident_postings[0]]
+    response = client.post(
+        "/auth/login",
+        json={"role": "external_resident", "mcr": "E12345A"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["user"]["current_posting_code"] == "TTSHCardio"
+    assert response.json()["user"]["current_posting_label"] == "TTSH Cardiology"
+
+
+def test_external_login_omits_current_posting_only_when_no_schedule_rows_exist() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.external_resident_postings = []
+    client = _client(fake_db)
+
+    response = client.post(
+        "/auth/login",
+        json={"role": "external_resident", "mcr": "E12345A"},
+    )
+
+    assert response.status_code == 200
+    assert "current_posting_code" not in response.json()["user"]
+    assert "current_posting_label" not in response.json()["user"]
 
 
 def test_supabase_mode_external_login_issues_backend_signed_mata_token() -> None:
@@ -91,6 +174,8 @@ def test_supabase_mode_external_login_issues_backend_signed_mata_token() -> None
         "name": "External Resident One",
         "mcr": "E12345A",
         "home_cluster": "NUH",
+        "current_posting_code": "TTSHCardio",
+        "current_posting_label": "TTSH Cardiology",
     }
 
     claims = jwt.decode(
@@ -218,4 +303,5 @@ def test_auth_me_returns_external_identity_without_posting_claim() -> None:
     assert payload["role"] == "external_resident"
     assert payload["mcr"] == "E12345A"
     assert payload["home_cluster"] == "NUH"
+    assert payload["current_posting_code"] == "TTSHCardio"
     assert "current_nhg_posting_code" not in payload

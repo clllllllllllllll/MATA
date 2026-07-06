@@ -6,6 +6,7 @@ import { AdminConfigPage } from './pages/admin/AdminConfigPage'
 import { AdminHomePage } from './pages/admin/AdminHomePage'
 import { AdminLogsPage } from './pages/admin/AdminLogsPage'
 import { AdminMultiPostingPage } from './pages/admin/AdminMultiPostingPage'
+import { AdminExternalAttendancePage } from './pages/admin/AdminExternalAttendancePage'
 import { AdminParsedDataPage } from './pages/admin/AdminParsedDataPage'
 import { AdminResidentSubmissionsPage } from './pages/admin/AdminResidentSubmissionsPage'
 import { AdminSecretaryEventsPage } from './pages/admin/AdminSecretaryEventsPage'
@@ -18,7 +19,6 @@ import { PcUploadTtfPage } from './pages/pc/PcUploadTtfPage'
 import { ResidentAttendancePage } from './pages/resident/ResidentAttendancePage'
 import { ResidentSubmissionPage } from './pages/resident/ResidentSubmissionPage'
 import { SecretaryTeachingSchedulePage } from './pages/secretary/SecretaryTeachingSchedulePage'
-import { StubPage } from './pages/StubPage'
 import { useAuth } from './context/useAuth'
 import { LoginPage } from './pages/auth/LoginPage'
 import { NonNhgRegistrationPage } from './pages/auth/NonNhgRegistrationPage'
@@ -152,26 +152,21 @@ const AppRoutes = () => {
       <Route path="/admin/secretary-events" element={shellElement(<AdminSecretaryEventsPage />)} />
       <Route path="/admin/staff-accounts" element={shellElement(<AdminStaffAccountsPage />)} />
       <Route path="/admin/submissions" element={shellElement(<AdminResidentSubmissionsPage />)} />
+      <Route path="/admin/external-attendance" element={shellElement(<AdminExternalAttendancePage />)} />
       <Route path="/pc" element={shellElement(<Navigate to="/pc/teaching-events" replace />)} />
       <Route path="/pc/upload-ttf" element={shellElement(<PcUploadTtfPage />)} />
       <Route path="/pc/teaching-events" element={shellElement(<PcTeachingEventsPage />)} />
       <Route path="/pc/config" element={shellElement(<AdminConfigPage configViewRole="programme_pc" />)} />
       <Route path="/pc/warnings" element={shellElement(<AdminWarningsPage />)} />
+      <Route path="/pc/external-attendance" element={shellElement(<AdminExternalAttendancePage />)} />
       <Route path="/secretary" element={shellElement(<Navigate to="/secretary/events" replace />)} />
       <Route path="/secretary/events" element={shellElement(<SecretaryTeachingSchedulePage />)} />
       <Route path="/resident" element={shellElement(<Navigate to="/resident/submissions" replace />)} />
       <Route path="/resident/submissions" element={shellElement(<ResidentSubmissionPage />)} />
       <Route path="/resident/attendance" element={shellElement(<ResidentAttendancePage />)} />
-      <Route
-        path="/external"
-        element={shellElement((
-          <StubPage
-            title="Non-NHG Resident Portal"
-            subtitle="Optional visual stub. Non-NHG Resident submission workflows remain deferred."
-            variant="non_nhg"
-          />
-        ))}
-      />
+      <Route path="/external" element={shellElement(<Navigate to="/external/submissions" replace />)} />
+      <Route path="/external/submissions" element={shellElement(<ResidentSubmissionPage />)} />
+      <Route path="/external/attendance" element={shellElement(<ResidentAttendancePage />)} />
       <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   )
@@ -182,6 +177,5 @@ function App() {
 }
 
 export default App
-
 
 

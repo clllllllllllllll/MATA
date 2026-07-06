@@ -7,19 +7,69 @@ import { defaultPathForRole } from '../../config/navigation'
 import { useAuth } from '../../context/useAuth'
 
 type HomeCluster = 'NUH' | 'SingHealth'
+type ScheduleInstitution = 'TTSH' | 'WH' | 'KTPH'
+
+interface PostingScheduleRowState {
+  id: string
+  startDate: string
+  endDate: string
+  programmeCode: string
+  institution: ScheduleInstitution
+}
 
 interface RegistrationFormState {
   name: string
   mcr: string
   homeCluster: HomeCluster | ''
-  currentNhgPostingCode: string
+  postingSchedule: PostingScheduleRowState[]
 }
+
+const PROGRAMME_OPTIONS = [
+  ['AIM', 'Advanced Internal Medicine'],
+  ['ANAES', 'Anaesthesiology'],
+  ['CARDIO', 'Cardiology'],
+  ['DERM', 'Dermatology'],
+  ['DR', 'Diagnostic Radiology'],
+  ['EM', 'Emergency Medicine'],
+  ['ENDO', 'Endocrinology'],
+  ['ENT', 'Otorhinolaryngology'],
+  ['EYE', 'Ophthalmology'],
+  ['FM', 'Family Medicine'],
+  ['GASTRO', 'Gastroenterology'],
+  ['GERI', 'Geriatric Medicine'],
+  ['GS', 'General Surgery'],
+  ['ID', 'Infectious Diseases'],
+  ['IM', 'Internal Medicine'],
+  ['MEDONCO', 'Medical Oncology'],
+  ['ORTHO', 'Orthopaedic Surgery'],
+  ['PATH', 'Pathology'],
+  ['PSY', 'Psychiatry'],
+  ['REHAB', 'Rehabilitation Medicine'],
+  ['RENAL', 'Renal Medicine'],
+  ['RESPI', 'Respiratory Medicine'],
+  ['RHEUM', 'Rheumatology'],
+  ['SPORTSMED', 'Sports Medicine'],
+  ['SIG', 'Surgery-In-General'],
+  ['URO', 'Urology'],
+  ['MICROB', 'Pathology (Microbiology)'],
+  ['PALLMED', 'Palliative Medicine'],
+] as const
+
+const INSTITUTION_OPTIONS: ScheduleInstitution[] = ['TTSH', 'WH', 'KTPH']
+
+const createScheduleRow = (id: string): PostingScheduleRowState => ({
+  id,
+  startDate: '',
+  endDate: '',
+  programmeCode: '',
+  institution: 'TTSH',
+})
 
 const INITIAL_FORM: RegistrationFormState = {
   name: '',
   mcr: '',
   homeCluster: '',
-  currentNhgPostingCode: '',
+  postingSchedule: [createScheduleRow('posting-1')],
 }
 
 const REGISTER_ERROR = 'Unable to register. Check your details and try again.'
@@ -36,13 +86,54 @@ export const NonNhgRegistrationPage = () => {
     form.name.trim().length > 0 &&
     form.mcr.trim().length > 0 &&
     Boolean(form.homeCluster) &&
-    form.currentNhgPostingCode.trim().length > 0
+    form.postingSchedule.every((row) =>
+      row.startDate &&
+      row.endDate &&
+      row.startDate <= row.endDate &&
+      row.programmeCode &&
+      row.institution,
+    )
 
   const updateForm = <Key extends keyof RegistrationFormState>(
     key: Key,
     value: RegistrationFormState[Key],
   ) => {
     setForm((prev) => ({ ...prev, [key]: value }))
+    setSubmitError(null)
+  }
+
+  const updateScheduleRow = <Key extends keyof PostingScheduleRowState>(
+    rowId: string,
+    key: Key,
+    value: PostingScheduleRowState[Key],
+  ) => {
+    setForm((prev) => ({
+      ...prev,
+      postingSchedule: prev.postingSchedule.map((row) =>
+        row.id === rowId ? { ...row, [key]: value } : row,
+      ),
+    }))
+    setSubmitError(null)
+  }
+
+  const addScheduleRow = () => {
+    setForm((prev) => ({
+      ...prev,
+      postingSchedule: [
+        ...prev.postingSchedule,
+        createScheduleRow(`posting-${prev.postingSchedule.length + 1}-${Date.now()}`),
+      ],
+    }))
+  }
+
+  const removeScheduleRow = (rowId: string) => {
+    setForm((prev) => ({
+      ...prev,
+      postingSchedule:
+        prev.postingSchedule.length > 1
+          ? prev.postingSchedule.filter((row) => row.id !== rowId)
+          : prev.postingSchedule,
+    }))
     setSubmitError(null)
   }
 
@@ -61,14 +152,22 @@ export const NonNhgRegistrationPage = () => {
         name: form.name,
         mcr: form.mcr,
         homeCluster: form.homeCluster,
-        currentNhgPostingCode: form.currentNhgPostingCode,
+        postingSchedule: form.postingSchedule.map((row) => ({
+          startDate: row.startDate,
+          endDate: row.endDate,
+          programmeCode: row.programmeCode,
+          institution: row.institution,
+        })),
       })
       setRegistrationResult(result)
       setSubmitState('success')
     } catch (error) {
       const message =
-        error instanceof ApiRequestError && error.status === 422
-          ? REGISTER_ERROR
+        error instanceof ApiRequestError &&
+        error.status === 422 &&
+        (error.message.includes('No posting could be resolved') ||
+          error.message.includes('Multiple postings could be resolved'))
+          ? error.message
           : REGISTER_ERROR
       setSubmitError(message)
       setSubmitState('error')
@@ -82,6 +181,24 @@ export const NonNhgRegistrationPage = () => {
       return
     }
     navigate('/login', { replace: true })
+  }
+
+  const postingResolutionError =
+    submitError &&
+    (submitError.includes('No posting could be resolved') ||
+      submitError.includes('Multiple postings could be resolved'))
+      ? submitError
+      : null
+
+  const formatSchedulePosting = (row: Record<string, unknown>) => {
+    const postingCode = typeof row.posting_code === 'string' ? row.posting_code : ''
+    const programmeCode = typeof row.programme_code === 'string' ? row.programme_code : ''
+    const institution = typeof row.institution === 'string' ? row.institution : ''
+    const startDate = typeof row.start_date === 'string' ? row.start_date : ''
+    const endDate = typeof row.end_date === 'string' ? row.end_date : ''
+    const scope = [programmeCode, institution].filter(Boolean).join(' - ')
+    const dates = [startDate, endDate].filter(Boolean).join(' to ')
+    return [postingCode, scope, dates].filter(Boolean).join(' | ')
   }
 
   if (submitState === 'success' && registrationResult) {
@@ -119,8 +236,20 @@ export const NonNhgRegistrationPage = () => {
               <dd>{resident.homeCluster}</dd>
             </div>
             <div>
-              <dt>NHG posting</dt>
-              <dd>{resident.currentNhgPostingCode}</dd>
+              <dt>NHG posting schedule</dt>
+              <dd>
+                {registrationResult.postingSchedule?.length ? (
+                  <ul className="auth-confirmation-schedule">
+                    {registrationResult.postingSchedule.map((row, index) => (
+                      <li key={`${String(row.posting_code ?? 'posting')}-${index}`}>
+                        {formatSchedulePosting(row)}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  resident.currentNhgPostingCode
+                )}
+              </dd>
             </div>
           </dl>
 
@@ -205,16 +334,79 @@ export const NonNhgRegistrationPage = () => {
             <small>Where you're a resident, not where you're currently posted.</small>
           </fieldset>
 
-          <label className="auth-field">
-            <span>Current NHG posting</span>
-            <input
-              className="mono"
-              value={form.currentNhgPostingCode}
-              onChange={(event) => updateForm('currentNhgPostingCode', event.target.value.trim())}
-              placeholder="e.g. TTSHGerMed"
-            />
-            <small>Where you're posted right now within NHG. Backend validation is authoritative.</small>
-          </label>
+          <fieldset className="auth-fieldset auth-schedule-fieldset">
+            <legend>Upcoming NHG Postings</legend>
+            <small>Date-bounded NHG posting rows are used for future attendance and ad-hoc submissions.</small>
+            <div className="auth-schedule-list">
+              {form.postingSchedule.map((row, index) => (
+                <div className="auth-schedule-row" key={row.id}>
+                  <div className="auth-schedule-row-heading">
+                    <strong>Posting {index + 1}</strong>
+                    {form.postingSchedule.length > 1 ? (
+                      <button type="button" onClick={() => removeScheduleRow(row.id)}>
+                        Remove
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="auth-schedule-grid">
+                    <label className="auth-field">
+                      <span>Start date</span>
+                      <input
+                        type="date"
+                        value={row.startDate}
+                        onChange={(event) => updateScheduleRow(row.id, 'startDate', event.target.value)}
+                      />
+                    </label>
+                    <label className="auth-field">
+                      <span>End date</span>
+                      <input
+                        type="date"
+                        value={row.endDate}
+                        onChange={(event) => updateScheduleRow(row.id, 'endDate', event.target.value)}
+                      />
+                    </label>
+                    <label className="auth-field">
+                      <span>Programme</span>
+                      <select
+                        value={row.programmeCode}
+                        onChange={(event) => updateScheduleRow(row.id, 'programmeCode', event.target.value)}
+                      >
+                        <option value="">Select programme</option>
+                        {PROGRAMME_OPTIONS.map(([code, name]) => (
+                          <option value={code} key={code}>
+                            {code} - {name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="auth-field">
+                      <span>Institution</span>
+                      <select
+                        value={row.institution}
+                        onChange={(event) =>
+                          updateScheduleRow(row.id, 'institution', event.target.value as ScheduleInstitution)
+                        }
+                      >
+                        {INSTITUTION_OPTIONS.map((institution) => (
+                          <option value={institution} key={institution}>
+                            {institution}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  {postingResolutionError ? (
+                    <div className="auth-schedule-row-error" role="alert">
+                      {postingResolutionError}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+            <button type="button" className="auth-schedule-add" onClick={addScheduleRow}>
+              Add posting row
+            </button>
+          </fieldset>
 
           <div className="auth-info-callout">
             <span aria-hidden="true">i</span>

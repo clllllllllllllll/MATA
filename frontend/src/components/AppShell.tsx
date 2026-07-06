@@ -44,6 +44,11 @@ export const AppShell = ({ children }: PropsWithChildren) => {
   const currentDisplayName = identity?.role === activeRole && identity.name
     ? identity.name
     : roleNameById[activeRole]
+  const isResidentIdentity = identity?.role === 'resident' || identity?.role === 'external_resident'
+  const sidebarSubtext = isResidentIdentity ? identity.mcr : currentRoleOption.label
+  const currentPostingScope = isResidentIdentity
+    ? identity.currentPostingLabel ?? identity.currentPostingCode ?? 'No current posting'
+    : null
   const currentScopeLabel = (() => {
     if (identity?.role === 'master_admin' && activeRole === 'master_admin') {
       return 'All Programmes'
@@ -55,10 +60,10 @@ export const AppShell = ({ children }: PropsWithChildren) => {
       return identity.postingCode
     }
     if (identity?.role === 'resident' && activeRole === 'resident') {
-      return `${identity.programmeCode} - MCR ${identity.mcr}`
+      return currentPostingScope ?? 'No current posting'
     }
     if (identity?.role === 'external_resident' && activeRole === 'external_resident') {
-      return `${identity.homeCluster} - MCR ${identity.mcr}`
+      return currentPostingScope ?? 'No current posting'
     }
     return currentRoleOption.scopeLabel
   })()
@@ -169,7 +174,7 @@ export const AppShell = ({ children }: PropsWithChildren) => {
             <div className="avatar">{currentDisplayName.slice(0, 2).toUpperCase()}</div>
             <div className="sidebar-user-details">
               <strong>{currentDisplayName}</strong>
-              <p>{currentRoleOption.label}</p>
+              <p>{sidebarSubtext}</p>
             </div>
           </div>
         </div>

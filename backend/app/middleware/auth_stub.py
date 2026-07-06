@@ -99,49 +99,54 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         try:
             bearer_token = extract_bearer_token(request.headers.get("Authorization"))
         except MataResidentTokenError:
-            return self._unauthorized_response()
+            authorization = request.headers.get("Authorization")
+            reason = "missing_authorization" if not authorization else "malformed_bearer"
+            return self._supabase_unauthorized_response(request, reason)
 
         if is_mata_resident_token(bearer_token, settings=self._settings):
             try:
                 claims = verify_mata_resident_token(bearer_token, settings=self._settings)
             except MataResidentTokenError:
-                return self._unauthorized_response()
+                return self._supabase_unauthorized_response(request, "mata_token_invalid")
 
             raw_subject = claims.get("sub")
             if not isinstance(raw_subject, str):
-                return self._unauthorized_response()
+                return self._supabase_unauthorized_response(request, "mata_claims_missing_sub")
             try:
                 resident_id = UUID(raw_subject)
             except ValueError:
-                return self._unauthorized_response()
+                return self._supabase_unauthorized_response(request, "mata_claims_invalid_sub")
             if claims.get("app_role") == "external_resident":
-                return await self._resolve_mata_external_resident_identity(resident_id)
-            return await self._resolve_mata_resident_identity(resident_id)
+                return await self._resolve_mata_external_resident_identity(resident_id, request)
+            return await self._resolve_mata_resident_identity(resident_id, request)
 
         try:
             claims = await self._get_supabase_verifier().verify(bearer_token)
         except SupabaseJwtError:
-            return self._unauthorized_response()
+            return self._supabase_unauthorized_response(request, "supabase_jwt_verify_failed")
 
         raw_subject = claims.get("sub")
         if not isinstance(raw_subject, str):
-            return self._unauthorized_response()
+            return self._supabase_unauthorized_response(request, "supabase_claims_missing_sub")
 
         try:
             supabase_user_id = UUID(raw_subject)
         except ValueError:
-            return self._unauthorized_response()
+            return self._supabase_unauthorized_response(request, "supabase_claims_invalid_sub")
 
-        return await self._resolve_supabase_user_identity(supabase_user_id)
+        return await self._resolve_supabase_user_identity(supabase_user_id, request)
 
     async def _resolve_mata_resident_identity(
         self,
         resident_id: UUID,
+        request: Request | None = None,
     ) -> AuthIdentity | Response:
         async with AsyncSessionLocal() as session:
             resident = await session.scalar(select(Resident).where(Resident.id == resident_id))
 
         if resident is None or resident.status == "inactive":
+            if request is not None:
+                return self._supabase_unauthorized_response(request, "mata_resident_missing_or_inactive")
             return self._unauthorized_response()
 
         return AuthIdentity(
@@ -154,23 +159,28 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
     async def _resolve_mata_external_resident_identity(
         self,
         external_resident_id: UUID,
+        request: Request | None = None,
     ) -> AuthIdentity | Response:
-        return await self._resolve_external_resident_identity(external_resident_id)
+        return await self._resolve_external_resident_identity(external_resident_id, request)
 
     async def _resolve_supabase_user_identity(
         self,
         supabase_user_id: UUID,
+        request: Request,
     ) -> AuthIdentity | Response:
         async with AsyncSessionLocal() as session:
             user = await session.scalar(
-                select(User).where(
-                    User.supabase_user_id == supabase_user_id,
-                    User.is_active.is_(True),
-                ),
+                select(User).where(User.supabase_user_id == supabase_user_id),
             )
 
-        if user is None or user.role not in {"admin", "secretary"}:
-            return self._unauthorized_response()
+        if user is None:
+            return self._supabase_unauthorized_response(request, "supabase_user_unmapped")
+
+        if not user.is_active:
+            return self._supabase_unauthorized_response(request, "supabase_user_inactive")
+
+        if user.role not in {"admin", "secretary"}:
+            return self._supabase_unauthorized_response(request, "role_invalid")
 
         if user.role == "admin":
             return AuthIdentity(
@@ -289,6 +299,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
     async def _resolve_external_resident_identity(
         self,
         subject_id: UUID,
+        request: Request | None = None,
     ) -> AuthIdentity | Response:
         async with AsyncSessionLocal() as session:
             resident = await session.scalar(
@@ -296,6 +307,11 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             )
 
         if resident is None or resident.status == "inactive":
+            if request is not None:
+                return self._supabase_unauthorized_response(
+                    request,
+                    "mata_external_resident_missing_or_inactive",
+                )
             return build_error_response(
                 status_code=401,
                 detail="Unauthorized",
@@ -347,6 +363,9 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         if self._supabase_verifier is None:
             self._supabase_verifier = SupabaseJwtVerifier(self._settings)
         return self._supabase_verifier
+
+    def _supabase_unauthorized_response(self, request: Request, reason: str) -> Response:
+        return self._unauthorized_response()
 
     @staticmethod
     def _normalise_admin_level(raw_value: str | None) -> str | None:

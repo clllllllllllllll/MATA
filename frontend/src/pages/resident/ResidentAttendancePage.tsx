@@ -8,6 +8,7 @@ import {
 } from '../../api/residentSubmissions'
 import { PageHero } from '../../components/PageHero'
 import { IconRefresh, IconX } from '../../components/icons'
+import { useAuth } from '../../context/useAuth'
 
 const formatDate = (value?: string) => {
   if (!value) {
@@ -78,6 +79,9 @@ const normaliseError = (error: unknown) => {
 }
 
 export const ResidentAttendancePage = () => {
+  const { identity } = useAuth()
+  const isExternalResident = identity?.role === 'external_resident'
+  const showStatusColumn = !isExternalResident
   const [rows, setRows] = useState<ResidentAttendanceHistoryRow[]>([])
   const [filters, setFilters] = useState<ResidentAttendanceFilters>({ limit: 100, offset: 0 })
   const [loading, setLoading] = useState(true)
@@ -147,7 +151,11 @@ export const ResidentAttendancePage = () => {
     <div className="page resident-page resident-attendance-page">
       <PageHero
         title="Past Submissions"
-        subtitle="NHG Resident - Your submitted teachings"
+        subtitle={
+          isExternalResident
+            ? 'Non-NHG Resident - Attendance stored for forwarding only, outside NHG compliance'
+            : 'NHG Resident - Your submitted teachings'
+        }
         actions={
           <button type="button" className="button button-secondary" onClick={() => void loadRows()}>
             <IconRefresh size={14} />
@@ -239,7 +247,7 @@ export const ResidentAttendancePage = () => {
                     <th>Time</th>
                     <th>Posting</th>
                     <th>Source</th>
-                    <th>Status</th>
+                    {showStatusColumn ? <th>Status</th> : null}
                     <th>Action</th>
                   </tr>
                 </thead>
@@ -255,11 +263,13 @@ export const ResidentAttendancePage = () => {
                         </td>
                         <td className="mono">{row.postingCode}</td>
                         <td>{row.source === 'adhoc' ? 'Ad-hoc' : 'Scheduled'}</td>
-                        <td>
-                          <span className={`status-badge ${statusClass(row.status)}`}>
-                            {formatAttendanceStatus(row.status)}
-                          </span>
-                        </td>
+                        {showStatusColumn ? (
+                          <td>
+                            <span className={`status-badge ${statusClass(row.status)}`}>
+                              {formatAttendanceStatus(row.status)}
+                            </span>
+                          </td>
+                        ) : null}
                         <td>
                           {canDelete ? (
                             <button
@@ -305,9 +315,11 @@ export const ResidentAttendancePage = () => {
                       </div>
                     </div>
                     <div className="resident-history-side">
-                      <span className={`status-badge resident-history-status ${statusClass(row.status)}`}>
-                        {formatAttendanceStatus(row.status)}
-                      </span>
+                      {showStatusColumn ? (
+                        <span className={`status-badge resident-history-status ${statusClass(row.status)}`}>
+                          {formatAttendanceStatus(row.status)}
+                        </span>
+                      ) : null}
                       {canDelete ? (
                         <button
                           type="button"

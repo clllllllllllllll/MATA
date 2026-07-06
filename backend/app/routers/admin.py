@@ -7,6 +7,7 @@ from typing import Annotated, Any, AsyncIterator, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, Header, Query, Request, UploadFile
+from fastapi.responses import Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +22,8 @@ from app.errors import ApiError, ErrorCode, UploadValidationApiError
 from app.middleware.auth_stub import AuthIdentity
 from app.schemas import (
     AcademicMonthBoundaryResponse,
+    AdminExternalAttendanceDetailResponse,
+    AdminExternalAttendanceListResponse,
     AdminResidentSubmissionDetailResponse,
     AdminResidentSubmissionListResponse,
     AdminSecretaryEventDetailResponse,
@@ -104,6 +107,7 @@ from app.schemas.data_revalidation import (
 )
 from app.services import (
     admin_config,
+    admin_external_attendance,
     admin_resident_submissions,
     admin_secretary_events,
     cache_invalidation,
@@ -2904,6 +2908,119 @@ async def get_admin_resident_submission(
         master_admin=admin_context.is_master_admin,
     )
     return AdminResidentSubmissionDetailResponse.model_validate(payload)
+
+
+@router.get(
+    "/external-attendance",
+    response_model=AdminExternalAttendanceListResponse,
+)
+async def list_admin_external_attendance(
+    programme_code: str | None = Query(default=None),
+    home_cluster: str | None = Query(default=None),
+    posting_code: str | None = Query(default=None),
+    mcr: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> AdminExternalAttendanceListResponse:
+    if db is None:
+        return AdminExternalAttendanceListResponse.model_validate(
+            {
+                "items": [],
+                "total": 0,
+                "limit": limit,
+                "offset": offset,
+                "summary": {
+                    "total_records": 0,
+                    "submitted_count": 0,
+                    "flagged_count": 0,
+                    "removed_count": 0,
+                    "adhoc_count": 0,
+                },
+            }
+        )
+    payload = await admin_external_attendance.list_external_attendance(
+        db,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+        programme_code=programme_code,
+        home_cluster=home_cluster,
+        posting_code=posting_code,
+        mcr=mcr,
+        status=status,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        offset=offset,
+    )
+    return AdminExternalAttendanceListResponse.model_validate(payload)
+
+
+@router.get("/external-attendance/export.xlsx")
+async def export_admin_external_attendance(
+    programme_code: str | None = Query(default=None),
+    home_cluster: str | None = Query(default=None),
+    posting_code: str | None = Query(default=None),
+    mcr: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> Response:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    payload = await admin_external_attendance.export_external_attendance_xlsx(
+        db,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+        programme_code=programme_code,
+        home_cluster=home_cluster,
+        posting_code=posting_code,
+        mcr=mcr,
+        status=status,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return Response(
+        content=payload["content"],
+        media_type=payload["media_type"],
+        headers={
+            "Content-Disposition": f'attachment; filename="{payload["filename"]}"',
+        },
+    )
+
+
+@router.get(
+    "/external-attendance/{attendance_id}",
+    response_model=AdminExternalAttendanceDetailResponse,
+)
+async def get_admin_external_attendance(
+    attendance_id: UUID,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> AdminExternalAttendanceDetailResponse:
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    payload = await admin_external_attendance.get_external_attendance(
+        db,
+        attendance_id=attendance_id,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+    )
+    return AdminExternalAttendanceDetailResponse.model_validate(payload)
 
 
 @router.get("/logs", response_model=AdminLogListResponse)

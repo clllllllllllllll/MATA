@@ -16,6 +16,7 @@ import {
 import { PageHero } from '../../components/PageHero'
 import { IconCalendar, IconRefresh, IconSend, IconX } from '../../components/icons'
 import { frontendConfig } from '../../config/frontendConfig'
+import { useAuth } from '../../context/useAuth'
 
 const START_TIME_OPTIONS = Array.from({ length: 24 * 4 }, (_, index) => {
   const totalMinutes = index * 15
@@ -34,6 +35,9 @@ const EMPTY_ADHOC_OPTIONS: ResidentAdhocOptionsResponse = {
   postingCode: null,
   postingLabel: null,
   rYear: null,
+  attendedPostingOptions: [],
+  selectedAttendedPostingCode: null,
+  selectedAttendedPostingLabel: null,
   options: [],
 }
 
@@ -106,28 +110,6 @@ const getEventSourceLabel = (event: ResidentEventsResponse['events'][number]) =>
   return 'Scheduled'
 }
 
-const getAttendanceStatusBadgeClass = (status: string) => {
-  const normalised = status.trim().toLowerCase()
-  if (normalised === 'removed') {
-    return 'status-badge-warning'
-  }
-  if (normalised === 'submitted') {
-    return 'status-badge-success'
-  }
-  return 'status-badge-neutral'
-}
-
-const formatAttendanceStatus = (status: string) => {
-  const normalised = status.trim().toLowerCase()
-  if (normalised === 'submitted') {
-    return 'Submitted'
-  }
-  if (normalised === 'removed') {
-    return 'Removed'
-  }
-  return status
-}
-
 const normaliseResidentApiError = (error: ApiRequestError): string => {
   if (error.status === 401 || error.status === 403) {
     return 'Resident authentication is invalid. Check demo resident headers.'
@@ -145,6 +127,8 @@ const normaliseResidentApiError = (error: ApiRequestError): string => {
 }
 
 export const ResidentSubmissionPage = () => {
+  const { identity } = useAuth()
+  const isExternalResident = identity?.role === 'external_resident'
   const [filters, setFilters] = useState<ResidentEventFilters>({})
   const [eventsResponse, setEventsResponse] = useState<ResidentEventsResponse>({
     events: [],
@@ -169,6 +153,7 @@ export const ResidentSubmissionPage = () => {
   const [adhocOptions, setAdhocOptions] = useState<ResidentAdhocOptionsResponse>(EMPTY_ADHOC_OPTIONS)
   const [adhocOptionsLoading, setAdhocOptionsLoading] = useState(false)
   const [adhocStartTime, setAdhocStartTime] = useState('')
+  const [selectedAttendedPostingCode, setSelectedAttendedPostingCode] = useState('')
   const [adhocTeachingName, setAdhocTeachingName] = useState('')
   const [detailsOfSession, setDetailsOfSession] = useState('')
   const [adhocState, setAdhocState] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle')
@@ -229,6 +214,7 @@ export const ResidentSubmissionPage = () => {
   const loadAdhocOptions = useCallback(async () => {
     if (!adhocDate) {
       setAdhocOptions(EMPTY_ADHOC_OPTIONS)
+      setSelectedAttendedPostingCode('')
       setAdhocTeachingName('')
       setAdhocMessage(null)
       return
@@ -236,8 +222,12 @@ export const ResidentSubmissionPage = () => {
     setAdhocOptionsLoading(true)
     setAdhocMessage(null)
     try {
-      const response = await getResidentAdhocTeachingOptions(adhocDate)
+      const response = await getResidentAdhocTeachingOptions(adhocDate, selectedAttendedPostingCode || undefined)
       setAdhocOptions(response)
+      const responseSelected = response.selectedAttendedPostingCode ?? ''
+      if (responseSelected !== selectedAttendedPostingCode) {
+        setSelectedAttendedPostingCode(responseSelected)
+      }
       setAdhocTeachingName('')
       if (!response.available) {
         setAdhocMessage(response.message ?? 'No ad-hoc teaching options are available for this date.')
@@ -251,6 +241,9 @@ export const ResidentSubmissionPage = () => {
         ...EMPTY_ADHOC_OPTIONS,
         date: adhocDate,
         teachingDate: adhocDate,
+        attendedPostingOptions: [],
+        selectedAttendedPostingCode: null,
+        selectedAttendedPostingLabel: null,
         reason:
           error instanceof ApiRequestError &&
           error.status === 422 &&
@@ -265,7 +258,7 @@ export const ResidentSubmissionPage = () => {
     } finally {
       setAdhocOptionsLoading(false)
     }
-  }, [adhocDate])
+  }, [adhocDate, selectedAttendedPostingCode])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -289,8 +282,10 @@ export const ResidentSubmissionPage = () => {
   const selectedCount = selectedEventIds.size
   const availableEvents = eventsResponse.events
   const filterOptions = eventsResponse.filterOptions
+  const attendanceHistoryPath = isExternalResident ? '/external/attendance' : '/resident/attendance'
   const displayedDateFrom = filters.dateFrom ?? filterOptions.dateFrom ?? ''
   const displayedDateTo = filters.dateTo ?? filterOptions.dateTo ?? ''
+  const attendedPostingOptions = adhocOptions.attendedPostingOptions
   const selectedAdhocOption = adhocOptions.options.find((option) => option.teachingName === adhocTeachingName)
 
   const toggleSelected = (eventId: string) => {
@@ -342,9 +337,9 @@ export const ResidentSubmissionPage = () => {
     if (adhocState === 'submitting') {
       return
     }
-    if (!adhocDate || !adhocStartTime || !adhocTeachingName || !selectedAdhocOption) {
+    if (!adhocDate || !adhocStartTime || !selectedAttendedPostingCode || !adhocTeachingName || !selectedAdhocOption) {
       setAdhocState('error')
-      setAdhocMessage('Date, teaching/session, and start time are required.')
+      setAdhocMessage('Date, attended department/programme, teaching/session, and start time are required.')
       return
     }
     setAdhocState('submitting')
@@ -354,6 +349,7 @@ export const ResidentSubmissionPage = () => {
         teachingDate: adhocDate,
         startTime: adhocStartTime,
         teachingName: selectedAdhocOption.teachingName,
+        attendedPostingCode: selectedAttendedPostingCode,
         detailsOfSession: detailsOfSession.trim() || undefined,
       })
       setAdhocState('success')
@@ -362,6 +358,7 @@ export const ResidentSubmissionPage = () => {
       setAdhocDate('')
       setAdhocOptions(EMPTY_ADHOC_OPTIONS)
       setAdhocStartTime('')
+      setSelectedAttendedPostingCode('')
       setAdhocTeachingName('')
       setDetailsOfSession('')
       await loadResidentEvents()
@@ -413,12 +410,16 @@ export const ResidentSubmissionPage = () => {
     <div className="page resident-page">
       <PageHero
         title="Submission Portal"
-        subtitle={`${frontendConfig.demoResidentProgramme} - MCR ${frontendConfig.demoResidentMcr}`}
+        subtitle={
+          isExternalResident
+            ? "Submissions are recorded for home-cluster's records only"
+            : `${frontendConfig.demoResidentProgramme} - MCR ${frontendConfig.demoResidentMcr}`
+        }
         actions={
           <div className="resident-hero-actions">
             <span className="scope-chip">
               <IconCalendar size={12} />
-              NHG Resident
+              {isExternalResident ? 'Non-NHG Resident' : 'NHG Resident'}
             </span>
             <button
               type="button"
@@ -643,11 +644,24 @@ export const ResidentSubmissionPage = () => {
           </div>
           <div className="resident-empty resident-adhoc-help">
             <p>Please ensure your current submission is not an already scheduled event. There are no CME Pts tagged to adhoc teachings.</p>
+            <p>
+              {isExternalResident
+                ? "Submissions are recorded for home-cluster's records only and are not included in NHG compliance."
+                : 'NHG ad-hoc submissions count as Department/Programme Teaching [1h] under your assigned posting when the target is available.'}
+            </p>
           </div>
           <div className="resident-form-grid">
             <label>
               Teaching date
-              <input type="date" value={adhocDate} onChange={(event) => setAdhocDate(event.target.value)} />
+              <input
+                type="date"
+                value={adhocDate}
+                onChange={(event) => {
+                  setAdhocDate(event.target.value)
+                  setSelectedAttendedPostingCode('')
+                  setAdhocTeachingName('')
+                }}
+              />
             </label>
             <label>
               Derived posting
@@ -659,11 +673,32 @@ export const ResidentSubmissionPage = () => {
               />
             </label>
             <label>
+              Attended department/programme
+              <select
+                value={selectedAttendedPostingCode}
+                onChange={(event) => {
+                  setSelectedAttendedPostingCode(event.target.value)
+                  setAdhocTeachingName('')
+                }}
+                disabled={!adhocDate || adhocOptionsLoading || attendedPostingOptions.length === 0}
+              >
+                <option value="">
+                  {adhocOptionsLoading ? 'Loading departments...' : 'Select attended department/programme'}
+                </option>
+                {attendedPostingOptions.map((option) => (
+                  <option key={option.postingCode} value={option.postingCode}>
+                    {option.label}
+                    {option.programmeName ? ` - ${option.programmeName}` : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
               Teaching/session
               <select
                 value={adhocTeachingName}
                 onChange={(event) => setAdhocTeachingName(event.target.value)}
-                disabled={!adhocOptions.available || adhocOptionsLoading}
+                disabled={!adhocOptions.available || adhocOptionsLoading || !selectedAttendedPostingCode}
               >
                 <option value="">{adhocOptionsLoading ? 'Loading options...' : 'Select teaching/session'}</option>
                 {adhocOptions.options.map((option) => (
@@ -696,9 +731,15 @@ export const ResidentSubmissionPage = () => {
           </div>
           {selectedAdhocOption ? (
             <div className="resident-derived-summary">
+              <span>{adhocOptions.selectedAttendedPostingLabel ?? selectedAdhocOption.postingLabel}</span>
               <span>{selectedAdhocOption.sessionTypeName ?? selectedAdhocOption.sessionType}</span>
               <span>{formatDuration(selectedAdhocOption.durationHours)}</span>
               <span>{selectedAdhocOption.isGlobal ? 'Global Type' : selectedAdhocOption.isTracked ? 'Tracked' : 'Untracked'}</span>
+              <span>
+                {isExternalResident
+                  ? "Home-cluster's records only - not included in NHG compliance"
+                  : 'Counts as Department/Programme Teaching [1h] under assigned posting'}
+              </span>
             </div>
           ) : null}
           <div className="resident-adhoc-actions">
@@ -713,6 +754,7 @@ export const ResidentSubmissionPage = () => {
               disabled={
                 adhocState === 'submitting' ||
                 !adhocOptions.available ||
+                !selectedAttendedPostingCode ||
                 !adhocTeachingName ||
                 adhocOptions.reason === 'public_holiday'
               }
@@ -726,7 +768,7 @@ export const ResidentSubmissionPage = () => {
         <article className="card resident-history-card">
           <div className="section-header resident-history-card-header">
             <h2>Recent Submissions</h2>
-            <Link className="button button-secondary" to="/resident/attendance">
+            <Link className="button button-secondary" to={attendanceHistoryPath}>
               View all past submissions
             </Link>
           </div>
@@ -764,9 +806,6 @@ export const ResidentSubmissionPage = () => {
                         </div>
                       </div>
                       <div className="resident-history-side">
-                        <span className={`status-badge resident-history-status ${getAttendanceStatusBadgeClass(row.status)}`}>
-                          {formatAttendanceStatus(row.status)}
-                        </span>
                         {canDelete ? (
                           <button
                             type="button"

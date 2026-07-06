@@ -60,6 +60,8 @@ def test_resident_login_accepts_mcr_only_and_does_not_return_posting_code() -> N
     assert payload["user"]["role"] == "resident"
     assert payload["user"]["mcr"] == "M12345A"
     assert payload["user"]["programme_code"] == "GRM"
+    assert payload["user"]["current_posting_code"] == "TTSHCardio"
+    assert payload["user"]["current_posting_label"] == "TTSH Cardiology"
     assert "posting_code" not in payload["user"]
 
 
@@ -80,6 +82,8 @@ def test_supabase_mode_resident_login_issues_backend_signed_mata_token() -> None
         "name": "Resident One",
         "programme_code": "GRM",
         "mcr": "M12345A",
+        "current_posting_code": "TTSHCardio",
+        "current_posting_label": "TTSH Cardiology",
     }
 
     claims = jwt.decode(

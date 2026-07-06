@@ -42,19 +42,34 @@ assert(
 )
 assertOrdered(
   adhocSectionSource,
-  ['Teaching date', 'Derived posting', 'Teaching/session', 'Start time', 'Details of session'],
-  'ad-hoc flow is date-first with derived posting before teaching selection',
+  ['Teaching date', 'Derived posting', 'Attended department/programme', 'Teaching/session', 'Start time', 'Details of session'],
+  'ad-hoc flow is date-first with derived posting and attended posting before teaching selection',
 )
 assert(pageSource.includes('loadAdhocOptions'), 'ad-hoc options load after date selection')
 assert(pageSource.includes('readOnly'), 'derived posting display is read-only')
+assert(pageSource.includes('selectedAttendedPostingCode'), 'ad-hoc flow tracks selected attended posting')
+assert(pageSource.includes('attendedPostingOptions'), 'ad-hoc flow renders attended posting options from backend')
 assert(pageSource.includes('adhocOptions.options.map'), 'ad-hoc teaching/session options come from backend options')
 assert(!pageSource.includes('placeholder="e.g. Journal Club"'), 'ad-hoc teaching no longer uses free text teaching input')
 assert(pageSource.includes('detailsOfSession'), 'details_of_session is represented as optional free text state')
 assert(apiSource.includes('/resident/adhoc-teaching-options'), 'API loads canonical ad-hoc options endpoint')
 assert(apiSource.includes('/resident/adhoc-teaching/options'), 'API retains compatibility alias path constant or fallback')
 assert(apiSource.includes('teaching_date'), 'ad-hoc submit payload is date-first')
+assert(apiSource.includes('attended_posting_code'), 'ad-hoc API sends selected attended posting code')
 assert(apiSource.includes('details_of_session'), 'ad-hoc submit payload includes optional details_of_session')
-assert(!apiSource.includes('posting_code: payload'), 'ad-hoc submit API does not send trusted posting_code')
+assert(!apiSource.includes('\n        posting_code: payload'), 'ad-hoc submit API does not send trusted posting_code')
+assert(
+  pageSource.includes("isExternalResident ? 'Non-NHG Resident' : 'NHG Resident'"),
+  'scope chip uses role-specific NHG/Non-NHG labels',
+)
+assert(
+  pageSource.includes("Submissions are recorded for home-cluster's records only"),
+  'Non-NHG ad-hoc helper copy is forwarding-only and compliance-excluded',
+)
+assert(
+  !pageSource.includes('<span>Counts as Department/Programme Teaching [1h] for NHG</span>'),
+  'NHG compliance attribution summary is not rendered unconditionally for Non-NHG residents',
+)
 
 assert(!pageSource.includes('resident-filter-title'), 'scheduled filters subheading is removed')
 assert(!pageSource.includes('Scheduled filters</div>'), 'scheduled filters heading text is not rendered')
@@ -79,7 +94,10 @@ assert(apiSource.includes('teaching_name'), 'scheduled events API sends teaching
 assert(apiSource.includes('posting_code'), 'scheduled events API sends posting_code filter')
 
 assert(pageSource.includes('View all past submissions'), 'recent widget links to all past submissions')
-assert(pageSource.includes("to=\"/resident/attendance\""), 'recent widget link targets /resident/attendance')
+assert(
+  pageSource.includes("'/resident/attendance'") && pageSource.includes("'/external/attendance'"),
+  'recent widget link targets the correct past submissions route for NHG and Non-NHG residents',
+)
 assert(pageSource.includes('resident-history-card-header'), 'recent submissions header has dedicated spacing class')
 assert(appSource.includes("path=\"/resident/attendance\""), '/resident/attendance route is registered')
 assert(navigationSource.includes("label: 'Past Submissions'"), 'Past Submissions appears in resident navigation')
@@ -90,8 +108,9 @@ assertOrdered(
   ['await removeResidentAttendance(row.attendanceId)', 'await loadResidentEvents()', 'await loadHistory()'],
   'delete flow refreshes available scheduled events and recent submissions',
 )
-assert(pageSource.includes('formatAttendanceStatus(row.status)'), 'recent widget capitalizes resident-facing status labels')
-assert(pageSource.includes('resident-history-side'), 'recent delete action is grouped with status area')
+assert(!pageSource.includes('formatAttendanceStatus(row.status)'), 'recent widget does not render visible status values')
+assert(!pageSource.includes('resident-history-status'), 'recent widget omits status badge styling')
+assert(pageSource.includes('resident-history-side'), 'recent delete action stays grouped in the side action area')
 assert(pageSource.includes('button-danger resident-delete-button'), 'recent delete action uses danger styling')
 assert(pageSource.includes('resident-adhoc-actions'), 'ad-hoc message and submit action use contained form-width wrapper')
 assert(pageSource.includes("reason === 'public_holiday'"), 'PH blocked ad-hoc state disables submit through unavailable options')

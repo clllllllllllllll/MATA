@@ -456,8 +456,6 @@ export const AdminResidentSubmissionsPage = () => {
     () => reportingPeriods.find((period) => period.id === filters.reportingPeriodId),
     [filters.reportingPeriodId, reportingPeriods],
   )
-  const scheduledSubmissionCount = Math.max(0, summary.totalSubmissions - summary.adhocCount)
-
   return (
     <div className="page admin-resident-submissions-page">
       <PageHero
@@ -599,12 +597,11 @@ export const AdminResidentSubmissionsPage = () => {
         <div className="resident-submissions-mobile-summary-card" aria-label="Submission summary">
           <span className="resident-submissions-summary-label">Submission summary</span>
           <span className="resident-submissions-summary-values">
-            <strong>Total: {summary.totalSubmissions}</strong>
-            <span>Scheduled: {scheduledSubmissionCount}</span>
+            <strong>Submitted: {summary.submittedCount}</strong>
+            <span>Flagged: {summary.flaggedCount}</span>
             <span>Ad-hoc: {summary.adhocCount}</span>
           </span>
         </div>
-        <MetricTile className="resident-submissions-desktop-metric" label="Submissions" value={summary.totalSubmissions} />
         <MetricTile className="resident-submissions-desktop-metric" label="Submitted" value={summary.submittedCount} />
         <MetricTile className="resident-submissions-desktop-metric" label="Flagged" value={summary.flaggedCount} />
         <MetricTile className="resident-submissions-desktop-metric" label="Ad-hoc" value={summary.adhocCount} />
@@ -639,8 +636,8 @@ export const AdminResidentSubmissionsPage = () => {
         <section className={`warning-group-card admin-resident-submissions-table-card ${isRefetching ? 'is-refetching' : ''}`}>
           <div className="warning-group-header">
             <div>
-              <span className="warning-group-kicker">Attendance submissions</span>
-              <h2>NHG resident attendance records</h2>
+              <span className="warning-group-kicker">Attendance Submissions</span>
+              <h2>NHG Resident Attendance Records</h2>
             </div>
             <div className="parsed-data-count-status">
               {isRefetching ? <span className="parsed-data-updating">Refreshing...</span> : null}
@@ -655,12 +652,11 @@ export const AdminResidentSubmissionsPage = () => {
                 <tr>
                   <th>NHG Resident</th>
                   <th>Teaching</th>
+                  <th>Session Type</th>
                   <th>Posting</th>
                   <th>Date + time</th>
                   <th>Source</th>
-                  <th>Status</th>
                   <th>CME / SMC</th>
-                  <th>Session Type</th>
                   <th aria-label="Open detail" />
                 </tr>
               </thead>
@@ -681,14 +677,18 @@ export const AdminResidentSubmissionsPage = () => {
                     <td>
                       <div className="secretary-event-title-cell">
                         <strong>{submission.residentName}</strong>
-                        <span>
-                          {submission.mcr} / {submission.programmeCode ?? '-'}
-                        </span>
+                        <span className="mono">{submission.mcr}</span>
                       </div>
                     </td>
                     <td>
                       <div className="secretary-event-stack">
                         <strong>{submission.teachingName}</strong>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="secretary-event-stack admin-resident-submissions-session-type">
+                        <strong>{submission.sessionTypeName ?? '-'}</strong>
+                        <span>{formatDuration(submission.durationHours)}</span>
                       </div>
                     </td>
                     <td>
@@ -709,9 +709,6 @@ export const AdminResidentSubmissionsPage = () => {
                       <StatusBadge label={submission.source} tone={sourceTone(submission.source)} />
                     </td>
                     <td>
-                      <StatusBadge label={submission.status} tone={statusTone(submission.status)} />
-                    </td>
-                    <td>
                       <div className="secretary-event-badge-stack">
                         <StatusBadge
                           label={submission.cmePointsAwarded ? 'CME awarded' : 'No CME'}
@@ -720,12 +717,6 @@ export const AdminResidentSubmissionsPage = () => {
                         {submission.smcEventCode ? (
                           <span className="mono admin-log-compact-text">{submission.smcEventCode}</span>
                         ) : null}
-                      </div>
-                    </td>
-                    <td>
-                      <div className="secretary-event-stack admin-resident-submissions-session-type">
-                        <strong>{submission.sessionTypeName ?? '-'}</strong>
-                        <span>{formatDuration(submission.durationHours)}</span>
                       </div>
                     </td>
                     <td className="cell-chevron">
@@ -766,7 +757,6 @@ export const AdminResidentSubmissionsPage = () => {
                     {compactParts([
                       submission.postingCode,
                       compactSourceLabel(submission),
-                      submission.programmeCode,
                     ])}
                   </span>
                   {submission.sessionTypeName ||

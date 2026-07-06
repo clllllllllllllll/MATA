@@ -32,7 +32,7 @@ export const roleOptions: RoleOption[] = [
     id: 'external_resident',
     label: 'Non-NHG Resident',
     scopeLabel: 'NUH - posted to TTSH GRM',
-    defaultPath: '/external',
+    defaultPath: '/external/submissions',
   },
 ]
 
@@ -100,6 +100,12 @@ export const navItems: NavItem[] = [
     icon: 'grid',
   },
   {
+    label: 'Non-NHG Attendance',
+    path: '/admin/external-attendance',
+    roles: ['master_admin'],
+    icon: 'hospital',
+  },
+  {
     label: 'Upload TTF',
     path: '/pc/upload-ttf',
     roles: ['programme_pc'],
@@ -124,6 +130,12 @@ export const navItems: NavItem[] = [
     icon: 'settings',
   },
   {
+    label: 'Non-NHG Attendance',
+    path: '/pc/external-attendance',
+    roles: ['programme_pc'],
+    icon: 'hospital',
+  },
+  {
     label: 'Teaching Schedule',
     path: '/secretary/events',
     roles: ['secretary'],
@@ -142,10 +154,16 @@ export const navItems: NavItem[] = [
     icon: 'file',
   },
   {
-    label: 'Non-NHG Portal',
-    path: '/external',
+    label: 'Submission Portal',
+    path: '/external/submissions',
     roles: ['external_resident'],
-    icon: 'hospital',
+    icon: 'send',
+  },
+  {
+    label: 'Past Submissions',
+    path: '/external/attendance',
+    roles: ['external_resident'],
+    icon: 'file',
   },
 ]
 
@@ -161,14 +179,18 @@ export const breadcrumbMap: Record<string, string[]> = {
   '/admin/secretary-events': ['Master Admin', 'Secretary Events'],
   '/admin/staff-accounts': ['Master Admin', 'Staff Accounts'],
   '/admin/submissions': ['Master Admin', 'Resident Submissions'],
+  '/admin/external-attendance': ['Master Admin', 'Non-NHG Attendance'],
   '/pc/upload-ttf': ['PC', 'Upload TTF'],
   '/pc/teaching-events': ['PC', 'Teaching Events'],
   '/pc/warnings': ['PC', 'Warnings'],
   '/pc/config': ['PC', 'Configuration'],
+  '/pc/external-attendance': ['PC', 'Non-NHG Attendance'],
   '/secretary': ['Secretary', 'Teaching Schedule'],
   '/secretary/events': ['Secretary', 'Teaching Schedule'],
   '/resident': ['NHG Resident', 'Submission Portal'],
   '/resident/submissions': ['NHG Resident', 'Submission Portal'],
   '/resident/attendance': ['NHG Resident', 'Past Submissions'],
   '/external': ['Non-NHG Resident', 'Submission Portal'],
+  '/external/submissions': ['Non-NHG Resident', 'Submission Portal'],
+  '/external/attendance': ['Non-NHG Resident', 'Past Submissions'],
 }

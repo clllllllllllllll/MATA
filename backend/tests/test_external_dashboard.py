@@ -38,6 +38,7 @@ def test_external_dashboard_returns_not_applicable() -> None:
     payload = response.json()
     assert payload["compliance_status"] == "not_applicable"
     assert payload["reason"] == "external_resident_excluded_from_nhg_compliance"
+    assert "Non-NHG Resident attendance" in payload["message"]
     assert "NHG compliance and clawback do not apply" in payload["message"]
     assert "percentage" not in payload
     assert "surplus" not in payload

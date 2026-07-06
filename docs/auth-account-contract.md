@@ -47,7 +47,7 @@ Backend:
 - `backend/app/routers/auth.py` has `POST /auth/login` and `GET /auth/me`.
 - `backend/app/services/auth.py` issues `stub.<role>.<id>` tokens in stub/demo mode. In Supabase mode, staff sessions come from Supabase Auth and NHG/Non-NHG resident sessions use backend-signed MATA resident tokens.
 - `backend/app/routers/external_residents.py` and `backend/app/services/external_residents.py` already implement partial Non-NHG self-enrolment and posting update.
-- The current Non-NHG service writes `external_residents` and `external_resident_postings`. Phase 5B forecast posting schedule requirements supersede the older single-current-posting contract: authorization-sensitive event/ad-hoc derivation should use `external_resident_postings` by selected date once implemented, while `external_residents.current_nhg_posting_code` may remain a current/cache/backward-compatibility pointer.
+- The current Non-NHG service writes `external_residents` and `external_resident_postings`. Phase 5B posting schedule requirements supersede the older single-current-posting contract: authorization-sensitive event/ad-hoc derivation uses `external_resident_postings` by selected date, while `external_residents.current_nhg_posting_code` may remain a current/cache/backward-compatibility pointer.
 - `users.admin_level` is now the persisted explicit master marker with allowed values `programme` and `master`. Runtime admin context and staff actor audit metadata prefer `request.state.identity` when middleware provides it; direct-header fallback branches are limited to local stub/demo compatibility.
 - `backend/app/dependencies/auth.py` provides central typed identity helpers over `request.state.identity`.
 - As of 5B-B2, resident and secretary route contexts read central verified identity dependencies instead of raw route-level `X-*` headers.
@@ -108,22 +108,22 @@ JWT/session claims:
 }
 ```
 
-The MATA resident session token must not contain `posting_code`, current posting, staff actor name, `admin_level`, or `programme_scope`. Protected requests reload the resident by `sub` and reject inactive rows; current posting remains a resident route/service concern derived from `resident_postings`.
+The MATA resident session token must not contain `posting_code`, current posting, staff actor name, `admin_level`, or `programme_scope`. Protected requests reload the resident by `sub` and reject inactive rows. `/auth/me` may include display-only `current_posting_code` and `current_posting_label` for shell display, resolved from today's `resident_postings` row first, then an effectively active reporting-period row, then the nearest future row, then the nearest recent past row; authorization-sensitive resident routes still derive posting in their own services.
 
 ### Non-NHG Resident Register + MCR Login
 
-5B-F-B register input: `name`, `mcr`, `home_cluster`, and `current_nhg_posting_code`. Forecast `posting_schedule[]` registration rows remain planned later work.
+5B-F registration input: `name`, `mcr`, `home_cluster`, and `posting_schedule[]` rows containing `start_date`, `end_date`, `programme_code`, and `institution`. The client does not send editable `posting_code`; the backend resolves posting codes from trusted programme/institution posting configuration. `current_nhg_posting_code` may remain a compatibility/cache field, but it is not the current UI contract.
 
 Source table: `external_residents`.
 
 Server behaviour:
 - Accept only `home_cluster = NUH | SingHealth`.
 - Reject MCR if it exists in `residents` or `external_residents`.
-- Validate `current_nhg_posting_code` exists in `posting_codes`.
+- Validate each schedule row and resolve exactly one safe posting code from trusted data/config; reject unresolved or ambiguous schedule rows with `422`.
 - Do not create `users`, native `residents`, or native `resident_postings`.
 - In `AUTH_MODE=supabase`, do not create a Supabase Auth user for the external resident.
 - In `AUTH_MODE=supabase`, return a backend-signed MATA resident session token for `Authorization: Bearer <token>` on external resident API calls. The token is signed with server-only `MATA_RESIDENT_SESSION_SECRET`, uses a MATA issuer/audience distinct from Supabase Auth JWTs, and is accepted only for `role/app_role = external_resident`.
-- For authorization-sensitive reads, fetch `external_residents` and derive the date-specific posting from `external_resident_postings` where relevant. `external_residents.current_nhg_posting_code` may be returned as today's derived/current posting for convenience/backward compatibility.
+- For authorization-sensitive reads, fetch `external_residents` and derive the date-specific posting from `external_resident_postings` where relevant. `/auth/me` may include display-only `current_posting_code` and `current_posting_label` resolved from today's `external_resident_postings` row first, then an effectively active reporting-period row, then the nearest future row, then the nearest recent past row. `external_residents.current_nhg_posting_code` may remain a cache/backward-compatibility pointer, but `/auth/me` must not fall back to it for shell scope.
 
 JWT/session claims:
 
@@ -329,7 +329,7 @@ Current helper surface:
 
 ## Login/Register Frontend Contract
 
-Planned `/login`:
+Implemented `/login`:
 - One universal login surface.
 - NHG Resident panel: MCR login.
 - Staff/Admin panel: username/email + password login; backend derives Master Admin, Programme PC, or Secretary from `users`.
@@ -339,13 +339,13 @@ Planned `/login`:
 
 Current Non-NHG registration:
 - User-facing label: Non-NHG Resident.
-- Fields: name, MCR, home cluster, and current NHG posting code.
+- Fields: name, MCR, home cluster, and posting schedule rows with date range, programme, and institution.
 - Enforces global MCR uniqueness server-side.
 - After registration, login remains MCR-only.
 
-Planned Non-NHG forecast schedule work:
-- Schedule rows capture date range, programme code plus full programme name, institution (`TTSH`, `WH`, `KTPH`), and resolved posting code.
-- Rows validate date order, overlap, controlled institution values, and posting-code resolution without string-generated posting codes.
+Implemented Non-NHG posting schedule work:
+- Schedule rows capture date range, programme code plus full programme name, and institution (`TTSH`, `WH`, `KTPH`). Resolved posting code is backend-derived and may be displayed only as read-only output.
+- Rows validate date order, overlap, controlled institution values, and posting-code resolution without string-generated or client-entered posting codes.
 
 ## Implementation TODOs
 
@@ -405,7 +405,7 @@ Planned Non-NHG forecast schedule work:
 - NHG Residents remain `residents`-table-backed and are not `users`.
 - Backend `/auth/login` validates the MCR against active `residents` rows and issues a backend-signed MATA resident session token with `iss = mata-api`, `aud = mata-resident-session`, `role/app_role = resident`, `sub = residents.id`, `mcr`, `programme_code`, `iat`, and `exp`.
 - Supabase-mode protected routes accept either a verified Supabase staff token or a verified MATA resident token. Raw `X-User-*` headers remain ignored in Supabase mode.
-- `/auth/me` with a MATA resident token returns resident identity only and omits staff actor fields, posting code, admin level, and programme scope.
+- `/auth/me` with a MATA resident token returns resident identity plus display-only current posting code/label when available, and omits staff actor fields, trusted posting code claims, admin level, and programme scope.
 - Frontend Supabase mode stores the MATA resident token after NHG Resident login, hydrates it through backend `/auth/me` when no staff Supabase session exists, attaches it as `Authorization: Bearer ...` for resident API calls, and keeps residents out of the staff actor-name gate.
 
 5B-F-B implemented:
@@ -413,9 +413,9 @@ Planned Non-NHG forecast schedule work:
 - Non-NHG Residents remain `external_residents`-table-backed and are not `users`, native `residents`, or native `resident_postings`.
 - Backend `/auth/login` validates the MCR against active `external_residents` rows and issues a backend-signed MATA resident session token with `iss = mata-api`, `aud = mata-resident-session`, `role/app_role = external_resident`, `sub = external_residents.id`, `mcr`, `home_cluster`, `iat`, and `exp`.
 - Supabase-mode protected routes accept verified MATA external resident tokens, reload active `external_residents` rows by `sub`, and ignore raw `X-User-*` headers.
-- `/auth/me` with a MATA external resident token returns external identity only and omits current posting, posting schedule, staff actor fields, posting code, admin level, programme code, and programme scope.
+- `/auth/me` with a MATA external resident token returns external identity plus display-only current posting code/label when available, and omits `current_nhg_posting_code`, posting schedule, staff actor fields, trusted posting code claims, admin level, programme code, and programme scope.
 - Frontend Supabase mode stores, hydrates, transports, and logs out MATA tokens for both NHG and registered Non-NHG Resident sessions; staff calls still rely on the latest Supabase session token.
-- Forecast `posting_schedule[]`, revised event visibility, revised ad-hoc flow, exports, compliance, surplus, and clawback remain deferred.
+- Non-NHG schedule rows, secretary-event visibility, ad-hoc submission, and admin/PC attendance export are implemented as recording/forwarding-only flows. NHG compliance, surplus, snapshots, and clawback remain excluded/deferred for Non-NHG Residents.
 
 5B-F:
 - Complete Non-NHG resident submission parity where not already implemented.
@@ -429,8 +429,8 @@ Planned Non-NHG forecast schedule work:
 - Add rate-limit hardening for login/register and mutation surfaces before UAT/public use.
 - Replace browser-visible Supabase bearer transport with backend-managed `HttpOnly`, `Secure`, `SameSite` cookies or BFF session transport plus CSRF protection.
 
-Still deferred beyond 5B-F-B:
-- Forecast Non-NHG posting schedule UI/API replacement, resident Supabase Auth provisioning, resident second factor, RLS, production Supabase deployment, Vercel/backend deployment, Master Admin seed/provisioning script, exports/email, bulk upload, compliance, surplus, snapshots, clawback, STP upload/parser, and SSO/corporate identity replacement for self-declared staff actor names.
+Still deferred beyond 5B-F:
+- Resident Supabase Auth provisioning, resident second factor, RLS, production Supabase deployment, Vercel/backend deployment, Master Admin seed/provisioning script, email delivery, bulk upload, NHG compliance/surplus/snapshots/clawback for Non-NHG Residents, STP upload/parser, and SSO/corporate identity replacement for self-declared staff actor names.
 - 5B-H must replace browser-visible bearer transport with backend-managed `HttpOnly`, `Secure`, `SameSite` cookies or BFF session transport plus CSRF protection.
 
 ## 5A Guardrails Preserved

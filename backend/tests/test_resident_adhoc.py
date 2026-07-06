@@ -56,6 +56,8 @@ def test_adhoc_teaching_derives_posting_from_submitted_date() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["event"]["posting_code"] == "TTSHCardio"
+    assert payload["event"]["teaching_name"] == "Department/Programme Teaching [1h]"
+    assert payload["event"]["session_type_id"] == fake_db.adhoc_session_type_id
     assert payload["event"]["is_adhoc"] is True
     assert payload["attendance"]["posting_code"] == "TTSHCardio"
     assert any(row["is_adhoc"] for row in fake_db.events)
@@ -80,6 +82,119 @@ def test_adhoc_options_are_date_first_and_catalogue_backed() -> None:
     assert "Journal Club" in option_names
     assert "" not in option_names
     assert "created_by_role" not in payload["options"][0]
+
+
+def test_adhoc_options_include_attended_posting_options() -> None:
+    fake_db = _fake_db()
+    client = _client(fake_db)
+
+    response = client.get(
+        "/resident/adhoc-teaching-options",
+        headers=_headers(fake_db),
+        params={"date": "2026-05-18"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    posting_codes = {
+        row["posting_code"] for row in payload["attended_posting_options"]
+    }
+    assert {"TTSHCardio", "TTSHNeuro"} <= posting_codes
+    assert payload["selected_attended_posting_code"] == "TTSHCardio"
+
+
+def test_adhoc_options_filter_teaching_by_selected_attended_posting() -> None:
+    fake_db = _fake_db()
+    client = _client(fake_db)
+
+    response = client.get(
+        "/resident/adhoc-teaching-options",
+        headers=_headers(fake_db),
+        params={"date": "2026-05-18", "attended_posting_code": "TTSHNeuro"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["posting_code"] == "TTSHCardio"
+    assert payload["selected_attended_posting_code"] == "TTSHNeuro"
+    option_names = {row["teaching_name"] for row in payload["options"]}
+    assert "Skills Teaching" in option_names
+    assert "Journal Club" not in option_names
+
+
+def test_adhoc_teaching_uses_selected_attended_posting_for_catalogue_evidence() -> None:
+    fake_db = _fake_db()
+    before_attendance = len(fake_db.attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "date": "2026-05-18",
+            "start_time": "10:00",
+            "attended_posting_code": "TTSHNeuro",
+            "teaching_name": "Skills Teaching",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["event"]["posting_code"] == "TTSHCardio"
+    assert payload["event"]["teaching_name"] == "Department/Programme Teaching [1h]"
+    assert payload["event"]["session_type_id"] == fake_db.adhoc_session_type_id
+    assert len(fake_db.attendance) == before_attendance + 1
+
+
+def test_adhoc_teaching_selected_attended_posting_does_not_replace_assigned_target() -> None:
+    fake_db = _fake_db()
+    fake_db.catalogue = [
+        row
+        for row in fake_db.catalogue
+        if row["keyword"] != "Department/Programme Teaching [1h]"
+    ]
+    before_events = len(fake_db.events)
+    before_attendance = len(fake_db.attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "date": "2026-05-18",
+            "start_time": "10:00",
+            "attended_posting_code": "TTSHNeuro",
+            "teaching_name": "Skills Teaching",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "department/programme teaching [1h]" in response.json()["detail"].lower()
+    assert len(fake_db.events) == before_events
+    assert len(fake_db.attendance) == before_attendance
+
+
+def test_adhoc_teaching_rejects_unknown_attended_posting_code() -> None:
+    fake_db = _fake_db()
+    before_events = len(fake_db.events)
+    before_attendance = len(fake_db.attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "date": "2026-05-18",
+            "start_time": "10:00",
+            "attended_posting_code": "TTSHMissing",
+            "teaching_name": "Skills Teaching",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "attended" in response.json()["detail"].lower()
+    assert len(fake_db.events) == before_events
+    assert len(fake_db.attendance) == before_attendance
 
 
 def test_adhoc_options_use_resident_posting_r_year_not_resident_r_year() -> None:
@@ -175,11 +290,63 @@ def test_adhoc_teaching_stores_optional_details_of_session() -> None:
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["event"]["teaching_name"] == "Department/Programme Teaching [1h]"
     assert payload["event"]["details_of_session"] == "Ward case discussion"
     assert "created_by_role" not in payload["event"]
     assert "created_for_programme_code" not in payload["event"]
     created_event = next(row for row in fake_db.events if row["id"] == payload["event"]["id"])
     assert created_event["details_of_session"] == "Ward case discussion"
+
+
+def test_adhoc_teaching_rejects_uncatalogued_teaching_name() -> None:
+    fake_db = _fake_db()
+    before_events = len(fake_db.events)
+    before_attendance = len(fake_db.attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "teaching_date": "2026-05-18",
+            "start_time": "10:00",
+            "teaching_name": "Completely New Topic",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "catalogue-backed" in response.json()["detail"].lower()
+    assert len(fake_db.events) == before_events
+    assert len(fake_db.attendance) == before_attendance
+
+
+def test_adhoc_teaching_rejects_when_fixed_department_programme_target_unavailable() -> None:
+    fake_db = _fake_db()
+    fake_db.catalogue = [
+        row
+        for row in fake_db.catalogue
+        if row["keyword"] != "Department/Programme Teaching [1h]"
+    ]
+    before_events = len(fake_db.events)
+    before_attendance = len(fake_db.attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "teaching_date": "2026-05-18",
+            "start_time": "10:00",
+            "teaching_name": "Journal Club",
+        },
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"].lower()
+    assert "department/programme teaching [1h]" in detail
+    assert "unavailable" in detail
+    assert len(fake_db.events) == before_events
+    assert len(fake_db.attendance) == before_attendance
 
 
 def test_adhoc_teaching_rejects_frontend_posting_code_authority() -> None:

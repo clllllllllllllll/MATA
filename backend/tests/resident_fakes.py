@@ -60,6 +60,7 @@ class FakeResidentSession:
         self.secretary_id = str(uuid4())
         self.session_type_id = str(uuid4())
         self.second_session_type_id = str(uuid4())
+        self.adhoc_session_type_id = str(uuid4())
         self.existing_attendance_id = str(uuid4())
         self.other_attendance_id = str(uuid4())
         self.event_id = str(uuid4())
@@ -116,9 +117,53 @@ class FakeResidentSession:
             },
         ]
         self.posting_codes = [
-            {"code": "TTSHCardio", "display_name": "TTSH Cardiology", "supports_secretary_events": True},
-            {"code": "TTSHNeuro", "display_name": "TTSH Neurology", "supports_secretary_events": True},
-            {"code": "KTPHGerMed", "display_name": "KTPH Geriatric Medicine", "supports_secretary_events": False},
+            {
+                "code": "TTSHCardio",
+                "display_name": "TTSH Cardiology",
+                "institution": "TTSH",
+                "supports_secretary_events": True,
+            },
+            {
+                "code": "TTSHNeuro",
+                "display_name": "TTSH Neurology",
+                "institution": "TTSH",
+                "supports_secretary_events": True,
+            },
+            {
+                "code": "KTPHGerMed",
+                "display_name": "KTPH Geriatric Medicine",
+                "institution": "KTPH",
+                "supports_secretary_events": False,
+            },
+        ]
+        self.programmes = [
+            {
+                "code": "GRM",
+                "name": "Geriatric Medicine",
+                "native_teaching_posting_code": None,
+            },
+            {
+                "code": "GERI",
+                "name": "Geriatric Medicine",
+                "native_teaching_posting_code": None,
+            },
+            {
+                "code": "DR",
+                "name": "Diagnostic Radiology",
+                "native_teaching_posting_code": None,
+            },
+        ]
+        self.secretary_programme_pools = [
+            {
+                "posting_code": "TTSHCardio",
+                "programme_code": "GERI",
+                "is_active": True,
+            },
+            {
+                "posting_code": "KTPHGerMed",
+                "programme_code": "GERI",
+                "is_active": True,
+            },
         ]
         self.external_residents = [
             {
@@ -182,6 +227,13 @@ class FakeResidentSession:
         self.catalogue = [
             self._catalogue("Journal Club", "TTSHCardio", self.session_type_id, Decimal("1.0")),
             self._catalogue("Skills Teaching", "TTSHNeuro", self.second_session_type_id, Decimal("2.0")),
+            self._catalogue(
+                "Department/Programme Teaching [1h]",
+                "TTSHCardio",
+                self.adhoc_session_type_id,
+                Decimal("1.0"),
+                session_type="Department/Programme Teaching [1h]",
+            ),
         ]
         self.global_session_types = [
             {"name": "Department Meeting [1h]", "duration_hours": Decimal("1.0"), "is_active": True}
@@ -233,6 +285,8 @@ class FakeResidentSession:
         posting_code: str,
         session_type_id: str,
         duration_hours: Decimal,
+        *,
+        session_type: str | None = None,
     ) -> dict:
         return {
             "keyword": keyword,
@@ -241,7 +295,7 @@ class FakeResidentSession:
             "r_year": "R2",
             "reporting_period_id": self.period_id,
             "session_type_id": session_type_id,
-            "session_type": f"{keyword} [{duration_hours}h]",
+            "session_type": session_type or f"{keyword} [{duration_hours}h]",
             "duration_hours": duration_hours,
             "is_tracked": True,
         }
@@ -276,6 +330,102 @@ class FakeResidentSession:
             "updated_at": self.now,
         }
 
+    def _posting_label(self, posting_code: str | None) -> str | None:
+        if posting_code is None:
+            return None
+        posting = next(
+            (
+                row
+                for row in self.posting_codes
+                if row["code"] == posting_code
+            ),
+            None,
+        )
+        return (posting or {}).get("display_name") or posting_code
+
+    def _resident_with_current_posting(self, resident: dict) -> dict:
+        active_periods = [
+            period
+            for period in self.reporting_periods
+            if is_reporting_period_effectively_active(period, as_of_date=self.today)
+        ]
+
+        def rank(posting: dict) -> tuple[int, int, date, str]:
+            posting_end = posting.get("end_date") or date.max
+            if posting["start_date"] <= self.today <= posting_end:
+                bucket = 0
+            elif any(
+                posting["start_date"] <= period["end_date"]
+                and posting_end >= period["start_date"]
+                for period in active_periods
+            ):
+                bucket = 1
+            elif posting["start_date"] > self.today:
+                bucket = 2
+            else:
+                bucket = 3
+            distance = (
+                (posting["start_date"] - self.today).days
+                if posting["start_date"] > self.today
+                else (self.today - min(posting_end, self.today)).days
+            )
+            return bucket, distance, -posting["start_date"].toordinal(), posting["posting_code"]
+
+        eligible = [
+            posting
+            for posting in self.resident_postings
+            if posting["resident_id"] == resident["id"]
+            and posting["status"] in {"active", "loa_working"}
+        ]
+        current_posting = min(eligible, key=rank) if eligible else None
+        posting_code = current_posting["posting_code"] if current_posting else None
+        return {
+            **resident,
+            "current_posting_code": posting_code,
+            "current_posting_label": self._posting_label(posting_code),
+        }
+
+    def _external_resident_with_current_posting(self, resident: dict) -> dict:
+        active_periods = [
+            period
+            for period in self.reporting_periods
+            if is_reporting_period_effectively_active(period, as_of_date=self.today)
+        ]
+
+        def rank(posting: dict) -> tuple[int, int, date, str]:
+            posting_end = posting.get("end_date") or date.max
+            if posting["start_date"] <= self.today <= posting_end:
+                bucket = 0
+            elif any(
+                posting["start_date"] <= period["end_date"]
+                and posting_end >= period["start_date"]
+                for period in active_periods
+            ):
+                bucket = 1
+            elif posting["start_date"] > self.today:
+                bucket = 2
+            else:
+                bucket = 3
+            distance = (
+                (posting["start_date"] - self.today).days
+                if posting["start_date"] > self.today
+                else (self.today - min(posting_end, self.today)).days
+            )
+            return bucket, distance, -posting["start_date"].toordinal(), posting["posting_code"]
+
+        eligible = [
+            posting
+            for posting in self.external_resident_postings
+            if posting["external_resident_id"] == resident["id"]
+        ]
+        current_posting = min(eligible, key=rank) if eligible else None
+        posting_code = current_posting["posting_code"] if current_posting else None
+        return {
+            **resident,
+            "current_posting_code": posting_code,
+            "current_posting_label": self._posting_label(posting_code),
+        }
+
     async def commit(self) -> None:
         self.commits += 1
 
@@ -301,6 +451,22 @@ class FakeResidentSession:
                 rows = [row for row in self.users if row["id"] == str(payload["user_id"]) and row["is_active"]]
             return FakeResult(rows=rows)
 
+        if "FROM residents r" in sql and "WHERE r.mcr = :mcr" in sql:
+            rows = [
+                self._resident_with_current_posting(row)
+                for row in self.residents
+                if row["mcr"] == payload.get("mcr")
+            ]
+            return FakeResult(rows=rows)
+
+        if "FROM residents r" in sql and "WHERE r.id = :resident_id" in sql:
+            rows = [
+                self._resident_with_current_posting(row)
+                for row in self.residents
+                if row["id"] == str(payload.get("resident_id"))
+            ]
+            return FakeResult(rows=rows)
+
         if "FROM residents" in sql and "WHERE mcr" in sql:
             rows = [row for row in self.residents if row["mcr"] == payload.get("mcr")]
             if "SELECT 1" in sql:
@@ -311,10 +477,27 @@ class FakeResidentSession:
             rows = [row for row in self.residents if row["id"] == str(payload.get("resident_id"))]
             return FakeResult(rows=rows)
 
+        if "FROM external_residents er" in sql and "WHERE er.mcr = :mcr" in sql:
+            rows = [
+                self._external_resident_with_current_posting(row)
+                for row in self.external_residents
+                if row["mcr"] == payload.get("mcr")
+            ]
+            return FakeResult(rows=rows)
+
         if "FROM external_residents" in sql and "WHERE mcr" in sql:
             rows = [row for row in self.external_residents if row["mcr"] == payload.get("mcr")]
             if "SELECT 1" in sql:
                 return FakeResult(scalar=1 if rows else None)
+            return FakeResult(rows=rows)
+
+        if "FROM external_residents er" in sql and "WHERE er.id = :external_resident_id" in sql:
+            lookup_id = str(payload.get("external_resident_id"))
+            rows = [
+                self._external_resident_with_current_posting(row)
+                for row in self.external_residents
+                if row["id"] == lookup_id
+            ]
             return FakeResult(rows=rows)
 
         if "FROM external_residents" in sql and "WHERE id" in sql:
@@ -324,6 +507,19 @@ class FakeResidentSession:
                 or payload.get("user_id")
             )
             rows = [row for row in self.external_residents if row["id"] == lookup_id]
+            return FakeResult(rows=rows)
+
+        if "FROM external_resident_postings" in sql and "SELECT" in sql:
+            start_date = payload.get("start_date") or payload.get("on_date") or date.min
+            end_date = payload.get("end_date") or payload.get("on_date") or date.max
+            rows = [
+                row
+                for row in self.external_resident_postings
+                if row["external_resident_id"] == str(payload.get("external_resident_id"))
+                and row["start_date"] <= end_date
+                and ((row.get("end_date") or date.max) >= start_date)
+            ]
+            rows.sort(key=lambda row: (row["start_date"], row["posting_code"]))
             return FakeResult(rows=rows)
 
         if "SELECT supports_secretary_events" in sql and "FROM posting_codes" in sql:
@@ -348,14 +544,63 @@ class FakeResidentSession:
             )
             return FakeResult(rows=[posting] if posting else [])
 
+        if "SELECT code, institution" in sql and "FROM posting_codes" in sql:
+            posting = next(
+                (
+                    row
+                    for row in self.posting_codes
+                    if row["code"] == payload.get("posting_code")
+                ),
+                None,
+            )
+            return FakeResult(rows=[posting] if posting else [])
+
         if "SELECT code, supports_secretary_events" in sql and "FROM posting_codes" in sql:
             codes = set(payload.get("posting_codes") or [])
             rows = [row for row in self.posting_codes if row["code"] in codes]
             return FakeResult(rows=rows)
 
+        if "FROM secretary_programme_pools" in sql and "JOIN posting_codes" in sql:
+            rows = []
+            for pool in self.secretary_programme_pools:
+                posting = next(
+                    (
+                        row
+                        for row in self.posting_codes
+                        if row["code"] == pool["posting_code"]
+                    ),
+                    None,
+                )
+                if (
+                    posting is not None
+                    and pool["programme_code"] == payload.get("programme_code")
+                    and pool["is_active"]
+                    and posting.get("institution") == payload.get("institution")
+                ):
+                    rows.append({"posting_code": posting["code"]})
+            rows.sort(key=lambda row: row["posting_code"])
+            return FakeResult(rows=rows)
+
+        if "FROM teaching_targets" in sql and "JOIN posting_codes" in sql:
+            return FakeResult(rows=[])
+
         if "SELECT 1" in sql and "FROM posting_codes" in sql:
             exists = any(row for row in self.posting_codes if row["code"] == payload.get("posting_code"))
             return FakeResult(scalar=1 if exists else None)
+
+        if "SELECT 1" in sql and "FROM programmes" in sql:
+            exists = any(row for row in self.programmes if row["code"] == payload.get("programme_code"))
+            return FakeResult(scalar=1 if exists else None)
+
+        if "native_teaching_posting_code" in sql and "FROM programmes" in sql:
+            rows = [
+                {
+                    "native_teaching_posting_code": row.get("native_teaching_posting_code"),
+                }
+                for row in self.programmes
+                if row["code"] == payload.get("programme_code")
+            ]
+            return FakeResult(rows=rows[:1])
 
         if "FROM reporting_periods" in sql:
             rows = [
@@ -405,6 +650,53 @@ class FakeResidentSession:
                 if row["is_active"]
                 and ("teaching_name" not in payload or row["name"] == payload["teaching_name"])
             ]
+            return FakeResult(rows=rows)
+
+        if "pc.code AS posting_code" in sql and "FROM teaching_name_catalogue" in sql:
+            if "programme_code" in payload:
+                catalogue_rows = [
+                    row
+                    for row in self.catalogue
+                    if row["programme_code"] == payload.get("programme_code")
+                    and row["r_year"] in {payload.get("r_year"), "ALL"}
+                    and row["reporting_period_id"] == str(payload.get("reporting_period_id"))
+                ]
+            else:
+                catalogue_rows = list(self.catalogue)
+            rows = []
+            seen: set[tuple[str, str]] = set()
+            for catalogue_row in catalogue_rows:
+                posting = next(
+                    (
+                        row
+                        for row in self.posting_codes
+                        if row["code"] == catalogue_row["posting_code"]
+                    ),
+                    None,
+                )
+                if posting is None:
+                    continue
+                key = (posting["code"], catalogue_row["programme_code"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                programme = next(
+                    (
+                        row
+                        for row in self.programmes
+                        if row["code"] == catalogue_row["programme_code"]
+                    ),
+                    None,
+                )
+                rows.append(
+                    {
+                        "posting_code": posting["code"],
+                        "label": posting.get("display_name") or posting["code"],
+                        "programme_code": catalogue_row["programme_code"],
+                        "programme_name": programme.get("name") if programme else None,
+                    }
+                )
+            rows.sort(key=lambda row: (row["label"], row["posting_code"], row["programme_code"]))
             return FakeResult(rows=rows)
 
         if "FROM teaching_name_catalogue" in sql:
@@ -466,6 +758,7 @@ class FakeResidentSession:
                     and row["event_date"] <= today
                     and row["id"] not in submitted
                     and row.get("created_by_role") == "secretary"
+                    and row.get("created_for_programme_code") is None
                 ]
                 if "date_from" in payload and payload["date_from"] is not None:
                     rows = [row for row in rows if row["event_date"] >= payload["date_from"]]
@@ -491,6 +784,7 @@ class FakeResidentSession:
                 and row["event_date"] <= payload.get("period_end", date.max)
                 and row["id"] not in submitted
                 and row.get("created_by_role") in {"secretary", "programme_pc", None}
+                and row.get("created_for_programme_code") in {None, payload.get("programme_code")}
             ]
             if "date_from" in payload and payload["date_from"] is not None:
                 rows = [row for row in rows if row["event_date"] >= payload["date_from"]]
@@ -526,6 +820,15 @@ class FakeResidentSession:
                 for row in self.attendance
                 if row["id"] == str(payload.get("attendance_id"))
                 and row["resident_id"] == str(payload.get("resident_id"))
+            ]
+            return FakeResult(rows=rows[:1])
+
+        if "FROM external_attendance_records" in sql and "id = :attendance_id" in sql:
+            rows = [
+                row
+                for row in self.external_attendance
+                if row["id"] == str(payload.get("attendance_id"))
+                and row["external_resident_id"] == str(payload.get("external_resident_id"))
             ]
             return FakeResult(rows=rows[:1])
 
@@ -605,6 +908,19 @@ class FakeResidentSession:
                     rows.append(row)
             return FakeResult(rows=rows, rowcount=len(rows))
 
+        if "UPDATE external_attendance_records" in sql:
+            rows: list[dict] = []
+            for row in self.external_attendance:
+                if (
+                    row["id"] == str(payload["attendance_id"])
+                    and row["external_resident_id"] == str(payload["external_resident_id"])
+                    and row["status"] == "submitted"
+                ):
+                    row["status"] = "removed"
+                    row["submitted_at"] = self.now
+                    rows.append(row)
+            return FakeResult(rows=rows, rowcount=len(rows))
+
         if "INSERT INTO teaching_events" in sql:
             row = self._event(
                 str(uuid4()),
@@ -646,11 +962,20 @@ class FakeResidentSession:
                 "external_resident_id": str(payload["external_resident_id"]),
                 "posting_code": payload["posting_code"],
                 "start_date": payload["start_date"],
-                "end_date": None,
-                "is_current": True,
+                "end_date": payload.get("end_date"),
+                "is_current": payload.get("is_current", True),
             }
             self.external_resident_postings.append(row)
             return FakeResult(rows=[row])
+
+        if "DELETE FROM external_resident_postings" in sql:
+            before = len(self.external_resident_postings)
+            self.external_resident_postings = [
+                row
+                for row in self.external_resident_postings
+                if row["external_resident_id"] != str(payload["external_resident_id"])
+            ]
+            return FakeResult(rowcount=before - len(self.external_resident_postings))
 
         if "UPDATE external_resident_postings" in sql:
             for row in self.external_resident_postings:
