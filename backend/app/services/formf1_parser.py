@@ -65,6 +65,14 @@ class FormF1Layout:
     mode: str
 
 
+class FormF1LayoutMappingError(ValueError):
+    def __init__(self, missing_labels: list[str]) -> None:
+        super().__init__(
+            "Expected reporting-period months cannot be mapped to FormF1 columns safely."
+        )
+        self.missing_labels = missing_labels
+
+
 def _cell_text(value: Any) -> str:
     if value is None:
         return ""
@@ -153,6 +161,8 @@ def _detect_dynamic_layout(
     max_header_row = min(sheet.max_row, 80)
     best_layout: FormF1Layout | None = None
     best_score = -1
+    best_partial_missing_labels: list[str] | None = None
+    best_partial_score = -1
 
     expected_labels = [_month_label(month_start) for month_start in period_months]
     for row_idx in range(1, max_header_row + 1):
@@ -178,6 +188,14 @@ def _detect_dynamic_layout(
             continue
         if len(mcr_cols) != 1:
             continue
+        if month_cols and not all(label in month_cols for label in expected_labels):
+            missing_labels = [
+                label for label in expected_labels if label not in month_cols
+            ]
+            if len(month_cols) > best_partial_score:
+                best_partial_score = len(month_cols)
+                best_partial_missing_labels = missing_labels
+            continue
         if not all(label in month_cols for label in expected_labels):
             continue
 
@@ -192,7 +210,29 @@ def _detect_dynamic_layout(
                 mode="dynamic",
             )
 
+    if best_layout is None and best_partial_missing_labels is not None:
+        raise FormF1LayoutMappingError(best_partial_missing_labels)
+
     return best_layout
+
+
+def _detect_promotion_col(sheet: Any, preferred_row: int) -> int | None:
+    max_header_row = min(sheet.max_row, 80)
+    rows_to_scan = [preferred_row] + [
+        row_idx for row_idx in range(1, max_header_row + 1) if row_idx != preferred_row
+    ]
+
+    for row_idx in rows_to_scan:
+        if row_idx < 1 or row_idx > sheet.max_row:
+            continue
+        promotion_cols = [
+            col_idx
+            for col_idx in range(1, sheet.max_column + 1)
+            if _is_promotion_header(sheet.cell(row=row_idx, column=col_idx).value)
+        ]
+        if len(promotion_cols) == 1:
+            return promotion_cols[0]
+    return None
 
 
 def _build_layout(sheet: Any, period_months: list[date]) -> FormF1Layout:
@@ -210,7 +250,7 @@ def _build_layout(sheet: Any, period_months: list[date]) -> FormF1Layout:
         header_row=28,
         mcr_col=5,  # E
         month_cols=_build_fallback_month_col_map(period_months),  # M..X mapped by label
-        promotion_col=25,  # Y
+        promotion_col=_detect_promotion_col(sheet, 28) or 25,  # Y in the legacy template
         mode="fallback",
     )
 
@@ -420,6 +460,17 @@ async def parse_formf1_upload(
         sheet = workbook["Table 1"]
         try:
             layout = _build_layout(sheet, period_months)
+        except FormF1LayoutMappingError as exc:
+            metadata["validation_failed"] = True
+            return ParserResult(
+                upload_type="form_f1",
+                errors=[str(exc)],
+                metadata={
+                    **metadata,
+                    "month_labels_parsed": month_labels_parsed,
+                    "missing_month_labels": exc.missing_labels,
+                },
+            )
         except ValueError as exc:
             metadata["validation_failed"] = True
             return ParserResult(
