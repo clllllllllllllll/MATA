@@ -52,6 +52,11 @@ import { PageHero } from '../../components/PageHero'
 import { useAppState } from '../../context/useAppState'
 import { useAdminConfigReadCache } from '../../hooks/useAdminConfigReadCache'
 import type { ReportingPeriodOption } from '../../types/upload'
+import {
+  normaliseReportingPeriodStatus,
+  reportingPeriodStatusLabel,
+  type ReportingPeriodStatus,
+} from '../../utils/reportingPeriods'
 import { MultiPostingRulesSection } from './AdminMultiPostingPage'
 import type { DataRevalidationImpact } from '../../types/dataRevalidation'
 
@@ -87,7 +92,7 @@ interface ReportingPeriodFormState {
   label: string
   startDate: string
   endDate: string
-  status: 'open' | 'closed'
+  status: ReportingPeriodStatus
 }
 
 interface PublicHolidayFormState {
@@ -188,7 +193,7 @@ const emptyReportingPeriodForm: ReportingPeriodFormState = {
   label: '',
   startDate: '',
   endDate: '',
-  status: 'open',
+  status: 'active',
 }
 
 const emptyPublicHolidayForm: PublicHolidayFormState = {
@@ -537,13 +542,13 @@ const describeDeleteError = (error: unknown): NonNullable<Feedback> => {
 }
 
 const periodStatusTone = (status: string): 'success' | 'neutral' =>
-  status.toLowerCase() === 'open' ? 'success' : 'neutral'
+  normaliseReportingPeriodStatus(status) === 'active' ? 'success' : 'neutral'
 
 const toFormState = (period: ReportingPeriodOption): ReportingPeriodFormState => ({
   label: period.label,
   startDate: period.startDate,
   endDate: period.endDate,
-  status: period.status.toLowerCase() === 'closed' ? 'closed' : 'open',
+  status: normaliseReportingPeriodStatus(period.status),
 })
 
 const toPublicHolidayFormState = (holiday: PublicHoliday): PublicHolidayFormState => ({
@@ -995,7 +1000,7 @@ const ReportingPeriodsSection = () => {
                     <td>{formatDate(period.startDate)}</td>
                     <td>{formatDate(period.endDate)}</td>
                     <td>
-                      <StatusBadge label={period.status} tone={periodStatusTone(period.status)} />
+                      <StatusBadge label={reportingPeriodStatusLabel(period.status)} tone={periodStatusTone(period.status)} />
                     </td>
                     <td>{formatDate(period.updatedAt)}</td>
                     <td>
@@ -1126,12 +1131,12 @@ const ReportingPeriodsSection = () => {
                 onChange={(event) =>
                   setFormState((prev) => ({
                     ...prev,
-                    status: event.target.value === 'closed' ? 'closed' : 'open',
+                    status: event.target.value === 'inactive' ? 'inactive' : 'active',
                   }))
                 }
               >
-                <option value="open">Open</option>
-                <option value="closed">Closed</option>
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
               </select>
             </label>
           ) : null}

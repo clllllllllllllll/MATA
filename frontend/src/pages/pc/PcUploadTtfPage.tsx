@@ -6,6 +6,7 @@ import { PageHero } from '../../components/PageHero'
 import { UploadCard } from '../../components/UploadCard'
 import { useAuth } from '../../context/useAuth'
 import { useAppState } from '../../context/useAppState'
+import { formatReportingPeriodOptionLabel } from '../../utils/reportingPeriods'
 import { buildPcTtfWarningsPath, resolvePcProgrammeScope } from './pcUploadTtfPageLogic'
 
 const formatDateTime = (iso?: string | null) =>
@@ -15,18 +16,6 @@ const formatDateTime = (iso?: string | null) =>
         timeStyle: 'short',
       })
     : 'Not uploaded yet'
-
-const formatPeriodOptionLabel = (label: string, startDate: string, endDate: string) => {
-  const start = new Date(startDate)
-  const end = new Date(endDate)
-  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) {
-    return label
-  }
-  return `${label} (${start.toLocaleDateString(undefined, {
-    month: 'short',
-    year: 'numeric',
-  })} - ${end.toLocaleDateString(undefined, { month: 'short', year: 'numeric' })})`
-}
 
 const latestLocalTtfUpload = (
   uploadHistory: ReturnType<typeof useAppState>['uploadHistory'],
@@ -150,7 +139,7 @@ export const PcUploadTtfPage = () => {
                   <select value={reportingPeriodId} onChange={(event) => setReportingPeriodId(event.target.value)}>
                     {reportingPeriods.map((period) => (
                       <option key={period.id} value={period.id}>
-                        {formatPeriodOptionLabel(period.label, period.startDate, period.endDate)}
+                        {formatReportingPeriodOptionLabel(period)}
                       </option>
                     ))}
                   </select>

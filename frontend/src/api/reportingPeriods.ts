@@ -2,6 +2,7 @@ import { httpClient, toApiRequestError } from './http'
 import type { ReportingPeriodOption } from '../types/upload'
 import { buildAdminDemoHeaders } from './authHeaders'
 import { toConfigDeleteResult, toDataRevalidationImpact, type ConfigDeleteResult } from './dataRevalidation'
+import type { ReportingPeriodStatus } from '../utils/reportingPeriods'
 
 const toReportingPeriod = (value: Record<string, unknown>): ReportingPeriodOption => ({
   id: String(value.id ?? ''),
@@ -24,7 +25,7 @@ export interface ReportingPeriodMutationPayload {
   label?: string
   startDate?: string
   endDate?: string
-  status?: 'open' | 'closed'
+  status?: ReportingPeriodStatus
 }
 
 const toApiPayload = (payload: ReportingPeriodMutationPayload): Record<string, unknown> => {

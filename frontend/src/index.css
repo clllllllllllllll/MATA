@@ -5990,13 +5990,16 @@ button:disabled,
 .admin-logs-filter-actions {
   display: flex;
   align-items: flex-start;
+  justify-content: flex-end;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   padding-top: 22px;
 }
 
 .admin-logs-filter-actions .button {
+  flex: 0 0 auto;
   min-height: 39px;
+  white-space: nowrap;
 }
 
 .admin-logs-advanced-filters {
@@ -6193,6 +6196,17 @@ button:disabled,
 .admin-log-action-card span {
   color: var(--ink-3);
   font-size: 12px;
+}
+
+.admin-log-support-details summary {
+  cursor: pointer;
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.admin-log-support-details .parsed-data-detail-grid {
+  margin-top: 10px;
 }
 
 @media (max-width: 900px) {

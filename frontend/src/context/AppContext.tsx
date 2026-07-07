@@ -20,6 +20,7 @@ import {
 import {
   makeUploadMeta,
 } from '../utils/warnings'
+import { isActiveReportingPeriodStatus } from '../utils/reportingPeriods'
 import { authSessionChangedEvent, readStoredAuthSession } from '../api/auth'
 import { listReportingPeriods } from '../api/reportingPeriods'
 import { ApiRequestError } from '../api/http'
@@ -90,13 +91,13 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
       return ''
     }
     const now = new Date()
-    const open = periods.filter((item) => item.status.toLowerCase() === 'open')
-    const currentOpen = open.find((item) => {
+    const active = periods.filter((item) => isActiveReportingPeriodStatus(item.status))
+    const currentActive = active.find((item) => {
       const start = new Date(item.startDate)
       const end = new Date(item.endDate)
       return Number.isFinite(start.getTime()) && Number.isFinite(end.getTime()) && start <= now && now <= end
     })
-    return currentOpen?.id ?? open[0]?.id ?? periods[0].id
+    return currentActive?.id ?? active[0]?.id ?? periods[0].id
   }, [])
 
   const fetchReportingPeriods = useCallback(
