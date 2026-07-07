@@ -13,10 +13,10 @@
   "dependencies": {
     "@supabase/supabase-js": "2.110.0",
     "@tanstack/react-query": "^5.99.2",
-    "axios": "^1.15.2",
+    "axios": "^1.16.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
-    "react-router-dom": "^7.14.2"
+    "react-router-dom": "^7.15.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -30,6 +30,6 @@
     "globals": "^17.5.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.58.2",
-    "vite": "^8.0.10"
+    "vite": "^8.0.16"
   }
 }
