@@ -88,10 +88,15 @@ def _normalise_mcr(value: Any) -> str:
 
 
 def _iter_period_month_starts(start_date: date, end_date: date) -> list[date]:
+    if end_date < start_date:
+        return []
+
+    # FormF1 is a month-level gate for six-month reporting windows; academic
+    # boundary end dates may spill into the next calendar month.
     months: list[date] = []
-    cursor = date(start_date.year, start_date.month, 1)
-    stop = date(end_date.year, end_date.month, 1)
-    while cursor <= stop:
+    start_month = 1 if start_date.month <= 6 else 7
+    cursor = date(start_date.year, start_month, 1)
+    for _ in range(6):
         months.append(cursor)
         if cursor.month == 12:
             cursor = date(cursor.year + 1, 1, 1)
