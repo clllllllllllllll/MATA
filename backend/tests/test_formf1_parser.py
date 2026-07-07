@@ -162,6 +162,23 @@ def _month_headers_jul_dec_2025(start_col: int) -> dict[int, str]:
     }
 
 
+def _month_headers_ay25(start_col: int) -> dict[int, str]:
+    return {
+        start_col + 0: "Jul-25",
+        start_col + 1: "Aug-25",
+        start_col + 2: "Sep-25",
+        start_col + 3: "Oct-25",
+        start_col + 4: "Nov-25",
+        start_col + 5: "Dec-25",
+        start_col + 6: "Jan-26",
+        start_col + 7: "Feb-26",
+        start_col + 8: "Mar-26",
+        start_col + 9: "Apr-26",
+        start_col + 10: "May-26",
+        start_col + 11: "Jun-26",
+    }
+
+
 def test_dynamic_header_detection_and_persistence_only_authoritative_fields() -> None:
     session = FakeFormF1Session()
     period_id = uuid4()
@@ -242,6 +259,110 @@ def test_dynamic_header_detection_and_persistence_only_authoritative_fields() ->
     } for row in session.form_f1_records)
 
 
+def test_full_year_ignores_extra_trailing_out_of_period_month() -> None:
+    session = FakeFormF1Session()
+    period_id = uuid4()
+    _add_reporting_period(
+        session,
+        period_id=period_id,
+        start_date=date(2025, 7, 1),
+        end_date=date(2026, 6, 30),
+    )
+    session.residents.add("M12345A")
+
+    header_cells = {2: "MCR", 23: "Senior Promotion Date"}
+    header_cells.update(_month_headers_ay25(10))
+    header_cells[22] = "Jul-26"
+    data_rows = [
+        {
+            2: "m12345a",
+            **{col: "Active" for col in range(10, 23)},
+            23: "06-Jan-2026",
+        }
+    ]
+    file_bytes = _table1_xlsx(header_row=6, header_cells=header_cells, data_rows=data_rows)
+
+    result = _run(
+        parse_formf1_upload(
+            file_bytes=file_bytes,
+            original_filename="ay25-extra-jul26.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    expected_labels = [
+        "Jul-25",
+        "Aug-25",
+        "Sep-25",
+        "Oct-25",
+        "Nov-25",
+        "Dec-25",
+        "Jan-26",
+        "Feb-26",
+        "Mar-26",
+        "Apr-26",
+        "May-26",
+        "Jun-26",
+    ]
+    assert result.errors == []
+    assert result.metadata["month_labels_parsed"] == expected_labels
+    assert result.metadata["records_created"] == 12
+    assert {row["month_label"] for row in session.form_f1_records} == set(expected_labels)
+    assert "Jul-26" not in {row["month_label"] for row in session.form_f1_records}
+    assert all(row["promotion_date"] == date(2026, 1, 6) for row in session.form_f1_records)
+
+
+def test_half_year_period_persists_only_in_period_months_from_full_workbook() -> None:
+    session = FakeFormF1Session()
+    period_id = uuid4()
+    _add_reporting_period(
+        session,
+        period_id=period_id,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 6, 30),
+    )
+    session.residents.add("M12345A")
+
+    header_cells = {2: "MCR"}
+    header_cells.update(_month_headers_ay25(10))
+    header_cells[22] = "Jul-26"
+    data_rows = [
+        {
+            2: "M12345A",
+            **{col: "Active" for col in range(10, 23)},
+        }
+    ]
+    file_bytes = _table1_xlsx(header_row=6, header_cells=header_cells, data_rows=data_rows)
+
+    result = _run(
+        parse_formf1_upload(
+            file_bytes=file_bytes,
+            original_filename="half-year-extra-months.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert result.metadata["month_labels_parsed"] == [
+        "Jan-26",
+        "Feb-26",
+        "Mar-26",
+        "Apr-26",
+        "May-26",
+        "Jun-26",
+    ]
+    assert {row["month_label"] for row in session.form_f1_records} == {
+        "Jan-26",
+        "Feb-26",
+        "Mar-26",
+        "Apr-26",
+        "May-26",
+        "Jun-26",
+    }
+
+
 def test_fallback_positions_e_mx_y_work() -> None:
     session = FakeFormF1Session()
     period_id = uuid4()
@@ -279,6 +400,63 @@ def test_fallback_positions_e_mx_y_work() -> None:
         "Sep-25",
     }
     assert all(row["promotion_date"] == date(2026, 2, 6) for row in session.form_f1_records)
+
+
+def test_fallback_promotion_date_uses_header_when_extra_month_shifts_column() -> None:
+    session = FakeFormF1Session()
+    period_id = uuid4()
+    _add_reporting_period(
+        session,
+        period_id=period_id,
+        start_date=date(2025, 7, 1),
+        end_date=date(2026, 6, 30),
+    )
+    session.residents.add("M23456B")
+
+    header_cells = {26: "Promotion Date"}
+    data_rows = [
+        {
+            5: "M23456B",
+            **{col: "Active" for col in range(13, 26)},
+            26: "06-Jan-2026",
+        }
+    ]
+    file_bytes = _table1_xlsx(
+        header_row=28,
+        header_cells=header_cells,
+        data_rows=data_rows,
+    )
+
+    result = _run(
+        parse_formf1_upload(
+            file_bytes=file_bytes,
+            original_filename="fallback-shifted-promotion.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert result.metadata["header_detection_mode"] == "fallback"
+    assert result.metadata["records_created"] == 12
+    assert result.metadata["promotion_dates_parsed"] == 1
+    assert result.metadata["promotion_date_warnings"] == []
+    assert {row["month_label"] for row in session.form_f1_records} == {
+        "Jul-25",
+        "Aug-25",
+        "Sep-25",
+        "Oct-25",
+        "Nov-25",
+        "Dec-25",
+        "Jan-26",
+        "Feb-26",
+        "Mar-26",
+        "Apr-26",
+        "May-26",
+        "Jun-26",
+    }
+    assert "Jul-26" not in {row["month_label"] for row in session.form_f1_records}
+    assert all(row["promotion_date"] == date(2026, 1, 6) for row in session.form_f1_records)
 
 
 def test_promotion_date_text_parse_and_unparseable_warning() -> None:
@@ -484,6 +662,67 @@ def test_unsafe_month_column_mapping_returns_validation_error_and_preserves_exis
     )
 
     assert result.metadata["validation_failed"] is True
+    assert session.form_f1_records == before
+
+
+def test_partial_header_missing_expected_month_fails_and_preserves_existing() -> None:
+    session = FakeFormF1Session()
+    period_id = uuid4()
+    _add_reporting_period(
+        session,
+        period_id=period_id,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 6, 30),
+    )
+    session.residents.add("M12345A")
+    session.form_f1_records = [
+        {
+            "reporting_period_id": str(period_id),
+            "mcr": "MOLD11A",
+            "month_label": "Jan-26",
+            "status_raw": "Active",
+            "is_active": True,
+            "promotion_date": None,
+            "upload_id": None,
+        }
+    ]
+    before = [dict(row) for row in session.form_f1_records]
+
+    header_cells = {
+        5: "MCR",
+        19: "Jan-26",
+        20: "Feb-26",
+        21: "Mar-26",
+        22: "Apr-26",
+        23: "May-26",
+    }
+    data_rows = [
+        {
+            5: "M12345A",
+            19: "Active",
+            20: "Active",
+            21: "Active",
+            22: "Active",
+            23: "Active",
+            24: "Active",
+        }
+    ]
+    file_bytes = _table1_xlsx(header_row=28, header_cells=header_cells, data_rows=data_rows)
+
+    result = _run(
+        parse_formf1_upload(
+            file_bytes=file_bytes,
+            original_filename="missing-jun-26.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.metadata["validation_failed"] is True
+    assert "Jun-26" in result.metadata["missing_month_labels"]
+    assert result.errors == [
+        "Expected reporting-period months cannot be mapped to FormF1 columns safely."
+    ]
     assert session.form_f1_records == before
 
 
