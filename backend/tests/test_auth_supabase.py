@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from jwt.algorithms import RSAAlgorithm
 
 from app.config import Settings
+from app.dependencies.auth import require_master_admin, require_programme_pc, require_resident
 from app.middleware import install_error_handlers
 from app.middleware.auth_stub import AuthIdentity, AuthStubMiddleware
 from app.routers import admin, auth
@@ -88,20 +89,25 @@ def _resident_token(
     *,
     secret: str = RESIDENT_SECRET,
     expires_delta: timedelta = timedelta(minutes=15),
+    issuer: str = "mata-api",
+    audience: str = "mata-resident-session",
+    extra_claims: dict | None = None,
 ) -> str:
     now = datetime.now(UTC)
+    payload = {
+        "iss": issuer,
+        "aud": audience,
+        "sub": fake_db.resident_id,
+        "role": "resident",
+        "app_role": "resident",
+        "mcr": "M12345A",
+        "programme_code": "GRM",
+        "iat": now,
+        "exp": now + expires_delta,
+    }
+    payload.update(extra_claims or {})
     return jwt.encode(
-        {
-            "iss": "mata-api",
-            "aud": "mata-resident-session",
-            "sub": fake_db.resident_id,
-            "role": "resident",
-            "app_role": "resident",
-            "mcr": "M12345A",
-            "programme_code": "GRM",
-            "iat": now,
-            "exp": now + expires_delta,
-        },
+        payload,
         secret,
         algorithm="HS256",
     )
@@ -112,20 +118,23 @@ def _external_resident_token(
     *,
     secret: str = RESIDENT_SECRET,
     expires_delta: timedelta = timedelta(minutes=15),
+    extra_claims: dict | None = None,
 ) -> str:
     now = datetime.now(UTC)
+    payload = {
+        "iss": "mata-api",
+        "aud": "mata-resident-session",
+        "sub": fake_db.external_resident_id,
+        "role": "external_resident",
+        "app_role": "external_resident",
+        "mcr": "E12345A",
+        "home_cluster": "NUH",
+        "iat": now,
+        "exp": now + expires_delta,
+    }
+    payload.update(extra_claims or {})
     return jwt.encode(
-        {
-            "iss": "mata-api",
-            "aud": "mata-resident-session",
-            "sub": fake_db.external_resident_id,
-            "role": "external_resident",
-            "app_role": "external_resident",
-            "mcr": "E12345A",
-            "home_cluster": "NUH",
-            "iat": now,
-            "exp": now + expires_delta,
-        },
+        payload,
         secret,
         algorithm="HS256",
     )
@@ -292,6 +301,58 @@ def _identity_client(
             "posting_code": identity.posting_code,
             "mcr": identity.mcr,
             "home_cluster": identity.home_cluster,
+        }
+
+    return TestClient(app)
+
+
+def _scope_guard_client(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    jwks: dict,
+    middleware_user: SimpleNamespace | None,
+    middleware_resident: SimpleNamespace | None = None,
+    middleware_external_resident: SimpleNamespace | None = None,
+) -> TestClient:
+    app = FastAPI()
+    install_error_handlers(app)
+    settings = _settings()
+
+    async def _fetch_jwks(self: SupabaseJwtVerifier) -> dict:
+        return jwks
+
+    monkeypatch.setattr(SupabaseJwtVerifier, "_fetch_jwks", _fetch_jwks)
+    monkeypatch.setattr(
+        "app.middleware.auth_stub.AsyncSessionLocal",
+        lambda: _FakeScalarSession(
+            middleware_user,
+            middleware_resident,
+            middleware_external_resident,
+        ),
+    )
+
+    app.add_middleware(AuthStubMiddleware, settings=settings)
+
+    @app.get("/api/v1/programme-pc")
+    async def programme_pc_endpoint(
+        identity: AuthIdentity = Depends(require_programme_pc),
+    ) -> dict:
+        return {"programme_scope": identity.programme_scope}
+
+    @app.get("/api/v1/master-only")
+    async def master_endpoint(
+        identity: AuthIdentity = Depends(require_master_admin),
+    ) -> dict:
+        return {"admin_level": identity.admin_level}
+
+    @app.get("/api/v1/resident-only")
+    async def resident_endpoint(
+        identity: AuthIdentity = Depends(require_resident),
+    ) -> dict:
+        return {
+            "role": identity.role,
+            "posting_code": identity.posting_code,
+            "programme_code": identity.programme_code,
         }
 
     return TestClient(app)
@@ -479,6 +540,41 @@ def test_valid_supabase_token_maps_to_auth_me_from_users_table(
     assert response.json()["programme_scope"] == ["GRM", "DR"]
 
 
+def test_unmapped_supabase_user_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    private_key = _private_key()
+    client = _identity_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=None,
+    )
+
+    response = client.get(
+        "/api/v1/identity",
+        headers={"Authorization": f"Bearer {_token(private_key)}"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error_code"] == "UNAUTHORIZED"
+
+
+def test_inactive_supabase_staff_user_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    private_key = _private_key()
+    middleware_user = _user(user_id=uuid4(), role="admin", is_active=False)
+    client = _identity_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=middleware_user,
+    )
+
+    response = client.get(
+        "/api/v1/identity",
+        headers={"Authorization": f"Bearer {_token(private_key)}"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error_code"] == "UNAUTHORIZED"
+
+
 def test_master_admin_identity_comes_from_users_admin_level(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -506,6 +602,88 @@ def test_master_admin_identity_comes_from_users_admin_level(
     assert response.json()["role"] == "admin"
     assert response.json()["admin_level"] == "master"
     assert response.json()["programme_scope"] == []
+
+
+def test_programme_scope_blank_only_is_denied_for_programme_pc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    middleware_user = _user(
+        user_id=uuid4(),
+        role="admin",
+        admin_level="programme",
+        programme_scope=[""],
+    )
+    client = _scope_guard_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=middleware_user,
+    )
+
+    response = client.get(
+        "/api/v1/programme-pc",
+        headers={
+            "Authorization": f"Bearer {_token(private_key)}",
+            "X-User-Programme": "DR",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "FORBIDDEN"
+
+
+def test_programme_scope_null_or_empty_is_denied_for_programme_pc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    jwks = _jwks_for_key(private_key)
+    for scope in (None, []):
+        client = _scope_guard_client(
+            monkeypatch,
+            jwks=jwks,
+            middleware_user=_user(
+                user_id=uuid4(),
+                role="admin",
+                admin_level="programme",
+                programme_scope=scope,
+            ),
+        )
+
+        response = client.get(
+            "/api/v1/programme-pc",
+            headers={"Authorization": f"Bearer {_token(private_key)}"},
+        )
+
+        assert response.status_code == 403
+        assert response.json()["error_code"] == "FORBIDDEN"
+
+
+def test_programme_scope_null_does_not_imply_master_admin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    middleware_user = _user(
+        user_id=uuid4(),
+        role="admin",
+        admin_level="programme",
+        programme_scope=None,
+    )
+    client = _scope_guard_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=middleware_user,
+    )
+
+    response = client.get(
+        "/api/v1/master-only",
+        headers={
+            "Authorization": f"Bearer {_token(private_key)}",
+            "X-Admin-Level": "master",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "FORBIDDEN"
 
 
 def test_programme_pc_identity_comes_from_users_programme_scope(
@@ -557,6 +735,33 @@ def test_secretary_identity_comes_from_users_posting_code(
     assert response.status_code == 200
     assert response.json()["role"] == "secretary"
     assert response.json()["posting_code"] == "TTSHCardio"
+
+
+def test_secretary_missing_posting_scope_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    middleware_user = _user(
+        user_id=uuid4(),
+        role="secretary",
+        posting_code=None,
+    )
+    client = _identity_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=middleware_user,
+    )
+
+    response = client.get(
+        "/api/v1/identity",
+        headers={
+            "Authorization": f"Bearer {_token(private_key)}",
+            "X-User-Site": "TTSHCardio",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "FORBIDDEN"
 
 
 def test_supabase_mode_ignores_conflicting_x_user_headers_with_valid_bearer(
@@ -627,6 +832,111 @@ def test_supabase_user_metadata_cannot_grant_authorization(
     assert response.json()["role"] == "secretary"
     assert response.json()["admin_level"] is None
     assert response.json()["programme_scope"] is None
+
+
+def test_supabase_staff_token_is_rejected_on_resident_only_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    middleware_user = _user(
+        user_id=uuid4(),
+        role="admin",
+        admin_level="programme",
+        programme_scope=["DR"],
+    )
+    client = _scope_guard_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=middleware_user,
+    )
+
+    response = client.get(
+        "/api/v1/resident-only",
+        headers={"Authorization": f"Bearer {_token(private_key)}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "FORBIDDEN"
+
+
+def test_mata_resident_token_with_posting_claim_does_not_set_posting_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    fake_db = FakeResidentSession()
+    client = _scope_guard_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=None,
+        middleware_resident=_resident(fake_db),
+    )
+
+    response = client.get(
+        "/api/v1/resident-only",
+        headers={
+            "Authorization": "Bearer "
+            + _resident_token(fake_db, extra_claims={"posting_code": "TTSHCardio"}),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["role"] == "resident"
+    assert response.json()["posting_code"] is None
+
+
+def test_mata_resident_token_wrong_issuer_or_audience_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    fake_db = FakeResidentSession()
+    client = _scope_guard_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=None,
+        middleware_resident=_resident(fake_db),
+    )
+
+    wrong_issuer = client.get(
+        "/api/v1/resident-only",
+        headers={
+            "Authorization": "Bearer "
+            + _resident_token(fake_db, issuer="https://mata-test.supabase.co/auth/v1"),
+        },
+    )
+    wrong_audience = client.get(
+        "/api/v1/resident-only",
+        headers={
+            "Authorization": "Bearer "
+            + _resident_token(fake_db, audience="authenticated"),
+        },
+    )
+
+    assert wrong_issuer.status_code == 401
+    assert wrong_audience.status_code == 401
+
+
+def test_mata_external_resident_token_with_posting_claim_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    fake_db = FakeResidentSession()
+    client = _identity_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=None,
+        middleware_external_resident=_external_resident(fake_db),
+    )
+
+    response = client.get(
+        "/api/v1/identity",
+        headers={
+            "Authorization": "Bearer "
+            + _external_resident_token(fake_db, extra_claims={"posting_code": "TTSHCardio"}),
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error_code"] == "UNAUTHORIZED"
 
 
 def test_mata_resident_token_maps_to_auth_me_without_staff_or_posting_fields(

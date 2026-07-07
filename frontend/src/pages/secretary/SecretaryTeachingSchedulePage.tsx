@@ -136,6 +136,16 @@ const normaliseApiError = (error: ApiRequestError, mode: 'list' | 'create' | 'op
   return 'Unable to create teaching event right now. Please try again.'
 }
 
+const formulaUnsafeCsvPrefix = /^[=+@-]/
+
+const sanitizeCsvCell = (cell: unknown) => {
+  const value = String(cell)
+  return formulaUnsafeCsvPrefix.test(value.trimStart()) ? `'${value}` : value
+}
+
+const quoteCsvCell = (cell: unknown) =>
+  `"${sanitizeCsvCell(cell).replaceAll('"', '""')}"`
+
 const buildEventCsv = (events: SecretaryTeachingEvent[]) => {
   const headers = [
     'Teaching Type',
@@ -160,9 +170,7 @@ const buildEventCsv = (events: SecretaryTeachingEvent[]) => {
     event.createdAt ?? '',
   ])
   const csvRows = [headers, ...rows]
-  return csvRows
-    .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(','))
-    .join('\n')
+  return csvRows.map((row) => row.map(quoteCsvCell).join(',')).join('\n')
 }
 
 const toPeriodRange = (period: ReportingPeriodOption | undefined) => {

@@ -421,17 +421,26 @@ Implemented Non-NHG posting schedule work:
 - Complete Non-NHG resident submission parity where not already implemented.
 - Keep Non-NHG attendance separate from native attendance and compliance.
 
-5B-G:
-- Add production RLS policies and service-role backend data access.
-- Verify exposed table grants and RLS behaviour in Supabase.
+5B-G completed:
+- Phase 5B-G is complete as readiness, documentation, and audit work.
+- 5B-G produced the staff bootstrap runbook, RLS/grants/Data API planning matrix, Supabase migration smoke plan, service-role / privileged backend access review, and updated readiness audit.
+- 5B-G did not implement RLS, add RLS policy SQL, implement cookie/BFF/CSRF session transport, or implement compliance.
 
-5B-H:
-- Add rate-limit hardening for login/register and mutation surfaces before UAT/public use.
-- Replace browser-visible Supabase bearer transport with backend-managed `HttpOnly`, `Secure`, `SameSite` cookies or BFF session transport plus CSRF protection.
+5B-H is now the Vercel/Supabase stakeholder UAT security phase:
+- `5B-H-A`: Vercel UAT security audit and minimal deployment hardening plan.
+- `5B-H-B`: Minimal UAT security fixes.
+- `5B-H-C`: Supabase/Vercel UAT deployment smoke.
+- `5B-H-D`: Full session transport hardening plan in `docs/5b_h_session_transport_hardening_plan.md`; implementation remains required before real production or public use.
 
-Still deferred beyond 5B-F:
-- Resident Supabase Auth provisioning, resident second factor, RLS, production Supabase deployment, Vercel/backend deployment, Master Admin seed/provisioning script, email delivery, bulk upload, NHG compliance/surplus/snapshots/clawback for Non-NHG Residents, STP upload/parser, and SSO/corporate identity replacement for self-declared staff actor names.
-- 5B-H must replace browser-visible bearer transport with backend-managed `HttpOnly`, `Secure`, `SameSite` cookies or BFF session transport plus CSRF protection.
+5B-H sequencing:
+- `5B-H-A`, `5B-H-B`, and `5B-H-C` are required before stakeholder UAT.
+- `5B-H-D` planning can be a deeper follow-up if time is tight, but the actual cookie/BFF/CSRF implementation must be completed before real production or public use.
+- Browser-visible bearer-token transport remains a known temporary risk until `5B-H-D`.
+- Full RLS enablement and policy SQL remain a later dedicated RLS/grants phase, not part of `5B-H-A`, `5B-H-B`, or `5B-H-C`.
+- Phase 6 compliance starts only after the protected deployment/security baseline is acceptable.
+
+Still deferred beyond this auth/account roadmap alignment:
+- Resident second factor, full RLS policy implementation, production staff bootstrap execution, email delivery, bulk upload, NHG compliance/surplus/snapshots/clawback for Non-NHG Residents, STP upload/parser, long-term SSO/corporate identity replacement for self-declared staff actor names, and any production/public launch beyond a controlled UAT security baseline.
 
 ## 5A Guardrails Preserved
 

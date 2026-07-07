@@ -213,6 +213,13 @@ assert(
   'temporary auth debug headers and logs are not part of normal HTTP transport',
 )
 assert(
+  secretarySchedulePageSource.includes('formulaUnsafeCsvPrefix') &&
+    secretarySchedulePageSource.includes('value.trimStart()') &&
+    secretarySchedulePageSource.includes("`'${value}`") &&
+    secretarySchedulePageSource.includes('row.map(quoteCsvCell)'),
+  'secretary schedule CSV export neutralizes spreadsheet formula-leading cells before download',
+)
+assert(
   authApiSource.includes('current_staff_actor_name') &&
     authApiSource.includes('staff_actor_name_required') &&
     authContextSource.includes('staffActorNameRequired'),

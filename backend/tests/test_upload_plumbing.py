@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
+from app.config import Settings
 from app.middleware.errors import install_error_handlers
 from app.routers import admin
 from app.services.parser_common import ParserResult, write_upload_log
@@ -26,6 +27,10 @@ def _make_valid_xlsx_bytes() -> bytes:
     return payload.getvalue()
 
 
+def _settings_override() -> Settings:
+    return Settings(max_upload_size_mb=10, _env_file=None)
+
+
 def _build_client() -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
@@ -35,6 +40,7 @@ def _build_client() -> TestClient:
         yield None
 
     app.dependency_overrides[admin.get_db_session] = _db_override
+    app.dependency_overrides[admin.get_settings] = _settings_override
     return TestClient(app)
 
 
@@ -93,6 +99,7 @@ def test_rdb_upload_route_passes_database_session_to_parser(monkeypatch) -> None
         yield session
 
     app.dependency_overrides[admin.get_db_session] = _db_override
+    app.dependency_overrides[admin.get_settings] = _settings_override
     app.include_router(admin.router)
     client = TestClient(app)
     response = client.post(
@@ -166,6 +173,7 @@ def test_rdb_upload_response_caps_raw_multi_posting_fragments_but_upload_log_kee
         yield session
 
     app.dependency_overrides[admin.get_db_session] = _db_override
+    app.dependency_overrides[admin.get_settings] = _settings_override
     app.include_router(admin.router)
     client = TestClient(app)
     response = client.post(
@@ -204,6 +212,36 @@ def test_invalid_extension_returns_422() -> None:
         files={"file": ("bad.csv", b"not-xlsx", "text/csv")},
     )
     assert response.status_code == 422
+
+
+def test_upload_route_rechecks_size_after_file_read(monkeypatch) -> None:
+    called = {"rdb": 0}
+
+    async def _fake_rdb_parser(**kwargs):
+        called["rdb"] += 1
+        return ParserResult(upload_type="rdb")
+
+    monkeypatch.setattr("app.services.rdb_parser.parse_rdb_upload", _fake_rdb_parser)
+
+    client = _build_client()
+    oversized_payload = b"x" * (10 * 1024 * 1024 + 1)
+    response = client.post(
+        "/admin/upload/rdb",
+        headers=_admin_headers(),
+        data={"reporting_period_id": str(uuid4())},
+        files={
+            "file": (
+                "oversized.xlsx",
+                oversized_payload,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "FILE_VALIDATION_FAILED"
+    assert "exceeds the 10 MB limit" in response.text
+    assert called["rdb"] == 0
 
 
 def test_non_admin_access_rejected() -> None:
@@ -470,6 +508,7 @@ def _build_upload_audit_client(session: _UploadAuditSession) -> TestClient:
         yield session
 
     app.dependency_overrides[admin.get_db_session] = _db_override
+    app.dependency_overrides[admin.get_settings] = _settings_override
     return TestClient(app)
 
 
