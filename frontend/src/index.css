@@ -4032,11 +4032,16 @@ tr:last-child td {
 }
 
 .grouped-warnings-table .cell-type {
-  display: flex;
-  align-items: center;
-  gap: 10px;
   white-space: nowrap;
   overflow: hidden;
+}
+
+.grouped-warnings-table .warning-type-cell-content {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  gap: 10px;
+  vertical-align: top;
 }
 
 .grouped-warnings-table th:nth-child(1),

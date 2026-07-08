@@ -814,8 +814,10 @@ export const AdminWarningsPage = () => {
                           }}
                         >
                           <td className="cell-type">
-                            <span className={`severity-dot severity-dot-${warning.severity}`} />
-                            <span className="mono-chip">{warning.warningType}</span>
+                            <span className="warning-type-cell-content">
+                              <span className={`severity-dot severity-dot-${warning.severity}`} />
+                              <span className="mono-chip">{warning.warningType}</span>
+                            </span>
                           </td>
                           <td>{fieldValue(warning.residentName)}</td>
                           <td className="mono-cell">{fieldValue(warning.mcr)}</td>
