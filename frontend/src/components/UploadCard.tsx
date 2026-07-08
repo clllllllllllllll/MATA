@@ -3,6 +3,7 @@ import { StatusBadge } from './StatusBadge'
 import { getSummaryCounts, getWarningsCount } from '../utils/warnings'
 import { ApiRequestError } from '../api/http'
 import { IconCheck, IconWarn } from './icons'
+import { resolveUploadErrorMessage } from './uploadErrorMessages'
 
 interface UploadCardProps {
   icon: ReactNode
@@ -171,18 +172,7 @@ export const UploadCard = ({
 
       if (error instanceof ApiRequestError) {
         details = error.details
-        if (error.status === 401 || error.status === 403) {
-          message = 'Upload was rejected because the demo admin is not authorised for this action.'
-        } else if (error.status === 422) {
-          message =
-            'Upload failed validation or parser checks. Check the workbook type, required fields, and reporting period.'
-        } else if (error.status === 409) {
-          message = 'Another upload is already running for this scope. Try again shortly.'
-        } else if (error.status && error.status >= 500) {
-          message = 'The server hit an error while processing this upload.'
-        } else if (error.isNetworkError) {
-          message = 'Could not reach the backend. Check Docker services and try again.'
-        }
+        message = resolveUploadErrorMessage(error)
       }
 
       setErrorMessage(message)
