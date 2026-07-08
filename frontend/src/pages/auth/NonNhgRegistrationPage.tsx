@@ -210,7 +210,7 @@ export const NonNhgRegistrationPage = () => {
             <div className="auth-brand-mark auth-brand-mark-success">M</div>
             <div>
               <strong>MATA</strong>
-              <span>Medical Attendance Tracking</span>
+              <span>Monitoring and Analysing of Teaching Attendances</span>
             </div>
           </header>
 
@@ -275,7 +275,7 @@ export const NonNhgRegistrationPage = () => {
           <div className="auth-brand-mark">M</div>
           <div>
             <strong>MATA</strong>
-            <span>Medical Attendance Tracking</span>
+            <span>Monitoring and Analysing of Teaching Attendances</span>
           </div>
         </header>
 
