@@ -696,145 +696,149 @@ export const AdminLogsPage = () => {
           <span>Filters</span>
           <strong>{hasFilters ? 'Active filters applied' : 'All admin logs'}</strong>
         </div>
-        <label className="admin-logs-search-field">
-          Search logs
-          <input
-            type="search"
-            value={searchTerm}
-            onChange={(event) => {
-              setSearchTerm(event.target.value)
-              setOffset(0)
-            }}
-            placeholder="Title, actor, source, MCR..."
-          />
-        </label>
-        <label>
-          Type
-          <select
-            value={filters.logType}
-            onChange={(event) => updateFilter('logType', event.target.value as AdminLogType | 'all')}
-          >
-            <option value="all">All types</option>
-            {logTypeOrder.map((logType) => (
-              <option key={logType} value={logType}>
-                {logTypeLabels[logType]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Programme
-          <select
-            value={filters.programmeCode}
-            onChange={(event) => updateFilter('programmeCode', event.target.value)}
-          >
-            <option value="all">All programmes</option>
-            {programmeOptions.map((programmeCode) => (
-              <option key={programmeCode} value={programmeCode}>
-                {programmeCode}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Reporting period
-          <select
-            value={filters.reportingPeriodId}
-            onChange={(event) => updateFilter('reportingPeriodId', event.target.value)}
-          >
-            <option value="">All periods</option>
-            {reportingPeriods.map((period) => (
-              <option key={period.id} value={period.id}>
-                {period.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Status
-          <select
-            value={filters.status}
-            onChange={(event) => updateFilter('status', event.target.value)}
-          >
-            <option value="all">All statuses</option>
-            {statusOptions.map((status) => (
-              <option key={status} value={status}>
-                {status}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Outcome
-          <select
-            value={filters.outcome}
-            onChange={(event) => updateFilter('outcome', event.target.value)}
-          >
-            <option value="all">All outcomes</option>
-            {outcomeOptions.map((outcome) => (
-              <option key={outcome} value={outcome}>
-                {outcome}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Upload type
-          <select
-            value={filters.uploadType}
-            onChange={(event) => updateFilter('uploadType', event.target.value as UploadType | 'all')}
-          >
-            <option value="all">All uploads</option>
-            {uploadTypeOrder.map((uploadType) => (
-              <option key={uploadType} value={uploadType}>
-                {uploadTypeLabels[uploadType]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Actor role
-          <select
-            value={filters.actorRole}
-            onChange={(event) => updateFilter('actorRole', event.target.value)}
-          >
-            <option value="all">All roles</option>
-            {actorRoleOptions.map((actorRole) => (
-              <option key={actorRole} value={actorRole}>
-                {labelForActorRole(actorRole)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Date from
-          <input
-            type="datetime-local"
-            value={filters.dateFrom}
-            onChange={(event) => updateFilter('dateFrom', event.target.value)}
-          />
-        </label>
-        <label>
-          Date to
-          <input
-            type="datetime-local"
-            value={filters.dateTo}
-            onChange={(event) => updateFilter('dateTo', event.target.value)}
-          />
-        </label>
-        <div className="admin-logs-filter-actions">
-          <button
-            type="button"
-            className="button button-secondary"
-            onClick={() => void fetchLogs()}
-            disabled={isManualRefreshing || isInitialLoading}
-          >
-            <IconRefresh size={14} />
-            {isManualRefreshing ? 'Refreshing' : 'Refresh'}
-          </button>
-          <button type="button" className="button button-ghost" onClick={clearFilters}>
-            Clear filters
-          </button>
+        <div className="admin-logs-filter-main">
+          <div className="admin-logs-filter-fields">
+            <label className="admin-logs-search-field">
+              Search logs
+              <input
+                type="search"
+                value={searchTerm}
+                onChange={(event) => {
+                  setSearchTerm(event.target.value)
+                  setOffset(0)
+                }}
+                placeholder="Title, actor, source, MCR..."
+              />
+            </label>
+            <label>
+              Type
+              <select
+                value={filters.logType}
+                onChange={(event) => updateFilter('logType', event.target.value as AdminLogType | 'all')}
+              >
+                <option value="all">All types</option>
+                {logTypeOrder.map((logType) => (
+                  <option key={logType} value={logType}>
+                    {logTypeLabels[logType]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Programme
+              <select
+                value={filters.programmeCode}
+                onChange={(event) => updateFilter('programmeCode', event.target.value)}
+              >
+                <option value="all">All programmes</option>
+                {programmeOptions.map((programmeCode) => (
+                  <option key={programmeCode} value={programmeCode}>
+                    {programmeCode}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Reporting period
+              <select
+                value={filters.reportingPeriodId}
+                onChange={(event) => updateFilter('reportingPeriodId', event.target.value)}
+              >
+                <option value="">All periods</option>
+                {reportingPeriods.map((period) => (
+                  <option key={period.id} value={period.id}>
+                    {period.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Status
+              <select
+                value={filters.status}
+                onChange={(event) => updateFilter('status', event.target.value)}
+              >
+                <option value="all">All statuses</option>
+                {statusOptions.map((status) => (
+                  <option key={status} value={status}>
+                    {status}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Outcome
+              <select
+                value={filters.outcome}
+                onChange={(event) => updateFilter('outcome', event.target.value)}
+              >
+                <option value="all">All outcomes</option>
+                {outcomeOptions.map((outcome) => (
+                  <option key={outcome} value={outcome}>
+                    {outcome}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Upload type
+              <select
+                value={filters.uploadType}
+                onChange={(event) => updateFilter('uploadType', event.target.value as UploadType | 'all')}
+              >
+                <option value="all">All uploads</option>
+                {uploadTypeOrder.map((uploadType) => (
+                  <option key={uploadType} value={uploadType}>
+                    {uploadTypeLabels[uploadType]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Actor role
+              <select
+                value={filters.actorRole}
+                onChange={(event) => updateFilter('actorRole', event.target.value)}
+              >
+                <option value="all">All roles</option>
+                {actorRoleOptions.map((actorRole) => (
+                  <option key={actorRole} value={actorRole}>
+                    {labelForActorRole(actorRole)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Date from
+              <input
+                type="datetime-local"
+                value={filters.dateFrom}
+                onChange={(event) => updateFilter('dateFrom', event.target.value)}
+              />
+            </label>
+            <label>
+              Date to
+              <input
+                type="datetime-local"
+                value={filters.dateTo}
+                onChange={(event) => updateFilter('dateTo', event.target.value)}
+              />
+            </label>
+          </div>
+          <div className="admin-logs-filter-actions">
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => void fetchLogs()}
+              disabled={isManualRefreshing || isInitialLoading}
+            >
+              <IconRefresh size={14} />
+              {isManualRefreshing ? 'Refreshing' : 'Refresh'}
+            </button>
+            <button type="button" className="button button-ghost" onClick={clearFilters}>
+              Clear filters
+            </button>
+          </div>
         </div>
         <details className="admin-logs-advanced-filters">
           <summary>Advanced filters</summary>

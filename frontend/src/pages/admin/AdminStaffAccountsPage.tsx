@@ -288,7 +288,7 @@ export const AdminStaffAccountsPage = () => {
       <section className="card">
         <div className="table-wrap">
           <div className="table-scroll">
-            <table>
+            <table className="admin-staff-accounts-table">
               <thead>
                 <tr>
                   <th>Account display name</th>
@@ -324,28 +324,30 @@ export const AdminStaffAccountsPage = () => {
                         />
                       </td>
                       <td>
-                        <div className="table-action-row">
+                        <div className="staff-account-actions">
+                          <div className="staff-account-actions-primary">
+                            <button
+                              type="button"
+                              className="button button-ghost staff-account-action-button"
+                              onClick={() => openEditDrawer(account)}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              className={
+                                account.isActive
+                                  ? 'button button-ghost danger staff-account-action-button'
+                                  : 'button button-ghost staff-account-action-button'
+                              }
+                              onClick={() => void toggleActive(account)}
+                            >
+                              {account.isActive ? 'Deactivate' : 'Activate'}
+                            </button>
+                          </div>
                           <button
                             type="button"
-                            className="button button-ghost staff-account-action-button"
-                            onClick={() => openEditDrawer(account)}
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            className={
-                              account.isActive
-                                ? 'button button-ghost danger staff-account-action-button'
-                                : 'button button-ghost staff-account-action-button'
-                            }
-                            onClick={() => void toggleActive(account)}
-                          >
-                            {account.isActive ? 'Deactivate' : 'Activate'}
-                          </button>
-                          <button
-                            type="button"
-                            className="button button-ghost staff-account-action-button"
+                            className="button button-ghost staff-account-action-button staff-account-reset-button"
                             onClick={() => {
                               setResetAccount(account)
                               setResetPassword('')
