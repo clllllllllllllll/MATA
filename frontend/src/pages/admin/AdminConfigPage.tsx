@@ -50,6 +50,7 @@ import { StatusBadge } from '../../components/StatusBadge'
 import { IconPlus, IconRefresh, NamedIcon } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
 import { useAppState } from '../../context/useAppState'
+import { useAuth } from '../../context/useAuth'
 import { useAdminConfigReadCache } from '../../hooks/useAdminConfigReadCache'
 import type { ReportingPeriodOption } from '../../types/upload'
 import {
@@ -57,6 +58,7 @@ import {
   reportingPeriodStatusLabel,
   type ReportingPeriodStatus,
 } from '../../utils/reportingPeriods'
+import { formatProgrammePcConfigSubtitle } from '../../utils/programmePcLabels'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 import { MultiPostingRulesSection } from './AdminMultiPostingPage'
 import type { DataRevalidationImpact } from '../../types/dataRevalidation'
@@ -3682,7 +3684,8 @@ interface AdminConfigPageProps {
 
 export const AdminConfigPage = ({ configViewRole }: AdminConfigPageProps) => {
   const location = useLocation()
-  const { demoAdminProgrammes, role } = useAppState()
+  const { role } = useAppState()
+  const { identity } = useAuth()
   const configRole: ConfigViewRole = configViewRole ?? (role === 'programme_pc' ? 'programme_pc' : 'master_admin')
   const defaultSectionKey: ConfigSectionKey =
     configRole === 'programme_pc' ? 'multi-posting-rules' : 'reporting-periods'
@@ -3707,7 +3710,9 @@ export const AdminConfigPage = ({ configViewRole }: AdminConfigPageProps) => {
     configSections[0]
   const subtitle =
     configRole === 'programme_pc'
-      ? `PC - ${demoAdminProgrammes.join(', ')}`
+      ? identity?.role === 'programme_pc'
+        ? formatProgrammePcConfigSubtitle(identity.programmeScope)
+        : formatProgrammePcConfigSubtitle([])
       : 'Master Admin - All programmes'
 
   useEffect(() => {

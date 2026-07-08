@@ -5,6 +5,10 @@ import { breadcrumbMap, navItems, roleOptions } from '../config/navigation'
 import { useAuth } from '../context/useAuth'
 import { useAppState } from '../context/useAppState'
 import type { AppRole } from '../types/app'
+import {
+  effectiveProgrammePcScope,
+  formatProgrammePcSidebarTitle,
+} from '../utils/programmePcLabels'
 import { formatUserFacingApiError } from '../utils/userFacingErrors'
 import {
   IconChevRight,
@@ -42,9 +46,12 @@ export const AppShell = ({ children }: PropsWithChildren) => {
     identity?.role === 'secretary'
 
   const currentRoleOption = roleOptions.find((option) => option.id === activeRole) ?? roleOptions[0]
-  const currentDisplayName = identity?.role === activeRole && identity.name
-    ? identity.name
-    : roleNameById[activeRole]
+  const currentDisplayName =
+    identity?.role === 'programme_pc' && activeRole === 'programme_pc'
+      ? formatProgrammePcSidebarTitle(identity.programmeScope)
+      : identity?.role === activeRole && identity.name
+        ? identity.name
+        : roleNameById[activeRole]
   const isResidentIdentity = identity?.role === 'resident' || identity?.role === 'external_resident'
   const sidebarSubtext = isResidentIdentity ? identity.mcr : currentRoleOption.label
   const currentPostingScope = isResidentIdentity
@@ -55,7 +62,7 @@ export const AppShell = ({ children }: PropsWithChildren) => {
       return 'All Programmes'
     }
     if (identity?.role === 'programme_pc' && activeRole === 'programme_pc') {
-      return identity.programmeScope.length > 0 ? identity.programmeScope.join(', ') : 'No programme scope'
+      return effectiveProgrammePcScope(identity.programmeScope) ?? 'No programme scope'
     }
     if (identity?.role === 'secretary' && activeRole === 'secretary') {
       return identity.postingCode
@@ -334,7 +341,6 @@ export const AppShell = ({ children }: PropsWithChildren) => {
     </div>
   )
 }
-
 
 
 
