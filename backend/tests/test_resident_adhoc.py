@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from decimal import Decimal
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -39,6 +40,47 @@ def _headers(fake_db: FakeResidentSession) -> dict[str, str]:
     }
 
 
+def _configure_geri_tts_ger_med_run_club(
+    fake_db: FakeResidentSession,
+    *,
+    catalogue_r_year: str = "ALL",
+    target_r_year: str = "ALL",
+    target_posting_code: str = "TTSHGerMed",
+) -> None:
+    fake_db.residents[0]["programme_code"] = "GERI"
+    fake_db.residents[0]["r_year"] = "R3"
+    fake_db.resident_postings[0]["posting_code"] = "TTSHGerMed"
+    fake_db.resident_postings[0]["r_year"] = "R3"
+    if not any(row["code"] == "TTSHGerMed" for row in fake_db.posting_codes):
+        fake_db.posting_codes.append(
+            {
+                "code": "TTSHGerMed",
+                "display_name": "TTSH Geriatric Medicine",
+                "institution": "TTSH",
+                "supports_secretary_events": True,
+            }
+        )
+    fake_db.catalogue.append(
+        fake_db._catalogue(  # noqa: SLF001
+            "Run Club",
+            "TTSHGerMed",
+            fake_db.adhoc_session_type_id,
+            Decimal("1.0"),
+            programme_code="GERI",
+            r_year=catalogue_r_year,
+            session_type="Department/Programme Teaching [1h]",
+        )
+    )
+    fake_db.teaching_targets.append(
+        fake_db._target(  # noqa: SLF001
+            target_posting_code,
+            fake_db.adhoc_session_type_id,
+            programme_code="GERI",
+            r_year=target_r_year,
+        )
+    )
+
+
 def test_adhoc_teaching_derives_posting_from_submitted_date() -> None:
     fake_db = _fake_db()
     client = _client(fake_db)
@@ -61,6 +103,32 @@ def test_adhoc_teaching_derives_posting_from_submitted_date() -> None:
     assert payload["event"]["is_adhoc"] is True
     assert payload["attendance"]["posting_code"] == "TTSHCardio"
     assert any(row["is_adhoc"] for row in fake_db.events)
+
+
+def test_adhoc_teaching_accepts_all_r_year_catalogue_and_target_for_assigned_posting() -> None:
+    fake_db = _fake_db()
+    _configure_geri_tts_ger_med_run_club(fake_db)
+    before_attendance = len(fake_db.attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "teaching_date": "2026-05-18",
+            "start_time": "16:15",
+            "attended_posting_code": "TTSHGerMed",
+            "teaching_name": "Run Club",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["event"]["posting_code"] == "TTSHGerMed"
+    assert payload["event"]["teaching_name"] == "Department/Programme Teaching [1h]"
+    assert payload["event"]["session_type_id"] == fake_db.adhoc_session_type_id
+    assert payload["attendance"]["posting_code"] == "TTSHGerMed"
+    assert len(fake_db.attendance) == before_attendance + 1
 
 
 def test_adhoc_options_are_date_first_and_catalogue_backed() -> None:
@@ -148,11 +216,7 @@ def test_adhoc_teaching_uses_selected_attended_posting_for_catalogue_evidence() 
 
 def test_adhoc_teaching_selected_attended_posting_does_not_replace_assigned_target() -> None:
     fake_db = _fake_db()
-    fake_db.catalogue = [
-        row
-        for row in fake_db.catalogue
-        if row["keyword"] != "Department/Programme Teaching [1h]"
-    ]
+    fake_db.teaching_targets = []
     before_events = len(fake_db.events)
     before_attendance = len(fake_db.attendance)
     client = _client(fake_db)
@@ -320,13 +384,9 @@ def test_adhoc_teaching_rejects_uncatalogued_teaching_name() -> None:
     assert len(fake_db.attendance) == before_attendance
 
 
-def test_adhoc_teaching_rejects_when_fixed_department_programme_target_unavailable() -> None:
+def test_adhoc_teaching_rejects_untracked_catalogue_teaching_name() -> None:
     fake_db = _fake_db()
-    fake_db.catalogue = [
-        row
-        for row in fake_db.catalogue
-        if row["keyword"] != "Department/Programme Teaching [1h]"
-    ]
+    fake_db.catalogue[0]["is_tracked"] = False
     before_events = len(fake_db.events)
     before_attendance = len(fake_db.attendance)
     client = _client(fake_db)
@@ -338,6 +398,55 @@ def test_adhoc_teaching_rejects_when_fixed_department_programme_target_unavailab
             "teaching_date": "2026-05-18",
             "start_time": "10:00",
             "teaching_name": "Journal Club",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "tracked" in response.json()["detail"].lower()
+    assert len(fake_db.events) == before_events
+    assert len(fake_db.attendance) == before_attendance
+
+
+def test_adhoc_teaching_rejects_when_fixed_department_programme_target_unavailable() -> None:
+    fake_db = _fake_db()
+    fake_db.teaching_targets = []
+    before_events = len(fake_db.events)
+    before_attendance = len(fake_db.attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "teaching_date": "2026-05-18",
+            "start_time": "10:00",
+            "teaching_name": "Journal Club",
+        },
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"].lower()
+    assert "department/programme teaching [1h]" in detail
+    assert "unavailable" in detail
+    assert len(fake_db.events) == before_events
+    assert len(fake_db.attendance) == before_attendance
+
+
+def test_adhoc_teaching_rejects_when_department_programme_target_is_for_wrong_posting() -> None:
+    fake_db = _fake_db()
+    _configure_geri_tts_ger_med_run_club(fake_db, target_posting_code="KTPHGerMed")
+    before_events = len(fake_db.events)
+    before_attendance = len(fake_db.attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "teaching_date": "2026-05-18",
+            "start_time": "16:15",
+            "attended_posting_code": "TTSHGerMed",
+            "teaching_name": "Run Club",
         },
     )
 

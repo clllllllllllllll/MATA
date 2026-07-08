@@ -227,13 +227,9 @@ class FakeResidentSession:
         self.catalogue = [
             self._catalogue("Journal Club", "TTSHCardio", self.session_type_id, Decimal("1.0")),
             self._catalogue("Skills Teaching", "TTSHNeuro", self.second_session_type_id, Decimal("2.0")),
-            self._catalogue(
-                "Department/Programme Teaching [1h]",
-                "TTSHCardio",
-                self.adhoc_session_type_id,
-                Decimal("1.0"),
-                session_type="Department/Programme Teaching [1h]",
-            ),
+        ]
+        self.teaching_targets = [
+            self._target("TTSHCardio", self.adhoc_session_type_id),
         ]
         self.global_session_types = [
             {"name": "Department Meeting [1h]", "duration_hours": Decimal("1.0"), "is_active": True}
@@ -286,18 +282,43 @@ class FakeResidentSession:
         session_type_id: str,
         duration_hours: Decimal,
         *,
+        programme_code: str = "GRM",
+        r_year: str = "R2",
         session_type: str | None = None,
+        is_tracked: bool = True,
     ) -> dict:
         return {
             "keyword": keyword,
             "posting_code": posting_code,
-            "programme_code": "GRM",
-            "r_year": "R2",
+            "programme_code": programme_code,
+            "r_year": r_year,
             "reporting_period_id": self.period_id,
             "session_type_id": session_type_id,
             "session_type": session_type or f"{keyword} [{duration_hours}h]",
             "duration_hours": duration_hours,
-            "is_tracked": True,
+            "is_tracked": is_tracked,
+        }
+
+    def _target(
+        self,
+        posting_code: str,
+        session_type_id: str,
+        *,
+        programme_code: str = "GRM",
+        r_year: str = "R2",
+        session_type: str = "Department/Programme Teaching [1h]",
+        duration_hours: Decimal = Decimal("1.0"),
+        is_tracked: bool = True,
+    ) -> dict:
+        return {
+            "posting_code": posting_code,
+            "programme_code": programme_code,
+            "r_year": r_year,
+            "reporting_period_id": self.period_id,
+            "session_type_id": session_type_id,
+            "session_type": session_type,
+            "duration_hours": duration_hours,
+            "is_tracked": is_tracked,
         }
 
     def _event(
@@ -580,6 +601,26 @@ class FakeResidentSession:
                     rows.append({"posting_code": posting["code"]})
             rows.sort(key=lambda row: row["posting_code"])
             return FakeResult(rows=rows)
+
+        if "FROM teaching_targets tt" in sql and "JOIN session_types st" in sql:
+            rows = [
+                {
+                    "session_type_id": row["session_type_id"],
+                    "session_type": row["session_type"],
+                    "duration_hours": row["duration_hours"],
+                    "is_tracked": row["is_tracked"],
+                    "is_global": False,
+                    "r_year": row["r_year"],
+                }
+                for row in self.teaching_targets
+                if row["posting_code"] == payload.get("posting_code")
+                and row["programme_code"] == payload.get("programme_code")
+                and row["r_year"] in {payload.get("r_year"), "ALL"}
+                and row["reporting_period_id"] == str(payload.get("reporting_period_id"))
+                and row["session_type"] == payload.get("session_type")
+            ]
+            rows.sort(key=lambda row: (0 if row["r_year"] == payload.get("r_year") else 1, row["session_type"]))
+            return FakeResult(rows=rows[:1])
 
         if "FROM teaching_targets" in sql and "JOIN posting_codes" in sql:
             return FakeResult(rows=[])
