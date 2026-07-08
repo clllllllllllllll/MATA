@@ -453,9 +453,24 @@ assert(
 )
 assert(
   staffAccountsPageSource.includes('staff-account-action-button') &&
+    staffAccountsPageSource.includes('className="admin-staff-accounts-table"') &&
+    staffAccountsPageSource.includes('className="staff-account-actions"') &&
+    staffAccountsPageSource.includes('className="staff-account-actions-primary"') &&
+    staffAccountsPageSource.includes('staff-account-reset-button') &&
     staffAccountsPageSource.includes('button button-ghost danger staff-account-action-button') &&
     !staffAccountsPageSource.includes('className="button button-secondary" onClick={() => {'),
   'Staff Accounts row actions use aligned admin row button styles',
+)
+assert(
+  /\.admin-staff-accounts-table \{\n\s+width: 100%;[\s\S]*min-width: 1180px;[\s\S]*table-layout: auto;/.test(stylesSourceLf) &&
+    /\.admin-staff-accounts-table th,\n\.admin-staff-accounts-table td \{\n\s+white-space: nowrap;/.test(stylesSourceLf),
+  'Staff Accounts desktop table uses page-scoped single-line column layout',
+)
+assert(
+  /\.staff-account-actions \{\n\s+display: inline-grid;[\s\S]*grid-template-columns: minmax\(max-content, 1fr\);/.test(stylesSourceLf) &&
+    /\.staff-account-actions-primary \{\n\s+display: grid;[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/.test(stylesSourceLf) &&
+    /\.staff-account-reset-button \{\n\s+width: 100%;/.test(stylesSourceLf),
+  'Staff Accounts reset password action matches the combined top action row width',
 )
 assert(
   !staffAccountsPageSource.includes('selectedOptions') &&
@@ -488,8 +503,19 @@ for (const source of [
   assert(!source.includes(obsoleteProgrammePcLabel), 'frontend user-facing copy uses PC terminology')
 }
 assert(
-  /\.admin-logs-filter-actions \{\n\s+grid-column: 1 \/ -1;[\s\S]*display: flex;[\s\S]*align-items: center;[\s\S]*flex-wrap: nowrap;/.test(stylesSourceLf),
-  'Admin Logs filter actions span their own row and keep Refresh/Clear filters aligned',
+  adminLogsPageSource.includes('className="admin-logs-filter-main"') &&
+    adminLogsPageSource.includes('className="admin-logs-filter-fields"') &&
+    adminLogsPageSource.indexOf('className="admin-logs-filter-main"') <
+      adminLogsPageSource.indexOf('className="admin-logs-filter-fields"') &&
+    adminLogsPageSource.indexOf('className="admin-logs-filter-fields"') <
+      adminLogsPageSource.indexOf('className="admin-logs-filter-actions"') &&
+    adminLogsPageSource.indexOf('className="admin-logs-filter-actions"') <
+      adminLogsPageSource.indexOf('className="admin-logs-advanced-filters"') &&
+    /\.admin-logs-filter-main \{\n\s+display: grid;\n\s+grid-template-columns: minmax\(0, 1fr\) auto;[\s\S]*align-items: end;/.test(stylesSourceLf) &&
+    /\.admin-logs-filter-fields \{\n\s+display: grid;[\s\S]*grid-template-columns: repeat\(auto-fit, minmax\(min\(100%, 170px\), 1fr\)\);/.test(stylesSourceLf) &&
+    /\.admin-logs-filter-actions \{\n\s+display: flex;[\s\S]*align-items: center;[\s\S]*justify-content: flex-end;[\s\S]*flex-wrap: nowrap;[\s\S]*white-space: nowrap;/.test(stylesSourceLf) &&
+    !/\.admin-logs-filter-actions \{\n\s+grid-column: 1 \/ -1;/.test(stylesSourceLf),
+  'Admin Logs filter actions sit as one no-wrap group in the primary filter area above advanced filters',
 )
 assert(
   !adminLogsPageSource.includes('Technical details') &&

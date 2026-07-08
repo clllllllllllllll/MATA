@@ -5983,18 +5983,40 @@ button:disabled,
 }
 
 .admin-logs-filter-card {
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  align-items: start;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.admin-logs-filter-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  min-width: 0;
+}
+
+.admin-logs-filter-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr));
+  gap: 12px;
+  align-items: end;
+  min-width: 0;
+}
+
+.admin-logs-filter-fields > label {
+  min-width: 0;
 }
 
 .admin-logs-filter-actions {
-  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: nowrap;
-  padding-top: 0;
+  white-space: nowrap;
+  align-self: end;
+  justify-self: end;
+  min-width: 0;
 }
 
 .admin-logs-filter-actions .button {
@@ -6129,15 +6151,20 @@ button:disabled,
 
 @media (max-width: 900px) {
   .admin-logs-search-field {
-    flex: 1 1 100%;
+    min-width: 0;
   }
 
-  .admin-logs-filter-card {
-    grid-template-columns: 1fr;
+  .admin-logs-filter-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .admin-logs-filter-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .admin-logs-filter-actions {
-    padding-top: 0;
+    justify-self: stretch;
+    grid-column: 1 / -1;
   }
 
 }
@@ -6532,6 +6559,11 @@ button:disabled,
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
     padding-top: 0;
+  }
+
+  .admin-logs-filter-main,
+  .admin-logs-filter-fields {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .admin-logs-filter-actions .button,
@@ -7576,6 +7608,71 @@ button:disabled,
 
 .admin-staff-accounts-page table tbody td {
   vertical-align: middle;
+}
+
+.admin-staff-accounts-table {
+  width: 100%;
+  min-width: 1180px;
+  table-layout: auto;
+}
+
+.admin-staff-accounts-table th,
+.admin-staff-accounts-table td {
+  white-space: nowrap;
+}
+
+.admin-staff-accounts-table th:nth-child(1),
+.admin-staff-accounts-table td:nth-child(1) {
+  min-width: 210px;
+}
+
+.admin-staff-accounts-table th:nth-child(2),
+.admin-staff-accounts-table td:nth-child(2) {
+  min-width: 220px;
+}
+
+.admin-staff-accounts-table th:nth-child(3),
+.admin-staff-accounts-table td:nth-child(3) {
+  min-width: 130px;
+}
+
+.admin-staff-accounts-table th:nth-child(4),
+.admin-staff-accounts-table td:nth-child(4) {
+  min-width: 180px;
+}
+
+.admin-staff-accounts-table th:nth-child(5),
+.admin-staff-accounts-table td:nth-child(5) {
+  min-width: 190px;
+}
+
+.admin-staff-accounts-table th:nth-child(6),
+.admin-staff-accounts-table td:nth-child(6) {
+  min-width: 96px;
+}
+
+.admin-staff-accounts-table th:nth-child(7),
+.admin-staff-accounts-table td:nth-child(7) {
+  min-width: 232px;
+}
+
+.staff-account-actions {
+  display: inline-grid;
+  grid-template-columns: minmax(max-content, 1fr);
+  gap: 8px;
+  align-items: stretch;
+  justify-items: stretch;
+}
+
+.staff-account-actions-primary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.staff-account-actions .staff-account-action-button,
+.staff-account-reset-button {
+  width: 100%;
 }
 
 .admin-staff-accounts-page .secretary-form-grid label,
