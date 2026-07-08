@@ -503,19 +503,19 @@ for (const source of [
   assert(!source.includes(obsoleteProgrammePcLabel), 'frontend user-facing copy uses PC terminology')
 }
 assert(
-  adminLogsPageSource.includes('className="admin-logs-filter-main"') &&
-    adminLogsPageSource.includes('className="admin-logs-filter-fields"') &&
-    adminLogsPageSource.indexOf('className="admin-logs-filter-main"') <
-      adminLogsPageSource.indexOf('className="admin-logs-filter-fields"') &&
-    adminLogsPageSource.indexOf('className="admin-logs-filter-fields"') <
-      adminLogsPageSource.indexOf('className="admin-logs-filter-actions"') &&
-    adminLogsPageSource.indexOf('className="admin-logs-filter-actions"') <
+  adminLogsPageSource.indexOf('title="Admin Logs"') <
+    adminLogsPageSource.indexOf('actions={') &&
+    adminLogsPageSource.indexOf('actions={') <
+      adminLogsPageSource.indexOf('className="card filter-bar warning-filter-card admin-logs-filter-card"') &&
+    adminLogsPageSource.indexOf('<IconRefresh size={14} />') <
+      adminLogsPageSource.indexOf('className="card filter-bar warning-filter-card admin-logs-filter-card"') &&
+    !adminLogsPageSource.includes('className="admin-logs-filter-actions"') &&
+    adminLogsPageSource.indexOf('Date to') < adminLogsPageSource.indexOf('className="admin-logs-clear-filter"') &&
+    adminLogsPageSource.indexOf('className="admin-logs-clear-filter"') <
       adminLogsPageSource.indexOf('className="admin-logs-advanced-filters"') &&
-    /\.admin-logs-filter-main \{\n\s+display: grid;\n\s+grid-template-columns: minmax\(0, 1fr\) auto;[\s\S]*align-items: end;/.test(stylesSourceLf) &&
-    /\.admin-logs-filter-fields \{\n\s+display: grid;[\s\S]*grid-template-columns: repeat\(auto-fit, minmax\(min\(100%, 170px\), 1fr\)\);/.test(stylesSourceLf) &&
-    /\.admin-logs-filter-actions \{\n\s+display: flex;[\s\S]*align-items: center;[\s\S]*justify-content: flex-end;[\s\S]*flex-wrap: nowrap;[\s\S]*white-space: nowrap;/.test(stylesSourceLf) &&
-    !/\.admin-logs-filter-actions \{\n\s+grid-column: 1 \/ -1;/.test(stylesSourceLf),
-  'Admin Logs filter actions sit as one no-wrap group in the primary filter area above advanced filters',
+    /\.admin-logs-filter-main \{\n\s+display: grid;\n\s+grid-template-columns: minmax\(220px, 1\.15fr\) repeat\(5, minmax\(128px, 1fr\)\);[\s\S]*align-items: end;/.test(stylesSourceLf) &&
+    /\.admin-logs-clear-filter \{\n\s+display: flex;[\s\S]*align-items: center;[\s\S]*justify-content: flex-start;/.test(stylesSourceLf),
+  'Admin Logs refresh is a header action and Clear filters sits inline after Date to in the filter card',
 )
 assert(
   !adminLogsPageSource.includes('Technical details') &&
