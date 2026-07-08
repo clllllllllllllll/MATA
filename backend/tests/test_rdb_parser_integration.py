@@ -50,6 +50,9 @@ class _FakeMappingResult:
     def all(self) -> list[dict]:
         return self._rows
 
+    def one_or_none(self) -> dict | None:
+        return self._rows[0] if self._rows else None
+
     def scalar(self) -> object:
         if not self._rows:
             return None
@@ -208,6 +211,9 @@ class FakeRDBSession:
 
         if "/* parsed_data_correction:corrected_resident_posting_reupload_count */" in sql:
             return _FakeScalarResult(0)
+
+        if "/* upload:reporting_period_status */" in sql:
+            return _FakeMappingResult([{"status": "active"}])
 
         if "FROM programmes" in sql:
             return _FakeMappingResult(self.programmes)

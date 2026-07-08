@@ -42,6 +42,9 @@ class _FakeMappingResult:
     def all(self) -> list[dict]:
         return self._rows
 
+    def one_or_none(self) -> dict | None:
+        return self._rows[0] if self._rows else None
+
 
 class FakeFormF1Session:
     def __init__(self) -> None:
@@ -117,6 +120,7 @@ def _add_reporting_period(
     session.reporting_periods[str(period_id)] = {
         "start_date": start_date,
         "end_date": end_date,
+        "status": "active",
     }
 
 

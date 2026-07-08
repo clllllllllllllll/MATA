@@ -143,6 +143,7 @@ from app.services.parser_common import (
     validate_upload_payload,
     write_upload_log,
 )
+from app.services.reporting_period_status import REPORTING_PERIOD_ACTIVE
 from app.services.formf1_parser import parse_formf1_upload
 from app.services.public_holiday_parser import parse_public_holiday_upload
 from app.services.ttf_parser import TTFUploadLockError, parse_ttf_upload
@@ -408,6 +409,35 @@ def _format_public_holiday_response(result: ParserResult) -> dict[str, Any]:
         "warnings": result.warnings,
         "errors": result.errors,
     }
+
+
+async def _require_active_upload_reporting_period(
+    db: AsyncSession | None,
+    reporting_period_id: UUID,
+) -> None:
+    if db is None:
+        return
+    result = await db.execute(
+        text(
+            """
+            /* upload:reporting_period_status */
+            SELECT status
+            FROM reporting_periods
+            WHERE id = :reporting_period_id
+            """
+        ),
+        {"reporting_period_id": str(reporting_period_id)},
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        return
+    if str(row.get("status") or "").strip().lower() == REPORTING_PERIOD_ACTIVE:
+        return
+    raise ApiError(
+        status_code=422,
+        detail="Selected reporting period is inactive. Activate the reporting period before uploading.",
+        error_code=ErrorCode.VALIDATION_FAILED.value,
+    )
 
 
 _METADATA_INTERNAL_KEYS = {"exception", "traceback", "stack", "stacktrace"}
@@ -1049,6 +1079,8 @@ async def upload_rdb(
             errors=[str(exc)],
         ) from exc
 
+    await _require_active_upload_reporting_period(db, reporting_period_id)
+
     corrected_rows_warning = None
     if db is not None:
         corrected_rows_warning = await parsed_data.resident_posting_corrections_reupload_warning(
@@ -1111,6 +1143,8 @@ async def upload_ttf(
             errors=[str(exc)],
         ) from exc
 
+    await _require_active_upload_reporting_period(db, reporting_period_id)
+
     try:
         parser_result = await parse_ttf_upload(
             file_bytes=validated.file_bytes,
@@ -1168,6 +1202,8 @@ async def upload_formf1(
             error_code=ErrorCode.FILE_VALIDATION_FAILED.value,
             errors=[str(exc)],
         ) from exc
+
+    await _require_active_upload_reporting_period(db, reporting_period_id)
 
     parser_result = await parse_formf1_upload(
         file_bytes=validated.file_bytes,

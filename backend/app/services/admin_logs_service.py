@@ -1174,7 +1174,7 @@ async def _fetch_warning_detail(db: AsyncSession, log_uuid: str) -> dict[str, An
 async def _fetch_audit_detail(db: AsyncSession, log_uuid: str) -> dict[str, Any] | None:
     result = await db.execute(
         text(
-            """
+            f"""
             /* admin_logs:audit_detail */
             SELECT
                 al.id,

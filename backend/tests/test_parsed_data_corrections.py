@@ -600,6 +600,8 @@ class FakeRdbUploadCorrectionWarningSession:
     async def execute(self, statement, params=None):
         sql = str(statement)
         payload = dict(params or {})
+        if "/* upload:reporting_period_status */" in sql:
+            return _FakeResult(rows=[{"status": "active"}])
         if "/* parsed_data_correction:corrected_resident_posting_reupload_count */" in sql:
             return _FakeResult(scalar=self.corrected_reupload_count)
         if "INSERT INTO upload_logs" in sql:
