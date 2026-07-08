@@ -719,6 +719,22 @@ class FakeMutationSession:
         raise AssertionError(f"Unhandled SQL: {sql}")
 
 
+class StrictWarningCandidateSqlSession(FakeMutationSession):
+    async def execute(self, statement, params=None):  # noqa: C901, PLR0912, PLR0915
+        sql = str(statement)
+        payload = dict(params or {})
+        if "/* data_revalidation:warning_candidates */" in sql:
+            if payload.get("programme_code") is None and ":programme_code IS NULL" in sql:
+                raise AssertionError(
+                    "programme_code None must not be used in an untyped nullable SQL predicate"
+                )
+            if payload.get("reporting_period_id") is None and ":reporting_period_id IS NULL" in sql:
+                raise AssertionError(
+                    "reporting_period_id None must not be used in an untyped nullable SQL predicate"
+                )
+        return await super().execute(statement, params)
+
+
 def _build_client_with_session(session: FakeMutationSession) -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
@@ -2287,6 +2303,49 @@ def test_reporting_period_update_rejects_empty_required_values() -> None:
         json={"status": "paused"},
     )
     assert status_response.status_code == 422
+
+
+def test_reporting_period_update_with_revalidation_handles_global_warning_scope() -> None:
+    session = StrictWarningCandidateSqlSession()
+    period_id = session.reporting_periods[0]["id"]
+    issue_id = _add_warning_issue(
+        session,
+        warning_type="unmatched_multi_posting",
+        programme_code="DR",
+        reporting_period_id=period_id,
+        source_payload={"posting_codes": ["A", "B"]},
+    )
+    _add_warning_issue(
+        session,
+        warning_type="unmatched_multi_posting",
+        programme_code="GRM",
+        reporting_period_id=str(uuid4()),
+        source_payload={"posting_codes": ["C", "D"]},
+    )
+    client = _build_client_with_session(session)
+
+    response = client.put(
+        f"/admin/reporting-periods/{period_id}",
+        headers=_master_admin_headers("DR"),
+        json={
+            "label": "Jul 25 - Dec 25",
+            "start_date": "2025-07-08",
+            "end_date": "2026-01-05",
+            "status": "inactive",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "inactive"
+    impact = _assert_config_impact(
+        body,
+        changed_entity="reporting_period",
+        action="update",
+        outcome="future_compliance_impact",
+    )
+    assert impact["affected_warning_ids"] == [issue_id]
+    assert impact["warnings_remaining"] == 1
 
 
 def test_loa_type_crud_and_duplicate_conflict() -> None:

@@ -102,6 +102,98 @@ class BulkConfigImpactSession:
         raise AssertionError("Data Revalidation handlers must not rollback")
 
 
+class WarningCandidateSqlSession:
+    def __init__(self) -> None:
+        self.rows = [
+            {
+                "issue_id": "period-dr",
+                "fingerprint": "period|DR",
+                "warning_type": "unmatched_multi_posting",
+                "status": "unresolved",
+                "severity": "warning",
+                "reporting_period_id": "period-1",
+                "programme_code": "DR",
+                "mcr": "M00001A",
+                "month_label": "Jul-25",
+                "last_seen_at": None,
+                "latest_upload_warning_id": "warning-1",
+                "source_payload": {"posting_codes": ["A", "B"]},
+                "message": "DR warning",
+                "suggested_action": None,
+            },
+            {
+                "issue_id": "period-geri",
+                "fingerprint": "period|GERI",
+                "warning_type": "unmatched_multi_posting",
+                "status": "reappeared",
+                "severity": "warning",
+                "reporting_period_id": "period-1",
+                "programme_code": "GERI",
+                "mcr": "M00002B",
+                "month_label": "Jul-25",
+                "last_seen_at": None,
+                "latest_upload_warning_id": "warning-2",
+                "source_payload": {"posting_codes": ["C", "D"]},
+                "message": "GERI warning",
+                "suggested_action": None,
+            },
+            {
+                "issue_id": "other-period",
+                "fingerprint": "period|other",
+                "warning_type": "unmatched_multi_posting",
+                "status": "unresolved",
+                "severity": "warning",
+                "reporting_period_id": "period-2",
+                "programme_code": "DR",
+                "mcr": "M00003C",
+                "month_label": "Aug-25",
+                "last_seen_at": None,
+                "latest_upload_warning_id": "warning-3",
+                "source_payload": {"posting_codes": ["E", "F"]},
+                "message": "Other period warning",
+                "suggested_action": None,
+            },
+        ]
+        self.last_sql = ""
+        self.last_params: dict = {}
+
+    async def execute(self, statement, params=None):
+        sql = str(statement)
+        payload = dict(params or {})
+        self.last_sql = sql
+        self.last_params = payload
+        if "/* data_revalidation:warning_candidates */" not in sql:
+            raise AssertionError(f"Unexpected SQL: {sql}")
+        if payload.get("programme_code") is None and ":programme_code IS NULL" in sql:
+            raise AssertionError("programme_code None must not be used in an untyped nullable SQL predicate")
+        if payload.get("reporting_period_id") is None and ":reporting_period_id IS NULL" in sql:
+            raise AssertionError("reporting_period_id None must not be used in an untyped nullable SQL predicate")
+
+        statuses = set(payload.get("statuses") or [])
+        warning_types = set(payload.get("warning_types") or [])
+        rows = [
+            row
+            for row in self.rows
+            if row["status"] in statuses
+            and row["warning_type"] in warning_types
+            and (
+                payload.get("programme_code") is None
+                or row["programme_code"] == payload["programme_code"]
+            )
+            and (
+                payload.get("reporting_period_id") is None
+                or str(row["reporting_period_id"]) == str(payload["reporting_period_id"])
+            )
+        ]
+        return _MappingResult(rows[: payload.get("limit", len(rows))])
+
+    async def commit(self) -> None:  # pragma: no cover - should never be reached
+        raise AssertionError("Data Revalidation handlers must not commit")
+
+    async def rollback(self) -> None:  # pragma: no cover - should never be reached
+        raise AssertionError("Data Revalidation handlers must not rollback")
+
+
 def _context(**overrides) -> DataRevalidationContext:
     payload = {
         "trigger_source": DataRevalidationTriggerSource.LIVE_DATA_CORRECTION,
@@ -132,6 +224,59 @@ def test_canonical_outcome_enum_values_are_exact() -> None:
         "manual_revalidation_required",
     )
     assert tuple(item.value for item in DataRevalidationOutcome) == CANONICAL_DATA_REVALIDATION_OUTCOMES
+
+
+@pytest.mark.asyncio
+async def test_warning_candidate_query_handles_null_programme_with_reporting_period() -> None:
+    session = WarningCandidateSqlSession()
+
+    page = await data_revalidation_service._fetch_actionable_warning_candidates(
+        session,
+        programme_code=None,
+        reporting_period_id="period-1",
+        warning_types=("unmatched_multi_posting",),
+    )
+
+    assert [row["issue_id"] for row in page.rows] == ["period-dr", "period-geri"]
+    assert "wi.programme_code = :programme_code" not in session.last_sql
+    assert "CAST(wi.reporting_period_id AS TEXT) = :reporting_period_id" in session.last_sql
+    assert session.last_params["reporting_period_id"] == "period-1"
+
+
+@pytest.mark.asyncio
+async def test_warning_candidate_query_keeps_programme_filter_with_reporting_period() -> None:
+    session = WarningCandidateSqlSession()
+
+    page = await data_revalidation_service._fetch_actionable_warning_candidates(
+        session,
+        programme_code="DR",
+        reporting_period_id="period-1",
+        warning_types=("unmatched_multi_posting",),
+    )
+
+    assert [row["issue_id"] for row in page.rows] == ["period-dr"]
+    assert "wi.programme_code = :programme_code" in session.last_sql
+    assert "CAST(wi.reporting_period_id AS TEXT) = :reporting_period_id" in session.last_sql
+    assert session.last_params["programme_code"] == "DR"
+    assert session.last_params["reporting_period_id"] == "period-1"
+
+
+@pytest.mark.asyncio
+async def test_warning_candidate_query_handles_global_scope_without_nullable_predicates() -> None:
+    session = WarningCandidateSqlSession()
+
+    page = await data_revalidation_service._fetch_actionable_warning_candidates(
+        session,
+        programme_code=None,
+        reporting_period_id=None,
+        warning_types=("unmatched_multi_posting",),
+    )
+
+    assert [row["issue_id"] for row in page.rows] == ["period-dr", "period-geri", "other-period"]
+    assert "wi.programme_code = :programme_code" not in session.last_sql
+    assert "CAST(wi.reporting_period_id AS TEXT) = :reporting_period_id" not in session.last_sql
+    assert "programme_code" not in session.last_params
+    assert "reporting_period_id" not in session.last_params
 
 
 @pytest.mark.asyncio
