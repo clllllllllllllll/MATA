@@ -409,6 +409,51 @@ async def _resolve_teaching_name(
     return dict(row) if row is not None else None
 
 
+async def _resolve_teaching_target(
+    db: AsyncSession,
+    *,
+    posting_code: str,
+    programme_code: str,
+    r_year: str,
+    reporting_period_id: UUID | str,
+    session_type: str,
+) -> dict[str, Any] | None:
+    result = await db.execute(
+        text(
+            """
+            SELECT
+                st.name AS keyword,
+                tt.session_type_id,
+                st.name AS session_type,
+                st.duration_hours,
+                tt.is_tracked,
+                false AS is_global
+            FROM teaching_targets tt
+            JOIN session_types st ON st.id = tt.session_type_id
+            WHERE tt.posting_code = :posting_code
+              AND tt.programme_code = :programme_code
+              AND tt.reporting_period_id = :reporting_period_id
+              AND tt.r_year IN (:r_year, 'ALL')
+              AND st.name = :session_type
+            ORDER BY
+                CASE WHEN tt.r_year = :r_year THEN 0 ELSE 1 END,
+                st.duration_hours DESC,
+                st.name ASC
+            LIMIT 1
+            """
+        ),
+        {
+            "posting_code": posting_code,
+            "programme_code": programme_code,
+            "reporting_period_id": str(reporting_period_id),
+            "r_year": r_year,
+            "session_type": session_type,
+        },
+    )
+    row = result.mappings().one_or_none()
+    return dict(row) if row is not None else None
+
+
 async def _posting_display_label(db: AsyncSession, posting_code: str) -> str:
     result = await db.execute(
         text(
@@ -2135,13 +2180,19 @@ async def submit_adhoc_teaching(
             detail="teaching_name must be selected from catalogue-backed ad-hoc teaching options",
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
-    resolved = await _resolve_teaching_name(
+    if selected.get("is_global") or not bool(selected.get("is_tracked")):
+        raise ApiError(
+            status_code=422,
+            detail="teaching_name must be selected from tracked catalogue-backed ad-hoc teaching options",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
+    resolved = await _resolve_teaching_target(
         db,
         posting_code=context["posting_code"],
         programme_code=resident["programme_code"],
         r_year=context["r_year"],
         reporting_period_id=period["id"],
-        teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
+        session_type=ADHOC_COMPLIANCE_TEACHING_NAME,
     )
     if resolved is None or resolved.get("is_global") or not bool(resolved.get("is_tracked")):
         raise ApiError(
