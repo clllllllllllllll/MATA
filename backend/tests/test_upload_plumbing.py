@@ -465,6 +465,9 @@ class _UploadAuditResult:
     def one(self):
         return self._row
 
+    def one_or_none(self):
+        return self._row
+
 
 class _UploadScalarResult:
     def __init__(self, value: int) -> None:
@@ -478,11 +481,16 @@ class _UploadAuditSession:
     def __init__(self) -> None:
         self.upload_logs: list[dict] = []
         self.audit_logs: list[dict] = []
+        self.reporting_periods: dict[str, dict] = {}
         self.commits = 0
 
     async def execute(self, statement, params):
         sql = str(statement)
         payload = dict(params)
+        if "/* upload:reporting_period_status */" in sql:
+            return _UploadAuditResult(
+                self.reporting_periods.get(str(payload["reporting_period_id"]))
+            )
         if "/* parsed_data_correction:corrected_resident_posting_reupload_count */" in sql:
             return _UploadScalarResult(0)
         if "INSERT INTO upload_logs" in sql:
@@ -615,6 +623,100 @@ def test_successful_admin_uploads_write_audit_logs_linked_to_upload_logs(monkeyp
         assert after["id"] == upload_log["id"]
         assert after["upload_type"] == upload_log["upload_type"]
         assert after["status"] == "success"
+
+
+def test_upload_endpoints_reject_inactive_reporting_period_before_parsers(monkeypatch) -> None:
+    called = {"count": 0}
+
+    async def _blocked_parser(**kwargs):
+        called["count"] += 1
+        return ParserResult(upload_type=kwargs.get("upload_type", "rdb"))
+
+    monkeypatch.setattr("app.services.rdb_parser.parse_rdb_upload", _blocked_parser)
+    monkeypatch.setattr("app.routers.admin.parse_ttf_upload", _blocked_parser)
+    monkeypatch.setattr("app.routers.admin.parse_formf1_upload", _blocked_parser)
+
+    session = _UploadAuditSession()
+    period_id = str(uuid4())
+    session.reporting_periods[period_id] = {"status": "inactive"}
+    client = _build_upload_audit_client(session)
+    headers = _admin_headers()
+    files = {
+        "file": (
+            "source.xlsx",
+            _make_valid_xlsx_bytes(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+
+    responses = [
+        client.post("/admin/upload/rdb", headers=headers, data={"reporting_period_id": period_id}, files=files),
+        client.post(
+            "/admin/upload/ttf",
+            headers=headers,
+            data={"reporting_period_id": period_id, "programme_code": "DR"},
+            files=files,
+        ),
+        client.post("/admin/upload/form-f1", headers=headers, data={"reporting_period_id": period_id}, files=files),
+    ]
+
+    assert [response.status_code for response in responses] == [422, 422, 422]
+    assert all(
+        response.json()["detail"]
+        == "Selected reporting period is inactive. Activate the reporting period before uploading."
+        for response in responses
+    )
+    assert called["count"] == 0
+    assert session.upload_logs == []
+    assert session.audit_logs == []
+    assert session.commits == 0
+
+
+def test_upload_endpoints_allow_active_reporting_period_before_parsers(monkeypatch) -> None:
+    called: list[str] = []
+
+    async def _fake_rdb_parser(**kwargs):
+        called.append("rdb")
+        return ParserResult(upload_type="rdb")
+
+    async def _fake_ttf_parser(**kwargs):
+        called.append("ttf")
+        return ParserResult(upload_type="ttf")
+
+    async def _fake_formf1_parser(**kwargs):
+        called.append("form_f1")
+        return ParserResult(upload_type="form_f1")
+
+    monkeypatch.setattr("app.services.rdb_parser.parse_rdb_upload", _fake_rdb_parser)
+    monkeypatch.setattr("app.routers.admin.parse_ttf_upload", _fake_ttf_parser)
+    monkeypatch.setattr("app.routers.admin.parse_formf1_upload", _fake_formf1_parser)
+
+    session = _UploadAuditSession()
+    period_id = str(uuid4())
+    session.reporting_periods[period_id] = {"status": "active"}
+    client = _build_upload_audit_client(session)
+    headers = _admin_headers()
+    files = {
+        "file": (
+            "source.xlsx",
+            _make_valid_xlsx_bytes(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+
+    responses = [
+        client.post("/admin/upload/rdb", headers=headers, data={"reporting_period_id": period_id}, files=files),
+        client.post(
+            "/admin/upload/ttf",
+            headers=headers,
+            data={"reporting_period_id": period_id, "programme_code": "DR"},
+            files=files,
+        ),
+        client.post("/admin/upload/form-f1", headers=headers, data={"reporting_period_id": period_id}, files=files),
+    ]
+
+    assert [response.status_code for response in responses] == [200, 200, 200]
+    assert called == ["rdb", "ttf", "form_f1"]
 
 
 def test_successful_admin_uploads_derive_warning_issues_after_upload_log(monkeypatch) -> None:

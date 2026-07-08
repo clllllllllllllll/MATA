@@ -350,6 +350,7 @@ class FakeAdminLogsSession:
         assert "wi.resolution_source_id" in sql
 
     def _assert_linked_audit_scope_sql(self, sql):
+        assert "{_audit_linked_warning_join_sql()}" not in sql
         assert "linked_wi.programme_code" in sql
         assert "linked_wi.id AS linked_warning_issue_id" in sql
 

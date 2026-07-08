@@ -41,6 +41,9 @@ class _FakeMappingResult:
     def all(self):
         return self._rows
 
+    def one_or_none(self):
+        return self._rows[0] if self._rows else None
+
 
 class FakeTTFSession:
     def __init__(self) -> None:
@@ -76,12 +79,17 @@ class FakeTTFSession:
         self.attendance_records: list[dict] = []
         self.upload_logs: list[dict] = []
         self.audit_logs: list[dict] = []
+        self.reporting_periods: dict[str, dict] = {}
         self.commits = 0
         self.rollbacks = 0
 
     async def execute(self, statement, params: dict | None = None):
         sql = str(statement)
         params = dict(params or {})
+
+        if "/* upload:reporting_period_status */" in sql:
+            row = self.reporting_periods.get(str(params["reporting_period_id"]))
+            return _FakeMappingResult([row] if row else [])
 
         if "pg_try_advisory_xact_lock" in sql:
             return _FakeScalarResult(self.lock_available)
