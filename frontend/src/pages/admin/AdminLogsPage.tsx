@@ -189,10 +189,10 @@ const sourceText = (log: AdminLogListItem) => {
     return parts.join(' · ')
   }
   if (log.upload_log_id) {
-    return `Upload ${log.upload_log_id}`
+    return 'Upload record'
   }
   if (log.warning_issue_id) {
-    return `Warning ${log.warning_issue_id}`
+    return 'Warning issue'
   }
   return '-'
 }
@@ -208,15 +208,21 @@ const actorText = (log: AdminLogListItem) => {
 }
 
 const entityText = (log: AdminLogListItem) => {
+  if (log.entity_type === 'upload_log') {
+    return 'Upload log'
+  }
+  if (log.entity_type === 'warning_issue') {
+    return 'Warning issue'
+  }
   const entity = [log.entity_type, log.entity_id].filter(Boolean).join(' · ')
   if (entity) {
     return entity
   }
   if (log.warning_issue_id) {
-    return `warning_issue · ${log.warning_issue_id}`
+    return 'Warning issue'
   }
   if (log.upload_log_id) {
-    return `upload_log · ${log.upload_log_id}`
+    return 'Upload log'
   }
   return '-'
 }
@@ -247,6 +253,16 @@ const statusTone = (value?: string | null): BadgeTone => {
     return 'info'
   }
   return 'neutral'
+}
+
+const formatAuditStatus = (value: string) =>
+  value
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+
+const formatWorkflowStatus = (workflowStatus?: Record<string, unknown> | null) => {
+  const status = searchValue(workflowStatus?.status)
+  return status ? formatAuditStatus(status) : null
 }
 
 const typeTone = (logType: AdminLogType): BadgeTone => {
@@ -618,6 +634,16 @@ export const AdminLogsPage = () => {
   const primaryDeepLink = activeDetail
     ? resolveDeepLinkPath(activeDetail.deep_link, activeDetail)
     : null
+  const workflowStatusText = selectedDetail ? formatWorkflowStatus(selectedDetail.workflow_status) : null
+  const technicalDetailFields = activeDetail
+    ? [
+        { label: 'Log ID', value: activeDetail.id },
+        { label: 'Upload log UUID', value: activeDetail.upload_log_id },
+        { label: 'Warning issue UUID', value: activeDetail.warning_issue_id },
+        { label: 'Upload warning UUID', value: activeDetail.upload_warning_id },
+        { label: 'Entity ID', value: activeDetail.entity_id },
+      ].filter((field) => field.value)
+    : []
 
   const hasFilters = useMemo(() => {
     const filterValues = Object.values(filters)
@@ -1119,10 +1145,22 @@ export const AdminLogsPage = () => {
                 <DetailField label="Reporting period" value={activeDetail.reporting_period_id} />
                 <DetailField label="Entity" value={entityText(activeDetail)} />
                 <DetailField label="Source" value={sourceText(activeDetail)} />
-                <DetailField label="Upload log" value={activeDetail.upload_log_id} />
-                <DetailField label="Warning issue" value={activeDetail.warning_issue_id} />
+                {selectedDetail ? (
+                  <DetailField label="Workflow status" value={workflowStatusText ?? 'No workflow status returned'} />
+                ) : null}
               </div>
             </div>
+
+            {technicalDetailFields.length > 0 ? (
+              <details className="detail-block admin-log-support-details">
+                <summary>Technical details</summary>
+                <div className="parsed-data-detail-grid">
+                  {technicalDetailFields.map((field) => (
+                    <DetailField key={field.label} label={field.label} value={field.value} />
+                  ))}
+                </div>
+              </details>
+            ) : null}
 
             {detailLoading ? (
               <div className="detail-block">
@@ -1140,15 +1178,6 @@ export const AdminLogsPage = () => {
 
             {selectedDetail ? (
               <>
-                <div className="detail-block">
-                  <h3>Workflow status</h3>
-                  <JsonPreview
-                    title="Workflow status"
-                    value={selectedDetail.workflow_status ?? undefined}
-                    emptyText="No mutable workflow status was returned for this log entry."
-                  />
-                </div>
-
                 <div className="detail-block">
                   <h3>Related entities</h3>
                   {selectedDetail.related_entities.length === 0 ? (
