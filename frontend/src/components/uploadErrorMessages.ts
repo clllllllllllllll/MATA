@@ -85,7 +85,9 @@ export const resolveUploadErrorMessage = (error: UploadErrorLike) => {
     return 'The server hit an error while processing this upload.'
   }
   if (error.isNetworkError) {
-    return 'Could not reach the backend. Check Docker services and try again.'
+    return 'The system could not complete the upload. Try again later.'
   }
-  return error.message ?? 'Upload failed. Please try again.'
+  return error.message && isSafeUserFacingMessage(error.message)
+    ? error.message
+    : 'Upload failed. Please try again.'
 }

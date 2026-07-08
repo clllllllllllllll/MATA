@@ -23,6 +23,7 @@ import { useAuth } from './context/useAuth'
 import { LoginPage } from './pages/auth/LoginPage'
 import { NonNhgRegistrationPage } from './pages/auth/NonNhgRegistrationPage'
 import { getRouteAccessDecision, shouldRenderRoutes } from './routeGuards'
+import { formatUserFacingApiError } from './utils/userFacingErrors'
 
 const AuthLoadingScreen = () => (
   <div className="auth-hydration-screen" aria-live="polite" aria-label="Checking session">
@@ -54,7 +55,9 @@ const StaffActorNameGate = () => {
     try {
       await updateStaffActorName(trimmedName)
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Unable to save staff name.')
+      setErrorMessage(formatUserFacingApiError(error, {
+        fallbackMessage: 'Unable to save staff name.',
+      }))
     } finally {
       setIsSaving(false)
     }
@@ -177,5 +180,4 @@ function App() {
 }
 
 export default App
-
 

@@ -8,6 +8,7 @@ import { UploadCard } from '../../components/UploadCard'
 import { useAppState } from '../../context/useAppState'
 import type { UploadType } from '../../types/app'
 import { formatReportingPeriodOptionLabel } from '../../utils/reportingPeriods'
+import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 import { buildMasterAdminTtfProgrammeOptions, buildReviewWarningsPathForUploadSlot } from './adminUploadPageLogic'
 
 const acceptedByType: Record<UploadType, string> = {
@@ -98,7 +99,9 @@ export const AdminUploadPage = () => {
       } catch (error) {
         if (active) {
           setProgrammeCatalogue([])
-          setProgrammesError(error instanceof Error ? error.message : 'Unable to load programme catalogue.')
+          setProgrammesError(formatUserFacingApiError(error, {
+            fallbackMessage: 'Unable to load programme catalogue.',
+          }))
         }
       }
     })()
@@ -117,11 +120,14 @@ export const AdminUploadPage = () => {
     }
   }, [selectedProgrammeCode, setSelectedProgrammeCode, ttfProgrammeOptions])
 
+  const hasSelectorOptions = reportingPeriods.length > 0
+  const activeReportingPeriodId = hasSelectorOptions ? reportingPeriodId : ''
+
   const uploadOne = async (uploadType: UploadType, file: File) => {
     const response = await uploadWorkbook({
       uploadType,
       file,
-      reportingPeriodId,
+      reportingPeriodId: activeReportingPeriodId,
       programmeCode: selectedProgrammeCode,
       adminId: demoAdminId,
       adminProgrammes: demoAdminProgrammes,
@@ -132,7 +138,7 @@ export const AdminUploadPage = () => {
       uploadType,
       response,
       filename: file.name,
-      reportingPeriodId,
+      reportingPeriodId: activeReportingPeriodId,
       reportingPeriodLabel,
       programmeCode: uploadType === 'ttf' ? selectedProgrammeCode : undefined,
     })
@@ -140,15 +146,11 @@ export const AdminUploadPage = () => {
     return response
   }
 
-  const hasSelectorOptions = reportingPeriods.length > 0
-  const useManualReportingPeriodFallback =
-    reportingPeriodsError !== null || (!reportingPeriodsLoading && reportingPeriods.length === 0)
-
   const reviewWarningsForUpload = (uploadType: UploadType) => {
     const latest = latestByType.get(uploadType)
     navigate(buildReviewWarningsPathForUploadSlot({
       uploadType,
-      selectedReportingPeriodId: reportingPeriodId,
+      selectedReportingPeriodId: activeReportingPeriodId,
       selectedProgrammeCode,
       latestUpload: latest
         ? {
@@ -180,27 +182,21 @@ export const AdminUploadPage = () => {
                     </option>
                   ))}
                 </select>
-                <small>Selects the reporting_period_id sent for RDB, TTF, and FormF1 uploads.</small>
+                <small>Used to scope RDB, TTF, and FormF1 uploads.</small>
               </>
             ) : null}
             {reportingPeriodsLoading ? <small>Loading reporting periods...</small> : null}
-            {useManualReportingPeriodFallback ? (
-              <>
-                <input
-                  type="text"
-                  value={reportingPeriodId}
-                  onChange={(event) => setReportingPeriodId(event.target.value)}
-                  placeholder="reporting_periods.id (UUID), required for RDB, TTF, FormF1"
-                />
-                <small>
-                  Reporting-period list unavailable. Use manual UUID fallback.{' '}
-                  <button type="button" className="button-link" onClick={() => void reloadReportingPeriods()}>
-                    Retry loading list
-                  </button>
-                </small>
-              </>
+            {!reportingPeriodsLoading && !hasSelectorOptions ? (
+              <small className="upload-validation-text">
+                Reporting period unavailable.{' '}
+                <button type="button" className="button-link" onClick={() => void reloadReportingPeriods()}>
+                  Retry loading list
+                </button>
+              </small>
             ) : null}
-            {reportingPeriodsError ? <small className="upload-validation-text">{reportingPeriodsError}</small> : null}
+            {reportingPeriodsError && hasSelectorOptions ? (
+              <small className="upload-validation-text">Reporting period list could not be refreshed.</small>
+            ) : null}
           </label>
           <label>
             Programme code (TTF)
@@ -241,7 +237,7 @@ export const AdminUploadPage = () => {
           lastUploadedText={formatDateTime(latestByType.get('rdb')?.uploadedAtIso)}
           accept={acceptedByType.rdb}
           requiresReportingPeriod
-          reportingPeriodId={reportingPeriodId}
+          reportingPeriodId={activeReportingPeriodId}
           onUpload={(file) => uploadOne('rdb', file)}
           onReviewWarnings={() => reviewWarningsForUpload('rdb')}
         />
@@ -254,7 +250,7 @@ export const AdminUploadPage = () => {
           accept={acceptedByType.ttf}
           requiresReportingPeriod
           requiresProgramme
-          reportingPeriodId={reportingPeriodId}
+          reportingPeriodId={activeReportingPeriodId}
           programmeCode={selectedProgrammeCode}
           onUpload={(file) => uploadOne('ttf', file)}
           onReviewWarnings={() => reviewWarningsForUpload('ttf')}
@@ -267,7 +263,7 @@ export const AdminUploadPage = () => {
           lastUploadedText={formatDateTime(latestByType.get('form_f1')?.uploadedAtIso)}
           accept={acceptedByType.form_f1}
           requiresReportingPeriod
-          reportingPeriodId={reportingPeriodId}
+          reportingPeriodId={activeReportingPeriodId}
           onUpload={(file) => uploadOne('form_f1', file)}
           onReviewWarnings={() => reviewWarningsForUpload('form_f1')}
         />

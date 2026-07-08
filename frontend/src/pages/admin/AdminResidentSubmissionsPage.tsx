@@ -16,6 +16,7 @@ import { IconChevRight, IconRefresh } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useAppState } from '../../context/useAppState'
+import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 type StatusFilter = 'all' | AdminResidentSubmissionStatus
 type SourceFilter = 'all' | AdminResidentSubmissionSource
@@ -262,7 +263,9 @@ export const AdminResidentSubmissionsPage = () => {
       } catch (error) {
         if (active) {
           setPostingOptions([])
-          setPostingError(error instanceof Error ? error.message : 'Unable to load posting filter options.')
+          setPostingError(formatUserFacingApiError(error, {
+            fallbackMessage: 'Unable to load posting filter options.',
+          }))
         }
       }
     })()
@@ -287,7 +290,9 @@ export const AdminResidentSubmissionsPage = () => {
       } catch (error) {
         if (active) {
           setProgrammeOptions([])
-          setProgrammeError(error instanceof Error ? error.message : 'Unable to load programme filter options.')
+          setProgrammeError(formatUserFacingApiError(error, {
+            fallbackMessage: 'Unable to load programme filter options.',
+          }))
         }
       }
     })()
@@ -347,7 +352,9 @@ export const AdminResidentSubmissionsPage = () => {
       setSummary(emptySummary)
       setTotal(0)
       hasLoadedRef.current = true
-      setSubmissionsError(error instanceof Error ? error.message : 'Unable to load resident submissions.')
+      setSubmissionsError(formatUserFacingApiError(error, {
+        fallbackMessage: 'Unable to load resident submissions.',
+      }))
     } finally {
       setSubmissionsLoading(false)
       setIsRefetching(false)
@@ -409,7 +416,9 @@ export const AdminResidentSubmissionsPage = () => {
         if (detailRequestRef.current === requestId) {
           setDetailError({
             submissionId: selectedSubmissionId,
-            message: error instanceof Error ? error.message : 'Unable to load submission detail.',
+            message: formatUserFacingApiError(error, {
+              fallbackMessage: 'Unable to load submission detail.',
+            }),
           })
         }
       }

@@ -18,6 +18,7 @@ import { IconPlus, IconRefresh } from '../../components/icons'
 import { useAppState } from '../../context/useAppState'
 import { useAdminConfigReadCache } from '../../hooks/useAdminConfigReadCache'
 import type { DataRevalidationImpact } from '../../types/dataRevalidation'
+import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 type RuleTab = MultiPostingRuleType
 type ConfigViewRole = 'master_admin' | 'programme_pc'
@@ -110,7 +111,9 @@ const describeError = (error: unknown, fallback: string): string => {
   if (!(error instanceof ApiRequestError)) {
     return fallback
   }
-  return error.message
+  return formatUserFacingApiError(error, {
+    fallbackMessage: fallback,
+  })
 }
 
 const mutationFeedback = (

@@ -29,6 +29,7 @@ import {
   setMemoryCache,
   type CacheScope,
 } from '../../utils/memoryReadCache'
+import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 type WarningReviewMode = 'active' | 'history'
 type WarningAction = 'resolve' | 'dismiss' | 'supersede'
@@ -121,10 +122,6 @@ const warningIssueIdForRow = (warning: UploadWarning) =>
   warning.warningIssueId ?? warning.issueId ?? null
 
 const statusText = (status?: string | null) => statusLabel[status ?? ''] ?? fieldValue(status)
-
-const JsonBlock = ({ value }: { value: unknown }) => (
-  <pre className="raw-json">{JSON.stringify(value ?? null, null, 2)}</pre>
-)
 
 export const AdminWarningsPage = () => {
   const navigate = useNavigate()
@@ -254,7 +251,9 @@ export const AdminWarningsPage = () => {
       setWarningDetail(detail)
     } catch (fetchError) {
       setWarningDetail(null)
-      setDetailError(fetchError instanceof Error ? fetchError.message : 'Unable to load warning detail.')
+      setDetailError(formatUserFacingApiError(fetchError, {
+        fallbackMessage: 'Unable to load warning detail.',
+      }))
     } finally {
       setIsDetailLoading(false)
     }
@@ -285,7 +284,9 @@ export const AdminWarningsPage = () => {
         setWarnings([])
       }
       hasLoadedWarningsRef.current = true
-      setError(fetchError instanceof Error ? fetchError.message : 'Unable to load upload warnings.')
+      setError(formatUserFacingApiError(fetchError, {
+        fallbackMessage: 'Unable to load upload warnings.',
+      }))
     } finally {
       setIsManualRefreshing(false)
       setIsInitialLoading(false)
@@ -348,7 +349,9 @@ export const AdminWarningsPage = () => {
             setWarnings([])
           }
           hasLoadedWarningsRef.current = true
-          setError(fetchError instanceof Error ? fetchError.message : 'Unable to load upload warnings.')
+          setError(formatUserFacingApiError(fetchError, {
+            fallbackMessage: 'Unable to load upload warnings.',
+          }))
         }
       } finally {
         if (active) {
@@ -438,7 +441,7 @@ export const AdminWarningsPage = () => {
     if (warningIssueId) {
       void loadDetail(warningIssueId)
     } else {
-      setDetailError('Warning detail is unavailable because this row does not include a warning issue id.')
+      setDetailError('Warning detail is unavailable for this row.')
     }
   }
 
@@ -486,7 +489,9 @@ export const AdminWarningsPage = () => {
       setActionResult(`${statusText(response.previousStatus)} -> ${statusText(response.newStatus)}`)
       await refreshAfterMutation()
     } catch (actionError) {
-      setDetailError(actionError instanceof Error ? actionError.message : 'Unable to update warning status.')
+      setDetailError(formatUserFacingApiError(actionError, {
+        fallbackMessage: 'Unable to update warning status.',
+      }))
     } finally {
       setActionBusy(null)
     }
@@ -515,7 +520,9 @@ export const AdminWarningsPage = () => {
       })
       setSourceCellPreview(preview)
     } catch (previewError) {
-      setSourceCellError(previewError instanceof Error ? previewError.message : 'Unable to preview replacement.')
+      setSourceCellError(formatUserFacingApiError(previewError, {
+        fallbackMessage: 'Unable to preview replacement.',
+      }))
     } finally {
       setSourceCellState('idle')
     }
@@ -545,7 +552,9 @@ export const AdminWarningsPage = () => {
       setSourceCellApplyResult(result)
       await refreshAfterMutation()
     } catch (applyError) {
-      setSourceCellError(applyError instanceof Error ? applyError.message : 'Unable to apply replacement.')
+      setSourceCellError(formatUserFacingApiError(applyError, {
+        fallbackMessage: 'Unable to apply replacement.',
+      }))
     } finally {
       setSourceCellState('idle')
     }
@@ -704,7 +713,7 @@ export const AdminWarningsPage = () => {
               setReportingPeriodFilter(event.target.value.trim())
               setOffset(0)
             }}
-            placeholder="Optional period UUID"
+            placeholder="Optional period filter"
           />
         </label>
         <label>
@@ -726,7 +735,7 @@ export const AdminWarningsPage = () => {
 
       {uploadLogFilter ? (
         <section className="inline-callout callout-info warning-query-callout">
-          <span>Reviewing warnings linked to upload log {uploadLogFilter}.</span>
+          <span>Reviewing warnings linked to the selected upload.</span>
         </section>
       ) : null}
 
@@ -929,23 +938,11 @@ export const AdminWarningsPage = () => {
                     {warningDetail.severity} - {statusText(selectedIssueStatus)}
                   </p>
                   {warningDetail.suggestedAction ? <p>{warningDetail.suggestedAction}</p> : null}
-                  <div className="warning-id-grid">
-                    <span>Issue</span>
-                    <strong className="mono-cell">{warningDetail.warningIssueId}</strong>
-                    <span>Latest occurrence</span>
-                    <strong className="mono-cell">{fieldValue(warningDetail.latestUploadWarningId)}</strong>
-                    <span>Fingerprint</span>
-                    <strong className="mono-cell">{warningDetail.fingerprint}</strong>
-                  </div>
                 </div>
 
                 <div className="detail-block">
                   <h3>Source Trace</h3>
                   <div className="parsed-data-detail-grid">
-                    <div className="parsed-data-detail-item">
-                      <span>Reporting period</span>
-                      <strong>{fieldValue(warningDetail.reportingPeriodId ?? selectedTrace?.reporting_period_id as string | null)}</strong>
-                    </div>
                     <div className="parsed-data-detail-item">
                       <span>Programme</span>
                       <strong>{fieldValue(warningDetail.programmeCode ?? selectedTrace?.programme_code as string | null)}</strong>
@@ -975,11 +972,6 @@ export const AdminWarningsPage = () => {
                       <strong>{traceValue(selectedTrace, 'cell_ref')}</strong>
                     </div>
                   </div>
-                </div>
-
-                <div className="detail-block">
-                  <h3>Latest Source Payload</h3>
-                  <JsonBlock value={warningDetail.latestSourcePayload} />
                 </div>
 
                 <div className="detail-block">
@@ -1090,19 +1082,6 @@ export const AdminWarningsPage = () => {
                             ))}
                           </ul>
                         ) : null}
-                        <details>
-                          <summary>Parsed candidate rows</summary>
-                          <JsonBlock value={sourceCellPreview.parsedCandidateRows} />
-                        </details>
-                        {sourceCellPreview.parserWarnings.length > 0 || sourceCellPreview.parserErrors.length > 0 ? (
-                          <details>
-                            <summary>Parser warnings and errors</summary>
-                            <JsonBlock value={{
-                              warnings: sourceCellPreview.parserWarnings,
-                              errors: sourceCellPreview.parserErrors,
-                            }} />
-                          </details>
-                        ) : null}
                         <label>
                           Correction reason
                           <textarea
@@ -1130,7 +1109,7 @@ export const AdminWarningsPage = () => {
                     {sourceCellApplyResult ? (
                       <div className="source-cell-apply-result">
                         <div className="inline-callout callout-success">
-                          <span>{sourceCellApplyResult.suggestedNextAction}</span>
+                          <span>Correction recorded. Review the updated warning status below.</span>
                         </div>
                         <DataRevalidationCallout impact={sourceCellApplyResult.dataRevalidation} />
                         <div className="parsed-data-detail-grid">
@@ -1143,10 +1122,6 @@ export const AdminWarningsPage = () => {
                           <div className="parsed-data-detail-item">
                             <span>Warning status</span>
                             <strong>{statusText(sourceCellApplyResult.warningIssueStatus)}</strong>
-                          </div>
-                          <div className="parsed-data-detail-item">
-                            <span>Audit log</span>
-                            <strong className="mono-cell">{sourceCellApplyResult.auditLogId}</strong>
                           </div>
                         </div>
                       </div>
@@ -1164,7 +1139,6 @@ export const AdminWarningsPage = () => {
                         <div key={occurrence.id} className="warning-occurrence-card">
                           <div>
                             <strong>{formatDateTime(occurrence.createdAt)}</strong>
-                            <span className="mono-cell">{occurrence.id}</span>
                           </div>
                           <p>{occurrence.message}</p>
                           <small>
