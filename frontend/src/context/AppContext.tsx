@@ -23,7 +23,7 @@ import {
 import { isActiveReportingPeriodStatus } from '../utils/reportingPeriods'
 import { authSessionChangedEvent, readStoredAuthSession } from '../api/auth'
 import { listReportingPeriods } from '../api/reportingPeriods'
-import { ApiRequestError } from '../api/http'
+import { formatUserFacingApiError } from '../utils/userFacingErrors'
 import type { AuthIdentity } from '../types/auth'
 import {
   clearMemoryCache,
@@ -137,8 +137,9 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
         return selectDefaultReportingPeriod(periods)
       })
     } catch (error) {
-      const message =
-        error instanceof ApiRequestError ? error.message : 'Unable to load reporting periods from backend.'
+      const message = formatUserFacingApiError(error, {
+        fallbackMessage: 'Reporting periods could not be loaded. Try refreshing the page.',
+      })
       setReportingPeriodsError(message)
       setReportingPeriods([])
     } finally {
@@ -168,8 +169,9 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
         if (!active) {
           return
         }
-        const message =
-          error instanceof ApiRequestError ? error.message : 'Unable to load reporting periods from backend.'
+        const message = formatUserFacingApiError(error, {
+          fallbackMessage: 'Reporting periods could not be loaded. Try refreshing the page.',
+        })
         setReportingPeriodsError(message)
         setReportingPeriods([])
       } finally {

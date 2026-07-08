@@ -13,6 +13,7 @@ import { IconChevRight, IconRefresh } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useAppState } from '../../context/useAppState'
+import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 type AttendanceFilter = 'all' | 'with' | 'without'
 
@@ -217,7 +218,9 @@ export const AdminSecretaryEventsPage = () => {
       } catch (error) {
         if (active) {
           setPostingOptions([])
-          setPostingError(error instanceof Error ? error.message : 'Unable to load posting filter options.')
+          setPostingError(formatUserFacingApiError(error, {
+            fallbackMessage: 'Unable to load posting filter options.',
+          }))
         }
       }
     })()
@@ -273,7 +276,9 @@ export const AdminSecretaryEventsPage = () => {
       setSummary(emptySummary)
       setTotal(0)
       hasLoadedRef.current = true
-      setEventsError(error instanceof Error ? error.message : 'Unable to load secretary events.')
+      setEventsError(formatUserFacingApiError(error, {
+        fallbackMessage: 'Unable to load secretary events.',
+      }))
     } finally {
       setEventsLoading(false)
       setIsRefetching(false)
@@ -335,7 +340,9 @@ export const AdminSecretaryEventsPage = () => {
         if (detailRequestRef.current === requestId) {
           setDetailError({
             eventId: selectedEventId,
-            message: error instanceof Error ? error.message : 'Unable to load event detail.',
+            message: formatUserFacingApiError(error, {
+              fallbackMessage: 'Unable to load event detail.',
+            }),
           })
         }
       }

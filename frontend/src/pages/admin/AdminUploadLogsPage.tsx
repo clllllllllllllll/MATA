@@ -16,6 +16,7 @@ import {
   setMemoryCache,
   type CacheScope,
 } from '../../utils/memoryReadCache'
+import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 import { buildAdminUploadWarningsPath } from './adminUploadPageLogic'
 
 const uploadTypeLabels: Record<UploadType, string> = {
@@ -44,6 +45,9 @@ const fieldValue = (value?: string | number | null) => {
   }
   return String(value)
 }
+
+const reportingPeriodText = (log: Pick<UploadLogListItem, 'reporting_period_label'>) =>
+  log.reporting_period_label || 'Reporting period unavailable'
 
 const statusTone = (status: UploadLogStatus): 'success' | 'warning' | 'critical' => {
   if (status === 'failed') {
@@ -171,7 +175,9 @@ export const AdminUploadLogsPage = () => {
       setLogs([])
       setTotal(0)
       hasLoadedLogsRef.current = true
-      setError(fetchError instanceof Error ? fetchError.message : 'Unable to load upload logs.')
+      setError(formatUserFacingApiError(fetchError, {
+        fallbackMessage: 'Unable to load upload logs.',
+      }))
     } finally {
       setIsManualRefreshing(false)
       setIsInitialLoading(false)
@@ -215,7 +221,9 @@ export const AdminUploadLogsPage = () => {
             setTotal(0)
           }
           hasLoadedLogsRef.current = true
-          setError(fetchError instanceof Error ? fetchError.message : 'Unable to load upload logs.')
+          setError(formatUserFacingApiError(fetchError, {
+            fallbackMessage: 'Unable to load upload logs.',
+          }))
         }
       } finally {
         if (active) {
@@ -444,7 +452,7 @@ export const AdminUploadLogsPage = () => {
                     <td>{uploadTypeLabels[log.upload_type]}</td>
                     <td>{formatDateTime(log.uploaded_at)}</td>
                     <td>{fieldValue(log.uploaded_by_name ?? log.uploaded_by)}</td>
-                    <td>{fieldValue(log.reporting_period_label ?? log.reporting_period_id)}</td>
+                    <td>{reportingPeriodText(log)}</td>
                     <td>{fieldValue(log.programme_code ?? 'Global')}</td>
                     <td>
                       <StatusBadge label={log.status} tone={statusTone(log.status)} />
@@ -482,7 +490,7 @@ export const AdminUploadLogsPage = () => {
                 <span className="admin-mobile-card-meta">
                   <span>{formatDateTime(log.uploaded_at)} - {fieldValue(log.uploaded_by_name ?? log.uploaded_by)}</span>
                   <span>
-                    {fieldValue(log.reporting_period_label ?? log.reporting_period_id)}
+                    {reportingPeriodText(log)}
                     {' - '}
                     {fieldValue(log.programme_code ?? 'Global')}
                   </span>
@@ -540,7 +548,7 @@ export const AdminUploadLogsPage = () => {
               <p>Uploaded: {formatDateTime(selectedLog.uploaded_at)}</p>
               <p>Uploaded by: {fieldValue(selectedLog.uploaded_by_name ?? selectedLog.uploaded_by)}</p>
               <p>Status: {selectedLog.status}</p>
-              <p>Reporting period: {fieldValue(selectedLog.reporting_period_label ?? selectedLog.reporting_period_id)}</p>
+              <p>Reporting period: {reportingPeriodText(selectedLog)}</p>
               <p>Programme: {fieldValue(selectedLog.programme_code ?? 'Global')}</p>
             </div>
             <div className="detail-block">
@@ -554,7 +562,7 @@ export const AdminUploadLogsPage = () => {
             <div className="detail-block">
               <h3>Audit summary</h3>
               <p className="inline-muted">
-                Raw upload summary is retained for backend audit but hidden from the UI for performance.
+                Detailed upload evidence is retained for audit but hidden from this view for performance.
               </p>
             </div>
           </div>

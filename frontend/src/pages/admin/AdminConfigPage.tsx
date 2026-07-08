@@ -57,6 +57,7 @@ import {
   reportingPeriodStatusLabel,
   type ReportingPeriodStatus,
 } from '../../utils/reportingPeriods'
+import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 import { MultiPostingRulesSection } from './AdminMultiPostingPage'
 import type { DataRevalidationImpact } from '../../types/dataRevalidation'
 
@@ -144,7 +145,6 @@ type Feedback = {
     label: string
     count: number
   }>
-  rawMessage?: string
   dataRevalidation?: DataRevalidationImpact | null
 } | null
 
@@ -532,12 +532,13 @@ const describeDeleteError = (error: unknown): NonNullable<Feedback> => {
         'It has linked uploads and parsed records. Keep it for audit history, or create a new reporting period instead.',
       detailsLabel: 'View linked record details',
       dependencyDetails: parsedDetails,
-      rawMessage: parsedDetails.length > 0 ? undefined : error.message,
     }
   }
   return {
     tone: 'error',
-    message: error.message,
+    message: formatUserFacingApiError(error, {
+      fallbackMessage: 'Unable to delete reporting period.',
+    }),
   }
 }
 
@@ -692,7 +693,9 @@ const describeWeekendExceptionError = (
   }
   return {
     tone: 'error',
-    message: error.message || fallbackMessage,
+    message: formatUserFacingApiError(error, {
+      fallbackMessage,
+    }),
   }
 }
 
@@ -715,7 +718,9 @@ const describePublicHolidayError = (
   }
   return {
     tone: 'error',
-    message: error.message || fallbackMessage,
+    message: formatUserFacingApiError(error, {
+      fallbackMessage,
+    }),
   }
 }
 
@@ -739,7 +744,9 @@ const describeGenericConfigError = (
   }
   return {
     tone: 'error',
-    message: error.message || fallbackMessage,
+    message: formatUserFacingApiError(error, {
+      fallbackMessage,
+    }),
   }
 }
 
@@ -841,7 +848,9 @@ const ReportingPeriodsSection = () => {
       setSubmitState('error')
       setFeedback({
         tone: 'error',
-        message: error instanceof ApiRequestError ? error.message : 'Unable to save reporting period.',
+        message: formatUserFacingApiError(error, {
+          fallbackMessage: 'Unable to save reporting period.',
+        }),
       })
     }
   }
@@ -914,7 +923,7 @@ const ReportingPeriodsSection = () => {
             <strong>{feedback.message}</strong>
             {feedback.description ? <p>{feedback.description}</p> : null}
             <DataRevalidationCallout impact={feedback.dataRevalidation} compact />
-            {feedback.detailsLabel && (feedback.dependencyDetails?.length || feedback.rawMessage) ? (
+            {feedback.detailsLabel && feedback.dependencyDetails?.length ? (
               <>
                 <button
                   type="button"
@@ -935,9 +944,6 @@ const ReportingPeriodsSection = () => {
                           </Fragment>
                         ))}
                       </dl>
-                    ) : null}
-                    {feedback.rawMessage ? (
-                      <p className="admin-config-raw-error">{feedback.rawMessage}</p>
                     ) : null}
                   </div>
                 ) : null}

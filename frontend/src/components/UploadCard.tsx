@@ -167,7 +167,7 @@ export const UploadCard = ({
       setUploadProgressPercent(100)
       setStatus('success')
     } catch (error) {
-      let message = error instanceof Error ? error.message : 'Upload failed. Please try again.'
+      let message = 'Upload failed. Please try again.'
       let details: unknown = null
 
       if (error instanceof ApiRequestError) {
@@ -261,7 +261,7 @@ export const UploadCard = ({
               <div className="upload-validation-slot" aria-live="polite">
                 {missingReportingPeriod ? (
                   <small className="upload-validation-text">
-                    Reporting period ID is required and must be a `reporting_periods.id` value for this upload.
+                    Select a reporting period before uploading.
                   </small>
                 ) : null}
                 {missingProgrammeCode ? (

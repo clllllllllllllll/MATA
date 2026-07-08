@@ -6,6 +6,7 @@ import { useAppState } from '../../context/useAppState'
 import type { ReportingPeriodOption } from '../../types/upload'
 import { ApiRequestError } from '../../api/http'
 import { teachingEventCreatedByDisplay } from '../../utils/teachingEventSource'
+import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 import {
   createSecretaryTeachingEvent,
   deleteSecretaryTeachingEvent,
@@ -110,22 +111,26 @@ const formatDuration = (value?: number) => {
 
 const normaliseApiError = (error: ApiRequestError, mode: 'list' | 'create' | 'options'): string => {
   if (error.status === 401 || error.status === 403) {
-    return 'Secretary authentication or posting scope is invalid. Check demo secretary headers.'
+    return 'Your session could not be verified. Sign in again and retry.'
   }
   if (error.status === 422) {
     if (/public holiday/i.test(error.message)) {
       return 'Teaching events cannot be created on public holidays.'
     }
-    return error.message || 'Validation failed. Please review the form fields.'
+    return formatUserFacingApiError(error, {
+      validationMessage: 'Teaching event could not be saved. Review the form and try again.',
+    })
   }
   if (error.status === 409) {
     if (/attendance exists/i.test(error.message)) {
       return 'Teaching event cannot be edited or deleted because attendance exists.'
     }
-    return error.message || 'Teaching event cannot be edited or deleted because attendance exists.'
+    return formatUserFacingApiError(error, {
+      conflictMessage: 'Teaching event cannot be edited or deleted because attendance exists.',
+    })
   }
   if (error.isNetworkError) {
-    return 'Cannot reach backend API. Verify frontend proxy and backend server are running.'
+    return 'The system could not complete the request. Try again later.'
   }
   if (mode === 'list') {
     return 'Unable to load teaching events right now.'
@@ -219,8 +224,6 @@ export const SecretaryTeachingSchedulePage = () => {
   const [formErrors, setFormErrors] = useState<Partial<Record<keyof TeachingFormState, string>>>({})
   const [submitState, setSubmitState] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle')
   const [submitMessage, setSubmitMessage] = useState<string | null>(null)
-  const [submitErrorDetailsOpen, setSubmitErrorDetailsOpen] = useState(false)
-  const [submitErrorDetails, setSubmitErrorDetails] = useState<unknown>(null)
 
   const selectedPeriod = useMemo(
     () => reportingPeriods.find((period) => period.id === reportingPeriodId),
@@ -252,8 +255,6 @@ export const SecretaryTeachingSchedulePage = () => {
         setSelectedIds(new Set())
         setSubmitState('idle')
         setSubmitMessage(null)
-        setSubmitErrorDetails(null)
-        setSubmitErrorDetailsOpen(false)
       } catch (error) {
         if (!active) {
           return
@@ -343,8 +344,6 @@ export const SecretaryTeachingSchedulePage = () => {
     })
     setSubmitMessage(null)
     setSubmitState('idle')
-    setSubmitErrorDetails(null)
-    setSubmitErrorDetailsOpen(false)
   }
 
   const selectedRows = useMemo(() => {
@@ -391,8 +390,6 @@ export const SecretaryTeachingSchedulePage = () => {
     setFormErrors({})
     setSubmitState('idle')
     setSubmitMessage(null)
-    setSubmitErrorDetails(null)
-    setSubmitErrorDetailsOpen(false)
     setSourceEvent(null)
   }
 
@@ -416,8 +413,6 @@ export const SecretaryTeachingSchedulePage = () => {
     setSelectedIds(() => new Set())
     setSubmitMessage(null)
     setSubmitState('idle')
-    setSubmitErrorDetails(null)
-    setSubmitErrorDetailsOpen(false)
   }
 
   const handleOpenDuplicate = () => {
@@ -436,8 +431,6 @@ export const SecretaryTeachingSchedulePage = () => {
     setFormErrors({})
     setSubmitState('idle')
     setSubmitMessage(null)
-    setSubmitErrorDetails(null)
-    setSubmitErrorDetailsOpen(false)
     setDrawerOpen(true)
     if (!supportsNameOptionsEndpoint || nameOptionsLoaded || nameOptionsLoading) {
       return
@@ -467,8 +460,6 @@ export const SecretaryTeachingSchedulePage = () => {
     setFormErrors({})
     setSubmitState('idle')
     setSubmitMessage(null)
-    setSubmitErrorDetails(null)
-    setSubmitErrorDetailsOpen(false)
     setDrawerOpen(true)
     if (!supportsNameOptionsEndpoint || nameOptionsLoaded || nameOptionsLoading) {
       return
@@ -554,9 +545,6 @@ export const SecretaryTeachingSchedulePage = () => {
     } else {
       setSubmitMessage('Unable to delete teaching event right now. Please try again.')
     }
-    if (firstFailure instanceof ApiRequestError) {
-      setSubmitErrorDetails(firstFailure.details)
-    }
   }
 
   const handleCreate = async () => {
@@ -619,7 +607,6 @@ export const SecretaryTeachingSchedulePage = () => {
 
     setSubmitState('submitting')
     setSubmitMessage(null)
-    setSubmitErrorDetails(null)
     const payload = {
       teachingName: formState.teachingName.trim(),
       eventDate: formState.eventDate,
@@ -661,9 +648,6 @@ export const SecretaryTeachingSchedulePage = () => {
           : 'Unable to save teaching event right now.'
       setSubmitState('error')
       setSubmitMessage(message)
-      if (error instanceof ApiRequestError) {
-        setSubmitErrorDetails(error.details)
-      }
     }
   }
 
@@ -1160,18 +1144,6 @@ export const SecretaryTeachingSchedulePage = () => {
             <div className="inline-callout callout-error">
               <div className="secretary-error-stack">
                 <span>{submitMessage}</span>
-                {submitErrorDetails ? (
-                  <button
-                    type="button"
-                    className="button-link"
-                    onClick={() => setSubmitErrorDetailsOpen((previous) => !previous)}
-                  >
-                    {submitErrorDetailsOpen ? 'Hide developer details' : 'Show developer details'}
-                  </button>
-                ) : null}
-                {submitErrorDetailsOpen && submitErrorDetails ? (
-                  <pre className="raw-json">{JSON.stringify(submitErrorDetails, null, 2)}</pre>
-                ) : null}
               </div>
             </div>
           ) : null}

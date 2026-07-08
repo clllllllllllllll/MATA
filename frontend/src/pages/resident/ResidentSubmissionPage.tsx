@@ -17,6 +17,7 @@ import { PageHero } from '../../components/PageHero'
 import { IconCalendar, IconRefresh, IconSend, IconX } from '../../components/icons'
 import { frontendConfig } from '../../config/frontendConfig'
 import { useAuth } from '../../context/useAuth'
+import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 const START_TIME_OPTIONS = Array.from({ length: 24 * 4 }, (_, index) => {
   const totalMinutes = index * 15
@@ -112,18 +113,24 @@ const getEventSourceLabel = (event: ResidentEventsResponse['events'][number]) =>
 
 const normaliseResidentApiError = (error: ApiRequestError): string => {
   if (error.status === 401 || error.status === 403) {
-    return 'Resident authentication is invalid. Check demo resident headers.'
+    return 'Your session could not be verified. Sign in again and retry.'
   }
   if (error.status === 422) {
-    return error.message || 'Validation failed. Please review your submission.'
+    return formatUserFacingApiError(error, {
+      validationMessage: 'Validation failed. Please review your submission.',
+    })
   }
   if (error.status === 409) {
-    return error.message || 'Duplicate submission detected.'
+    return formatUserFacingApiError(error, {
+      conflictMessage: 'Duplicate submission detected.',
+    })
   }
   if (error.isNetworkError) {
-    return 'Cannot reach backend API. Verify frontend proxy and backend server are running.'
+    return 'The system could not complete the request. Try again later.'
   }
-  return error.message || 'Unexpected API error occurred.'
+  return formatUserFacingApiError(error, {
+    fallbackMessage: 'Something went wrong. Try again or contact support.',
+  })
 }
 
 export const ResidentSubmissionPage = () => {

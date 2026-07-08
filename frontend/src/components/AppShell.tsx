@@ -5,6 +5,7 @@ import { breadcrumbMap, navItems, roleOptions } from '../config/navigation'
 import { useAuth } from '../context/useAuth'
 import { useAppState } from '../context/useAppState'
 import type { AppRole } from '../types/app'
+import { formatUserFacingApiError } from '../utils/userFacingErrors'
 import {
   IconChevRight,
   IconLogOut,
@@ -143,7 +144,9 @@ export const AppShell = ({ children }: PropsWithChildren) => {
       await updateStaffActorName(trimmedName)
       setSettingsOpen(false)
     } catch (error) {
-      setSettingsError(error instanceof Error ? error.message : 'Unable to save staff name.')
+      setSettingsError(formatUserFacingApiError(error, {
+        fallbackMessage: 'Unable to save staff name.',
+      }))
     } finally {
       setSettingsSaving(false)
     }
@@ -331,7 +334,6 @@ export const AppShell = ({ children }: PropsWithChildren) => {
     </div>
   )
 }
-
 
 
 

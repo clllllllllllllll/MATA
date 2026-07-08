@@ -2,6 +2,9 @@ import { uploadLabels } from '../config/frontendConfig'
 import type { UploadType } from '../types/app'
 import type { NormalizedWarning, UploadMeta, WarningSeverity } from '../types/upload'
 
+export const UNKNOWN_WARNING_MESSAGE =
+  'This upload produced a warning that could not be summarized. Review the workbook row and try again.'
+
 const normalizeToken = (value: string | undefined): string =>
   (value ?? '').trim().toLowerCase()
 
@@ -131,7 +134,7 @@ const objectWarningToItem = (
     toStringValue(warning.message) ??
     toStringValue(warning.detail) ??
     toStringValue(warning.error) ??
-    JSON.stringify(warning)
+    UNKNOWN_WARNING_MESSAGE
   const scopeKey = makeUploadScopeKey({
     uploadType: uploadMeta.uploadType,
     reportingPeriodId,

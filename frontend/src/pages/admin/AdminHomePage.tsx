@@ -16,6 +16,7 @@ import { uploadLabels } from '../../config/frontendConfig'
 import { useAppState } from '../../context/useAppState'
 import type { UploadType } from '../../types/app'
 import type { UploadLogListItem, UploadLogStatus } from '../../types/upload'
+import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 const workspaceTiles = [
   {
@@ -147,7 +148,9 @@ export const AdminHomePage = () => {
       setUploadLogs(rows)
     } catch (error) {
       setUploadLogs([])
-      setUploadLogsError(error instanceof Error ? error.message : 'Unable to load upload logs.')
+      setUploadLogsError(formatUserFacingApiError(error, {
+        fallbackMessage: 'Unable to load upload logs.',
+      }))
     } finally {
       setUploadLogsLoading(false)
     }
@@ -168,7 +171,9 @@ export const AdminHomePage = () => {
           return
         }
         setUploadLogs([])
-        setUploadLogsError(error instanceof Error ? error.message : 'Unable to load upload logs.')
+        setUploadLogsError(formatUserFacingApiError(error, {
+          fallbackMessage: 'Unable to load upload logs.',
+        }))
       } finally {
         if (active) {
           setUploadLogsLoading(false)

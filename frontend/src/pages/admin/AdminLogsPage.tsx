@@ -25,6 +25,7 @@ import {
   setMemoryCache,
   type CacheScope,
 } from '../../utils/memoryReadCache'
+import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 type BadgeTone = 'success' | 'warning' | 'critical' | 'info' | 'neutral'
 
@@ -513,7 +514,9 @@ export const AdminLogsPage = () => {
       setLogs([])
       setTotal(0)
       hasLoadedLogsRef.current = true
-      setError(fetchError instanceof Error ? fetchError.message : 'Unable to load admin logs.')
+      setError(formatUserFacingApiError(fetchError, {
+        fallbackMessage: 'Unable to load admin logs.',
+      }))
     } finally {
       setIsManualRefreshing(false)
       setIsInitialLoading(false)
@@ -559,7 +562,9 @@ export const AdminLogsPage = () => {
             setTotal(0)
           }
           hasLoadedLogsRef.current = true
-          setError(fetchError instanceof Error ? fetchError.message : 'Unable to load admin logs.')
+          setError(formatUserFacingApiError(fetchError, {
+            fallbackMessage: 'Unable to load admin logs.',
+          }))
         }
       } finally {
         if (active) {
@@ -652,9 +657,9 @@ export const AdminLogsPage = () => {
       } catch (detailFetchError) {
         if (detailRequestRef.current === requestId) {
           setDetailError(
-            detailFetchError instanceof Error
-              ? detailFetchError.message
-              : 'Unable to load admin log detail.',
+            formatUserFacingApiError(detailFetchError, {
+              fallbackMessage: 'Unable to load admin log detail.',
+            }),
           )
         }
       } finally {
@@ -852,11 +857,11 @@ export const AdminLogsPage = () => {
               />
             </label>
             <label>
-              Actor user ID
+              Actor
               <input
                 value={filters.actorUserId}
                 onChange={(event) => updateFilter('actorUserId', event.target.value)}
-                placeholder="UUID"
+                placeholder="Name or account reference"
               />
             </label>
             <label>
@@ -868,11 +873,11 @@ export const AdminLogsPage = () => {
               />
             </label>
             <label>
-              Entity ID
+              Related record
               <input
                 value={filters.entityId}
                 onChange={(event) => updateFilter('entityId', event.target.value)}
-                placeholder="UUID or source id"
+                placeholder="Record reference"
               />
             </label>
             <label>

@@ -25,6 +25,7 @@ import {
   type ProgrammeTeachingEventFormState,
 } from './pcTeachingEventsPageLogic'
 import { resolvePcProgrammeScope } from './pcUploadTtfPageLogic'
+import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 type DrawerMode = 'create' | 'edit' | 'duplicate'
 
@@ -80,7 +81,9 @@ const formatDuration = (value?: number | null) => {
 }
 
 const eventErrorMessage = (error: unknown, fallback: string) =>
-  error instanceof ApiRequestError ? error.message : fallback
+  error instanceof ApiRequestError
+    ? formatUserFacingApiError(error, { fallbackMessage: fallback })
+    : fallback
 
 const emptyForm = (programmeCode: string): ProgrammeTeachingEventFormState => ({
   ...EMPTY_PROGRAMME_TEACHING_EVENT_FORM,

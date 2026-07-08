@@ -10,6 +10,7 @@ import { ApiRequestError } from '../../api/http'
 import { IconDownload, IconRefresh, IconX } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
 import { StatusBadge } from '../../components/StatusBadge'
+import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 const pageSize = 50
 
@@ -73,7 +74,9 @@ const sourceTone = (source?: string): 'warning' | 'info' =>
 
 const normaliseError = (error: unknown) => {
   if (error instanceof ApiRequestError) {
-    return error.message || 'Unable to load Non-NHG attendance.'
+    return formatUserFacingApiError(error, {
+      fallbackMessage: 'Unable to load Non-NHG attendance.',
+    })
   }
   return 'Unable to load Non-NHG attendance.'
 }

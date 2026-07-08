@@ -15,6 +15,7 @@ import { PageHero } from '../../components/PageHero'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useAppState } from '../../context/useAppState'
 import { useAuth } from '../../context/useAuth'
+import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 type DrawerMode = 'create' | 'edit'
 
@@ -115,7 +116,9 @@ export const AdminStaffAccountsPage = () => {
       setProgrammes(programmeRows)
       setPostingCodes(postingRows)
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Unable to load staff accounts.')
+      setErrorMessage(formatUserFacingApiError(error, {
+        fallbackMessage: 'Unable to load staff accounts.',
+      }))
     } finally {
       setLoading(false)
     }
@@ -205,7 +208,9 @@ export const AdminStaffAccountsPage = () => {
       setDrawerOpen(false)
       await refresh()
     } catch (error) {
-      setSubmitMessage(error instanceof Error ? error.message : 'Unable to save staff account.')
+      setSubmitMessage(formatUserFacingApiError(error, {
+        fallbackMessage: 'Unable to save staff account.',
+      }))
     } finally {
       setSubmitting(false)
     }
@@ -227,7 +232,9 @@ export const AdminStaffAccountsPage = () => {
       })
       await refresh()
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Unable to update staff account.')
+      setErrorMessage(formatUserFacingApiError(error, {
+        fallbackMessage: 'Unable to update staff account.',
+      }))
     }
   }
 
@@ -253,7 +260,9 @@ export const AdminStaffAccountsPage = () => {
       setResetPassword('')
       await refresh()
     } catch (error) {
-      setResetMessage(error instanceof Error ? error.message : 'Unable to reset password.')
+      setResetMessage(formatUserFacingApiError(error, {
+        fallbackMessage: 'Unable to reset password.',
+      }))
     } finally {
       setResetSubmitting(false)
     }

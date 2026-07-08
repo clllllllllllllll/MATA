@@ -9,6 +9,7 @@ import {
 import { PageHero } from '../../components/PageHero'
 import { IconRefresh, IconX } from '../../components/icons'
 import { useAuth } from '../../context/useAuth'
+import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 const formatDate = (value?: string) => {
   if (!value) {
@@ -73,7 +74,9 @@ const formatAttendanceStatus = (status: string) => {
 
 const normaliseError = (error: unknown) => {
   if (error instanceof ApiRequestError) {
-    return error.message || 'Unable to load past submissions.'
+    return formatUserFacingApiError(error, {
+      fallbackMessage: 'Unable to load past submissions.',
+    })
   }
   return 'Unable to load past submissions.'
 }

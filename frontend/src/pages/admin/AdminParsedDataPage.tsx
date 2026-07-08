@@ -47,6 +47,7 @@ import {
   setMemoryCache,
   type CacheScope,
 } from '../../utils/memoryReadCache'
+import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 type ParsedDataTabId =
   | 'residents'
@@ -908,11 +909,6 @@ const tabDefinitions: ParsedTabDefinition[] = [
       { label: 'Month', value: (row) => formatValue((row as ParsedAcademicMonthBoundaryRow).month_label) },
       { label: 'Start Date', value: (row) => formatDate((row as ParsedAcademicMonthBoundaryRow).start_date) },
       { label: 'End Date', value: (row) => formatDate((row as ParsedAcademicMonthBoundaryRow).end_date) },
-      {
-        label: 'Upload ID',
-        className: 'mono-cell',
-        value: (row) => formatValue((row as ParsedAcademicMonthBoundaryRow).upload_id),
-      },
     ],
   },
 ]
@@ -990,13 +986,19 @@ const correctionErrorMessage = (error: unknown) => {
       return 'This row could not be found. Refresh and review the latest live data.'
     }
     if (error.status === 422) {
-      return error.message || 'The correction was rejected. Review the fields and try again.'
+      return formatUserFacingApiError(error, {
+        validationMessage: 'The correction was rejected. Review the fields and try again.',
+      })
     }
     if (error.isNetworkError) {
-      return error.message
+      return formatUserFacingApiError(error, {
+        fallbackMessage: 'Unable to apply correction.',
+      })
     }
   }
-  return error instanceof Error ? error.message : 'Unable to apply correction.'
+  return formatUserFacingApiError(error, {
+    fallbackMessage: 'Unable to apply correction.',
+  })
 }
 
 const formatJsonPreview = (value: unknown) => {
@@ -1006,11 +1008,20 @@ const formatJsonPreview = (value: unknown) => {
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
     return formatValue(value)
   }
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
+  if (Array.isArray(value)) {
+    return `${value.length.toLocaleString('en-SG')} item${value.length === 1 ? '' : 's'}`
   }
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    const displayValue =
+      optionalString(record.name) ??
+      optionalString(record.resident_name) ??
+      optionalString(record.session_type_name) ??
+      optionalString(record.keyword) ??
+      optionalString(record.label)
+    return displayValue ?? `${Object.keys(record).length.toLocaleString('en-SG')} fields`
+  }
+  return String(value)
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -1079,6 +1090,17 @@ const hiddenCorrectionDiffFields = new Set([
   'created_at',
   'updated_at',
 ])
+
+const hiddenParsedDataDetailFields = new Set([
+  'id',
+  'resident_id',
+  'reporting_period_id',
+  'session_type_id',
+  'upload_id',
+])
+
+const parsedDataDetailEntries = (row: ParsedDataRow) =>
+  Object.entries(row).filter(([key]) => !hiddenParsedDataDetailFields.has(key) && !key.endsWith('_id'))
 
 const formatCorrectionActionLabel = (action: string) =>
   correctionActionLabels[action] ?? humanizeKey(action.replace(/^admin\.parsed_data\./, '').replace(/\./g, '_'))
@@ -1707,7 +1729,9 @@ export const AdminParsedDataPage = () => {
       setRows([])
       setTotal(0)
       hasLoadedRowsRef.current = true
-      setError(fetchError instanceof Error ? fetchError.message : 'Unable to load parsed data.')
+      setError(formatUserFacingApiError(fetchError, {
+        fallbackMessage: 'Unable to load parsed data.',
+      }))
     } finally {
       setIsManualRefreshing(false)
       setIsInitialLoading(false)
@@ -1730,7 +1754,9 @@ export const AdminParsedDataPage = () => {
         setSelectedRow(refreshedRow)
       }
     } catch (fetchError) {
-      setError(fetchError instanceof Error ? fetchError.message : 'Unable to refresh live data.')
+      setError(formatUserFacingApiError(fetchError, {
+        fallbackMessage: 'Unable to refresh live data.',
+      }))
       if (nextSelectedRow) {
         setSelectedRow(nextSelectedRow)
       }
@@ -1777,7 +1803,9 @@ export const AdminParsedDataPage = () => {
             setTotal(0)
           }
           hasLoadedRowsRef.current = true
-          setError(fetchError instanceof Error ? fetchError.message : 'Unable to load parsed data.')
+          setError(formatUserFacingApiError(fetchError, {
+            fallbackMessage: 'Unable to load parsed data.',
+          }))
         }
       } finally {
         if (active) {
@@ -1822,7 +1850,9 @@ export const AdminParsedDataPage = () => {
       setRdbUploadLogs([])
       setSelectedRdbUploadId(null)
       setSelectedRdbUploadDetail(null)
-      setRawFragmentError(fetchError instanceof Error ? fetchError.message : 'Unable to load RDB upload logs.')
+      setRawFragmentError(formatUserFacingApiError(fetchError, {
+        fallbackMessage: 'Unable to load RDB upload logs.',
+      }))
     } finally {
       setIsRawLogLoading(false)
     }
@@ -1875,7 +1905,9 @@ export const AdminParsedDataPage = () => {
       } catch (fetchError) {
         if (active) {
           setSelectedRdbUploadDetail(null)
-          setRawFragmentError(fetchError instanceof Error ? fetchError.message : 'Unable to load RDB upload detail.')
+          setRawFragmentError(formatUserFacingApiError(fetchError, {
+            fallbackMessage: 'Unable to load RDB upload detail.',
+          }))
         }
       } finally {
         if (active) {
@@ -1900,7 +1932,7 @@ export const AdminParsedDataPage = () => {
   const selectedRdbLogLabel = selectedRdbUploadDetail
     ? [
         formatSingaporeDateTime(selectedRdbUploadDetail.uploaded_at),
-        selectedRdbUploadDetail.reporting_period_label ?? selectedRdbUploadDetail.reporting_period_id,
+        selectedRdbUploadDetail.reporting_period_label ?? 'Reporting period unavailable',
         selectedRdbUploadDetail.programme_code ?? 'Global',
         selectedRdbUploadDetail.original_filename,
       ].filter(Boolean).join(' | ')
@@ -2013,7 +2045,9 @@ export const AdminParsedDataPage = () => {
       } catch (fetchError) {
         if (active) {
           setCorrectionHistory([])
-          setCorrectionHistoryError(fetchError instanceof Error ? fetchError.message : 'Unable to load correction history.')
+          setCorrectionHistoryError(formatUserFacingApiError(fetchError, {
+            fallbackMessage: 'Unable to load correction history.',
+          }))
         }
       } finally {
         if (active) {
@@ -3169,7 +3203,7 @@ export const AdminParsedDataPage = () => {
               ) : null}
               {rdbUploadLogs.map((log) => (
                 <option key={log.id} value={log.id}>
-                  {formatSingaporeDateTime(log.uploaded_at)} | {log.reporting_period_label ?? log.reporting_period_id ?? 'No period'} | {log.programme_code ?? 'Global'}
+                  {formatSingaporeDateTime(log.uploaded_at)} | {log.reporting_period_label ?? 'Reporting period unavailable'} | {log.programme_code ?? 'Global'}
                 </option>
               ))}
             </select>
@@ -3350,7 +3384,7 @@ export const AdminParsedDataPage = () => {
                   ) : null}
                 </div>
                 <div className="parsed-data-detail-grid">
-                  {Object.entries(selectedRow).map(([key, value]) => (
+                  {parsedDataDetailEntries(selectedRow).map(([key, value]) => (
                     <div key={key} className="parsed-data-detail-item">
                       <span>{humanizeKey(key)}</span>
                       <strong className={isMonoField(key) ? 'mono-cell' : undefined}>
@@ -3415,24 +3449,6 @@ export const AdminParsedDataPage = () => {
                                 <div className="parsed-data-detail-item">
                                   <span>Rule Type</span>
                                   <strong>{formatValue(postingGroup.ruleType ? humanizeKey(postingGroup.ruleType) : null)}</strong>
-                                </div>
-                                <div className="parsed-data-detail-item">
-                                  <span>Rule ID</span>
-                                  <strong className="mono-cell">{formatValue(postingGroup.ruleId)}</strong>
-                                </div>
-                                <div className="parsed-data-detail-item">
-                                  <span>Warning</span>
-                                  <strong>
-                                    {postingGroup.warningId ? (
-                                      <a
-                                        href={`/admin/upload/warnings?mode=history&upload_type=rdb&search=${encodeURIComponent(postingGroup.warningId)}`}
-                                      >
-                                        {postingGroup.warningId}
-                                      </a>
-                                    ) : (
-                                      '-'
-                                    )}
-                                  </strong>
                                 </div>
                                 <div className="parsed-data-detail-item">
                                   <span>Fragment Date Ranges</span>
