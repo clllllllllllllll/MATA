@@ -129,6 +129,7 @@ const toListItem = (value: Record<string, unknown>): AdminLogListItem => ({
   actor_admin_level: optionalString(value.actor_admin_level),
   programme_code: optionalString(value.programme_code),
   reporting_period_id: optionalString(value.reporting_period_id),
+  reporting_period_label: optionalString(value.reporting_period_label),
   entity_type: optionalString(value.entity_type),
   entity_id: optionalString(value.entity_id),
   upload_log_id: optionalString(value.upload_log_id),

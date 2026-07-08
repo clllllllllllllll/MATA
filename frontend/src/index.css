@@ -5983,17 +5983,18 @@ button:disabled,
 }
 
 .admin-logs-filter-card {
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)) auto;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   align-items: start;
 }
 
 .admin-logs-filter-actions {
+  grid-column: 1 / -1;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: nowrap;
-  padding-top: 22px;
+  padding-top: 0;
 }
 
 .admin-logs-filter-actions .button {
@@ -6126,89 +6127,6 @@ button:disabled,
   margin-bottom: 8px;
 }
 
-.admin-log-json-section {
-  display: grid;
-  gap: 8px;
-}
-
-.admin-log-json-section summary {
-  cursor: pointer;
-  color: var(--ink-2);
-  font-size: 12.5px;
-  font-weight: 800;
-}
-
-.admin-log-json-section summary span {
-  margin-left: 8px;
-  color: var(--amber);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-
-.admin-log-json-preview {
-  max-height: 340px;
-}
-
-.admin-log-empty-evidence {
-  display: grid;
-  gap: 4px;
-  color: var(--ink-3);
-}
-
-.admin-log-empty-evidence p {
-  margin: 0;
-}
-
-.admin-log-related-list,
-.admin-log-action-list {
-  display: grid;
-  gap: 10px;
-}
-
-.admin-log-related-card,
-.admin-log-action-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: #fafafd;
-  padding: 10px 12px;
-}
-
-.admin-log-related-card div,
-.admin-log-action-card div {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.admin-log-related-card strong,
-.admin-log-action-card strong,
-.admin-log-related-card span,
-.admin-log-action-card span {
-  overflow-wrap: anywhere;
-}
-
-.admin-log-related-card span,
-.admin-log-action-card span {
-  color: var(--ink-3);
-  font-size: 12px;
-}
-
-.admin-log-support-details summary {
-  cursor: pointer;
-  color: var(--ink-2);
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.admin-log-support-details .parsed-data-detail-grid {
-  margin-top: 10px;
-}
-
 @media (max-width: 900px) {
   .admin-logs-search-field {
     flex: 1 1 100%;
@@ -6222,11 +6140,6 @@ button:disabled,
     padding-top: 0;
   }
 
-  .admin-log-related-card,
-  .admin-log-action-card {
-    align-items: flex-start;
-    flex-direction: column;
-  }
 }
 
 .admin-secretary-events-filters {
