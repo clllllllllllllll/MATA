@@ -625,6 +625,11 @@ assert(
   'PC upload TTF uses the shared PC-safe reporting-period source',
 )
 assert(
+  adminConfigPageSource.includes("setFeedback(mutationFeedback('Reporting period updated.'))") &&
+    !adminConfigPageSource.includes("setFeedback(mutationFeedback('Reporting period updated.', result))"),
+  'Reporting Period update success message stays simple and omits data revalidation details',
+)
+assert(
   adminUploadPageSource.includes('listProgrammes'),
   'Master Admin upload page still loads the programme catalogue for admin uploads',
 )

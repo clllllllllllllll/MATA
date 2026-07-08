@@ -813,13 +813,13 @@ const ReportingPeriodsSection = () => {
     setFeedbackDetailsOpen(false)
     try {
       if (drawerMode === 'edit' && selectedPeriod) {
-        const result = await updateReportingPeriod({
+        await updateReportingPeriod({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           id: selectedPeriod.id,
           payload: formState,
         })
-        setFeedback(mutationFeedback('Reporting period updated.', result))
+        setFeedback(mutationFeedback('Reporting period updated.'))
       } else {
         const result = await createReportingPeriod({
           adminId: demoAdminId,
