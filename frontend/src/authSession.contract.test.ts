@@ -487,6 +487,33 @@ for (const source of [
 ]) {
   assert(!source.includes(obsoleteProgrammePcLabel), 'frontend user-facing copy uses PC terminology')
 }
+assert(
+  /\.admin-logs-filter-actions \{\n\s+grid-column: 1 \/ -1;[\s\S]*display: flex;[\s\S]*align-items: center;[\s\S]*flex-wrap: nowrap;/.test(stylesSourceLf),
+  'Admin Logs filter actions span their own row and keep Refresh/Clear filters aligned',
+)
+assert(
+  !adminLogsPageSource.includes('Technical details') &&
+    !adminLogsPageSource.includes('technicalDetailFields') &&
+    !adminLogsPageSource.includes('admin-log-support-details'),
+  'Admin Logs detail omits technical support details from the normal UI',
+)
+assert(
+  !adminLogsPageSource.includes('Immutable evidence') &&
+    !adminLogsPageSource.includes('Bounded evidence preview') &&
+    !adminLogsPageSource.includes('JsonPreview') &&
+    !adminLogsPageSource.includes('immutable_evidence'),
+  'Admin Logs detail omits raw immutable evidence and JSON previews from the normal UI',
+)
+assert(
+  !adminLogsPageSource.includes('selectedDetail.related_entities.map') &&
+    !adminLogsPageSource.includes('entity.entity_id ?'),
+  'Admin Logs detail does not render related entity IDs in the normal UI',
+)
+assert(
+  !adminLogsPageSource.includes('value={activeDetail.reporting_period_id}') &&
+    adminLogsPageSource.includes('reportingPeriodLabelForLog'),
+  'Admin Logs detail maps reporting_period_id to a readable reporting period label',
+)
 assert(authHeadersSource.includes('getSessionAuthHeaders'), 'demo/header builder can use active session identity')
 assert(authHeadersSource.includes("authMode === 'supabase'"), 'auth headers suppress stub/demo identity in supabase mode')
 assert(!authHeadersSource.includes(obsoleteIdentityHeaderFallback), 'auth headers do not emit pre-login demo identity headers')

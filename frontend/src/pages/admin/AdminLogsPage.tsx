@@ -12,7 +12,6 @@ import { StatusBadge } from '../../components/StatusBadge'
 import { useAppState } from '../../context/useAppState'
 import type { UploadType } from '../../types/app'
 import type {
-  AdminLogAction,
   AdminLogDeepLink,
   AdminLogDetailResponse,
   AdminLogListItem,
@@ -49,7 +48,6 @@ interface AdminLogFilterState {
 
 const pageSize = 50
 const searchDebounceMs = 300
-const evidencePreviewLimit = 4800
 
 const logTypeLabels: Record<AdminLogType, string> = {
   upload: 'Upload',
@@ -178,6 +176,11 @@ const withQuery = (path: string, query?: Record<string, unknown>) => {
   return queryString ? `${path}?${queryString}` : path
 }
 
+const formatAuditStatus = (value: string) =>
+  value
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+
 const sourceText = (log: AdminLogListItem) => {
   const source = log.source_ref
   const parts = [
@@ -200,7 +203,6 @@ const sourceText = (log: AdminLogListItem) => {
 const actorText = (log: AdminLogListItem) => {
   return (
     log.actor_name ??
-    log.actor_user_id ??
     labelForActorRole(log.actor_role) ??
     labelForActorRole(log.stored_actor_role) ??
     'Unknown actor'
@@ -214,9 +216,8 @@ const entityText = (log: AdminLogListItem) => {
   if (log.entity_type === 'warning_issue') {
     return 'Warning issue'
   }
-  const entity = [log.entity_type, log.entity_id].filter(Boolean).join(' · ')
-  if (entity) {
-    return entity
+  if (log.entity_type) {
+    return formatAuditStatus(log.entity_type)
   }
   if (log.warning_issue_id) {
     return 'Warning issue'
@@ -255,16 +256,6 @@ const statusTone = (value?: string | null): BadgeTone => {
   return 'neutral'
 }
 
-const formatAuditStatus = (value: string) =>
-  value
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (letter) => letter.toUpperCase())
-
-const formatWorkflowStatus = (workflowStatus?: Record<string, unknown> | null) => {
-  const status = searchValue(workflowStatus?.status)
-  return status ? formatAuditStatus(status) : null
-}
-
 const typeTone = (logType: AdminLogType): BadgeTone => {
   if (logType === 'warning' || logType === 'warning_action') {
     return 'warning'
@@ -283,12 +274,7 @@ const routeIsDirectPath = (route: string) => route.startsWith('/admin/') || rout
 const resolveDeepLinkPath = (
   deepLink: AdminLogDeepLink | null | undefined,
   log: AdminLogListItem,
-  action?: AdminLogAction,
 ) => {
-  if (action?.action === 'view_raw_summary' || action?.action === 'download_raw_audit') {
-    return null
-  }
-
   const route = deepLink?.route ?? ''
   if (routeIsDirectPath(route) && route !== '/admin/logs') {
     return withQuery(route, deepLink?.query)
@@ -397,38 +383,6 @@ const buildSearchParams = (
   }
 
   return params
-}
-
-const JsonPreview = ({
-  title,
-  value,
-  emptyText,
-}: {
-  title: string
-  value?: unknown
-  emptyText?: string
-}) => {
-  const json = useMemo(() => JSON.stringify(value ?? {}, null, 2), [value])
-  const hasContent = json !== '{}'
-  if (!hasContent) {
-    return emptyText ? (
-      <div className="admin-log-empty-evidence">
-        <strong>{title}</strong>
-        <p>{emptyText}</p>
-      </div>
-    ) : null
-  }
-  const isTruncated = json.length > evidencePreviewLimit
-  const preview = isTruncated ? `${json.slice(0, evidencePreviewLimit)}\n... truncated` : json
-  return (
-    <details className="admin-log-json-section">
-      <summary>
-        {title}
-        {isTruncated ? <span>Preview truncated</span> : null}
-      </summary>
-      <pre className="raw-json admin-log-json-preview">{preview}</pre>
-    </details>
-  )
 }
 
 const DetailField = ({
@@ -630,20 +584,24 @@ export const AdminLogsPage = () => {
     ).sort()
   }, [demoAdminProgrammes, logs])
 
+  const reportingPeriodLabelById = useMemo(() => {
+    return new Map(reportingPeriods.map((period) => [period.id, period.label]))
+  }, [reportingPeriods])
+
+  const reportingPeriodLabelForLog = (log: AdminLogListItem) => {
+    if (log.reporting_period_label) {
+      return log.reporting_period_label
+    }
+    if (log.reporting_period_id) {
+      return reportingPeriodLabelById.get(log.reporting_period_id) ?? 'Reporting period unavailable'
+    }
+    return 'Reporting period unavailable'
+  }
+
   const activeDetail = selectedDetail?.list_item ?? selectedLog
   const primaryDeepLink = activeDetail
     ? resolveDeepLinkPath(activeDetail.deep_link, activeDetail)
     : null
-  const workflowStatusText = selectedDetail ? formatWorkflowStatus(selectedDetail.workflow_status) : null
-  const technicalDetailFields = activeDetail
-    ? [
-        { label: 'Log ID', value: activeDetail.id },
-        { label: 'Upload log UUID', value: activeDetail.upload_log_id },
-        { label: 'Warning issue UUID', value: activeDetail.warning_issue_id },
-        { label: 'Upload warning UUID', value: activeDetail.upload_warning_id },
-        { label: 'Entity ID', value: activeDetail.entity_id },
-      ].filter((field) => field.value)
-    : []
 
   const hasFilters = useMemo(() => {
     const filterValues = Object.values(filters)
@@ -1142,118 +1100,24 @@ export const AdminLogsPage = () => {
                 <DetailField label="Actor" value={actorText(activeDetail)} />
                 <DetailField label="Actor role" value={labelForActorRole(activeDetail.actor_role ?? activeDetail.stored_actor_role)} />
                 <DetailField label="Programme" value={activeDetail.programme_code ?? 'Global'} />
-                <DetailField label="Reporting period" value={activeDetail.reporting_period_id} />
+                <DetailField label="Reporting period" value={reportingPeriodLabelForLog(activeDetail)} />
+                <DetailField label="Upload type" value={labelForUploadType(activeDetail.upload_type)} />
                 <DetailField label="Entity" value={entityText(activeDetail)} />
                 <DetailField label="Source" value={sourceText(activeDetail)} />
-                {selectedDetail ? (
-                  <DetailField label="Workflow status" value={workflowStatusText ?? 'No workflow status returned'} />
-                ) : null}
               </div>
             </div>
 
-            {technicalDetailFields.length > 0 ? (
-              <details className="detail-block admin-log-support-details">
-                <summary>Technical details</summary>
-                <div className="parsed-data-detail-grid">
-                  {technicalDetailFields.map((field) => (
-                    <DetailField key={field.label} label={field.label} value={field.value} />
-                  ))}
-                </div>
-              </details>
-            ) : null}
-
             {detailLoading ? (
               <div className="detail-block">
-                <h3>Evidence</h3>
-                <p>Loading bounded audit evidence...</p>
+                <p>Loading additional log context...</p>
               </div>
             ) : null}
 
             {detailError ? (
               <div className="detail-block">
-                <h3>Evidence</h3>
+                <h3>Additional context</h3>
                 <p className="inline-muted">{detailError}</p>
               </div>
-            ) : null}
-
-            {selectedDetail ? (
-              <>
-                <div className="detail-block">
-                  <h3>Related entities</h3>
-                  {selectedDetail.related_entities.length === 0 ? (
-                    <p className="inline-muted">No related entities were returned.</p>
-                  ) : (
-                    <div className="admin-log-related-list">
-                      {selectedDetail.related_entities.map((entity, index) => {
-                        const path = resolveDeepLinkPath(entity.deep_link, activeDetail)
-                        return (
-                          <div key={`${entity.entity_type}-${entity.entity_id ?? index}`} className="admin-log-related-card">
-                            <div>
-                              <strong>{entity.label}</strong>
-                              <span>
-                                {entity.relationship} · {entity.entity_type}
-                                {entity.entity_id ? ` · ${entity.entity_id}` : ''}
-                              </span>
-                            </div>
-                            <button
-                              type="button"
-                              className="button button-secondary"
-                              disabled={!path}
-                              onClick={() => openPath(path)}
-                            >
-                              {path ? 'Open' : 'Not wired'}
-                            </button>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                <div className="detail-block">
-                  <h3>Available actions</h3>
-                  {selectedDetail.available_actions.length === 0 ? (
-                    <p className="inline-muted">No actions were returned for this log entry.</p>
-                  ) : (
-                    <div className="admin-log-action-list">
-                      {selectedDetail.available_actions.map((action) => {
-                        const path = resolveDeepLinkPath(action.deep_link, activeDetail, action)
-                        const rawAction =
-                          action.action === 'view_raw_summary' || action.action === 'download_raw_audit'
-                        return (
-                          <div key={`${action.action}-${action.endpoint ?? action.label}`} className="admin-log-action-card">
-                            <div>
-                              <strong>{action.label}</strong>
-                              <span>
-                                {rawAction
-                                  ? 'Raw audit payloads are not fetched by default.'
-                                  : action.endpoint ?? 'Route metadata only'}
-                              </span>
-                            </div>
-                            <button
-                              type="button"
-                              className="button button-secondary"
-                              disabled={!path}
-                              onClick={() => openPath(path)}
-                            >
-                              {path ? 'Open' : 'Not wired'}
-                            </button>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                <div className="detail-block">
-                  <h3>Immutable evidence</h3>
-                  <JsonPreview
-                    title="Bounded evidence preview"
-                    value={selectedDetail.immutable_evidence}
-                    emptyText="No immutable evidence was returned for this log entry."
-                  />
-                </div>
-              </>
             ) : null}
           </div>
         ) : null}

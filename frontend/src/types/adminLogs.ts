@@ -66,6 +66,7 @@ export interface AdminLogListItem {
   actor_admin_level?: string | null
   programme_code?: string | null
   reporting_period_id?: string | null
+  reporting_period_label?: string | null
   entity_type?: string | null
   entity_id?: string | null
   upload_log_id?: string | null
