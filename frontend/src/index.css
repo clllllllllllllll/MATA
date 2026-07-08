@@ -5989,39 +5989,27 @@ button:disabled,
 
 .admin-logs-filter-main {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(220px, 1.15fr) repeat(5, minmax(128px, 1fr));
   gap: 12px;
   align-items: end;
   min-width: 0;
 }
 
-.admin-logs-filter-fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr));
-  gap: 12px;
-  align-items: end;
+.admin-logs-filter-main > label {
   min-width: 0;
 }
 
-.admin-logs-filter-fields > label {
-  min-width: 0;
-}
-
-.admin-logs-filter-actions {
+.admin-logs-clear-filter {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-wrap: nowrap;
-  white-space: nowrap;
-  align-self: end;
-  justify-self: end;
+  justify-content: flex-start;
   min-width: 0;
 }
 
-.admin-logs-filter-actions .button {
+.admin-logs-clear-filter .button {
   flex: 0 0 auto;
-  min-height: 39px;
+  min-height: 36px;
+  padding-inline: 0;
   white-space: nowrap;
 }
 
@@ -6149,20 +6137,16 @@ button:disabled,
   margin-bottom: 8px;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1120px) {
   .admin-logs-search-field {
     min-width: 0;
   }
 
   .admin-logs-filter-main {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .admin-logs-filter-fields {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .admin-logs-filter-actions {
+  .admin-logs-clear-filter {
     justify-self: stretch;
     grid-column: 1 / -1;
   }
@@ -6546,7 +6530,7 @@ button:disabled,
     min-width: 0;
   }
 
-  .admin-logs-filter-actions,
+  .admin-logs-clear-filter,
   .upload-log-filter-card > .button,
   .admin-warnings-page .warning-filter-card > .button,
   .parsed-data-clear-filter,
@@ -6554,19 +6538,15 @@ button:disabled,
     width: 100%;
   }
 
-  .admin-logs-filter-actions {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
+  .admin-logs-clear-filter {
     padding-top: 0;
   }
 
-  .admin-logs-filter-main,
-  .admin-logs-filter-fields {
+  .admin-logs-filter-main {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .admin-logs-filter-actions .button,
+  .admin-logs-clear-filter .button,
   .upload-log-filter-card > .button,
   .admin-warnings-page .warning-filter-card > .button,
   .parsed-data-clear-filter .button,
