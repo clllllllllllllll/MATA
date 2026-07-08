@@ -354,8 +354,24 @@ async def _fetch_actionable_warning_candidates(
     selected_warning_types = tuple(warning_types or _PARSER_CONFIG_WARNING_TYPES)
     if not selected_warning_types:
         return _WarningCandidatePage(rows=[], limit_reached=False)
+    where_clauses = [
+        "wi.status IN :statuses",
+        "wi.warning_type IN :warning_types",
+    ]
+    params: dict[str, Any] = {
+        "statuses": _ACTIONABLE_WARNING_STATUSES,
+        "warning_types": selected_warning_types,
+        "limit": _WARNING_QUERY_LIMIT + 1,
+    }
+    if programme_code is not None:
+        where_clauses.append("wi.programme_code = :programme_code")
+        params["programme_code"] = programme_code
+    if reporting_period_id is not None:
+        where_clauses.append("CAST(wi.reporting_period_id AS TEXT) = :reporting_period_id")
+        params["reporting_period_id"] = reporting_period_id
+    where_sql = "\n          AND ".join(where_clauses)
     statement = text(
-        """
+        f"""
         /* data_revalidation:warning_candidates */
         SELECT
             wi.id AS issue_id,
@@ -380,13 +396,7 @@ async def _fetch_actionable_warning_candidates(
             ORDER BY uw.created_at DESC, uw.id DESC
             LIMIT 1
         ) latest_uw ON TRUE
-        WHERE wi.status IN :statuses
-          AND wi.warning_type IN :warning_types
-          AND (:programme_code IS NULL OR wi.programme_code = :programme_code)
-          AND (
-              :reporting_period_id IS NULL
-              OR CAST(wi.reporting_period_id AS TEXT) = :reporting_period_id
-          )
+        WHERE {where_sql}
         ORDER BY wi.last_seen_at DESC NULLS LAST, wi.id DESC
         LIMIT :limit
         """
@@ -394,16 +404,7 @@ async def _fetch_actionable_warning_candidates(
         bindparam("statuses", expanding=True),
         bindparam("warning_types", expanding=True),
     )
-    result = await db_session.execute(
-        statement,
-        {
-            "statuses": _ACTIONABLE_WARNING_STATUSES,
-            "warning_types": selected_warning_types,
-            "programme_code": programme_code,
-            "reporting_period_id": reporting_period_id,
-            "limit": _WARNING_QUERY_LIMIT + 1,
-        },
-    )
+    result = await db_session.execute(statement, params)
     rows = [dict(row) for row in result.mappings().all()]
     return _WarningCandidatePage(
         rows=rows[:_WARNING_QUERY_LIMIT],
