@@ -1,0 +1,4 @@
+Contact: mailto:aine.project3@outlook.com
+Expires: 2027-07-08T00:00:00Z
+Preferred-Languages: en
+Canonical: https://mata-aine.vercel.app/.well-known/security.txt
