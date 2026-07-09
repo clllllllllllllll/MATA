@@ -80,12 +80,27 @@ class FakeTTFSession:
         self.upload_logs: list[dict] = []
         self.audit_logs: list[dict] = []
         self.reporting_periods: dict[str, dict] = {}
+        self.rate_limit_buckets: dict[tuple[str, str, object, int], int] = {}
         self.commits = 0
         self.rollbacks = 0
 
     async def execute(self, statement, params: dict | None = None):
         sql = str(statement)
         params = dict(params or {})
+
+        if "INSERT INTO rate_limit_buckets" in sql:
+            key = (
+                params["scope"],
+                params["key_hash"],
+                params["window_start"],
+                params["window_seconds"],
+            )
+            request_count = self.rate_limit_buckets.get(key, 0) + 1
+            self.rate_limit_buckets[key] = request_count
+            return _FakeScalarResult({"request_count": request_count})
+
+        if "DELETE FROM rate_limit_buckets" in sql:
+            return _FakeScalarResult()
 
         if "/* upload:reporting_period_status */" in sql:
             row = self.reporting_periods.get(str(params["reporting_period_id"]))

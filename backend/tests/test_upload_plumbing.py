@@ -482,11 +482,24 @@ class _UploadAuditSession:
         self.upload_logs: list[dict] = []
         self.audit_logs: list[dict] = []
         self.reporting_periods: dict[str, dict] = {}
+        self.rate_limit_buckets: dict[tuple[str, str, object, int], int] = {}
         self.commits = 0
 
     async def execute(self, statement, params):
         sql = str(statement)
         payload = dict(params)
+        if "INSERT INTO rate_limit_buckets" in sql:
+            key = (
+                payload["scope"],
+                payload["key_hash"],
+                payload["window_start"],
+                payload["window_seconds"],
+            )
+            request_count = self.rate_limit_buckets.get(key, 0) + 1
+            self.rate_limit_buckets[key] = request_count
+            return _UploadAuditResult({"request_count": request_count})
+        if "DELETE FROM rate_limit_buckets" in sql:
+            return _UploadScalarResult(0)
         if "/* upload:reporting_period_status */" in sql:
             return _UploadAuditResult(
                 self.reporting_periods.get(str(payload["reporting_period_id"]))

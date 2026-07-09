@@ -3,11 +3,12 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.dependencies.auth import require_authenticated
+from app.dependencies.persistent_rate_limit import enforce_auth_login_persistent_rate_limit
 from app.errors import ApiError, ErrorCode
 from app.middleware.auth_stub import AuthIdentity
 from app.schemas.auth import LoginRequest, StaffActorNameRequest
@@ -23,6 +24,18 @@ except Exception:
 
     async def get_db_session() -> AsyncIterator[AsyncSession | None]:
         yield None
+
+
+async def _persistent_login_rate_limit(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    settings: Settings = Depends(get_settings),
+) -> None:
+    await enforce_auth_login_persistent_rate_limit(
+        request,
+        db=db,
+        settings=settings,
+    )
 
 
 def _parse_subject(raw_value: str | None) -> UUID:
@@ -42,7 +55,7 @@ def _parse_subject(raw_value: str | None) -> UUID:
         ) from exc
 
 
-@router.post("/login")
+@router.post("/login", dependencies=[Depends(_persistent_login_rate_limit)])
 async def login(
     request: LoginRequest,
     db: AsyncSession = Depends(get_db_session),

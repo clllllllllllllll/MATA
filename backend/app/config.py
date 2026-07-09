@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     rate_limit_report_per_minute: int = 20
     rate_limit_resident_attendance_per_minute: int = 30
     rate_limit_get_per_minute: int = 300
+    rate_limit_hash_secret: str | None = None
 
     @field_validator("cors_origins", mode="before")
     @classmethod

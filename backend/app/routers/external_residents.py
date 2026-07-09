@@ -4,10 +4,14 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings, get_settings
 from app.dependencies.auth import require_external_resident
+from app.dependencies.persistent_rate_limit import (
+    enforce_external_registration_persistent_rate_limit,
+)
 from app.errors import ApiError, ErrorCode
 from app.middleware.auth_stub import AuthIdentity
 from app.schemas.external_resident import (
@@ -29,6 +33,18 @@ except Exception:
         yield None
 
 
+async def _persistent_registration_rate_limit(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    settings: Settings = Depends(get_settings),
+) -> None:
+    await enforce_external_registration_persistent_rate_limit(
+        request,
+        db=db,
+        settings=settings,
+    )
+
+
 @dataclass(slots=True)
 class ExternalResidentContext:
     external_resident_id: UUID
@@ -47,7 +63,7 @@ async def require_external_resident_context(
         ) from exc
 
 
-@router.post("/register")
+@router.post("/register", dependencies=[Depends(_persistent_registration_rate_limit)])
 async def register_external_resident(
     request: ExternalResidentRegisterRequest,
     db: AsyncSession = Depends(get_db_session),

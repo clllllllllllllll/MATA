@@ -37,6 +37,9 @@ class FakeResult:
     def scalar_one_or_none(self):
         return self._scalar
 
+    def scalar_one(self):
+        return self._scalar
+
 
 class FakeResidentSession:
     def __init__(self, *, today: date | None = None) -> None:
@@ -73,6 +76,8 @@ class FakeResidentSession:
         self.external_resident_id = str(uuid4())
         self.other_external_resident_id = str(uuid4())
         self.external_existing_attendance_id = str(uuid4())
+        self.rate_limit_buckets: dict[tuple[str, str, datetime, int], int] = {}
+        self.rate_limit_rows: list[dict[str, object]] = []
 
         self.users = [
             {
@@ -453,9 +458,36 @@ class FakeResidentSession:
     async def rollback(self) -> None:
         return None
 
+    def _execute_rate_limit_bucket(self, payload: dict) -> FakeResult:
+        key = (
+            payload["scope"],
+            payload["key_hash"],
+            payload["window_start"],
+            payload["window_seconds"],
+        )
+        request_count = self.rate_limit_buckets.get(key, 0) + 1
+        self.rate_limit_buckets[key] = request_count
+        self.rate_limit_rows.append(
+            {
+                "scope": payload["scope"],
+                "key_hash": payload["key_hash"],
+                "window_start": payload["window_start"],
+                "window_seconds": payload["window_seconds"],
+                "request_count": request_count,
+                "expires_at": payload["expires_at"],
+            }
+        )
+        return FakeResult(rows=[{"request_count": request_count}])
+
     async def execute(self, statement, params=None):  # noqa: C901, PLR0912, PLR0915
         sql = str(statement)
         payload = dict(params or {})
+
+        if "INSERT INTO rate_limit_buckets" in sql:
+            return self._execute_rate_limit_bucket(payload)
+
+        if "DELETE FROM rate_limit_buckets" in sql:
+            return FakeResult(rowcount=0)
 
         if "FROM users" in sql:
             rows = [
