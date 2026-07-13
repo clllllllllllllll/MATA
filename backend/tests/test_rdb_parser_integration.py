@@ -549,6 +549,122 @@ def test_rdb_upload_rejects_mcr_already_registered_as_external_resident() -> Non
     assert session.rollbacks == 1
 
 
+def test_rdb_upload_warns_for_overlapping_resident_posting_phases() -> None:
+    session = FakeRDBSession()
+    period_id = uuid4()
+    file_bytes = _rdb_workbook_with_months(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One",
+                mcr="M12345A",
+                r_year="R2",
+                programme="DR",
+                jul="TTSHAnaes",
+                aug="TTSHCardio",
+            )
+        ],
+        month_labels=["Jul-25", "Aug-25"],
+        date_ranges=["08 Jul 25 - 31 Aug 25", "01 Aug 25 - 30 Sep 25"],
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="overlap.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    warnings = [
+        item
+        for item in result.warnings
+        if isinstance(item, dict)
+        and item.get("type") == "overlapping_resident_posting_phase"
+    ]
+    assert result.errors == []
+    assert len(warnings) == 1
+    assert warnings[0]["earlier_posting_code"] == "TTSHAnaes"
+    assert warnings[0]["later_posting_code"] == "TTSHCardio"
+    assert len(session.resident_postings) == 2
+
+
+def test_rdb_upload_does_not_warn_for_adjacent_resident_posting_phases() -> None:
+    session = FakeRDBSession()
+    period_id = uuid4()
+    file_bytes = _rdb_workbook_with_months(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One",
+                mcr="M12345A",
+                r_year="R2",
+                programme="DR",
+                jul="TTSHAnaes",
+                aug="TTSHCardio",
+            )
+        ],
+        month_labels=["Jul-25", "Aug-25"],
+        date_ranges=["08 Jul 25 - 31 Jul 25", "01 Aug 25 - 30 Sep 25"],
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="adjacent.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert not any(
+        isinstance(item, dict)
+        and item.get("type") == "overlapping_resident_posting_phase"
+        for item in result.warnings
+    )
+
+
+def test_rdb_upload_does_not_warn_for_same_phase_am_pm_multi_posting() -> None:
+    session = FakeRDBSession()
+    period_id = uuid4()
+    file_bytes = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One",
+                mcr="M12345A",
+                r_year="R2",
+                programme="DR",
+                jul=(
+                    "TTSHAnaes\n"
+                    "(from 08-Jul-2025 to 03-Aug-2025 AM)\n"
+                    "TTSHCardio\n"
+                    "(from 08-Jul-2025 to 03-Aug-2025 PM)"
+                ),
+            )
+        ]
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="am-pm.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert {row["day_part"] for row in session.resident_postings} == {"AM", "PM"}
+    assert not any(
+        isinstance(item, dict)
+        and item.get("type") == "overlapping_resident_posting_phase"
+        for item in result.warnings
+    )
+
+
 def test_sample_upload_creates_residents_postings_posting_codes_and_upload_log() -> None:
     session = FakeRDBSession()
     user_id = uuid4()

@@ -414,6 +414,35 @@ def test_derive_upload_warnings_is_idempotent_for_same_upload() -> None:
     assert session.upload_logs == session.original_upload_logs
 
 
+def test_derive_upload_warnings_persists_overlapping_resident_posting_phase() -> None:
+    session = FakeWarningIssueSession()
+    upload_log = session.add_upload_log(
+        summary={
+            "warnings": [
+                {
+                    "type": "overlapping_resident_posting_phase",
+                    "severity": "warning",
+                    "mcr": "M00001A",
+                    "resident_name": "Resident A",
+                    "programme_code": "GRM",
+                    "month_label": "May-26",
+                    "posting_codes": ["TTSHGerMed", "KTPHGerMed"],
+                    "message": "Resident posting phases overlap across distinct RDB phases.",
+                }
+            ]
+        }
+    )
+
+    result = _run(
+        derive_upload_warnings_from_summary(session, upload_log, upload_log["summary"])
+    )
+
+    assert result.issues_created == 1
+    assert result.occurrences_created == 1
+    assert session.warning_issues[0]["warning_type"] == "overlapping_resident_posting_phase"
+    assert session.upload_warnings[0]["warning_type"] == "overlapping_resident_posting_phase"
+
+
 @pytest.mark.parametrize("status", ["resolved", "dismissed", "superseded"])
 def test_resolved_dismissed_or_superseded_issue_becomes_reappeared(status: str) -> None:
     session = FakeWarningIssueSession()

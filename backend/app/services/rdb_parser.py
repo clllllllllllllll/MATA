@@ -1109,6 +1109,57 @@ def _deduplicate_resident_postings(
     return deduplicated
 
 
+def _warn_overlapping_resident_posting_phases(
+    accumulator: RDBParseAccumulator,
+) -> None:
+    """Record cross-phase overlaps without flagging one-cell AM/PM assignments."""
+    for resident in accumulator.residents.values():
+        postings = sorted(
+            resident.postings,
+            key=lambda posting: (posting.start_date, posting.end_date, posting.month_label or ""),
+        )
+        for index, earlier in enumerate(postings):
+            for later in postings[index + 1 :]:
+                if later.start_date > earlier.end_date:
+                    break
+                if earlier.month_label == later.month_label:
+                    continue
+                if (
+                    earlier.day_part is not None
+                    and later.day_part is not None
+                    and earlier.day_part != later.day_part
+                ):
+                    continue
+                accumulator.warnings.append(
+                    {
+                        "type": "overlapping_resident_posting_phase",
+                        "severity": "warning",
+                        "reporting_period_id": str(earlier.reporting_period_id),
+                        "mcr": resident.mcr,
+                        "resident_name": resident.name,
+                        "programme_code": resident.programme_code,
+                        "month_label": earlier.month_label,
+                        "posting_codes": [earlier.posting_code, later.posting_code],
+                        "earlier_posting_code": earlier.posting_code,
+                        "earlier_month_label": earlier.month_label,
+                        "earlier_start_date": earlier.start_date.isoformat(),
+                        "earlier_end_date": earlier.end_date.isoformat(),
+                        "later_posting_code": later.posting_code,
+                        "later_month_label": later.month_label,
+                        "later_start_date": later.start_date.isoformat(),
+                        "later_end_date": later.end_date.isoformat(),
+                        "message": (
+                            "Resident posting phases overlap across distinct RDB phases. "
+                            "The rows were retained for review."
+                        ),
+                        "suggested_action": (
+                            "Confirm the overlapping phase dates in the RDB source before "
+                            "using the data for compliance."
+                        ),
+                    }
+                )
+
+
 def _rule_matches(rule: MultiPostingRuleConfig, codes: list[str]) -> bool:
     if rule.posting_code_2:
         return rule.posting_code_1 in codes and rule.posting_code_2 in codes
@@ -2313,6 +2364,7 @@ async def _parse_workbook_to_accumulator(
 
                 accumulator.residents[mcr] = parsed_resident
 
+        _warn_overlapping_resident_posting_phases(accumulator)
         return accumulator
     finally:
         workbook.close()
