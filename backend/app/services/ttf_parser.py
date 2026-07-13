@@ -705,6 +705,14 @@ async def parse_ttf_upload(
         if monthly_target <= 0:
             errors.append({"row": row_idx, "message": "Monthly target must be positive."})
             continue
+        if not monthly_target.is_integer():
+            errors.append(
+                {
+                    "row": row_idx,
+                    "message": "Monthly target must be a whole number.",
+                }
+            )
+            continue
 
         exploded_years = explode_r_years(raw_r_year, row_programme_config)
         if not exploded_years:

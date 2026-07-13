@@ -102,6 +102,26 @@ def _base_row(**overrides: object) -> list[object]:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("target", [1, 1.0, 2])
+async def test_monthly_target_accepts_integral_excel_numbers(target: object) -> None:
+    result = await _parse([_base_row(monthly_target=target)])
+
+    assert result.errors == []
+    assert result.metadata["targets"][0]["monthly_target"] == float(target)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", [1.5, 2.25])
+async def test_monthly_target_rejects_non_integral_excel_numbers(target: float) -> None:
+    result = await _parse([_base_row(monthly_target=target)])
+
+    assert result.metadata["targets"] == []
+    assert result.errors == [
+        {"row": 2, "message": "Monthly target must be a whole number."}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_dynamic_sheet_detection() -> None:
     workbook = Workbook()
     junk = workbook.active
