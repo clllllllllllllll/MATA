@@ -8,6 +8,10 @@ import { ApiRequestError } from '../../api/http'
 import { teachingEventCreatedByDisplay } from '../../utils/teachingEventSource'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 import {
+  downloadSecretaryTeachingScheduleCsv,
+  SECRETARY_TEACHING_EVENT_EXPORT_ERROR,
+} from './secretaryTeachingScheduleExport'
+import {
   createSecretaryTeachingEvent,
   deleteSecretaryTeachingEvent,
   updateSecretaryTeachingEvent,
@@ -208,6 +212,7 @@ export const SecretaryTeachingSchedulePage = () => {
   const [recentCreatedEvents, setRecentCreatedEvents] = useState<SecretaryTeachingEvent[]>([])
   const [eventsLoading, setEventsLoading] = useState(true)
   const [eventsError, setEventsError] = useState<string | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
   const [supportsEventListEndpoint, setSupportsEventListEndpoint] = useState(true)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
@@ -652,16 +657,12 @@ export const SecretaryTeachingSchedulePage = () => {
   }
 
   const handleExport = () => {
-    const csv = buildEventCsv(visibleEvents)
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = 'secretary-teaching-schedule.csv'
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(url)
+    setExportError(null)
+    try {
+      downloadSecretaryTeachingScheduleCsv(buildEventCsv(visibleEvents))
+    } catch {
+      setExportError(SECRETARY_TEACHING_EVENT_EXPORT_ERROR)
+    }
   }
 
   return (
@@ -801,6 +802,11 @@ export const SecretaryTeachingSchedulePage = () => {
         {eventsError ? (
           <div className="inline-callout callout-warning secretary-inline-callout">
             <span>{eventsError}</span>
+          </div>
+        ) : null}
+        {exportError ? (
+          <div className="inline-callout callout-error secretary-inline-callout" role="alert">
+            <span>{exportError}</span>
           </div>
         ) : null}
 
