@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import logging
 from decimal import Decimal
 from hashlib import blake2b
 from dataclasses import asdict, dataclass
@@ -12,6 +13,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.parser_common import ParserResult
+
+logger = logging.getLogger(__name__)
 
 _PARSER_ONLY_FALLBACK_PROGRAMME_CODES = {
     "AIM",
@@ -620,12 +623,13 @@ async def parse_ttf_upload(
 
         workbook = load_workbook(filename=BytesIO(file_bytes), data_only=True)
     except Exception as exc:
+        logger.exception("Unable to read TTF workbook")
         return ParserResult(
             upload_type="ttf",
             errors=[
                 "Workbook could not be read. Please upload a valid, non-password-protected Excel file."
             ],
-            metadata={**metadata, "exception": str(exc)},
+            metadata=metadata,
         )
 
     if db_session is not None:

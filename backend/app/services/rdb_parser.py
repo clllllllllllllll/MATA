@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -12,6 +13,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.parser_common import ParserResult
+
+
+logger = logging.getLogger(__name__)
+UNEXPECTED_UPLOAD_FAILURE_MESSAGE = "Upload failed. Please contact administrator."
 
 
 class RDBParserError(ValueError):
@@ -2102,7 +2107,7 @@ async def _persist_rdb_upload(
         session, [resident.mcr for resident in residents]
     )
     if external_mcr_conflicts:
-        raise ValueError(
+        raise RDBParserError(
             "RDB upload contains an MCR already registered as a Non-NHG Resident."
         )
     existing_residents = await _fetch_existing_resident_ids(
@@ -2445,11 +2450,23 @@ async def parse_rdb_upload(
             parsed=parsed,
         )
         await db_session.commit()
-    except Exception as exc:
+    except RDBParserError as exc:
         await db_session.rollback()
         return ParserResult(
             upload_type="rdb",
             errors=[str(exc)],
+            metadata={
+                "original_filename": original_filename,
+                "reporting_period_id": str(reporting_period_id),
+                "byte_count": len(file_bytes),
+            },
+        )
+    except Exception as exc:
+        await db_session.rollback()
+        logger.exception("Unexpected RDB upload processing failure")
+        return ParserResult(
+            upload_type="rdb",
+            errors=[UNEXPECTED_UPLOAD_FAILURE_MESSAGE],
             metadata={
                 "original_filename": original_filename,
                 "reporting_period_id": str(reporting_period_id),

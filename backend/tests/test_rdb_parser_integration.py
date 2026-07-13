@@ -739,6 +739,41 @@ def test_sample_upload_creates_residents_postings_posting_codes_and_upload_log()
     )
 
 
+def test_rdb_persistence_exception_is_sanitized_and_logged(caplog) -> None:
+    class FailingRDBSession(FakeRDBSession):
+        async def execute(self, statement, params: dict | None = None):
+            if "INSERT INTO residents" in str(statement):
+                raise RuntimeError("SQLSTATE 23505 at C:/private/database.sql")
+            return await super().execute(statement, params)
+
+    session = FailingRDBSession()
+    file_bytes = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One",
+                mcr="M12345A",
+                r_year="R2",
+                programme="DR",
+                jul="TTSHAnaes",
+            )
+        ]
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="rdb.xlsx",
+            reporting_period_id=uuid4(),
+            db_session=session,
+        )
+    )
+
+    assert result.errors == ["Upload failed. Please contact administrator."]
+    assert "SQLSTATE 23505" not in str(result.to_summary())
+    assert "SQLSTATE 23505" in caplog.text
+
+
 def test_blank_rdb_resident_month_cell_emits_info_warning_without_posting_row() -> None:
     session = FakeRDBSession()
     period_id = uuid4()
