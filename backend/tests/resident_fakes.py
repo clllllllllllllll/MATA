@@ -825,18 +825,20 @@ class FakeResidentSession:
                     and row["status"] == "submitted"
                 }
                 rows = [
-                    row
+                    {
+                        **row,
+                        "already_attended": row["id"] in submitted,
+                    }
                     for row in self.events
                     if row["posting_code"] == posting_code
                     and row["event_date"] <= today
-                    and row["id"] not in submitted
-                    and row.get("created_by_role") == "secretary"
-                    and row.get("created_for_programme_code") is None
                 ]
                 if "date_from" in payload and payload["date_from"] is not None:
                     rows = [row for row in rows if row["event_date"] >= payload["date_from"]]
                 if "date_to" in payload and payload["date_to"] is not None:
                     rows = [row for row in rows if row["event_date"] <= payload["date_to"]]
+                if "teaching_name" in payload and payload["teaching_name"]:
+                    rows = [row for row in rows if row["teaching_name"] == payload["teaching_name"]]
                 rows.sort(key=lambda row: (row["event_date"], row["start_time"], row["teaching_name"]))
                 return FakeResult(rows=rows)
 
