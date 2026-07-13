@@ -15,3 +15,17 @@ export const formatProgrammePcConfigSubtitle = (programmeScope: readonly string[
   const scope = effectiveProgrammePcScope(programmeScope)
   return `PC - ${scope ?? 'No programme scope'}`
 }
+
+export const formatProgrammePcConfigEmptyState = (
+  programmeScope: readonly string[] | undefined,
+  ruleLabel: string,
+): { title: string; body: string } => {
+  const scope = effectiveProgrammePcScope(programmeScope)
+
+  return {
+    title: `No ${ruleLabel} posting rules for your programme`,
+    body: scope
+      ? `Rules for ${scope} will appear here once created.`
+      : 'Rules for your programme will appear here once created.',
+  }
+}
