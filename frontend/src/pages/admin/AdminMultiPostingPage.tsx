@@ -16,8 +16,10 @@ import { DataRevalidationCallout } from '../../components/DataRevalidationCallou
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconPlus, IconRefresh } from '../../components/icons'
 import { useAppState } from '../../context/useAppState'
+import { useAuth } from '../../context/useAuth'
 import { useAdminConfigReadCache } from '../../hooks/useAdminConfigReadCache'
 import type { DataRevalidationImpact } from '../../types/dataRevalidation'
+import { formatProgrammePcConfigEmptyState } from '../../utils/programmePcLabels'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 type RuleTab = MultiPostingRuleType
@@ -70,6 +72,12 @@ const outputColumnLabel: Record<RuleTab, string> = {
   main_posting: 'Main Posting',
   combine: 'Combined Posting',
   half_month: 'Half Month Posting',
+}
+
+const emptyStateRuleLabel: Record<RuleTab, string> = {
+  main_posting: 'main',
+  combine: 'combined',
+  half_month: 'half month',
 }
 
 const multiPostingTableColumnCount = 6
@@ -148,60 +156,39 @@ const postingOptionLabel = (postingCode: PostingCodeOption): string => {
   return display ? `${postingCode.code} - ${display}` : postingCode.code
 }
 
-const ProgrammeScopeText = ({ programmeCodes }: { programmeCodes: string[] }) => {
-  if (programmeCodes.length === 0) {
-    return <>Rules for your accessible programmes will appear here once created.</>
-  }
-
-  return (
-    <>
-      Rules for{' '}
-      {programmeCodes.map((programmeCode, index) => (
-        <Fragment key={programmeCode}>
-          {index > 0 ? (index === programmeCodes.length - 1 ? ' and ' : ', ') : null}
-          <strong>{programmeCode}</strong>
-        </Fragment>
-      ))}{' '}
-      will appear here once created.
-    </>
-  )
-}
-
 const emptyBannerCopy = (
   activeTab: RuleTab,
   viewRole: ConfigViewRole,
-  programmeCodes: string[],
+  programmeScope: readonly string[] | undefined,
 ): { title: string; body: ReactNode; hint: string } => {
+  if (viewRole === 'programme_pc') {
+    const copy = formatProgrammePcConfigEmptyState(programmeScope, emptyStateRuleLabel[activeTab])
+
+    return {
+      ...copy,
+      hint: 'Changes apply on the next RDB re-upload',
+    }
+  }
+
   if (activeTab === 'combine') {
     return {
-      title: viewRole === 'master_admin' ? 'No combined posting rules yet' : 'No combined posting rules for your programmes',
-      body:
-        viewRole === 'master_admin'
-          ? 'Combined posting rules will appear here once created.'
-          : 'Combined posting rules for your accessible programmes will appear here once created.',
+      title: 'No combined posting rules yet',
+      body: 'Combined posting rules will appear here once created.',
       hint: 'Changes apply on the next RDB re-upload',
     }
   }
 
   if (activeTab === 'half_month') {
     return {
-      title: viewRole === 'master_admin' ? 'No half month posting rules yet' : 'No half month posting rules for your programmes',
-      body:
-        viewRole === 'master_admin'
-          ? 'Half month posting rules will appear here once created.'
-          : 'Half month posting rules for your accessible programmes will appear here once created.',
+      title: 'No half month posting rules yet',
+      body: 'Half month posting rules will appear here once created.',
       hint: 'Changes apply on the next RDB re-upload',
     }
   }
 
   return {
-    title: viewRole === 'master_admin' ? 'No main posting rules yet' : 'No main posting rules for your programmes',
-    body:
-      viewRole === 'programme_pc' ? (
-        <ProgrammeScopeText programmeCodes={programmeCodes} />
-      ) : (
-        'Rules will appear here once created.'
-      ),
+    title: 'No main posting rules yet',
+    body: 'Rules will appear here once created.',
     hint: 'Changes apply on the next RDB re-upload',
   }
 }
@@ -254,6 +241,7 @@ interface MultiPostingRulesSectionProps {
 export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSectionProps) => {
   const location = useLocation()
   const { demoAdminId, demoAdminProgrammes, role } = useAppState()
+  const { identity } = useAuth()
   const viewRole = configViewRole ?? (role === 'programme_pc' ? 'programme_pc' : 'master_admin')
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
   const [activeTab, setActiveTab] = useState<RuleTab>('main_posting')
@@ -369,7 +357,9 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
       ),
     [rules],
   )
-  const emptyStateCopy = emptyBannerCopy(activeTab, viewRole, demoAdminProgrammes)
+  const pcProgrammeScope =
+    viewRole === 'programme_pc' && identity?.role === 'programme_pc' ? identity.programmeScope : []
+  const emptyStateCopy = emptyBannerCopy(activeTab, viewRole, pcProgrammeScope)
 
   const openCreateDrawer = () => {
     setDrawerMode('create')
