@@ -10,6 +10,7 @@ from app.models.posting import (
     WeekendException,
 )
 from app.models.programme import Programme
+from app.models.rate_limit import RateLimitBucket
 from app.models.reporting import (
     AcademicMonthBoundary,
     ClawbackRecord,
@@ -50,6 +51,7 @@ __all__ = [
     "PostingGroup",
     "Programme",
     "PublicHoliday",
+    "RateLimitBucket",
     "ReportingPeriod",
     "Resident",
     "ResidentPosting",

@@ -602,6 +602,8 @@ class FakeRdbUploadCorrectionWarningSession:
         payload = dict(params or {})
         if "/* upload:reporting_period_status */" in sql:
             return _FakeResult(rows=[{"status": "active"}])
+        if "INSERT INTO rate_limit_buckets" in sql and "RETURNING request_count" in sql:
+            return _FakeResult(rows=[{"request_count": 1}])
         if "/* parsed_data_correction:corrected_resident_posting_reupload_count */" in sql:
             return _FakeResult(scalar=self.corrected_reupload_count)
         if "INSERT INTO upload_logs" in sql:

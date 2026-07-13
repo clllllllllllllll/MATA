@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.dependencies.auth import is_master_admin
+from app.dependencies.persistent_rate_limit import enforce_upload_persistent_rate_limit
 from app.dependencies.staff_actor import (
     STAFF_ACTOR_FALLBACK_NAME,
     StaffActorContext,
@@ -1081,6 +1082,13 @@ async def upload_rdb(
 
     await _require_active_upload_reporting_period(db, reporting_period_id)
 
+    await enforce_upload_persistent_rate_limit(
+        db,
+        settings=settings,
+        user_id=admin_context.user_id,
+        upload_type="rdb",
+    )
+
     corrected_rows_warning = None
     if db is not None:
         corrected_rows_warning = await parsed_data.resident_posting_corrections_reupload_warning(
@@ -1145,6 +1153,14 @@ async def upload_ttf(
 
     await _require_active_upload_reporting_period(db, reporting_period_id)
 
+    await enforce_upload_persistent_rate_limit(
+        db,
+        settings=settings,
+        user_id=admin_context.user_id,
+        upload_type="ttf",
+        programme_code=programme_code,
+    )
+
     try:
         parser_result = await parse_ttf_upload(
             file_bytes=validated.file_bytes,
@@ -1204,6 +1220,13 @@ async def upload_formf1(
         ) from exc
 
     await _require_active_upload_reporting_period(db, reporting_period_id)
+
+    await enforce_upload_persistent_rate_limit(
+        db,
+        settings=settings,
+        user_id=admin_context.user_id,
+        upload_type="form_f1",
+    )
 
     parser_result = await parse_formf1_upload(
         file_bytes=validated.file_bytes,

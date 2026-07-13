@@ -53,12 +53,27 @@ class FakeFormF1Session:
         self.form_f1_records: list[dict] = []
         self.upload_logs: list[dict] = []
         self.audit_logs: list[dict] = []
+        self.rate_limit_buckets: dict[tuple[str, str, object, int], int] = {}
         self.commits = 0
         self.rollbacks = 0
 
     async def execute(self, statement, params: dict | None = None):
         sql = str(statement)
         params = dict(params or {})
+
+        if "INSERT INTO rate_limit_buckets" in sql:
+            key = (
+                params["scope"],
+                params["key_hash"],
+                params["window_start"],
+                params["window_seconds"],
+            )
+            request_count = self.rate_limit_buckets.get(key, 0) + 1
+            self.rate_limit_buckets[key] = request_count
+            return _FakeScalarResult({"request_count": request_count})
+
+        if "DELETE FROM rate_limit_buckets" in sql:
+            return _FakeScalarResult()
 
         if "FROM reporting_periods" in sql:
             period_id = str(params["reporting_period_id"])
