@@ -197,6 +197,7 @@ class FakeRDBSession:
         self.multi_posting_rules: list[dict] = []
         self.posting_codes: set[str] = set()
         self.residents: dict[str, dict] = {}
+        self.external_resident_mcrs: set[str] = set()
         self.resident_postings: list[dict] = []
         self.upload_logs: list[dict] = []
         self.audit_logs: list[dict] = []
@@ -257,6 +258,12 @@ class FakeRDBSession:
                     for resident in self.residents.values()
                     if resident["mcr"] in mcrs
                 ]
+            )
+
+        if "SELECT mcr" in sql and "FROM external_residents" in sql:
+            mcrs = set(params["mcrs"])
+            return _FakeMappingResult(
+                [{"mcr": mcr} for mcr in sorted(self.external_resident_mcrs & mcrs)]
             )
 
         if "SELECT code" in sql and "FROM posting_codes" in sql:
@@ -506,6 +513,40 @@ def _assert_unmatched_warning_trace_fields(
     assert warning.get("cell_ref") == cell_ref
     assert isinstance(warning.get("posting_codes"), list)
     assert warning.get("message")
+
+
+def test_rdb_upload_rejects_mcr_already_registered_as_external_resident() -> None:
+    session = FakeRDBSession()
+    session.external_resident_mcrs.add("M12345A")
+    period_id = uuid4()
+    file_bytes = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One",
+                mcr="M12345A",
+                r_year="R2",
+                programme="DR",
+                jul="TTSHAnaes",
+            )
+        ]
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="rdb.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == [
+        "RDB upload contains an MCR already registered as a Non-NHG Resident."
+    ]
+    assert session.residents == {}
+    assert session.resident_postings == []
+    assert session.rollbacks == 1
 
 
 def test_sample_upload_creates_residents_postings_posting_codes_and_upload_log() -> None:

@@ -1810,6 +1810,24 @@ async def _fetch_existing_resident_ids(
     return {str(row["mcr"]): row["id"] for row in result.mappings().all()}
 
 
+async def _fetch_external_resident_mcr_conflicts(
+    session: AsyncSession, mcrs: list[str]
+) -> set[str]:
+    if not mcrs:
+        return set()
+    result = await session.execute(
+        text(
+            """
+            SELECT mcr
+            FROM external_residents
+            WHERE mcr = ANY(:mcrs)
+            """
+        ),
+        {"mcrs": mcrs},
+    )
+    return {str(row["mcr"]) for row in result.mappings().all()}
+
+
 async def _fetch_existing_posting_codes(
     session: AsyncSession, codes: list[str]
 ) -> set[str]:
@@ -2029,6 +2047,13 @@ async def _persist_rdb_upload(
         await _insert_posting_code(session, code)
 
     residents = list(parsed.residents.values())
+    external_mcr_conflicts = await _fetch_external_resident_mcr_conflicts(
+        session, [resident.mcr for resident in residents]
+    )
+    if external_mcr_conflicts:
+        raise ValueError(
+            "RDB upload contains an MCR already registered as a Non-NHG Resident."
+        )
     existing_residents = await _fetch_existing_resident_ids(
         session, [resident.mcr for resident in residents]
     )
