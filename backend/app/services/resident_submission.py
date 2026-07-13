@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy import text
@@ -19,6 +19,14 @@ WEEKEND_WARNING = (
     "as they do not meet the weekend exception rules for your programme."
 )
 ADHOC_COMPLIANCE_TEACHING_NAME = "Department/Programme Teaching [1h]"
+ExternalEventIneligibilityReason = Literal[
+    "future_event",
+    "posting_unavailable",
+    "posting_mismatch",
+    "event_scope",
+    "secretary_events_not_supported",
+    "already_attended",
+]
 
 
 def _event_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -916,30 +924,6 @@ async def _get_event(db: AsyncSession, event_id: UUID) -> dict[str, Any]:
     return dict(row)
 
 
-async def _posting_supports_secretary_events(
-    db: AsyncSession,
-    posting_code: str,
-) -> bool:
-    result = await db.execute(
-        text(
-            """
-            SELECT supports_secretary_events
-            FROM posting_codes
-            WHERE code = :posting_code
-            """
-        ),
-        {"posting_code": posting_code},
-    )
-    row = result.mappings().one_or_none()
-    if row is None:
-        raise ApiError(
-            status_code=422,
-            detail="current_nhg_posting_code is not valid",
-            error_code=ErrorCode.VALIDATION_FAILED.value,
-        )
-    return bool(row["supports_secretary_events"])
-
-
 async def _posting_capabilities(
     db: AsyncSession,
     *,
@@ -1060,15 +1044,6 @@ async def _events_for_external_posting(
     where = [
         "posting_code = :posting_code",
         "event_date <= :today",
-        "created_by_role = 'secretary'",
-        "created_for_programme_code IS NULL",
-        """NOT EXISTS (
-              SELECT 1
-              FROM external_attendance_records ear
-              WHERE ear.external_resident_id = :external_resident_id
-                AND ear.teaching_event_id = teaching_events.id
-                AND ear.status = 'submitted'
-          )""",
     ]
     if date_from is not None:
         params["date_from"] = date_from
@@ -1100,7 +1075,14 @@ async def _events_for_external_posting(
                 is_adhoc,
                 created_by_role,
                 created_at,
-                updated_at
+                updated_at,
+                EXISTS (
+                    SELECT 1
+                    FROM external_attendance_records ear
+                    WHERE ear.external_resident_id = :external_resident_id
+                      AND ear.teaching_event_id = teaching_events.id
+                      AND ear.status = 'submitted'
+                ) AS already_attended
             FROM teaching_events
             WHERE {' AND '.join(where)}
             ORDER BY event_date ASC, start_time ASC, teaching_name ASC
@@ -1126,6 +1108,61 @@ def _matching_context_for_event(
             and (row.get("end_date") is None or event_date <= row["end_date"])
         ),
         None,
+    )
+
+
+def _external_event_ineligibility_reason(
+    *,
+    event: dict[str, Any],
+    posting_contexts: list[dict[str, Any]],
+    posting_capabilities: dict[str, bool],
+    today: date,
+    already_attended: bool,
+) -> ExternalEventIneligibilityReason | None:
+    if event["event_date"] > today:
+        return "future_event"
+    if not posting_contexts:
+        return "posting_unavailable"
+    if _matching_context_for_event(
+        posting_contexts,
+        posting_code=event["posting_code"],
+        event_date=event["event_date"],
+    ) is None:
+        return "posting_mismatch"
+    if (
+        event.get("created_by_role") != "secretary"
+        or event.get("created_for_programme_code") is not None
+    ):
+        return "event_scope"
+    if not posting_capabilities.get(event["posting_code"], False):
+        return "secretary_events_not_supported"
+    if already_attended:
+        return "already_attended"
+    return None
+
+
+def _external_event_ineligibility_error(
+    reason: ExternalEventIneligibilityReason,
+) -> ApiError:
+    if reason == "already_attended":
+        return ApiError(
+            status_code=409,
+            detail="Attendance already submitted for this teaching event",
+            error_code=ErrorCode.CONFLICT.value,
+        )
+    detail_by_reason = {
+        "future_event": "Future teaching events cannot be submitted",
+        "posting_unavailable": "No Non-NHG Resident posting is available for the teaching date",
+        "posting_mismatch": "Teaching event is outside the resident posting scope",
+        "event_scope": "Teaching event is outside the Non-NHG Resident scope",
+        "secretary_events_not_supported": (
+            "Secretary-created events are not supported for this posting"
+        ),
+    }
+    return ApiError(
+        status_code=422,
+        detail=detail_by_reason[reason],
+        error_code=ErrorCode.VALIDATION_FAILED.value,
     )
 
 
@@ -1303,11 +1340,14 @@ async def list_available_events(
             )
         deduped_events: dict[str, dict[str, Any]] = {}
         for event in raw_events:
-            if _matching_context_for_event(
-                contexts,
-                posting_code=event["posting_code"],
-                event_date=event["event_date"],
-            ):
+            reason = _external_event_ineligibility_reason(
+                event=event,
+                posting_contexts=contexts,
+                posting_capabilities=posting_capabilities,
+                today=today,
+                already_attended=bool(event.get("already_attended")),
+            )
+            if reason is None:
                 deduped_events[str(event["id"])] = event
         events = sorted(
             deduped_events.values(),
@@ -1754,55 +1794,34 @@ async def submit_attendance(
         touched_postings: set[str] = set()
         for event_id in event_ids:
             event = await _get_event(db, event_id)
-            if event["event_date"] > today:
-                raise ApiError(
-                    status_code=422,
-                    detail="Future teaching events cannot be submitted",
-                    error_code=ErrorCode.VALIDATION_FAILED.value,
-                )
-            posting_context = await _external_posting_context_for_date(
+            posting_contexts = await _external_posting_contexts(
                 db,
                 external_resident_id=external_resident_id,
-                on_date=event["event_date"],
+                start_date=event["event_date"],
+                end_date=event["event_date"],
             )
-            if posting_context is None:
-                raise ApiError(
-                    status_code=422,
-                    detail="No Non-NHG Resident posting is available for the teaching date",
-                    error_code=ErrorCode.VALIDATION_FAILED.value,
-                )
-            if event["posting_code"] != posting_context["posting_code"]:
-                raise ApiError(
-                    status_code=422,
-                    detail="Teaching event is outside the resident posting scope",
-                    error_code=ErrorCode.VALIDATION_FAILED.value,
-                )
-            if event.get("created_for_programme_code") is not None or event.get("created_by_role") not in {"secretary", None}:
-                raise ApiError(
-                    status_code=422,
-                    detail="Teaching event is outside the Non-NHG Resident scope",
-                    error_code=ErrorCode.VALIDATION_FAILED.value,
-                )
-            supports_secretary_events = await _posting_supports_secretary_events(
+            posting_capabilities = await _posting_capabilities(
                 db,
-                posting_context["posting_code"],
+                posting_codes={
+                    context["posting_code"]
+                    for context in posting_contexts
+                    if context.get("posting_code")
+                },
             )
-            if event.get("created_by_role") == "secretary" and not supports_secretary_events:
-                raise ApiError(
-                    status_code=422,
-                    detail="Secretary-created events are not supported for this posting",
-                    error_code=ErrorCode.VALIDATION_FAILED.value,
-                )
-            if await _duplicate_external_attendance_exists(
+            already_attended = await _duplicate_external_attendance_exists(
                 db,
                 external_resident_id=external_resident_id,
                 event_id=event_id,
-            ):
-                raise ApiError(
-                    status_code=409,
-                    detail="Attendance already submitted for this teaching event",
-                    error_code=ErrorCode.CONFLICT.value,
-                )
+            )
+            reason = _external_event_ineligibility_reason(
+                event=event,
+                posting_contexts=posting_contexts,
+                posting_capabilities=posting_capabilities,
+                today=today,
+                already_attended=already_attended,
+            )
+            if reason is not None:
+                raise _external_event_ineligibility_error(reason)
             await _insert_external_attendance(
                 db,
                 external_resident_id=external_resident_id,

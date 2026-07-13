@@ -181,6 +181,58 @@ def test_external_attendance_creates_external_record_only() -> None:
     assert len(fake_db.attendance) == before_native
 
 
+def test_external_null_role_event_is_hidden_and_cannot_be_submitted() -> None:
+    fake_db = FakeResidentSession()
+    event_id = str(uuid4())
+    event = fake_db._event(  # noqa: SLF001
+        event_id,
+        "TTSHCardio",
+        "Legacy Teaching",
+        fake_db.today - date.resolution,
+    )
+    event["created_by_role"] = None
+    fake_db.events.append(event)
+    client = _client(fake_db)
+
+    list_response = client.get("/resident/events", headers=_external_headers(fake_db))
+    submit_response = client.post(
+        "/resident/attendance",
+        headers=_external_headers(fake_db),
+        json={"event_ids": [event_id]},
+    )
+
+    assert list_response.status_code == 200
+    assert event_id not in {row["id"] for row in list_response.json()["events"]}
+    assert submit_response.status_code == 422
+    assert all(row["teaching_event_id"] != event_id for row in fake_db.external_attendance)
+
+
+def test_external_programme_owned_event_is_hidden_and_cannot_be_submitted() -> None:
+    fake_db = FakeResidentSession()
+    event_id = str(uuid4())
+    event = fake_db._event(  # noqa: SLF001
+        event_id,
+        "TTSHCardio",
+        "Programme Teaching",
+        fake_db.today - date.resolution,
+    )
+    event["created_for_programme_code"] = "GERI"
+    fake_db.events.append(event)
+    client = _client(fake_db)
+
+    list_response = client.get("/resident/events", headers=_external_headers(fake_db))
+    submit_response = client.post(
+        "/resident/attendance",
+        headers=_external_headers(fake_db),
+        json={"event_ids": [event_id]},
+    )
+
+    assert list_response.status_code == 200
+    assert event_id not in {row["id"] for row in list_response.json()["events"]}
+    assert submit_response.status_code == 422
+    assert all(row["teaching_event_id"] != event_id for row in fake_db.external_attendance)
+
+
 def test_external_attendance_uses_event_date_matched_posting_schedule() -> None:
     fake_db = FakeResidentSession()
     fake_db.external_residents[0]["current_nhg_posting_code"] = "TTSHCardio"
