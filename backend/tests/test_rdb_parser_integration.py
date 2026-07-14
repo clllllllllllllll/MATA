@@ -199,6 +199,7 @@ class FakeRDBSession:
         self.residents: dict[str, dict] = {}
         self.external_resident_mcrs: set[str] = set()
         self.resident_postings: list[dict] = []
+        self.resident_posting_keys: set[tuple[object, str, object, object]] = set()
         self.upload_logs: list[dict] = []
         self.audit_logs: list[dict] = []
         self.surplus_ledger: list[dict] = []
@@ -295,6 +296,15 @@ class FakeRDBSession:
                 for row in self.resident_postings
                 if str(row["reporting_period_id"]) != period_id
             ]
+            self.resident_posting_keys = {
+                (
+                    row["resident_id"],
+                    str(row["reporting_period_id"]),
+                    row["start_date"],
+                    row.get("day_part"),
+                )
+                for row in self.resident_postings
+            }
             return _FakeScalarResult()
 
         if "INSERT INTO resident_postings" in sql:
@@ -304,18 +314,10 @@ class FakeRDBSession:
                 params["start_date"],
                 params.get("day_part"),
             )
-            existing_keys = {
-                (
-                    row["resident_id"],
-                    str(row["reporting_period_id"]),
-                    row["start_date"],
-                    row.get("day_part"),
-                )
-                for row in self.resident_postings
-            }
-            if key in existing_keys:
+            if key in self.resident_posting_keys:
                 raise AssertionError(f"duplicate resident_postings insert attempted: {key}")
             self.resident_postings.append(dict(params))
+            self.resident_posting_keys.add(key)
             return _FakeScalarResult()
 
         if "UPDATE surplus_ledger" in sql:
@@ -435,6 +437,27 @@ def _resident_row(
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def test_fake_rdb_session_duplicate_check_does_not_rescan_persisted_rows() -> None:
+    class NonIterablePostingRows(list):
+        def __iter__(self):
+            raise AssertionError("resident posting rows were rescanned during insert")
+
+    session = FakeRDBSession()
+    session.resident_postings = NonIterablePostingRows()
+    params = {
+        "resident_id": uuid4(),
+        "reporting_period_id": uuid4(),
+        "start_date": date(2025, 7, 1),
+        "day_part": None,
+        "posting_code": "TTSHAnaes",
+    }
+
+    _run(session.execute("INSERT INTO resident_postings", params))
+
+    with pytest.raises(AssertionError, match="duplicate resident_postings insert attempted"):
+        _run(session.execute("INSERT INTO resident_postings", params))
 
 
 def _sample_workbook_bytes(*candidate_names: str) -> bytes:
