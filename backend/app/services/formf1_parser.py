@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime
 from io import BytesIO
@@ -11,6 +12,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.parser_common import ParserResult
+
+
+logger = logging.getLogger(__name__)
+UNEXPECTED_UPLOAD_FAILURE_MESSAGE = "Upload failed. Please contact administrator."
 
 
 _MCR_PATTERN = re.compile(r"^[A-Z]\d+[A-Z]$")
@@ -432,13 +437,14 @@ async def parse_formf1_upload(
 
         workbook = load_workbook(filename=BytesIO(file_bytes), data_only=True)
     except Exception as exc:
+        logger.exception("Unable to read FormF1 workbook")
         metadata["validation_failed"] = True
         return ParserResult(
             upload_type="form_f1",
             errors=[
                 "Workbook could not be read. Please upload a valid, non-password-protected Excel file."
             ],
-            metadata={**metadata, "exception": str(exc)},
+            metadata=metadata,
         )
 
     try:
@@ -617,9 +623,10 @@ async def parse_formf1_upload(
             await db_session.commit()
         except Exception as exc:
             await db_session.rollback()
+            logger.exception("Unexpected FormF1 upload processing failure")
             return ParserResult(
                 upload_type="form_f1",
-                errors=[str(exc)],
+                errors=[UNEXPECTED_UPLOAD_FAILURE_MESSAGE],
                 metadata=metadata,
             )
 

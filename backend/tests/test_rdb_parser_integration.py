@@ -197,7 +197,9 @@ class FakeRDBSession:
         self.multi_posting_rules: list[dict] = []
         self.posting_codes: set[str] = set()
         self.residents: dict[str, dict] = {}
+        self.external_resident_mcrs: set[str] = set()
         self.resident_postings: list[dict] = []
+        self.resident_posting_keys: set[tuple[object, str, object, object]] = set()
         self.upload_logs: list[dict] = []
         self.audit_logs: list[dict] = []
         self.surplus_ledger: list[dict] = []
@@ -259,6 +261,12 @@ class FakeRDBSession:
                 ]
             )
 
+        if "SELECT mcr" in sql and "FROM external_residents" in sql:
+            mcrs = set(params["mcrs"])
+            return _FakeMappingResult(
+                [{"mcr": mcr} for mcr in sorted(self.external_resident_mcrs & mcrs)]
+            )
+
         if "SELECT code" in sql and "FROM posting_codes" in sql:
             codes = set(params["codes"])
             return _FakeMappingResult(
@@ -288,6 +296,15 @@ class FakeRDBSession:
                 for row in self.resident_postings
                 if str(row["reporting_period_id"]) != period_id
             ]
+            self.resident_posting_keys = {
+                (
+                    row["resident_id"],
+                    str(row["reporting_period_id"]),
+                    row["start_date"],
+                    row.get("day_part"),
+                )
+                for row in self.resident_postings
+            }
             return _FakeScalarResult()
 
         if "INSERT INTO resident_postings" in sql:
@@ -297,18 +314,10 @@ class FakeRDBSession:
                 params["start_date"],
                 params.get("day_part"),
             )
-            existing_keys = {
-                (
-                    row["resident_id"],
-                    str(row["reporting_period_id"]),
-                    row["start_date"],
-                    row.get("day_part"),
-                )
-                for row in self.resident_postings
-            }
-            if key in existing_keys:
+            if key in self.resident_posting_keys:
                 raise AssertionError(f"duplicate resident_postings insert attempted: {key}")
             self.resident_postings.append(dict(params))
+            self.resident_posting_keys.add(key)
             return _FakeScalarResult()
 
         if "UPDATE surplus_ledger" in sql:
@@ -430,6 +439,27 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def test_fake_rdb_session_duplicate_check_does_not_rescan_persisted_rows() -> None:
+    class NonIterablePostingRows(list):
+        def __iter__(self):
+            raise AssertionError("resident posting rows were rescanned during insert")
+
+    session = FakeRDBSession()
+    session.resident_postings = NonIterablePostingRows()
+    params = {
+        "resident_id": uuid4(),
+        "reporting_period_id": uuid4(),
+        "start_date": date(2025, 7, 1),
+        "day_part": None,
+        "posting_code": "TTSHAnaes",
+    }
+
+    _run(session.execute("INSERT INTO resident_postings", params))
+
+    with pytest.raises(AssertionError, match="duplicate resident_postings insert attempted"):
+        _run(session.execute("INSERT INTO resident_postings", params))
+
+
 def _sample_workbook_bytes(*candidate_names: str) -> bytes:
     search_dirs = [
         Path(__file__).parent / "data",
@@ -508,6 +538,156 @@ def _assert_unmatched_warning_trace_fields(
     assert warning.get("message")
 
 
+def test_rdb_upload_rejects_mcr_already_registered_as_external_resident() -> None:
+    session = FakeRDBSession()
+    session.external_resident_mcrs.add("M12345A")
+    period_id = uuid4()
+    file_bytes = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One",
+                mcr="M12345A",
+                r_year="R2",
+                programme="DR",
+                jul="TTSHAnaes",
+            )
+        ]
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="rdb.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == [
+        "RDB upload contains an MCR already registered as a Non-NHG Resident."
+    ]
+    assert session.residents == {}
+    assert session.resident_postings == []
+    assert session.rollbacks == 1
+
+
+def test_rdb_upload_warns_for_overlapping_resident_posting_phases() -> None:
+    session = FakeRDBSession()
+    period_id = uuid4()
+    file_bytes = _rdb_workbook_with_months(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One",
+                mcr="M12345A",
+                r_year="R2",
+                programme="DR",
+                jul="TTSHAnaes",
+                aug="TTSHCardio",
+            )
+        ],
+        month_labels=["Jul-25", "Aug-25"],
+        date_ranges=["08 Jul 25 - 31 Aug 25", "01 Aug 25 - 30 Sep 25"],
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="overlap.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    warnings = [
+        item
+        for item in result.warnings
+        if isinstance(item, dict)
+        and item.get("type") == "overlapping_resident_posting_phase"
+    ]
+    assert result.errors == []
+    assert len(warnings) == 1
+    assert warnings[0]["earlier_posting_code"] == "TTSHAnaes"
+    assert warnings[0]["later_posting_code"] == "TTSHCardio"
+    assert len(session.resident_postings) == 2
+
+
+def test_rdb_upload_does_not_warn_for_adjacent_resident_posting_phases() -> None:
+    session = FakeRDBSession()
+    period_id = uuid4()
+    file_bytes = _rdb_workbook_with_months(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One",
+                mcr="M12345A",
+                r_year="R2",
+                programme="DR",
+                jul="TTSHAnaes",
+                aug="TTSHCardio",
+            )
+        ],
+        month_labels=["Jul-25", "Aug-25"],
+        date_ranges=["08 Jul 25 - 31 Jul 25", "01 Aug 25 - 30 Sep 25"],
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="adjacent.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert not any(
+        isinstance(item, dict)
+        and item.get("type") == "overlapping_resident_posting_phase"
+        for item in result.warnings
+    )
+
+
+def test_rdb_upload_does_not_warn_for_same_phase_am_pm_multi_posting() -> None:
+    session = FakeRDBSession()
+    period_id = uuid4()
+    file_bytes = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One",
+                mcr="M12345A",
+                r_year="R2",
+                programme="DR",
+                jul=(
+                    "TTSHAnaes\n"
+                    "(from 08-Jul-2025 to 03-Aug-2025 AM)\n"
+                    "TTSHCardio\n"
+                    "(from 08-Jul-2025 to 03-Aug-2025 PM)"
+                ),
+            )
+        ]
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="am-pm.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert {row["day_part"] for row in session.resident_postings} == {"AM", "PM"}
+    assert not any(
+        isinstance(item, dict)
+        and item.get("type") == "overlapping_resident_posting_phase"
+        for item in result.warnings
+    )
+
+
 def test_sample_upload_creates_residents_postings_posting_codes_and_upload_log() -> None:
     session = FakeRDBSession()
     user_id = uuid4()
@@ -580,6 +760,41 @@ def test_sample_upload_creates_residents_postings_posting_codes_and_upload_log()
         json.loads(session.upload_logs[-1]["summary"])["original_filename"]
         == "audit-name.xlsx"
     )
+
+
+def test_rdb_persistence_exception_is_sanitized_and_logged(caplog) -> None:
+    class FailingRDBSession(FakeRDBSession):
+        async def execute(self, statement, params: dict | None = None):
+            if "INSERT INTO residents" in str(statement):
+                raise RuntimeError("SQLSTATE 23505 at C:/private/database.sql")
+            return await super().execute(statement, params)
+
+    session = FailingRDBSession()
+    file_bytes = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One",
+                mcr="M12345A",
+                r_year="R2",
+                programme="DR",
+                jul="TTSHAnaes",
+            )
+        ]
+    )
+
+    result = _run(
+        parse_rdb_upload(
+            file_bytes=file_bytes,
+            original_filename="rdb.xlsx",
+            reporting_period_id=uuid4(),
+            db_session=session,
+        )
+    )
+
+    assert result.errors == ["Upload failed. Please contact administrator."]
+    assert "SQLSTATE 23505" not in str(result.to_summary())
+    assert "SQLSTATE 23505" in caplog.text
 
 
 def test_blank_rdb_resident_month_cell_emits_info_warning_without_posting_row() -> None:
