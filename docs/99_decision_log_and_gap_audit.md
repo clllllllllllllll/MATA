@@ -12,6 +12,18 @@
 
 Every important decision made during the project, with reasoning and consequences.
 
+#### Decision: TTF zero monthly target semantics
+- **Status:** Confirmed
+- **Decision:** `teaching_targets.monthly_target = 0` is valid. The target row and its `teaching_name_catalogue` entries remain persisted, allowing event visibility, event creation, and attendance capture.
+- **Compliance consequence:** Zero-target rows contribute to neither numerator nor denominator and create no percentage, shortage, surplus, reallocation, or clawback contribution.
+- **Do not change without PM/stakeholder approval:** Yes
+
+#### Decision: FormF1 blank monthly status semantics
+- **Status:** Confirmed
+- **Decision:** `Active` and `Extension` map to active. `Inactive`, blank, `NULL`, and whitespace-only monthly status cells map to inactive. A valid MCR row persists an inactive record for every blank in-scope reporting-period month.
+- **Boundary:** A blank MCR with no monthly values remains the parser's end/skip-row condition. Unknown non-blank statuses remain warning-only, retain `status_raw`, use the existing active fallback, and persist an `unknown_formf1_status` warning containing the value and Excel cell reference. Blank statuses do not create this warning.
+- **Do not change without PM/stakeholder approval:** Yes
+
 ---
 
 #### Decision: Vercel stakeholder UAT requires a deployment security cut before Phase 6 compliance

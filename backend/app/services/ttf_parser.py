@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import logging
+import math
 from decimal import Decimal
 from hashlib import blake2b
 from dataclasses import asdict, dataclass
@@ -706,14 +707,15 @@ async def parse_ttf_upload(
         except Exception:
             errors.append({"row": row_idx, "message": f"Monthly target '{monthly_target_raw}' is not numeric."})
             continue
-        if monthly_target <= 0:
-            errors.append({"row": row_idx, "message": "Monthly target must be positive."})
-            continue
-        if not monthly_target.is_integer():
+        if (
+            not math.isfinite(monthly_target)
+            or monthly_target < 0
+            or not monthly_target.is_integer()
+        ):
             errors.append(
                 {
                     "row": row_idx,
-                    "message": "Monthly target must be a whole number.",
+                    "message": "Monthly target must be a non-negative whole number.",
                 }
             )
             continue

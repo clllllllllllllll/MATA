@@ -4,7 +4,7 @@ from datetime import date, time
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Boolean, Date, ForeignKey, Index, Numeric, String, Text, Time, UniqueConstraint, text
+from sqlalchemy import Boolean, CheckConstraint, Date, ForeignKey, Index, Numeric, String, Text, Time, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,6 +22,10 @@ class SessionType(UUIDTimestampMixin, Base):
 class TeachingTarget(UUIDTimestampMixin, Base):
     __tablename__ = "teaching_targets"
     __table_args__ = (
+        CheckConstraint(
+            "monthly_target >= 0",
+            name="ck_teaching_targets_monthly_target_nonnegative",
+        ),
         UniqueConstraint(
             "reporting_period_id",
             "programme_code",

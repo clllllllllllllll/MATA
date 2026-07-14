@@ -1422,6 +1422,7 @@ const dayPartOptions = [
 ]
 
 const formF1StatusOptions = [
+  { value: '', label: 'Blank (Inactive)' },
   { value: 'Active', label: 'Active' },
   { value: 'Extension', label: 'Extension' },
   { value: 'Inactive', label: 'Inactive' },
@@ -2130,7 +2131,7 @@ export const AdminParsedDataPage = () => {
         if (value === 'Active' || value === 'Extension') {
           next.is_active = true
         }
-        if (value === 'Inactive') {
+        if (value === 'Inactive' || value === '') {
           next.is_active = false
         }
       }
@@ -2543,7 +2544,8 @@ export const AdminParsedDataPage = () => {
         ) : (
           <input
             type={field.type === 'date' ? 'date' : field.type === 'number' ? 'number' : 'text'}
-            step={field.key === 'active_months_weight' ? '0.25' : undefined}
+            min={field.key === 'monthly_target' ? '0' : undefined}
+            step={field.key === 'active_months_weight' ? '0.25' : field.key === 'monthly_target' ? '1' : undefined}
             value={String(value)}
             onChange={(event) => setCorrectionDraftField(field, event.target.value)}
             disabled={isCorrectionSubmitting}

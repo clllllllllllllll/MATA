@@ -277,7 +277,7 @@ One row per (reporting_period, programme, residency_year, posting_code, session_
 | r_year | VARCHAR(10) | NOT NULL | `R1`..`R7`, `SS1`..`SS3`, or `'ALL'` for programmes with `r_year_required = false` |
 | posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | |
 | session_type_id | UUID | FK → session_types.id, NOT NULL | |
-| monthly_target | INTEGER | NOT NULL | Sessions per active month at 100% |
+| monthly_target | INTEGER | NOT NULL, CHECK (`monthly_target >= 0`) | Non-negative sessions per active month at 100%. `0` is valid: the row remains catalogue-seeded and attendance-capable but is compliance-exempt. |
 | is_tracked | BOOLEAN | DEFAULT true | If false, attendance is stored but excluded from compliance numerator and denominator. Row still seeded into teaching_name_catalogue for event visibility. |
 | is_reallocatable | BOOLEAN | DEFAULT false | Whether surplus can be reallocated via tag |
 | tag | VARCHAR(10) | | Reallocation group label. If set, must match at least one other row at the same posting. |
@@ -476,8 +476,8 @@ Per-resident per-calendar-month active/inactive status parsed from the FormF1 fi
 | reporting_period_id | UUID | FK → reporting_periods.id, NOT NULL | |
 | mcr | VARCHAR(20) | NOT NULL | The only resident identifier read from FormF1. Join key to residents.mcr |
 | month_label | VARCHAR(10) | NOT NULL | e.g. `Jul-25`, `Aug-25` — calendar month |
-| status_raw | VARCHAR(50) | NOT NULL | Raw value from FormF1: `Active`, `Inactive`, `Extension` |
-| is_active | BOOLEAN | NOT NULL | Derived: `Active` and `Extension` → true. `Inactive` → false. |
+| status_raw | VARCHAR(50) | NOT NULL | Raw value from FormF1; blank monthly cells persist as an empty string |
+| is_active | BOOLEAN | NOT NULL | Derived: `Active` and `Extension` → true; `Inactive`, blank, `NULL`, and whitespace-only → false. |
 | promotion_date | DATE | NULL | Parsed from FormF1 promotion date / senior promotion date column (current template column Y). Stored for future R3→R4/senior-promotion compliance handling only. Not used by compliance in this phase. |
 | upload_id | UUID | FK → upload_logs.id | Which upload produced this record |
 | created_at | TIMESTAMPTZ | DEFAULT now() | |
@@ -488,6 +488,7 @@ Per-resident per-calendar-month active/inactive status parsed from the FormF1 fi
 - `Active` → is_active = true
 - `Extension` → is_active = true (always track, funding not allocated, clawback not exercised — `clawback_suppressed_reason = 'Extension'`)
 - `Inactive` → is_active = false (excluded from both numerator and denominator)
+- blank/`NULL`/whitespace-only monthly cell → is_active = false (excluded from both numerator and denominator; the record is still persisted)
 
 **Re-upload behaviour:** Full replace per `reporting_period_id` scope. Re-upload is allowed at any time (to handle unforeseen LOAs like maternity). Delete-and-reinsert within scope.
 

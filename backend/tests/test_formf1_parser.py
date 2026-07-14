@@ -12,7 +12,8 @@ from openpyxl import Workbook
 
 from app.middleware.errors import install_error_handlers
 from app.routers import admin
-from app.services.formf1_parser import parse_formf1_upload
+from app.services.parser_common import ParserResult
+from app.services.formf1_parser import _status_to_is_active, parse_formf1_upload
 
 
 class _FakeScalarResult:
@@ -252,17 +253,39 @@ def test_dynamic_header_detection_and_persistence_only_authoritative_fields() ->
         "Nov-25",
         "Dec-25",
     ]
-    assert result.metadata["records_created"] == 5
+    assert result.metadata["records_created"] == 6
     assert result.metadata["active_count"] == 4
-    assert result.metadata["inactive_count"] == 1
+    assert result.metadata["inactive_count"] == 2
     assert result.metadata["promotion_dates_parsed"] == 1
     assert result.metadata["promotion_date_warnings"] == []
-    assert any("unknown status" in warning for warning in result.warnings)
+    expected_warning = (
+        'Unknown FormF1 status "Unknown" at cell M7. '
+        "Please verify and correct the source data."
+    )
+    assert result.warnings == [
+        {
+            "type": "unknown_formf1_status",
+            "severity": "warning",
+            "message": expected_warning,
+            "mcr": "M12345A",
+            "month_label": "Oct-25",
+            "sheet_name": "Table 1",
+            "row_number": 7,
+            "cell_ref": "M7",
+            "raw_value": "Unknown",
+        }
+    ]
+    unknown_record = next(
+        row for row in session.form_f1_records if row["month_label"] == "Oct-25"
+    )
+    assert unknown_record["status_raw"] == "Unknown"
+    assert unknown_record["is_active"] is True
     assert {row["month_label"] for row in session.form_f1_records} == {
         "Jul-25",
         "Aug-25",
         "Sep-25",
         "Oct-25",
+        "Nov-25",
         "Dec-25",
     }
     assert all(row["mcr"] == "M12345A" for row in session.form_f1_records)
@@ -276,6 +299,80 @@ def test_dynamic_header_detection_and_persistence_only_authoritative_fields() ->
         "promotion_date",
         "upload_id",
     } for row in session.form_f1_records)
+
+
+def test_status_normalisation_recognises_blank_as_inactive() -> None:
+    assert _status_to_is_active("Active") == (True, None)
+    assert _status_to_is_active(" active ") == (True, None)
+    assert _status_to_is_active("Extension") == (True, None)
+    assert _status_to_is_active(" extension ") == (True, None)
+    assert _status_to_is_active("Inactive") == (False, None)
+    assert _status_to_is_active(None) == (False, None)
+    assert _status_to_is_active("") == (False, None)
+    assert _status_to_is_active("   ") == (False, None)
+    assert _status_to_is_active("Extensoin") == (
+        True,
+        "unknown status 'Extensoin' treated as active",
+    )
+
+
+def test_formf1_upload_response_exposes_safe_unknown_status_message() -> None:
+    message = (
+        'Unknown FormF1 status "N/A" at cell H24. '
+        "Please verify and correct the source data."
+    )
+    response = admin._format_formf1_response(
+        ParserResult(
+            upload_type="form_f1",
+            warnings=[
+                {
+                    "type": "unknown_formf1_status",
+                    "message": message,
+                    "raw_value": "N/A",
+                    "cell_ref": "H24",
+                }
+            ],
+        )
+    )
+
+    assert response["warnings"] == [message]
+
+
+def test_valid_mcr_row_with_blank_period_months_persists_inactive_records() -> None:
+    session = FakeFormF1Session()
+    period_id = uuid4()
+    _add_reporting_period(
+        session,
+        period_id=period_id,
+        start_date=date(2025, 7, 1),
+        end_date=date(2025, 12, 31),
+    )
+    session.residents.add("M12345A")
+    header_cells = {2: "MCR"}
+    header_cells.update(_month_headers_jul_dec_2025(10))
+
+    result = _run(
+        parse_formf1_upload(
+            file_bytes=_table1_xlsx(
+                header_row=6,
+                header_cells=header_cells,
+                data_rows=[{2: "M12345A"}, {2: "", 10: ""}],
+            ),
+            original_filename="blank-months.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert result.warnings == []
+    assert result.metadata["records_created"] == 6
+    assert result.metadata["active_count"] == 0
+    assert result.metadata["inactive_count"] == 6
+    assert {row["month_label"] for row in session.form_f1_records} == {
+        "Jul-25", "Aug-25", "Sep-25", "Oct-25", "Nov-25", "Dec-25"
+    }
+    assert all(row["status_raw"] == "" and row["is_active"] is False for row in session.form_f1_records)
 
 
 def test_jul_dec_boundary_period_ignores_next_boundary_month() -> None:
@@ -344,7 +441,8 @@ def test_jan_jun_boundary_period_ignores_next_boundary_month() -> None:
     data_rows = [
         {
             2: "M12345A",
-            **{col: "Active" for col in range(10, 23)},
+            **{col: "Active" for col in range(10, 22)},
+            22: "Extensoin",
         }
     ]
     file_bytes = _table1_xlsx(header_row=6, header_cells=header_cells, data_rows=data_rows)
@@ -376,6 +474,7 @@ def test_jan_jun_boundary_period_ignores_next_boundary_month() -> None:
         "Jun-26",
     }
     assert "Jul-26" not in {row["month_label"] for row in session.form_f1_records}
+    assert result.warnings == []
 
 
 def test_fallback_positions_e_mx_y_work() -> None:
@@ -408,11 +507,14 @@ def test_fallback_positions_e_mx_y_work() -> None:
 
     assert result.errors == []
     assert result.metadata["header_detection_mode"] == "fallback"
-    assert result.metadata["records_created"] == 3
+    assert result.metadata["records_created"] == 6
     assert {row["month_label"] for row in session.form_f1_records} == {
         "Jul-25",
         "Aug-25",
         "Sep-25",
+        "Oct-25",
+        "Nov-25",
+        "Dec-25",
     }
     assert all(row["promotion_date"] == date(2026, 2, 6) for row in session.form_f1_records)
 
@@ -856,7 +958,7 @@ def test_successful_reupload_full_replaces_scope_records() -> None:
     period_b_rows = [
         row for row in session.form_f1_records if row["reporting_period_id"] == str(period_b)
     ]
-    assert len(period_a_rows) == 2
+    assert len(period_a_rows) == 6
     assert {row["mcr"] for row in period_a_rows} == {"M67890B"}
     assert len(period_b_rows) == 1
     assert period_b_rows[0]["mcr"] == "MOTHER1A"

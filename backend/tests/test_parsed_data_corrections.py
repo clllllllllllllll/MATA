@@ -1202,6 +1202,39 @@ def test_teaching_target_correction_regenerates_catalogue_from_details_of_traini
     assert _audit_json(audit_row, "metadata_json")["catalogue_keywords"] == ["Journal Club", "Grand Round"]
 
 
+def test_teaching_target_correction_accepts_zero_and_rejects_fractional_or_negative_values() -> None:
+    session = FakeParsedDataCorrectionSession()
+    client = _build_client_with_session(session)
+
+    zero = client.patch(
+        f"/admin/parsed-data/teaching-targets/{session.target_id}",
+        headers=_headers(),
+        json={
+            "correction_reason": "Target is intentionally zero",
+            "last_seen_updated_at": session.now.isoformat(),
+            "changes": {"monthly_target": 0.0},
+        },
+    )
+
+    assert zero.status_code == 200
+    assert session.teaching_targets[0]["monthly_target"] == 0
+
+    for invalid_target in (None, 1.5, -1, -0.5):
+        session = FakeParsedDataCorrectionSession()
+        client = _build_client_with_session(session)
+        response = client.patch(
+            f"/admin/parsed-data/teaching-targets/{session.target_id}",
+            headers=_headers(),
+            json={
+                "correction_reason": "Reject invalid target",
+                "last_seen_updated_at": session.now.isoformat(),
+                "changes": {"monthly_target": invalid_target},
+            },
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"] == "monthly_target must be a non-negative whole number"
+
+
 def test_form_f1_custom_status_requires_explicit_is_active() -> None:
     session = FakeParsedDataCorrectionSession()
     client = _build_client_with_session(session)
@@ -1275,6 +1308,26 @@ def test_form_f1_known_status_valid_pairs_succeed() -> None:
         assert session.form_f1_records[0]["status_raw"] == status_raw
         assert session.form_f1_records[0]["is_active"] is is_active
         assert len(session.audit_logs) == 1
+
+
+def test_form_f1_blank_status_correction_is_persisted_as_inactive() -> None:
+    for blank_status in ("", None):
+        session = FakeParsedDataCorrectionSession()
+        client = _build_client_with_session(session)
+
+        response = client.patch(
+            f"/admin/parsed-data/form-f1-records/{session.form_f1_id}",
+            headers=_headers(),
+            json={
+                "correction_reason": "Source cell is blank",
+                "last_seen_updated_at": session.now.isoformat(),
+                "changes": {"status_raw": blank_status},
+            },
+        )
+
+        assert response.status_code == 200
+        assert session.form_f1_records[0]["status_raw"] == ""
+        assert session.form_f1_records[0]["is_active"] is False
 
 
 def test_academic_month_boundary_correction_is_master_only() -> None:

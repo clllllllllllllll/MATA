@@ -486,7 +486,7 @@ def detect_ttf_sheet(workbook) -> str | None:
 | D | posting_code | Bare code (e.g. `KTPHDiagRd`) or legacy bracket format |
 | E | dashboard_posting | Compliance grouping key. When non-empty, this value seeds `posting_groups.group_code`; the resolved Column D posting code becomes `posting_groups.            posting_code`. All posting codes sharing the same Column E value and programme are aggregated under that group for active-month counting, `target_100`, `target_70`, posting-level percentage, shortage, and clawback. When empty, no posting group row is created and the posting remains standalone under its resolved Column D posting code. |
 | F | session_type | Full name with duration, e.g. `Department/Programme Teaching [1h]` |
-| G | monthly_target | Integer frequency target at 100% |
+| G | monthly_target | Non-negative integer frequency target at 100%; `0` is valid |
 | H | is_tracked | `Yes` → true, anything else → false |
 | I | is_reallocatable | `Y` → true, anything else → false |
 | J | tag | Reallocation group label, e.g. `A`, `B`. Empty = no reallocation |
@@ -584,7 +584,7 @@ Before inserting, validate:
 
 1. `programme_code` matches a known programme
 2. Each posting code exists in `posting_codes` table (or add it as a new dormant code with display_name = NULL)
-3. `monthly_target` is a positive number
+3. `monthly_target` is a non-negative whole number. `0` and `0.0` are valid; negative, fractional, non-finite, and non-numeric values are rejected.
 4. `session_type` name contains a duration bracket `[Xh]`
 5. No duplicate `(reporting_period_id, programme_code, r_year, posting_code, session_type_id)` after explosion
 6. If `is_reallocatable = true`, `tag` must not be empty
@@ -719,9 +719,10 @@ Resident identity/profile/programme/r_year/posting remain authoritative from RDB
 | `Active` | true | Standard active |
 | `Extension` | true | Always track — funding not allocated, clawback not exercised (`clawback_suppressed_reason = 'Extension'`) |
 | `Inactive` | false | Excluded from both numerator and denominator |
+| blank, `NULL`, or whitespace-only | false | Recognised inactive monthly status; persists an inactive row |
 
 **Expected status list:** `Active`, `Inactive`, `Extension`.
-Unknown values must produce a warning, preserve `status_raw`, and must not fail upload.
+For every valid MCR row, every in-scope reporting-period month persists a record. Blank monthly status cells persist `status_raw = ''` and `is_active = false`; they do not produce an unknown-status warning. A blank MCR with no monthly values remains the end/skip-row condition. Unknown non-blank values preserve `status_raw`, use the existing active fallback, and do not fail upload. They create a persisted `unknown_formf1_status` warning containing the unknown value, Excel cell reference, MCR, and month label.
 
 **When is_active = false:** The resident-month is excluded from both the compliance numerator and denominator. Sessions attended in that month are stored but not counted.
 
@@ -878,7 +879,9 @@ Skip — resident has no posting that month.
 Deduplicate by MCR — use the later sheet's data if there's a conflict.
 
 ### TTF frequency target of 0
-Valid — session type exists at this posting but has no attendance requirement. Skip from compliance calculations.
+
+**Confirmed rule:** A zero-target row and its teaching-name catalogue entries remain persisted, so the session type remains available for event visibility, event creation, and attendance capture. It contributes to neither the compliance numerator nor denominator and creates no target, percentage, shortage, surplus, reallocation, or clawback contribution.
+
 
 ### TTF "No" in Tracked column
 The session type exists and events can be created, but attendance does NOT count toward compliance. The row is still seeded into `teaching_name_catalogue` so events are visible to residents. Both numerator and denominator exclude these sessions.
