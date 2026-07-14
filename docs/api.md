@@ -377,6 +377,7 @@ Upload Teaching Target File Excel.
 - **Body:** `file` (xlsx), `reporting_period_id` (UUID), `programme_code` (string)
 - **Processing:** See `docs/parsing.md` § TTF Parser
 - **Behaviour:** Full replace within `(reporting_period_id, programme_code)` scope. Re-upload always allowed regardless of existing attendance.
+- **Target validation:** `monthly_target` must be a non-negative whole number. `0` is accepted and remains catalogue-seeded, event-visible, and attendance-capable, but is excluded from compliance aggregation.
 - **Orphan detection:** After replace, checks for attendance records whose `teaching_name` no longer has a `teaching_name_catalogue` row. These are returned as warnings — upload still returns `200`.
 - **Concurrency:** Scope-level PostgreSQL advisory lock. A second upload for the same scope returns `409`.
 - **Audit log:** Writes `upload_logs` row with `upload_type = 'ttf'`
@@ -415,6 +416,7 @@ Upload FormF1 Excel file for active/inactive status per resident per calendar mo
 - **Parsed/persisted fields only:** MCR, monthly status columns, and promotion date/senior promotion date. Other FormF1 profile/identity columns are non-authoritative and are not persisted from FormF1.
 - **Column detection:** Dynamic header/column detection is preferred. Current-template fallback positions remain supported: column E = MCR, columns M–X = monthly statuses, column Y = promotion date.
 - **Behaviour:** Full replace per `reporting_period_id` scope. Re-upload allowed at any time (e.g. to update for unforeseen LOAs). Promotion date is parsed and persisted but is not used by compliance yet.
+- **Monthly-status normalisation:** `Active` and `Extension` persist as active. `Inactive`, blank, `NULL`, and whitespace-only cells persist as inactive records for valid MCR rows. Unknown non-blank values remain warning-only and preserve their raw value.
 - **422 fail-fast with no replacement:** If duplicate MCR validation fails, or if header/month-column detection is unsafe, return `422` and preserve existing `form_f1_records` rows for the period.
 - **Audit log:** Writes `upload_logs` row with `upload_type = 'form_f1'`
 - **Response:**
@@ -679,6 +681,7 @@ Edit a single teaching target row (mid-period correction).
 
 - **Auth:** admin only
 - **Editable fields:** `monthly_target`, `is_tracked`, `is_reallocatable`, `tag`, `details_of_training`
+- **Target validation:** `monthly_target` accepts non-negative whole numbers including `0`; negative and fractional values are rejected.
 - **Identity columns (locked):** `session_type_id`, `posting_code`, `programme_code`, `r_year` — cannot be changed via CRUD. Full TTF re-upload required for structural changes.
 - **Side effect:** When `details_of_training` is updated, the system deletes and re-inserts the corresponding `teaching_name_catalogue` rows for this `(reporting_period_id, programme_code, posting_code, session_type_id)` scope. Keyword changes take effect immediately for compliance and event visibility on the next read — no TTF re-upload needed.
 - **Body:**

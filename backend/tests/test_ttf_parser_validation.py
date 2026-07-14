@@ -123,7 +123,7 @@ async def test_ttf_workbook_read_error_is_sanitized_and_logged(monkeypatch, capl
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("target", [1, 1.0, 2])
+@pytest.mark.parametrize("target", [0, 0.0, 1, 1.0, 2])
 async def test_monthly_target_accepts_integral_excel_numbers(target: object) -> None:
     result = await _parse([_base_row(monthly_target=target)])
 
@@ -132,13 +132,25 @@ async def test_monthly_target_accepts_integral_excel_numbers(target: object) -> 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("target", [1.5, 2.25])
-async def test_monthly_target_rejects_non_integral_excel_numbers(target: float) -> None:
+@pytest.mark.parametrize("target", [1.5, 2.25, -1, -0.5, "NaN", "infinity"])
+async def test_monthly_target_rejects_values_outside_non_negative_whole_numbers(
+    target: object,
+) -> None:
     result = await _parse([_base_row(monthly_target=target)])
 
     assert result.metadata["targets"] == []
     assert result.errors == [
-        {"row": 2, "message": "Monthly target must be a whole number."}
+        {"row": 2, "message": "Monthly target must be a non-negative whole number."}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_monthly_target_rejects_non_numeric_text() -> None:
+    result = await _parse([_base_row(monthly_target="not numeric")])
+
+    assert result.metadata["targets"] == []
+    assert result.errors == [
+        {"row": 2, "message": "Monthly target 'not numeric' is not numeric."}
     ]
 
 

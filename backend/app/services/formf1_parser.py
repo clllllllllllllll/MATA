@@ -306,13 +306,15 @@ def _parse_promotion_date(value: Any) -> tuple[date | None, str | None]:
     return None, f"unparseable promotion date text: {text_value}"
 
 
-def _status_to_is_active(raw_status: str) -> tuple[bool, str | None]:
-    status_norm = raw_status.strip().casefold()
+def _status_to_is_active(raw_status: str | None) -> tuple[bool, str | None]:
+    status_norm = (raw_status or "").strip().casefold()
     if status_norm == "active":
         return True, None
     if status_norm == "extension":
         return True, None
     if status_norm == "inactive":
+        return False, None
+    if not status_norm:
         return False, None
     return True, f"unknown status '{raw_status}' treated as active"
 
@@ -563,9 +565,6 @@ async def parse_formf1_upload(
                 raw_status = _cell_text(
                     sheet.cell(row=row_idx, column=layout.month_cols[label]).value
                 )
-                if not raw_status:
-                    continue
-
                 is_active, status_warning = _status_to_is_active(raw_status)
                 if status_warning:
                     warnings.append(f"{mcr} {label}: {status_warning}")

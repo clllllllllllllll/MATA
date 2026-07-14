@@ -67,6 +67,8 @@ def compute_group_target_100(
 - `achieved` = raw count of attendance records (display only)
 - `achieved_and_counted` = min(achieved, target_100) — this feeds compliance
 
+**Zero targets:** A row with `monthly_target = 0` remains event-visible and attendance-capable, but is excluded before compliance aggregation. It contributes `0` to both numerator and denominator; its stored attendance is audit-only and cannot create a percentage, shortage, surplus, reallocation supply/demand, or clawback contribution.
+
 ---
 
 ## BL-2: Compliance Thresholds — 70% Traffic Light
@@ -93,8 +95,11 @@ def posting_compliance(
     target_100: int             # sum of all (monthly_target * active_months)
 ) -> dict:
     import math
+    if target_100 <= 0:
+        return {"applicable": False, "target_70": 0, "percentage": None,
+                "shortage": 0, "met": None}
     target_70 = math.ceil(target_100 * TARGET_70_PCT)
-    percentage = achieved_and_counted / target_100 if target_100 > 0 else 0
+    percentage = achieved_and_counted / target_100
     shortage = max(0, target_70 - achieved_and_counted)
     met = achieved_and_counted >= target_70
 
@@ -210,6 +215,8 @@ Surplus tracks independently per `(resident, posting_code, session_type)`.
 ```python
 def update_surplus(resident_id, posting_code, session_type_id, reporting_period_id):
     target = get_teaching_target(...)
+    if not target.is_tracked or target.monthly_target == 0:
+        return  # no surplus-ledger, reallocation, or clawback contribution
     achieved = count_attendance_records(...)
     surplus = max(0, achieved - target.monthly_target * active_months)
     upsert_surplus_ledger(
@@ -411,7 +418,7 @@ The compliance engine runs **JIT (just-in-time)** — recalculated on read, not 
 ### Resident dashboard — Python (single-resident JIT)
 
 1. Query all active `resident_postings` for the resident within the reporting period (status `active` or `loa_working`)
-2. For each phase, check `form_f1_records.is_active` for the corresponding calendar month. If false, exclude from denominator and numerator (FormF1 gate, separate from AY month bucketing)
+2. For each phase, check `form_f1_records.is_active` for the corresponding calendar month. If false, exclude from denominator and numerator (FormF1 gate, separate from AY month bucketing). `Active` and `Extension` are true; `Inactive` and blank monthly cells are false.
 3. For each active posting phase, check `posting_groups` for `(posting_code, programme_code)`. If a group is found, fetch all posting codes sharing the same `group_code`. Sum active_months and attendance across ALL group members (whole-month counting, no proration)
 4. For each attendance event, resolve AY month bucket using `programmes.ay_date_category` and `academic_month_boundaries` where `event_date BETWEEN start_date AND end_date`
 5. For each active posting phase, query native `attendance_records` joined via `teaching_events.posting_code` where `event_date BETWEEN phase.start_date AND phase.end_date` and `attendance_records.status = 'submitted'`. Do NOT filter by `attendance_records.posting_code` — it is audit-only. Do not join or read `external_attendance_records` in NHG compliance.
@@ -419,7 +426,7 @@ The compliance engine runs **JIT (just-in-time)** — recalculated on read, not 
 7. For remaining records, resolve `session_type_id` at read time by joining `teaching_name_catalogue` WHERE `keyword = teaching_event.teaching_name AND posting_code = teaching_event.posting_code AND programme_code = resident.programme_code AND r_year = phase.r_year AND reporting_period_id = current_period`. Use `duration_hours` tiebreaker if multiple catalogue rows match. If no catalogue match — silently exclude from compliance.
 8. Apply ORTHO weekend mutation if applicable (BL-5)
 9. Group by `(group_code OR posting_code, session_type_id)` — use group_code when a posting group exists, posting_code otherwise
-10. Apply capping (BL-1), accounting for `active_months_weight` and posting group aggregation
+10. Exclude untracked and zero-target rows before applying capping (BL-1). A zero target is not a `0/0` percentage or a met target; it is not applicable to compliance aggregation.
 11. Update `surplus_ledger` with pre-reallocation values (BL-4)
 12. Apply tag-based reallocation (BL-3) — read-time only, not written back
 13. Compute posting-level compliance (BL-2)
@@ -913,7 +920,7 @@ The `add to Max Cand` / `don't add to Max Cand` flag is stored as a display anno
 **Final behaviour:**
 - `form_f1_records.is_active` per calendar month is the denominator gate
 - Active status values: `Active`, `Extension` → is_active = true
-- Inactive → is_active = false → excluded from both numerator and denominator
+- `Inactive`, blank, `NULL`, and whitespace-only monthly cells → is_active = false → excluded from both numerator and denominator; valid MCR rows persist an inactive record for each blank in-scope month
 - `form_f1_records.promotion_date` is captured from FormF1 for future R3→R4/senior promotion handling, but current compliance logic must not use it yet
 - Employed residents: Active in FormF1 (they have real postings in RDB, no funding/clawback)
 - LOA months that render a resident inactive appear as Inactive in FormF1 — no separate LOA compliance logic needed

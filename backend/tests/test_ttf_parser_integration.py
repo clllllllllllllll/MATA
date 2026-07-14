@@ -512,6 +512,26 @@ def test_validation_error_prevents_any_db_writes_even_with_db_session() -> None:
     assert session.posting_groups == {}
 
 
+def test_zero_target_persists_and_seeds_teaching_name_catalogue() -> None:
+    session = FakeTTFSession()
+    period_id = uuid4()
+
+    result = _run(
+        parse_ttf_upload(
+            file_bytes=_ttf_bytes([_base_row(monthly_target=0, details="Zero Target Teaching")]),
+            original_filename="ttf-zero-target.xlsx",
+            reporting_period_id=period_id,
+            programme_code="DR",
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    assert session.teaching_targets[0]["monthly_target"] == 0
+    assert session.teaching_targets[0]["is_tracked"] is True
+    assert [row["keyword"] for row in session.catalogue_rows] == ["Zero Target Teaching"]
+
+
 def test_upload_route_uses_db_session_writes_upload_log_and_maps_lock_to_409() -> None:
     session = FakeTTFSession()
     app = FastAPI()

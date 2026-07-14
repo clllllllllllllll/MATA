@@ -817,7 +817,6 @@ _REQUIRED_TEXT_FIELDS = {
     "r_year",
     "posting_code",
     "status",
-    "status_raw",
     "academic_year_label",
     "ay_date_category",
     "month_label",
@@ -828,6 +827,7 @@ _RESIDENT_STATUS_VALUES = {"active", "inactive", "loa", "employed"}
 _POSTING_STATUS_VALUES = {"active", "loa", "loa_working", "employed"}
 _AY_DATE_CATEGORIES = {"im_subspec", "non_im_subspec"}
 _FORM_F1_STATUS_ACTIVE_MAP = {
+    "": False,
     "active": True,
     "extension": True,
     "inactive": False,
@@ -949,7 +949,22 @@ def _coerce_change_value(field: str, value: Any) -> Any:
             raise AssertionError from exc
     if field in _INT_FIELDS:
         if value is None:
+            if field == "monthly_target":
+                _raise_validation("monthly_target must be a non-negative whole number")
             return None
+        if field == "monthly_target":
+            try:
+                target = Decimal(str(value))
+            except Exception as exc:
+                _raise_validation("monthly_target must be a non-negative whole number")
+                raise AssertionError from exc
+            if (
+                not target.is_finite()
+                or target < 0
+                or target != target.to_integral_value()
+            ):
+                _raise_validation("monthly_target must be a non-negative whole number")
+            return int(target)
         try:
             return int(value)
         except (TypeError, ValueError) as exc:
@@ -959,8 +974,12 @@ def _coerce_change_value(field: str, value: Any) -> Any:
         if isinstance(value, bool):
             return value
         _raise_validation(f"{field} must be a boolean")
+    if field == "status_raw" and value is None:
+        return ""
     if isinstance(value, str):
         trimmed = value.strip()
+        if field == "status_raw":
+            return trimmed
         if field in _REQUIRED_TEXT_FIELDS and not trimmed:
             _raise_validation(f"{field} is required")
         return trimmed or None
@@ -1454,8 +1473,8 @@ async def _validate_teaching_target_changes(
     merged: dict[str, Any],
     changed: dict[str, Any],
 ) -> list[str] | None:
-    if "monthly_target" in changed and int(merged["monthly_target"]) <= 0:
-        _raise_validation("monthly_target must be positive")
+    if "monthly_target" in changed and int(merged["monthly_target"]) < 0:
+        _raise_validation("monthly_target must be a non-negative whole number")
     if bool(merged.get("is_reallocatable")) and not (merged.get("tag") or "").strip():
         _raise_validation("tag is required when is_reallocatable is true")
     if merged.get("posting_code") and not await _scalar_exists(
@@ -1538,17 +1557,18 @@ async def _validate_teaching_target_changes(
 def _validate_form_f1_changes(changed: dict[str, Any], merged: dict[str, Any]) -> None:
     if "status_raw" not in changed and "is_active" not in changed:
         return
-    status_key = str(merged["status_raw"]).strip().casefold()
+    status_key = str(merged.get("status_raw") or "").strip().casefold()
     if status_key not in _FORM_F1_STATUS_ACTIVE_MAP:
         if "is_active" not in changed:
             _raise_validation("custom status_raw values require explicit is_active")
         return
     expected = _FORM_F1_STATUS_ACTIVE_MAP[status_key]
-    if bool(merged["is_active"]) is not expected:
-        _raise_validation("is_active does not match status_raw")
     if "status_raw" in changed:
         changed["is_active"] = expected
         merged["is_active"] = expected
+        return
+    if bool(merged["is_active"]) is not expected:
+        _raise_validation("is_active does not match status_raw")
 
 
 async def _validate_academic_month_boundary_changes(
