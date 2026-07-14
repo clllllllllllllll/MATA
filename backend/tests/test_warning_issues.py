@@ -443,6 +443,49 @@ def test_derive_upload_warnings_persists_overlapping_resident_posting_phase() ->
     assert session.upload_warnings[0]["warning_type"] == "overlapping_resident_posting_phase"
 
 
+def test_derive_upload_warnings_persists_unknown_formf1_status_context() -> None:
+    session = FakeWarningIssueSession()
+    upload_log = session.add_upload_log(
+        upload_type="form_f1",
+        summary={
+            "warnings": [
+                {
+                    "type": "unknown_formf1_status",
+                    "severity": "warning",
+                    "message": (
+                        'Unknown FormF1 status "Extensoin" at cell H24. '
+                        "Please verify and correct the source data."
+                    ),
+                    "mcr": "M00001A",
+                    "month_label": "Aug-25",
+                    "sheet_name": "Table 1",
+                    "row_number": 24,
+                    "cell_ref": "H24",
+                    "raw_value": "Extensoin",
+                }
+            ]
+        },
+    )
+
+    result = _run(
+        derive_upload_warnings_from_summary(session, upload_log, upload_log["summary"])
+    )
+
+    assert result.issues_created == 1
+    assert result.occurrences_created == 1
+    issue = session.warning_issues[0]
+    occurrence = session.upload_warnings[0]
+    assert issue["warning_type"] == "unknown_formf1_status"
+    assert issue["mcr"] == "M00001A"
+    assert issue["month_label"] == "Aug-25"
+    assert occurrence["cell_ref"] == "H24"
+    assert occurrence["message"] == (
+        'Unknown FormF1 status "Extensoin" at cell H24. '
+        "Please verify and correct the source data."
+    )
+    assert occurrence["source_payload"]["raw_value"] == "Extensoin"
+
+
 @pytest.mark.parametrize("status", ["resolved", "dismissed", "superseded"])
 def test_resolved_dismissed_or_superseded_issue_becomes_reappeared(status: str) -> None:
     session = FakeWarningIssueSession()

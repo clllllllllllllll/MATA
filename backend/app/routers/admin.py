@@ -381,6 +381,12 @@ def _format_ttf_response(result: ParserResult) -> dict[str, Any]:
 
 def _format_formf1_response(result: ParserResult) -> dict[str, Any]:
     metadata = result.metadata or {}
+    warning_messages = [
+        warning.get("message", "Upload warning")
+        if isinstance(warning, dict)
+        else warning
+        for warning in result.warnings
+    ]
     return {
         "records_created": metadata.get("records_created", result.created_count),
         "records_updated": metadata.get("records_updated", result.updated_count),
@@ -392,7 +398,7 @@ def _format_formf1_response(result: ParserResult) -> dict[str, Any]:
         "inactive_count": metadata.get("inactive_count", 0),
         "promotion_dates_parsed": metadata.get("promotion_dates_parsed", 0),
         "promotion_date_warnings": metadata.get("promotion_date_warnings", []),
-        "warnings": result.warnings,
+        "warnings": warning_messages,
         "errors": result.errors,
     }
 

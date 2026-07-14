@@ -416,7 +416,7 @@ Upload FormF1 Excel file for active/inactive status per resident per calendar mo
 - **Parsed/persisted fields only:** MCR, monthly status columns, and promotion date/senior promotion date. Other FormF1 profile/identity columns are non-authoritative and are not persisted from FormF1.
 - **Column detection:** Dynamic header/column detection is preferred. Current-template fallback positions remain supported: column E = MCR, columns M–X = monthly statuses, column Y = promotion date.
 - **Behaviour:** Full replace per `reporting_period_id` scope. Re-upload allowed at any time (e.g. to update for unforeseen LOAs). Promotion date is parsed and persisted but is not used by compliance yet.
-- **Monthly-status normalisation:** `Active` and `Extension` persist as active. `Inactive`, blank, `NULL`, and whitespace-only cells persist as inactive records for valid MCR rows. Unknown non-blank values remain warning-only and preserve their raw value.
+- **Monthly-status normalisation:** `Active` and `Extension` persist as active. `Inactive`, blank, `NULL`, and whitespace-only cells persist as inactive records for valid MCR rows. Unknown non-blank values preserve their raw value, retain the active fallback, do not fail the upload, and emit a persisted `unknown_formf1_status` warning containing the value and Excel cell reference. Blank values do not generate this warning.
 - **422 fail-fast with no replacement:** If duplicate MCR validation fails, or if header/month-column detection is unsafe, return `422` and preserve existing `form_f1_records` rows for the period.
 - **Audit log:** Writes `upload_logs` row with `upload_type = 'form_f1'`
 - **Response:**

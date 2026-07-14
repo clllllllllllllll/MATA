@@ -319,6 +319,16 @@ def _status_to_is_active(raw_status: str | None) -> tuple[bool, str | None]:
     return True, f"unknown status '{raw_status}' treated as active"
 
 
+def _excel_cell_reference(*, column: int, row: int) -> str:
+    """Return an A1-style cell reference without depending on workbook internals."""
+    letters: list[str] = []
+    current = column
+    while current:
+        current, remainder = divmod(current - 1, 26)
+        letters.append(chr(ord("A") + remainder))
+    return f"{''.join(reversed(letters))}{row}"
+
+
 async def _fetch_reporting_period_dates(
     db_session: AsyncSession, reporting_period_id: UUID
 ) -> tuple[date, date] | None:
@@ -513,7 +523,7 @@ async def parse_formf1_upload(
             )
 
         parsed_rows: list[FormF1RecordWrite] = []
-        warnings: list[str] = []
+        warnings: list[str | dict[str, Any]] = []
         skipped_mcr_warnings: list[str] = []
         promotion_date_warnings: list[str] = []
         valid_mcr_rows: list[str] = []
@@ -562,12 +572,28 @@ async def parse_formf1_upload(
                 promotion_date_warnings.append(f"{mcr}: {promotion_warning}")
 
             for label in month_labels_parsed:
-                raw_status = _cell_text(
-                    sheet.cell(row=row_idx, column=layout.month_cols[label]).value
-                )
+                month_column = layout.month_cols[label]
+                raw_status = _cell_text(sheet.cell(row=row_idx, column=month_column).value)
                 is_active, status_warning = _status_to_is_active(raw_status)
                 if status_warning:
-                    warnings.append(f"{mcr} {label}: {status_warning}")
+                    cell_ref = _excel_cell_reference(column=month_column, row=row_idx)
+                    message = (
+                        f'Unknown FormF1 status "{raw_status}" at cell {cell_ref}. '
+                        "Please verify and correct the source data."
+                    )
+                    warnings.append(
+                        {
+                            "type": "unknown_formf1_status",
+                            "severity": "warning",
+                            "message": message,
+                            "mcr": mcr,
+                            "month_label": label,
+                            "sheet_name": sheet.title,
+                            "row_number": row_idx,
+                            "cell_ref": cell_ref,
+                            "raw_value": raw_status,
+                        }
+                    )
 
                 parsed_rows.append(
                     FormF1RecordWrite(

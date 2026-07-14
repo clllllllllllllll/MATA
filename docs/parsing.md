@@ -722,7 +722,7 @@ Resident identity/profile/programme/r_year/posting remain authoritative from RDB
 | blank, `NULL`, or whitespace-only | false | Recognised inactive monthly status; persists an inactive row |
 
 **Expected status list:** `Active`, `Inactive`, `Extension`.
-For every valid MCR row, every in-scope reporting-period month persists a record. Blank monthly status cells persist `status_raw = ''` and `is_active = false`; they do not produce an unknown-status warning. A blank MCR with no monthly values remains the end/skip-row condition. Unknown non-blank values must produce a warning, preserve `status_raw`, and must not fail upload.
+For every valid MCR row, every in-scope reporting-period month persists a record. Blank monthly status cells persist `status_raw = ''` and `is_active = false`; they do not produce an unknown-status warning. A blank MCR with no monthly values remains the end/skip-row condition. Unknown non-blank values preserve `status_raw`, use the existing active fallback, and do not fail upload. They create a persisted `unknown_formf1_status` warning containing the unknown value, Excel cell reference, MCR, and month label.
 
 **When is_active = false:** The resident-month is excluded from both the compliance numerator and denominator. Sessions attended in that month are stored but not counted.
 

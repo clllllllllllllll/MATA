@@ -29,6 +29,8 @@ def compute_achieved_and_counted(
 **FormF1 active/inactive gate (final):**
 The `form_f1_records` table is the final authoritative active/inactive source. A resident-month where `is_active = false` is excluded from both the compliance numerator and denominator.
 
+Unknown non-blank FormF1 monthly statuses retain their raw value and use the existing active fallback so the upload remains non-blocking. Each creates a persisted `unknown_formf1_status` warning with the unknown value and Excel cell reference. Blank, `NULL`, and whitespace-only monthly cells are recognised inactive values and do not create this warning.
+
 **FormF1 and multi-posting cells:** FormF1 active/inactive is per calendar month per resident — not per posting code. If a resident has two postings in the same calendar month (e.g. multi-posting cell), FormF1 applies uniformly to both. A month cannot be Active for one posting and Inactive for another.
 
 **active_months weight for half-month postings:**
