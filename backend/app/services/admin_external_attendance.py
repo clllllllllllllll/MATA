@@ -136,6 +136,50 @@ def _detail(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _catalogue_authorization_clause(
+    *,
+    catalogue_alias: str,
+    programme_clause: str,
+    reporting_period_id: UUID | None,
+) -> str:
+    """Scope a catalogue authorization to the event's unambiguous period.
+
+    Historical external-attendance reports may read an inactive selected period, so
+    this intentionally uses date containment rather than current effective status.
+    Without an explicit period, overlapping period windows fail closed by allowing
+    no arbitrary catalogue row to authorize the event.
+    """
+    if reporting_period_id is not None:
+        return f"""
+            EXISTS (
+                SELECT 1
+                FROM teaching_name_catalogue {catalogue_alias}
+                WHERE {catalogue_alias}.reporting_period_id = :reporting_period_id
+                  AND {catalogue_alias}.posting_code = te.posting_code
+                  AND {catalogue_alias}.keyword = te.teaching_name
+                  AND {programme_clause}
+            )
+        """
+    return f"""
+        EXISTS (
+            SELECT 1
+            FROM reporting_periods applicable_period
+            JOIN teaching_name_catalogue {catalogue_alias}
+              ON {catalogue_alias}.reporting_period_id = applicable_period.id
+            WHERE te.event_date BETWEEN applicable_period.start_date AND applicable_period.end_date
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM reporting_periods competing_period
+                  WHERE competing_period.id <> applicable_period.id
+                    AND te.event_date BETWEEN competing_period.start_date AND competing_period.end_date
+              )
+              AND {catalogue_alias}.posting_code = te.posting_code
+              AND {catalogue_alias}.keyword = te.teaching_name
+              AND {programme_clause}
+        )
+    """
+
+
 def _base_where(
     *,
     programme_scope: set[str],
@@ -147,6 +191,7 @@ def _base_where(
     status: str | None,
     date_from: date | None,
     date_to: date | None,
+    reporting_period_id: UUID | None = None,
     attendance_id: UUID | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     clean_programme_code = _normalise_optional(programme_code)
@@ -171,29 +216,35 @@ def _base_where(
 
     where: list[str] = []
     params: dict[str, Any] = {}
-    if not master_admin:
-        params["programme_scope"] = sorted(programme_scope)
+    if reporting_period_id is not None:
+        params["reporting_period_id"] = str(reporting_period_id)
         where.append(
             """
             EXISTS (
                 SELECT 1
-                FROM teaching_name_catalogue tnc_scope
-                WHERE tnc_scope.posting_code = te.posting_code
-                  AND tnc_scope.programme_code = ANY(:programme_scope)
+                FROM reporting_periods selected_period
+                WHERE selected_period.id = :reporting_period_id
+                  AND te.event_date BETWEEN selected_period.start_date AND selected_period.end_date
             )
             """
+        )
+    if not master_admin:
+        params["programme_scope"] = sorted(programme_scope)
+        where.append(
+            _catalogue_authorization_clause(
+                catalogue_alias="tnc_scope",
+                programme_clause="tnc_scope.programme_code = ANY(:programme_scope)",
+                reporting_period_id=reporting_period_id,
+            )
         )
     if clean_programme_code is not None:
         params["programme_code"] = clean_programme_code
         where.append(
-            """
-            EXISTS (
-                SELECT 1
-                FROM teaching_name_catalogue tnc_programme
-                WHERE tnc_programme.posting_code = te.posting_code
-                  AND tnc_programme.programme_code = :programme_code
+            _catalogue_authorization_clause(
+                catalogue_alias="tnc_programme",
+                programme_clause="tnc_programme.programme_code = :programme_code",
+                reporting_period_id=reporting_period_id,
             )
-            """
         )
     if attendance_id is not None:
         params["attendance_id"] = str(attendance_id)
@@ -269,6 +320,7 @@ async def list_external_attendance(
     status: str | None,
     date_from: date | None,
     date_to: date | None,
+    reporting_period_id: UUID | None,
     limit: int,
     offset: int,
 ) -> dict[str, Any]:
@@ -282,6 +334,7 @@ async def list_external_attendance(
         status=status,
         date_from=date_from,
         date_to=date_to,
+        reporting_period_id=reporting_period_id,
     )
     params.update({"limit": limit, "offset": offset})
     where_sql = " AND ".join(f"({clause})" for clause in where)
@@ -366,6 +419,7 @@ async def get_external_attendance(
         status=None,
         date_from=None,
         date_to=None,
+        reporting_period_id=None,
         attendance_id=attendance_id,
     )
     where_sql = " AND ".join(f"({clause})" for clause in where)
@@ -456,6 +510,7 @@ async def export_external_attendance_xlsx(
     status: str | None,
     date_from: date | None,
     date_to: date | None,
+    reporting_period_id: UUID | None,
 ) -> dict[str, Any]:
     where, params = _base_where(
         programme_scope=programme_scope,
@@ -467,6 +522,7 @@ async def export_external_attendance_xlsx(
         status=status,
         date_from=date_from,
         date_to=date_to,
+        reporting_period_id=reporting_period_id,
     )
     where_sql = " AND ".join(f"({clause})" for clause in where)
     result = await db.execute(

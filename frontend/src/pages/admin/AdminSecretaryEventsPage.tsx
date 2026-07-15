@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
+import type { SetStateAction } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   getAdminSecretaryEvent,
@@ -13,6 +14,13 @@ import { IconChevRight, IconRefresh } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useAppState } from '../../context/useAppState'
+import {
+  AuthScopedReportingPageRequestController,
+  authScopedReportingPageReducer,
+  createAuthScopedReportingPageState,
+  revalidateReportingPeriodFilterId,
+  type AuthScopedReportingPageState,
+} from '../../utils/authScopedReportingPeriodFilter'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 type AttendanceFilter = 'all' | 'with' | 'without'
@@ -28,6 +36,15 @@ interface FilterState {
 
 const pageSize = 25
 const searchDebounceMs = 300
+
+const emptyFilters = (reportingPeriodId = ''): FilterState => ({
+  reportingPeriodId,
+  postingCode: 'all',
+  dateFrom: '',
+  dateTo: '',
+  search: '',
+  hasAttendance: 'all',
+})
 
 const emptySummary: AdminSecretaryEventListSummary = {
   totalEvents: 0,
@@ -134,6 +151,14 @@ const MetricTile = ({
   </div>
 )
 
+type SecretaryEventsPageState = AuthScopedReportingPageState<
+  FilterState,
+  AdminSecretaryEventListItem,
+  AdminSecretaryEventListSummary,
+  AdminSecretaryEventDetail,
+  { eventId: string; message: string }
+>
+
 export const AdminSecretaryEventsPage = () => {
   const [searchParams, setSearchParams] = useSearchParams()
   const {
@@ -144,34 +169,106 @@ export const AdminSecretaryEventsPage = () => {
     reportingPeriods,
     reportingPeriodsLoading,
     reportingPeriodsError,
+    reportingPeriodAuthenticationContextVersion: authenticationContextVersion,
   } = useAppState()
   const adminLevel = role === 'programme_pc' ? 'programme' : 'master'
-  const [filters, setFilters] = useState<FilterState>({
-    reportingPeriodId: reportingPeriodId || '',
-    postingCode: 'all',
-    dateFrom: '',
-    dateTo: '',
-    search: '',
-    hasAttendance: 'all',
-  })
+  const [pageState, dispatchPageState] = useReducer(
+    authScopedReportingPageReducer<
+      FilterState,
+      AdminSecretaryEventListItem,
+      AdminSecretaryEventListSummary,
+      AdminSecretaryEventDetail,
+      { eventId: string; message: string }
+    >,
+    undefined,
+    () => createAuthScopedReportingPageState<
+      FilterState,
+      AdminSecretaryEventListItem,
+      AdminSecretaryEventListSummary,
+      AdminSecretaryEventDetail,
+      { eventId: string; message: string }
+    >(
+      authenticationContextVersion,
+      emptyFilters(reportingPeriodId),
+      emptySummary,
+      searchParams.get('event_id')?.trim() ?? '',
+    ),
+  )
+  const [requestController] = useState(
+    () => new AuthScopedReportingPageRequestController(authenticationContextVersion),
+  )
+  const authenticationContextChanged =
+    pageState.authenticationContextVersion !== authenticationContextVersion
+  const authenticationResetPending =
+    authenticationContextChanged || pageState.authenticationResetPending
+  const mergePageState = useCallback((changes:
+    | Partial<SecretaryEventsPageState>
+    | ((state: SecretaryEventsPageState) => Partial<SecretaryEventsPageState>),
+  ) => {
+    dispatchPageState({ type: 'merge', changes })
+  }, [])
+  const setFilters = useCallback((value: SetStateAction<FilterState>) => {
+    mergePageState((state) => ({
+      filters: typeof value === 'function' ? value(state.filters) : value,
+    }))
+  }, [mergePageState])
+  const setEvents = useCallback((value: SetStateAction<AdminSecretaryEventListItem[]>) => {
+    mergePageState((state) => ({
+      rows: typeof value === 'function' ? value(state.rows) : value,
+    }))
+  }, [mergePageState])
+  const setSummary = useCallback((value: SetStateAction<AdminSecretaryEventListSummary>) => {
+    mergePageState((state) => ({
+      summary: typeof value === 'function' ? value(state.summary) : value,
+    }))
+  }, [mergePageState])
+  const setTotal = useCallback((value: SetStateAction<number>) => {
+    mergePageState((state) => ({ total: typeof value === 'function' ? value(state.total) : value }))
+  }, [mergePageState])
+  const setOffset = useCallback((value: SetStateAction<number>) => {
+    mergePageState((state) => ({ offset: typeof value === 'function' ? value(state.offset) : value }))
+  }, [mergePageState])
+  const setSelectedEvent = useCallback((
+    value: SetStateAction<AdminSecretaryEventListItem | null>,
+  ) => {
+    mergePageState((state) => ({
+      selectedRow: typeof value === 'function' ? value(state.selectedRow) : value,
+    }))
+  }, [mergePageState])
+  const setSelectedDetail = useCallback((
+    value: SetStateAction<AdminSecretaryEventDetail | null>,
+  ) => {
+    mergePageState((state) => ({
+      selectedDetail: typeof value === 'function' ? value(state.selectedDetail) : value,
+    }))
+  }, [mergePageState])
+  const setDetailError = useCallback((
+    value: SetStateAction<{ eventId: string; message: string } | null>,
+  ) => {
+    mergePageState((state) => ({
+      detailError: typeof value === 'function' ? value(state.detailError) : value,
+    }))
+  }, [mergePageState])
+  const {
+    filters,
+    rows: events,
+    summary,
+    total,
+    offset,
+    selectedRow: selectedEvent,
+    selectedDetail,
+    detailError,
+  } = pageState
   const [debouncedSearch, setDebouncedSearch] = useState(filters.search)
-  const [events, setEvents] = useState<AdminSecretaryEventListItem[]>([])
-  const [summary, setSummary] = useState<AdminSecretaryEventListSummary>(emptySummary)
-  const [total, setTotal] = useState(0)
-  const [offset, setOffset] = useState(0)
   const [eventsLoading, setEventsLoading] = useState(true)
   const [isRefetching, setIsRefetching] = useState(false)
   const [isManualRefreshing, setIsManualRefreshing] = useState(false)
   const [eventsError, setEventsError] = useState<string | null>(null)
   const [postingOptions, setPostingOptions] = useState<PostingCodeOption[]>([])
   const [postingError, setPostingError] = useState<string | null>(null)
-  const [selectedEvent, setSelectedEvent] = useState<AdminSecretaryEventListItem | null>(null)
-  const [selectedDetail, setSelectedDetail] = useState<AdminSecretaryEventDetail | null>(null)
-  const [detailError, setDetailError] = useState<{ eventId: string; message: string } | null>(null)
   const hasLoadedRef = useRef(false)
-  const periodSeededRef = useRef(Boolean(reportingPeriodId))
-  const detailRequestRef = useRef(0)
-  const selectedEventId = searchParams.get('event_id')?.trim() ?? ''
+  const selectedEventSearchParam = searchParams.get('event_id')?.trim() ?? ''
+  const selectedEventId = pageState.detailId
 
   const updateFilter = <Key extends keyof FilterState>(
     key: Key,
@@ -184,16 +281,100 @@ export const AdminSecretaryEventsPage = () => {
     setOffset(0)
   }
 
-  useEffect(() => {
-    if (periodSeededRef.current || !reportingPeriodId) {
+  useLayoutEffect(() => {
+    if (!authenticationContextChanged) {
       return
     }
-    periodSeededRef.current = true
-    setFilters((previous) => ({
-      ...previous,
+    requestController.synchronizeAuthenticationContext(authenticationContextVersion)
+    dispatchPageState({
+      type: 'authentication-context-changed',
+      authenticationContextVersion,
+      filters: emptyFilters(reportingPeriodId),
+      summary: emptySummary,
+    })
+  }, [
+    authenticationContextChanged,
+    authenticationContextVersion,
+    reportingPeriodId,
+    requestController,
+  ])
+
+  useEffect(() => {
+    if (!pageState.authenticationResetPending) {
+      return
+    }
+    let active = true
+    void Promise.resolve().then(() => {
+      if (!active) {
+        return
+      }
+      setDebouncedSearch('')
+      setEventsLoading(true)
+      setIsRefetching(false)
+      setIsManualRefreshing(false)
+      setEventsError(null)
+      setPostingOptions([])
+      setPostingError(null)
+      hasLoadedRef.current = false
+      setSearchParams((previous) => {
+        const next = new URLSearchParams(previous)
+        next.delete('event_id')
+        return next
+      }, { replace: true })
+      if (!selectedEventSearchParam) {
+        dispatchPageState({ type: 'authentication-reset-completed' })
+      }
+    })
+    return () => {
+      active = false
+    }
+  }, [pageState.authenticationResetPending, selectedEventSearchParam, setSearchParams])
+
+  useEffect(() => {
+    if (authenticationResetPending || selectedEventSearchParam === pageState.detailId) {
+      return
+    }
+    mergePageState({ detailId: selectedEventSearchParam })
+  }, [
+    authenticationResetPending,
+    mergePageState,
+    pageState.detailId,
+    selectedEventSearchParam,
+  ])
+
+  useEffect(() => {
+    if (authenticationResetPending || reportingPeriodsLoading) {
+      return
+    }
+    const nextReportingPeriodId = revalidateReportingPeriodFilterId(
+      reportingPeriods,
+      filters.reportingPeriodId,
       reportingPeriodId,
-    }))
-  }, [reportingPeriodId])
+    )
+    if (nextReportingPeriodId === filters.reportingPeriodId) {
+      return
+    }
+    let active = true
+    void Promise.resolve().then(() => {
+      if (active) {
+        setFilters((previous) => ({ ...previous, reportingPeriodId: nextReportingPeriodId }))
+      }
+    })
+    return () => {
+      active = false
+    }
+  }, [
+    authenticationResetPending,
+    filters.reportingPeriodId,
+    reportingPeriodId,
+    reportingPeriods,
+    reportingPeriodsLoading,
+    setFilters,
+  ])
+
+  useEffect(() => () => {
+    requestController.invalidateAll()
+  }, [requestController])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -227,14 +408,14 @@ export const AdminSecretaryEventsPage = () => {
     return () => {
       active = false
     }
-  }, [adminLevel, demoAdminId, demoAdminProgrammes])
+  }, [adminLevel, authenticationContextVersion, demoAdminId, demoAdminProgrammes])
 
-  const loadEvents = useCallback(async () => {
+  const loadEvents = useCallback(async (validatedReportingPeriodId?: string) => {
     return listAdminSecretaryEvents({
       adminId: demoAdminId,
       adminProgrammes: demoAdminProgrammes,
       adminLevel,
-      reportingPeriodId: filters.reportingPeriodId,
+      reportingPeriodId: validatedReportingPeriodId,
       postingCode: filters.postingCode === 'all' ? undefined : filters.postingCode,
       dateFrom: filters.dateFrom,
       dateTo: filters.dateTo,
@@ -252,7 +433,6 @@ export const AdminSecretaryEventsPage = () => {
     filters.dateTo,
     filters.hasAttendance,
     filters.postingCode,
-    filters.reportingPeriodId,
     offset,
   ])
 
@@ -265,99 +445,133 @@ export const AdminSecretaryEventsPage = () => {
       setEventsLoading(true)
     }
     setEventsError(null)
-    try {
-      const response = await loadEvents()
-      setEvents(response.items)
-      setSummary(response.summary)
-      setTotal(response.total)
-      hasLoadedRef.current = true
-    } catch (error) {
+    const result = await requestController.runListRequest(
+      reportingPeriods,
+      filters.reportingPeriodId,
+      loadEvents,
+    )
+    if (result.status === 'stale') {
+      return
+    }
+    if (result.status === 'invalid-period') {
+      dispatchPageState({ type: 'invalid-reporting-period', summary: emptySummary })
+      setSearchParams((previous) => {
+        const next = new URLSearchParams(previous)
+        next.delete('event_id')
+        return next
+      }, { replace: true })
+    } else if (result.status === 'error') {
       setEvents([])
       setSummary(emptySummary)
       setTotal(0)
       hasLoadedRef.current = true
-      setEventsError(formatUserFacingApiError(error, {
+      setEventsError(formatUserFacingApiError(result.error, {
         fallbackMessage: 'Unable to load secretary events.',
       }))
-    } finally {
-      setEventsLoading(false)
-      setIsRefetching(false)
-      setIsManualRefreshing(false)
+    } else {
+      setEvents(result.value.items)
+      setSummary(result.value.summary)
+      setTotal(result.value.total)
+      hasLoadedRef.current = true
     }
-  }, [loadEvents])
+    setEventsLoading(false)
+    setIsRefetching(false)
+    setIsManualRefreshing(false)
+  }, [
+    filters.reportingPeriodId,
+    loadEvents,
+    reportingPeriods,
+    requestController,
+    setEvents,
+    setSearchParams,
+    setSummary,
+    setTotal,
+  ])
 
   useEffect(() => {
+    if (authenticationResetPending) {
+      return
+    }
     let active = true
-    ;(async () => {
-      if (!active) {
-        return
+    void Promise.resolve().then(() => {
+      if (active) {
+        void fetchEvents(false)
       }
-      await fetchEvents(false)
-    })()
+    })
     return () => {
       active = false
+      requestController.invalidateList()
     }
-  }, [fetchEvents])
+  }, [authenticationResetPending, fetchEvents, requestController])
 
   const openDetail = (event: AdminSecretaryEventListItem) => {
     const nextParams = new URLSearchParams(searchParams)
     nextParams.set('event_id', event.id)
     setSearchParams(nextParams, { replace: true })
     setSelectedEvent(event)
+    mergePageState({ detailId: event.id })
   }
 
-  const closeDetail = () => {
-    detailRequestRef.current += 1
-    const nextParams = new URLSearchParams(searchParams)
-    nextParams.delete('event_id')
-    setSearchParams(nextParams, { replace: true })
+  const closeDetail = useCallback(() => {
+    requestController.invalidateDetail()
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous)
+      next.delete('event_id')
+      return next
+    }, { replace: true })
     setSelectedEvent(null)
     setSelectedDetail(null)
     setDetailError(null)
-  }
+    mergePageState({ detailId: '' })
+  }, [
+    mergePageState,
+    requestController,
+    setDetailError,
+    setSearchParams,
+    setSelectedDetail,
+    setSelectedEvent,
+  ])
 
   useEffect(() => {
-    if (!selectedEventId) {
+    if (authenticationResetPending || !selectedEventId) {
       return
     }
 
-    const requestId = detailRequestRef.current + 1
-    detailRequestRef.current = requestId
-
     ;(async () => {
-      try {
-        const detail = await getAdminSecretaryEvent({
+      const result = await requestController.runDetailRequest(() =>
+        getAdminSecretaryEvent({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
           eventId: selectedEventId,
+        }),
+      )
+      if (result.status === 'success') {
+        setSelectedDetail(result.value)
+        setSelectedEvent(result.value)
+      } else if (result.status === 'error') {
+        setDetailError({
+          eventId: selectedEventId,
+          message: formatUserFacingApiError(result.error, {
+            fallbackMessage: 'Unable to load event detail.',
+          }),
         })
-        if (detailRequestRef.current === requestId) {
-          setSelectedDetail(detail)
-          setSelectedEvent(detail)
-        }
-      } catch (error) {
-        if (detailRequestRef.current === requestId) {
-          setDetailError({
-            eventId: selectedEventId,
-            message: formatUserFacingApiError(error, {
-              fallbackMessage: 'Unable to load event detail.',
-            }),
-          })
-        }
       }
     })()
-  }, [adminLevel, demoAdminId, demoAdminProgrammes, selectedEventId])
+  }, [
+    adminLevel,
+    authenticationResetPending,
+    demoAdminId,
+    demoAdminProgrammes,
+    requestController,
+    selectedEventId,
+    setDetailError,
+    setSelectedDetail,
+    setSelectedEvent,
+  ])
 
   const clearFilters = () => {
-    setFilters({
-      reportingPeriodId: '',
-      postingCode: 'all',
-      dateFrom: '',
-      dateTo: '',
-      search: '',
-      hasAttendance: 'all',
-    })
+    setFilters(emptyFilters())
     setDebouncedSearch('')
     setOffset(0)
   }
@@ -383,6 +597,10 @@ export const AdminSecretaryEventsPage = () => {
     () => reportingPeriods.find((period) => period.id === filters.reportingPeriodId),
     [filters.reportingPeriodId, reportingPeriods],
   )
+
+  if (authenticationResetPending) {
+    return null
+  }
 
   return (
     <div className="page admin-secretary-events-page">

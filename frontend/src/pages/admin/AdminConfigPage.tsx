@@ -54,8 +54,10 @@ import { useAuth } from '../../context/useAuth'
 import { useAdminConfigReadCache } from '../../hooks/useAdminConfigReadCache'
 import type { ReportingPeriodOption } from '../../types/upload'
 import {
+  defaultDeactivateOn,
+  isEffectivelyActiveReportingPeriod,
   normaliseReportingPeriodStatus,
-  reportingPeriodStatusLabel,
+  reportingPeriodDisplayStatus,
   type ReportingPeriodStatus,
 } from '../../utils/reportingPeriods'
 import { formatProgrammePcConfigSubtitle } from '../../utils/programmePcLabels'
@@ -96,6 +98,7 @@ interface ReportingPeriodFormState {
   startDate: string
   endDate: string
   status: ReportingPeriodStatus
+  deactivateOn: string
 }
 
 interface PublicHolidayFormState {
@@ -196,6 +199,7 @@ const emptyReportingPeriodForm: ReportingPeriodFormState = {
   startDate: '',
   endDate: '',
   status: 'active',
+  deactivateOn: '',
 }
 
 const emptyPublicHolidayForm: PublicHolidayFormState = {
@@ -544,14 +548,15 @@ const describeDeleteError = (error: unknown): NonNullable<Feedback> => {
   }
 }
 
-const periodStatusTone = (status: string): 'success' | 'neutral' =>
-  normaliseReportingPeriodStatus(status) === 'active' ? 'success' : 'neutral'
+const periodStatusTone = (period: ReportingPeriodOption): 'success' | 'neutral' =>
+  isEffectivelyActiveReportingPeriod(period) ? 'success' : 'neutral'
 
 const toFormState = (period: ReportingPeriodOption): ReportingPeriodFormState => ({
   label: period.label,
   startDate: period.startDate,
   endDate: period.endDate,
   status: normaliseReportingPeriodStatus(period.status),
+  deactivateOn: period.deactivateOn ?? '',
 })
 
 const toPublicHolidayFormState = (holiday: PublicHoliday): PublicHolidayFormState => ({
@@ -820,13 +825,31 @@ const ReportingPeriodsSection = () => {
     setSubmitState('submitting')
     setFeedback(null)
     setFeedbackDetailsOpen(false)
+    const today = new Date()
+    const todayIso = [today.getFullYear(), String(today.getMonth() + 1).padStart(2, '0'), String(today.getDate()).padStart(2, '0')]
+      .join('-')
+    if (
+      formState.status === 'active'
+      && formState.endDate < todayIso
+      && (!formState.deactivateOn || formState.deactivateOn <= todayIso)
+    ) {
+      setSubmitState('error')
+      setFeedback({
+        tone: 'error',
+        message: 'A past reporting period can be reopened only with a new deactivation date after today.',
+      })
+      return
+    }
     try {
       if (drawerMode === 'edit' && selectedPeriod) {
         await updateReportingPeriod({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           id: selectedPeriod.id,
-          payload: formState,
+          payload: {
+            ...formState,
+            deactivateOn: formState.deactivateOn || null,
+          },
         })
         setFeedback(mutationFeedback('Reporting period updated.'))
       } else {
@@ -837,6 +860,7 @@ const ReportingPeriodsSection = () => {
             label: formState.label,
             startDate: formState.startDate,
             endDate: formState.endDate,
+            deactivateOn: formState.deactivateOn || undefined,
           },
         })
         setFeedback(mutationFeedback('Reporting period created.', result))
@@ -1008,7 +1032,7 @@ const ReportingPeriodsSection = () => {
                     <td>{formatDate(period.startDate)}</td>
                     <td>{formatDate(period.endDate)}</td>
                     <td>
-                      <StatusBadge label={reportingPeriodStatusLabel(period.status)} tone={periodStatusTone(period.status)} />
+                      <StatusBadge label={reportingPeriodDisplayStatus(period)} tone={periodStatusTone(period)} />
                     </td>
                     <td>{formatDate(period.updatedAt)}</td>
                     <td>
@@ -1124,13 +1148,33 @@ const ReportingPeriodsSection = () => {
               <input
                 type="date"
                 value={formState.endDate}
-                onChange={(event) =>
-                  setFormState((prev) => ({ ...prev, endDate: event.target.value }))
-                }
+                onChange={(event) => {
+                  const endDate = event.target.value
+                  setFormState((prev) => {
+                    const previousDefault = defaultDeactivateOn(prev.endDate)
+                    return {
+                      ...prev,
+                      endDate,
+                      deactivateOn:
+                        !prev.deactivateOn || prev.deactivateOn === previousDefault
+                          ? defaultDeactivateOn(endDate)
+                          : prev.deactivateOn,
+                    }
+                  })
+                }}
                 required
               />
             </label>
           </div>
+          <label>
+            Deactivate on
+            <input
+              type="date"
+              value={formState.deactivateOn}
+              onChange={(event) => setFormState((prev) => ({ ...prev, deactivateOn: event.target.value }))}
+            />
+            <small>Defaults to 14 calendar days after the end date. A reopened past period needs a future date.</small>
+          </label>
           {drawerMode === 'edit' ? (
             <label>
               Status

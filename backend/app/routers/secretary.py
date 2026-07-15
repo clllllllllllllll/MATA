@@ -549,11 +549,15 @@ async def current_residents(
 
 @router.get("/teaching-name-options")
 async def teaching_name_options(
+    reporting_period_id: UUID | None = Query(default=None),
+    event_date: date | None = Query(default=None),
     secretary_context: SecretaryContext = Depends(require_secretary_context),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
     options = await secretary_events.teaching_name_options(
         db,
         posting_code=secretary_context.posting_code,
+        reporting_period_id=reporting_period_id,
+        relevant_date=event_date,
     )
     return {"options": options}

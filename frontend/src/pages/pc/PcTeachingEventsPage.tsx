@@ -26,6 +26,7 @@ import {
 } from './pcTeachingEventsPageLogic'
 import { resolvePcProgrammeScope } from './pcUploadTtfPageLogic'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
+import { validatedReportingPeriod, withValidatedReportingPeriod } from '../../utils/reportingPeriods'
 
 type DrawerMode = 'create' | 'edit' | 'duplicate'
 
@@ -133,7 +134,7 @@ export const PcTeachingEventsPage = () => {
   )
   const selectedPcProgrammeCode = programmeScope.selectedProgrammeCode
   const selectedPeriod = useMemo(
-    () => reportingPeriods.find((period) => period.id === reportingPeriodId),
+    () => validatedReportingPeriod(reportingPeriods, reportingPeriodId),
     [reportingPeriodId, reportingPeriods],
   )
   const dateRange = useMemo(() => selectedPeriodRange(selectedPeriod), [selectedPeriod])
@@ -189,7 +190,7 @@ export const PcTeachingEventsPage = () => {
   const showSelectionActionMessage = selectedActionMessage !== null && !selectionMessage
 
   const loadEvents = useCallback(async () => {
-    if (!selectedPcProgrammeCode) {
+    if (!selectedPcProgrammeCode || !selectedPeriod) {
       setEvents([])
       setEventsLoading(false)
       return
@@ -197,12 +198,21 @@ export const PcTeachingEventsPage = () => {
     setEventsLoading(true)
     setEventsError(null)
     try {
-      const rows = await listProgrammeTeachingEvents({
-        adminId: pcAdminId,
-        adminProgrammes: pcProgrammeScope,
-        programmeCode: selectedPcProgrammeCode,
-        ...dateRange,
-      })
+      const rows = await withValidatedReportingPeriod(
+        reportingPeriods,
+        reportingPeriodId,
+        (period) => listProgrammeTeachingEvents({
+          adminId: pcAdminId,
+          adminProgrammes: pcProgrammeScope,
+          programmeCode: selectedPcProgrammeCode,
+          reportingPeriodId: period.id,
+          ...dateRange,
+        }),
+      )
+      if (!rows) {
+        setEvents([])
+        return
+      }
       setEvents(rows)
       setSelectedIds(new Set())
       setSelectionMessage(null)
@@ -212,7 +222,7 @@ export const PcTeachingEventsPage = () => {
     } finally {
       setEventsLoading(false)
     }
-  }, [dateRange, pcAdminId, pcProgrammeScope, selectedPcProgrammeCode])
+  }, [dateRange, pcAdminId, pcProgrammeScope, reportingPeriodId, reportingPeriods, selectedPcProgrammeCode, selectedPeriod])
 
   useEffect(() => {
     if (selectedPcProgrammeCode && selectedProgrammeCode !== selectedPcProgrammeCode) {
@@ -223,7 +233,7 @@ export const PcTeachingEventsPage = () => {
   useEffect(() => {
     let active = true
     ;(async () => {
-      if (!selectedPcProgrammeCode) {
+      if (!selectedPcProgrammeCode || !selectedPeriod) {
         if (active) {
           setEvents([])
           setEventsLoading(false)
@@ -235,12 +245,20 @@ export const PcTeachingEventsPage = () => {
         setEventsError(null)
       }
       try {
-        const rows = await listProgrammeTeachingEvents({
-          adminId: pcAdminId,
-          adminProgrammes: pcProgrammeScope,
-          programmeCode: selectedPcProgrammeCode,
-          ...dateRange,
-        })
+        const rows = await withValidatedReportingPeriod(
+          reportingPeriods,
+          reportingPeriodId,
+          (period) => listProgrammeTeachingEvents({
+            adminId: pcAdminId,
+            adminProgrammes: pcProgrammeScope,
+            programmeCode: selectedPcProgrammeCode,
+            reportingPeriodId: period.id,
+            ...dateRange,
+          }),
+        )
+        if (!rows) {
+          return
+        }
         if (active) {
           setEvents(rows)
           setSelectedIds(new Set())
@@ -261,12 +279,12 @@ export const PcTeachingEventsPage = () => {
     return () => {
       active = false
     }
-  }, [dateRange, pcAdminId, pcProgrammeScope, selectedPcProgrammeCode])
+  }, [dateRange, pcAdminId, pcProgrammeScope, reportingPeriodId, reportingPeriods, selectedPcProgrammeCode, selectedPeriod])
 
   useEffect(() => {
     let active = true
     ;(async () => {
-      if (!selectedPcProgrammeCode) {
+      if (!selectedPcProgrammeCode || !selectedPeriod) {
         if (active) {
           setNameOptions([])
         }
@@ -277,11 +295,19 @@ export const PcTeachingEventsPage = () => {
         setNameOptionsError(null)
       }
       try {
-        const options = await listProgrammeTeachingNameOptions({
-          adminId: pcAdminId,
-          adminProgrammes: pcProgrammeScope,
-          programmeCode: selectedPcProgrammeCode,
-        })
+        const options = await withValidatedReportingPeriod(
+          reportingPeriods,
+          reportingPeriodId,
+          (period) => listProgrammeTeachingNameOptions({
+            adminId: pcAdminId,
+            adminProgrammes: pcProgrammeScope,
+            programmeCode: selectedPcProgrammeCode,
+            reportingPeriodId: period.id,
+          }),
+        )
+        if (!options) {
+          return
+        }
         if (active) {
           setNameOptions(options)
         }
@@ -300,7 +326,7 @@ export const PcTeachingEventsPage = () => {
     return () => {
       active = false
     }
-  }, [pcAdminId, pcProgrammeScope, selectedPcProgrammeCode])
+  }, [pcAdminId, pcProgrammeScope, reportingPeriodId, reportingPeriods, selectedPcProgrammeCode, selectedPeriod])
 
   const toggleSelected = (id: string) => {
     setSelectedIds((previous) => {

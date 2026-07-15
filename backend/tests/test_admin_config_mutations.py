@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
 
@@ -1764,7 +1764,7 @@ def test_reporting_period_create_update_delete_crud() -> None:
     assert body["label"] == "Jul - Dec 2026"
     assert body["status"] == "active"
     assert body["activate_on"] == "2026-07-01"
-    assert body["deactivate_on"] is None
+    assert body["deactivate_on"] == "2027-01-14"
 
     duplicate = client.post(
         "/admin/reporting-periods",
@@ -1814,6 +1814,266 @@ def test_reporting_period_create_update_delete_crud() -> None:
     )
     assert deleted.status_code == 200
     assert deleted.json()["deleted"] is True
+
+
+def test_reporting_period_creation_defaults_deactivation_and_reopen_requires_new_future_date() -> None:
+    session = FakeMutationSession()
+    client = _build_client_with_session(session)
+    headers = _master_admin_headers("DR")
+
+    defaulted = client.post(
+        "/admin/reporting-periods",
+        headers=headers,
+        json={
+            "label": "Default deactivation",
+            "start_date": "2026-07-01",
+            "end_date": "2026-12-31",
+        },
+    )
+    assert defaulted.status_code == 200
+    assert defaulted.json()["deactivate_on"] == "2027-01-14"
+
+    explicit = client.post(
+        "/admin/reporting-periods",
+        headers=headers,
+        json={
+            "label": "Explicit deactivation",
+            "start_date": "2026-07-01",
+            "end_date": "2026-12-31",
+            "deactivate_on": "2027-02-01",
+        },
+    )
+    assert explicit.status_code == 200
+    assert explicit.json()["deactivate_on"] == "2027-02-01"
+
+    past = session.reporting_periods[0]
+    past.update(
+        {
+            "start_date": date(2025, 7, 1),
+                "end_date": date(2025, 12, 31),
+                "status": "inactive",
+                "activate_on": None,
+                "deactivate_on": date(2025, 12, 31),
+        }
+    )
+    rejected = client.put(
+        f"/admin/reporting-periods/{past['id']}/activate",
+        headers=headers,
+    )
+    assert rejected.status_code == 422
+
+    reopened = client.put(
+        f"/admin/reporting-periods/{past['id']}",
+        headers=headers,
+        json={"status": "active", "deactivate_on": "2026-12-31"},
+    )
+    assert reopened.status_code == 200
+    assert reopened.json()["status"] == "active"
+    assert reopened.json()["deactivate_on"] == "2026-12-31"
+
+
+def test_past_reporting_period_reopen_guard_uses_candidate_effective_status() -> None:
+    headers = _master_admin_headers("DR")
+    today = date.today()
+
+    due_activation = FakeMutationSession()
+    due_period = due_activation.reporting_periods[0]
+    due_period.update(
+        {
+            "start_date": today - timedelta(days=365),
+            "end_date": today - timedelta(days=1),
+            "status": "inactive",
+            "activate_on": None,
+            "deactivate_on": None,
+        }
+    )
+    due_client = _build_client_with_session(due_activation)
+    rejected_due_activation = due_client.put(
+        f"/admin/reporting-periods/{due_period['id']}",
+        headers=headers,
+        json={"activate_on": (today - timedelta(days=2)).isoformat()},
+    )
+    assert rejected_due_activation.status_code == 422
+
+    explicit_status = FakeMutationSession()
+    explicit_period = explicit_status.reporting_periods[0]
+    explicit_period.update(
+        {
+            "start_date": today - timedelta(days=365),
+            "end_date": today - timedelta(days=1),
+            "status": "inactive",
+            "activate_on": None,
+            "deactivate_on": None,
+        }
+    )
+    explicit_client = _build_client_with_session(explicit_status)
+    reopened_by_status = explicit_client.put(
+        f"/admin/reporting-periods/{explicit_period['id']}",
+        headers=headers,
+        json={"status": "active", "deactivate_on": (today + timedelta(days=30)).isoformat()},
+    )
+    assert reopened_by_status.status_code == 200
+
+    scheduled = FakeMutationSession()
+    scheduled_period = scheduled.reporting_periods[0]
+    scheduled_period.update(
+        {
+            "start_date": today - timedelta(days=365),
+            "end_date": today - timedelta(days=1),
+            "status": "inactive",
+            "activate_on": None,
+            "deactivate_on": None,
+        }
+    )
+    scheduled_client = _build_client_with_session(scheduled)
+    reopened_by_schedule = scheduled_client.put(
+        f"/admin/reporting-periods/{scheduled_period['id']}",
+        headers=headers,
+        json={
+            "activate_on": (today - timedelta(days=2)).isoformat(),
+            "deactivate_on": (today + timedelta(days=30)).isoformat(),
+        },
+    )
+    assert reopened_by_schedule.status_code == 200
+
+    ordinary_edit = scheduled_client.put(
+        f"/admin/reporting-periods/{scheduled_period['id']}",
+        headers=headers,
+        json={"label": "Already reopened ordinary edit"},
+    )
+    assert ordinary_edit.status_code == 200
+    assert ordinary_edit.json()["deactivate_on"] == (today + timedelta(days=30)).isoformat()
+
+    precedence = FakeMutationSession()
+    precedence_period = precedence.reporting_periods[0]
+    precedence_period.update(
+        {
+            "start_date": today - timedelta(days=365),
+            "end_date": today - timedelta(days=1),
+            "status": "inactive",
+            "activate_on": None,
+            "deactivate_on": None,
+        }
+    )
+    precedence_client = _build_client_with_session(precedence)
+    inactive_candidate = precedence_client.put(
+        f"/admin/reporting-periods/{precedence_period['id']}",
+        headers=headers,
+        json={
+            "activate_on": (today - timedelta(days=3)).isoformat(),
+            "deactivate_on": (today - timedelta(days=2)).isoformat(),
+        },
+    )
+    assert inactive_candidate.status_code == 200
+
+
+def test_past_reporting_period_scheduled_reopen_requires_a_new_bounded_window() -> None:
+    headers = _master_admin_headers("DR")
+    today = date.today()
+
+    def past_inactive_session(*, deactivate_on: date | None = None) -> tuple[FakeMutationSession, dict]:
+        session = FakeMutationSession()
+        period = session.reporting_periods[0]
+        period.update(
+            {
+                "start_date": today - timedelta(days=365),
+                "end_date": today - timedelta(days=1),
+                "status": "inactive",
+                "activate_on": None,
+                "deactivate_on": deactivate_on,
+            }
+        )
+        return session, period
+
+    no_window_session, no_window_period = past_inactive_session()
+    no_window = _build_client_with_session(no_window_session).put(
+        f"/admin/reporting-periods/{no_window_period['id']}",
+        headers=headers,
+        json={"activate_on": (today + timedelta(days=1)).isoformat()},
+    )
+    assert no_window.status_code == 422
+
+    valid_window_session, valid_window_period = past_inactive_session()
+    valid_window = _build_client_with_session(valid_window_session).put(
+        f"/admin/reporting-periods/{valid_window_period['id']}",
+        headers=headers,
+        json={
+            "activate_on": (today + timedelta(days=1)).isoformat(),
+            "deactivate_on": (today + timedelta(days=2)).isoformat(),
+        },
+    )
+    assert valid_window.status_code == 200
+
+    same_day_session, same_day_period = past_inactive_session()
+    same_day = _build_client_with_session(same_day_session).put(
+        f"/admin/reporting-periods/{same_day_period['id']}",
+        headers=headers,
+        json={
+            "activate_on": (today + timedelta(days=1)).isoformat(),
+            "deactivate_on": (today + timedelta(days=1)).isoformat(),
+        },
+    )
+    assert same_day.status_code == 422
+
+    before_activation_session, before_activation_period = past_inactive_session()
+    before_activation = _build_client_with_session(before_activation_session).put(
+        f"/admin/reporting-periods/{before_activation_period['id']}",
+        headers=headers,
+        json={
+            "activate_on": (today + timedelta(days=2)).isoformat(),
+            "deactivate_on": (today + timedelta(days=1)).isoformat(),
+        },
+    )
+    assert before_activation.status_code == 422
+
+    expired_window_session, expired_window_period = past_inactive_session(
+        deactivate_on=today - timedelta(days=1)
+    )
+    expired_window = _build_client_with_session(expired_window_session).put(
+        f"/admin/reporting-periods/{expired_window_period['id']}",
+        headers=headers,
+        json={"activate_on": (today + timedelta(days=1)).isoformat()},
+    )
+    assert expired_window.status_code == 422
+
+
+def test_past_reporting_period_activate_endpoint_requires_existing_future_deactivation() -> None:
+    headers = _master_admin_headers("DR")
+    today = date.today()
+
+    rejected_session = FakeMutationSession()
+    rejected_period = rejected_session.reporting_periods[0]
+    rejected_period.update(
+        {
+            "start_date": today - timedelta(days=365),
+            "end_date": today - timedelta(days=1),
+            "status": "inactive",
+            "activate_on": None,
+            "deactivate_on": today - timedelta(days=1),
+        }
+    )
+    rejected = _build_client_with_session(rejected_session).put(
+        f"/admin/reporting-periods/{rejected_period['id']}/activate",
+        headers=headers,
+    )
+    assert rejected.status_code == 422
+
+    bounded_session = FakeMutationSession()
+    bounded_period = bounded_session.reporting_periods[0]
+    bounded_period.update(
+        {
+            "start_date": today - timedelta(days=365),
+            "end_date": today - timedelta(days=1),
+            "status": "inactive",
+            "activate_on": None,
+            "deactivate_on": today + timedelta(days=30),
+        }
+    )
+    bounded = _build_client_with_session(bounded_session).put(
+        f"/admin/reporting-periods/{bounded_period['id']}/activate",
+        headers=headers,
+    )
+    assert bounded.status_code == 200
 
 
 def test_reporting_period_delete_returns_dependency_counts() -> None:

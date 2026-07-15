@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
 from app.services import cache_invalidation
-from app.services.reporting_period_status import is_reporting_period_effectively_active
+from app.services.reporting_period_status import resolve_active_reporting_period_for_date
 
 
 ACTIVE_POSTING_STATUSES = {"active", "loa_working"}
@@ -173,29 +173,14 @@ async def _external_resident(
 async def _active_reporting_period(
     db: AsyncSession,
     *,
-    as_of_date: date,
+    relevant_date: date,
+    status_as_of_date: date | None = None,
 ) -> dict[str, Any] | None:
-    result = await db.execute(
-        text(
-            """
-            SELECT
-                id,
-                label,
-                start_date,
-                end_date,
-                status,
-                activate_on,
-                deactivate_on
-            FROM reporting_periods
-            ORDER BY start_date DESC
-            """
-        )
+    return await resolve_active_reporting_period_for_date(
+        db,
+        relevant_date=relevant_date,
+        status_as_of_date=status_as_of_date,
     )
-    for row in result.mappings().all():
-        period = dict(row)
-        if is_reporting_period_effectively_active(period, as_of_date=as_of_date):
-            return period
-    return None
 
 
 async def _posting_contexts(
@@ -543,6 +528,7 @@ async def _teaching_options_for_posting(
     db: AsyncSession,
     *,
     posting_code: str,
+    reporting_period_id: UUID | str,
 ) -> list[dict[str, Any]]:
     global_result = await db.execute(
         text(
@@ -577,10 +563,14 @@ async def _teaching_options_for_posting(
             FROM teaching_name_catalogue tnc
             JOIN session_types st ON st.id = tnc.session_type_id
             WHERE tnc.posting_code = :posting_code
+              AND tnc.reporting_period_id = :reporting_period_id
             ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
             """
         ),
-        {"posting_code": posting_code},
+        {
+            "posting_code": posting_code,
+            "reporting_period_id": str(reporting_period_id),
+        },
     )
     rows = [dict(row) for row in global_result.mappings().all()]
     rows.extend(dict(row) for row in catalogue_result.mappings().all())
@@ -623,6 +613,8 @@ async def _attended_posting_options_for_resident(
 
 async def _attended_posting_options_for_external(
     db: AsyncSession,
+    *,
+    reporting_period_id: UUID | str,
 ) -> list[dict[str, Any]]:
     result = await db.execute(
         text(
@@ -635,9 +627,11 @@ async def _attended_posting_options_for_external(
             FROM teaching_name_catalogue tnc
             JOIN posting_codes pc ON pc.code = tnc.posting_code
             LEFT JOIN programmes p ON p.code = tnc.programme_code
+            WHERE tnc.reporting_period_id = :reporting_period_id
             ORDER BY label ASC, pc.code ASC, tnc.programme_code ASC
             """
-        )
+        ),
+        {"reporting_period_id": str(reporting_period_id)},
     )
     return [dict(row) for row in result.mappings().all()]
 
@@ -715,7 +709,11 @@ async def list_adhoc_teaching_options(
 ) -> dict[str, Any]:
     today = today or date.today()
     resident = await _resident(db, resident_id)
-    period = await _active_reporting_period(db, as_of_date=today)
+    period = await _active_reporting_period(
+        db,
+        relevant_date=teaching_date,
+        status_as_of_date=today,
+    )
     if period is None:
         return _adhoc_options_response(
             teaching_date=teaching_date,
@@ -820,6 +818,14 @@ async def list_external_adhoc_teaching_options(
     attended_posting_code: str | None = None,
 ) -> dict[str, Any]:
     await _external_resident(db, external_resident_id)
+    period = await _active_reporting_period(db, relevant_date=teaching_date)
+    if period is None:
+        return _adhoc_options_response(
+            teaching_date=teaching_date,
+            available=False,
+            reason="active_reporting_period_unavailable",
+            message="No active reporting period is available for this teaching date.",
+        )
     await _ensure_not_public_holiday(db, teaching_date)
     posting_context = await _external_posting_context_for_date(
         db,
@@ -836,7 +842,10 @@ async def list_external_adhoc_teaching_options(
 
     posting_code = posting_context["posting_code"]
     posting_label = await _posting_display_label(db, posting_code)
-    attended_posting_options = await _attended_posting_options_for_external(db)
+    attended_posting_options = await _attended_posting_options_for_external(
+        db,
+        reporting_period_id=period["id"],
+    )
     selected_attended_posting = _select_attended_posting(
         attended_posting_options,
         requested_posting_code=attended_posting_code,
@@ -855,6 +864,7 @@ async def list_external_adhoc_teaching_options(
     raw_options = await _teaching_options_for_posting(
         db,
         posting_code=selected_attended_posting["posting_code"],
+        reporting_period_id=period["id"],
     )
     options = [
         {
@@ -866,7 +876,7 @@ async def list_external_adhoc_teaching_options(
             "duration_hours": row.get("duration_hours"),
             "posting_code": selected_attended_posting["posting_code"],
             "posting_label": selected_attended_posting["label"],
-            "reporting_period_id": None,
+            "reporting_period_id": str(period["id"]),
             "r_year": None,
             "is_tracked": bool(row.get("is_tracked")),
             "is_global": bool(row.get("is_global")),
@@ -1295,8 +1305,25 @@ async def list_available_events(
                 error_code=ErrorCode.UNAUTHORIZED.value,
             )
         await _external_resident(db, external_resident_id)
-        range_start = date_from or date.min
-        range_end = date_to or today
+        period = await _active_reporting_period(
+            db,
+            relevant_date=date_to or today,
+            status_as_of_date=today,
+        )
+        if period is None:
+            return {
+                "events": [],
+                "reason": "active_reporting_period_unavailable",
+            }
+        range_start, range_end = _effective_event_range(
+            period_start=period["start_date"],
+            period_end=period["end_date"],
+            today=today,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        if range_start > range_end:
+            return {"events": []}
         contexts = await _external_posting_contexts(
             db,
             external_resident_id=external_resident_id,
@@ -1333,8 +1360,8 @@ async def list_available_events(
                     external_resident_id=external_resident_id,
                     posting_code=external_posting_code,
                     today=today,
-                    date_from=date_from,
-                    date_to=date_to,
+                    date_from=range_start,
+                    date_to=range_end,
                     teaching_name=teaching_name,
                 )
             )
@@ -1362,7 +1389,11 @@ async def list_available_events(
             error_code=ErrorCode.UNAUTHORIZED.value,
         )
     resident = await _resident(db, resident_id)
-    period = await _active_reporting_period(db, as_of_date=today)
+    period = await _active_reporting_period(
+        db,
+        relevant_date=today,
+        status_as_of_date=today,
+    )
     if period is None:
         return {
             "events": [],
@@ -1674,6 +1705,7 @@ async def _resolve_teaching_name_for_posting(
     *,
     posting_code: str,
     teaching_name: str,
+    reporting_period_id: UUID | str,
 ) -> dict[str, Any] | None:
     global_result = await db.execute(
         text(
@@ -1711,10 +1743,15 @@ async def _resolve_teaching_name_for_posting(
             JOIN session_types st ON st.id = tnc.session_type_id
             WHERE tnc.posting_code = :posting_code
               AND tnc.keyword = :teaching_name
+              AND tnc.reporting_period_id = :reporting_period_id
             ORDER BY tnc.duration_hours DESC, st.name ASC
             """
         ),
-        {"posting_code": posting_code, "teaching_name": teaching_name},
+        {
+            "posting_code": posting_code,
+            "teaching_name": teaching_name,
+            "reporting_period_id": str(reporting_period_id),
+        },
     )
     row = result.mappings().one_or_none()
     return dict(row) if row is not None else None
@@ -1792,8 +1829,20 @@ async def submit_attendance(
         submitted_events: list[dict[str, Any]] = []
         weekend_warning_count = 0
         touched_postings: set[str] = set()
+        touched_period_ids: set[str] = set()
         for event_id in event_ids:
             event = await _get_event(db, event_id)
+            period = await _active_reporting_period(
+                db,
+                relevant_date=event["event_date"],
+                status_as_of_date=today,
+            )
+            if period is None:
+                raise ApiError(
+                    status_code=422,
+                    detail="No active reporting period is available for the teaching event date",
+                    error_code=ErrorCode.VALIDATION_FAILED.value,
+                )
             posting_contexts = await _external_posting_contexts(
                 db,
                 external_resident_id=external_resident_id,
@@ -1831,6 +1880,7 @@ async def submit_attendance(
             submitted += 1
             submitted_events.append(_event_row(event))
             touched_postings.add(event["posting_code"])
+            touched_period_ids.add(str(period["id"]))
             accepted = await _weekend_is_accepted(
                 db,
                 event=event,
@@ -1841,10 +1891,12 @@ async def submit_attendance(
                 weekend_warning_count += 1
 
         await db.commit()
-        invalidate_resident_caches(
-            external_resident_id=external_resident_id,
-            posting_codes=touched_postings,
-        )
+        for reporting_period_id in touched_period_ids:
+            invalidate_resident_caches(
+                external_resident_id=external_resident_id,
+                posting_codes=touched_postings,
+                reporting_period_id=reporting_period_id,
+            )
         return {
             "submitted": submitted,
             "submitted_events": submitted_events,
@@ -1863,24 +1915,29 @@ async def submit_attendance(
             error_code=ErrorCode.UNAUTHORIZED.value,
         )
     resident = await _resident(db, resident_id)
-    period = await _active_reporting_period(db, as_of_date=today)
-    if period is None:
-        raise ApiError(
-            status_code=422,
-            detail="No active reporting period is available",
-            error_code=ErrorCode.VALIDATION_FAILED.value,
-        )
 
     submitted = 0
     submitted_events: list[dict[str, Any]] = []
     weekend_warning_count = 0
     touched_postings: set[str] = set()
+    touched_period_ids: set[str] = set()
     for event_id in event_ids:
         event = await _get_event(db, event_id)
         if event["event_date"] > today:
             raise ApiError(
                 status_code=422,
                 detail="Future teaching events cannot be submitted",
+                error_code=ErrorCode.VALIDATION_FAILED.value,
+            )
+        period = await _active_reporting_period(
+            db,
+            relevant_date=event["event_date"],
+            status_as_of_date=today,
+        )
+        if period is None:
+            raise ApiError(
+                status_code=422,
+                detail="No active reporting period is available for the teaching event date",
                 error_code=ErrorCode.VALIDATION_FAILED.value,
             )
         if event.get("created_by_role") not in {"secretary", "programme_pc", None}:
@@ -1962,6 +2019,7 @@ async def submit_attendance(
         submitted += 1
         submitted_events.append(_available_event_row(event, resolved=resolved))
         touched_postings.add(event["posting_code"])
+        touched_period_ids.add(str(period["id"]))
         accepted = await _weekend_is_accepted(
             db,
             event=event,
@@ -1972,12 +2030,13 @@ async def submit_attendance(
             weekend_warning_count += 1
 
     await db.commit()
-    invalidate_resident_caches(
-        resident_id=resident_id,
-        posting_codes=touched_postings,
-        programme_code=resident["programme_code"],
-        reporting_period_id=period["id"],
-    )
+    for reporting_period_id in touched_period_ids:
+        invalidate_resident_caches(
+            resident_id=resident_id,
+            posting_codes=touched_postings,
+            programme_code=resident["programme_code"],
+            reporting_period_id=reporting_period_id,
+        )
     return {
         "submitted": submitted,
         "submitted_events": submitted_events,
@@ -2010,6 +2069,13 @@ async def submit_adhoc_teaching(
                 error_code=ErrorCode.UNAUTHORIZED.value,
             )
         await _external_resident(db, external_resident_id)
+        period = await _active_reporting_period(db, relevant_date=event_date)
+        if period is None:
+            raise ApiError(
+                status_code=422,
+                detail="No active reporting period is available",
+                error_code=ErrorCode.VALIDATION_FAILED.value,
+            )
         await _ensure_not_public_holiday(db, event_date)
         posting_context = await _external_posting_context_for_date(
             db,
@@ -2023,7 +2089,10 @@ async def submit_adhoc_teaching(
                 error_code=ErrorCode.VALIDATION_FAILED.value,
             )
         posting_code = posting_context["posting_code"]
-        attended_posting_options = await _attended_posting_options_for_external(db)
+        attended_posting_options = await _attended_posting_options_for_external(
+            db,
+            reporting_period_id=period["id"],
+        )
         selected_attended_posting = _select_attended_posting(
             attended_posting_options,
             requested_posting_code=attended_posting_code,
@@ -2039,6 +2108,7 @@ async def submit_adhoc_teaching(
             db,
             posting_code=selected_attended_posting["posting_code"],
             teaching_name=teaching_name,
+            reporting_period_id=period["id"],
         )
         if resolved is None:
             raise ApiError(
@@ -2141,7 +2211,7 @@ async def submit_adhoc_teaching(
             error_code=ErrorCode.UNAUTHORIZED.value,
         )
     resident = await _resident(db, resident_id)
-    period = await _active_reporting_period(db, as_of_date=date.today())
+    period = await _active_reporting_period(db, relevant_date=event_date)
     if period is None:
         raise ApiError(
             status_code=422,
@@ -2614,7 +2684,7 @@ async def dashboard_placeholder(
             error_code=ErrorCode.UNAUTHORIZED.value,
         )
     resident = await _resident(db, resident_id)
-    period = await _active_reporting_period(db, as_of_date=date.today())
+    period = await _active_reporting_period(db, relevant_date=date.today())
     return {
         "resident": {
             "id": resident["id"],

@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconCalendar, IconDownload, IconPlus } from '../../components/icons'
 import { frontendConfig } from '../../config/frontendConfig'
 import { useAppState } from '../../context/useAppState'
-import type { ReportingPeriodOption } from '../../types/upload'
 import { ApiRequestError } from '../../api/http'
 import { teachingEventCreatedByDisplay } from '../../utils/teachingEventSource'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
+import {
+  loadSecretaryEventsForPeriod,
+  shouldApplySecretaryEventLoad,
+} from '../../utils/secretaryEventPeriodScope'
 import {
   downloadSecretaryTeachingScheduleCsv,
   SECRETARY_TEACHING_EVENT_EXPORT_ERROR,
@@ -38,6 +41,8 @@ const INITIAL_FORM: TeachingFormState = {
   cmePointsAwarded: false,
   smcEventCode: '',
 }
+
+const EMPTY_EVENTS: SecretaryTeachingEvent[] = []
 
 const START_TIME_OPTIONS = Array.from({ length: 24 * 4 }, (_, index) => {
   const totalMinutes = index * 15
@@ -182,16 +187,6 @@ const buildEventCsv = (events: SecretaryTeachingEvent[]) => {
   return csvRows.map((row) => row.map(quoteCsvCell).join(',')).join('\n')
 }
 
-const toPeriodRange = (period: ReportingPeriodOption | undefined) => {
-  if (!period) {
-    return {}
-  }
-  return {
-    dateFrom: period.startDate,
-    dateTo: period.endDate,
-  }
-}
-
 const isDateWithinPeriod = (eventDate: string, periodStart?: string, periodEnd?: string) => {
   if (!eventDate || !periodStart || !periodEnd) {
     return true
@@ -220,7 +215,7 @@ export const SecretaryTeachingSchedulePage = () => {
   const [nameOptionsLoading, setNameOptionsLoading] = useState(false)
   const [nameOptionsError, setNameOptionsError] = useState<string | null>(null)
   const [supportsNameOptionsEndpoint, setSupportsNameOptionsEndpoint] = useState(true)
-  const [nameOptionsLoaded, setNameOptionsLoaded] = useState(false)
+  const [nameOptionsPeriodId, setNameOptionsPeriodId] = useState<string | null>(null)
 
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerMode, setDrawerMode] = useState<DrawerMode>('create')
@@ -234,25 +229,41 @@ export const SecretaryTeachingSchedulePage = () => {
     () => reportingPeriods.find((period) => period.id === reportingPeriodId),
     [reportingPeriods, reportingPeriodId],
   )
+  const selectedPeriodId = selectedPeriod?.id ?? null
+  const selectedPeriodIdRef = useRef<string | null>(selectedPeriodId)
+  useEffect(() => {
+    selectedPeriodIdRef.current = selectedPeriodId
+  }, [selectedPeriodId])
+  const nameOptionsLoaded = nameOptionsPeriodId === reportingPeriodId
 
   const loadEvents = useCallback(async (): Promise<SecretaryTeachingEvent[]> => {
-    const range = toPeriodRange(selectedPeriod)
-    const hasRange = Boolean(range.dateFrom || range.dateTo)
-    const filteredEvents = await listSecretaryTeachingEvents(range)
-    if (filteredEvents.length > 0 || !hasRange) {
-      return filteredEvents
-    }
-    return listSecretaryTeachingEvents()
+    return (await loadSecretaryEventsForPeriod(selectedPeriod, listSecretaryTeachingEvents)) ?? []
   }, [selectedPeriod])
 
   useEffect(() => {
     let active = true
+    if (!selectedPeriod) {
+      void Promise.resolve().then(() => {
+        if (!active) {
+          return
+        }
+        setEvents([])
+        setRecentCreatedEvents([])
+        setSelectedIds(new Set())
+        setEventsError(null)
+        setEventsLoading(false)
+      })
+      return () => {
+        active = false
+      }
+    }
+    const requestedPeriodId = selectedPeriod.id
     ;(async () => {
       setEventsLoading(true)
       setEventsError(null)
       try {
         const response = await loadEvents()
-        if (!active) {
+        if (!active || !shouldApplySecretaryEventLoad(requestedPeriodId, selectedPeriodIdRef.current)) {
           return
         }
         setSupportsEventListEndpoint(true)
@@ -261,7 +272,7 @@ export const SecretaryTeachingSchedulePage = () => {
         setSubmitState('idle')
         setSubmitMessage(null)
       } catch (error) {
-        if (!active) {
+        if (!active || !shouldApplySecretaryEventLoad(requestedPeriodId, selectedPeriodIdRef.current)) {
           return
         }
         if (error instanceof ApiRequestError && error.status === 404) {
@@ -278,7 +289,7 @@ export const SecretaryTeachingSchedulePage = () => {
           setEventsError(message)
         }
       } finally {
-        if (active) {
+        if (active && shouldApplySecretaryEventLoad(requestedPeriodId, selectedPeriodIdRef.current)) {
           setEventsLoading(false)
         }
       }
@@ -286,16 +297,25 @@ export const SecretaryTeachingSchedulePage = () => {
     return () => {
       active = false
     }
-  }, [loadEvents])
+  }, [loadEvents, selectedPeriod])
 
   const loadTeachingNameOptions = useCallback(async () => {
+    if (!selectedPeriod) {
+      setNameOptions([])
+      setNameOptionsError(null)
+      setNameOptionsPeriodId(reportingPeriodId)
+      setNameOptionsLoading(false)
+      return
+    }
     setNameOptionsLoading(true)
     setNameOptionsError(null)
     try {
-      const options = await listSecretaryTeachingNameOptions()
+      const options = await listSecretaryTeachingNameOptions({
+        reportingPeriodId: selectedPeriod.id,
+      })
       setSupportsNameOptionsEndpoint(true)
       setNameOptions(options)
-      setNameOptionsLoaded(true)
+      setNameOptionsPeriodId(reportingPeriodId)
     } catch (error) {
       if (error instanceof ApiRequestError && error.status === 404) {
         setSupportsNameOptionsEndpoint(false)
@@ -307,11 +327,11 @@ export const SecretaryTeachingSchedulePage = () => {
             : 'Unable to load teaching name options.'
         setNameOptionsError(message)
       }
-      setNameOptionsLoaded(true)
+      setNameOptionsPeriodId(reportingPeriodId)
     } finally {
       setNameOptionsLoading(false)
     }
-  }, [])
+  }, [reportingPeriodId, selectedPeriod])
 
   const teachingTypeByName = useMemo(() => {
     const map = new Map<string, string>()
@@ -323,11 +343,16 @@ export const SecretaryTeachingSchedulePage = () => {
     return map
   }, [nameOptions])
 
-  const visibleEvents = supportsEventListEndpoint ? events : recentCreatedEvents
-  const hasNameOptions = supportsNameOptionsEndpoint && nameOptions.length > 0
-  const isNameOptionsInitialLoading = nameOptionsLoading && nameOptions.length === 0
+  const visibleEvents = selectedPeriod
+    ? supportsEventListEndpoint
+      ? events
+      : recentCreatedEvents
+    : EMPTY_EVENTS
+  const hasNameOptions = supportsNameOptionsEndpoint && nameOptionsLoaded && nameOptions.length > 0
+  const isNameOptionsInitialLoading = nameOptionsLoading && (!nameOptionsLoaded || nameOptions.length === 0)
   const shouldUseTextFallback =
-    !isNameOptionsInitialLoading && (!supportsNameOptionsEndpoint || !!nameOptionsError || nameOptions.length === 0)
+    !isNameOptionsInitialLoading
+    && (!supportsNameOptionsEndpoint || !nameOptionsLoaded || !!nameOptionsError || nameOptions.length === 0)
   const selectedPeriodDateError = useMemo(() => {
     if (!formState.eventDate || !selectedPeriod) {
       return null
@@ -405,6 +430,11 @@ export const SecretaryTeachingSchedulePage = () => {
   }
 
   const openDrawer = () => {
+    if (!selectedPeriod) {
+      setSubmitState('error')
+      setSubmitMessage('Select an active reporting period before creating a teaching event.')
+      return
+    }
     setDrawerMode('create')
     resetForm()
     setDrawerOpen(true)
@@ -592,12 +622,11 @@ export const SecretaryTeachingSchedulePage = () => {
     if (!formState.teachingName.trim()) {
       nextErrors.teachingName = 'Teaching name is required.'
     }
-    if (!formState.eventDate) {
+    if (!selectedPeriod) {
+      nextErrors.eventDate = 'An active reporting period is required.'
+    } else if (!formState.eventDate) {
       nextErrors.eventDate = 'Event date is required.'
-    } else if (
-      selectedPeriod &&
-      !isDateWithinPeriod(formState.eventDate, selectedPeriod.startDate, selectedPeriod.endDate)
-    ) {
+    } else if (!isDateWithinPeriod(formState.eventDate, selectedPeriod.startDate, selectedPeriod.endDate)) {
       nextErrors.eventDate = 'Event date must be within the selected reporting period.'
     }
     if (!formState.startTime) {
@@ -719,6 +748,8 @@ export const SecretaryTeachingSchedulePage = () => {
                 type="button"
                 className="button button-primary"
                 onClick={openDrawer}
+                disabled={!selectedPeriod}
+                title={!selectedPeriod ? 'Select an active reporting period before creating a teaching event.' : undefined}
               >
                 <IconPlus size={14} />
                 Add Teaching
@@ -976,11 +1007,14 @@ export const SecretaryTeachingSchedulePage = () => {
                 onClick={() => void handleCreate()}
                 disabled={
                   submitState === 'submitting' ||
+                  !selectedPeriod ||
                   !!selectedPeriodDateError ||
                   (drawerMode === 'edit' && (!sourceEvent || sourceEvent.hasAttendance))
                 }
                 title={
-                  selectedPeriodDateError
+                  !selectedPeriod
+                    ? 'Select an active reporting period before creating a teaching event.'
+                    : selectedPeriodDateError
                     ? 'Event date must be within the selected reporting period.'
                     : drawerMode === 'edit' && sourceEvent?.hasAttendance
                       ? 'Editing and deleting are disabled because attendance has been submitted for this event.'

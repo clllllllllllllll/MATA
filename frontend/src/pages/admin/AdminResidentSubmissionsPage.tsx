@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
+import type { SetStateAction } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   getAdminResidentSubmission,
@@ -16,6 +17,13 @@ import { IconChevRight, IconRefresh } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useAppState } from '../../context/useAppState'
+import {
+  AuthScopedReportingPageRequestController,
+  authScopedReportingPageReducer,
+  createAuthScopedReportingPageState,
+  revalidateReportingPeriodFilterId,
+  type AuthScopedReportingPageState,
+} from '../../utils/authScopedReportingPeriodFilter'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 type StatusFilter = 'all' | AdminResidentSubmissionStatus
@@ -34,6 +42,17 @@ interface FilterState {
 
 const pageSize = 25
 const searchDebounceMs = 300
+
+const emptyFilters = (reportingPeriodId = ''): FilterState => ({
+  reportingPeriodId,
+  programmeCode: 'all',
+  postingCode: 'all',
+  status: 'all',
+  source: 'all',
+  dateFrom: '',
+  dateTo: '',
+  search: '',
+})
 
 const emptySummary: AdminResidentSubmissionListSummary = {
   totalSubmissions: 0,
@@ -174,6 +193,14 @@ const MetricTile = ({
   </div>
 )
 
+type ResidentSubmissionsPageState = AuthScopedReportingPageState<
+  FilterState,
+  AdminResidentSubmissionListItem,
+  AdminResidentSubmissionListSummary,
+  AdminResidentSubmissionDetail,
+  { submissionId: string; message: string }
+>
+
 export const AdminResidentSubmissionsPage = () => {
   const [searchParams, setSearchParams] = useSearchParams()
   const {
@@ -184,24 +211,98 @@ export const AdminResidentSubmissionsPage = () => {
     reportingPeriods,
     reportingPeriodsLoading,
     reportingPeriodsError,
+    reportingPeriodAuthenticationContextVersion: authenticationContextVersion,
   } = useAppState()
   const adminLevel = role === 'programme_pc' ? 'programme' : 'master'
   const roleLabel = role === 'programme_pc' ? 'PC' : 'Master Admin'
-  const [filters, setFilters] = useState<FilterState>({
-    reportingPeriodId: reportingPeriodId || '',
-    programmeCode: 'all',
-    postingCode: 'all',
-    status: 'all',
-    source: 'all',
-    dateFrom: '',
-    dateTo: '',
-    search: '',
-  })
+  const [pageState, dispatchPageState] = useReducer(
+    authScopedReportingPageReducer<
+      FilterState,
+      AdminResidentSubmissionListItem,
+      AdminResidentSubmissionListSummary,
+      AdminResidentSubmissionDetail,
+      { submissionId: string; message: string }
+    >,
+    undefined,
+    () => createAuthScopedReportingPageState<
+      FilterState,
+      AdminResidentSubmissionListItem,
+      AdminResidentSubmissionListSummary,
+      AdminResidentSubmissionDetail,
+      { submissionId: string; message: string }
+    >(
+      authenticationContextVersion,
+      emptyFilters(reportingPeriodId),
+      emptySummary,
+      searchParams.get('submission_id')?.trim() ?? '',
+    ),
+  )
+  const [requestController] = useState(
+    () => new AuthScopedReportingPageRequestController(authenticationContextVersion),
+  )
+  const authenticationContextChanged =
+    pageState.authenticationContextVersion !== authenticationContextVersion
+  const authenticationResetPending =
+    authenticationContextChanged || pageState.authenticationResetPending
+  const mergePageState = useCallback((changes:
+    | Partial<ResidentSubmissionsPageState>
+    | ((state: ResidentSubmissionsPageState) => Partial<ResidentSubmissionsPageState>),
+  ) => {
+    dispatchPageState({ type: 'merge', changes })
+  }, [])
+  const setFilters = useCallback((value: SetStateAction<FilterState>) => {
+    mergePageState((state) => ({
+      filters: typeof value === 'function' ? value(state.filters) : value,
+    }))
+  }, [mergePageState])
+  const setSubmissions = useCallback((value: SetStateAction<AdminResidentSubmissionListItem[]>) => {
+    mergePageState((state) => ({
+      rows: typeof value === 'function' ? value(state.rows) : value,
+    }))
+  }, [mergePageState])
+  const setSummary = useCallback((value: SetStateAction<AdminResidentSubmissionListSummary>) => {
+    mergePageState((state) => ({
+      summary: typeof value === 'function' ? value(state.summary) : value,
+    }))
+  }, [mergePageState])
+  const setTotal = useCallback((value: SetStateAction<number>) => {
+    mergePageState((state) => ({ total: typeof value === 'function' ? value(state.total) : value }))
+  }, [mergePageState])
+  const setOffset = useCallback((value: SetStateAction<number>) => {
+    mergePageState((state) => ({ offset: typeof value === 'function' ? value(state.offset) : value }))
+  }, [mergePageState])
+  const setSelectedSubmission = useCallback((
+    value: SetStateAction<AdminResidentSubmissionListItem | null>,
+  ) => {
+    mergePageState((state) => ({
+      selectedRow: typeof value === 'function' ? value(state.selectedRow) : value,
+    }))
+  }, [mergePageState])
+  const setSelectedDetail = useCallback((
+    value: SetStateAction<AdminResidentSubmissionDetail | null>,
+  ) => {
+    mergePageState((state) => ({
+      selectedDetail: typeof value === 'function' ? value(state.selectedDetail) : value,
+    }))
+  }, [mergePageState])
+  const setDetailError = useCallback((
+    value: SetStateAction<{ submissionId: string; message: string } | null>,
+  ) => {
+    mergePageState((state) => ({
+      detailError: typeof value === 'function' ? value(state.detailError) : value,
+    }))
+  }, [mergePageState])
+  const {
+    filters,
+    rows: submissions,
+    summary,
+    total,
+    offset,
+    selectedRow: selectedSubmission,
+    selectedDetail,
+    detailError,
+  } = pageState
   const [debouncedSearch, setDebouncedSearch] = useState(filters.search)
-  const [submissions, setSubmissions] = useState<AdminResidentSubmissionListItem[]>([])
-  const [summary, setSummary] = useState<AdminResidentSubmissionListSummary>(emptySummary)
-  const [total, setTotal] = useState(0)
-  const [offset, setOffset] = useState(0)
   const [submissionsLoading, setSubmissionsLoading] = useState(true)
   const [isRefetching, setIsRefetching] = useState(false)
   const [isManualRefreshing, setIsManualRefreshing] = useState(false)
@@ -210,13 +311,9 @@ export const AdminResidentSubmissionsPage = () => {
   const [postingError, setPostingError] = useState<string | null>(null)
   const [programmeOptions, setProgrammeOptions] = useState<Programme[]>([])
   const [programmeError, setProgrammeError] = useState<string | null>(null)
-  const [selectedSubmission, setSelectedSubmission] = useState<AdminResidentSubmissionListItem | null>(null)
-  const [selectedDetail, setSelectedDetail] = useState<AdminResidentSubmissionDetail | null>(null)
-  const [detailError, setDetailError] = useState<{ submissionId: string; message: string } | null>(null)
   const hasLoadedRef = useRef(false)
-  const periodSeededRef = useRef(Boolean(reportingPeriodId))
-  const detailRequestRef = useRef(0)
-  const selectedSubmissionId = searchParams.get('submission_id')?.trim() ?? ''
+  const selectedSubmissionSearchParam = searchParams.get('submission_id')?.trim() ?? ''
+  const selectedSubmissionId = pageState.detailId
 
   const updateFilter = <Key extends keyof FilterState>(
     key: Key,
@@ -229,16 +326,105 @@ export const AdminResidentSubmissionsPage = () => {
     setOffset(0)
   }
 
-  useEffect(() => {
-    if (periodSeededRef.current || !reportingPeriodId) {
+  useLayoutEffect(() => {
+    if (!authenticationContextChanged) {
       return
     }
-    periodSeededRef.current = true
-    setFilters((previous) => ({
-      ...previous,
+    requestController.synchronizeAuthenticationContext(authenticationContextVersion)
+    dispatchPageState({
+      type: 'authentication-context-changed',
+      authenticationContextVersion,
+      filters: emptyFilters(reportingPeriodId),
+      summary: emptySummary,
+    })
+  }, [
+    authenticationContextChanged,
+    authenticationContextVersion,
+    reportingPeriodId,
+    requestController,
+  ])
+
+  useEffect(() => {
+    if (!pageState.authenticationResetPending) {
+      return
+    }
+    let active = true
+    void Promise.resolve().then(() => {
+      if (!active) {
+        return
+      }
+      setDebouncedSearch('')
+      setSubmissionsLoading(true)
+      setIsRefetching(false)
+      setIsManualRefreshing(false)
+      setSubmissionsError(null)
+      setPostingOptions([])
+      setPostingError(null)
+      setProgrammeOptions([])
+      setProgrammeError(null)
+      hasLoadedRef.current = false
+      setSearchParams((previous) => {
+        const next = new URLSearchParams(previous)
+        next.delete('submission_id')
+        return next
+      }, { replace: true })
+      if (!selectedSubmissionSearchParam) {
+        dispatchPageState({ type: 'authentication-reset-completed' })
+      }
+    })
+    return () => {
+      active = false
+    }
+  }, [pageState.authenticationResetPending, selectedSubmissionSearchParam, setSearchParams])
+
+  useEffect(() => {
+    if (
+      authenticationResetPending
+      || selectedSubmissionSearchParam === pageState.detailId
+    ) {
+      return
+    }
+    mergePageState({ detailId: selectedSubmissionSearchParam })
+  }, [
+    authenticationResetPending,
+    mergePageState,
+    pageState.detailId,
+    selectedSubmissionSearchParam,
+  ])
+
+  useEffect(() => {
+    if (authenticationResetPending || reportingPeriodsLoading) {
+      return
+    }
+    const nextReportingPeriodId = revalidateReportingPeriodFilterId(
+      reportingPeriods,
+      filters.reportingPeriodId,
       reportingPeriodId,
-    }))
-  }, [reportingPeriodId])
+    )
+    if (nextReportingPeriodId === filters.reportingPeriodId) {
+      return
+    }
+    let active = true
+    void Promise.resolve().then(() => {
+      if (active) {
+        setFilters((previous) => ({ ...previous, reportingPeriodId: nextReportingPeriodId }))
+      }
+    })
+    return () => {
+      active = false
+    }
+  }, [
+    authenticationResetPending,
+    filters.reportingPeriodId,
+    reportingPeriodId,
+    reportingPeriods,
+    reportingPeriodsLoading,
+    setFilters,
+  ])
+
+  useEffect(() => () => {
+    requestController.invalidateAll()
+  }, [requestController])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -272,7 +458,7 @@ export const AdminResidentSubmissionsPage = () => {
     return () => {
       active = false
     }
-  }, [adminLevel, demoAdminId, demoAdminProgrammes])
+  }, [adminLevel, authenticationContextVersion, demoAdminId, demoAdminProgrammes])
 
   useEffect(() => {
     let active = true
@@ -299,14 +485,14 @@ export const AdminResidentSubmissionsPage = () => {
     return () => {
       active = false
     }
-  }, [adminLevel, demoAdminId, demoAdminProgrammes])
+  }, [adminLevel, authenticationContextVersion, demoAdminId, demoAdminProgrammes])
 
-  const loadSubmissions = useCallback(async () => {
+  const loadSubmissions = useCallback(async (validatedReportingPeriodId?: string) => {
     return listAdminResidentSubmissions({
       adminId: demoAdminId,
       adminProgrammes: demoAdminProgrammes,
       adminLevel,
-      reportingPeriodId: filters.reportingPeriodId,
+      reportingPeriodId: validatedReportingPeriodId,
       programmeCode: filters.programmeCode === 'all' ? undefined : filters.programmeCode,
       postingCode: filters.postingCode === 'all' ? undefined : filters.postingCode,
       status: toStatusParam(filters.status),
@@ -326,7 +512,6 @@ export const AdminResidentSubmissionsPage = () => {
     filters.dateTo,
     filters.postingCode,
     filters.programmeCode,
-    filters.reportingPeriodId,
     filters.source,
     filters.status,
     offset,
@@ -341,101 +526,133 @@ export const AdminResidentSubmissionsPage = () => {
       setSubmissionsLoading(true)
     }
     setSubmissionsError(null)
-    try {
-      const response = await loadSubmissions()
-      setSubmissions(response.items)
-      setSummary(response.summary)
-      setTotal(response.total)
-      hasLoadedRef.current = true
-    } catch (error) {
+    const result = await requestController.runListRequest(
+      reportingPeriods,
+      filters.reportingPeriodId,
+      loadSubmissions,
+    )
+    if (result.status === 'stale') {
+      return
+    }
+    if (result.status === 'invalid-period') {
+      dispatchPageState({ type: 'invalid-reporting-period', summary: emptySummary })
+      setSearchParams((previous) => {
+        const next = new URLSearchParams(previous)
+        next.delete('submission_id')
+        return next
+      }, { replace: true })
+    } else if (result.status === 'error') {
       setSubmissions([])
       setSummary(emptySummary)
       setTotal(0)
       hasLoadedRef.current = true
-      setSubmissionsError(formatUserFacingApiError(error, {
+      setSubmissionsError(formatUserFacingApiError(result.error, {
         fallbackMessage: 'Unable to load resident submissions.',
       }))
-    } finally {
-      setSubmissionsLoading(false)
-      setIsRefetching(false)
-      setIsManualRefreshing(false)
+    } else {
+      setSubmissions(result.value.items)
+      setSummary(result.value.summary)
+      setTotal(result.value.total)
+      hasLoadedRef.current = true
     }
-  }, [loadSubmissions])
+    setSubmissionsLoading(false)
+    setIsRefetching(false)
+    setIsManualRefreshing(false)
+  }, [
+    filters.reportingPeriodId,
+    loadSubmissions,
+    reportingPeriods,
+    requestController,
+    setSearchParams,
+    setSubmissions,
+    setSummary,
+    setTotal,
+  ])
 
   useEffect(() => {
+    if (authenticationResetPending) {
+      return
+    }
     let active = true
-    ;(async () => {
-      if (!active) {
-        return
+    void Promise.resolve().then(() => {
+      if (active) {
+        void fetchSubmissions(false)
       }
-      await fetchSubmissions(false)
-    })()
+    })
     return () => {
       active = false
+      requestController.invalidateList()
     }
-  }, [fetchSubmissions])
+  }, [authenticationResetPending, fetchSubmissions, requestController])
 
   const openDetail = (submission: AdminResidentSubmissionListItem) => {
     const nextParams = new URLSearchParams(searchParams)
     nextParams.set('submission_id', submission.id)
     setSearchParams(nextParams, { replace: true })
     setSelectedSubmission(submission)
+    mergePageState({ detailId: submission.id })
   }
 
-  const closeDetail = () => {
-    detailRequestRef.current += 1
-    const nextParams = new URLSearchParams(searchParams)
-    nextParams.delete('submission_id')
-    setSearchParams(nextParams, { replace: true })
+  const closeDetail = useCallback(() => {
+    requestController.invalidateDetail()
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous)
+      next.delete('submission_id')
+      return next
+    }, { replace: true })
     setSelectedSubmission(null)
     setSelectedDetail(null)
     setDetailError(null)
-  }
+    mergePageState({ detailId: '' })
+  }, [
+    mergePageState,
+    requestController,
+    setDetailError,
+    setSearchParams,
+    setSelectedDetail,
+    setSelectedSubmission,
+  ])
 
   useEffect(() => {
-    if (!selectedSubmissionId) {
+    if (authenticationResetPending || !selectedSubmissionId) {
       return
     }
 
-    const requestId = detailRequestRef.current + 1
-    detailRequestRef.current = requestId
-
     ;(async () => {
-      try {
-        const detail = await getAdminResidentSubmission({
+      const result = await requestController.runDetailRequest(() =>
+        getAdminResidentSubmission({
           adminId: demoAdminId,
           adminProgrammes: demoAdminProgrammes,
           adminLevel,
           submissionId: selectedSubmissionId,
+        }),
+      )
+      if (result.status === 'success') {
+        setSelectedDetail(result.value)
+        setSelectedSubmission(result.value)
+      } else if (result.status === 'error') {
+        setDetailError({
+          submissionId: selectedSubmissionId,
+          message: formatUserFacingApiError(result.error, {
+            fallbackMessage: 'Unable to load submission detail.',
+          }),
         })
-        if (detailRequestRef.current === requestId) {
-          setSelectedDetail(detail)
-          setSelectedSubmission(detail)
-        }
-      } catch (error) {
-        if (detailRequestRef.current === requestId) {
-          setDetailError({
-            submissionId: selectedSubmissionId,
-            message: formatUserFacingApiError(error, {
-              fallbackMessage: 'Unable to load submission detail.',
-            }),
-          })
-        }
       }
     })()
-  }, [adminLevel, demoAdminId, demoAdminProgrammes, selectedSubmissionId])
+  }, [
+    adminLevel,
+    authenticationResetPending,
+    demoAdminId,
+    demoAdminProgrammes,
+    requestController,
+    selectedSubmissionId,
+    setDetailError,
+    setSelectedDetail,
+    setSelectedSubmission,
+  ])
 
   const clearFilters = () => {
-    setFilters({
-      reportingPeriodId: '',
-      programmeCode: 'all',
-      postingCode: 'all',
-      status: 'all',
-      source: 'all',
-      dateFrom: '',
-      dateTo: '',
-      search: '',
-    })
+    setFilters(emptyFilters())
     setDebouncedSearch('')
     setOffset(0)
   }
@@ -465,6 +682,9 @@ export const AdminResidentSubmissionsPage = () => {
     () => reportingPeriods.find((period) => period.id === filters.reportingPeriodId),
     [filters.reportingPeriodId, reportingPeriods],
   )
+  if (authenticationResetPending) {
+    return null
+  }
   return (
     <div className="page admin-resident-submissions-page">
       <PageHero

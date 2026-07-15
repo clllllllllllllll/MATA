@@ -305,7 +305,7 @@ def test_adhoc_options_no_posting_returns_unavailable_state() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["available"] is False
-    assert payload["reason"] == "posting_unavailable"
+    assert payload["reason"] == "active_reporting_period_unavailable"
     assert payload["options"] == []
 
 
@@ -541,7 +541,7 @@ def test_adhoc_teaching_rejects_when_no_posting_exists_for_date() -> None:
     )
 
     assert response.status_code == 422
-    assert "no active resident posting" in response.json()["detail"].lower()
+    assert response.json()["detail"] == "No active reporting period is available"
 
 
 def test_adhoc_weekend_non_exception_returns_warning() -> None:

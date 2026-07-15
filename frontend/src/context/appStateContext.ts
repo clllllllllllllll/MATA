@@ -19,6 +19,7 @@ export interface AppStateContextValue {
   reportingPeriodId: string
   setReportingPeriodId: (reportingPeriodId: string) => void
   reportingPeriodLabel?: string
+  reportingPeriodAuthenticationContextVersion: string
   reportingPeriods: ReportingPeriodOption[]
   reportingPeriodsLoading: boolean
   reportingPeriodsError: string | null

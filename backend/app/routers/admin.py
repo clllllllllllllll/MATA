@@ -1341,6 +1341,7 @@ async def create_reporting_period(
         status=payload.status,
         activate_on=payload.activate_on,
         deactivate_on=payload.deactivate_on,
+        deactivate_on_set="deactivate_on" in payload.model_fields_set,
     )
     data_revalidation = await _revalidate_config_mutation(
         db,
@@ -1387,40 +1388,58 @@ async def update_reporting_period(
         entity_type="reporting_period",
         entity_id=reporting_period_id,
     )
-    row = await admin_config.update_reporting_period(
-        db,
-        programme_scope=_global_config_scope(admin_context),
-        reporting_period_id=reporting_period_id,
-        label=payload.label,
-        start_date=payload.start_date,
-        end_date=payload.end_date,
-        status=payload.status,
-        activate_on=payload.activate_on,
-        activate_on_set="activate_on" in payload.model_fields_set,
-        deactivate_on=payload.deactivate_on,
-        deactivate_on_set="deactivate_on" in payload.model_fields_set,
-    )
-    data_revalidation = await _revalidate_config_mutation(
-        db,
-        admin_context=admin_context,
-        actor=staff_actor,
-        entity_type="reporting_period",
-        mutation="update",
-        entity_id=reporting_period_id,
-        snapshot=row,
-        changed_fields=_config_changed_fields(payload),
-        previous_snapshot=before,
-    )
-    await _write_config_audit(
-        db,
-        actor=staff_actor,
-        entity_type="reporting_period",
-        mutation="update",
-        entity_id=reporting_period_id,
-        before=before,
-        after=_compact_snapshot(row),
-        data_revalidation=data_revalidation,
-    )
+    try:
+        row = await admin_config.update_reporting_period(
+            db,
+            programme_scope=_global_config_scope(admin_context),
+            reporting_period_id=reporting_period_id,
+            label=payload.label,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            status=payload.status,
+            activate_on=payload.activate_on,
+            activate_on_set="activate_on" in payload.model_fields_set,
+            deactivate_on=payload.deactivate_on,
+            deactivate_on_set="deactivate_on" in payload.model_fields_set,
+            commit=False,
+        )
+        verified = await _read_config_audit_snapshot(
+            db,
+            entity_type="reporting_period",
+            entity_id=reporting_period_id,
+        )
+        if verified is None or (
+            payload.status is not None and verified.get("status") != row.get("status")
+        ):
+            raise ApiError(
+                status_code=500,
+                detail="Reporting period update could not be verified",
+                error_code=ErrorCode.INTERNAL_ERROR.value,
+            )
+        data_revalidation = await _revalidate_config_mutation(
+            db,
+            admin_context=admin_context,
+            actor=staff_actor,
+            entity_type="reporting_period",
+            mutation="update",
+            entity_id=reporting_period_id,
+            snapshot=row,
+            changed_fields=_config_changed_fields(payload),
+            previous_snapshot=before,
+        )
+        await _write_config_audit(
+            db,
+            actor=staff_actor,
+            entity_type="reporting_period",
+            mutation="update",
+            entity_id=reporting_period_id,
+            before=before,
+            after=_compact_snapshot(row),
+            data_revalidation=data_revalidation,
+        )
+    except Exception:
+        await db.rollback()
+        raise
     return ReportingPeriodMutationResponse.model_validate(
         _with_data_revalidation(row, data_revalidation)
     )
@@ -1440,33 +1459,49 @@ async def _set_reporting_period_status_response(
         entity_type="reporting_period",
         entity_id=reporting_period_id,
     )
-    row = await admin_config.set_reporting_period_status(
-        db,
-        programme_scope=_global_config_scope(admin_context),
-        reporting_period_id=reporting_period_id,
-        status=status,
-    )
-    data_revalidation = await _revalidate_config_mutation(
-        db,
-        admin_context=admin_context,
-        actor=staff_actor,
-        entity_type="reporting_period",
-        mutation=mutation,
-        entity_id=reporting_period_id,
-        snapshot=row,
-        changed_fields=["status"],
-        previous_snapshot=before,
-    )
-    await _write_config_audit(
-        db,
-        actor=staff_actor,
-        entity_type="reporting_period",
-        mutation=mutation,
-        entity_id=reporting_period_id,
-        before=before,
-        after=_compact_snapshot(row),
-        data_revalidation=data_revalidation,
-    )
+    try:
+        row = await admin_config.set_reporting_period_status(
+            db,
+            programme_scope=_global_config_scope(admin_context),
+            reporting_period_id=reporting_period_id,
+            status=status,
+            commit=False,
+        )
+        verified = await _read_config_audit_snapshot(
+            db,
+            entity_type="reporting_period",
+            entity_id=reporting_period_id,
+        )
+        if verified is None or verified.get("status") != status:
+            raise ApiError(
+                status_code=500,
+                detail="Reporting period status could not be verified",
+                error_code=ErrorCode.INTERNAL_ERROR.value,
+            )
+        data_revalidation = await _revalidate_config_mutation(
+            db,
+            admin_context=admin_context,
+            actor=staff_actor,
+            entity_type="reporting_period",
+            mutation=mutation,
+            entity_id=reporting_period_id,
+            snapshot=row,
+            changed_fields=["status"],
+            previous_snapshot=before,
+        )
+        await _write_config_audit(
+            db,
+            actor=staff_actor,
+            entity_type="reporting_period",
+            mutation=mutation,
+            entity_id=reporting_period_id,
+            before=before,
+            after=_compact_snapshot(row),
+            data_revalidation=data_revalidation,
+        )
+    except Exception:
+        await db.rollback()
+        raise
     return ReportingPeriodMutationResponse.model_validate(
         _with_data_revalidation(row, data_revalidation)
     )
@@ -2694,6 +2729,7 @@ async def delete_global_session_type(
 @router.get("/programme-teaching-events")
 async def list_programme_teaching_events(
     programme_code: str | None = Query(default=None),
+    reporting_period_id: UUID | None = Query(default=None),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     posting_code: str | None = Query(default=None),
@@ -2709,6 +2745,7 @@ async def list_programme_teaching_events(
         db,
         programme_scope=admin_context.programme_scope,
         programme_code=programme_code,
+        reporting_period_id=reporting_period_id,
         date_from=date_from,
         date_to=date_to,
         posting_code=posting_code,
@@ -2810,6 +2847,8 @@ async def delete_programme_teaching_event(
 @router.get("/programme-teaching-name-options")
 async def list_programme_teaching_name_options(
     programme_code: str = Query(...),
+    reporting_period_id: UUID | None = Query(default=None),
+    event_date: date | None = Query(default=None),
     admin_context: AdminContext = Depends(require_admin_context),
     db: AsyncSession | None = Depends(get_db_session),
 ) -> dict[str, Any]:
@@ -2819,6 +2858,8 @@ async def list_programme_teaching_name_options(
     options = await programme_teaching_events.teaching_name_options(
         db,
         programme_code=programme_code,
+        reporting_period_id=reporting_period_id,
+        relevant_date=event_date,
     )
     return {"options": options}
 
@@ -2988,6 +3029,7 @@ async def get_admin_resident_submission(
     response_model=AdminExternalAttendanceListResponse,
 )
 async def list_admin_external_attendance(
+    reporting_period_id: UUID | None = Query(default=None),
     programme_code: str | None = Query(default=None),
     home_cluster: str | None = Query(default=None),
     posting_code: str | None = Query(default=None),
@@ -3027,6 +3069,7 @@ async def list_admin_external_attendance(
         status=status,
         date_from=date_from,
         date_to=date_to,
+        reporting_period_id=reporting_period_id,
         limit=limit,
         offset=offset,
     )
@@ -3035,6 +3078,7 @@ async def list_admin_external_attendance(
 
 @router.get("/external-attendance/export.xlsx")
 async def export_admin_external_attendance(
+    reporting_period_id: UUID | None = Query(default=None),
     programme_code: str | None = Query(default=None),
     home_cluster: str | None = Query(default=None),
     posting_code: str | None = Query(default=None),
@@ -3062,6 +3106,7 @@ async def export_admin_external_attendance(
         status=status,
         date_from=date_from,
         date_to=date_to,
+        reporting_period_id=reporting_period_id,
     )
     return Response(
         content=payload["content"],

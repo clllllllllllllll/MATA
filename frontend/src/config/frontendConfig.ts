@@ -63,7 +63,6 @@ export const frontendConfig = {
   apiBaseUrl: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1',
   defaultRole: 'master_admin' as const,
   defaultProgrammeCode,
-  defaultReportingPeriodId: import.meta.env.VITE_DEFAULT_REPORTING_PERIOD_ID ?? '',
   demoAdminId: defaultAdminId,
   demoAdminProgrammes: configuredProgrammes,
   demoSecretaryId: defaultSecretaryId,

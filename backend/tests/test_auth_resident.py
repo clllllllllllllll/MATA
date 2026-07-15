@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
+from uuid import uuid4
 
 import jwt
 from fastapi import FastAPI
@@ -259,3 +260,75 @@ def test_auth_me_returns_resident_identity_without_posting_code() -> None:
     assert payload["role"] == "resident"
     assert payload["mcr"] == "M12345A"
     assert "posting_code" not in payload
+
+
+def test_resident_current_posting_uses_only_the_resolved_current_period() -> None:
+    fake_db = FakeResidentSession()
+    future_period_id = str(uuid4())
+    fake_db.reporting_periods.append(
+        {
+            "id": future_period_id,
+            "label": "UAT semantic test 2099",
+            "start_date": date(2099, 1, 1),
+            "end_date": date(2099, 6, 30),
+            "status": "active",
+            "activate_on": None,
+            "deactivate_on": None,
+        }
+    )
+    fake_db.resident_postings.append(
+        {
+            "resident_id": fake_db.resident_id,
+            "reporting_period_id": future_period_id,
+            "posting_code": "TTSHNeuro",
+            "r_year": "R2",
+            "start_date": date(2099, 1, 1),
+            "end_date": date(2099, 6, 30),
+            "status": "active",
+        }
+    )
+    login_client = _client(fake_db)
+    me_client = _client(
+        fake_db,
+        AuthIdentity(role="resident", subject_id=fake_db.resident_id, programme_code="GRM"),
+    )
+
+    login = login_client.post("/auth/login", json={"role": "resident", "mcr": "M12345A"})
+    current_identity = me_client.get("/auth/me")
+
+    assert login.status_code == 200
+    assert login.json()["user"]["current_posting_code"] == "TTSHCardio"
+    assert current_identity.status_code == 200
+    assert current_identity.json()["current_posting_code"] == "TTSHCardio"
+
+
+def test_resident_current_posting_is_empty_without_period_and_conflicts_on_overlap() -> None:
+    unavailable = FakeResidentSession()
+    unavailable.reporting_periods[0]["status"] = "inactive"
+    unavailable_client = _client(unavailable)
+    no_period = unavailable_client.post(
+        "/auth/login",
+        json={"role": "resident", "mcr": "M12345A"},
+    )
+
+    overlapping = FakeResidentSession()
+    overlapping.reporting_periods.append(
+        {
+            "id": str(uuid4()),
+            "label": "Overlapping current period",
+            "start_date": date.today() - timedelta(days=1),
+            "end_date": date.today() + timedelta(days=1),
+            "status": "active",
+            "activate_on": None,
+            "deactivate_on": None,
+        }
+    )
+    overlap_client = _client(overlapping)
+    conflict = overlap_client.post(
+        "/auth/login",
+        json={"role": "resident", "mcr": "M12345A"},
+    )
+
+    assert no_period.status_code == 200
+    assert "current_posting_code" not in no_period.json()["user"]
+    assert conflict.status_code == 409

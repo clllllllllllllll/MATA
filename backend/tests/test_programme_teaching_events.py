@@ -48,6 +48,17 @@ class _FakeResult:
 class FakeProgrammeTeachingEventsSession:
     def __init__(self) -> None:
         self.period_id = str(uuid4())
+        self.reporting_periods = [
+            {
+                "id": self.period_id,
+                "label": "2026 operational period",
+                "start_date": date(2026, 1, 1),
+                "end_date": date(2026, 12, 31),
+                "status": "active",
+                "activate_on": None,
+                "deactivate_on": None,
+            }
+        ]
         self.session_type_id = str(uuid4())
         self.other_session_type_id = str(uuid4())
         self.pc_dr_event_id = str(uuid4())
@@ -172,8 +183,27 @@ class FakeProgrammeTeachingEventsSession:
         sql = str(statement)
         payload = dict(params or {})
 
+        if "/* reporting_period_resolution:list */" in sql:
+            return _FakeResult(rows=list(self.reporting_periods))
+
+        if "/* reporting_period_resolution:explicit */" in sql:
+            rows = [
+                row
+                for row in self.reporting_periods
+                if row["id"] == str(payload["reporting_period_id"])
+            ]
+            return _FakeResult(rows=rows)
+
         if "/* programme_teaching_events:list */" in sql:
-            rows = self._scope_events(payload.get("programme_scope") or [])
+            rows = self._scope_events(
+                payload.get("programme_scope") or [],
+                reporting_period_id=str(payload["reporting_period_id"]),
+            )
+            rows = [
+                row
+                for row in rows
+                if payload["reporting_period_start"] <= row["event_date"] <= payload["reporting_period_end"]
+            ]
             if payload.get("programme_code"):
                 rows = [
                     row
@@ -181,7 +211,15 @@ class FakeProgrammeTeachingEventsSession:
                     if row.get("created_for_programme_code") == payload["programme_code"]
                     or (
                         row.get("created_for_programme_code") is None
-                        and self._secretary_programmes(row["posting_code"]) & {payload["programme_code"]}
+                        and (
+                            self._secretary_programmes(row["posting_code"]) & {payload["programme_code"]}
+                            or self._catalogue_programmes(
+                                posting_code=row["posting_code"],
+                                teaching_name=row["teaching_name"],
+                                reporting_period_id=str(payload["reporting_period_id"]),
+                            )
+                            & {payload["programme_code"]}
+                        )
                     )
                 ]
             return _FakeResult(rows=rows)
@@ -199,6 +237,7 @@ class FakeProgrammeTeachingEventsSession:
                 }
                 for row in self.catalogue
                 if row["programme_code"] == payload["programme_code"]
+                and row["reporting_period_id"] == str(payload["reporting_period_id"])
             ]
             return _FakeResult(rows=rows)
 
@@ -230,6 +269,7 @@ class FakeProgrammeTeachingEventsSession:
                 row["posting_code"]
                 for row in self.catalogue
                 if row["programme_code"] == programme_code
+                and row["reporting_period_id"] == str(payload["reporting_period_id"])
             )
             return _FakeResult(rows=[{"posting_code": code} for code in sorted(codes)])
 
@@ -268,6 +308,7 @@ class FakeProgrammeTeachingEventsSession:
                 if row["programme_code"] == payload["programme_code"]
                 and row["posting_code"] == payload["posting_code"]
                 and row["keyword"] == payload["teaching_name"]
+                and row["reporting_period_id"] == str(payload["reporting_period_id"])
             ]
             return _FakeResult(rows=rows)
 
@@ -277,6 +318,7 @@ class FakeProgrammeTeachingEventsSession:
             is_available = bool(self._secretary_programmes(posting_code) & {programme_code}) or any(
                 row["programme_code"] == programme_code
                 and row["posting_code"] == posting_code
+                and row["reporting_period_id"] == str(payload["reporting_period_id"])
                 for row in self.catalogue
             )
             return _FakeResult(scalar=is_available)
@@ -311,6 +353,7 @@ class FakeProgrammeTeachingEventsSession:
                 row["programme_code"] == programme_code
                 and row["posting_code"] == posting_code
                 and row["keyword"] == teaching_name
+                and row["reporting_period_id"] == str(payload["reporting_period_id"])
                 for row in self.catalogue
             )
             return _FakeResult(scalar=is_match)
@@ -355,14 +398,40 @@ class FakeProgrammeTeachingEventsSession:
             if row["posting_code"] == posting_code and row["is_active"]
         }
 
-    def _scope_events(self, programme_scope: list[str]) -> list[dict]:
+    def _catalogue_programmes(
+        self,
+        *,
+        posting_code: str,
+        teaching_name: str,
+        reporting_period_id: str,
+    ) -> set[str]:
+        return {
+            row["programme_code"]
+            for row in self.catalogue
+            if row["posting_code"] == posting_code
+            and row["keyword"] == teaching_name
+            and row["reporting_period_id"] == reporting_period_id
+        }
+
+    def _scope_events(self, programme_scope: list[str], *, reporting_period_id: str) -> list[dict]:
         scope = set(programme_scope)
         rows = []
         for row in self.events:
             if row["is_adhoc"]:
                 continue
             owner = row.get("created_for_programme_code")
-            if owner in scope or (owner is None and self._secretary_programmes(row["posting_code"]) & scope):
+            if owner in scope or (
+                owner is None
+                and (
+                    self._secretary_programmes(row["posting_code"]) & scope
+                    or self._catalogue_programmes(
+                        posting_code=row["posting_code"],
+                        teaching_name=row["teaching_name"],
+                        reporting_period_id=reporting_period_id,
+                    )
+                    & scope
+                )
+            ):
                 rows.append(
                     {
                         **row,
@@ -637,6 +706,164 @@ def test_teaching_name_options_are_programme_scoped() -> None:
     assert "Grand Round" in keywords
     assert "Department Meeting [1h]" in keywords
     assert "Geri Teaching" not in keywords
+
+
+def test_teaching_name_options_do_not_leak_from_future_uat_period() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    uat_period_id = str(uuid4())
+    session.reporting_periods.append(
+        {
+            "id": uat_period_id,
+            "label": "UAT semantic test 2099",
+            "start_date": date(2099, 1, 1),
+            "end_date": date(2099, 6, 30),
+            "status": "active",
+            "activate_on": None,
+            "deactivate_on": None,
+        }
+    )
+    uat_row = session._catalogue("UAT-only teaching", "DR", "TTSHCardio", session.session_type_id)
+    uat_row["reporting_period_id"] = uat_period_id
+    session.catalogue.append(uat_row)
+    client = _client(session)
+
+    current = client.get(
+        "/admin/programme-teaching-name-options",
+        headers=_headers(scope="DR"),
+        params={"programme_code": "DR"},
+    )
+    explicit_uat = client.get(
+        "/admin/programme-teaching-name-options",
+        headers=_headers(scope="DR"),
+        params={"programme_code": "DR", "reporting_period_id": uat_period_id},
+    )
+
+    assert current.status_code == 200
+    assert "UAT-only teaching" not in {row["keyword"] for row in current.json()["options"]}
+    assert explicit_uat.status_code == 200
+    assert "UAT-only teaching" in {row["keyword"] for row in explicit_uat.json()["options"]}
+
+
+def test_pc_event_list_and_management_are_isolated_by_reporting_period() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    uat_period_id = str(uuid4())
+    session.reporting_periods.append(
+        {
+            "id": uat_period_id,
+            "label": "UAT semantic test 2099",
+            "start_date": date(2099, 1, 1),
+            "end_date": date(2099, 6, 30),
+            "status": "active",
+            "activate_on": None,
+            "deactivate_on": None,
+        }
+    )
+    uat_catalogue = session._catalogue("UAT-only teaching", "DR", "TTSHNeuro", session.session_type_id)
+    uat_catalogue["reporting_period_id"] = uat_period_id
+    session.catalogue.append(uat_catalogue)
+    cross_period_event = session._event(
+        event_id=str(uuid4()),
+        posting_code="TTSHNeuro",
+        teaching_name="UAT-only teaching",
+        created_by_role="secretary",
+        created_for_programme_code=None,
+    )
+    uat_event = session._event(
+        event_id=str(uuid4()),
+        posting_code="TTSHNeuro",
+        teaching_name="UAT-only teaching",
+        created_by_role="secretary",
+        created_for_programme_code=None,
+        event_date=date(2099, 2, 1),
+    )
+    session.events.extend([cross_period_event, uat_event])
+    client = _client(session)
+
+    current = client.get("/admin/programme-teaching-events", headers=_headers(scope="DR"))
+    explicit_uat = client.get(
+        "/admin/programme-teaching-events",
+        headers=_headers(scope="DR"),
+        params={"reporting_period_id": uat_period_id},
+    )
+    cross_period_update = client.put(
+        f"/admin/programme-teaching-events/{cross_period_event['id']}",
+        headers=_headers(scope="DR"),
+        json={
+            "programme_code": "DR",
+            "posting_code": "TTSHNeuro",
+            "teaching_name": "UAT-only teaching",
+            "event_date": "2026-05-20",
+            "start_time": "10:00",
+        },
+    )
+    cross_period_delete = client.delete(
+        f"/admin/programme-teaching-events/{cross_period_event['id']}",
+        headers=_headers(scope="DR"),
+    )
+    conflicting_dates = client.get(
+        "/admin/programme-teaching-events",
+        headers=_headers(scope="DR"),
+        params={"reporting_period_id": uat_period_id, "date_from": "2026-05-20"},
+    )
+
+    assert current.status_code == 200
+    assert cross_period_event["id"] not in {row["id"] for row in current.json()["events"]}
+    assert explicit_uat.status_code == 200
+    assert {row["id"] for row in explicit_uat.json()["events"]} == {uat_event["id"]}
+    assert cross_period_update.status_code == 403
+    assert cross_period_delete.status_code == 403
+    assert conflicting_dates.status_code == 422
+
+
+def test_pc_operational_catalogue_visibility_and_overlap_conflict() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    scoped_event = session._event(
+        event_id=str(uuid4()),
+        posting_code="TTSHNeuro",
+        teaching_name="Current-period teaching",
+        created_by_role="secretary",
+        created_for_programme_code=None,
+    )
+    session.catalogue.append(
+        session._catalogue(
+            "Current-period teaching",
+            "DR",
+            "TTSHNeuro",
+            session.session_type_id,
+        )
+    )
+    session.events.append(scoped_event)
+    client = _client(session)
+
+    listed = client.get("/admin/programme-teaching-events", headers=_headers(scope="DR"))
+    manageable = client.put(
+        f"/admin/programme-teaching-events/{scoped_event['id']}",
+        headers=_headers(scope="DR"),
+        json={
+            "programme_code": "DR",
+            "posting_code": "TTSHNeuro",
+            "teaching_name": "Current-period teaching",
+            "event_date": "2026-05-20",
+            "start_time": "10:00",
+        },
+    )
+    session.reporting_periods.append(
+        {
+            "id": str(uuid4()),
+            "label": "Overlapping operational period",
+            "start_date": date(2026, 7, 1),
+            "end_date": date(2026, 12, 31),
+            "status": "active",
+            "activate_on": None,
+            "deactivate_on": None,
+        }
+    )
+    overlap = client.get("/admin/programme-teaching-events", headers=_headers(scope="DR"))
+
+    assert listed.status_code == 200
+    assert scoped_event["id"] in {row["id"] for row in listed.json()["events"]}
+    assert manageable.status_code == 200
+    assert overlap.status_code == 409
 
 
 def test_global_teaching_name_options_include_safe_programme_postings() -> None:

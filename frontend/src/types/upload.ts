@@ -9,7 +9,9 @@ export interface ReportingPeriodOption {
   label: string
   startDate: string
   endDate: string
-  status: 'active' | 'inactive' | string
+  status: 'active' | 'inactive'
+  activateOn?: string | null
+  deactivateOn?: string | null
   createdAt?: string
   updatedAt?: string
   dataRevalidation?: DataRevalidationImpact | null
