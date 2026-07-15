@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date
+from collections.abc import Mapping
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -13,6 +14,8 @@ from app.errors import ApiError, ErrorCode
 from app.services.cache import cache
 from app.services.reporting_period_status import (
     REPORTING_PERIOD_ACTIVE,
+    REPORTING_PERIOD_INACTIVE,
+    get_effective_reporting_period_status,
     normalise_reporting_period_status,
 )
 
@@ -1103,6 +1106,67 @@ def _validate_reporting_period_transition_order(
         _raise_validation("activate_on must be on or before deactivate_on")
 
 
+def _past_period_reopen_activation_date(
+    *,
+    current: Mapping[str, Any],
+    candidate_status: str,
+    candidate_activate_on: date | None,
+    candidate_deactivate_on: date | None,
+    activate_on_set: bool,
+    status_set: bool,
+    end_date: date,
+    today: date,
+) -> date | None:
+    """Return the date a past inactive period is newly being reopened, if any.
+
+    Reporting-period status is evaluated at read time, so a future ``activate_on``
+    can reopen a historical period even while it remains inactive today.  Preserve
+    an existing future schedule when it is merely postponed, but require a fresh
+    bounded reopen window for a new or accelerated activation.
+    """
+    if (
+        end_date >= today
+        or get_effective_reporting_period_status(current, as_of_date=today)
+        != REPORTING_PERIOD_INACTIVE
+    ):
+        return None
+
+    candidate = {
+        "status": candidate_status,
+        "activate_on": candidate_activate_on,
+        "deactivate_on": candidate_deactivate_on,
+    }
+    if status_set and candidate_status == REPORTING_PERIOD_ACTIVE:
+        return today
+    if get_effective_reporting_period_status(candidate, as_of_date=today) == REPORTING_PERIOD_ACTIVE:
+        return today
+
+    if not activate_on_set or candidate_activate_on is None or candidate_activate_on <= today:
+        return None
+
+    current_activate_on = current.get("activate_on")
+    if (
+        current_activate_on is not None
+        and current_activate_on > today
+        and candidate_activate_on >= current_activate_on
+    ):
+        return None
+
+    # Check the prospective activation independently of deactivation precedence.
+    # A same-day activation/deactivation has no active window and is therefore not
+    # an acceptable bounded reopen.
+    candidate_without_deactivation = {**candidate, "deactivate_on": None}
+    if (
+        get_effective_reporting_period_status(
+            candidate_without_deactivation,
+            as_of_date=candidate_activate_on,
+        )
+        != REPORTING_PERIOD_ACTIVE
+    ):
+        return None
+    return candidate_activate_on
+
+
 def _raise_dependency_conflict(dependencies: dict[str, int]) -> None:
     raise ApiError(
         status_code=409,
@@ -1122,13 +1186,17 @@ async def create_reporting_period(
     status: str | None,
     activate_on: date | None,
     deactivate_on: date | None,
+    deactivate_on_set: bool = False,
 ) -> dict[str, Any]:
     _validate_programme_scope_for_write(programme_scope)
     if start_date > end_date:
         _raise_validation("start_date must be on or before end_date")
+    resolved_deactivate_on = (
+        deactivate_on if deactivate_on_set else end_date + timedelta(days=14)
+    )
     _validate_reporting_period_transition_order(
         activate_on=activate_on,
-        deactivate_on=deactivate_on,
+        deactivate_on=resolved_deactivate_on,
     )
     resolved_status = (
         normalise_reporting_period_status(status)
@@ -1173,7 +1241,7 @@ async def create_reporting_period(
                 "end_date": end_date,
                 "status": resolved_status,
                 "activate_on": activate_on,
-                "deactivate_on": deactivate_on,
+                "deactivate_on": resolved_deactivate_on,
             },
         )
         await db.commit()
@@ -1198,6 +1266,8 @@ async def update_reporting_period(
     activate_on_set: bool,
     deactivate_on: date | None,
     deactivate_on_set: bool,
+    commit: bool = True,
+    allow_existing_future_deactivation_for_past_activation: bool = False,
 ) -> dict[str, Any]:
     _validate_programme_scope_for_write(programme_scope)
     existing = await db.execute(
@@ -1238,6 +1308,44 @@ async def update_reporting_period(
         if status is not None
         else None
     )
+    candidate_status = resolved_status or current["status"]
+    today = date.today()
+    reopen_activation_date = _past_period_reopen_activation_date(
+        current=current,
+        candidate_status=candidate_status,
+        candidate_activate_on=resolved_activate_on,
+        candidate_deactivate_on=resolved_deactivate_on,
+        activate_on_set=activate_on_set,
+        status_set=resolved_status is not None,
+        end_date=resolved_end,
+        today=today,
+    )
+    has_explicit_future_deactivation = (
+        deactivate_on_set
+        and resolved_deactivate_on is not None
+        and resolved_deactivate_on > today
+    )
+    has_existing_future_deactivation = (
+        allow_existing_future_deactivation_for_past_activation
+        and not deactivate_on_set
+        and current.get("deactivate_on") is not None
+        and current["deactivate_on"] > today
+    )
+    if reopen_activation_date is not None and not (
+        has_explicit_future_deactivation or has_existing_future_deactivation
+    ):
+        _raise_validation(
+            "Reactivating a past reporting period requires deactivate_on to be after today"
+        )
+    if (
+        reopen_activation_date is not None
+        and reopen_activation_date > today
+        and resolved_deactivate_on is not None
+        and resolved_deactivate_on <= reopen_activation_date
+    ):
+        _raise_validation(
+            "Scheduled past-period reactivation requires deactivate_on to be after activate_on"
+        )
 
     try:
         result = await db.execute(
@@ -1283,13 +1391,15 @@ async def update_reporting_period(
                 "deactivate_on_set": deactivate_on_set,
             },
         )
-        await db.commit()
+        if commit:
+            await db.commit()
     except IntegrityError:
         await db.rollback()
         _raise_conflict("Reporting period already exists")
 
     row = result.mappings().one()
-    _invalidate_admin_config_cache()
+    if commit:
+        _invalidate_admin_config_cache()
     return dict(row)
 
 
@@ -1299,6 +1409,7 @@ async def set_reporting_period_status(
     programme_scope: set[str],
     reporting_period_id: UUID,
     status: str,
+    commit: bool = True,
 ) -> dict[str, Any]:
     return await update_reporting_period(
         db,
@@ -1312,6 +1423,10 @@ async def set_reporting_period_status(
         activate_on_set=False,
         deactivate_on=None,
         deactivate_on_set=False,
+        commit=commit,
+        allow_existing_future_deactivation_for_past_activation=(
+            normalise_reporting_period_status(status) == REPORTING_PERIOD_ACTIVE
+        ),
     )
 
 

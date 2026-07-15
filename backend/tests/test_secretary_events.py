@@ -55,6 +55,18 @@ class FakeSecretarySession:
         self.other_resident_id = str(uuid4())
         self.session_type_id = str(uuid4())
         self.other_session_type_id = str(uuid4())
+        self.reporting_period_id = str(uuid4())
+        self.reporting_periods = [
+            {
+                "id": self.reporting_period_id,
+                "label": "2026 operational period",
+                "start_date": date(2026, 1, 1),
+                "end_date": date(2026, 12, 31),
+                "status": "active",
+                "activate_on": None,
+                "deactivate_on": None,
+            }
+        ]
         self.series_id = str(uuid4())
         self.attended_event_id = str(uuid4())
         self.other_event_id = str(uuid4())
@@ -144,6 +156,8 @@ class FakeSecretarySession:
                 "is_tracked": True,
             },
         ]
+        for row in self.catalogue:
+            row["reporting_period_id"] = self.reporting_period_id
         self.global_session_types = [
             {
                 "id": str(uuid4()),
@@ -194,6 +208,8 @@ class FakeSecretarySession:
                 "status": "active",
             },
         ]
+        for row in self.residents:
+            row["reporting_period_id"] = self.reporting_period_id
         self.events = [
             self._event(
                 event_id=self.attended_event_id,
@@ -350,6 +366,17 @@ class FakeSecretarySession:
         sql = str(statement)
         payload = dict(params or {})
 
+        if "/* reporting_period_resolution:list */" in sql:
+            return _FakeResult(rows=list(self.reporting_periods))
+
+        if "/* reporting_period_resolution:explicit */" in sql:
+            rows = [
+                row
+                for row in self.reporting_periods
+                if row["id"] == str(payload["reporting_period_id"])
+            ]
+            return _FakeResult(rows=rows)
+
         if "INSERT INTO audit_logs" in sql:
             row = dict(payload)
             row["created_at"] = self.now
@@ -417,6 +444,7 @@ class FakeSecretarySession:
                     if use_programme_pool
                     else row["posting_code"] == payload["posting_code"]
                 )
+                and row["reporting_period_id"] == str(payload["reporting_period_id"])
                 and (
                     payload.get("teaching_name") in {None, ""}
                     or row["keyword"] == payload.get("teaching_name")
@@ -587,6 +615,7 @@ class FakeSecretarySession:
                 }
                 for row in self.residents
                 if row["posting_code"] == payload["posting_code"]
+                and row["reporting_period_id"] == str(payload["reporting_period_id"])
                 and row["start_date"] <= today <= row["end_date"]
             ]
             return _FakeResult(rows=rows)
@@ -1091,6 +1120,56 @@ def test_teaching_name_options_use_programme_pool_and_include_active_globals() -
     assert row2_index < row10_index < row11_index
 
 
+def test_teaching_name_options_do_not_leak_from_future_uat_period() -> None:
+    fake_db = FakeSecretarySession()
+    uat_period_id = str(uuid4())
+    fake_db.reporting_periods.append(
+        {
+            "id": uat_period_id,
+            "label": "UAT semantic test 2099",
+            "start_date": date(2099, 1, 1),
+            "end_date": date(2099, 6, 30),
+            "status": "active",
+            "activate_on": None,
+            "deactivate_on": None,
+        }
+    )
+    fake_db.catalogue.append(
+        {
+            "keyword": "UAT-only teaching",
+            "posting_code": "TTSHCardio",
+            "programme_code": "CARD",
+            "session_type_id": fake_db.session_type_id,
+            "session_type": "UAT teaching [1h]",
+            "duration_hours": Decimal("1.0"),
+            "is_tracked": True,
+            "reporting_period_id": uat_period_id,
+        }
+    )
+    client = _client(fake_db)
+
+    current = client.get("/secretary/teaching-name-options", headers=_headers(fake_db))
+    explicit_uat = client.get(
+        "/secretary/teaching-name-options",
+        headers=_headers(fake_db),
+        params={"reporting_period_id": uat_period_id},
+    )
+    mismatched_date = client.get(
+        "/secretary/teaching-name-options",
+        headers=_headers(fake_db),
+        params={
+            "reporting_period_id": uat_period_id,
+            "event_date": "2026-05-06",
+        },
+    )
+
+    assert current.status_code == 200
+    assert "UAT-only teaching" not in {row["keyword"] for row in current.json()["options"]}
+    assert explicit_uat.status_code == 200
+    assert "UAT-only teaching" in {row["keyword"] for row in explicit_uat.json()["options"]}
+    assert mismatched_date.status_code == 422
+
+
 def test_create_event_accepts_keyword_from_mapped_programme_pool() -> None:
     fake_db = FakeSecretarySession()
     client = _client(fake_db)
@@ -1157,6 +1236,64 @@ def test_residents_endpoint_lists_only_current_own_posting_residents() -> None:
     assert response.status_code == 200
     residents = response.json()["residents"]
     assert [row["mcr"] for row in residents] == ["M12345A"]
+
+
+def test_residents_endpoint_isolated_to_current_period_and_fails_closed() -> None:
+    fake_db = FakeSecretarySession()
+    future_period_id = str(uuid4())
+    fake_db.reporting_periods.extend(
+        [
+            {
+                "id": str(uuid4()),
+                "label": "Reopened past period",
+                "start_date": date(2025, 1, 1),
+                "end_date": date(2025, 12, 31),
+                "status": "active",
+                "activate_on": None,
+                "deactivate_on": date(2026, 12, 31),
+            },
+            {
+                "id": future_period_id,
+                "label": "UAT semantic test 2099",
+                "start_date": date(2099, 1, 1),
+                "end_date": date(2099, 6, 30),
+                "status": "active",
+                "activate_on": None,
+                "deactivate_on": None,
+            },
+        ]
+    )
+    fake_db.residents.append(
+        {
+            **fake_db.residents[0],
+            "reporting_period_id": future_period_id,
+        }
+    )
+    client = _client(fake_db)
+
+    current = client.get("/secretary/residents", headers=_headers(fake_db))
+    assert current.status_code == 200
+    assert [row["mcr"] for row in current.json()["residents"]] == ["M12345A"]
+
+    fake_db.reporting_periods[0]["status"] = "inactive"
+    unavailable = client.get("/secretary/residents", headers=_headers(fake_db))
+    assert unavailable.status_code == 200
+    assert unavailable.json()["residents"] == []
+
+    fake_db.reporting_periods[0]["status"] = "active"
+    fake_db.reporting_periods.append(
+        {
+            "id": str(uuid4()),
+            "label": "Overlapping current period",
+            "start_date": date(2026, 7, 1),
+            "end_date": date(2026, 12, 31),
+            "status": "active",
+            "activate_on": None,
+            "deactivate_on": None,
+        }
+    )
+    overlap = client.get("/secretary/residents", headers=_headers(fake_db))
+    assert overlap.status_code == 409
 
 
 def test_duplicate_event_respects_scope_and_rejects_client_posting_code() -> None:

@@ -440,7 +440,11 @@ The compliance engine runs **JIT (just-in-time)** — recalculated on read, not 
 
 `activate_on` and `deactivate_on` are nullable scheduled transition dates. They are resolved at read time and do not mutate the stored `status` value. When both scheduled dates are due, the later scheduled date wins; if both scheduled dates are due on the same date, deactivation wins.
 
-Resident event discovery and new submissions use the active/effectively active period. If no active/effectively active period exists, the event list is empty with `reason = "active_reporting_period_unavailable"` and ad-hoc submission is disabled; attendance and ad-hoc submission attempts return `422`. Existing attendance records remain stored and auditable.
+Multiple reporting periods may be administratively/effectively active at once. Administrative status is separate from date applicability: a current-date workflow resolves exactly one effectively active period containing today; an event or submission resolves exactly one effectively active period containing that event/submission date. A future active period must not become a current default, and a reopened past period remains explicitly selectable for its historical date range. If two effectively active periods contain the same relevant date, the workflow fails closed with a configuration conflict rather than choosing by row order.
+
+Resident event discovery and new submissions use that date-aware resolver. If no matching period exists, the event list is empty with `reason = "active_reporting_period_unavailable"` and ad-hoc submission is disabled; attendance and ad-hoc submission attempts return `422`. Existing attendance records remain stored and auditable.
+
+New reporting periods default `deactivate_on` to `end_date + 14 calendar days` unless an explicit value is supplied. A past period can be reopened only by a new effective inactive-to-active transition that supplies a future `deactivate_on`; this includes a newly scheduled future `activate_on`, for which `deactivate_on` must be strictly later than `activate_on`. Its historical start/end dates are not extended by reopening. Ordinary edits to an already effectively active reopened period preserve its existing future `deactivate_on` and do not require it to be resubmitted.
 
 ### PC-created teaching event visibility (planned 4B)
 

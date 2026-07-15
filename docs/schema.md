@@ -150,6 +150,8 @@ Six-month reporting windows.
 
 **Effective status:** `status` is the stored manual state. `activate_on` and `deactivate_on` are read-time scheduling hints; due dates do not mutate the row by themselves. When both scheduled dates are due, the later scheduled date wins; if both are due on the same date, deactivation wins.
 
+**Resolution and administration:** Multiple rows may be administratively active at the same time; there is no single-active-period constraint. Operational resolution additionally requires the relevant date to fall within `start_date..end_date`, and must fail closed if more than one effectively active period contains that date. The reporting-period create service defaults an omitted `deactivate_on` to `end_date + 14 calendar days`; this is application behaviour, not a database column default. A new immediate or scheduled reopening of a past period requires a bounded future `deactivate_on`; a scheduled reopen must end strictly after `activate_on`.
+
 ---
 
 ## Table: `residents`

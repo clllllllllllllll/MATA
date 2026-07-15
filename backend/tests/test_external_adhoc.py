@@ -125,6 +125,40 @@ def test_external_adhoc_options_filter_by_selected_attended_posting() -> None:
     assert "Journal Club" in option_names
 
 
+def test_external_adhoc_options_do_not_leak_future_uat_catalogue() -> None:
+    fake_db = FakeResidentSession()
+    uat_period_id = str(uuid4())
+    fake_db.reporting_periods.append(
+        {
+            "id": uat_period_id,
+            "label": "UAT semantic test 2099",
+            "start_date": date(2099, 1, 1),
+            "end_date": date(2099, 6, 30),
+            "status": "active",
+            "activate_on": None,
+            "deactivate_on": None,
+        }
+    )
+    uat_row = fake_db._catalogue(  # noqa: SLF001
+        "UAT-only teaching",
+        "TTSHCardio",
+        fake_db.session_type_id,
+        Decimal("1.0"),
+    )
+    uat_row["reporting_period_id"] = uat_period_id
+    fake_db.catalogue.append(uat_row)
+    client = _client(fake_db)
+
+    response = client.get(
+        "/resident/adhoc-teaching-options",
+        headers=_external_headers(fake_db),
+        params={"date": "2026-05-18"},
+    )
+
+    assert response.status_code == 200
+    assert "UAT-only teaching" not in {row["teaching_name"] for row in response.json()["options"]}
+
+
 def test_external_adhoc_options_no_schedule_row_returns_unavailable() -> None:
     fake_db = FakeResidentSession()
     client = _client(fake_db)

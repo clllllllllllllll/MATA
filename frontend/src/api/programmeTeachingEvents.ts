@@ -135,6 +135,7 @@ const toDuplicateApiPayload = (payload: ProgrammeTeachingEventDuplicatePayload):
 export const listProgrammeTeachingEvents = async (
   params: ProgrammePcRequestContext & {
     programmeCode?: string
+    reportingPeriodId?: string
     dateFrom?: string
     dateTo?: string
     postingCode?: string
@@ -144,6 +145,7 @@ export const listProgrammeTeachingEvents = async (
     const response = await httpClient.get('/admin/programme-teaching-events', {
       params: {
         programme_code: params.programmeCode || undefined,
+        reporting_period_id: params.reportingPeriodId || undefined,
         date_from: params.dateFrom || undefined,
         date_to: params.dateTo || undefined,
         posting_code: params.postingCode || undefined,
@@ -161,11 +163,19 @@ export const listProgrammeTeachingEvents = async (
 }
 
 export const listProgrammeTeachingNameOptions = async (
-  params: ProgrammePcRequestContext & { programmeCode: string },
+  params: ProgrammePcRequestContext & {
+    programmeCode: string
+    reportingPeriodId?: string
+    eventDate?: string
+  },
 ): Promise<ProgrammeTeachingNameOption[]> => {
   try {
     const response = await httpClient.get('/admin/programme-teaching-name-options', {
-      params: { programme_code: params.programmeCode },
+      params: {
+        programme_code: params.programmeCode,
+        reporting_period_id: params.reportingPeriodId || undefined,
+        event_date: params.eventDate || undefined,
+      },
       headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, 'programme'),
     })
     const rows = (response.data as { options?: unknown })?.options

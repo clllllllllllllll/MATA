@@ -2,12 +2,13 @@ import {
   useEffect,
   useCallback,
   useMemo,
+  useRef,
   useState,
   type PropsWithChildren,
 } from 'react'
 import { frontendConfig } from '../config/frontendConfig'
 import type { AppRole } from '../types/app'
-import type { ReportingPeriodOption, UploadMeta } from '../types/upload'
+import type { UploadMeta } from '../types/upload'
 import {
   AppStateContext,
   type AppStateContextValue,
@@ -20,7 +21,6 @@ import {
 import {
   makeUploadMeta,
 } from '../utils/warnings'
-import { isActiveReportingPeriodStatus } from '../utils/reportingPeriods'
 import { authSessionChangedEvent, readStoredAuthSession } from '../api/auth'
 import { listReportingPeriods } from '../api/reportingPeriods'
 import { formatUserFacingApiError } from '../utils/userFacingErrors'
@@ -32,6 +32,16 @@ import {
   readThroughMemoryCache,
   type CacheScope,
 } from '../utils/memoryReadCache'
+import {
+  applyReportingPeriodLoadFailure,
+  applyReportingPeriodLoadSuccess,
+  createReportingPeriodContextState,
+  isReportingPeriodLoadCurrent,
+  reportingPeriodLoadToken,
+  selectValidatedReportingPeriod,
+  transitionReportingPeriodAuthenticationContext,
+  type ReportingPeriodContextState,
+} from '../utils/reportingPeriodContextState'
 
 const canIdentityLoadReportingPeriodData = (identity: AuthIdentity | null): boolean => {
   if (!identity) {
@@ -52,6 +62,7 @@ const reportingPeriodProgrammeScope = (identity: AuthIdentity | null): string[] 
 
 export const AppStateProvider = ({ children }: PropsWithChildren) => {
   const [role, setRole] = useState<AppRole>(frontendConfig.defaultRole)
+  const roleRef = useRef(role)
   const [sessionIdentity, setSessionIdentity] = useState<AuthIdentity | null>(
     () => readStoredAuthSession()?.identity ?? null,
   )
@@ -59,13 +70,34 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
   const [selectedProgrammeCode, setSelectedProgrammeCode] = useState<string>(
     frontendConfig.defaultProgrammeCode,
   )
-  const [reportingPeriodId, setReportingPeriodId] = useState<string>(
-    frontendConfig.defaultReportingPeriodId,
+  const [reportingPeriodContext, setReportingPeriodContext] = useState<ReportingPeriodContextState>(
+    () => createReportingPeriodContextState(sessionIdentity),
   )
-  const [reportingPeriods, setReportingPeriods] = useState<ReportingPeriodOption[]>([])
+  const reportingPeriodContextRef = useRef(reportingPeriodContext)
+  const reportingPeriodRequestVersionRef = useRef(0)
+  const reportingPeriodId = reportingPeriodContext.selectedId
+  const reportingPeriods = reportingPeriodContext.periods
+  const reportingPeriodAuthenticationContextVersion = JSON.stringify([
+    reportingPeriodContext.authenticationContextKey,
+    reportingPeriodContext.authenticationGeneration,
+  ])
   const [reportingPeriodsLoading, setReportingPeriodsLoading] = useState(canLoadReportingPeriodData)
   const [reportingPeriodsError, setReportingPeriodsError] = useState<string | null>(null)
   const [uploadHistory, setUploadHistory] = useState<UploadMeta[]>(loadUploadHistory)
+
+  const updateReportingPeriodContext = useCallback(
+    (transition: (state: ReportingPeriodContextState) => ReportingPeriodContextState) => {
+      const next = transition(reportingPeriodContextRef.current)
+      reportingPeriodContextRef.current = next
+      setReportingPeriodContext(next)
+      return next
+    },
+    [],
+  )
+
+  const invalidateReportingPeriodRequests = useCallback(() => {
+    reportingPeriodRequestVersionRef.current += 1
+  }, [])
 
   const adminCacheScope = useMemo<CacheScope>(() => ({
     role,
@@ -78,26 +110,22 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
 
   const updateRole = useCallback((nextRole: AppRole) => {
     clearMemoryCache()
+    if (nextRole !== roleRef.current) {
+      roleRef.current = nextRole
+      invalidateReportingPeriodRequests()
+      updateReportingPeriodContext((state) => ({
+        ...state,
+        authenticationGeneration: state.authenticationGeneration + 1,
+        periods: [],
+        selectedId: '',
+      }))
+    }
     setRole(nextRole)
-  }, [])
+  }, [invalidateReportingPeriodRequests, updateReportingPeriodContext])
 
   const updateSelectedProgrammeCode = useCallback((programmeCode: string) => {
     clearMemoryCache()
     setSelectedProgrammeCode(programmeCode)
-  }, [])
-
-  const selectDefaultReportingPeriod = useCallback((periods: ReportingPeriodOption[]) => {
-    if (periods.length === 0) {
-      return ''
-    }
-    const now = new Date()
-    const active = periods.filter((item) => isActiveReportingPeriodStatus(item.status))
-    const currentActive = active.find((item) => {
-      const start = new Date(item.startDate)
-      const end = new Date(item.endDate)
-      return Number.isFinite(start.getTime()) && Number.isFinite(end.getTime()) && start <= now && now <= end
-    })
-    return currentActive?.id ?? active[0]?.id ?? periods[0].id
   }, [])
 
   const fetchReportingPeriods = useCallback(
@@ -118,64 +146,87 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
   )
 
   const reloadReportingPeriods = useCallback(async () => {
+    const loadToken = reportingPeriodLoadToken(reportingPeriodContextRef.current)
+    const requestVersion = reportingPeriodRequestVersionRef.current + 1
+    reportingPeriodRequestVersionRef.current = requestVersion
     setReportingPeriodsLoading(true)
     setReportingPeriodsError(null)
     if (!canLoadReportingPeriodData) {
-      setReportingPeriods([])
-      setReportingPeriodId('')
+      updateReportingPeriodContext((state) => applyReportingPeriodLoadFailure(state, loadToken))
       setReportingPeriodsLoading(false)
       return
     }
     try {
       clearMemoryCache((key) => key === makeScopedCacheKey(adminCacheScope, 'admin.reporting-periods.list', {}))
       const periods = await fetchReportingPeriods()
-      setReportingPeriods(periods)
-      setReportingPeriodId((prev) => {
-        if (prev && periods.some((item) => item.id === prev)) {
-          return prev
-        }
-        return selectDefaultReportingPeriod(periods)
-      })
+      if (
+        requestVersion !== reportingPeriodRequestVersionRef.current
+        || !isReportingPeriodLoadCurrent(reportingPeriodContextRef.current, loadToken)
+      ) {
+        return
+      }
+      updateReportingPeriodContext((state) => applyReportingPeriodLoadSuccess(state, loadToken, periods))
     } catch (error) {
+      if (
+        requestVersion !== reportingPeriodRequestVersionRef.current
+        || !isReportingPeriodLoadCurrent(reportingPeriodContextRef.current, loadToken)
+      ) {
+        return
+      }
       const message = formatUserFacingApiError(error, {
         fallbackMessage: 'Reporting periods could not be loaded. Try refreshing the page.',
       })
       setReportingPeriodsError(message)
-      setReportingPeriods([])
+      updateReportingPeriodContext((state) => applyReportingPeriodLoadFailure(state, loadToken))
     } finally {
-      setReportingPeriodsLoading(false)
+      if (
+        requestVersion === reportingPeriodRequestVersionRef.current
+        && isReportingPeriodLoadCurrent(reportingPeriodContextRef.current, loadToken)
+      ) {
+        setReportingPeriodsLoading(false)
+      }
     }
-  }, [adminCacheScope, canLoadReportingPeriodData, fetchReportingPeriods, selectDefaultReportingPeriod])
+  }, [adminCacheScope, canLoadReportingPeriodData, fetchReportingPeriods, updateReportingPeriodContext])
 
   useEffect(() => {
     if (!canLoadReportingPeriodData) {
       return
     }
     let active = true
+    const loadToken = reportingPeriodLoadToken(reportingPeriodContextRef.current)
+    const requestVersion = reportingPeriodRequestVersionRef.current + 1
+    reportingPeriodRequestVersionRef.current = requestVersion
     ;(async () => {
       try {
         const periods = await fetchReportingPeriods()
-        if (!active) {
+        if (
+          !active
+          || requestVersion !== reportingPeriodRequestVersionRef.current
+          || !isReportingPeriodLoadCurrent(reportingPeriodContextRef.current, loadToken)
+        ) {
           return
         }
-        setReportingPeriods(periods)
-        setReportingPeriodId((prev) => {
-          if (prev && periods.some((item) => item.id === prev)) {
-            return prev
-          }
-          return selectDefaultReportingPeriod(periods)
-        })
+        setReportingPeriodsError(null)
+        updateReportingPeriodContext((state) => applyReportingPeriodLoadSuccess(state, loadToken, periods))
       } catch (error) {
-        if (!active) {
+        if (
+          !active
+          || requestVersion !== reportingPeriodRequestVersionRef.current
+          || !isReportingPeriodLoadCurrent(reportingPeriodContextRef.current, loadToken)
+        ) {
           return
         }
         const message = formatUserFacingApiError(error, {
           fallbackMessage: 'Reporting periods could not be loaded. Try refreshing the page.',
         })
         setReportingPeriodsError(message)
-        setReportingPeriods([])
+        updateReportingPeriodContext((state) => applyReportingPeriodLoadFailure(state, loadToken))
       } finally {
-        if (active) {
+        if (
+          active
+          && requestVersion === reportingPeriodRequestVersionRef.current
+          && isReportingPeriodLoadCurrent(reportingPeriodContextRef.current, loadToken)
+        ) {
           setReportingPeriodsLoading(false)
         }
       }
@@ -183,21 +234,32 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
     return () => {
       active = false
     }
-  }, [canLoadReportingPeriodData, fetchReportingPeriods, selectDefaultReportingPeriod])
+  }, [canLoadReportingPeriodData, fetchReportingPeriods, updateReportingPeriodContext])
 
   useEffect(() => {
     const onAuthSessionChanged = () => {
       const nextIdentity = readStoredAuthSession()?.identity ?? null
+      const previousContext = reportingPeriodContextRef.current
+      const nextContext = transitionReportingPeriodAuthenticationContext(previousContext, nextIdentity)
+      if (nextContext !== previousContext) {
+        invalidateReportingPeriodRequests()
+        reportingPeriodContextRef.current = nextContext
+        setReportingPeriodContext(nextContext)
+        setReportingPeriodsError(null)
+        setReportingPeriodsLoading(canIdentityLoadReportingPeriodData(nextIdentity))
+      }
       setSessionIdentity(nextIdentity)
       if (!canIdentityLoadReportingPeriodData(nextIdentity)) {
-        setReportingPeriods([])
-        setReportingPeriodsError(null)
         setReportingPeriodsLoading(false)
       }
     }
     window.addEventListener(authSessionChangedEvent, onAuthSessionChanged)
     return () => window.removeEventListener(authSessionChangedEvent, onAuthSessionChanged)
-  }, [])
+  }, [invalidateReportingPeriodRequests])
+
+  const updateReportingPeriodId = useCallback((selectedId: string) => {
+    updateReportingPeriodContext((state) => selectValidatedReportingPeriod(state, selectedId))
+  }, [updateReportingPeriodContext])
 
   const reportingPeriodLabel = useMemo(
     () => reportingPeriods.find((item) => item.id === reportingPeriodId)?.label,
@@ -234,8 +296,9 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
       selectedProgrammeCode,
       setSelectedProgrammeCode: updateSelectedProgrammeCode,
       reportingPeriodId,
-      setReportingPeriodId,
+      setReportingPeriodId: updateReportingPeriodId,
       reportingPeriodLabel,
+      reportingPeriodAuthenticationContextVersion,
       reportingPeriods,
       reportingPeriodsLoading,
       reportingPeriodsError,
@@ -250,6 +313,7 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
       selectedProgrammeCode,
       reportingPeriodId,
       reportingPeriodLabel,
+      reportingPeriodAuthenticationContextVersion,
       reportingPeriods,
       reportingPeriodsLoading,
       reportingPeriodsError,
@@ -257,6 +321,7 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
       uploadHistory,
       addUploadResult,
       updateRole,
+      updateReportingPeriodId,
       updateSelectedProgrammeCode,
     ],
   )

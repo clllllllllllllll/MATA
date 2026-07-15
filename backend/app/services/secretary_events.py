@@ -11,6 +11,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
+from app.services.reporting_period_status import (
+    resolve_active_reporting_period_for_date,
+    resolve_explicit_reporting_period,
+)
 from app.services import cache_invalidation
 
 
@@ -126,6 +130,7 @@ async def _catalogue_rows_for_secretary_posting(
     db: AsyncSession,
     *,
     posting_code: str,
+    reporting_period_id: UUID | str,
     teaching_name: str | None = None,
 ) -> list[dict[str, Any]]:
     programme_codes = await _resolve_secretary_programme_pool(db, posting_code)
@@ -145,10 +150,14 @@ async def _catalogue_rows_for_secretary_posting(
                     FROM teaching_name_catalogue tnc
                     JOIN session_types st ON st.id = tnc.session_type_id
                     WHERE tnc.programme_code = ANY(:programme_codes)
+                      AND tnc.reporting_period_id = :reporting_period_id
                     ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
                     """
                 ),
-                {"programme_codes": programme_codes},
+                {
+                    "programme_codes": programme_codes,
+                    "reporting_period_id": str(reporting_period_id),
+                },
             )
         else:
             result = await db.execute(
@@ -165,11 +174,16 @@ async def _catalogue_rows_for_secretary_posting(
                     FROM teaching_name_catalogue tnc
                     JOIN session_types st ON st.id = tnc.session_type_id
                     WHERE tnc.programme_code = ANY(:programme_codes)
+                      AND tnc.reporting_period_id = :reporting_period_id
                       AND tnc.keyword = :teaching_name
                     ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
                     """
                 ),
-                {"programme_codes": programme_codes, "teaching_name": teaching_name},
+                {
+                    "programme_codes": programme_codes,
+                    "reporting_period_id": str(reporting_period_id),
+                    "teaching_name": teaching_name,
+                },
             )
         return [dict(row) for row in result.mappings().all()]
 
@@ -188,10 +202,14 @@ async def _catalogue_rows_for_secretary_posting(
                 FROM teaching_name_catalogue tnc
                 JOIN session_types st ON st.id = tnc.session_type_id
                 WHERE tnc.posting_code = :posting_code
+                  AND tnc.reporting_period_id = :reporting_period_id
                 ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
                 """
             ),
-            {"posting_code": posting_code},
+            {
+                "posting_code": posting_code,
+                "reporting_period_id": str(reporting_period_id),
+            },
         )
     else:
         result = await db.execute(
@@ -208,11 +226,16 @@ async def _catalogue_rows_for_secretary_posting(
                 FROM teaching_name_catalogue tnc
                 JOIN session_types st ON st.id = tnc.session_type_id
                 WHERE tnc.posting_code = :posting_code
+                  AND tnc.reporting_period_id = :reporting_period_id
                   AND tnc.keyword = :teaching_name
                 ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
                 """
             ),
-            {"posting_code": posting_code, "teaching_name": teaching_name},
+            {
+                "posting_code": posting_code,
+                "reporting_period_id": str(reporting_period_id),
+                "teaching_name": teaching_name,
+            },
         )
     return [dict(row) for row in result.mappings().all()]
 
@@ -247,6 +270,7 @@ async def resolve_teaching_name(
     *,
     posting_code: str,
     teaching_name: str,
+    reporting_period_id: UUID | str,
 ) -> dict[str, Any]:
     global_result = await db.execute(
         text(
@@ -272,6 +296,7 @@ async def resolve_teaching_name(
     rows = await _catalogue_rows_for_secretary_posting(
         db,
         posting_code=posting_code,
+        reporting_period_id=reporting_period_id,
         teaching_name=teaching_name,
     )
     if not rows:
@@ -373,10 +398,21 @@ async def _insert_event(
     smc_event_code: str | None,
     series_id: UUID | str | None = None,
 ) -> dict[str, Any]:
+    period = await resolve_active_reporting_period_for_date(
+        db,
+        relevant_date=event_date,
+    )
+    if period is None:
+        raise ApiError(
+            status_code=422,
+            detail="No active reporting period is available for the teaching event date",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
     resolved = await resolve_teaching_name(
         db,
         posting_code=posting_code,
         teaching_name=teaching_name,
+        reporting_period_id=period["id"],
     )
     duration_hours = resolved["duration_hours"]
     end_time = _compute_end_time(event_date, start_time, duration_hours)
@@ -589,10 +625,21 @@ async def update_teaching_event(
         )
 
     await _ensure_not_public_holiday(db, event_date)
+    period = await resolve_active_reporting_period_for_date(
+        db,
+        relevant_date=event_date,
+    )
+    if period is None:
+        raise ApiError(
+            status_code=422,
+            detail="No active reporting period is available for the teaching event date",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
     resolved = await resolve_teaching_name(
         db,
         posting_code=posting_code,
         teaching_name=teaching_name,
+        reporting_period_id=period["id"],
     )
     duration_hours = resolved["duration_hours"]
     end_time = _compute_end_time(event_date, start_time, duration_hours)
@@ -728,10 +775,28 @@ async def teaching_name_options(
     db: AsyncSession,
     *,
     posting_code: str,
+    reporting_period_id: UUID | str | None = None,
+    relevant_date: date | None = None,
 ) -> list[dict[str, Any]]:
+    period = (
+        await resolve_explicit_reporting_period(
+            db,
+            reporting_period_id=reporting_period_id,
+            require_effectively_active=True,
+            relevant_date=relevant_date,
+        )
+        if reporting_period_id is not None
+        else await resolve_active_reporting_period_for_date(
+            db,
+            relevant_date=relevant_date or date.today(),
+        )
+    )
+    if period is None:
+        return []
     catalogue_rows = await _catalogue_rows_for_secretary_posting(
         db,
         posting_code=posting_code,
+        reporting_period_id=period["id"],
     )
     global_result = await db.execute(
         text(
@@ -831,6 +896,13 @@ async def current_residents(
     today: date | None = None,
 ) -> list[dict[str, Any]]:
     today = today or date.today()
+    period = await resolve_active_reporting_period_for_date(
+        db,
+        relevant_date=today,
+        status_as_of_date=today,
+    )
+    if period is None:
+        return []
     result = await db.execute(
         text(
             """
@@ -847,6 +919,7 @@ async def current_residents(
             FROM resident_postings rp
             JOIN residents r ON r.id = rp.resident_id
             WHERE rp.posting_code = :posting_code
+              AND rp.reporting_period_id = :reporting_period_id
               AND rp.start_date <= :today
               AND rp.end_date >= :today
               AND rp.status IN ('active', 'loa_working')
@@ -854,7 +927,11 @@ async def current_residents(
             ORDER BY r.name ASC, r.mcr ASC
             """
         ),
-        {"posting_code": posting_code, "today": today},
+        {
+            "posting_code": posting_code,
+            "reporting_period_id": str(period["id"]),
+            "today": today,
+        },
     )
     return [dict(row) for row in result.mappings().all()]
 
@@ -930,7 +1007,6 @@ async def create_event_series(
     end_date: date | None,
     end_after_count: int | None,
 ) -> dict[str, Any]:
-    await resolve_teaching_name(db, posting_code=posting_code, teaching_name=teaching_name)
     series_result = await db.execute(
         text(
             """

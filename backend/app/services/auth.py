@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from app.services.mata_resident_token import (
     sign_mata_external_resident_token,
     sign_mata_resident_token,
 )
+from app.services.reporting_period_status import resolve_active_reporting_period_for_date
 
 
 def _auth_failure() -> ApiError:
@@ -170,10 +172,33 @@ def _normalise_mcr(raw_mcr: str | None) -> str | None:
     return cleaned or None
 
 
+async def _current_reporting_period_params(db: AsyncSession) -> dict[str, Any]:
+    """Return the one period that may supply a display-only current posting."""
+
+    period = await resolve_active_reporting_period_for_date(
+        db,
+        relevant_date=date.today(),
+    )
+    if period is None:
+        # Keep bound date types concrete while making the external-period overlap
+        # predicate impossible. Native posting rows are constrained by the null id.
+        return {
+            "reporting_period_id": None,
+            "reporting_period_start": date.max,
+            "reporting_period_end": date.min,
+        }
+    return {
+        "reporting_period_id": str(period["id"]),
+        "reporting_period_start": period["start_date"],
+        "reporting_period_end": period["end_date"],
+    }
+
+
 async def _lookup_resident_login_rows(
     db: AsyncSession,
     normalised_mcr: str,
 ) -> tuple[Any | None, Any | None]:
+    period_params = await _current_reporting_period_params(db)
     resident_result = await db.execute(
         text(
             """
@@ -188,32 +213,17 @@ async def _lookup_resident_login_rows(
             LEFT JOIN LATERAL (
                 SELECT rp.posting_code
                 FROM resident_postings rp
-                LEFT JOIN reporting_periods period
-                  ON rp.reporting_period_id = period.id
-                 AND (
-                    CASE
-                      WHEN period.deactivate_on IS NOT NULL
-                       AND CURRENT_DATE >= period.deactivate_on
-                       AND (period.activate_on IS NULL OR period.deactivate_on >= period.activate_on)
-                        THEN 'inactive'
-                      WHEN period.activate_on IS NOT NULL
-                       AND CURRENT_DATE >= period.activate_on
-                        THEN 'active'
-                      ELSE period.status
-                    END
-                 ) = 'active'
                 WHERE rp.resident_id = r.id
                   AND rp.status IN ('active', 'loa_working')
+                  AND rp.reporting_period_id = :reporting_period_id
                 ORDER BY
                   CASE
                     WHEN rp.start_date <= CURRENT_DATE
                      AND (rp.end_date IS NULL OR rp.end_date >= CURRENT_DATE)
                       THEN 0
-                    WHEN period.id IS NOT NULL
-                      THEN 1
                     WHEN rp.start_date > CURRENT_DATE
-                      THEN 2
-                    ELSE 3
+                      THEN 1
+                    ELSE 2
                   END,
                   CASE
                     WHEN rp.start_date > CURRENT_DATE
@@ -229,7 +239,7 @@ async def _lookup_resident_login_rows(
             WHERE r.mcr = :mcr
             """
         ),
-        {"mcr": normalised_mcr},
+        {"mcr": normalised_mcr, **period_params},
     )
     external_result = await db.execute(
         text(
@@ -245,32 +255,21 @@ async def _lookup_resident_login_rows(
             LEFT JOIN LATERAL (
                 SELECT erp.posting_code
                 FROM external_resident_postings erp
-                LEFT JOIN reporting_periods rp
-                  ON erp.start_date <= rp.end_date
-                 AND (erp.end_date IS NULL OR erp.end_date >= rp.start_date)
-                 AND (
-                    CASE
-                      WHEN rp.deactivate_on IS NOT NULL
-                       AND CURRENT_DATE >= rp.deactivate_on
-                       AND (rp.activate_on IS NULL OR rp.deactivate_on >= rp.activate_on)
-                        THEN 'inactive'
-                      WHEN rp.activate_on IS NOT NULL
-                       AND CURRENT_DATE >= rp.activate_on
-                        THEN 'active'
-                      ELSE rp.status
-                    END
-                 ) = 'active'
                 WHERE erp.external_resident_id = er.id
+                  AND :reporting_period_id IS NOT NULL
+                  AND erp.start_date <= :reporting_period_end
+                  AND (
+                    erp.end_date IS NULL
+                    OR erp.end_date >= :reporting_period_start
+                  )
                 ORDER BY
                   CASE
                     WHEN erp.start_date <= CURRENT_DATE
                      AND (erp.end_date IS NULL OR erp.end_date >= CURRENT_DATE)
                       THEN 0
-                    WHEN rp.id IS NOT NULL
-                      THEN 1
                     WHEN erp.start_date > CURRENT_DATE
-                      THEN 2
-                    ELSE 3
+                      THEN 1
+                    ELSE 2
                   END,
                   CASE
                     WHEN erp.start_date > CURRENT_DATE
@@ -286,7 +285,7 @@ async def _lookup_resident_login_rows(
             WHERE er.mcr = :mcr
             """
         ),
-        {"mcr": normalised_mcr},
+        {"mcr": normalised_mcr, **period_params},
     )
     return (
         resident_result.mappings().one_or_none(),
@@ -398,6 +397,7 @@ async def get_current_identity(
     subject_id: UUID,
 ) -> dict[str, Any]:
     if role == "resident":
+        period_params = await _current_reporting_period_params(db)
         result = await db.execute(
             text(
                 """
@@ -412,32 +412,17 @@ async def get_current_identity(
                 LEFT JOIN LATERAL (
                     SELECT rp.posting_code
                     FROM resident_postings rp
-                    LEFT JOIN reporting_periods period
-                      ON rp.reporting_period_id = period.id
-                     AND (
-                        CASE
-                          WHEN period.deactivate_on IS NOT NULL
-                           AND CURRENT_DATE >= period.deactivate_on
-                           AND (period.activate_on IS NULL OR period.deactivate_on >= period.activate_on)
-                            THEN 'inactive'
-                          WHEN period.activate_on IS NOT NULL
-                           AND CURRENT_DATE >= period.activate_on
-                            THEN 'active'
-                          ELSE period.status
-                        END
-                     ) = 'active'
                     WHERE rp.resident_id = r.id
                       AND rp.status IN ('active', 'loa_working')
+                      AND rp.reporting_period_id = :reporting_period_id
                     ORDER BY
                       CASE
                         WHEN rp.start_date <= CURRENT_DATE
                          AND (rp.end_date IS NULL OR rp.end_date >= CURRENT_DATE)
                           THEN 0
-                        WHEN period.id IS NOT NULL
-                          THEN 1
                         WHEN rp.start_date > CURRENT_DATE
-                          THEN 2
-                        ELSE 3
+                          THEN 1
+                        ELSE 2
                       END,
                       CASE
                         WHEN rp.start_date > CURRENT_DATE
@@ -453,7 +438,7 @@ async def get_current_identity(
                 WHERE r.id = :resident_id
                 """
             ),
-            {"resident_id": str(subject_id)},
+            {"resident_id": str(subject_id), **period_params},
         )
         resident = result.mappings().one_or_none()
         if resident is None or resident.get("status") == "inactive":
@@ -461,6 +446,7 @@ async def get_current_identity(
         return _resident_user(dict(resident))
 
     if role == "external_resident":
+        period_params = await _current_reporting_period_params(db)
         result = await db.execute(
             text(
                 """
@@ -475,32 +461,21 @@ async def get_current_identity(
                 LEFT JOIN LATERAL (
                     SELECT erp.posting_code
                     FROM external_resident_postings erp
-                    LEFT JOIN reporting_periods rp
-                      ON erp.start_date <= rp.end_date
-                     AND (erp.end_date IS NULL OR erp.end_date >= rp.start_date)
-                     AND (
-                        CASE
-                          WHEN rp.deactivate_on IS NOT NULL
-                           AND CURRENT_DATE >= rp.deactivate_on
-                           AND (rp.activate_on IS NULL OR rp.deactivate_on >= rp.activate_on)
-                            THEN 'inactive'
-                          WHEN rp.activate_on IS NOT NULL
-                           AND CURRENT_DATE >= rp.activate_on
-                            THEN 'active'
-                          ELSE rp.status
-                        END
-                     ) = 'active'
                     WHERE erp.external_resident_id = er.id
+                      AND :reporting_period_id IS NOT NULL
+                      AND erp.start_date <= :reporting_period_end
+                      AND (
+                        erp.end_date IS NULL
+                        OR erp.end_date >= :reporting_period_start
+                      )
                     ORDER BY
                       CASE
                         WHEN erp.start_date <= CURRENT_DATE
                          AND (erp.end_date IS NULL OR erp.end_date >= CURRENT_DATE)
                           THEN 0
-                        WHEN rp.id IS NOT NULL
-                          THEN 1
                         WHEN erp.start_date > CURRENT_DATE
-                          THEN 2
-                        ELSE 3
+                          THEN 1
+                        ELSE 2
                       END,
                       CASE
                         WHEN erp.start_date > CURRENT_DATE
@@ -516,7 +491,7 @@ async def get_current_identity(
                 WHERE er.id = :external_resident_id
                 """
             ),
-            {"external_resident_id": str(subject_id)},
+            {"external_resident_id": str(subject_id), **period_params},
         )
         resident = result.mappings().one_or_none()
         if resident is None or resident.get("status") == "inactive":

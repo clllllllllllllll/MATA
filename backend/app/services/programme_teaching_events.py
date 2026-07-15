@@ -9,6 +9,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
+from app.services.reporting_period_status import (
+    resolve_active_reporting_period_for_date,
+    resolve_explicit_reporting_period,
+)
 from app.services import cache_invalidation
 
 
@@ -124,7 +128,24 @@ async def teaching_name_options(
     db: AsyncSession,
     *,
     programme_code: str,
+    reporting_period_id: UUID | str | None = None,
+    relevant_date: date | None = None,
 ) -> list[dict[str, Any]]:
+    period = (
+        await resolve_explicit_reporting_period(
+            db,
+            reporting_period_id=reporting_period_id,
+            require_effectively_active=True,
+            relevant_date=relevant_date,
+        )
+        if reporting_period_id is not None
+        else await resolve_active_reporting_period_for_date(
+            db,
+            relevant_date=relevant_date or date.today(),
+        )
+    )
+    if period is None:
+        return []
     catalogue_result = await db.execute(
         text(
             """
@@ -140,10 +161,14 @@ async def teaching_name_options(
             FROM teaching_name_catalogue tnc
             JOIN session_types st ON st.id = tnc.session_type_id
             WHERE tnc.programme_code = :programme_code
+              AND tnc.reporting_period_id = :reporting_period_id
             ORDER BY tnc.keyword ASC, tnc.posting_code ASC, tnc.duration_hours DESC
             """
         ),
-        {"programme_code": programme_code},
+        {
+            "programme_code": programme_code,
+            "reporting_period_id": str(period["id"]),
+        },
     )
     global_result = await db.execute(
         text(
@@ -176,12 +201,16 @@ async def teaching_name_options(
                 SELECT tnc.posting_code
                 FROM teaching_name_catalogue tnc
                 WHERE tnc.programme_code = :programme_code
+                  AND tnc.reporting_period_id = :reporting_period_id
             ) safe_postings
             WHERE posting_code IS NOT NULL
             ORDER BY posting_code ASC
             """
         ),
-        {"programme_code": programme_code},
+        {
+            "programme_code": programme_code,
+            "reporting_period_id": str(period["id"]),
+        },
     )
     global_posting_codes = [
         str(row["posting_code"])
@@ -258,6 +287,7 @@ async def _posting_available_for_programme(
     *,
     programme_code: str,
     posting_code: str,
+    reporting_period_id: UUID | str,
 ) -> bool:
     result = await db.execute(
         text(
@@ -277,11 +307,16 @@ async def _posting_available_for_programme(
                         FROM teaching_name_catalogue tnc
                         WHERE tnc.posting_code = :posting_code
                           AND tnc.programme_code = :programme_code
+                          AND tnc.reporting_period_id = :reporting_period_id
                     )
                 ) AS is_available
             """
         ),
-        {"programme_code": programme_code, "posting_code": posting_code},
+        {
+            "programme_code": programme_code,
+            "posting_code": posting_code,
+            "reporting_period_id": str(reporting_period_id),
+        },
     )
     return bool(result.scalar_one_or_none())
 
@@ -292,6 +327,7 @@ async def resolve_teaching_name(
     programme_code: str,
     posting_code: str,
     teaching_name: str,
+    reporting_period_id: UUID | str,
 ) -> dict[str, Any]:
     result = await db.execute(
         text(
@@ -324,6 +360,7 @@ async def resolve_teaching_name(
                 WHERE tnc.programme_code = :programme_code
                   AND tnc.posting_code = :posting_code
                   AND tnc.keyword = :teaching_name
+                  AND tnc.reporting_period_id = :reporting_period_id
             ) resolved
             ORDER BY source_priority ASC, duration_hours DESC, session_type ASC
             LIMIT 1
@@ -333,6 +370,7 @@ async def resolve_teaching_name(
             "programme_code": programme_code,
             "posting_code": posting_code,
             "teaching_name": teaching_name,
+            "reporting_period_id": str(reporting_period_id),
         },
     )
     row = result.mappings().one_or_none()
@@ -347,6 +385,7 @@ async def resolve_teaching_name(
         db,
         programme_code=programme_code,
         posting_code=posting_code,
+        reporting_period_id=reporting_period_id,
     ):
         raise ApiError(
             status_code=422,
@@ -364,15 +403,53 @@ async def list_teaching_events(
     *,
     programme_scope: set[str],
     programme_code: str | None = None,
+    reporting_period_id: UUID | str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
     posting_code: str | None = None,
 ) -> list[dict[str, Any]]:
+    if reporting_period_id is not None:
+        period = await resolve_explicit_reporting_period(
+            db,
+            reporting_period_id=reporting_period_id,
+            require_effectively_active=True,
+            relevant_date=date_from or date_to,
+        )
+        if period is not None and date_from is not None and not (
+            period["start_date"] <= date_from <= period["end_date"]
+        ):
+            raise ApiError(
+                status_code=422,
+                detail="The selected reporting period does not contain the relevant date",
+                error_code=ErrorCode.VALIDATION_FAILED.value,
+            )
+        if period is not None and date_to is not None and not (
+            period["start_date"] <= date_to <= period["end_date"]
+        ):
+            raise ApiError(
+                status_code=422,
+                detail="The selected reporting period does not contain the relevant date",
+                error_code=ErrorCode.VALIDATION_FAILED.value,
+            )
+    else:
+        period = await resolve_active_reporting_period_for_date(
+            db,
+            relevant_date=date.today(),
+        )
+    if period is None:
+        return []
+
     scope = _scope_values(programme_scope)
-    params: dict[str, Any] = {"programme_scope": scope}
+    params: dict[str, Any] = {
+        "programme_scope": scope,
+        "reporting_period_id": str(period["id"]),
+        "reporting_period_start": period["start_date"],
+        "reporting_period_end": period["end_date"],
+    }
     where = [
         "te.is_adhoc = false",
         "(te.created_by_role IN ('secretary', 'programme_pc') OR te.created_by_role IS NULL)",
+        "te.event_date BETWEEN :reporting_period_start AND :reporting_period_end",
         """
         (
             te.created_for_programme_code = ANY(:programme_scope)
@@ -392,6 +469,7 @@ async def list_teaching_events(
                         WHERE tnc.posting_code = te.posting_code
                           AND tnc.programme_code = ANY(:programme_scope)
                           AND tnc.keyword = te.teaching_name
+                          AND tnc.reporting_period_id = :reporting_period_id
                     )
                 )
             )
@@ -417,9 +495,10 @@ async def list_teaching_events(
                         OR EXISTS (
                             SELECT 1
                             FROM teaching_name_catalogue tnc
-                            WHERE tnc.posting_code = te.posting_code
-                              AND tnc.programme_code = :programme_code
-                              AND tnc.keyword = te.teaching_name
+                        WHERE tnc.posting_code = te.posting_code
+                          AND tnc.programme_code = :programme_code
+                          AND tnc.keyword = te.teaching_name
+                          AND tnc.reporting_period_id = :reporting_period_id
                         )
                     )
                 )
@@ -532,6 +611,7 @@ async def _event_matches_programme(
     *,
     event: dict[str, Any],
     programme_code: str,
+    reporting_period_id: UUID | str,
 ) -> bool:
     if event.get("created_for_programme_code") is not None:
         return event.get("created_for_programme_code") == programme_code
@@ -555,6 +635,7 @@ async def _event_matches_programme(
                         WHERE tnc.posting_code = :posting_code
                           AND tnc.programme_code = :programme_code
                           AND tnc.keyword = :teaching_name
+                          AND tnc.reporting_period_id = :reporting_period_id
                     )
                 ) AS is_match
             """
@@ -563,6 +644,7 @@ async def _event_matches_programme(
             "posting_code": event["posting_code"],
             "programme_code": programme_code,
             "teaching_name": event["teaching_name"],
+            "reporting_period_id": str(reporting_period_id),
         },
     )
     return bool(result.scalar_one_or_none())
@@ -580,7 +662,22 @@ async def _ensure_event_manageable_for_programme(
             detail="Teaching event cannot be managed from the programme PC schedule",
             error_code=ErrorCode.CONFLICT.value,
         )
-    if not await _event_matches_programme(db, event=event, programme_code=programme_code):
+    period = await resolve_active_reporting_period_for_date(
+        db,
+        relevant_date=event["event_date"],
+    )
+    if period is None:
+        raise ApiError(
+            status_code=422,
+            detail="No active reporting period is available for the teaching event date",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
+    if not await _event_matches_programme(
+        db,
+        event=event,
+        programme_code=programme_code,
+        reporting_period_id=period["id"],
+    ):
         raise ApiError(
             status_code=403,
             detail="Forbidden - teaching event is outside programme scope",
@@ -625,11 +722,22 @@ async def _insert_event(
     smc_event_code: str | None,
     created_by_role: str = "programme_pc",
 ) -> dict[str, Any]:
+    period = await resolve_active_reporting_period_for_date(
+        db,
+        relevant_date=event_date,
+    )
+    if period is None:
+        raise ApiError(
+            status_code=422,
+            detail="No active reporting period is available for the teaching event date",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
     resolved = await resolve_teaching_name(
         db,
         programme_code=programme_code,
         posting_code=posting_code,
         teaching_name=teaching_name,
+        reporting_period_id=period["id"],
     )
     duration_hours = resolved["duration_hours"]
     end_time = _compute_end_time(event_date, start_time, duration_hours)
@@ -756,11 +864,22 @@ async def update_teaching_event(
         )
 
     await _ensure_not_public_holiday(db, event_date)
+    period = await resolve_active_reporting_period_for_date(
+        db,
+        relevant_date=event_date,
+    )
+    if period is None:
+        raise ApiError(
+            status_code=422,
+            detail="No active reporting period is available for the teaching event date",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
     resolved = await resolve_teaching_name(
         db,
         programme_code=programme_code,
         posting_code=posting_code,
         teaching_name=teaching_name,
+        reporting_period_id=period["id"],
     )
     duration_hours = resolved["duration_hours"]
     end_time = _compute_end_time(event_date, start_time, duration_hours)

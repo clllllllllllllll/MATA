@@ -369,27 +369,20 @@ class FakeResidentSession:
         )
         return (posting or {}).get("display_name") or posting_code
 
-    def _resident_with_current_posting(self, resident: dict) -> dict:
-        active_periods = [
-            period
-            for period in self.reporting_periods
-            if is_reporting_period_effectively_active(period, as_of_date=self.today)
-        ]
-
+    def _resident_with_current_posting(
+        self,
+        resident: dict,
+        *,
+        reporting_period_id: str | None,
+    ) -> dict:
         def rank(posting: dict) -> tuple[int, int, date, str]:
             posting_end = posting.get("end_date") or date.max
             if posting["start_date"] <= self.today <= posting_end:
                 bucket = 0
-            elif any(
-                posting["start_date"] <= period["end_date"]
-                and posting_end >= period["start_date"]
-                for period in active_periods
-            ):
-                bucket = 1
             elif posting["start_date"] > self.today:
-                bucket = 2
+                bucket = 1
             else:
-                bucket = 3
+                bucket = 2
             distance = (
                 (posting["start_date"] - self.today).days
                 if posting["start_date"] > self.today
@@ -402,6 +395,8 @@ class FakeResidentSession:
             for posting in self.resident_postings
             if posting["resident_id"] == resident["id"]
             and posting["status"] in {"active", "loa_working"}
+            and reporting_period_id is not None
+            and posting["reporting_period_id"] == reporting_period_id
         ]
         current_posting = min(eligible, key=rank) if eligible else None
         posting_code = current_posting["posting_code"] if current_posting else None
@@ -411,27 +406,22 @@ class FakeResidentSession:
             "current_posting_label": self._posting_label(posting_code),
         }
 
-    def _external_resident_with_current_posting(self, resident: dict) -> dict:
-        active_periods = [
-            period
-            for period in self.reporting_periods
-            if is_reporting_period_effectively_active(period, as_of_date=self.today)
-        ]
-
+    def _external_resident_with_current_posting(
+        self,
+        resident: dict,
+        *,
+        reporting_period_id: str | None,
+        reporting_period_start: date,
+        reporting_period_end: date,
+    ) -> dict:
         def rank(posting: dict) -> tuple[int, int, date, str]:
             posting_end = posting.get("end_date") or date.max
             if posting["start_date"] <= self.today <= posting_end:
                 bucket = 0
-            elif any(
-                posting["start_date"] <= period["end_date"]
-                and posting_end >= period["start_date"]
-                for period in active_periods
-            ):
-                bucket = 1
             elif posting["start_date"] > self.today:
-                bucket = 2
+                bucket = 1
             else:
-                bucket = 3
+                bucket = 2
             distance = (
                 (posting["start_date"] - self.today).days
                 if posting["start_date"] > self.today
@@ -443,6 +433,9 @@ class FakeResidentSession:
             posting
             for posting in self.external_resident_postings
             if posting["external_resident_id"] == resident["id"]
+            and reporting_period_id is not None
+            and posting["start_date"] <= reporting_period_end
+            and (posting.get("end_date") or date.max) >= reporting_period_start
         ]
         current_posting = min(eligible, key=rank) if eligible else None
         posting_code = current_posting["posting_code"] if current_posting else None
@@ -506,7 +499,10 @@ class FakeResidentSession:
 
         if "FROM residents r" in sql and "WHERE r.mcr = :mcr" in sql:
             rows = [
-                self._resident_with_current_posting(row)
+                self._resident_with_current_posting(
+                    row,
+                    reporting_period_id=payload.get("reporting_period_id"),
+                )
                 for row in self.residents
                 if row["mcr"] == payload.get("mcr")
             ]
@@ -514,7 +510,10 @@ class FakeResidentSession:
 
         if "FROM residents r" in sql and "WHERE r.id = :resident_id" in sql:
             rows = [
-                self._resident_with_current_posting(row)
+                self._resident_with_current_posting(
+                    row,
+                    reporting_period_id=payload.get("reporting_period_id"),
+                )
                 for row in self.residents
                 if row["id"] == str(payload.get("resident_id"))
             ]
@@ -532,7 +531,12 @@ class FakeResidentSession:
 
         if "FROM external_residents er" in sql and "WHERE er.mcr = :mcr" in sql:
             rows = [
-                self._external_resident_with_current_posting(row)
+                self._external_resident_with_current_posting(
+                    row,
+                    reporting_period_id=payload.get("reporting_period_id"),
+                    reporting_period_start=payload.get("reporting_period_start", date.max),
+                    reporting_period_end=payload.get("reporting_period_end", date.min),
+                )
                 for row in self.external_residents
                 if row["mcr"] == payload.get("mcr")
             ]
@@ -547,7 +551,12 @@ class FakeResidentSession:
         if "FROM external_residents er" in sql and "WHERE er.id = :external_resident_id" in sql:
             lookup_id = str(payload.get("external_resident_id"))
             rows = [
-                self._external_resident_with_current_posting(row)
+                self._external_resident_with_current_posting(
+                    row,
+                    reporting_period_id=payload.get("reporting_period_id"),
+                    reporting_period_start=payload.get("reporting_period_start", date.max),
+                    reporting_period_end=payload.get("reporting_period_end", date.min),
+                )
                 for row in self.external_residents
                 if row["id"] == lookup_id
             ]
@@ -676,6 +685,15 @@ class FakeResidentSession:
             return FakeResult(rows=rows[:1])
 
         if "FROM reporting_periods" in sql:
+            if "/* reporting_period_resolution:explicit */" in sql:
+                rows = [
+                    row
+                    for row in self.reporting_periods
+                    if row["id"] == str(payload["reporting_period_id"])
+                ]
+                return FakeResult(rows=rows)
+            if "/* reporting_period_resolution:list */" in sql:
+                return FakeResult(rows=list(self.reporting_periods))
             rows = [
                 row
                 for row in self.reporting_periods
@@ -735,7 +753,11 @@ class FakeResidentSession:
                     and row["reporting_period_id"] == str(payload.get("reporting_period_id"))
                 ]
             else:
-                catalogue_rows = list(self.catalogue)
+                catalogue_rows = [
+                    row
+                    for row in self.catalogue
+                    if row["reporting_period_id"] == str(payload.get("reporting_period_id"))
+                ]
             rows = []
             seen: set[tuple[str, str]] = set()
             for catalogue_row in catalogue_rows:
@@ -806,6 +828,7 @@ class FakeResidentSession:
                     }
                     for row in self.catalogue
                     if row["posting_code"] == payload.get("posting_code")
+                    and row["reporting_period_id"] == str(payload.get("reporting_period_id"))
                     and ("teaching_name" not in payload or row["keyword"] == payload["teaching_name"])
                 ]
             return FakeResult(rows=rows)

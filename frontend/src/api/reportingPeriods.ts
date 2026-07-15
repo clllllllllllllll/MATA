@@ -2,18 +2,11 @@ import { httpClient, toApiRequestError } from './http'
 import type { ReportingPeriodOption } from '../types/upload'
 import { buildAdminDemoHeaders } from './authHeaders'
 import { toConfigDeleteResult, toDataRevalidationImpact, type ConfigDeleteResult } from './dataRevalidation'
-import type { ReportingPeriodStatus } from '../utils/reportingPeriods'
-
-const toReportingPeriod = (value: Record<string, unknown>): ReportingPeriodOption => ({
-  id: String(value.id ?? ''),
-  label: String(value.label ?? ''),
-  startDate: String(value.start_date ?? ''),
-  endDate: String(value.end_date ?? ''),
-  status: String(value.status ?? ''),
-  createdAt: value.created_at ? String(value.created_at) : undefined,
-  updatedAt: value.updated_at ? String(value.updated_at) : undefined,
-  dataRevalidation: toDataRevalidationImpact(value.data_revalidation),
-})
+import { type ReportingPeriodStatus } from '../utils/reportingPeriods'
+import {
+  parseReportingPeriodListResponse,
+  parseReportingPeriodResponse,
+} from '../utils/reportingPeriodResponse'
 
 interface ReportingPeriodRequestContext {
   adminId: string
@@ -26,6 +19,8 @@ export interface ReportingPeriodMutationPayload {
   startDate?: string
   endDate?: string
   status?: ReportingPeriodStatus
+  activateOn?: string | null
+  deactivateOn?: string | null
 }
 
 const toApiPayload = (payload: ReportingPeriodMutationPayload): Record<string, unknown> => {
@@ -42,6 +37,12 @@ const toApiPayload = (payload: ReportingPeriodMutationPayload): Record<string, u
   if (payload.status !== undefined) {
     body.status = payload.status
   }
+  if (payload.activateOn !== undefined) {
+    body.activate_on = payload.activateOn
+  }
+  if (payload.deactivateOn !== undefined) {
+    body.deactivate_on = payload.deactivateOn
+  }
   return body
 }
 
@@ -52,10 +53,7 @@ export const listReportingPeriods = async (
     const response = await httpClient.get('/admin/reporting-periods', {
       headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes),
     })
-    const rows = Array.isArray(response.data) ? response.data : []
-    return rows
-      .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
-      .map(toReportingPeriod)
+    return parseReportingPeriodListResponse(response.data, toDataRevalidationImpact)
   } catch (error) {
     throw toApiRequestError(error)
   }
@@ -63,14 +61,15 @@ export const listReportingPeriods = async (
 
 export const createReportingPeriod = async (
   params: ReportingPeriodRequestContext & {
-    payload: Required<Pick<ReportingPeriodMutationPayload, 'label' | 'startDate' | 'endDate'>>
+    payload: ReportingPeriodMutationPayload
+      & Required<Pick<ReportingPeriodMutationPayload, 'label' | 'startDate' | 'endDate'>>
   },
 ): Promise<ReportingPeriodOption> => {
   try {
     const response = await httpClient.post('/admin/reporting-periods', toApiPayload(params.payload), {
       headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, undefined, params.actorName),
     })
-    return toReportingPeriod(response.data as Record<string, unknown>)
+    return parseReportingPeriodResponse(response.data, toDataRevalidationImpact)
   } catch (error) {
     throw toApiRequestError(error)
   }
@@ -90,7 +89,7 @@ export const updateReportingPeriod = async (
         headers: buildAdminDemoHeaders(params.adminId, params.adminProgrammes, undefined, params.actorName),
       },
     )
-    return toReportingPeriod(response.data as Record<string, unknown>)
+    return parseReportingPeriodResponse(response.data, toDataRevalidationImpact)
   } catch (error) {
     throw toApiRequestError(error)
   }

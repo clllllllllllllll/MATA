@@ -408,12 +408,14 @@ def test_events_reject_verified_staff_identity() -> None:
 
 def test_events_use_active_period_event_window_not_today_posting_only() -> None:
     fake_db = FakeResidentSession()
+    period_start = fake_db.today - timedelta(days=14)
+    period_end = fake_db.today + timedelta(days=14)
     fake_db.reporting_periods = [
         {
             "id": fake_db.period_id,
-            "label": "Jul-Dec 2025",
-            "start_date": date(2025, 7, 1),
-            "end_date": date(2025, 12, 31),
+            "label": "Current operational period",
+            "start_date": period_start,
+            "end_date": period_end,
             "status": "active",
         }
     ]
@@ -423,8 +425,8 @@ def test_events_use_active_period_event_window_not_today_posting_only() -> None:
             "reporting_period_id": fake_db.period_id,
             "posting_code": "TTSHGerMed",
             "r_year": "ALL",
-            "start_date": date(2025, 7, 8),
-            "end_date": date(2025, 7, 31),
+            "start_date": fake_db.today - timedelta(days=7),
+            "end_date": fake_db.today + timedelta(days=7),
             "status": "active",
         }
     ]
@@ -447,8 +449,8 @@ def test_events_use_active_period_event_window_not_today_posting_only() -> None:
     valid_event_id = str(uuid4())
     outside_window_id = str(uuid4())
     fake_db.events = [
-        fake_db._event(valid_event_id, "TTSHGerMed", "GERI Demo Row 22", date(2025, 7, 15)),  # noqa: SLF001
-        fake_db._event(outside_window_id, "TTSHGerMed", "GERI Demo Row 22", date(2025, 7, 5)),  # noqa: SLF001
+        fake_db._event(valid_event_id, "TTSHGerMed", "GERI Demo Row 22", fake_db.today),  # noqa: SLF001
+        fake_db._event(outside_window_id, "TTSHGerMed", "GERI Demo Row 22", period_start - timedelta(days=1)),  # noqa: SLF001
     ]
     client = _client(fake_db)
 
@@ -469,12 +471,14 @@ def test_events_use_active_period_event_window_not_today_posting_only() -> None:
 
 def test_events_exclude_submitted_event_in_active_period_window() -> None:
     fake_db = FakeResidentSession()
+    period_start = fake_db.today - timedelta(days=14)
+    period_end = fake_db.today + timedelta(days=14)
     fake_db.reporting_periods = [
         {
             "id": fake_db.period_id,
-            "label": "Jul-Dec 2025",
-            "start_date": date(2025, 7, 1),
-            "end_date": date(2025, 12, 31),
+            "label": "Current operational period",
+            "start_date": period_start,
+            "end_date": period_end,
             "status": "active",
         }
     ]
@@ -484,8 +488,8 @@ def test_events_exclude_submitted_event_in_active_period_window() -> None:
             "reporting_period_id": fake_db.period_id,
             "posting_code": "TTSHGerMed",
             "r_year": "ALL",
-            "start_date": date(2025, 7, 8),
-            "end_date": date(2025, 7, 31),
+            "start_date": fake_db.today - timedelta(days=7),
+            "end_date": fake_db.today + timedelta(days=7),
             "status": "active",
         }
     ]
@@ -506,7 +510,7 @@ def test_events_exclude_submitted_event_in_active_period_window() -> None:
     ]
     submitted_event_id = str(uuid4())
     fake_db.events = [
-        fake_db._event(submitted_event_id, "TTSHGerMed", "GERI Demo Row 22", date(2025, 7, 15)),  # noqa: SLF001
+        fake_db._event(submitted_event_id, "TTSHGerMed", "GERI Demo Row 22", fake_db.today),  # noqa: SLF001
     ]
     fake_db.attendance = [
         {

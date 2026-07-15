@@ -120,8 +120,9 @@ export const AdminUploadPage = () => {
     }
   }, [selectedProgrammeCode, setSelectedProgrammeCode, ttfProgrammeOptions])
 
+  const selectedPeriod = reportingPeriods.find((period) => period.id === reportingPeriodId)
   const hasSelectorOptions = reportingPeriods.length > 0
-  const activeReportingPeriodId = hasSelectorOptions ? reportingPeriodId : ''
+  const activeReportingPeriodId = selectedPeriod?.id ?? ''
 
   const uploadOne = async (uploadType: UploadType, file: File) => {
     const response = await uploadWorkbook({

@@ -921,12 +921,11 @@ Create a new reporting period.
   "start_date": "2026-01-06",
   "end_date": "2026-07-06",
   "status": "active",
-  "activate_on": null,
-  "deactivate_on": null
+  "activate_on": null
 }
 ```
 
-`status` is optional on create and defaults to `active`. Only `active` and `inactive` are accepted; legacy `open`/`closed` values are rejected. `activate_on` and `deactivate_on` are optional scheduled transition dates. If both are supplied, `activate_on <= deactivate_on` is required.
+`status` is optional on create and defaults to `active`. Only `active` and `inactive` are accepted; legacy `open`/`closed` values are rejected. `activate_on` and `deactivate_on` are optional scheduled transition dates. If `deactivate_on` is omitted, it defaults to `end_date + 14 calendar days`; an explicitly supplied value is preserved. If both transition dates are supplied, `activate_on <= deactivate_on` is required.
 
 ### PUT `/admin/reporting-periods/{id}`
 
@@ -934,14 +933,15 @@ Update a reporting period label, date range, stored status, or scheduled transit
 
 - **Auth:** Master Admin only
 - **Body:** any subset of `label`, `start_date`, `end_date`, `status`, `activate_on`, `deactivate_on`.
-- **Validation:** `start_date <= end_date`, `status` is `active` or `inactive`, and the resolved `activate_on/deactivate_on` pair must satisfy `activate_on <= deactivate_on` when both are set.
+- **Validation:** `start_date <= end_date`, `status` is `active` or `inactive`, and the resolved `activate_on/deactivate_on` pair must satisfy `activate_on <= deactivate_on` when both are set. A past period requires an explicitly supplied `deactivate_on` after today for a new immediate or scheduled inactive-to-active transition. For a future scheduled reopening, `deactivate_on` must be strictly later than `activate_on`; a same-day pair is not a valid reopen window. Ordinary edits to an already reopened period preserve its existing date.
 - **Response:** existing reporting-period entity fields plus `data_revalidation`.
 
 ### PUT `/admin/reporting-periods/{id}/activate`
 
-Set `reporting_periods.status = 'active'`.
+Set `reporting_periods.status = 'active'`. A past period can be activated only when it already has a future `deactivate_on`; otherwise use the full reporting-period update endpoint to explicitly create a bounded historical reopen window.
 
 - **Auth:** Master Admin only
+- **Consistency:** the status update, read-after-write verification, data revalidation summary, and audit row commit as one transaction. On an API timeout or `5xx`, callers must re-read the period before retrying.
 - **Response:** existing reporting-period entity fields plus `data_revalidation`.
 
 ### PUT `/admin/reporting-periods/{id}/deactivate`
@@ -971,7 +971,7 @@ Resident-facing default period resolution uses the effective status, not only th
 }
 ```
 
-The stored status remains `active` or `inactive`; due scheduled dates are resolved at read time and do not mutate the row. When both scheduled dates are due, the later scheduled date wins; if both are due on the same date, deactivation wins. With no active/effectively active period, resident event listing returns an empty list with `reason = "active_reporting_period_unavailable"` and ad-hoc disabled; attendance and ad-hoc submission endpoints reject with `422`.
+The stored status remains `active` or `inactive`; due scheduled dates are resolved at read time and do not mutate the row. When both scheduled dates are due, the later scheduled date wins; if both are due on the same date, deactivation wins. Multiple periods may be administratively active, but a current-date workflow must resolve exactly one effectively active period containing today and a dated workflow must resolve exactly one containing its relevant date. A future active period is not a current default, and overlapping active date windows return a safe configuration conflict. With no matching period, resident event listing returns an empty list with `reason = "active_reporting_period_unavailable"` and ad-hoc disabled; attendance and ad-hoc submission endpoints reject with `422`.
 
 ---
 
@@ -1164,16 +1164,16 @@ List scheduled teaching events visible to the Programme PC's programme scope.
 
 - **Auth:** admin/PC only
 - **Scope:** `programme_code IN programme_scope`. Null or empty `programme_scope` means no access. Master admin access is rejected on these PC CRUD endpoints.
-- **Query params:** `programme_code`, `date_from`, `date_to`, `posting_code` optional.
-- **Visibility contract:** Return PC-created rows where `created_for_programme_code` is in scope, plus secretary-created/null-owner scheduled rows that match the selected programme via `secretary_programme_pools` or `teaching_name_catalogue`.
+- **Query params:** `programme_code`, `reporting_period_id`, `date_from`, `date_to`, `posting_code` optional.
+- **Visibility contract:** Resolve the selected period, or the effectively active period containing today when none is selected. Return only events whose dates fall in that period. PC-created rows must be in scope; secretary-created/null-owner scheduled rows match the selected programme through `secretary_programme_pools` or `teaching_name_catalogue` in that same reporting-period scope. If an explicit period is supplied with `date_from` or `date_to`, each supplied date must fall inside it or the API returns `422`.
 
 ### GET `/admin/programme-teaching-name-options`
 
 Return teaching-name options for PC event creation.
 
 - **Auth:** admin/PC only
+- **Query params:** `programme_code` required; `reporting_period_id` or `event_date` optional. An explicit period must be effectively active. When both are supplied, `event_date` must belong to the explicit period or the API returns `422`. With neither option, the backend resolves the single effectively active period containing today. TTF-derived options are scoped to that resolved period.
 - **Scope:** `programme_code IN programme_scope`.
-- **Query params:** `programme_code` required.
 - **Source:** TTF Column K via `teaching_name_catalogue` for the selected programme, plus active `global_session_types`.
 
 ### POST `/admin/programme-teaching-events`
@@ -1328,6 +1328,7 @@ List residents currently posted to the secretary's site.
 Get available teaching name keywords for the secretary event-creation dropdown.
 
 - **Auth:** secretary only
+- **Query params:** `reporting_period_id` or `event_date` optional. An explicit period must be effectively active. When both are supplied, `event_date` must belong to the explicit period or the API returns `422`. With neither option, the backend resolves the single effectively active period containing today. TTF-derived options are scoped to that resolved period.
 - **Scope:** Returns a unified, deduplicated list combining:
   1. Keywords from `teaching_name_catalogue` for the secretary’s **native programme teaching pool**, not only the exact `posting_code = X-User-Site`.
   2. Active entries from `global_session_types` (compliance-exempt, available to all secretaries).
@@ -1610,9 +1611,9 @@ Looks up `residents` table by MCR. Validates `status != 'inactive'`. **No passwo
 
 Return current identity from validated JWT.
 
-- Resident: returns `residents` row identity fields (`id`, `role`, `name`, `programme_code`, `mcr`) plus display-only `current_posting_code` and `current_posting_label` when a usable `resident_postings` row exists. Display resolution prefers today's row, then a row overlapping an effectively active reporting period, then the nearest future row, then the nearest recent past row. It does not return a trusted `posting_code` claim.
+- Resident: returns `residents` row identity fields (`id`, `role`, `name`, `programme_code`, `mcr`) plus display-only `current_posting_code` and `current_posting_label` when a usable `resident_postings` row exists in the single effectively active period containing today. Within that period, display resolution prefers today's row, then the nearest future row, then the nearest recent past row. It does not return a trusted `posting_code` claim.
 - Resident current posting for authorization-sensitive endpoints is still resolved server-side from `resident_postings` at request time.
-- Non-NHG Resident: returns `external_residents` row identity fields (`id`, `role`, `name`, `mcr`, `home_cluster`) plus display-only `current_posting_code` and `current_posting_label` when a usable `external_resident_postings` row exists. Display resolution prefers today's row, then a row overlapping an effectively active reporting period, then the nearest future row, then the nearest recent past row. It does not return `current_nhg_posting_code`, trusted `posting_code`, posting schedule, staff actor metadata, `admin_level`, `programme_code`, or `programme_scope`.
+- Non-NHG Resident: returns `external_residents` row identity fields (`id`, `role`, `name`, `mcr`, `home_cluster`) plus display-only `current_posting_code` and `current_posting_label` when a usable `external_resident_postings` row overlaps the single effectively active period containing today. Within that period, display resolution prefers today's row, then the nearest future row, then the nearest recent past row. It does not return `current_nhg_posting_code`, trusted `posting_code`, posting schedule, staff actor metadata, `admin_level`, `programme_code`, or `programme_scope`.
 - Admin/Secretary: returns `users` row fields + scope, including `admin_level` for admin accounts and saved staff actor metadata:
   - `current_staff_actor_name`
   - `staff_actor_name_required` (`true` when the staff account has no saved non-blank actor name)
@@ -1831,8 +1832,8 @@ Non-NHG attendance list/read and Excel export are Phase 5B-F admin/PC tools. Ext
 List Non-NHG attendance for authorized admin/PC users.
 
 - **Auth:** admin/PC only
-- **Scope:** Programme-scoped where the event posting maps to a programme in `programme_scope` through active/effectively active catalogue/target data or a future explicit posting-to-programme mapping. Explicit master admin may access all programmes. Null/empty `programme_scope` means no access.
-- **Filters:** `home_cluster`, `posting_code`, `attended_posting_code` where supported, `date_from`, `date_to`, `mcr`, `status`.
+- **Scope:** Programme-PC authorization requires a `teaching_name_catalogue` row matching the event posting, teaching name, programme scope, and the event's applicable reporting period. With no explicit period filter, the event date must map to exactly one reporting-period range; overlapping ranges fail closed. An explicit `reporting_period_id` scopes the report by date containment and permits authorized inactive historical reporting. Explicit master admin may access all programmes. Null/empty `programme_scope` means no access.
+- **Filters:** `reporting_period_id`, `home_cluster`, `posting_code`, `attended_posting_code` where supported, `date_from`, `date_to`, `mcr`, `status`.
 - **Compliance exclusion:** Results are for audit/forwarding only and must not be joined into native compliance reports.
 
 ### GET `/admin/external-attendance/{id}`

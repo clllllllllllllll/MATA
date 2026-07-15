@@ -108,9 +108,16 @@ export const listSecretaryTeachingEvents = async (params?: {
   }
 }
 
-export const listSecretaryTeachingNameOptions = async (): Promise<TeachingNameOption[]> => {
+export const listSecretaryTeachingNameOptions = async (params?: {
+  reportingPeriodId?: string
+  eventDate?: string
+}): Promise<TeachingNameOption[]> => {
   try {
     const response = await httpClient.get('/secretary/teaching-name-options', {
+      params: {
+        reporting_period_id: params?.reportingPeriodId || undefined,
+        event_date: params?.eventDate || undefined,
+      },
       headers: buildSecretaryDemoHeaders(),
     })
     const rows = (response.data as { options?: unknown })?.options

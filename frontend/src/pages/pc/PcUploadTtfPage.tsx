@@ -53,8 +53,7 @@ export const PcUploadTtfPage = () => {
     () => reportingPeriods.find((period) => period.id === reportingPeriodId),
     [reportingPeriodId, reportingPeriods],
   )
-  const activeReportingPeriodId =
-    reportingPeriods.length > 0 && reportingPeriodId.trim().length > 0 ? reportingPeriodId : ''
+  const activeReportingPeriodId = selectedPeriod?.id ?? ''
   const localLatestTtfUpload = latestLocalTtfUpload(uploadHistory, selectedPcProgrammeCode)
 
   useEffect(() => {

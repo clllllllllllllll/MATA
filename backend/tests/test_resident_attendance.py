@@ -507,7 +507,7 @@ def test_attendance_is_blocked_when_reporting_period_is_inactive() -> None:
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "No active reporting period is available"
+    assert response.json()["detail"] == "No active reporting period is available for the teaching event date"
     assert len(fake_db.attendance) == before_count
 
 

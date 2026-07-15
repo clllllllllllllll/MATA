@@ -2,6 +2,7 @@ import { buildAdminDemoHeaders } from './authHeaders'
 import { httpClient, toApiRequestError } from './http'
 
 export interface AdminExternalAttendanceFilters {
+  reportingPeriodId?: string
   programmeCode?: string
   homeCluster?: string
   postingCode?: string
@@ -81,6 +82,7 @@ const toItem = (value: Record<string, unknown>): AdminExternalAttendanceListItem
 })
 
 const buildParams = (filters: AdminExternalAttendanceFilters) => ({
+  reporting_period_id: filters.reportingPeriodId || undefined,
   programme_code: filters.programmeCode || undefined,
   home_cluster: filters.homeCluster || undefined,
   posting_code: filters.postingCode || undefined,

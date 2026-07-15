@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from uuid import uuid4
 
 import jwt
 from fastapi import FastAPI
@@ -305,3 +306,51 @@ def test_auth_me_returns_external_identity_without_posting_claim() -> None:
     assert payload["home_cluster"] == "NUH"
     assert payload["current_posting_code"] == "TTSHCardio"
     assert "current_nhg_posting_code" not in payload
+
+
+def test_external_current_posting_uses_resolved_period_and_fails_closed_on_overlap() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.reporting_periods.append(
+        {
+            "id": str(uuid4()),
+            "label": "UAT semantic test 2099",
+            "start_date": date(2099, 1, 1),
+            "end_date": date(2099, 6, 30),
+            "status": "active",
+            "activate_on": None,
+            "deactivate_on": None,
+        }
+    )
+    client = _client(fake_db)
+    current = client.post(
+        "/auth/login",
+        json={"role": "external_resident", "mcr": "E12345A"},
+    )
+    assert current.status_code == 200
+    assert current.json()["user"]["current_posting_code"] == "TTSHCardio"
+
+    fake_db.reporting_periods[0]["status"] = "inactive"
+    no_period = client.post(
+        "/auth/login",
+        json={"role": "external_resident", "mcr": "E12345A"},
+    )
+    assert no_period.status_code == 200
+    assert "current_posting_code" not in no_period.json()["user"]
+
+    fake_db.reporting_periods[0]["status"] = "active"
+    fake_db.reporting_periods.append(
+        {
+            "id": str(uuid4()),
+            "label": "Overlapping current period",
+            "start_date": date.today() - timedelta(days=1),
+            "end_date": date.today() + timedelta(days=1),
+            "status": "active",
+            "activate_on": None,
+            "deactivate_on": None,
+        }
+    )
+    conflict = client.post(
+        "/auth/login",
+        json={"role": "external_resident", "mcr": "E12345A"},
+    )
+    assert conflict.status_code == 409
