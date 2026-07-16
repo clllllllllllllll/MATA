@@ -594,16 +594,56 @@ class FakeRdbUploadCorrectionWarningSession:
     def __init__(self) -> None:
         self.upload_logs: list[dict] = []
         self.audit_logs: list[dict] = []
+        self.rate_limit_buckets: dict[
+            tuple[str, str, datetime, int],
+            dict[str, object],
+        ] = {}
+        self.rate_limit_request_counts: list[int] = []
+        self.rate_limit_cleanup_calls = 0
         self.commits = 0
         self.corrected_reupload_count = 3
 
     async def execute(self, statement, params=None):
         sql = str(statement)
+        normalised_sql = " ".join(sql.upper().split())
         payload = dict(params or {})
         if "/* upload:reporting_period_status */" in sql:
             return _FakeResult(rows=[{"status": "active"}])
-        if "INSERT INTO rate_limit_buckets" in sql and "RETURNING request_count" in sql:
-            return _FakeResult(rows=[{"request_count": 1}])
+        if (
+            normalised_sql.startswith("INSERT INTO RATE_LIMIT_BUCKETS")
+            and "ON CONFLICT (SCOPE, KEY_HASH, WINDOW_START, WINDOW_SECONDS)" in normalised_sql
+            and "DO UPDATE SET REQUEST_COUNT = RATE_LIMIT_BUCKETS.REQUEST_COUNT + 1" in normalised_sql
+            and normalised_sql.endswith("RETURNING REQUEST_COUNT")
+        ):
+            key = (
+                payload["scope"],
+                payload["key_hash"],
+                payload["window_start"],
+                payload["window_seconds"],
+            )
+            existing = self.rate_limit_buckets.get(key)
+            request_count = int(existing["request_count"]) + 1 if existing else 1
+            self.rate_limit_buckets[key] = {
+                "request_count": request_count,
+                "expires_at": payload["expires_at"],
+            }
+            self.rate_limit_request_counts.append(request_count)
+            return _FakeResult(rows=[{"request_count": request_count}])
+        if (
+            normalised_sql.startswith("DELETE FROM RATE_LIMIT_BUCKETS")
+            and normalised_sql.endswith("WHERE EXPIRES_AT < :CUTOFF")
+        ):
+            cutoff = payload["cutoff"]
+            expired_keys = [
+                key
+                for key, bucket in self.rate_limit_buckets.items()
+                if isinstance(bucket.get("expires_at"), datetime)
+                and bucket["expires_at"] < cutoff
+            ]
+            for key in expired_keys:
+                del self.rate_limit_buckets[key]
+            self.rate_limit_cleanup_calls += 1
+            return _FakeResult(rowcount=len(expired_keys))
         if "/* parsed_data_correction:corrected_resident_posting_reupload_count */" in sql:
             return _FakeResult(scalar=self.corrected_reupload_count)
         if "INSERT INTO upload_logs" in sql:
@@ -1558,6 +1598,7 @@ def test_rdb_upload_warns_when_it_will_overwrite_corrected_resident_postings(mon
         )
 
     monkeypatch.setattr("app.services.rdb_parser.parse_rdb_upload", _fake_rdb_parser)
+    monkeypatch.setattr("app.services.persistent_rate_limit._cleanup_due", lambda _: True)
     session = FakeRdbUploadCorrectionWarningSession()
     client = _build_client_with_session(session)
 
@@ -1575,6 +1616,8 @@ def test_rdb_upload_warns_when_it_will_overwrite_corrected_resident_postings(mon
     )
 
     assert response.status_code == 200
+    assert session.rate_limit_request_counts == [1]
+    assert session.rate_limit_cleanup_calls == 1
     warning = response.json()["warnings"][0]
     assert warning["warning_type"] == "corrected_rows_replaced"
     assert warning["entity_type"] == "resident_postings"
