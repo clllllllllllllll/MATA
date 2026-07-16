@@ -32,13 +32,13 @@ def _headers(fake_db: FakeResidentSession) -> dict[str, str]:
     }
 
 
-def test_external_scheduled_events_use_the_current_period_not_a_future_uat_period() -> None:
+def test_external_scheduled_events_use_the_current_period_not_a_future_period() -> None:
     fake_db = FakeResidentSession()
-    uat_event_id = str(uuid4())
+    future_event_id = str(uuid4())
     fake_db.reporting_periods.append(
         {
             "id": str(uuid4()),
-            "label": "UAT semantic test 2099",
+            "label": "Future Test Period",
             "start_date": date(2099, 1, 1),
             "end_date": date(2099, 6, 30),
             "status": "active",
@@ -48,9 +48,9 @@ def test_external_scheduled_events_use_the_current_period_not_a_future_uat_perio
     )
     fake_db.events.append(
         fake_db._event(  # noqa: SLF001
-            uat_event_id,
+            future_event_id,
             "TTSHCardio",
-            "UAT-only teaching",
+            "Future Test Teaching",
             date(2099, 2, 1),
         )
     )
@@ -61,7 +61,7 @@ def test_external_scheduled_events_use_the_current_period_not_a_future_uat_perio
     assert response.status_code == 200
     event_ids = {row["id"] for row in response.json()["events"]}
     assert fake_db.event_id in event_ids
-    assert uat_event_id not in event_ids
+    assert future_event_id not in event_ids
 
 
 def test_external_scheduled_attendance_supports_reopened_history_and_stays_external() -> None:

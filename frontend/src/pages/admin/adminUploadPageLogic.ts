@@ -1,8 +1,111 @@
 import type { Programme } from '../../api/programmes'
+import type { UploadRequest } from '../../api/uploads'
 import type { UploadType } from '../../types/app'
+import type { ReportingPeriodOption } from '../../types/upload'
 import { formatProgrammeOptionLabel, type ProgrammeOption } from '../../utils/programmeOptions.ts'
 
 export type MasterAdminTtfProgrammeOption = ProgrammeOption
+
+export const MISSING_REPORTING_PERIOD_MESSAGE = 'Select a reporting period before uploading.'
+export const INACTIVE_REPORTING_PERIOD_MESSAGE = 'Selected reporting period is inactive.'
+export const INVALID_REPORTING_PERIOD_MESSAGE = 'Selected reporting period is unavailable.'
+
+export type AdminUploadReportingPeriodState = 'missing' | 'invalid' | 'inactive' | 'active'
+
+export interface AdminUploadReportingPeriodSelection {
+  state: AdminUploadReportingPeriodState
+  period?: ReportingPeriodOption
+  reportingPeriodId: string
+  validationMessage?: string
+}
+
+export const resolveAdminUploadReportingPeriod = (
+  reportingPeriods: ReportingPeriodOption[],
+  selectedId: string,
+): AdminUploadReportingPeriodSelection => {
+  if (!selectedId.trim()) {
+    return {
+      state: 'missing',
+      reportingPeriodId: '',
+      validationMessage: MISSING_REPORTING_PERIOD_MESSAGE,
+    }
+  }
+
+  const period = reportingPeriods.find((candidate) => candidate.id === selectedId)
+  if (!period) {
+    return {
+      state: 'invalid',
+      reportingPeriodId: '',
+      validationMessage: INVALID_REPORTING_PERIOD_MESSAGE,
+    }
+  }
+
+  if (period.status !== 'active') {
+    return {
+      state: 'inactive',
+      period,
+      reportingPeriodId: period.id,
+      validationMessage: INACTIVE_REPORTING_PERIOD_MESSAGE,
+    }
+  }
+
+  return {
+    state: 'active',
+    period,
+    reportingPeriodId: period.id,
+  }
+}
+
+export interface SubmitAdminUploadInput extends Omit<UploadRequest, 'reportingPeriodId'> {
+  reportingPeriod: AdminUploadReportingPeriodSelection
+}
+
+export interface SubmittedAdminUpload {
+  request: UploadRequest
+  response: Record<string, unknown>
+}
+
+type AdminUploadSubmitter = (request: UploadRequest) => Promise<Record<string, unknown>>
+
+const uploadRequiresReportingPeriod = (uploadType: UploadType): boolean =>
+  uploadType === 'rdb' || uploadType === 'ttf' || uploadType === 'form_f1'
+
+export const submitAdminUpload = async (
+  input: SubmitAdminUploadInput,
+  submit: AdminUploadSubmitter,
+): Promise<SubmittedAdminUpload | undefined> => {
+  const requiresReportingPeriod = uploadRequiresReportingPeriod(input.uploadType)
+  if (
+    requiresReportingPeriod
+    && (
+      input.reportingPeriod.state !== 'active'
+      || !input.reportingPeriod.period
+      || input.reportingPeriod.period.id !== input.reportingPeriod.reportingPeriodId
+    )
+  ) {
+    return undefined
+  }
+
+  const programmeCode = input.programmeCode?.trim()
+  if (input.uploadType === 'ttf' && !programmeCode) {
+    return undefined
+  }
+
+  const request: UploadRequest = {
+    uploadType: input.uploadType,
+    file: input.file,
+    reportingPeriodId: requiresReportingPeriod
+      ? input.reportingPeriod.reportingPeriodId
+      : undefined,
+    programmeCode,
+    adminProgrammes: input.adminProgrammes,
+    adminId: input.adminId,
+    adminLevel: input.adminLevel,
+    actorName: input.actorName,
+  }
+  const response = await submit(request)
+  return { request, response }
+}
 
 type AdminUploadWarningMode = 'active' | 'history'
 

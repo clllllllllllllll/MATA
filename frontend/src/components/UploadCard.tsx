@@ -4,6 +4,7 @@ import { getSummaryCounts, getWarningsCount } from '../utils/warnings'
 import { ApiRequestError } from '../api/http'
 import { IconCheck, IconWarn } from './icons'
 import { resolveUploadErrorMessage } from './uploadErrorMessages'
+import { resolveUploadCardAvailability, type UploadCardStatus } from './uploadCardLogic'
 
 interface UploadCardProps {
   icon: ReactNode
@@ -16,6 +17,7 @@ interface UploadCardProps {
   }
   accept: string
   reportingPeriodId?: string
+  reportingPeriodValidationMessage?: string
   programmeCode?: string
   requiresReportingPeriod?: boolean
   requiresProgramme?: boolean
@@ -31,6 +33,7 @@ export const UploadCard = ({
   sourceStatus,
   accept,
   reportingPeriodId,
+  reportingPeriodValidationMessage,
   programmeCode,
   requiresReportingPeriod = false,
   requiresProgramme = false,
@@ -38,9 +41,7 @@ export const UploadCard = ({
   onReviewWarnings,
 }: UploadCardProps) => {
   const [file, setFile] = useState<File | null>(null)
-  const [status, setStatus] = useState<
-    'idle' | 'selected' | 'uploading' | 'parsing' | 'success' | 'error'
-  >('idle')
+  const [status, setStatus] = useState<UploadCardStatus>('idle')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [errorDetails, setErrorDetails] = useState<unknown>(null)
   const [response, setResponse] = useState<Record<string, unknown> | null>(null)
@@ -49,12 +50,15 @@ export const UploadCard = ({
   const inputRef = useRef<HTMLInputElement | null>(null)
   const dragDepthRef = useRef(0)
 
-  const isUploadDisabled =
-    !file ||
-    status === 'uploading' ||
-    status === 'parsing' ||
-    (requiresReportingPeriod && !(reportingPeriodId && reportingPeriodId.trim().length > 0)) ||
-    (requiresProgramme && !(programmeCode && programmeCode.trim().length > 0))
+  const availability = resolveUploadCardAvailability({
+    hasFile: Boolean(file),
+    status,
+    requiresReportingPeriod,
+    reportingPeriodId,
+    reportingPeriodValidationMessage,
+    requiresProgramme,
+    programmeCode,
+  })
 
   const summary = useMemo(() => (response ? getSummaryCounts(response) : null), [response])
   const warningsCount = response ? getWarningsCount(response) : 0
@@ -62,11 +66,6 @@ export const UploadCard = ({
   const updatedCount = summary?.updated
   const isSuspiciousZeroResult =
     status === 'success' && createdCount === 0 && updatedCount === 0 && warningsCount === 0
-  const missingReportingPeriod =
-    requiresReportingPeriod && !(reportingPeriodId && reportingPeriodId.trim().length > 0)
-  const missingProgrammeCode =
-    requiresProgramme && !(programmeCode && programmeCode.trim().length > 0)
-
   useEffect(() => {
     if (status !== 'uploading') {
       return
@@ -257,16 +256,16 @@ export const UploadCard = ({
               )}
             </label>
 
-            {missingReportingPeriod || missingProgrammeCode ? (
+            {availability.reportingPeriodMessage || availability.programmeMessage ? (
               <div className="upload-validation-slot" aria-live="polite">
-                {missingReportingPeriod ? (
+                {availability.reportingPeriodMessage ? (
                   <small className="upload-validation-text">
-                    Select a reporting period before uploading.
+                    {availability.reportingPeriodMessage}
                   </small>
                 ) : null}
-                {missingProgrammeCode ? (
+                {availability.programmeMessage ? (
                   <small className="upload-validation-text">
-                    Programme code is required for TTF and must be one programme within your configured scope.
+                    {availability.programmeMessage}
                   </small>
                 ) : null}
               </div>
@@ -294,7 +293,7 @@ export const UploadCard = ({
 
         {!isLoadingState && !isTerminalState ? (
           <div className="upload-card-actions">
-            <button type="button" className="button button-primary" disabled={isUploadDisabled} onClick={handleUpload}>
+            <button type="button" className="button button-primary" disabled={availability.disabled} onClick={handleUpload}>
               Upload
             </button>
           </div>

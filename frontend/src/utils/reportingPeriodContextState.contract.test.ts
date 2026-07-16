@@ -35,7 +35,7 @@ const periods = [
     status: 'active',
   },
   {
-    id: 'future-uat',
+    id: 'future-active',
     label: 'Future test period',
     startDate: '2099-01-01',
     endDate: '2099-06-30',
@@ -97,12 +97,16 @@ let token = reportingPeriodLoadToken(state)
 state = applyReportingPeriodLoadSuccess(state, token, periods, currentDate)
 assertEqual(state.selectedId, 'current', 'initial load selects the unique current period')
 
-state = selectValidatedReportingPeriod(state, 'future-uat')
+state = selectValidatedReportingPeriod(state, 'reopened-past')
 const samePrincipal = { ...principalA, name: 'Updated display only' }
 state = transitionReportingPeriodAuthenticationContext(state, samePrincipal)
 token = reportingPeriodLoadToken(state)
 state = applyReportingPeriodLoadSuccess(state, token, periods, currentDate)
-assertEqual(state.selectedId, 'future-uat', 'same principal reload retains an explicit valid period')
+assertEqual(
+  state.selectedId,
+  'reopened-past',
+  'same principal reload retains an explicit historical period',
+)
 
 const beforeLogoutToken = reportingPeriodLoadToken(state)
 state = transitionReportingPeriodAuthenticationContext(state, null)
@@ -144,7 +148,7 @@ assertEqual(state.selectedId, '', 'programme-scope changes clear the prior selec
 state = createReportingPeriodContextState(principalA)
 token = reportingPeriodLoadToken(state)
 state = applyReportingPeriodLoadSuccess(state, token, periods, currentDate)
-state = selectValidatedReportingPeriod(state, 'future-uat')
+state = selectValidatedReportingPeriod(state, 'future-active')
 token = reportingPeriodLoadToken(state)
 state = applyReportingPeriodLoadFailure(state, token)
 assertEqual(state.periods.length, 0, 'load failure clears the period list')
@@ -179,7 +183,7 @@ const staleResult = await withValidatedReportingPeriod(periods, 'missing-period'
 assertEqual(staleResult, undefined, 'an unvalidated PC period produces no operation result')
 assertEqual(staleCalls.length, 0, 'an unvalidated PC period makes zero operational calls')
 
-for (const explicitId of ['reopened-past', 'future-uat', 'inactive-history']) {
+for (const explicitId of ['reopened-past', 'future-active', 'inactive-history']) {
   const calls: string[] = []
   const result = await withValidatedReportingPeriod(periods, explicitId, async (period) => {
     calls.push(period.id)

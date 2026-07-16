@@ -125,13 +125,13 @@ def test_external_adhoc_options_filter_by_selected_attended_posting() -> None:
     assert "Journal Club" in option_names
 
 
-def test_external_adhoc_options_do_not_leak_future_uat_catalogue() -> None:
+def test_external_adhoc_options_do_not_leak_future_period_catalogue() -> None:
     fake_db = FakeResidentSession()
-    uat_period_id = str(uuid4())
+    future_period_id = str(uuid4())
     fake_db.reporting_periods.append(
         {
-            "id": uat_period_id,
-            "label": "UAT semantic test 2099",
+            "id": future_period_id,
+            "label": "Future Test Period",
             "start_date": date(2099, 1, 1),
             "end_date": date(2099, 6, 30),
             "status": "active",
@@ -139,14 +139,14 @@ def test_external_adhoc_options_do_not_leak_future_uat_catalogue() -> None:
             "deactivate_on": None,
         }
     )
-    uat_row = fake_db._catalogue(  # noqa: SLF001
-        "UAT-only teaching",
+    future_row = fake_db._catalogue(  # noqa: SLF001
+        "Future Test Teaching",
         "TTSHCardio",
         fake_db.session_type_id,
         Decimal("1.0"),
     )
-    uat_row["reporting_period_id"] = uat_period_id
-    fake_db.catalogue.append(uat_row)
+    future_row["reporting_period_id"] = future_period_id
+    fake_db.catalogue.append(future_row)
     client = _client(fake_db)
 
     response = client.get(
@@ -156,7 +156,7 @@ def test_external_adhoc_options_do_not_leak_future_uat_catalogue() -> None:
     )
 
     assert response.status_code == 200
-    assert "UAT-only teaching" not in {row["teaching_name"] for row in response.json()["options"]}
+    assert "Future Test Teaching" not in {row["teaching_name"] for row in response.json()["options"]}
 
 
 def test_external_adhoc_options_no_schedule_row_returns_unavailable() -> None:

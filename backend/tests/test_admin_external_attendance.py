@@ -44,7 +44,7 @@ class FakeAdminExternalAttendanceSession:
         self.geri_attendance_id = str(uuid4())
         self.session_type_id = str(uuid4())
         self.operational_reporting_period_id = str(uuid4())
-        self.uat_reporting_period_id = str(uuid4())
+        self.future_reporting_period_id = str(uuid4())
         self.executed_sql: list[str] = []
         self.reporting_periods = [
             {
@@ -54,7 +54,7 @@ class FakeAdminExternalAttendanceSession:
                 "status": "active",
             },
             {
-                "id": self.uat_reporting_period_id,
+                "id": self.future_reporting_period_id,
                 "start_date": date(2099, 1, 1),
                 "end_date": date(2099, 12, 31),
                 "status": "active",
@@ -381,7 +381,7 @@ def test_admin_external_attendance_detail_respects_programme_scope() -> None:
     assert allowed.json()["notes"]["compliance_included"] is False
 
 
-def test_programme_pc_catalogue_authorization_cannot_use_a_future_uat_period() -> None:
+def test_programme_pc_catalogue_authorization_cannot_use_a_future_period() -> None:
     fake_db = FakeAdminExternalAttendanceSession()
     fake_db.catalogue_mappings = [
         mapping
@@ -393,7 +393,7 @@ def test_programme_pc_catalogue_authorization_cannot_use_a_future_uat_period() -
     ]
     fake_db.catalogue_mappings.append(
         {
-            "reporting_period_id": fake_db.uat_reporting_period_id,
+            "reporting_period_id": fake_db.future_reporting_period_id,
             "posting_code": "TTSHCardio",
             "keyword": "Journal Club",
             "programme_code": "DR",
@@ -433,16 +433,16 @@ def test_programme_pc_external_attendance_uses_selected_or_unambiguous_event_per
         params={"reporting_period_id": fake_db.operational_reporting_period_id},
         headers=_headers(fake_db, scope="DR"),
     )
-    unrelated_uat = client.get(
+    unrelated_future = client.get(
         "/admin/external-attendance",
-        params={"reporting_period_id": fake_db.uat_reporting_period_id},
+        params={"reporting_period_id": fake_db.future_reporting_period_id},
         headers=_headers(fake_db, scope="DR"),
     )
 
     assert operational.status_code == 200
     assert operational.json()["total"] == 1
-    assert unrelated_uat.status_code == 200
-    assert unrelated_uat.json()["total"] == 0
+    assert unrelated_future.status_code == 200
+    assert unrelated_future.json()["total"] == 0
 
     historical_period_id = str(uuid4())
     fake_db.reporting_periods.append(

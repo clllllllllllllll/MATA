@@ -29,8 +29,8 @@ const periods = [
     status: 'active',
   },
   {
-    id: 'uat-2099',
-    label: 'UAT semantic test 2099',
+    id: 'future-active',
+    label: 'Future Test Period',
     startDate: '2099-01-01',
     endDate: '2099-06-30',
     status: 'active',
@@ -50,8 +50,8 @@ assertEqual(
   'an explicitly selected historical period remains selectable',
 )
 assertEqual(
-  retainOrSelectReportingPeriodId(periods, 'uat-2099', currentDate),
-  'uat-2099',
+  retainOrSelectReportingPeriodId(periods, 'future-active', currentDate),
+  'future-active',
   'an explicitly selected future period remains selectable',
 )
 assertEqual(

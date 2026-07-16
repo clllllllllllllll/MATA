@@ -313,7 +313,7 @@ def test_external_current_posting_uses_resolved_period_and_fails_closed_on_overl
     fake_db.reporting_periods.append(
         {
             "id": str(uuid4()),
-            "label": "UAT semantic test 2099",
+            "label": "Future Test Period",
             "start_date": date(2099, 1, 1),
             "end_date": date(2099, 6, 30),
             "status": "active",

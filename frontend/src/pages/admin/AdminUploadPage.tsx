@@ -9,7 +9,12 @@ import { useAppState } from '../../context/useAppState'
 import type { UploadType } from '../../types/app'
 import { formatReportingPeriodOptionLabel } from '../../utils/reportingPeriods'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
-import { buildMasterAdminTtfProgrammeOptions, buildReviewWarningsPathForUploadSlot } from './adminUploadPageLogic'
+import {
+  buildMasterAdminTtfProgrammeOptions,
+  buildReviewWarningsPathForUploadSlot,
+  resolveAdminUploadReportingPeriod,
+  submitAdminUpload,
+} from './adminUploadPageLogic'
 
 const acceptedByType: Record<UploadType, string> = {
   public_holidays: '.xlsx,.csv',
@@ -120,38 +125,47 @@ export const AdminUploadPage = () => {
     }
   }, [selectedProgrammeCode, setSelectedProgrammeCode, ttfProgrammeOptions])
 
-  const selectedPeriod = reportingPeriods.find((period) => period.id === reportingPeriodId)
   const hasSelectorOptions = reportingPeriods.length > 0
-  const activeReportingPeriodId = selectedPeriod?.id ?? ''
+  const reportingPeriodSelection = useMemo(
+    () => resolveAdminUploadReportingPeriod(reportingPeriods, reportingPeriodId),
+    [reportingPeriodId, reportingPeriods],
+  )
+  const selectedReportingPeriodId = reportingPeriodSelection.reportingPeriodId
 
   const uploadOne = async (uploadType: UploadType, file: File) => {
-    const response = await uploadWorkbook({
+    const submitted = await submitAdminUpload({
       uploadType,
       file,
-      reportingPeriodId: activeReportingPeriodId,
+      reportingPeriod: reportingPeriodSelection,
       programmeCode: selectedProgrammeCode,
       adminId: demoAdminId,
       adminProgrammes: demoAdminProgrammes,
       adminLevel: 'master',
-    })
+    }, uploadWorkbook)
+    if (!submitted) {
+      throw new Error(
+        reportingPeriodSelection.validationMessage
+          ?? 'Select a programme code before uploading.',
+      )
+    }
 
     addUploadResult({
       uploadType,
-      response,
+      response: submitted.response,
       filename: file.name,
-      reportingPeriodId: activeReportingPeriodId,
-      reportingPeriodLabel,
+      reportingPeriodId: submitted.request.reportingPeriodId,
+      reportingPeriodLabel: reportingPeriodSelection.period?.label ?? reportingPeriodLabel,
       programmeCode: uploadType === 'ttf' ? selectedProgrammeCode : undefined,
     })
 
-    return response
+    return submitted.response
   }
 
   const reviewWarningsForUpload = (uploadType: UploadType) => {
     const latest = latestByType.get(uploadType)
     navigate(buildReviewWarningsPathForUploadSlot({
       uploadType,
-      selectedReportingPeriodId: activeReportingPeriodId,
+      selectedReportingPeriodId,
       selectedProgrammeCode,
       latestUpload: latest
         ? {
@@ -177,6 +191,7 @@ export const AdminUploadPage = () => {
             {hasSelectorOptions ? (
               <>
                 <select value={reportingPeriodId} onChange={(event) => setReportingPeriodId(event.target.value)}>
+                  <option value="">Select a reporting period</option>
                   {reportingPeriods.map((period) => (
                     <option key={period.id} value={period.id}>
                       {formatReportingPeriodOptionLabel(period)}
@@ -238,7 +253,8 @@ export const AdminUploadPage = () => {
           lastUploadedText={formatDateTime(latestByType.get('rdb')?.uploadedAtIso)}
           accept={acceptedByType.rdb}
           requiresReportingPeriod
-          reportingPeriodId={activeReportingPeriodId}
+          reportingPeriodId={selectedReportingPeriodId}
+          reportingPeriodValidationMessage={reportingPeriodSelection.validationMessage}
           onUpload={(file) => uploadOne('rdb', file)}
           onReviewWarnings={() => reviewWarningsForUpload('rdb')}
         />
@@ -251,7 +267,8 @@ export const AdminUploadPage = () => {
           accept={acceptedByType.ttf}
           requiresReportingPeriod
           requiresProgramme
-          reportingPeriodId={activeReportingPeriodId}
+          reportingPeriodId={selectedReportingPeriodId}
+          reportingPeriodValidationMessage={reportingPeriodSelection.validationMessage}
           programmeCode={selectedProgrammeCode}
           onUpload={(file) => uploadOne('ttf', file)}
           onReviewWarnings={() => reviewWarningsForUpload('ttf')}
@@ -264,7 +281,8 @@ export const AdminUploadPage = () => {
           lastUploadedText={formatDateTime(latestByType.get('form_f1')?.uploadedAtIso)}
           accept={acceptedByType.form_f1}
           requiresReportingPeriod
-          reportingPeriodId={activeReportingPeriodId}
+          reportingPeriodId={selectedReportingPeriodId}
+          reportingPeriodValidationMessage={reportingPeriodSelection.validationMessage}
           onUpload={(file) => uploadOne('form_f1', file)}
           onReviewWarnings={() => reviewWarningsForUpload('form_f1')}
         />
