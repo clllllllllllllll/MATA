@@ -18,10 +18,12 @@ const redirectTarget = (decision: { kind: string; to?: string }) =>
 const appSource = read('./App.tsx')
 const mainSource = read('./main.tsx')
 const authApiSource = read('./api/auth.ts')
+const loginErrorMessagesSource = read('./api/loginErrorMessages.ts')
 const httpSource = read('./api/http.ts')
 const authContextSource = read('./context/AuthContext.tsx')
 const authContextTypeSource = read('./context/authContext.ts')
 const loginPageSource = read('./pages/auth/LoginPage.tsx')
+const residentLoginFlowSource = read('./pages/auth/residentLoginFlow.ts')
 const registrationPageSource = read('./pages/auth/NonNhgRegistrationPage.tsx')
 const shellSource = read('./components/AppShell.tsx')
 const navigationSource = read('./config/navigation.ts')
@@ -305,9 +307,13 @@ assert(
 )
 assert(loginPageSource.includes('NHG Resident'), 'login page uses NHG Resident terminology')
 assert(loginPageSource.includes('Non-NHG Resident'), 'login page uses Non-NHG Resident terminology')
-assert(loginPageSource.includes('Unable to sign in. Check your details and try again.'), 'login page uses generic failure copy')
 assert(
-  authApiSource.includes('Too many sign-in attempts. Please try again in 1 minute.') &&
+  loginErrorMessagesSource.includes('Unable to sign in. Check your details and try again.') &&
+    loginPageSource.includes('resolveResidentLoginError(loginError)'),
+  'mounted resident login maps ordinary failures to generic copy',
+)
+assert(
+  loginErrorMessagesSource.includes('Too many sign-in attempts. Please try again in 1 minute.') &&
     loginPageSource.includes('getRateLimitLoginErrorMessage') &&
     /const getStaffLoginErrorMessage = \(loginError: unknown\) => \{\s*const rateLimitMessage = getRateLimitLoginErrorMessage\(loginError\)[\s\S]*?if \(rateLimitMessage\) \{[\s\S]*?return rateLimitMessage[\s\S]*?STAFF_SUPABASE_BACKEND_AUTH_ERROR/.test(loginPageSource),
   'login page shows a specific too-many-requests message before staff errors fall back to generic or backend-auth copy',
@@ -319,21 +325,25 @@ assert(
   'HTTP error conversion preserves Retry-After seconds for backend login rate-limit feedback',
 )
 assert(
-  authApiSource.includes('isRateLimitError') &&
-    authApiSource.includes('getRateLimitLoginErrorMessage') &&
-    authApiSource.includes('error.status === 429'),
-  'auth API exposes shared rate-limit detection and one-minute fallback messaging for backend and Supabase auth errors',
+  loginErrorMessagesSource.includes('isRateLimitError') &&
+    loginErrorMessagesSource.includes('getRateLimitLoginErrorMessage') &&
+    loginErrorMessagesSource.includes('.status === 429'),
+  'login error mapping preserves rate-limit detection and one-minute fallback messaging',
 )
 assert(
-  /catch \(loginError\) \{[\s\S]*if \(isRateLimitError\(loginError\)\) \{[\s\S]*throw loginError[\s\S]*\}/.test(loginPageSource),
-  'resident login fallback preserves backend 429 instead of trying the other resident table and showing invalid-details copy',
+  !loginPageSource.includes('loginOrder') &&
+    !loginPageSource.includes('isRateLimitError') &&
+    !loginPageSource.includes("startsWith('E')") &&
+    residentLoginFlowSource.includes('const session = await authenticate(payload)'),
+  'resident login sends one request for the explicitly selected identity path without table probing',
 )
 assert(loginPageSource.includes('loginStaff'), 'staff login is separate from MCR resident login')
 assert(
   !loginPageSource.includes('residentSupabaseUnsupported') &&
     !loginPageSource.includes('MCR-only resident sign-in is available in local/demo mode. Supabase staff sessions are enabled here.') &&
     !loginPageSource.includes('Non-NHG Resident sign-in remains deferred') &&
-    loginPageSource.includes('NHG and registered Non-NHG Residents use MCR-only sign-in'),
+    loginPageSource.includes('Use NHG Resident for RDB-backed resident accounts.') &&
+    loginPageSource.includes('Registered Non-NHG Residents must choose their separate sign-in mode.'),
   'login page enables NHG and registered Non-NHG Resident MCR login in supabase mode',
 )
 assert(!loginPageSource.includes('auth-login-grid'), 'login page does not use the three-equal-card layout')
@@ -349,17 +359,18 @@ assert(
   'login page does not expose staff implementation role chooser copy',
 )
 assert(
-  !loginPageSource.includes('setResidentRole'),
-  'login page does not hide NHG/Non-NHG resident login behind a selected-mode toggle',
+  loginPageSource.includes('auth-resident-role-selector') &&
+    loginPageSource.includes("chooseResidentLoginRole('resident')") &&
+    loginPageSource.includes("chooseResidentLoginRole('external_resident')") &&
+    loginPageSource.includes('submitSelectedResidentLogin') &&
+    residentLoginFlowSource.includes("role: 'resident'") &&
+    registrationPageSource.includes('to="/login"'),
+  'NHG is the default resident mode and Non-NHG login requires an explicit visible selection',
 )
 assert(
-  loginPageSource.includes("'resident', 'external_resident'") &&
-    loginPageSource.includes("'external_resident', 'resident'") &&
-    !loginPageSource.includes("frontendConfig.authMode === 'supabase'\n      ? ['resident']") &&
-    loginPageSource.includes('loginResident(normalisedMcr, role)'),
-  'single resident MCR form supports NHG and registered Non-NHG resident login without a visible mode toggle',
+  authApiSource.includes("return login({ role: 'staff', email, password })"),
+  'staff login uses the unchanged neutral backend staff login discriminator',
 )
-assert(authApiSource.includes("role: 'staff'"), 'staff login uses the neutral backend staff login discriminator')
 assert(registrationPageSource.includes('registration-confirmation'), 'registration page implements screenshot-only confirmation state')
 assert(registrationPageSource.includes('registerNonNhgResident'), 'registration page submits through auth API helper')
 assert(registrationPageSource.includes('Continue to login'), 'confirmation continues to login when no session is returned')
