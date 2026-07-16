@@ -2,23 +2,29 @@ import { useState, type FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   STAFF_SUPABASE_BACKEND_AUTH_ERROR,
-  getRateLimitLoginErrorMessage,
-  isRateLimitError,
   loginResident,
   loginStaff,
 } from '../../api/auth'
 import { ApiRequestError } from '../../api/http'
+import {
+  GENERIC_LOGIN_ERROR,
+  getRateLimitLoginErrorMessage,
+  resolveResidentLoginError,
+} from '../../api/loginErrorMessages'
 import { IconChevRight } from '../../components/icons'
 import { defaultPathForRole, isPathAllowedForRole } from '../../config/navigation'
 import { useAuth } from '../../context/useAuth'
 import type { AppRole } from '../../types/app'
-
-type ResidentLoginRole = 'resident' | 'external_resident'
+import {
+  createInitialResidentLoginState,
+  selectResidentLoginRole,
+  submitSelectedResidentLogin,
+} from './residentLoginFlow'
+import type { ResidentLoginRole } from '../../api/loginPayloads'
 type LoginFormId = 'staff' | 'resident'
 
-const LOGIN_ERROR = 'Unable to sign in. Check your details and try again.'
 const RESIDENT_HELP =
-  'NHG and registered Non-NHG Residents use MCR-only sign-in for their own resident routes.'
+  'Use NHG Resident for RDB-backed resident accounts. Registered Non-NHG Residents must choose their separate sign-in mode.'
 const SUPABASE_CONFIGURATION_ERROR_MARKER = 'VITE_AUTH_MODE=supabase requires'
 
 const getRedirectPath = (role: AppRole, from?: string) => {
@@ -34,7 +40,7 @@ const getStaffLoginErrorMessage = (loginError: unknown) => {
     return rateLimitMessage
   }
   if (!(loginError instanceof ApiRequestError)) {
-    return LOGIN_ERROR
+    return GENERIC_LOGIN_ERROR
   }
   if (
     loginError.message.includes(SUPABASE_CONFIGURATION_ERROR_MARKER) ||
@@ -42,18 +48,19 @@ const getStaffLoginErrorMessage = (loginError: unknown) => {
   ) {
     return loginError.message
   }
-  return LOGIN_ERROR
+  return GENERIC_LOGIN_ERROR
 }
 
 export const LoginPage = () => {
   const navigate = useNavigate()
   const location = useLocation()
-  const { beginLoginAttempt, isAuthRequestCurrent, clearCurrentAuthRequest, loginWithSession, logout } = useAuth()
+  const { beginLoginAttempt, isAuthRequestCurrent, clearCurrentAuthRequest, loginWithSession } = useAuth()
   const fromPath = (location.state as { from?: string } | null)?.from
 
   const [staffEmail, setStaffEmail] = useState('')
   const [staffPassword, setStaffPassword] = useState('')
   const [residentMcr, setResidentMcr] = useState('')
+  const [residentLoginState, setResidentLoginState] = useState(createInitialResidentLoginState)
   const [error, setError] = useState<{ formId: LoginFormId; message: string } | null>(null)
   const [submittingForm, setSubmittingForm] = useState<LoginFormId | null>(null)
   const isSubmitting = submittingForm !== null
@@ -64,7 +71,7 @@ export const LoginPage = () => {
       return
     }
     if (!staffEmail.trim() || !staffPassword) {
-      setError({ formId: 'staff', message: LOGIN_ERROR })
+      setError({ formId: 'staff', message: GENERIC_LOGIN_ERROR })
       return
     }
 
@@ -97,41 +104,51 @@ export const LoginPage = () => {
 
   const submitResidentLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (submittingForm === 'resident') {
+      return
+    }
     if (!residentMcr.trim()) {
-      setError({ formId: 'resident', message: LOGIN_ERROR })
+      setError({ formId: 'resident', message: GENERIC_LOGIN_ERROR })
       return
     }
 
-    const normalisedMcr = residentMcr.trim().toUpperCase()
-    const loginOrder: ResidentLoginRole[] = normalisedMcr.startsWith('E')
-      ? ['external_resident', 'resident']
-      : ['resident', 'external_resident']
-
     setSubmittingForm('resident')
     setError(null)
-    await logout()
+    const loginGeneration = beginLoginAttempt()
     try {
-      for (const role of loginOrder) {
-        try {
-          const session = await loginResident(normalisedMcr, role)
-          loginWithSession(session)
-          navigate(getRedirectPath(session.identity.role, fromPath), { replace: true })
-          return
-        } catch (loginError) {
-          if (isRateLimitError(loginError)) {
-            throw loginError
-          }
-          // Try the other resident identity table before showing the generic failure.
-        }
+      const result = await submitSelectedResidentLogin({
+        rawMcr: residentMcr,
+        role: residentLoginState.role,
+        authenticate: loginResident,
+      })
+      if (!isAuthRequestCurrent(loginGeneration)) {
+        return
       }
-      await logout()
-      setError({ formId: 'resident', message: LOGIN_ERROR })
-    } catch (loginError) {
-      await logout()
-      setError({ formId: 'resident', message: getRateLimitLoginErrorMessage(loginError) ?? LOGIN_ERROR })
-    } finally {
       setSubmittingForm(null)
+      loginWithSession(result.session)
+      navigate(result.redirectPath, { replace: true })
+    } catch (loginError) {
+      if (!isAuthRequestCurrent(loginGeneration)) {
+        return
+      }
+      const clearedCurrentRequest = await clearCurrentAuthRequest(loginGeneration)
+      if (!clearedCurrentRequest) {
+        return
+      }
+      setError({ formId: 'resident', message: resolveResidentLoginError(loginError) })
+    } finally {
+      if (isAuthRequestCurrent(loginGeneration)) {
+        setSubmittingForm(null)
+      }
     }
+  }
+
+  const chooseResidentLoginRole = (role: ResidentLoginRole) => {
+    if (submittingForm === 'resident') {
+      return
+    }
+    setResidentLoginState(selectResidentLoginRole(role))
+    setError((currentError) => currentError?.formId === 'resident' ? null : currentError)
   }
 
   const formError = (formId: LoginFormId) =>
@@ -196,7 +213,36 @@ export const LoginPage = () => {
 
         <div className="auth-divider">Resident MCR</div>
 
+        <div className="auth-resident-role-selector" role="group" aria-label="Resident account type">
+          <button
+            type="button"
+            className={residentLoginState.role === 'resident' ? 'is-active' : ''}
+            aria-pressed={residentLoginState.role === 'resident'}
+            onClick={() => chooseResidentLoginRole('resident')}
+            disabled={isSubmitting}
+          >
+            NHG Resident
+          </button>
+          <button
+            type="button"
+            className={residentLoginState.role === 'external_resident' ? 'is-active' : ''}
+            aria-pressed={residentLoginState.role === 'external_resident'}
+            onClick={() => chooseResidentLoginRole('external_resident')}
+            disabled={isSubmitting}
+          >
+            Registered Non-NHG Resident
+          </button>
+        </div>
+
         <form className="auth-form auth-form-block" onSubmit={submitResidentLogin}>
+          <div className="auth-section-heading">
+            <h2>
+              {residentLoginState.role === 'resident'
+                ? 'NHG Resident login'
+                : 'Registered Non-NHG Resident login'}
+            </h2>
+            <p>{RESIDENT_HELP}</p>
+          </div>
           <label className="auth-field">
             <span>MCR number</span>
             <input
@@ -207,10 +253,6 @@ export const LoginPage = () => {
               autoComplete="username"
             />
           </label>
-
-          <p className="auth-help">
-            {RESIDENT_HELP}
-          </p>
 
           {formError('resident')}
 

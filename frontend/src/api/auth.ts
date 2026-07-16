@@ -2,6 +2,7 @@ import { frontendConfig } from '../config/frontendConfig'
 import type { AppRole } from '../types/app'
 import type { AuthIdentity, StoredAuthSession } from '../types/auth'
 import { ApiRequestError, httpClient, toApiRequestError } from './http'
+import type { ResidentLoginPayload } from './loginPayloads'
 import {
   authSessionChangedEvent,
   clearAuthSession,
@@ -22,10 +23,7 @@ type LoginPayload =
       email: string
       password: string
     }
-  | {
-      role: 'resident' | 'external_resident'
-      mcr: string
-    }
+  | ResidentLoginPayload
 
 interface BackendLoginResponse {
   access_token: string
@@ -188,28 +186,6 @@ const isMataResidentSessionRole = (role: AppRole): role is 'resident' | 'externa
 
 export const STAFF_SUPABASE_BACKEND_AUTH_ERROR =
   'Supabase sign-in succeeded, but MATA could not authorize this staff account.'
-export const LOGIN_RATE_LIMIT_ERROR = 'Too many sign-in attempts. Please try again in 1 minute.'
-const DEFAULT_LOGIN_RATE_LIMIT_RETRY_AFTER_SECONDS = 60
-
-const formatRetryAfter = (seconds: number): string => {
-  if (seconds <= 60) {
-    return '1 minute'
-  }
-  const minutes = Math.ceil(seconds / 60)
-  return `${minutes} minutes`
-}
-
-export const isRateLimitError = (error: unknown): error is ApiRequestError =>
-  error instanceof ApiRequestError && error.status === 429
-
-export const getRateLimitLoginErrorMessage = (error: unknown): string | null => {
-  if (!isRateLimitError(error)) {
-    return null
-  }
-  const retryAfterSeconds = error.retryAfterSeconds ?? DEFAULT_LOGIN_RATE_LIMIT_RETRY_AFTER_SECONDS
-  return `Too many sign-in attempts. Please try again in ${formatRetryAfter(retryAfterSeconds)}.`
-}
-
 export const toStubIdentityHeaders = (identity: AuthIdentity | null): Record<string, string> => {
   if (!identity || frontendConfig.authMode === 'supabase') {
     return {}
@@ -264,12 +240,7 @@ export const login = async (payload: LoginPayload): Promise<StoredAuthSession> =
   }
 }
 
-export const loginResident = (
-  mcr: string,
-  role: 'resident' | 'external_resident' = 'resident',
-) => {
-  return login({ role, mcr })
-}
+export const loginResident = (payload: ResidentLoginPayload) => login(payload)
 
 export const loginStaffWithSupabase = async (
   email: string,

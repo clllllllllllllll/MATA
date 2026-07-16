@@ -7275,6 +7275,33 @@ button:disabled,
   box-shadow: var(--shadow-1);
 }
 
+.auth-resident-role-selector {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+  margin-bottom: 14px;
+}
+
+.auth-resident-role-selector button {
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.auth-resident-role-selector button.is-active {
+  background: #fff;
+  color: var(--ink);
+  box-shadow: var(--shadow-1);
+}
+
 .auth-form {
   display: grid;
   gap: 14px;

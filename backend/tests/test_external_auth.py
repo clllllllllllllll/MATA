@@ -284,6 +284,19 @@ def test_external_login_rejects_unknown_mcr() -> None:
     assert response.status_code == 401
 
 
+def test_external_role_does_not_authenticate_native_resident_mcr() -> None:
+    fake_db = FakeResidentSession()
+    client = _client(fake_db)
+
+    response = client.post(
+        "/auth/login",
+        json={"role": "external_resident", "mcr": "M12345A"},
+    )
+
+    assert response.status_code == 401
+    assert "access_token" not in response.json()
+
+
 def test_auth_me_returns_external_identity_without_posting_claim() -> None:
     fake_db = FakeResidentSession()
     client = _client(
