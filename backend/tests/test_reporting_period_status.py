@@ -108,7 +108,7 @@ def test_current_date_ignores_reopened_past_and_future_active_periods() -> None:
     periods = [
         _period("reopened-past", date(2025, 7, 1), date(2025, 12, 31)),
         _period("current", date(2026, 7, 1), date(2026, 12, 31)),
-        _period("uat-2099", date(2099, 1, 1), date(2099, 6, 30)),
+        _period("future-period", date(2099, 1, 1), date(2099, 6, 30)),
     ]
 
     result = resolve_reporting_period_for_date(

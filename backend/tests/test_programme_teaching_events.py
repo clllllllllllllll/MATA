@@ -708,13 +708,13 @@ def test_teaching_name_options_are_programme_scoped() -> None:
     assert "Geri Teaching" not in keywords
 
 
-def test_teaching_name_options_do_not_leak_from_future_uat_period() -> None:
+def test_teaching_name_options_do_not_leak_from_future_period() -> None:
     session = FakeProgrammeTeachingEventsSession()
-    uat_period_id = str(uuid4())
+    future_period_id = str(uuid4())
     session.reporting_periods.append(
         {
-            "id": uat_period_id,
-            "label": "UAT semantic test 2099",
+            "id": future_period_id,
+            "label": "Future Test Period",
             "start_date": date(2099, 1, 1),
             "end_date": date(2099, 6, 30),
             "status": "active",
@@ -722,9 +722,9 @@ def test_teaching_name_options_do_not_leak_from_future_uat_period() -> None:
             "deactivate_on": None,
         }
     )
-    uat_row = session._catalogue("UAT-only teaching", "DR", "TTSHCardio", session.session_type_id)
-    uat_row["reporting_period_id"] = uat_period_id
-    session.catalogue.append(uat_row)
+    future_row = session._catalogue("Future Test Teaching", "DR", "TTSHCardio", session.session_type_id)
+    future_row["reporting_period_id"] = future_period_id
+    session.catalogue.append(future_row)
     client = _client(session)
 
     current = client.get(
@@ -732,25 +732,25 @@ def test_teaching_name_options_do_not_leak_from_future_uat_period() -> None:
         headers=_headers(scope="DR"),
         params={"programme_code": "DR"},
     )
-    explicit_uat = client.get(
+    explicit_future = client.get(
         "/admin/programme-teaching-name-options",
         headers=_headers(scope="DR"),
-        params={"programme_code": "DR", "reporting_period_id": uat_period_id},
+        params={"programme_code": "DR", "reporting_period_id": future_period_id},
     )
 
     assert current.status_code == 200
-    assert "UAT-only teaching" not in {row["keyword"] for row in current.json()["options"]}
-    assert explicit_uat.status_code == 200
-    assert "UAT-only teaching" in {row["keyword"] for row in explicit_uat.json()["options"]}
+    assert "Future Test Teaching" not in {row["keyword"] for row in current.json()["options"]}
+    assert explicit_future.status_code == 200
+    assert "Future Test Teaching" in {row["keyword"] for row in explicit_future.json()["options"]}
 
 
 def test_pc_event_list_and_management_are_isolated_by_reporting_period() -> None:
     session = FakeProgrammeTeachingEventsSession()
-    uat_period_id = str(uuid4())
+    future_period_id = str(uuid4())
     session.reporting_periods.append(
         {
-            "id": uat_period_id,
-            "label": "UAT semantic test 2099",
+            "id": future_period_id,
+            "label": "Future Test Period",
             "start_date": date(2099, 1, 1),
             "end_date": date(2099, 6, 30),
             "status": "active",
@@ -758,32 +758,32 @@ def test_pc_event_list_and_management_are_isolated_by_reporting_period() -> None
             "deactivate_on": None,
         }
     )
-    uat_catalogue = session._catalogue("UAT-only teaching", "DR", "TTSHNeuro", session.session_type_id)
-    uat_catalogue["reporting_period_id"] = uat_period_id
-    session.catalogue.append(uat_catalogue)
+    future_catalogue = session._catalogue("Future Test Teaching", "DR", "TTSHNeuro", session.session_type_id)
+    future_catalogue["reporting_period_id"] = future_period_id
+    session.catalogue.append(future_catalogue)
     cross_period_event = session._event(
         event_id=str(uuid4()),
         posting_code="TTSHNeuro",
-        teaching_name="UAT-only teaching",
+        teaching_name="Future Test Teaching",
         created_by_role="secretary",
         created_for_programme_code=None,
     )
-    uat_event = session._event(
+    future_event = session._event(
         event_id=str(uuid4()),
         posting_code="TTSHNeuro",
-        teaching_name="UAT-only teaching",
+        teaching_name="Future Test Teaching",
         created_by_role="secretary",
         created_for_programme_code=None,
         event_date=date(2099, 2, 1),
     )
-    session.events.extend([cross_period_event, uat_event])
+    session.events.extend([cross_period_event, future_event])
     client = _client(session)
 
     current = client.get("/admin/programme-teaching-events", headers=_headers(scope="DR"))
-    explicit_uat = client.get(
+    explicit_future = client.get(
         "/admin/programme-teaching-events",
         headers=_headers(scope="DR"),
-        params={"reporting_period_id": uat_period_id},
+        params={"reporting_period_id": future_period_id},
     )
     cross_period_update = client.put(
         f"/admin/programme-teaching-events/{cross_period_event['id']}",
@@ -791,7 +791,7 @@ def test_pc_event_list_and_management_are_isolated_by_reporting_period() -> None
         json={
             "programme_code": "DR",
             "posting_code": "TTSHNeuro",
-            "teaching_name": "UAT-only teaching",
+            "teaching_name": "Future Test Teaching",
             "event_date": "2026-05-20",
             "start_time": "10:00",
         },
@@ -803,13 +803,13 @@ def test_pc_event_list_and_management_are_isolated_by_reporting_period() -> None
     conflicting_dates = client.get(
         "/admin/programme-teaching-events",
         headers=_headers(scope="DR"),
-        params={"reporting_period_id": uat_period_id, "date_from": "2026-05-20"},
+        params={"reporting_period_id": future_period_id, "date_from": "2026-05-20"},
     )
 
     assert current.status_code == 200
     assert cross_period_event["id"] not in {row["id"] for row in current.json()["events"]}
-    assert explicit_uat.status_code == 200
-    assert {row["id"] for row in explicit_uat.json()["events"]} == {uat_event["id"]}
+    assert explicit_future.status_code == 200
+    assert {row["id"] for row in explicit_future.json()["events"]} == {future_event["id"]}
     assert cross_period_update.status_code == 403
     assert cross_period_delete.status_code == 403
     assert conflicting_dates.status_code == 422

@@ -1120,13 +1120,13 @@ def test_teaching_name_options_use_programme_pool_and_include_active_globals() -
     assert row2_index < row10_index < row11_index
 
 
-def test_teaching_name_options_do_not_leak_from_future_uat_period() -> None:
+def test_teaching_name_options_do_not_leak_from_future_period() -> None:
     fake_db = FakeSecretarySession()
-    uat_period_id = str(uuid4())
+    future_period_id = str(uuid4())
     fake_db.reporting_periods.append(
         {
-            "id": uat_period_id,
-            "label": "UAT semantic test 2099",
+            "id": future_period_id,
+            "label": "Future Test Period",
             "start_date": date(2099, 1, 1),
             "end_date": date(2099, 6, 30),
             "status": "active",
@@ -1136,37 +1136,37 @@ def test_teaching_name_options_do_not_leak_from_future_uat_period() -> None:
     )
     fake_db.catalogue.append(
         {
-            "keyword": "UAT-only teaching",
+            "keyword": "Future Test Teaching",
             "posting_code": "TTSHCardio",
             "programme_code": "CARD",
             "session_type_id": fake_db.session_type_id,
-            "session_type": "UAT teaching [1h]",
+            "session_type": "Future Test Teaching [1h]",
             "duration_hours": Decimal("1.0"),
             "is_tracked": True,
-            "reporting_period_id": uat_period_id,
+            "reporting_period_id": future_period_id,
         }
     )
     client = _client(fake_db)
 
     current = client.get("/secretary/teaching-name-options", headers=_headers(fake_db))
-    explicit_uat = client.get(
+    explicit_future = client.get(
         "/secretary/teaching-name-options",
         headers=_headers(fake_db),
-        params={"reporting_period_id": uat_period_id},
+        params={"reporting_period_id": future_period_id},
     )
     mismatched_date = client.get(
         "/secretary/teaching-name-options",
         headers=_headers(fake_db),
         params={
-            "reporting_period_id": uat_period_id,
+            "reporting_period_id": future_period_id,
             "event_date": "2026-05-06",
         },
     )
 
     assert current.status_code == 200
-    assert "UAT-only teaching" not in {row["keyword"] for row in current.json()["options"]}
-    assert explicit_uat.status_code == 200
-    assert "UAT-only teaching" in {row["keyword"] for row in explicit_uat.json()["options"]}
+    assert "Future Test Teaching" not in {row["keyword"] for row in current.json()["options"]}
+    assert explicit_future.status_code == 200
+    assert "Future Test Teaching" in {row["keyword"] for row in explicit_future.json()["options"]}
     assert mismatched_date.status_code == 422
 
 
@@ -1254,7 +1254,7 @@ def test_residents_endpoint_isolated_to_current_period_and_fails_closed() -> Non
             },
             {
                 "id": future_period_id,
-                "label": "UAT semantic test 2099",
+                "label": "Future Test Period",
                 "start_date": date(2099, 1, 1),
                 "end_date": date(2099, 6, 30),
                 "status": "active",
