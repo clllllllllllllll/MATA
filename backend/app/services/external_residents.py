@@ -151,6 +151,19 @@ async def _resolve_posting_candidates_from_targets(
     return [str(row["posting_code"]) for row in result.mappings().all()]
 
 
+def _select_registration_candidate(
+    candidate_sources: list[list[str]],
+) -> str | None:
+    for candidates in candidate_sources:
+        distinct_candidates = sorted(set(candidates))
+        if not distinct_candidates:
+            continue
+        if len(distinct_candidates) > 1:
+            raise _schedule_validation_error(POSTING_RESOLUTION_AMBIGUOUS)
+        return distinct_candidates[0]
+    return None
+
+
 async def _resolve_posting_code(
     db: AsyncSession,
     *,
@@ -170,22 +183,111 @@ async def _resolve_posting_code(
         programme_code=programme_code,
         institution=institution,
     )
-    if len(candidates) == 1:
-        return candidates[0]
-    if len(candidates) > 1:
-        raise _schedule_validation_error(POSTING_RESOLUTION_AMBIGUOUS)
+    selected = _select_registration_candidate([candidates])
+    if selected is not None:
+        return selected
 
     candidates = await _resolve_posting_candidates_from_targets(
         db,
         programme_code=programme_code,
         institution=institution,
     )
-    if candidates:
-        if len(candidates) == 1:
-            return candidates[0]
-        raise _schedule_validation_error(POSTING_RESOLUTION_AMBIGUOUS)
+    selected = _select_registration_candidate([candidates])
+    if selected is not None:
+        return selected
 
     raise _schedule_validation_error(POSTING_RESOLUTION_NOT_FOUND)
+
+
+async def list_registration_options(db: AsyncSession) -> list[dict[str, Any]]:
+    native_result = await db.execute(
+        text(
+            """
+            /* external_registration_options:native */
+            SELECT p.code AS programme_code,
+                   p.name AS programme_name,
+                   pc.institution,
+                   pc.code AS posting_code
+            FROM programmes p
+            JOIN posting_codes pc
+              ON pc.code = p.native_teaching_posting_code
+            WHERE pc.institution IN ('TTSH', 'WH', 'KTPH')
+            """
+        )
+    )
+    pool_result = await db.execute(
+        text(
+            """
+            /* external_registration_options:secretary_pool */
+            SELECT p.code AS programme_code,
+                   p.name AS programme_name,
+                   pc.institution,
+                   pc.code AS posting_code
+            FROM secretary_programme_pools spp
+            JOIN programmes p
+              ON p.code = spp.programme_code
+            JOIN posting_codes pc
+              ON pc.code = spp.posting_code
+            WHERE spp.is_active = true
+              AND pc.institution IN ('TTSH', 'WH', 'KTPH')
+            """
+        )
+    )
+    target_result = await db.execute(
+        text(
+            """
+            /* external_registration_options:teaching_targets */
+            SELECT DISTINCT p.code AS programme_code,
+                   p.name AS programme_name,
+                   pc.institution,
+                   pc.code AS posting_code
+            FROM teaching_targets tt
+            JOIN programmes p
+              ON p.code = tt.programme_code
+            JOIN posting_codes pc
+              ON pc.code = tt.posting_code
+            WHERE pc.institution IN ('TTSH', 'WH', 'KTPH')
+            """
+        )
+    )
+
+    source_maps: list[dict[tuple[str, str], list[str]]] = []
+    programme_names: dict[str, str] = {}
+    for result in (native_result, pool_result, target_result):
+        source_map: dict[tuple[str, str], list[str]] = {}
+        for row in result.mappings().all():
+            programme_code = str(row["programme_code"])
+            institution = str(row["institution"])
+            programme_names[programme_code] = str(row["programme_name"])
+            source_map.setdefault((programme_code, institution), []).append(
+                str(row["posting_code"])
+            )
+        source_maps.append(source_map)
+
+    candidate_keys = set().union(*(source_map.keys() for source_map in source_maps))
+    institutions_by_programme: dict[str, list[str]] = {}
+    institution_order = {"TTSH": 0, "WH": 1, "KTPH": 2}
+    for programme_code, institution in sorted(candidate_keys):
+        try:
+            selected = _select_registration_candidate(
+                [source_map.get((programme_code, institution), []) for source_map in source_maps]
+            )
+        except ApiError:
+            continue
+        if selected is not None:
+            institutions_by_programme.setdefault(programme_code, []).append(institution)
+
+    return [
+        {
+            "programme_code": programme_code,
+            "programme_name": programme_names[programme_code],
+            "institutions": sorted(
+                institutions,
+                key=lambda institution: institution_order[institution],
+            ),
+        }
+        for programme_code, institutions in sorted(institutions_by_programme.items())
+    ]
 
 
 async def _mcr_exists_in_native_residents(db: AsyncSession, mcr: str) -> bool:
@@ -378,6 +480,20 @@ async def register_external_resident(
             detail="home_cluster must be NUH or SingHealth",
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
+
+    if await _mcr_exists_in_native_residents(db, normalised_mcr):
+        raise ApiError(
+            status_code=409,
+            detail="MCR already exists",
+            error_code=ErrorCode.CONFLICT.value,
+        )
+    if await _mcr_exists_in_external_residents(db, normalised_mcr):
+        raise ApiError(
+            status_code=409,
+            detail="MCR already exists",
+            error_code=ErrorCode.CONFLICT.value,
+        )
+
     normalised_schedule: list[dict[str, Any]] | None = None
     if posting_schedule is not None:
         normalised_schedule = await _validate_posting_schedule(db, posting_schedule)
@@ -394,19 +510,6 @@ async def register_external_resident(
             )
     else:
         raise _schedule_validation_error("posting_schedule is required")
-
-    if await _mcr_exists_in_native_residents(db, normalised_mcr):
-        raise ApiError(
-            status_code=409,
-            detail="MCR already exists",
-            error_code=ErrorCode.CONFLICT.value,
-        )
-    if await _mcr_exists_in_external_residents(db, normalised_mcr):
-        raise ApiError(
-            status_code=409,
-            detail="MCR already exists",
-            error_code=ErrorCode.CONFLICT.value,
-        )
 
     resident_insert = await db.execute(
         text(

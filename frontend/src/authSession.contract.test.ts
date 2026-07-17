@@ -85,6 +85,11 @@ type SubmitSharedResidentLogin = (options: {
   rawMcr: string
   authenticate: (payload: ResidentLoginPayload) => Promise<StoredAuthSession>
 }) => Promise<{ session: StoredAuthSession; redirectPath: string }>
+type ParseNonNhgRegistrationOptions = (value: unknown) => Array<{
+  programmeCode: string
+  programmeName: string
+  institutions: Array<'TTSH' | 'WH' | 'KTPH'>
+}>
 
 const productionAuthModules = await (async () => {
   const moduleServer = await createServer({
@@ -102,6 +107,8 @@ const productionAuthModules = await (async () => {
     ])
     return {
       createStoredSession: authModule.createStoredSession as CreateStoredSession,
+      parseNonNhgRegistrationOptions:
+        authModule.parseNonNhgRegistrationOptions as ParseNonNhgRegistrationOptions,
       submitSharedResidentLogin:
         residentLoginFlowModule.submitSharedResidentLogin as SubmitSharedResidentLogin,
     }
@@ -115,6 +122,42 @@ const rawLoginResponse = (user: Record<string, unknown>): RawLoginResponse => ({
   token_type: 'bearer',
   user,
 })
+
+const parsedRegistrationOptions = productionAuthModules.parseNonNhgRegistrationOptions([
+  {
+    programme_code: 'GERI',
+    programme_name: 'Geriatric Medicine',
+    institutions: ['TTSH', 'KTPH'],
+  },
+])
+assert(
+  JSON.stringify(parsedRegistrationOptions) ===
+    JSON.stringify([
+      {
+        programmeCode: 'GERI',
+        programmeName: 'Geriatric Medicine',
+        institutions: ['TTSH', 'KTPH'],
+      },
+    ]),
+  'Non-NHG registration parses backend-supported programme/institution pairs',
+)
+let malformedRegistrationOptionsRejected = false
+try {
+  productionAuthModules.parseNonNhgRegistrationOptions([
+    {
+      programme_code: 'GERI',
+      programme_name: 'Geriatric Medicine',
+      institutions: ['TTSH', 'UNSUPPORTED'],
+    },
+  ])
+} catch (error) {
+  malformedRegistrationOptionsRejected =
+    error instanceof Error && error.message === 'Malformed registration options response.'
+}
+assert(
+  malformedRegistrationOptionsRejected,
+  'Non-NHG registration fails closed on unsupported backend institution options',
+)
 
 const assertInvalidRawLoginResponse = async (
   label: string,
@@ -563,6 +606,11 @@ assert(
   'Non-NHG registration shows posting-resolution validation near schedule rows',
 )
 assert(
+  registrationPageSource.includes("error.status === 429") &&
+    registrationPageSource.includes('Too many registration attempts. Please try again later.'),
+  'Non-NHG registration keeps rate-limit feedback distinct from generic validation errors',
+)
+assert(
   registrationPageSource.includes('formatSchedulePosting') &&
     registrationPageSource.includes('auth-confirmation-schedule'),
   'Non-NHG registration success recap displays resolved posting codes as read-only output',
@@ -573,8 +621,11 @@ assert(
   'Non-NHG registration CTA remains available in supabase mode',
 )
 assert(
-  !registrationPageSource.includes('listPostingCodes'),
-  'public Non-NHG registration page does not call admin posting-code APIs before login',
+  !registrationPageSource.includes('listPostingCodes') &&
+    registrationPageSource.includes('listNonNhgRegistrationOptions') &&
+    !registrationPageSource.includes('const PROGRAMME_OPTIONS') &&
+    !registrationPageSource.includes('const INSTITUTION_OPTIONS'),
+  'public Non-NHG registration uses backend-supported pairs without admin APIs or a duplicate static matrix',
 )
 assert(
   navigationSource.includes("id: 'master_admin'") &&

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -89,3 +90,9 @@ class ExternalResidentPostingScheduleUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     posting_schedule: list[ExternalResidentPostingScheduleRow] = Field(min_length=1)
+
+
+class ExternalResidentRegistrationOption(BaseModel):
+    programme_code: str
+    programme_name: str
+    institutions: list[Literal["TTSH", "WH", "KTPH"]]

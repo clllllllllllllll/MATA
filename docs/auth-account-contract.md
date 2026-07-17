@@ -118,6 +118,8 @@ The MATA resident session token must not contain `posting_code`, current posting
 
 5B-F registration input: `name`, `mcr`, `home_cluster`, and `posting_schedule[]` rows containing `start_date`, `end_date`, `programme_code`, and `institution`. The client does not send editable `posting_code`; the backend resolves posting codes from trusted programme/institution posting configuration. `current_nhg_posting_code` may remain a compatibility/cache field, but it is not the current UI contract.
 
+The public registration form loads its programme/institution pairs from `GET /external-residents/registration-options`, which is derived from the same trusted resolution configuration. Unresolved or ambiguous pairs are not presented, but the registration endpoint remains authoritative and revalidates every submitted row.
+
 Source table: `external_residents`.
 
 Server behaviour:

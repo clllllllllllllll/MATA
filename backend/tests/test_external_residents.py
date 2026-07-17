@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import date
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -27,7 +29,13 @@ def _client(
     async def _db_override():
         yield fake_db
 
+    async def _rate_limit_override() -> None:
+        return None
+
     app.dependency_overrides[external_residents.get_db_session] = _db_override
+    app.dependency_overrides[
+        external_residents._persistent_registration_rate_limit
+    ] = _rate_limit_override
     app.include_router(external_residents.router)
     return TestClient(app)
 
@@ -131,10 +139,119 @@ def test_external_registration_creates_forecast_posting_schedule_rows() -> None:
     assert len(fake_db.external_resident_postings) == before + 2
     assert fake_db.external_resident_postings[-2]["start_date"] == date(2026, 7, 1)
     assert fake_db.external_resident_postings[-2]["end_date"] == date(2026, 7, 31)
+    assert fake_db.commits == 1
+
+
+@pytest.mark.parametrize("with_native_occupancy", [False, True])
+def test_external_registration_resolution_is_independent_of_native_occupancy(
+    with_native_occupancy: bool,
+) -> None:
+    fake_db = FakeResidentSession()
+    assert not any(
+        row["posting_code"] == "KTPHGerMed" for row in fake_db.resident_postings
+    )
+    if with_native_occupancy:
+        fake_db.resident_postings.append(
+            {
+                **fake_db.resident_postings[0],
+                "posting_code": "KTPHGerMed",
+            }
+        )
+    native_residents_before = deepcopy(fake_db.residents)
+    native_postings_before = deepcopy(fake_db.resident_postings)
+    external_residents_before = len(fake_db.external_residents)
+    external_postings_before = len(fake_db.external_resident_postings)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/external-residents/register",
+        json={
+            "name": "Synthetic Occupancy Independent Resident",
+            "mcr": "TST90001A" if with_native_occupancy else "TST90002A",
+            "home_cluster": "NUH",
+            "posting_schedule": [
+                {
+                    "start_date": "2026-09-01",
+                    "end_date": "2026-09-30",
+                    "programme_code": "GERI",
+                    "institution": "KTPH",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["posting_schedule"][0]["posting_code"] == "KTPHGerMed"
+    assert len(fake_db.external_residents) == external_residents_before + 1
+    assert len(fake_db.external_resident_postings) == external_postings_before + 1
+    assert fake_db.residents == native_residents_before
+    assert fake_db.resident_postings == native_postings_before
+
+
+def test_external_registration_options_only_return_resolvable_pairs() -> None:
+    fake_db = FakeResidentSession()
+    response = _client(fake_db).get("/external-residents/registration-options")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "programme_code": "GERI",
+            "programme_name": "Geriatric Medicine",
+            "institutions": ["TTSH", "KTPH"],
+        },
+        {
+            "programme_code": "GRM",
+            "programme_name": "Geriatric Medicine",
+            "institutions": ["TTSH"],
+        },
+    ]
+
+    for index, option in enumerate(response.json()):
+        for institution_index, institution in enumerate(option["institutions"]):
+            candidate_db = FakeResidentSession()
+            registration = _client(candidate_db).post(
+                "/external-residents/register",
+                json={
+                    "name": "Synthetic Listed Option Resident",
+                    "mcr": f"TST91{index}{institution_index}A",
+                    "home_cluster": "NUH",
+                    "posting_schedule": [
+                        {
+                            "start_date": "2026-09-01",
+                            "end_date": "2026-09-30",
+                            "programme_code": option["programme_code"],
+                            "institution": institution,
+                        }
+                    ],
+                },
+            )
+            assert registration.status_code == 200
+
+
+def test_external_registration_options_omit_ambiguous_and_unmapped_pairs() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.secretary_programme_pools.append(
+        {
+            "posting_code": "TTSHNeuro",
+            "programme_code": "GERI",
+            "is_active": True,
+        }
+    )
+
+    response = _client(fake_db).get("/external-residents/registration-options")
+
+    assert response.status_code == 200
+    geri_option = next(
+        row for row in response.json() if row["programme_code"] == "GERI"
+    )
+    assert geri_option["institutions"] == ["KTPH"]
+    assert all("WH" not in row["institutions"] for row in response.json())
 
 
 def test_external_registration_rejects_overlapping_forecast_rows() -> None:
     fake_db = FakeResidentSession()
+    residents_before = deepcopy(fake_db.external_residents)
+    postings_before = deepcopy(fake_db.external_resident_postings)
     client = _client(fake_db)
 
     response = client.post(
@@ -161,6 +278,8 @@ def test_external_registration_rejects_overlapping_forecast_rows() -> None:
     )
 
     assert response.status_code == 422
+    assert fake_db.external_residents == residents_before
+    assert fake_db.external_resident_postings == postings_before
 
 
 def test_external_registration_rejects_invalid_forecast_date_range() -> None:
@@ -254,6 +373,8 @@ def test_external_registration_rejects_invalid_home_cluster() -> None:
 
 def test_external_registration_rejects_mcr_already_in_native_residents() -> None:
     fake_db = FakeResidentSession()
+    residents_before = deepcopy(fake_db.external_residents)
+    postings_before = deepcopy(fake_db.external_resident_postings)
     client = _client(fake_db)
 
     response = client.post(
@@ -267,10 +388,14 @@ def test_external_registration_rejects_mcr_already_in_native_residents() -> None
     )
 
     assert response.status_code == 409
+    assert fake_db.external_residents == residents_before
+    assert fake_db.external_resident_postings == postings_before
 
 
 def test_external_registration_rejects_mcr_already_in_external_residents() -> None:
     fake_db = FakeResidentSession()
+    residents_before = deepcopy(fake_db.external_residents)
+    postings_before = deepcopy(fake_db.external_resident_postings)
     client = _client(fake_db)
 
     response = client.post(
@@ -284,6 +409,8 @@ def test_external_registration_rejects_mcr_already_in_external_residents() -> No
     )
 
     assert response.status_code == 409
+    assert fake_db.external_residents == residents_before
+    assert fake_db.external_resident_postings == postings_before
 
 
 def test_external_registration_rejects_invalid_current_posting() -> None:
@@ -332,6 +459,75 @@ def test_external_registration_rejects_unresolved_forecast_posting_without_parti
     assert len(fake_db.external_resident_postings) == before_postings
 
 
+def test_external_registration_rejects_atomic_multi_row_resolution_failure() -> None:
+    fake_db = FakeResidentSession()
+    residents_before = deepcopy(fake_db.external_residents)
+    postings_before = deepcopy(fake_db.external_resident_postings)
+    native_residents_before = deepcopy(fake_db.residents)
+    native_postings_before = deepcopy(fake_db.resident_postings)
+
+    response = _client(fake_db).post(
+        "/external-residents/register",
+        json={
+            "name": "Synthetic Atomic Validation Resident",
+            "mcr": "TST92001A",
+            "home_cluster": "NUH",
+            "posting_schedule": [
+                {
+                    "start_date": "2026-09-01",
+                    "end_date": "2026-09-30",
+                    "programme_code": "GERI",
+                    "institution": "KTPH",
+                },
+                {
+                    "start_date": "2026-10-01",
+                    "end_date": "2026-10-31",
+                    "programme_code": "GERI",
+                    "institution": "WH",
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "No posting could be resolved for this programme and institution. "
+        "Contact an administrator."
+    )
+    assert fake_db.external_residents == residents_before
+    assert fake_db.external_resident_postings == postings_before
+    assert fake_db.residents == native_residents_before
+    assert fake_db.resident_postings == native_postings_before
+
+
+def test_external_registration_checks_global_mcr_before_schedule_resolution() -> None:
+    fake_db = FakeResidentSession()
+    residents_before = deepcopy(fake_db.external_residents)
+    postings_before = deepcopy(fake_db.external_resident_postings)
+
+    response = _client(fake_db).post(
+        "/external-residents/register",
+        json={
+            "name": "Synthetic Duplicate Resident",
+            "mcr": "M12345A",
+            "home_cluster": "NUH",
+            "posting_schedule": [
+                {
+                    "start_date": "2026-09-01",
+                    "end_date": "2026-09-30",
+                    "programme_code": "GERI",
+                    "institution": "WH",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "MCR already exists"
+    assert fake_db.external_residents == residents_before
+    assert fake_db.external_resident_postings == postings_before
+
+
 def test_external_registration_rejects_ambiguous_forecast_posting() -> None:
     fake_db = FakeResidentSession()
     fake_db.secretary_programme_pools.append(
@@ -341,6 +537,8 @@ def test_external_registration_rejects_ambiguous_forecast_posting() -> None:
             "is_active": True,
         },
     )
+    residents_before = deepcopy(fake_db.external_residents)
+    postings_before = deepcopy(fake_db.external_resident_postings)
     client = _client(fake_db)
 
     response = client.post(
@@ -362,6 +560,8 @@ def test_external_registration_rejects_ambiguous_forecast_posting() -> None:
 
     assert response.status_code == 422
     assert response.json()["detail"] == "Multiple postings could be resolved for this programme and institution. Contact an administrator."
+    assert fake_db.external_residents == residents_before
+    assert fake_db.external_resident_postings == postings_before
 
 
 def test_external_posting_update_closes_old_and_creates_new_current_row() -> None:

@@ -1711,6 +1711,20 @@ Update password. Admin/secretary only.
 
 Non-NHG Residents are Phase 5B pre-compliance scope. They use separate identity and attendance tables. They are never stored in `users`, never stored in native `residents`, and never represented through native `resident_postings`. Backend/internal route and table names may continue to use `external_resident`.
 
+### GET `/external-residents/registration-options`
+
+Return the public programme/institution pairs that currently resolve to exactly one canonical posting through the same trusted configuration used by registration. The response does not expose or accept a client-selected posting code. Missing or ambiguous mappings are omitted, and `POST /external-residents/register` independently validates the submitted pair.
+
+```json
+[
+  {
+    "programme_code": "GERI",
+    "programme_name": "Geriatric Medicine",
+    "institutions": ["TTSH"]
+  }
+]
+```
+
 ### POST `/external-residents/register`
 
 Self-register a Non-NHG/cross-cluster resident.

@@ -622,6 +622,85 @@ class FakeResidentSession:
             rows = [row for row in self.posting_codes if row["code"] in codes]
             return FakeResult(rows=rows)
 
+        if "external_registration_options:native" in sql:
+            rows = []
+            for programme in self.programmes:
+                posting = next(
+                    (
+                        row
+                        for row in self.posting_codes
+                        if row["code"] == programme.get("native_teaching_posting_code")
+                    ),
+                    None,
+                )
+                if posting is not None and posting.get("institution") in {"TTSH", "WH", "KTPH"}:
+                    rows.append(
+                        {
+                            "programme_code": programme["code"],
+                            "programme_name": programme["name"],
+                            "institution": posting["institution"],
+                            "posting_code": posting["code"],
+                        }
+                    )
+            return FakeResult(rows=rows)
+
+        if "external_registration_options:secretary_pool" in sql:
+            rows = []
+            for pool in self.secretary_programme_pools:
+                programme = next(
+                    (row for row in self.programmes if row["code"] == pool["programme_code"]),
+                    None,
+                )
+                posting = next(
+                    (row for row in self.posting_codes if row["code"] == pool["posting_code"]),
+                    None,
+                )
+                if (
+                    programme is not None
+                    and posting is not None
+                    and pool["is_active"]
+                    and posting.get("institution") in {"TTSH", "WH", "KTPH"}
+                ):
+                    rows.append(
+                        {
+                            "programme_code": programme["code"],
+                            "programme_name": programme["name"],
+                            "institution": posting["institution"],
+                            "posting_code": posting["code"],
+                        }
+                    )
+            return FakeResult(rows=rows)
+
+        if "external_registration_options:teaching_targets" in sql:
+            rows = []
+            seen: set[tuple[str, str]] = set()
+            for target in self.teaching_targets:
+                programme = next(
+                    (row for row in self.programmes if row["code"] == target["programme_code"]),
+                    None,
+                )
+                posting = next(
+                    (row for row in self.posting_codes if row["code"] == target["posting_code"]),
+                    None,
+                )
+                candidate_key = (target["programme_code"], target["posting_code"])
+                if (
+                    programme is not None
+                    and posting is not None
+                    and posting.get("institution") in {"TTSH", "WH", "KTPH"}
+                    and candidate_key not in seen
+                ):
+                    seen.add(candidate_key)
+                    rows.append(
+                        {
+                            "programme_code": programme["code"],
+                            "programme_name": programme["name"],
+                            "institution": posting["institution"],
+                            "posting_code": posting["code"],
+                        }
+                    )
+            return FakeResult(rows=rows)
+
         if "FROM secretary_programme_pools" in sql and "JOIN posting_codes" in sql:
             rows = []
             for pool in self.secretary_programme_pools:
@@ -664,7 +743,23 @@ class FakeResidentSession:
             return FakeResult(rows=rows[:1])
 
         if "FROM teaching_targets" in sql and "JOIN posting_codes" in sql:
-            return FakeResult(rows=[])
+            rows = []
+            seen: set[str] = set()
+            for target in self.teaching_targets:
+                posting = next(
+                    (row for row in self.posting_codes if row["code"] == target["posting_code"]),
+                    None,
+                )
+                if (
+                    posting is not None
+                    and target["programme_code"] == payload.get("programme_code")
+                    and posting.get("institution") == payload.get("institution")
+                    and posting["code"] not in seen
+                ):
+                    seen.add(posting["code"])
+                    rows.append({"posting_code": posting["code"]})
+            rows.sort(key=lambda row: row["posting_code"])
+            return FakeResult(rows=rows)
 
         if "SELECT 1" in sql and "FROM posting_codes" in sql:
             exists = any(row for row in self.posting_codes if row["code"] == payload.get("posting_code"))

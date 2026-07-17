@@ -31,6 +31,14 @@ interface BackendLoginResponse {
   user: Record<string, unknown>
 }
 
+export type NonNhgScheduleInstitution = 'TTSH' | 'WH' | 'KTPH'
+
+export interface NonNhgRegistrationOption {
+  programmeCode: string
+  programmeName: string
+  institutions: NonNhgScheduleInstitution[]
+}
+
 export interface NonNhgRegistrationPayload {
   name: string
   mcr: string
@@ -39,7 +47,7 @@ export interface NonNhgRegistrationPayload {
     startDate: string
     endDate: string
     programmeCode: string
-    institution: 'TTSH' | 'WH' | 'KTPH'
+    institution: NonNhgScheduleInstitution
   }>
 }
 
@@ -60,6 +68,42 @@ const optionalString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0 ? value : undefined
 
 const requiredString = (value: unknown): string => optionalString(value) ?? ''
+
+const isNonNhgScheduleInstitution = (value: unknown): value is NonNhgScheduleInstitution =>
+  value === 'TTSH' || value === 'WH' || value === 'KTPH'
+
+export const parseNonNhgRegistrationOptions = (
+  value: unknown,
+): NonNhgRegistrationOption[] => {
+  if (!Array.isArray(value)) {
+    throw new Error('Malformed registration options response.')
+  }
+
+  return value.map((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error('Malformed registration options response.')
+    }
+    const row = entry as Record<string, unknown>
+    const programmeCode = requiredString(row.programme_code)
+    const programmeName = requiredString(row.programme_name)
+    const institutions = Array.isArray(row.institutions)
+      ? row.institutions.filter(isNonNhgScheduleInstitution)
+      : []
+    if (
+      !programmeCode ||
+      !programmeName ||
+      institutions.length === 0 ||
+      institutions.length !== (row.institutions as unknown[]).length
+    ) {
+      throw new Error('Malformed registration options response.')
+    }
+    return {
+      programmeCode,
+      programmeName,
+      institutions: [...new Set(institutions)],
+    }
+  })
+}
 
 const toStringArray = (value: unknown): string[] => {
   if (Array.isArray(value)) {
@@ -433,6 +477,19 @@ export const registerNonNhgResident = async (
       postingSchedule: response.data.posting_schedule as Array<Record<string, unknown>> | undefined,
       session: loginLikeResponse,
     }
+  } catch (error) {
+    throw toApiRequestError(error)
+  }
+}
+
+export const listNonNhgRegistrationOptions = async (): Promise<
+  NonNhgRegistrationOption[]
+> => {
+  try {
+    const response = await httpClient.get<unknown>(
+      '/external-residents/registration-options',
+    )
+    return parseNonNhgRegistrationOptions(response.data)
   } catch (error) {
     throw toApiRequestError(error)
   }

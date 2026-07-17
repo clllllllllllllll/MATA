@@ -1,20 +1,25 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { registerNonNhgResident, type NonNhgRegistrationResult } from '../../api/auth'
+import {
+  listNonNhgRegistrationOptions,
+  registerNonNhgResident,
+  type NonNhgRegistrationOption,
+  type NonNhgRegistrationResult,
+  type NonNhgScheduleInstitution,
+} from '../../api/auth'
 import { ApiRequestError } from '../../api/http'
 import { IconCheck, IconChevRight } from '../../components/icons'
 import { defaultPathForRole } from '../../config/navigation'
 import { useAuth } from '../../context/useAuth'
 
 type HomeCluster = 'NUH' | 'SingHealth'
-type ScheduleInstitution = 'TTSH' | 'WH' | 'KTPH'
 
 interface PostingScheduleRowState {
   id: string
   startDate: string
   endDate: string
   programmeCode: string
-  institution: ScheduleInstitution
+  institution: NonNhgScheduleInstitution | ''
 }
 
 interface RegistrationFormState {
@@ -24,45 +29,12 @@ interface RegistrationFormState {
   postingSchedule: PostingScheduleRowState[]
 }
 
-const PROGRAMME_OPTIONS = [
-  ['AIM', 'Advanced Internal Medicine'],
-  ['ANAES', 'Anaesthesiology'],
-  ['CARDIO', 'Cardiology'],
-  ['DERM', 'Dermatology'],
-  ['DR', 'Diagnostic Radiology'],
-  ['EM', 'Emergency Medicine'],
-  ['ENDO', 'Endocrinology'],
-  ['ENT', 'Otorhinolaryngology'],
-  ['EYE', 'Ophthalmology'],
-  ['FM', 'Family Medicine'],
-  ['GASTRO', 'Gastroenterology'],
-  ['GERI', 'Geriatric Medicine'],
-  ['GS', 'General Surgery'],
-  ['ID', 'Infectious Diseases'],
-  ['IM', 'Internal Medicine'],
-  ['MEDONCO', 'Medical Oncology'],
-  ['ORTHO', 'Orthopaedic Surgery'],
-  ['PATH', 'Pathology'],
-  ['PSY', 'Psychiatry'],
-  ['REHAB', 'Rehabilitation Medicine'],
-  ['RENAL', 'Renal Medicine'],
-  ['RESPI', 'Respiratory Medicine'],
-  ['RHEUM', 'Rheumatology'],
-  ['SPORTSMED', 'Sports Medicine'],
-  ['SIG', 'Surgery-In-General'],
-  ['URO', 'Urology'],
-  ['MICROB', 'Pathology (Microbiology)'],
-  ['PALLMED', 'Palliative Medicine'],
-] as const
-
-const INSTITUTION_OPTIONS: ScheduleInstitution[] = ['TTSH', 'WH', 'KTPH']
-
 const createScheduleRow = (id: string): PostingScheduleRowState => ({
   id,
   startDate: '',
   endDate: '',
   programmeCode: '',
-  institution: 'TTSH',
+  institution: '',
 })
 
 const INITIAL_FORM: RegistrationFormState = {
@@ -73,6 +45,8 @@ const INITIAL_FORM: RegistrationFormState = {
 }
 
 const REGISTER_ERROR = 'Unable to register. Check your details and try again.'
+const REGISTRATION_RATE_LIMIT_ERROR = 'Too many registration attempts. Please try again later.'
+const REGISTRATION_OPTIONS_ERROR = 'Posting options are unavailable. Please try again later.'
 
 export const NonNhgRegistrationPage = () => {
   const navigate = useNavigate()
@@ -81,8 +55,40 @@ export const NonNhgRegistrationPage = () => {
   const [submitState, setSubmitState] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle')
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [registrationResult, setRegistrationResult] = useState<NonNhgRegistrationResult | null>(null)
+  const [registrationOptions, setRegistrationOptions] = useState<NonNhgRegistrationOption[]>([])
+  const [registrationOptionsError, setRegistrationOptionsError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    const loadRegistrationOptions = async () => {
+      try {
+        const options = await listNonNhgRegistrationOptions()
+        if (!active) return
+        setRegistrationOptions(options)
+        setRegistrationOptionsError(options.length > 0 ? null : REGISTRATION_OPTIONS_ERROR)
+      } catch {
+        if (!active) return
+        setRegistrationOptions([])
+        setRegistrationOptionsError(REGISTRATION_OPTIONS_ERROR)
+      }
+    }
+    void loadRegistrationOptions()
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const supportedInstitutions = (programmeCode: string): NonNhgScheduleInstitution[] =>
+    registrationOptions.find((option) => option.programmeCode === programmeCode)?.institutions ?? []
+
+  const isSupportedScheduleRow = (row: PostingScheduleRowState): boolean =>
+    Boolean(row.institution) && supportedInstitutions(row.programmeCode).includes(
+      row.institution as NonNhgScheduleInstitution,
+    )
 
   const canSubmit =
+    !registrationOptionsError &&
+    registrationOptions.length > 0 &&
     form.name.trim().length > 0 &&
     form.mcr.trim().length > 0 &&
     Boolean(form.homeCluster) &&
@@ -91,7 +97,7 @@ export const NonNhgRegistrationPage = () => {
       row.endDate &&
       row.startDate <= row.endDate &&
       row.programmeCode &&
-      row.institution,
+      isSupportedScheduleRow(row),
     )
 
   const updateForm = <Key extends keyof RegistrationFormState>(
@@ -111,6 +117,23 @@ export const NonNhgRegistrationPage = () => {
       ...prev,
       postingSchedule: prev.postingSchedule.map((row) =>
         row.id === rowId ? { ...row, [key]: value } : row,
+      ),
+    }))
+    setSubmitError(null)
+  }
+
+  const selectScheduleProgramme = (rowId: string, programmeCode: string) => {
+    const institutions = supportedInstitutions(programmeCode)
+    setForm((prev) => ({
+      ...prev,
+      postingSchedule: prev.postingSchedule.map((row) =>
+        row.id === rowId
+          ? {
+              ...row,
+              programmeCode,
+              institution: institutions[0] ?? '',
+            }
+          : row,
       ),
     }))
     setSubmitError(null)
@@ -156,19 +179,24 @@ export const NonNhgRegistrationPage = () => {
           startDate: row.startDate,
           endDate: row.endDate,
           programmeCode: row.programmeCode,
-          institution: row.institution,
+          institution: row.institution as NonNhgScheduleInstitution,
         })),
       })
       setRegistrationResult(result)
       setSubmitState('success')
     } catch (error) {
-      const message =
-        error instanceof ApiRequestError &&
-        error.status === 422 &&
-        (error.message.includes('No posting could be resolved') ||
-          error.message.includes('Multiple postings could be resolved'))
-          ? error.message
-          : REGISTER_ERROR
+      let message = REGISTER_ERROR
+      if (error instanceof ApiRequestError) {
+        if (error.status === 429) {
+          message = REGISTRATION_RATE_LIMIT_ERROR
+        } else if (
+          error.status === 422 &&
+          (error.message.includes('No posting could be resolved') ||
+            error.message.includes('Multiple postings could be resolved'))
+        ) {
+          message = error.message
+        }
+      }
       setSubmitError(message)
       setSubmitState('error')
     }
@@ -369,12 +397,12 @@ export const NonNhgRegistrationPage = () => {
                       <span>Programme</span>
                       <select
                         value={row.programmeCode}
-                        onChange={(event) => updateScheduleRow(row.id, 'programmeCode', event.target.value)}
+                        onChange={(event) => selectScheduleProgramme(row.id, event.target.value)}
                       >
                         <option value="">Select programme</option>
-                        {PROGRAMME_OPTIONS.map(([code, name]) => (
-                          <option value={code} key={code}>
-                            {code} - {name}
+                        {registrationOptions.map((option) => (
+                          <option value={option.programmeCode} key={option.programmeCode}>
+                            {option.programmeCode} - {option.programmeName}
                           </option>
                         ))}
                       </select>
@@ -384,10 +412,16 @@ export const NonNhgRegistrationPage = () => {
                       <select
                         value={row.institution}
                         onChange={(event) =>
-                          updateScheduleRow(row.id, 'institution', event.target.value as ScheduleInstitution)
+                          updateScheduleRow(
+                            row.id,
+                            'institution',
+                            event.target.value as NonNhgScheduleInstitution,
+                          )
                         }
+                        disabled={!row.programmeCode}
                       >
-                        {INSTITUTION_OPTIONS.map((institution) => (
+                        <option value="">Select institution</option>
+                        {supportedInstitutions(row.programmeCode).map((institution) => (
                           <option value={institution} key={institution}>
                             {institution}
                           </option>
@@ -403,7 +437,17 @@ export const NonNhgRegistrationPage = () => {
                 </div>
               ))}
             </div>
-            <button type="button" className="auth-schedule-add" onClick={addScheduleRow}>
+            {registrationOptionsError ? (
+              <div className="auth-schedule-row-error" role="alert">
+                {registrationOptionsError}
+              </div>
+            ) : null}
+            <button
+              type="button"
+              className="auth-schedule-add"
+              onClick={addScheduleRow}
+              disabled={registrationOptions.length === 0}
+            >
               Add posting row
             </button>
           </fieldset>

@@ -17,6 +17,7 @@ from app.middleware.auth_stub import AuthIdentity
 from app.schemas.external_resident import (
     ExternalResidentPostingScheduleUpdateRequest,
     ExternalResidentPostingUpdateRequest,
+    ExternalResidentRegistrationOption,
     ExternalResidentRegisterRequest,
 )
 from app.services import external_residents
@@ -61,6 +62,17 @@ async def require_external_resident_context(
             detail="Unauthorized",
             error_code=ErrorCode.UNAUTHORIZED.value,
         ) from exc
+
+
+@router.get(
+    "/registration-options",
+    response_model=list[ExternalResidentRegistrationOption],
+)
+async def list_registration_options(
+    db: AsyncSession = Depends(get_db_session),
+) -> list[ExternalResidentRegistrationOption]:
+    rows = await external_residents.list_registration_options(db)
+    return [ExternalResidentRegistrationOption.model_validate(row) for row in rows]
 
 
 @router.post("/register", dependencies=[Depends(_persistent_registration_rate_limit)])
