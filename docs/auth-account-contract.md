@@ -19,6 +19,7 @@ References checked:
 - Staff/admin accounts live in `users`; NHG Residents do not.
 - NHG Residents are RDB-backed in `residents` and authenticate by MCR.
 - Non-NHG Residents self-enrol into `external_residents` and authenticate by MCR after registration.
+- The frontend exposes one shared Resident MCR login field for both identity types. It sends one neutral `{ "role": "resident", "mcr": "<NORMALIZED_MCR>" }` request, and the backend resolves the unique native or external identity.
 - Non-NHG Resident attendance lives in `external_attendance_records` and never enters NHG compliance, numerator, denominator, surplus, snapshots, clawback, or native reports.
 - MCR is globally unique across `residents` and `external_residents`.
 - Master admin must be explicit. Never infer master access from `programme_scope = NULL`.
@@ -64,8 +65,7 @@ Frontend:
 - `frontend/src/types/auth.ts` defines the typed frontend auth/session identity contract for later real session wiring.
 - As of 5B-C, the frontend has a universal `/login`, frontend auth/session provider, role-aware route guards, logout/session clearing, and Non-NHG Resident registration plus confirmation UI.
 - As of 5B-D2, `VITE_AUTH_MODE=supabase` uses the Supabase browser session for staff login, hydration, API bearer transport, and logout. MATA role/scope still comes only from backend `/auth/me`.
-- As of 5B-F-A, `AUTH_MODE=supabase` also supports NHG Resident MCR login without creating Supabase Auth users. The backend validates MCR against `residents`, issues a backend-signed MATA resident session token, and reloads the active `residents` row on protected requests.
-- As of 5B-F-B, `AUTH_MODE=supabase` also supports registered Non-NHG Resident MCR login without creating Supabase Auth users. The backend validates MCR against `external_residents`, issues a backend-signed MATA resident session token with `role/app_role = external_resident`, and reloads the active `external_residents` row on protected requests.
+- As of 5B-F-A/5B-F-B, `AUTH_MODE=supabase` supports one shared NHG/registered Non-NHG Resident MCR login without creating Supabase Auth users. The backend checks both resident identity tables in one request, relies on global MCR uniqueness for deterministic resolution, issues the matching backend-signed MATA resident token, and reloads the resolved active row on protected requests.
 - As of 5B-E, staff accounts are generic pass-down role accounts. Master Admin can manage staff accounts at `/admin/staff-accounts`; Supabase-mode create/reset calls are backend-only service-role operations and are mocked in tests.
 - As of 5B-E, staff users save `current_staff_actor_name` once after login and can change it from Settings. This is self-declared audit/display metadata only and never an authorization source. Resetting a staff account password clears the saved actor name for handover.
 
@@ -76,16 +76,20 @@ Docker/env:
 
 ## Identity Paths
 
+The login UI has one Resident MCR field. NHG Residents and already-registered Non-NHG Residents both submit the neutral request role `resident`; the frontend does not infer an identity type from the MCR and does not retry against another role. The backend resolves the unique matching table and returns `user.role = resident | external_resident`. A first-time Non-NHG Resident uses the separate registration action before subsequently using this shared login. Explicit `role = external_resident` requests remain temporarily accepted for compatibility, are scoped only to `external_residents`, and never fall back to native residents.
+
 ### NHG Resident MCR Login
 
-Input: role `resident`, MCR only.
+Input: shared role `resident`, MCR only.
 
 Source table: `residents`.
 
 Server behaviour:
 - Normalise MCR.
-- Look up `residents.mcr`.
+- Look up the normalized MCR in both `residents` and `external_residents` as one backend resolution operation.
+- Resolve to the native path only when exactly one native row and no external row exists.
 - Reject missing or inactive residents.
+- Reject a cross-table duplicate without selecting an identity or issuing a token, and log no MCR, names, rows, or SQL.
 - Return/log in as subject `residents.id`.
 - Include resident `programme_code` as a native programme claim.
 - Do not put current posting in the token. Resolve posting from `resident_postings` on each request.
@@ -121,6 +125,7 @@ Server behaviour:
 - Reject MCR if it exists in `residents` or `external_residents`.
 - Validate each schedule row and resolve exactly one safe posting code from trusted data/config; reject unresolved or ambiguous schedule rows with `422`.
 - Do not create `users`, native `residents`, or native `resident_postings`.
+- After registration, use the same shared Resident MCR field and neutral `role = resident` request as NHG Residents. The backend returns `user.role = external_resident` when the unique active match is in `external_residents`.
 - In `AUTH_MODE=supabase`, do not create a Supabase Auth user for the external resident.
 - In `AUTH_MODE=supabase`, return a backend-signed MATA resident session token for `Authorization: Bearer <token>` on external resident API calls. The token is signed with server-only `MATA_RESIDENT_SESSION_SECRET`, uses a MATA issuer/audience distinct from Supabase Auth JWTs, and is accepted only for `role/app_role = external_resident`.
 - For authorization-sensitive reads, fetch `external_residents` and derive the date-specific posting from `external_resident_postings` where relevant. `/auth/me` may include display-only `current_posting_code` and `current_posting_label` resolved from today's `external_resident_postings` row first, then an effectively active reporting-period row, then the nearest future row, then the nearest recent past row. `external_residents.current_nhg_posting_code` may remain a cache/backward-compatibility pointer, but `/auth/me` must not fall back to it for shell scope.
@@ -317,7 +322,7 @@ Responsibilities:
 - Route guards are UX only. Backend remains the security boundary.
 - The frontend must redirect after login by role:
   - NHG Resident -> `/resident/submissions`
-  - Non-NHG Resident -> `/external/submissions` once the final route exists; current placeholder route is `/external`
+  - Non-NHG Resident -> `/external/submissions`
   - Secretary -> `/secretary/events`
   - Programme PC -> `/pc/teaching-events`
   - Master Admin -> `/admin`
@@ -331,9 +336,9 @@ Current helper surface:
 
 Implemented `/login`:
 - One universal login surface.
-- NHG Resident panel: MCR login.
+- One shared Resident MCR field for NHG Residents and already-registered Non-NHG Residents. The frontend sends one neutral request, never selects or infers a subtype, and redirects from the backend-returned role.
 - Staff/Admin panel: username/email + password login; backend derives Master Admin, Programme PC, or Secretary from `users`.
-- Non-NHG Resident CTA using user-facing label "Non-NHG Resident".
+- First-time Non-NHG Resident registration CTA using user-facing label "Non-NHG Resident".
 - Successful login stores/loads the real session identity and redirects using the target table above.
 - Stub/demo local mode keeps using session-derived stub headers after login, without a user-facing role switcher.
 
@@ -367,7 +372,7 @@ Implemented Non-NHG posting schedule work:
 - Seed/create the actual backend-owned Master Admin account in the target environment.
 
 5B-C implemented:
-- Added universal frontend `/login` with NHG Resident MCR login, registered Non-NHG Resident MCR login, and separate staff login for Master Admin, Programme PC, and Secretary accounts.
+- Added universal frontend `/login` with one shared NHG/registered Non-NHG Resident MCR login and separate staff login for Master Admin, Programme PC, and Secretary accounts.
 - Added frontend auth/session provider, session hydration through `/auth/me` where available, role-aware redirects, protected route guards, and logout/session clearing.
 - Added Non-NHG Resident self-registration UI and screenshot-matched registration confirmation state. Registration does not assume immediate login unless the backend returns a session-like response.
 - Removed the visible role switcher and kept stub/demo session headers disabled in `VITE_AUTH_MODE=supabase`.
@@ -414,7 +419,7 @@ Implemented Non-NHG posting schedule work:
 - Backend `/auth/login` validates the MCR against active `external_residents` rows and issues a backend-signed MATA resident session token with `iss = mata-api`, `aud = mata-resident-session`, `role/app_role = external_resident`, `sub = external_residents.id`, `mcr`, `home_cluster`, `iat`, and `exp`.
 - Supabase-mode protected routes accept verified MATA external resident tokens, reload active `external_residents` rows by `sub`, and ignore raw `X-User-*` headers.
 - `/auth/me` with a MATA external resident token returns external identity plus display-only current posting code/label when available, and omits `current_nhg_posting_code`, posting schedule, staff actor fields, trusted posting code claims, admin level, programme code, and programme scope.
-- Frontend Supabase mode stores, hydrates, transports, and logs out MATA tokens for both NHG and registered Non-NHG Resident sessions; staff calls still rely on the latest Supabase session token.
+- Frontend Supabase mode uses the shared neutral MCR request, then stores, hydrates, transports, and logs out the resolved MATA token for both NHG and registered Non-NHG Resident sessions; staff calls still rely on the latest Supabase session token.
 - Non-NHG schedule rows, secretary-event visibility, ad-hoc submission, and admin/PC attendance export are implemented as recording/forwarding-only flows. NHG compliance, surplus, snapshots, and clawback remain excluded/deferred for Non-NHG Residents.
 
 5B-F:

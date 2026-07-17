@@ -68,12 +68,17 @@ def _normalise_text(value: object) -> str | None:
 
 def _login_identifier(payload: dict[str, Any]) -> str | None:
     role = (_normalise_text(payload.get("role")) or "unknown").lower()
-    if role in {"resident", "external_resident"}:
+    bucket_role = (
+        "resident"
+        if role in {"resident", "external_resident"}
+        else role
+    )
+    if bucket_role == "resident":
         mcr = _normalise_text(payload.get("mcr"))
-        return f"{role}:mcr:{mcr.upper()}" if mcr else None
+        return f"{bucket_role}:mcr:{mcr.upper()}" if mcr else None
 
     email = _normalise_text(payload.get("email"))
-    return f"{role}:email:{email.lower()}" if email else None
+    return f"{bucket_role}:email:{email.lower()}" if email else None
 
 
 def _external_register_mcr_identifier(payload: dict[str, Any]) -> str | None:

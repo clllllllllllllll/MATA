@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 import jwt
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -20,6 +21,52 @@ def _create_cross_table_mcr_duplicate(fake_db: FakeResidentSession) -> str:
     duplicate_mcr = fake_db.residents[0]["mcr"]
     fake_db.external_residents[0]["mcr"] = duplicate_mcr
     return duplicate_mcr
+
+
+def _assert_safe_duplicate_conflict(
+    response,
+    caplog,
+    *,
+    fake_db: FakeResidentSession,
+    duplicate_mcr: str,
+) -> None:
+    payload = response.json()
+    assert payload == {
+        "detail": "Conflict",
+        "error_code": "CONFLICT",
+        "errors": [],
+        "warnings": [],
+        "metadata": {},
+    }
+    assert "access_token" not in payload
+    assert "user" not in payload
+
+    exposed_text = f"{response.text}\n{caplog.text}"
+    exposed_text_lower = exposed_text.lower()
+    sensitive_values = (
+        duplicate_mcr,
+        fake_db.residents[0]["name"],
+        fake_db.residents[0]["id"],
+        fake_db.external_residents[0]["name"],
+        fake_db.external_residents[0]["id"],
+        repr(fake_db.residents[0]),
+        repr(fake_db.external_residents[0]),
+    )
+    for value in sensitive_values:
+        assert str(value).lower() not in exposed_text_lower
+
+    for unsafe_detail in (
+        "external_residents",
+        "residents",
+        "access_token",
+        "stub.",
+        "traceback",
+        "apierror",
+        "select ",
+        " inactive",
+        " active",
+    ):
+        assert unsafe_detail not in exposed_text_lower
 
 
 def _client(
@@ -155,13 +202,13 @@ def test_external_login_omits_current_posting_only_when_no_schedule_rows_exist()
     assert "current_posting_label" not in response.json()["user"]
 
 
-def test_supabase_mode_external_login_issues_backend_signed_mata_token() -> None:
+def test_supabase_mode_shared_resident_login_issues_external_mata_token() -> None:
     fake_db = FakeResidentSession()
     client = _client(fake_db, settings=_supabase_settings())
 
     response = client.post(
         "/auth/login",
-        json={"role": "external_resident", "mcr": " e12345a "},
+        json={"role": "resident", "mcr": " e12345a "},
     )
 
     assert response.status_code == 200
@@ -203,7 +250,7 @@ def test_supabase_mode_external_login_issues_backend_signed_mata_token() -> None
     assert "current_staff_actor_name" not in claims
 
 
-def test_supabase_mode_rejects_cross_table_duplicate_mcr_for_resident_login() -> None:
+def test_supabase_mode_rejects_cross_table_duplicate_mcr_for_resident_login(caplog) -> None:
     fake_db = FakeResidentSession()
     duplicate_mcr = _create_cross_table_mcr_duplicate(fake_db)
     client = _client(fake_db, settings=_supabase_settings())
@@ -213,8 +260,71 @@ def test_supabase_mode_rejects_cross_table_duplicate_mcr_for_resident_login() ->
         json={"role": "resident", "mcr": f" {duplicate_mcr.lower()} "},
     )
 
-    assert response.status_code == 401
-    assert "access_token" not in response.json()
+    assert response.status_code == 409
+    _assert_safe_duplicate_conflict(
+        response,
+        caplog,
+        fake_db=fake_db,
+        duplicate_mcr=duplicate_mcr,
+    )
+
+
+@pytest.mark.parametrize(
+    ("duplicate_mcr", "native_status", "external_status"),
+    [
+        pytest.param(
+            "M90001Z",
+            "active",
+            "inactive",
+            id="native-active-external-inactive",
+        ),
+        pytest.param(
+            "M90002Y",
+            "inactive",
+            "active",
+            id="native-inactive-external-active",
+        ),
+    ],
+)
+def test_shared_resident_login_rejects_mixed_status_cross_table_duplicate(
+    caplog,
+    duplicate_mcr: str,
+    native_status: str,
+    external_status: str,
+) -> None:
+    fake_db = FakeResidentSession()
+    native_row = fake_db.residents[0]
+    external_row = fake_db.external_residents[0]
+    native_row.update(
+        {
+            "name": f"Synthetic Native {native_status.title()}",
+            "mcr": duplicate_mcr,
+            "status": native_status,
+        }
+    )
+    external_row.update(
+        {
+            "name": f"Synthetic External {external_status.title()}",
+            "mcr": duplicate_mcr,
+            "status": external_status,
+        }
+    )
+    assert native_row["mcr"] == external_row["mcr"] == duplicate_mcr
+    assert {native_row["status"], external_row["status"]} == {"active", "inactive"}
+
+    client = _client(fake_db, settings=_supabase_settings())
+    response = client.post(
+        "/auth/login",
+        json={"role": "resident", "mcr": f" {duplicate_mcr.lower()} "},
+    )
+
+    assert response.status_code == 409
+    _assert_safe_duplicate_conflict(
+        response,
+        caplog,
+        fake_db=fake_db,
+        duplicate_mcr=duplicate_mcr,
+    )
 
 
 def test_supabase_mode_rejects_cross_table_duplicate_mcr_for_external_login() -> None:
@@ -227,7 +337,7 @@ def test_supabase_mode_rejects_cross_table_duplicate_mcr_for_external_login() ->
         json={"role": "external_resident", "mcr": duplicate_mcr},
     )
 
-    assert response.status_code == 401
+    assert response.status_code == 409
     assert "access_token" not in response.json()
 
 
@@ -241,7 +351,7 @@ def test_stub_mode_rejects_cross_table_duplicate_mcr_for_resident_login() -> Non
         json={"role": "resident", "mcr": duplicate_mcr},
     )
 
-    assert response.status_code == 401
+    assert response.status_code == 409
     assert "access_token" not in response.json()
 
 
@@ -255,7 +365,7 @@ def test_stub_mode_rejects_cross_table_duplicate_mcr_for_external_login() -> Non
         json={"role": "external_resident", "mcr": duplicate_mcr},
     )
 
-    assert response.status_code == 401
+    assert response.status_code == 409
     assert "access_token" not in response.json()
 
 

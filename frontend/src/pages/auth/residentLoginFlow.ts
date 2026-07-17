@@ -2,28 +2,19 @@ import type { StoredAuthSession } from '../../types/auth.ts'
 import {
   createResidentLoginPayload,
   type ResidentLoginPayload,
-  type ResidentLoginRole,
 } from '../../api/loginPayloads.ts'
 import { defaultPathForGuardRole } from '../../routeGuards.ts'
 
-export interface ResidentLoginState {
-  role: ResidentLoginRole
-}
+type AuthenticatedResidentRole = 'resident' | 'external_resident'
 
-export const createInitialResidentLoginState = (): ResidentLoginState => ({
-  role: 'resident',
-})
+const isAuthenticatedResidentRole = (role: string): role is AuthenticatedResidentRole =>
+  role === 'resident' || role === 'external_resident'
 
-export const selectResidentLoginRole = (role: ResidentLoginRole): ResidentLoginState => ({
-  role,
-})
-
-export const resolveResidentLoginRedirect = (role: ResidentLoginRole): string =>
+export const resolveResidentLoginRedirect = (role: AuthenticatedResidentRole): string =>
   defaultPathForGuardRole(role)
 
-interface SubmitSelectedResidentLoginOptions {
+interface SubmitResidentLoginOptions {
   rawMcr: string
-  role: ResidentLoginRole
   authenticate: (payload: ResidentLoginPayload) => Promise<StoredAuthSession>
 }
 
@@ -32,20 +23,20 @@ export interface ResidentLoginResult {
   redirectPath: string
 }
 
-export const submitSelectedResidentLogin = async ({
+export const submitSharedResidentLogin = async ({
   rawMcr,
-  role,
   authenticate,
-}: SubmitSelectedResidentLoginOptions): Promise<ResidentLoginResult> => {
-  const payload = createResidentLoginPayload(rawMcr, role)
+}: SubmitResidentLoginOptions): Promise<ResidentLoginResult> => {
+  const payload = createResidentLoginPayload(rawMcr)
   const session = await authenticate(payload)
+  const authenticatedRole = session.identity.role
 
-  if (session.identity.role !== payload.role) {
-    throw new Error('Resident login response did not match the selected identity path.')
+  if (!isAuthenticatedResidentRole(authenticatedRole)) {
+    throw new Error('Resident login response returned an invalid role.')
   }
 
   return {
     session,
-    redirectPath: resolveResidentLoginRedirect(payload.role),
+    redirectPath: resolveResidentLoginRedirect(authenticatedRole),
   }
 }

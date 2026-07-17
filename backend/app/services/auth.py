@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Any
 from uuid import UUID
@@ -17,6 +18,9 @@ from app.services.mata_resident_token import (
     sign_mata_resident_token,
 )
 from app.services.reporting_period_status import resolve_active_reporting_period_for_date
+
+
+logger = logging.getLogger(__name__)
 
 
 def _auth_failure() -> ApiError:
@@ -40,6 +44,14 @@ def _auth_config_failure() -> ApiError:
         status_code=500,
         detail="Resident session configuration is missing",
         error_code=ErrorCode.INTERNAL_ERROR.value,
+    )
+
+
+def _resident_identity_conflict() -> ApiError:
+    return ApiError(
+        status_code=409,
+        detail="Conflict",
+        error_code=ErrorCode.CONFLICT.value,
     )
 
 
@@ -318,20 +330,36 @@ async def login(
         )
         if resident_row is not None and external_resident_row is not None:
             # Defensive guard for a violated global MCR uniqueness invariant.
-            raise _auth_failure()
-        identity_row = resident_row if role == "resident" else external_resident_row
+            logger.error(
+                "Resident login rejected because the global MCR uniqueness invariant was violated",
+            )
+            raise _resident_identity_conflict()
+
+        if role == "external_resident":
+            # Retained compatibility path: an explicit external request never
+            # authenticates or falls back to a native resident row.
+            resolved_role = "external_resident"
+            identity_row = external_resident_row
+        elif resident_row is not None:
+            resolved_role = "resident"
+            identity_row = resident_row
+        else:
+            # The neutral resident request is the shared MCR login path.
+            resolved_role = "external_resident"
+            identity_row = external_resident_row
+
         if identity_row is None or identity_row.get("status") == "inactive":
             raise _auth_failure()
         user = (
             _resident_user(dict(identity_row))
-            if role == "resident"
+            if resolved_role == "resident"
             else _external_resident_user(dict(identity_row))
         )
         if auth_mode == "supabase":
             try:
                 signer = (
                     sign_mata_resident_token
-                    if role == "resident"
+                    if resolved_role == "resident"
                     else sign_mata_external_resident_token
                 )
                 access_token = signer(
@@ -341,7 +369,7 @@ async def login(
             except MataResidentTokenError as exc:
                 raise _auth_config_failure() from exc
         else:
-            access_token = _stub_access_token(role=role, subject_id=user["id"])
+            access_token = _stub_access_token(role=resolved_role, subject_id=user["id"])
         return {
             "access_token": access_token,
             "token_type": "bearer",
