@@ -195,11 +195,13 @@ async def _current_reporting_period_params(db: AsyncSession) -> dict[str, Any]:
         # Keep bound date types concrete while making the external-period overlap
         # predicate impossible. Native posting rows are constrained by the null id.
         return {
+            "has_reporting_period": False,
             "reporting_period_id": None,
             "reporting_period_start": date.max,
             "reporting_period_end": date.min,
         }
     return {
+        "has_reporting_period": True,
         "reporting_period_id": str(period["id"]),
         "reporting_period_start": period["start_date"],
         "reporting_period_end": period["end_date"],
@@ -268,7 +270,7 @@ async def _lookup_resident_login_rows(
                 SELECT erp.posting_code
                 FROM external_resident_postings erp
                 WHERE erp.external_resident_id = er.id
-                  AND :reporting_period_id IS NOT NULL
+                  AND CAST(:has_reporting_period AS BOOLEAN) IS TRUE
                   AND erp.start_date <= :reporting_period_end
                   AND (
                     erp.end_date IS NULL
@@ -490,7 +492,7 @@ async def get_current_identity(
                     SELECT erp.posting_code
                     FROM external_resident_postings erp
                     WHERE erp.external_resident_id = er.id
-                      AND :reporting_period_id IS NOT NULL
+                      AND CAST(:has_reporting_period AS BOOLEAN) IS TRUE
                       AND erp.start_date <= :reporting_period_end
                       AND (
                         erp.end_date IS NULL
