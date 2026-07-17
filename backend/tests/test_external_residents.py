@@ -7,7 +7,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.middleware.auth_stub import AuthIdentity
+from app.config import Settings
+from app.middleware.auth_stub import AuthIdentity, AuthStubMiddleware
 from app.middleware.errors import install_error_handlers
 from app.routers import external_residents
 from tests.resident_fakes import FakeResidentSession
@@ -25,6 +26,28 @@ def _client(
         if identity is not None:
             request.state.identity = identity
         return await call_next(request)
+
+    async def _db_override():
+        yield fake_db
+
+    async def _rate_limit_override() -> None:
+        return None
+
+    app.dependency_overrides[external_residents.get_db_session] = _db_override
+    app.dependency_overrides[
+        external_residents._persistent_registration_rate_limit
+    ] = _rate_limit_override
+    app.include_router(external_residents.router)
+    return TestClient(app)
+
+
+def _middleware_client(fake_db: FakeResidentSession) -> TestClient:
+    app = FastAPI()
+    install_error_handlers(app)
+    app.add_middleware(
+        AuthStubMiddleware,
+        settings=Settings(auth_mode="stub", _env_file=None),
+    )
 
     async def _db_override():
         yield fake_db
@@ -226,6 +249,111 @@ def test_external_registration_options_only_return_resolvable_pairs() -> None:
                 },
             )
             assert registration.status_code == 200
+
+
+def test_external_registration_options_are_public_through_auth_middleware() -> None:
+    client = _middleware_client(FakeResidentSession())
+
+    response = client.get("/external-residents/registration-options")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == [
+        {
+            "programme_code": "GERI",
+            "programme_name": "Geriatric Medicine",
+            "institutions": ["TTSH", "KTPH"],
+        },
+        {
+            "programme_code": "GRM",
+            "programme_name": "Geriatric Medicine",
+            "institutions": ["TTSH"],
+        },
+    ]
+    assert all(
+        set(option) == {"programme_code", "programme_name", "institutions"}
+        for option in payload
+    )
+
+
+def test_external_registration_options_ignore_stale_bearer_header() -> None:
+    client = _middleware_client(FakeResidentSession())
+
+    anonymous_response = client.get("/external-residents/registration-options")
+    stale_session_response = client.get(
+        "/external-residents/registration-options",
+        headers={"Authorization": "Bearer synthetic-expired-token"},
+    )
+
+    assert anonymous_response.status_code == 200
+    assert stale_session_response.status_code == 200
+    assert stale_session_response.json() == anonymous_response.json()
+
+
+def test_external_registration_remains_public_through_auth_middleware() -> None:
+    response = _middleware_client(FakeResidentSession()).post(
+        "/external-residents/register",
+        json={
+            "name": "Synthetic Public Registration Resident",
+            "mcr": "TST92001A",
+            "home_cluster": "NUH",
+            "posting_schedule": [
+                {
+                    "start_date": "2026-09-01",
+                    "end_date": "2026-09-30",
+                    "programme_code": "GERI",
+                    "institution": "TTSH",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["resident"]["mcr"] == "TST92001A"
+
+
+def test_external_posting_schedule_remains_protected_through_auth_middleware() -> None:
+    fake_db = FakeResidentSession()
+    postings_before = deepcopy(fake_db.external_resident_postings)
+    commits_before = fake_db.commits
+
+    response = _middleware_client(fake_db).put(
+        "/external-residents/me/posting-schedule",
+        json={
+            "posting_schedule": [
+                {
+                    "start_date": "2026-09-01",
+                    "end_date": "2026-09-30",
+                    "programme_code": "GERI",
+                    "institution": "TTSH",
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "detail": "Unauthorized",
+        "error_code": "UNAUTHORIZED",
+        "errors": [],
+        "warnings": [],
+        "metadata": {},
+    }
+    assert fake_db.external_resident_postings == postings_before
+    assert fake_db.commits == commits_before
+
+
+def test_external_registration_options_route_has_no_collision() -> None:
+    client = _middleware_client(FakeResidentSession())
+
+    route = next(
+        route
+        for route in client.app.routes
+        if getattr(route, "path", None) == "/external-residents/registration-options"
+        and "GET" in getattr(route, "methods", set())
+    )
+
+    assert route.endpoint is external_residents.list_registration_options
 
 
 def test_external_registration_options_omit_ambiguous_and_unmapped_pairs() -> None:

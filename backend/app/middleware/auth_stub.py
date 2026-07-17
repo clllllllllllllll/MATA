@@ -55,6 +55,10 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             or path in self.OPEN_PATHS
             or path.endswith("/auth/login")
             or path.endswith("/external-residents/register")
+            or (
+                request.method == "GET"
+                and path.endswith("/external-residents/registration-options")
+            )
         ):
             return await call_next(request)
 
