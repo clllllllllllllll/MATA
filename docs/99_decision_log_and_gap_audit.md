@@ -266,7 +266,7 @@ Every important decision made during the project, with reasoning and consequence
 - **Decision:** Residents only see teaching events after their posting schedule has been uploaded via RDB. No RDB upload = no visible events. Enforced by `resident_postings` lookup at request time.
 - **Reasoning:** Without a posting schedule, the system cannot determine which events are relevant to the resident. Showing all events would be incorrect and confusing.
 - **Alternatives considered:** None — this is a logical necessity.
-- **Consequences for codebase:** `GET /resident/events` returns empty list with `reason: "posting_schedule_unavailable"` when no `resident_postings` rows exist for the current period.
+- **Consequences for codebase:** `GET /resident/events` enumerates every effectively active period and returns an empty list with `reason: "posting_schedule_unavailable"` only when no eligible `resident_postings` context exists across those periods. A missing posting covering today does not suppress historical event-date eligibility.
 - **Reference file and section:** `api.md` § GET `/resident/events` visibility gating
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -491,7 +491,7 @@ Every important decision made during the project, with reasoning and consequence
 #### Decision B: Native NHG Resident event visibility sources (Phase 5B)
 - **Status:** ✅ Confirmed Phase 5B requirement
 - **Decision:** NHG Resident event discovery has three allowed scheduled-event sources: assigned/current posting secretary events, native programme TTSH department secretary events, and native programme PC-created events.
-- **Assigned/current posting secretary events:** Derived from `resident_postings` for the selected/current date. Secretary-created events at that `posting_code` are visible subject to normal date/catalogue/reporting-period checks.
+- **Assigned posting secretary events:** Derived from `resident_postings` covering each scheduled event date. Secretary-created events at that `posting_code` are visible subject to normal date/catalogue/reporting-period checks. Scheduled discovery automatically combines all effectively active periods; residents do not select a reporting period.
 - **Native programme TTSH department secretary events:** Derived from an explicit native-programme-to-TTSH-posting mapping, for example `GRM -> TTSHGerMed`, `REHAB -> TTSH Rehab posting code`, and `DR -> TTSH Diagnostic Radiology posting code`. Do not infer this mapping by string manipulation. Preferred implementation is explicit config/mapping such as `programmes.native_teaching_posting_code` or a `programme_teaching_posting_map` table.
 - **Native programme PC-created events:** `teaching_events.created_for_programme_code = resident.programme_code`. PC-created events are NHG/programme-owned, not TTSH site-owned.
 - **Deduplication:** Deduplicate event rows by `teaching_events.id` when an event qualifies through more than one source.

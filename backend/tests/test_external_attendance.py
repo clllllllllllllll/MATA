@@ -118,7 +118,10 @@ def test_external_events_hidden_when_supports_secretary_events_false() -> None:
     response = client.get("/resident/events", headers=_external_headers(fake_db))
 
     assert response.status_code == 200
-    assert response.json() == {"events": [], "reason": "secretary_events_not_supported"}
+    payload = response.json()
+    assert payload["events"] == []
+    assert payload["reason"] == "secretary_events_not_supported"
+    assert len(payload["active_reporting_periods"]) == 1
 
 
 def test_external_events_exclude_already_submitted_records() -> None:

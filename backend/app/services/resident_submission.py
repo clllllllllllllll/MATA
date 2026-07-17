@@ -10,7 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
 from app.services import cache_invalidation
-from app.services.reporting_period_status import resolve_active_reporting_period_for_date
+from app.services.reporting_period_status import (
+    list_effectively_active_reporting_periods,
+    resolve_active_reporting_period_for_date,
+    resolve_reporting_period_for_date,
+)
 
 
 ACTIVE_POSTING_STATUSES = {"active", "loa_working"}
@@ -29,8 +33,12 @@ ExternalEventIneligibilityReason = Literal[
 ]
 
 
-def _event_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+def _event_row(
+    row: dict[str, Any],
+    *,
+    reporting_period: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    event = {
         "id": row["id"],
         "posting_code": row["posting_code"],
         "teaching_name": row["teaching_name"],
@@ -47,14 +55,19 @@ def _event_row(row: dict[str, Any]) -> dict[str, Any]:
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
+    if reporting_period is not None:
+        event["reporting_period_id"] = reporting_period["id"]
+        event["reporting_period_label"] = reporting_period["label"]
+    return event
 
 
 def _available_event_row(
     event: dict[str, Any],
     *,
     resolved: dict[str, Any],
+    reporting_period: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    row = {
         "id": event["id"],
         "teaching_name": event["teaching_name"],
         "event_date": event["event_date"],
@@ -68,6 +81,19 @@ def _available_event_row(
         "is_global": bool(resolved.get("is_global")),
         "is_adhoc": bool(event.get("is_adhoc", False)),
         "already_submitted": False,
+    }
+    if reporting_period is not None:
+        row["reporting_period_id"] = reporting_period["id"]
+        row["reporting_period_label"] = reporting_period["label"]
+    return row
+
+
+def _submission_period_row(period: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": period["id"],
+        "label": period["label"],
+        "start_date": period["start_date"],
+        "end_date": period["end_date"],
     }
 
 
@@ -181,6 +207,41 @@ async def _active_reporting_period(
         relevant_date=relevant_date,
         status_as_of_date=status_as_of_date,
     )
+
+
+async def list_submission_periods(
+    db: AsyncSession,
+    *,
+    role: str = "resident",
+    resident_id: UUID | None = None,
+    external_resident_id: UUID | None = None,
+    today: date | None = None,
+) -> dict[str, Any]:
+    """List operationally active periods for resident scheduled-event discovery."""
+
+    today = today or date.today()
+    if role == "external_resident":
+        if external_resident_id is None:
+            raise ApiError(
+                status_code=401,
+                detail="Unauthorized",
+                error_code=ErrorCode.UNAUTHORIZED.value,
+            )
+        await _external_resident(db, external_resident_id)
+    else:
+        if resident_id is None:
+            raise ApiError(
+                status_code=401,
+                detail="Unauthorized",
+                error_code=ErrorCode.UNAUTHORIZED.value,
+            )
+        await _resident(db, resident_id)
+
+    periods = await list_effectively_active_reporting_periods(
+        db,
+        status_as_of_date=today,
+    )
+    return {"periods": [_submission_period_row(period) for period in periods]}
 
 
 async def _posting_contexts(
@@ -1265,23 +1326,6 @@ def _native_visibility_contexts(
     ]
 
 
-def _posting_filter_options(
-    contexts: list[dict[str, Any]],
-    *,
-    start: date,
-    end: date,
-) -> list[dict[str, str]]:
-    posting_codes = {
-        row["posting_code"]
-        for row in contexts
-        if row.get("posting_code") and _context_overlaps_range(row, start=start, end=end)
-    }
-    return [
-        {"posting_code": posting_code, "label": posting_code}
-        for posting_code in sorted(posting_codes)
-    ]
-
-
 async def list_available_events(
     db: AsyncSession,
     *,
@@ -1297,6 +1341,7 @@ async def list_available_events(
     today = today or date.today()
     teaching_name = _normalise_optional_filter(teaching_name)
     posting_code = _normalise_optional_filter(posting_code)
+    resident: dict[str, Any] | None = None
     if role == "external_resident":
         if external_resident_id is None:
             raise ApiError(
@@ -1305,57 +1350,86 @@ async def list_available_events(
                 error_code=ErrorCode.UNAUTHORIZED.value,
             )
         await _external_resident(db, external_resident_id)
-        period = await _active_reporting_period(
-            db,
-            relevant_date=date_to or today,
-            status_as_of_date=today,
-        )
-        if period is None:
-            return {
-                "events": [],
-                "reason": "active_reporting_period_unavailable",
-            }
-        range_start, range_end = _effective_event_range(
-            period_start=period["start_date"],
-            period_end=period["end_date"],
-            today=today,
-            date_from=date_from,
-            date_to=date_to,
-        )
-        if range_start > range_end:
-            return {"events": []}
-        contexts = await _external_posting_contexts(
-            db,
-            external_resident_id=external_resident_id,
-            start_date=range_start,
-            end_date=range_end,
-        )
-        if not contexts:
-            return {"events": [], "reason": "posting_schedule_unavailable"}
-
-        eligible_posting_codes = {
-            row["posting_code"]
-            for row in contexts
-            if row.get("posting_code")
-            and _context_overlaps_range(row, start=range_start, end=range_end)
-        }
-        if posting_code is not None:
-            eligible_posting_codes = (
-                {posting_code} if posting_code in eligible_posting_codes else set()
+    else:
+        if resident_id is None:
+            raise ApiError(
+                status_code=401,
+                detail="Unauthorized",
+                error_code=ErrorCode.UNAUTHORIZED.value,
             )
-        posting_capabilities = await _posting_capabilities(
-            db,
-            posting_codes=eligible_posting_codes,
-        )
-        supported_posting_codes = {
-            code for code, supports in posting_capabilities.items() if supports
+        resident = await _resident(db, resident_id)
+
+    active_periods = await list_effectively_active_reporting_periods(
+        db,
+        status_as_of_date=today,
+    )
+    active_period_rows = [_submission_period_row(period) for period in active_periods]
+
+    if not active_periods:
+        return {
+            "events": [],
+            "reason": "active_reporting_period_unavailable",
+            "ad_hoc_allowed": False,
+            "message": "No active submission period is currently available.",
+            "posting_capabilities": [],
+            "filter_options": {
+                "posting_options": [],
+                "teaching_name_options": [],
+            },
+            "active_reporting_periods": [],
         }
-        if not supported_posting_codes:
-            return {"events": [], "reason": "secretary_events_not_supported"}
-        raw_events: list[dict[str, Any]] = []
-        for external_posting_code in sorted(supported_posting_codes):
-            raw_events.extend(
-                await _events_for_external_posting(
+
+    if role == "external_resident":
+        assert external_resident_id is not None
+        all_contexts: list[dict[str, Any]] = []
+        all_capability_codes: set[str] = set()
+        supported_anywhere = False
+        event_rows: dict[str, dict[str, Any]] = {}
+        option_names: set[str] = set()
+        posting_option_codes: set[str] = set()
+        queried_ranges: list[tuple[date, date]] = []
+
+        for period in active_periods:
+            range_start, range_end = _effective_event_range(
+                period_start=period["start_date"],
+                period_end=period["end_date"],
+                today=today,
+                date_from=date_from,
+                date_to=date_to,
+            )
+            if range_start > range_end:
+                continue
+            queried_ranges.append((range_start, range_end))
+            contexts = await _external_posting_contexts(
+                db,
+                external_resident_id=external_resident_id,
+                start_date=range_start,
+                end_date=range_end,
+            )
+            all_contexts.extend(contexts)
+            eligible_codes = {
+                row["posting_code"]
+                for row in contexts
+                if row.get("posting_code")
+                and _context_overlaps_range(row, start=range_start, end=range_end)
+            }
+            posting_option_codes.update(eligible_codes)
+            all_capability_codes.update(eligible_codes)
+            selected_codes = eligible_codes
+            if posting_code is not None:
+                selected_codes = {posting_code} if posting_code in eligible_codes else set()
+            period_capabilities = await _posting_capabilities(
+                db,
+                posting_codes=eligible_codes,
+            )
+            supported_codes = {
+                code
+                for code in selected_codes
+                if period_capabilities.get(code, False)
+            }
+            supported_anywhere = supported_anywhere or any(period_capabilities.values())
+            for external_posting_code in sorted(supported_codes):
+                raw_events = await _events_for_external_posting(
                     db,
                     external_resident_id=external_resident_id,
                     posting_code=external_posting_code,
@@ -1364,170 +1438,268 @@ async def list_available_events(
                     date_to=range_end,
                     teaching_name=teaching_name,
                 )
-            )
-        deduped_events: dict[str, dict[str, Any]] = {}
-        for event in raw_events:
-            reason = _external_event_ineligibility_reason(
-                event=event,
-                posting_contexts=contexts,
-                posting_capabilities=posting_capabilities,
-                today=today,
-                already_attended=bool(event.get("already_attended")),
-            )
-            if reason is None:
-                deduped_events[str(event["id"])] = event
-        events = sorted(
-            deduped_events.values(),
-            key=lambda row: (row["event_date"], row["start_time"], row["teaching_name"]),
-        )
-        return {"events": [_event_row(row) for row in events]}
+                for event in raw_events:
+                    resolved_period = resolve_reporting_period_for_date(
+                        active_periods,
+                        relevant_date=event["event_date"],
+                        status_as_of_date=today,
+                    )
+                    if resolved_period is None or str(resolved_period["id"]) != str(period["id"]):
+                        continue
+                    reason = _external_event_ineligibility_reason(
+                        event=event,
+                        posting_contexts=contexts,
+                        posting_capabilities=period_capabilities,
+                        today=today,
+                        already_attended=bool(event.get("already_attended")),
+                    )
+                    if reason is None:
+                        event_rows[str(event["id"])] = _event_row(
+                            event,
+                            reporting_period=resolved_period,
+                        )
+                        option_names.add(event["teaching_name"])
 
-    if resident_id is None:
-        raise ApiError(
-            status_code=401,
-            detail="Unauthorized",
-            error_code=ErrorCode.UNAUTHORIZED.value,
+        capabilities = await _posting_capabilities(
+            db,
+            posting_codes=all_capability_codes,
         )
-    resident = await _resident(db, resident_id)
-    period = await _active_reporting_period(
-        db,
-        relevant_date=today,
-        status_as_of_date=today,
-    )
-    if period is None:
+        posting_capability_rows = [
+            {
+                "posting_code": code,
+                "supports_secretary_events": capabilities.get(code, False),
+            }
+            for code in sorted(all_capability_codes)
+        ]
+        filter_options = {
+            "posting_options": [
+                {"posting_code": code, "label": code}
+                for code in sorted(posting_option_codes)
+            ],
+            "teaching_name_options": [
+                {"teaching_name": name, "label": name}
+                for name in sorted(option_names, key=str.casefold)
+            ],
+        }
+        if queried_ranges:
+            filter_options["date_from"] = min(item[0] for item in queried_ranges).isoformat()
+            filter_options["date_to"] = max(item[1] for item in queried_ranges).isoformat()
+        if not all_contexts:
+            return {
+                "events": [],
+                "reason": "posting_schedule_unavailable",
+                "ad_hoc_allowed": False,
+                "message": "No posting schedule is available for an active submission period.",
+                "posting_capabilities": posting_capability_rows,
+                "filter_options": filter_options,
+                "active_reporting_periods": active_period_rows,
+            }
+        if not supported_anywhere:
+            return {
+                "events": [],
+                "reason": "secretary_events_not_supported",
+                "ad_hoc_allowed": True,
+                "message": "No scheduled teaching events are supported for your postings.",
+                "posting_capabilities": posting_capability_rows,
+                "filter_options": filter_options,
+                "active_reporting_periods": active_period_rows,
+            }
+        events = sorted(
+            event_rows.values(),
+            key=lambda row: (
+                row["event_date"],
+                row["start_time"],
+                row["teaching_name"],
+                str(row["id"]),
+            ),
+        )
         return {
-            "events": [],
-            "reason": "active_reporting_period_unavailable",
-            "ad_hoc_allowed": False,
-            "message": "No active reporting period is available yet.",
-            "posting_capabilities": [],
+            "events": events,
+            "reason": None if events else "no_eligible_scheduled_events",
+            "ad_hoc_allowed": True,
+            "message": (
+                None
+                if events
+                else "No scheduled teaching events are currently available for your postings."
+            ),
+            "posting_capabilities": posting_capability_rows,
+            "filter_options": filter_options,
+            "active_reporting_periods": active_period_rows,
         }
 
-    contexts, visibility_contexts = await _resident_visibility_contexts(
-        db,
-        resident_id=resident_id,
-        resident=resident,
-        reporting_period_id=period["id"],
-    )
-    if not contexts:
+    assert resident_id is not None
+    assert resident is not None
+    has_posting_context = False
+    eligible_posting_codes: set[str] = set()
+    posting_option_codes: set[str] = set()
+    option_names: set[str] = set()
+    queried_ranges: list[tuple[date, date]] = []
+    event_rows: dict[str, dict[str, Any]] = {}
+
+    for period in active_periods:
+        contexts, visibility_contexts = await _resident_visibility_contexts(
+            db,
+            resident_id=resident_id,
+            resident=resident,
+            reporting_period_id=period["id"],
+        )
+        has_posting_context = has_posting_context or bool(contexts)
+        range_start, range_end = _effective_event_range(
+            period_start=period["start_date"],
+            period_end=period["end_date"],
+            today=today,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        if range_start > range_end:
+            continue
+        queried_ranges.append((range_start, range_end))
+        period_eligible_codes = {
+            row["posting_code"]
+            for row in visibility_contexts
+            if row.get("posting_code")
+            and _context_overlaps_range(row, start=range_start, end=range_end)
+        }
+        eligible_posting_codes.update(period_eligible_codes)
+        posting_option_codes.update(period_eligible_codes)
+        selected_codes = period_eligible_codes
+        if posting_code is not None:
+            selected_codes = {posting_code} if posting_code in period_eligible_codes else set()
+
+        raw_events = await _events_for_postings(
+            db,
+            resident_id=resident_id,
+            programme_code=resident["programme_code"],
+            posting_codes=selected_codes,
+            today=today,
+            period_start=period["start_date"],
+            period_end=period["end_date"],
+            date_from=range_start,
+            date_to=range_end,
+            teaching_name=teaching_name,
+        )
+        for event in raw_events:
+            resolved_period = resolve_reporting_period_for_date(
+                active_periods,
+                relevant_date=event["event_date"],
+                status_as_of_date=today,
+            )
+            if resolved_period is None or str(resolved_period["id"]) != str(period["id"]):
+                continue
+            owner = event.get("created_for_programme_code")
+            if owner is not None and owner != resident["programme_code"]:
+                continue
+            context = _matching_context_for_event(
+                visibility_contexts,
+                posting_code=event["posting_code"],
+                event_date=event["event_date"],
+            )
+            if context is None:
+                continue
+            resolved = await _resolve_teaching_name(
+                db,
+                posting_code=event["posting_code"],
+                programme_code=resident["programme_code"],
+                r_year=context["r_year"],
+                reporting_period_id=resolved_period["id"],
+                teaching_name=event["teaching_name"],
+            )
+            if resolved is not None:
+                event_rows[str(event["id"])] = _available_event_row(
+                    event,
+                    resolved=resolved,
+                    reporting_period=resolved_period,
+                )
+
+        option_raw_events = await _events_for_postings(
+            db,
+            resident_id=resident_id,
+            programme_code=resident["programme_code"],
+            posting_codes=selected_codes,
+            today=today,
+            period_start=period["start_date"],
+            period_end=period["end_date"],
+            date_from=range_start,
+            date_to=range_end,
+            teaching_name=None,
+        )
+        for event in option_raw_events:
+            resolved_period = resolve_reporting_period_for_date(
+                active_periods,
+                relevant_date=event["event_date"],
+                status_as_of_date=today,
+            )
+            if resolved_period is None or str(resolved_period["id"]) != str(period["id"]):
+                continue
+            context = _matching_context_for_event(
+                visibility_contexts,
+                posting_code=event["posting_code"],
+                event_date=event["event_date"],
+            )
+            if context is None:
+                continue
+            resolved = await _resolve_teaching_name(
+                db,
+                posting_code=event["posting_code"],
+                programme_code=resident["programme_code"],
+                r_year=context["r_year"],
+                reporting_period_id=resolved_period["id"],
+                teaching_name=event["teaching_name"],
+            )
+            if resolved is not None:
+                option_names.add(event["teaching_name"])
+
+    if not has_posting_context:
         return {
             "events": [],
             "reason": "posting_schedule_unavailable",
             "ad_hoc_allowed": False,
             "message": (
-                "Your posting schedule is not available yet. "
+                "Your posting schedule is not available for an active submission period. "
                 "Please contact your programme coordinator after RDB upload."
             ),
             "posting_capabilities": [],
+            "filter_options": {
+                "posting_options": [],
+                "teaching_name_options": [],
+            },
+            "active_reporting_periods": active_period_rows,
         }
 
-    range_start, range_end = _effective_event_range(
-        period_start=period["start_date"],
-        period_end=period["end_date"],
-        today=today,
-        date_from=date_from,
-        date_to=date_to,
-    )
-
-    eligible_posting_codes = {
-        row["posting_code"]
-        for row in visibility_contexts
-        if row.get("posting_code") and _context_overlaps_range(row, start=range_start, end=range_end)
-    }
-    posting_codes = set(eligible_posting_codes)
-    if posting_code is not None:
-        posting_codes = {posting_code} if posting_code in eligible_posting_codes else set()
-    posting_capabilities = await _posting_capabilities(db, posting_codes=eligible_posting_codes)
-    raw_events = await _events_for_postings(
+    posting_capabilities = await _posting_capabilities(
         db,
-        resident_id=resident_id,
-        programme_code=resident["programme_code"],
-        posting_codes=posting_codes,
-        today=today,
-        period_start=period["start_date"],
-        period_end=period["end_date"],
-        date_from=date_from,
-        date_to=date_to,
-        teaching_name=teaching_name,
+        posting_codes=eligible_posting_codes,
     )
-
-    events: list[dict[str, Any]] = []
-    for event in raw_events:
-        owner = event.get("created_for_programme_code")
-        if owner is not None and owner != resident["programme_code"]:
-            continue
-        context = _matching_context_for_event(
-            visibility_contexts,
-            posting_code=event["posting_code"],
-            event_date=event["event_date"],
-        )
-        if context is None:
-            continue
-        resolved = await _resolve_teaching_name(
-            db,
-            posting_code=event["posting_code"],
-            programme_code=resident["programme_code"],
-            r_year=context["r_year"],
-            reporting_period_id=period["id"],
-            teaching_name=event["teaching_name"],
-        )
-        if resolved is not None:
-            event_row = _available_event_row(event, resolved=resolved)
-            if all(existing["id"] != event_row["id"] for existing in events):
-                events.append(event_row)
-
-    option_raw_events = await _events_for_postings(
-        db,
-        resident_id=resident_id,
-        programme_code=resident["programme_code"],
-        posting_codes=posting_codes or eligible_posting_codes,
-        today=today,
-        period_start=period["start_date"],
-        period_end=period["end_date"],
-        date_from=date_from,
-        date_to=date_to,
-        teaching_name=None,
-    )
-    option_names: set[str] = set()
-    for event in option_raw_events:
-        context = _matching_context_for_event(
-            visibility_contexts,
-            posting_code=event["posting_code"],
-            event_date=event["event_date"],
-        )
-        if context is None:
-            continue
-        resolved = await _resolve_teaching_name(
-            db,
-            posting_code=event["posting_code"],
-            programme_code=resident["programme_code"],
-            r_year=context["r_year"],
-            reporting_period_id=period["id"],
-            teaching_name=event["teaching_name"],
-        )
-        if resolved is not None:
-            option_names.add(event["teaching_name"])
+    capabilities = [
+        {
+            "posting_code": code,
+            "supports_secretary_events": posting_capabilities.get(code, False),
+        }
+        for code in sorted(eligible_posting_codes)
+    ]
     filter_options = {
-        "date_from": range_start.isoformat(),
-        "date_to": range_end.isoformat(),
-        "posting_options": _posting_filter_options(
-            visibility_contexts,
-            start=range_start,
-            end=range_end,
-        ),
+        "posting_options": [
+            {"posting_code": code, "label": code}
+            for code in sorted(posting_option_codes)
+        ],
         "teaching_name_options": [
             {"teaching_name": name, "label": name}
             for name in sorted(option_names, key=str.casefold)
         ],
     }
+    if queried_ranges:
+        filter_options["date_from"] = min(item[0] for item in queried_ranges).isoformat()
+        filter_options["date_to"] = max(item[1] for item in queried_ranges).isoformat()
 
-    capabilities = [
-        {
-            "posting_code": posting_code,
-            "supports_secretary_events": posting_capabilities.get(posting_code, False),
-        }
-        for posting_code in sorted(eligible_posting_codes)
-    ]
+    events = sorted(
+        event_rows.values(),
+        key=lambda row: (
+            row["event_date"],
+            row["start_time"],
+            row["teaching_name"],
+            str(row["id"]),
+        ),
+    )
     if events:
         return {
             "events": events,
@@ -1536,6 +1708,7 @@ async def list_available_events(
             "message": None,
             "posting_capabilities": capabilities,
             "filter_options": filter_options,
+            "active_reporting_periods": active_period_rows,
         }
 
     has_secretary_support_hint = any(item["supports_secretary_events"] for item in capabilities)
@@ -1544,15 +1717,17 @@ async def list_available_events(
         "reason": "no_eligible_scheduled_events",
         "ad_hoc_allowed": True,
         "message": (
-            "No scheduled teaching events available. You can submit ad-hoc teaching."
+            "No scheduled teaching events are currently available for your postings. "
+            "You can submit ad-hoc teaching."
             if has_secretary_support_hint
             else (
-                "No eligible scheduled teaching events are currently available for your posting. "
+                "No scheduled teaching events are currently available for your postings. "
                 "You can submit ad-hoc teaching."
             )
         ),
         "posting_capabilities": capabilities,
         "filter_options": filter_options,
+        "active_reporting_periods": active_period_rows,
     }
 
 

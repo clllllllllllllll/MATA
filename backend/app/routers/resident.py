@@ -82,6 +82,24 @@ async def list_events(
     )
 
 
+@router.get("/submission-periods")
+async def list_submission_periods(
+    resident_context: ResidentContext = Depends(require_resident_context),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict:
+    if resident_context.role == "external_resident":
+        return await resident_submission.list_submission_periods(
+            db,
+            role="external_resident",
+            external_resident_id=resident_context.subject_id,
+        )
+    return await resident_submission.list_submission_periods(
+        db,
+        role="resident",
+        resident_id=resident_context.subject_id,
+    )
+
+
 @router.post("/attendance")
 async def submit_attendance(
     request: ResidentAttendanceSubmitRequest,

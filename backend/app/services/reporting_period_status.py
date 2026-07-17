@@ -131,6 +131,28 @@ async def list_reporting_periods_for_resolution(
     return [dict(row) for row in result.mappings().all()]
 
 
+async def list_effectively_active_reporting_periods(
+    db: AsyncSession,
+    *,
+    status_as_of_date: date | None = None,
+) -> list[dict[str, Any]]:
+    """Return every period whose operational status is effectively active.
+
+    Date applicability remains a separate check: callers must still require a
+    dated event/submission to fall inside exactly one returned period.
+    """
+
+    periods = await list_reporting_periods_for_resolution(db)
+    return [
+        period
+        for period in periods
+        if is_reporting_period_effectively_active(
+            period,
+            as_of_date=status_as_of_date,
+        )
+    ]
+
+
 async def resolve_active_reporting_period_for_date(
     db: AsyncSession,
     *,

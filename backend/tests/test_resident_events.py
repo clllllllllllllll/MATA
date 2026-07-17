@@ -3,9 +3,12 @@ from __future__ import annotations
 from datetime import date, timedelta
 from uuid import uuid4
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.services import resident_submission
+from app.errors import ApiError
 from app.middleware.auth_stub import AuthIdentity
 from app.middleware.errors import install_error_handlers
 from app.routers import resident
@@ -581,3 +584,241 @@ def test_events_posting_filter_cannot_widen_beyond_resident_postings() -> None:
 
     assert response.status_code == 200
     assert response.json()["events"] == []
+
+
+def _configure_historical_geri_case(fake_db: FakeResidentSession) -> str:
+    historical_event_id = str(uuid4())
+    historical_period_id = str(uuid4())
+    fake_db.residents[0].update(
+        {
+            "name": "Historical GERI Resident",
+            "mcr": "M64471D",
+            "programme_code": "GERI",
+        }
+    )
+    fake_db.reporting_periods = [
+        {
+            "id": historical_period_id,
+            "label": "2025/26 reopened",
+            "start_date": date(2025, 7, 1),
+            "end_date": date(2025, 12, 31),
+            "status": "active",
+            "activate_on": None,
+            "deactivate_on": date(2099, 1, 1),
+        }
+    ]
+    fake_db.resident_postings = [
+        {
+            "resident_id": fake_db.resident_id,
+            "reporting_period_id": historical_period_id,
+            "posting_code": "TTSHGerMed",
+            "r_year": "ALL",
+            "start_date": date(2025, 7, 1),
+            "end_date": date(2025, 7, 31),
+            "status": "active",
+        }
+    ]
+    fake_db.posting_codes.append(
+        {
+            "code": "TTSHGerMed",
+            "display_name": "TTSH Geriatric Medicine",
+            "institution": "TTSH",
+            "supports_secretary_events": True,
+        }
+    )
+    fake_db.catalogue = [
+        {
+            "keyword": "GERI Historical Teaching",
+            "posting_code": "TTSHGerMed",
+            "programme_code": "GERI",
+            "r_year": "ALL",
+            "reporting_period_id": historical_period_id,
+            "session_type_id": fake_db.session_type_id,
+            "session_type": "GERI Teaching [1.0h]",
+            "duration_hours": 1.0,
+            "is_tracked": True,
+        }
+    ]
+    fake_db.attendance = []
+    fake_db.events = [
+        fake_db._event(  # noqa: SLF001
+            historical_event_id,
+            "TTSHGerMed",
+            "GERI Historical Teaching",
+            date(2025, 7, 15),
+        )
+    ]
+    return historical_event_id
+
+
+@pytest.mark.asyncio
+async def test_events_return_reopened_july_2025_geri_event_without_a_current_posting() -> None:
+    fake_db = FakeResidentSession(today=date(2026, 7, 17))
+    historical_event_id = _configure_historical_geri_case(fake_db)
+
+    payload = await resident_submission.list_available_events(
+        fake_db,
+        resident_id=fake_db.residents[0]["id"],
+        today=date(2026, 7, 17),
+    )
+
+    assert [row["id"] for row in payload["events"]] == [historical_event_id]
+    assert payload["events"][0]["reporting_period_id"] == fake_db.reporting_periods[0]["id"]
+    assert payload["active_reporting_periods"][0]["label"] == "2025/26 reopened"
+    assert all(
+        not (row["start_date"] <= date(2026, 7, 17) <= row["end_date"])
+        for row in fake_db.resident_postings
+    )
+
+
+def test_submission_periods_returns_all_effectively_active_periods_without_a_selector() -> None:
+    fake_db = FakeResidentSession(today=date.today())
+    _configure_historical_geri_case(fake_db)
+    second_period_id = str(uuid4())
+    fake_db.reporting_periods.append(
+        {
+            "id": second_period_id,
+            "label": "Another reopened period",
+            "start_date": date(2026, 1, 1),
+            "end_date": date(2026, 6, 30),
+            "status": "inactive",
+            "activate_on": date(2026, 7, 1),
+            "deactivate_on": date(2099, 1, 1),
+        }
+    )
+    client = _client(fake_db)
+
+    response = client.get("/resident/submission-periods", headers=_headers(fake_db))
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()["periods"]] == [
+        fake_db.reporting_periods[0]["id"],
+        second_period_id,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_events_query_multiple_effectively_active_periods_without_cross_period_fallback() -> None:
+    fake_db = FakeResidentSession(today=date(2026, 7, 17))
+    first_event_id = _configure_historical_geri_case(fake_db)
+    second_period_id = str(uuid4())
+    second_event_id = str(uuid4())
+    fake_db.reporting_periods.append(
+        {
+            "id": second_period_id,
+            "label": "First half 2026 reopened",
+            "start_date": date(2026, 1, 1),
+            "end_date": date(2026, 6, 30),
+            "status": "inactive",
+            "activate_on": date(2026, 7, 1),
+            "deactivate_on": date(2099, 1, 1),
+        }
+    )
+    fake_db.resident_postings.append(
+        {
+            "resident_id": fake_db.resident_id,
+            "reporting_period_id": second_period_id,
+            "posting_code": "TTSHGerMed",
+            "r_year": "ALL",
+            "start_date": date(2026, 6, 1),
+            "end_date": date(2026, 6, 30),
+            "status": "loa_working",
+        }
+    )
+    fake_db.catalogue.append(
+        {
+            **fake_db.catalogue[0],
+            "keyword": "Second Period Teaching",
+            "reporting_period_id": second_period_id,
+        }
+    )
+    fake_db.events.append(
+        fake_db._event(  # noqa: SLF001
+            second_event_id,
+            "TTSHGerMed",
+            "Second Period Teaching",
+            date(2026, 6, 30),
+        )
+    )
+
+    payload = await resident_submission.list_available_events(
+        fake_db,
+        resident_id=fake_db.residents[0]["id"],
+        today=date(2026, 7, 17),
+    )
+
+    assert [row["id"] for row in payload["events"]] == [first_event_id, second_event_id]
+    assert {row["reporting_period_id"] for row in payload["events"]} == {
+        fake_db.reporting_periods[0]["id"],
+        second_period_id,
+    }
+    assert len(payload["active_reporting_periods"]) == 2
+
+    fake_db.catalogue[-1]["reporting_period_id"] = fake_db.reporting_periods[0]["id"]
+    isolated = await resident_submission.list_available_events(
+        fake_db,
+        resident_id=fake_db.residents[0]["id"],
+        today=date(2026, 7, 17),
+    )
+    assert [row["id"] for row in isolated["events"]] == [first_event_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["active", "loa_working"])
+async def test_events_use_inclusive_event_date_posting_boundaries(status: str) -> None:
+    fake_db = FakeResidentSession(today=date(2026, 7, 17))
+    historical_event_id = _configure_historical_geri_case(fake_db)
+    fake_db.resident_postings[0].update(
+        {
+            "start_date": date(2025, 7, 15),
+            "end_date": date(2025, 7, 15),
+            "status": status,
+        }
+    )
+
+    payload = await resident_submission.list_available_events(
+        fake_db,
+        resident_id=fake_db.residents[0]["id"],
+        today=date(2026, 7, 17),
+    )
+
+    assert [row["id"] for row in payload["events"]] == [historical_event_id]
+
+
+@pytest.mark.asyncio
+async def test_events_exclude_historical_period_after_effective_deactivation() -> None:
+    fake_db = FakeResidentSession(today=date(2026, 7, 17))
+    _configure_historical_geri_case(fake_db)
+    fake_db.reporting_periods[0]["deactivate_on"] = date(2026, 7, 16)
+
+    payload = await resident_submission.list_available_events(
+        fake_db,
+        resident_id=fake_db.residents[0]["id"],
+        today=date(2026, 7, 17),
+    )
+
+    assert payload["events"] == []
+    assert payload["reason"] == "active_reporting_period_unavailable"
+    assert payload["active_reporting_periods"] == []
+
+
+@pytest.mark.asyncio
+async def test_events_fail_closed_when_active_periods_overlap_an_event_date() -> None:
+    fake_db = FakeResidentSession(today=date(2026, 7, 17))
+    _configure_historical_geri_case(fake_db)
+    fake_db.reporting_periods.append(
+        {
+            **fake_db.reporting_periods[0],
+            "id": str(uuid4()),
+            "label": "Ambiguous historical overlap",
+        }
+    )
+
+    with pytest.raises(ApiError) as raised:
+        await resident_submission.list_available_events(
+            fake_db,
+            resident_id=fake_db.residents[0]["id"],
+            today=date(2026, 7, 17),
+        )
+
+    assert raised.value.status_code == 409

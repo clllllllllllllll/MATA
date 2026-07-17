@@ -92,6 +92,41 @@ assert(apiSource.includes('date_from'), 'scheduled events API sends date_from fi
 assert(apiSource.includes('date_to'), 'scheduled events API sends date_to filter')
 assert(apiSource.includes('teaching_name'), 'scheduled events API sends teaching_name filter')
 assert(apiSource.includes('posting_code'), 'scheduled events API sends posting_code filter')
+assert(
+  apiSource.includes('/resident/submission-periods'),
+  'resident portal loads effectively active submission periods without a selector',
+)
+assert(
+  pageSource.includes('getResidentPortalIdentitySubtitle(identity)'),
+  'resident header renders the authenticated identity',
+)
+assert(!pageSource.includes('demoResidentMcr'), 'resident header does not render demo MCR configuration')
+assert(!pageSource.includes('M00001A'), 'resident portal has no placeholder resident MCR')
+assert(!pageSource.includes('Reporting period'), 'resident portal does not render a reporting-period selector')
+assert(
+  pageSource.includes('Loading active submission periods...'),
+  'resident portal has a distinct period-loading state',
+)
+assert(
+  pageSource.includes('Loading available scheduled events...'),
+  'resident portal has a distinct event-loading state',
+)
+assert(
+  pageSource.includes('No active submission period is currently available.'),
+  'resident portal has a controlled no-active-period state',
+)
+assert(
+  pageSource.includes('No scheduled teaching events are currently available for your postings.'),
+  'resident portal distinguishes active periods with no eligible events',
+)
+assert(
+  pageSource.includes("scheduledEventsState === 'ready'"),
+  'eligible historical events render independently of current-posting sidebar text',
+)
+assert(
+  !pageSource.includes('currentPosting'),
+  'current-posting display state does not gate resident scheduled events',
+)
 
 assert(pageSource.includes('View all past submissions'), 'recent widget links to all past submissions')
 assert(

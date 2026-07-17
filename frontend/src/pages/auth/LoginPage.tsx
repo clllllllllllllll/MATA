@@ -205,7 +205,7 @@ export const LoginPage = () => {
               className="mono"
               value={residentMcr}
               onChange={(event) => setResidentMcr(event.target.value.toUpperCase())}
-              placeholder="e.g. M00001A"
+              placeholder="e.g. M12345A"
               autoComplete="username"
             />
           </label>

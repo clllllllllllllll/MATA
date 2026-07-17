@@ -971,7 +971,7 @@ Resident-facing default period resolution uses the effective status, not only th
 }
 ```
 
-The stored status remains `active` or `inactive`; due scheduled dates are resolved at read time and do not mutate the row. When both scheduled dates are due, the later scheduled date wins; if both are due on the same date, deactivation wins. Multiple periods may be administratively active, but a current-date workflow must resolve exactly one effectively active period containing today and a dated workflow must resolve exactly one containing its relevant date. A future active period is not a current default, and overlapping active date windows return a safe configuration conflict. With no matching period, resident event listing returns an empty list with `reason = "active_reporting_period_unavailable"` and ad-hoc disabled; attendance and ad-hoc submission endpoints reject with `422`.
+The stored status remains `active` or `inactive`; due scheduled dates are resolved at read time and do not mutate the row. When both scheduled dates are due, the later scheduled date wins; if both are due on the same date, deactivation wins. Multiple periods may be administratively active. A current-date display workflow resolves exactly one effectively active period containing today, while a dated submission resolves exactly one containing its relevant date. Resident scheduled-event discovery is the intentional exception: it enumerates every effectively active period and evaluates each event against the one active period containing the event date. A future active period is not a current default, and overlapping active date windows return a safe configuration conflict for an affected event/submission date. With no effectively active period, resident event listing returns an empty list with `reason = "active_reporting_period_unavailable"` and ad-hoc disabled; attendance and ad-hoc submission endpoints reject with `422` when their selected date has no matching period.
 
 ---
 
@@ -1399,24 +1399,34 @@ Note: is_global = true entries come from global_session_types and are always exc
 List teaching events available for submission.
 
 - **Auth:** resident only
+- **Period resolution:** enumerate every effectively active reporting period using stored `status` plus due `activate_on` / `deactivate_on` transitions. Residents do not select a period. Each candidate event must fall inside exactly one of those periods; its catalogue and posting checks use that same period ID. Events in inactive/expired periods are excluded, and overlapping active periods for an event date fail closed with `409`.
 - **Visibility gating:**
-  1. If resident has no `resident_postings` rows for the current/effectively active period → no assigned-posting visibility; return empty list with `reason: "posting_schedule_unavailable"` if no other allowed source can produce events.
-  2. Assigned/current posting secretary events: derive assigned posting from `resident_postings` for the selected/current date with `status IN ('active', 'loa_working')`. Secretary-created events at that `posting_code` are eligible.
+  1. If the resident has no `resident_postings` rows in any effectively active period → no assigned-posting visibility; return empty list with `reason: "posting_schedule_unavailable"` if no other allowed source can produce events. A missing posting covering today does not suppress historical rows.
+  2. Assigned posting secretary events: derive assigned posting from `resident_postings` covering each event date with `status IN ('active', 'loa_working')`. Secretary-created events at that `posting_code` are eligible.
   3. Native programme TTSH department secretary events: derive the native programme teaching posting from explicit config/mapping, for example `programmes.native_teaching_posting_code` or `programme_teaching_posting_map`. Do not infer this mapping by string manipulation.
   4. Native programme PC-created events: include events where `teaching_events.created_for_programme_code = resident.programme_code`.
   5. Deduplicate rows by `teaching_events.id` across all sources.
   6. Filter to `event_date <= today` (no future events).
   7. Exclude events already submitted by this resident.
-  8. Apply active/effectively active reporting-period checks.
+  8. Apply the event-date-specific effectively active reporting-period check; never resolve historical visibility from today.
   9. Apply `teaching_name_catalogue` / global-session matching. For catalogue-backed events, only show events whose `teaching_name` exists in the resident's catalogue for `(event posting context, resident.programme_code, resident_postings.r_year, reporting_period_id)`. Global session type exclusion/visibility follows the same source eligibility rules.
   10. Do not show PC-created events for non-native programmes.
   11. Do not show secretary-created events from arbitrary TTSH departments unless they are either the resident's assigned/current posting or the resident's native programme department.
-- **Query params:** `date_from`, `date_to`
+- **Query params:** `date_from`, `date_to`, `teaching_name`, `posting_code`. Filters apply to the combined cross-period collection and cannot widen resident scope.
+- **Response metadata:** each event includes the server-resolved `reporting_period_id` / `reporting_period_label`. The top-level `active_reporting_periods[]` lists the periods considered, allowing the frontend to distinguish no active submission period from an active-period empty result without presenting a selector.
 
 **Native visibility examples:**
 - **Scenario A:** Native GRM Resident John is posted to TTSH Geriatric Medicine. John sees TTSH GRM Department Secretary events because he is posted there and GRM PC events because GRM is his native programme. The TTSH GRM secretary event source is deduped if it is both assigned posting and native programme department.
 - **Scenario B:** Native GRM Resident John is posted to TTSH Rehab. John sees TTSH Rehab Department Secretary events because he is posted there, TTSH GRM Department Secretary events because GRM is his native programme department, and GRM PC events because GRM is his native programme.
 - **Scenario C:** Native Rehab Resident Mary is posted to TTSH GRM. Mary sees TTSH GRM Department Secretary events because she is posted there, TTSH Rehab Department Secretary events because Rehab is her native programme department, and Rehab PC events because Rehab is her native programme.
+
+### GET `/resident/submission-periods`
+
+Return the effectively active reporting-period metadata used by the Submission Portal's loading and empty-state classification.
+
+- **Auth:** NHG Resident or registered Non-NHG Resident from the authenticated session.
+- **Response:** `{ "periods": [{ "id", "label", "start_date", "end_date" }] }`
+- **Security/UX:** this endpoint does not accept a resident ID or a selected period and does not authorize access to events. `GET /resident/events` independently enforces period, posting, programme ownership, catalogue, and duplicate checks. The frontend must not render a resident reporting-period selector.
 
 ### POST `/resident/attendance`
 

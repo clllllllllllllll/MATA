@@ -607,3 +607,66 @@ def test_adhoc_teaching_uses_effectively_active_scheduled_reporting_period() -> 
 
     assert response.status_code == 200
     assert response.json()["event"]["is_adhoc"] is True
+
+
+def test_adhoc_options_resolve_reopened_historical_period_and_selected_date_posting() -> None:
+    fake_db = _fake_db()
+    fake_db.reporting_periods[0].update(
+        {
+            "label": "2025/26 reopened",
+            "start_date": date(2025, 7, 1),
+            "end_date": date(2025, 12, 31),
+            "status": "active",
+            "activate_on": None,
+            "deactivate_on": date(2099, 1, 1),
+        }
+    )
+    fake_db.resident_postings[0].update(
+        {
+            "start_date": date(2025, 7, 1),
+            "end_date": date(2025, 7, 31),
+        }
+    )
+    client = _client(fake_db)
+
+    response = client.get(
+        "/resident/adhoc-teaching-options",
+        headers=_headers(fake_db),
+        params={"date": "2025-07-15", "attended_posting_code": "TTSHCardio"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is True
+    assert payload["reporting_period_id"] == fake_db.period_id
+    assert payload["posting_code"] == "TTSHCardio"
+    assert any(row["teaching_name"] == "Journal Club" for row in payload["options"])
+    assert not any(
+        row["start_date"] <= date.today() <= row["end_date"]
+        for row in fake_db.resident_postings
+    )
+
+
+def test_adhoc_options_fail_closed_for_overlapping_effectively_active_periods() -> None:
+    fake_db = _fake_db()
+    fake_db.reporting_periods.append(
+        {
+            "id": "00000000-0000-0000-0000-000000000099",
+            "label": "Ambiguous overlap",
+            "start_date": fake_db.reporting_periods[0]["start_date"],
+            "end_date": fake_db.reporting_periods[0]["end_date"],
+            "status": "active",
+            "activate_on": None,
+            "deactivate_on": None,
+        }
+    )
+    client = _client(fake_db)
+
+    response = client.get(
+        "/resident/adhoc-teaching-options",
+        headers=_headers(fake_db),
+        params={"date": "2026-05-18"},
+    )
+
+    assert response.status_code == 409
+    assert "ambiguous" in response.json()["detail"].lower()

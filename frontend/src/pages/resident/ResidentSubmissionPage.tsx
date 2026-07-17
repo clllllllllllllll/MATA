@@ -5,6 +5,7 @@ import {
   getResidentAdhocTeachingOptions,
   listResidentAttendance,
   listResidentEvents,
+  listResidentSubmissionPeriods,
   removeResidentAttendance,
   submitResidentAdhocTeaching,
   submitResidentAttendance,
@@ -12,11 +13,15 @@ import {
   type ResidentAttendanceHistoryRow,
   type ResidentEventFilters,
   type ResidentEventsResponse,
+  type ResidentSubmissionPeriod,
 } from '../../api/residentSubmissions'
 import { PageHero } from '../../components/PageHero'
 import { IconCalendar, IconRefresh, IconSend, IconX } from '../../components/icons'
-import { frontendConfig } from '../../config/frontendConfig'
 import { useAuth } from '../../context/useAuth'
+import {
+  getResidentPortalIdentitySubtitle,
+  getResidentScheduledEventsState,
+} from '../../utils/residentSubmissionState'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 const START_TIME_OPTIONS = Array.from({ length: 24 * 4 }, (_, index) => {
@@ -147,8 +152,12 @@ export const ResidentSubmissionPage = () => {
       postingOptions: [],
       teachingNameOptions: [],
     },
+    activeReportingPeriods: [],
   })
-  const [eventsLoading, setEventsLoading] = useState(true)
+  const [activeSubmissionPeriods, setActiveSubmissionPeriods] = useState<ResidentSubmissionPeriod[]>([])
+  const [periodsLoading, setPeriodsLoading] = useState(true)
+  const [periodsError, setPeriodsError] = useState<string | null>(null)
+  const [eventsLoading, setEventsLoading] = useState(false)
   const [eventsError, setEventsError] = useState<string | null>(null)
   const [selectedEventIds, setSelectedEventIds] = useState<Set<string>>(new Set())
 
@@ -176,6 +185,7 @@ export const ResidentSubmissionPage = () => {
     try {
       const response = await listResidentEvents(filters)
       setEventsResponse(response)
+      setActiveSubmissionPeriods(response.activeReportingPeriods)
       setSelectedEventIds(new Set())
     } catch (error) {
       const message =
@@ -183,7 +193,7 @@ export const ResidentSubmissionPage = () => {
           ? normaliseResidentApiError(error)
           : 'Unable to load resident events right now.'
       setEventsError(message)
-      setEventsResponse({
+      setEventsResponse((previous) => ({
         events: [],
         reason: null,
         adHocAllowed: false,
@@ -193,11 +203,42 @@ export const ResidentSubmissionPage = () => {
           postingOptions: [],
           teachingNameOptions: [],
         },
-      })
+        activeReportingPeriods: previous.activeReportingPeriods,
+      }))
     } finally {
       setEventsLoading(false)
     }
   }, [filters])
+
+  const loadSubmissionPeriods = useCallback(async () => {
+    setPeriodsLoading(true)
+    setPeriodsError(null)
+    try {
+      const periods = await listResidentSubmissionPeriods()
+      setActiveSubmissionPeriods(periods)
+      setEventsLoading(periods.length > 0)
+      if (periods.length === 0) {
+        setEventsResponse((previous) => ({
+          ...previous,
+          events: [],
+          reason: 'active_reporting_period_unavailable',
+          adHocAllowed: false,
+          message: 'No active submission period is currently available.',
+          activeReportingPeriods: [],
+        }))
+      }
+    } catch (error) {
+      const message =
+        error instanceof ApiRequestError
+          ? normaliseResidentApiError(error)
+          : 'Unable to load active submission periods right now.'
+      setPeriodsError(message)
+      setActiveSubmissionPeriods([])
+      setEventsLoading(false)
+    } finally {
+      setPeriodsLoading(false)
+    }
+  }, [])
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true)
@@ -269,13 +310,27 @@ export const ResidentSubmissionPage = () => {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void loadResidentEvents()
+      void loadSubmissionPeriods()
       void loadHistory()
     }, 0)
     return () => {
       window.clearTimeout(timer)
     }
-  }, [loadResidentEvents, loadHistory])
+  }, [loadHistory, loadSubmissionPeriods])
+
+  const activePeriodKey = activeSubmissionPeriods.map((period) => period.id).join(',')
+
+  useEffect(() => {
+    if (periodsLoading || periodsError || activeSubmissionPeriods.length === 0) {
+      return
+    }
+    const timer = window.setTimeout(() => {
+      void loadResidentEvents()
+    }, 0)
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [activePeriodKey, activeSubmissionPeriods.length, loadResidentEvents, periodsError, periodsLoading])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -288,6 +343,15 @@ export const ResidentSubmissionPage = () => {
 
   const selectedCount = selectedEventIds.size
   const availableEvents = eventsResponse.events
+  const scheduledEventsState = getResidentScheduledEventsState({
+    periodsLoading,
+    periodsError,
+    activePeriodCount: activeSubmissionPeriods.length,
+    eventsLoading,
+    eventsError,
+    eventCount: availableEvents.length,
+  })
+  const scheduledEventsError = periodsError ?? eventsError
   const filterOptions = eventsResponse.filterOptions
   const attendanceHistoryPath = isExternalResident ? '/external/attendance' : '/resident/attendance'
   const displayedDateFrom = filters.dateFrom ?? filterOptions.dateFrom ?? ''
@@ -417,11 +481,7 @@ export const ResidentSubmissionPage = () => {
     <div className="page resident-page">
       <PageHero
         title="Submission Portal"
-        subtitle={
-          isExternalResident
-            ? "Submissions are recorded for home-cluster's records only"
-            : `${frontendConfig.demoResidentProgramme} - MCR ${frontendConfig.demoResidentMcr}`
-        }
+        subtitle={getResidentPortalIdentitySubtitle(identity)}
         actions={
           <div className="resident-hero-actions">
             <span className="scope-chip">
@@ -449,11 +509,6 @@ export const ResidentSubmissionPage = () => {
       {submitMessage ? (
         <section className={`inline-callout ${submitState === 'error' ? 'callout-error' : 'callout-success'}`}>
           <span>{submitMessage}</span>
-        </section>
-      ) : null}
-      {eventsError ? (
-        <section className="inline-callout callout-error">
-          <span>{eventsError}</span>
         </section>
       ) : null}
       <section className="resident-submit-sticky sticky-action-footer" aria-label="Resident attendance action bar">
@@ -525,16 +580,31 @@ export const ResidentSubmissionPage = () => {
           </div>
         </div>
 
-        {eventsLoading ? (
-          <div className="resident-empty">Loading available events...</div>
-        ) : availableEvents.length === 0 ? (
+        {scheduledEventsState === 'periods_loading' ? (
+          <div className="resident-empty">Loading active submission periods...</div>
+        ) : scheduledEventsState === 'events_loading' ? (
+          <div className="resident-empty">Loading available scheduled events...</div>
+        ) : scheduledEventsState === 'error' ? (
+          <div className="resident-empty">
+            <p className="resident-empty-title">Unable to load scheduled events</p>
+            <p>{scheduledEventsError ?? 'Try again later or contact support.'}</p>
+          </div>
+        ) : scheduledEventsState === 'no_active_periods' ? (
+          <div className="resident-empty">
+            <p className="resident-empty-title">No active submission period</p>
+            <p>No active submission period is currently available.</p>
+          </div>
+        ) : scheduledEventsState === 'empty' ? (
           <div className="resident-empty">
             <p className="resident-empty-title">
               {eventsResponse.reason === 'posting_schedule_unavailable'
                 ? 'Posting schedule unavailable'
                 : 'No scheduled teaching events available'}
             </p>
-            <p>{eventsResponse.message ?? 'Try again later or submit ad-hoc teaching.'}</p>
+            <p>
+              {eventsResponse.message ??
+                'No scheduled teaching events are currently available for your postings.'}
+            </p>
           </div>
         ) : (
           <div className="table-wrap resident-table-wrap">
@@ -594,7 +664,7 @@ export const ResidentSubmissionPage = () => {
             </div>
           </div>
         )}
-        {!eventsLoading && availableEvents.length > 0 ? (
+        {scheduledEventsState === 'ready' ? (
           <div className="resident-event-card-list responsive-card-list" aria-label="Available scheduled events">
             {availableEvents.map((event) => {
               const selected = selectedEventIds.has(event.id)

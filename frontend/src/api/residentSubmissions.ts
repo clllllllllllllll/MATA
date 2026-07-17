@@ -19,6 +19,13 @@ export interface ResidentPostingCapability {
   supportsSecretaryEvents: boolean
 }
 
+export interface ResidentSubmissionPeriod {
+  id: string
+  label: string
+  startDate: string
+  endDate: string
+}
+
 export interface ResidentFilterOption {
   label: string
   postingCode?: string
@@ -53,6 +60,8 @@ export interface ResidentAvailableEvent {
   isGlobal: boolean
   isAdhoc: boolean
   alreadySubmitted: boolean
+  reportingPeriodId?: string
+  reportingPeriodLabel?: string
 }
 
 export interface ResidentEventsResponse {
@@ -62,6 +71,7 @@ export interface ResidentEventsResponse {
   message?: string | null
   postingCapabilities: ResidentPostingCapability[]
   filterOptions: ResidentEventFilterOptions
+  activeReportingPeriods: ResidentSubmissionPeriod[]
 }
 
 export interface ResidentAttendanceSubmitResponse {
@@ -162,6 +172,15 @@ const toResidentEvent = (value: Record<string, unknown>): ResidentAvailableEvent
   isGlobal: Boolean(value.is_global),
   isAdhoc: Boolean(value.is_adhoc),
   alreadySubmitted: Boolean(value.already_submitted),
+  reportingPeriodId: value.reporting_period_id ? String(value.reporting_period_id) : undefined,
+  reportingPeriodLabel: value.reporting_period_label ? String(value.reporting_period_label) : undefined,
+})
+
+const toSubmissionPeriod = (value: Record<string, unknown>): ResidentSubmissionPeriod => ({
+  id: String(value.id ?? ''),
+  label: String(value.label ?? ''),
+  startDate: String(value.start_date ?? ''),
+  endDate: String(value.end_date ?? ''),
 })
 
 const toPostingCapability = (value: Record<string, unknown>): ResidentPostingCapability => ({
@@ -239,6 +258,33 @@ const buildParams = (values: Record<string, string | number | undefined>) => {
   return params
 }
 
+export const parseResidentEventsResponse = (value: unknown): ResidentEventsResponse => {
+  const payload =
+    typeof value === 'object' && value !== null
+      ? (value as Record<string, unknown>)
+      : {}
+  const eventRows = Array.isArray(payload.events) ? payload.events : []
+  const capabilityRows = Array.isArray(payload.posting_capabilities) ? payload.posting_capabilities : []
+  const activePeriodRows = Array.isArray(payload.active_reporting_periods)
+    ? payload.active_reporting_periods
+    : []
+  return {
+    events: eventRows
+      .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
+      .map(toResidentEvent),
+    reason: typeof payload.reason === 'string' ? payload.reason : null,
+    adHocAllowed: typeof payload.ad_hoc_allowed === 'boolean' ? payload.ad_hoc_allowed : undefined,
+    message: typeof payload.message === 'string' ? payload.message : null,
+    postingCapabilities: capabilityRows
+      .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
+      .map(toPostingCapability),
+    filterOptions: toEventFilterOptions(payload.filter_options),
+    activeReportingPeriods: activePeriodRows
+      .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
+      .map(toSubmissionPeriod),
+  }
+}
+
 export const listResidentEvents = async (
   filters: ResidentEventFilters = {},
 ): Promise<ResidentEventsResponse> => {
@@ -252,24 +298,25 @@ export const listResidentEvents = async (
         posting_code: filters.postingCode,
       }),
     })
+    return parseResidentEventsResponse(response.data)
+  } catch (error) {
+    throw toApiRequestError(error)
+  }
+}
+
+export const listResidentSubmissionPeriods = async (): Promise<ResidentSubmissionPeriod[]> => {
+  try {
+    const response = await httpClient.get('/resident/submission-periods', {
+      headers: buildResidentDemoHeaders(),
+    })
     const payload =
       typeof response.data === 'object' && response.data !== null
         ? (response.data as Record<string, unknown>)
         : {}
-    const eventRows = Array.isArray(payload.events) ? payload.events : []
-    const capabilityRows = Array.isArray(payload.posting_capabilities) ? payload.posting_capabilities : []
-    return {
-      events: eventRows
-        .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
-        .map(toResidentEvent),
-      reason: typeof payload.reason === 'string' ? payload.reason : null,
-      adHocAllowed: typeof payload.ad_hoc_allowed === 'boolean' ? payload.ad_hoc_allowed : undefined,
-      message: typeof payload.message === 'string' ? payload.message : null,
-      postingCapabilities: capabilityRows
-        .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
-        .map(toPostingCapability),
-      filterOptions: toEventFilterOptions(payload.filter_options),
-    }
+    const rows = Array.isArray(payload.periods) ? payload.periods : []
+    return rows
+      .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
+      .map(toSubmissionPeriod)
   } catch (error) {
     throw toApiRequestError(error)
   }

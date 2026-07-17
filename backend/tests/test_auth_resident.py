@@ -298,6 +298,34 @@ def test_auth_me_returns_resident_identity_without_posting_code() -> None:
     assert "posting_code" not in payload
 
 
+def test_authenticated_resident_identity_returns_the_account_mcr_only() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.residents[0]["mcr"] = "M64471D"
+    fake_db.residents[0]["programme_code"] = "GERI"
+    fake_db.residents[1]["mcr"] = "M00001A"
+    login_client = _client(fake_db)
+    me_client = _client(
+        fake_db,
+        AuthIdentity(
+            role="resident",
+            subject_id=fake_db.resident_id,
+            programme_code="GERI",
+            mcr="stale-client-value",
+        ),
+    )
+
+    login = login_client.post("/auth/login", json={"role": "resident", "mcr": "M64471D"})
+    current_identity = me_client.get("/auth/me")
+
+    assert login.status_code == 200
+    assert login.json()["user"]["mcr"] == "M64471D"
+    assert login.json()["user"]["programme_code"] == "GERI"
+    assert current_identity.status_code == 200
+    assert current_identity.json()["mcr"] == "M64471D"
+    assert current_identity.json()["programme_code"] == "GERI"
+    assert current_identity.json()["mcr"] != fake_db.residents[1]["mcr"]
+
+
 def test_resident_current_posting_uses_only_the_resolved_current_period() -> None:
     fake_db = FakeResidentSession()
     future_period_id = str(uuid4())

@@ -47,15 +47,8 @@ const defaultSecretarySite = import.meta.env.VITE_DEMO_SECRETARY_SITE ?? 'TTSHGe
 const defaultSecretaryScopeLabel =
   import.meta.env.VITE_DEMO_SECRETARY_SCOPE_LABEL ?? 'TTSH Geriatric Medicine'
 
-const defaultResidentId =
-  import.meta.env.VITE_DEMO_RESIDENT_USER_ID ??
-  '00000000-0000-0000-0000-0000000000bb'
-
-const defaultResidentMcr = import.meta.env.VITE_DEMO_RESIDENT_MCR ?? 'M00001A'
-const defaultResidentProgramme = import.meta.env.VITE_DEMO_RESIDENT_PROGRAMME ?? 'GERI'
 const defaultResidentScopeLabel =
-  import.meta.env.VITE_DEMO_RESIDENT_SCOPE_LABEL ??
-  `TTSH Geriatric Medicine - MCR ${defaultResidentMcr}`
+  import.meta.env.VITE_DEMO_RESIDENT_SCOPE_LABEL ?? 'Resident account'
 
 export const frontendConfig = {
   appEnv: parseAppEnv(import.meta.env.VITE_APP_ENV),
@@ -68,9 +61,6 @@ export const frontendConfig = {
   demoSecretaryId: defaultSecretaryId,
   demoSecretarySite: defaultSecretarySite,
   demoSecretaryScopeLabel: defaultSecretaryScopeLabel,
-  demoResidentId: defaultResidentId,
-  demoResidentMcr: defaultResidentMcr,
-  demoResidentProgramme: defaultResidentProgramme,
   demoResidentScopeLabel: defaultResidentScopeLabel,
   supabaseUrl: import.meta.env.VITE_SUPABASE_URL ?? '',
   supabasePublishableKey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? '',

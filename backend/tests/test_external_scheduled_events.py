@@ -120,7 +120,7 @@ def test_external_scheduled_attendance_supports_reopened_history_and_stays_exter
     assert historical_events.status_code == 200
     assert historic_event["id"] in {row["id"] for row in historical_events.json()["events"]}
     assert crossing_events.status_code == 200
-    assert historic_event["id"] not in {row["id"] for row in crossing_events.json()["events"]}
+    assert historic_event["id"] in {row["id"] for row in crossing_events.json()["events"]}
     assert response.status_code == 200
     assert len(fake_db.external_attendance) == before_external + 1
     assert len(fake_db.attendance) == before_native

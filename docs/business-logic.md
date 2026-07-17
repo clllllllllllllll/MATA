@@ -442,7 +442,7 @@ The compliance engine runs **JIT (just-in-time)** — recalculated on read, not 
 
 Multiple reporting periods may be administratively/effectively active at once. Administrative status is separate from date applicability: a current-date workflow resolves exactly one effectively active period containing today; an event or submission resolves exactly one effectively active period containing that event/submission date. A future active period must not become a current default, and a reopened past period remains explicitly selectable for its historical date range. If two effectively active periods contain the same relevant date, the workflow fails closed with a configuration conflict rather than choosing by row order.
 
-Resident event discovery and new submissions use that date-aware resolver. If no matching period exists, the event list is empty with `reason = "active_reporting_period_unavailable"` and ad-hoc submission is disabled; attendance and ad-hoc submission attempts return `422`. Existing attendance records remain stored and auditable.
+Resident scheduled-event discovery enumerates all effectively active periods, then uses the date-aware resolver for every candidate event. The event must fall inside exactly one active period, and its posting/catalogue checks use that period ID; a period containing today is not required. New attendance and ad-hoc submissions continue to resolve exactly one effectively active period from the event/selected teaching date. If no effectively active period exists, the event list is empty with `reason = "active_reporting_period_unavailable"` and ad-hoc submission is disabled; attendance and ad-hoc submission attempts return `422` when their date has no matching period. Existing attendance records remain stored and auditable.
 
 New reporting periods default `deactivate_on` to `end_date + 14 calendar days` unless an explicit value is supplied. A past period can be reopened only by a new effective inactive-to-active transition that supplies a future `deactivate_on`; this includes a newly scheduled future `activate_on`, for which `deactivate_on` must be strictly later than `activate_on`. Its historical start/end dates are not extended by reopening. Ordinary edits to an already effectively active reopened period preserve its existing future `deactivate_on` and do not require it to be resubmitted.
 
@@ -461,7 +461,7 @@ PC-created events are scheduled teaching events, not ad-hoc submissions. Public 
 NHG Resident scheduled-event discovery uses three allowed sources:
 
 1. **Assigned/current posting secretary events**
-   - Derive assigned posting from `resident_postings` for the selected/current date with `status IN ('active', 'loa_working')`.
+   - Derive assigned posting from `resident_postings` covering each event date with `status IN ('active', 'loa_working')`.
    - Secretary-created events at that `posting_code` are eligible.
 
 2. **Native programme TTSH department secretary events**
