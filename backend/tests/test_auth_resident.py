@@ -115,6 +115,8 @@ def test_supabase_mode_resident_login_rejects_unknown_mcr() -> None:
     response = client.post("/auth/login", json={"role": "resident", "mcr": "UNKNOWN"})
 
     assert response.status_code == 401
+    assert response.json()["detail"] == "Unauthorized"
+    assert "access_token" not in response.json()
 
 
 def test_supabase_mode_resident_login_rejects_inactive_resident() -> None:
@@ -125,6 +127,8 @@ def test_supabase_mode_resident_login_rejects_inactive_resident() -> None:
     response = client.post("/auth/login", json={"role": "resident", "mcr": "M12345A"})
 
     assert response.status_code == 401
+    assert response.json()["detail"] == "Unauthorized"
+    assert "access_token" not in response.json()
 
 
 def test_resident_login_rejects_unknown_mcr() -> None:
@@ -136,7 +140,7 @@ def test_resident_login_rejects_unknown_mcr() -> None:
     assert response.status_code == 401
 
 
-def test_resident_role_does_not_authenticate_external_resident_mcr() -> None:
+def test_shared_resident_login_resolves_active_external_resident() -> None:
     fake_db = FakeResidentSession()
     client = _client(fake_db)
 
@@ -145,7 +149,26 @@ def test_resident_role_does_not_authenticate_external_resident_mcr() -> None:
         json={"role": "resident", "mcr": "E12345A"},
     )
 
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["access_token"] == f"stub.external_resident.{fake_db.external_resident_id}"
+    assert payload["user"]["id"] == fake_db.external_resident_id
+    assert payload["user"]["role"] == "external_resident"
+    assert payload["user"]["mcr"] == "E12345A"
+
+
+def test_shared_resident_login_rejects_inactive_external_resident_without_token() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.external_residents[0]["status"] = "inactive"
+    client = _client(fake_db)
+
+    response = client.post(
+        "/auth/login",
+        json={"role": "resident", "mcr": "E12345A"},
+    )
+
     assert response.status_code == 401
+    assert response.json()["detail"] == "Unauthorized"
     assert "access_token" not in response.json()
 
 

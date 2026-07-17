@@ -5,17 +5,14 @@ import test from 'node:test'
 import {
   createResidentLoginPayload,
   type ResidentLoginPayload,
-  type ResidentLoginRole,
 } from '../../api/loginPayloads.ts'
 import { resolveResidentLoginError } from '../../api/loginErrorMessages.ts'
 import type { StoredAuthSession } from '../../types/auth.ts'
-import {
-  createInitialResidentLoginState,
-  selectResidentLoginRole,
-  submitSelectedResidentLogin,
-} from './residentLoginFlow.ts'
+import { submitSharedResidentLogin } from './residentLoginFlow.ts'
 
-const sessionForRole = (role: ResidentLoginRole): StoredAuthSession => ({
+type AuthenticatedResidentRole = 'resident' | 'external_resident'
+
+const sessionForRole = (role: AuthenticatedResidentRole): StoredAuthSession => ({
   mode: 'supabase',
   accessToken: role === 'resident' ? 'mata-native-token' : 'mata-external-token',
   tokenType: 'bearer',
@@ -24,25 +21,24 @@ const sessionForRole = (role: ResidentLoginRole): StoredAuthSession => ({
     ? {
         role: 'resident',
         subjectId: 'native-resident-id',
-        name: 'Native Resident',
+        name: 'Synthetic Native Resident',
         mcr: 'M90001Z',
         programmeCode: 'GRM',
       }
     : {
         role: 'external_resident',
         subjectId: 'external-resident-id',
-        name: 'Non-NHG Resident',
+        name: 'Synthetic Non-NHG Resident',
         mcr: 'M90001Z',
         homeCluster: 'NUH',
       },
 })
 
-test('NHG MCR submit constructs one normalized resident request and returns the native route', async () => {
+test('shared MCR submit sends one normalized neutral request and redirects a native response', async () => {
   const requests: ResidentLoginPayload[] = []
 
-  const result = await submitSelectedResidentLogin({
+  const result = await submitSharedResidentLogin({
     rawMcr: '  m90001z  ',
-    role: 'resident',
     authenticate: async (payload) => {
       requests.push(payload)
       return sessionForRole('resident')
@@ -54,130 +50,94 @@ test('NHG MCR submit constructs one normalized resident request and returns the 
   assert.equal(result.redirectPath, '/resident/submissions')
 })
 
-test('registered Non-NHG MCR submit constructs one explicit external request and returns its route', async () => {
+test('shared MCR submit keeps the neutral request and redirects an external response', async () => {
   const requests: ResidentLoginPayload[] = []
 
-  const result = await submitSelectedResidentLogin({
+  const result = await submitSharedResidentLogin({
     rawMcr: '  m90001z  ',
-    role: 'external_resident',
     authenticate: async (payload) => {
       requests.push(payload)
       return sessionForRole('external_resident')
     },
   })
 
-  assert.deepEqual(requests, [{ role: 'external_resident', mcr: 'M90001Z' }])
+  assert.deepEqual(requests, [{ role: 'resident', mcr: 'M90001Z' }])
   assert.equal(result.session.accessToken, 'mata-external-token')
   assert.equal(result.redirectPath, '/external/submissions')
 })
 
-test('returning to the normal login page creates a fresh NHG Resident mode', () => {
-  const nonNhgState = selectResidentLoginRole('external_resident')
-  assert.equal(nonNhgState.role, 'external_resident')
-
-  const remountedLoginState = createInitialResidentLoginState()
-  assert.equal(remountedLoginState.role, 'resident')
-})
-
-test('a previous external attempt cannot change the next explicit NHG request', async () => {
+test('an external-looking MCR prefix does not change the neutral request role', async () => {
   const requests: ResidentLoginPayload[] = []
 
-  await assert.rejects(
-    submitSelectedResidentLogin({
-      rawMcr: 'M90001Z',
-      role: 'external_resident',
-      authenticate: async (payload) => {
-        requests.push(payload)
-        throw new Error('Unauthorized')
-      },
-    }),
-  )
-
-  const result = await submitSelectedResidentLogin({
-    rawMcr: 'M90001Z',
-    role: 'resident',
-    authenticate: async (payload) => {
-      requests.push(payload)
-      return sessionForRole('resident')
-    },
-  })
-
-  assert.deepEqual(requests, [
-    { role: 'external_resident', mcr: 'M90001Z' },
-    { role: 'resident', mcr: 'M90001Z' },
-  ])
-  assert.equal(result.session.identity.role, 'resident')
-})
-
-test('a previous NHG attempt cannot change the next explicit Non-NHG request', async () => {
-  const requests: ResidentLoginPayload[] = []
-
-  await assert.rejects(
-    submitSelectedResidentLogin({
-      rawMcr: 'M90001Z',
-      role: 'resident',
-      authenticate: async (payload) => {
-        requests.push(payload)
-        throw new Error('Unauthorized')
-      },
-    }),
-  )
-
-  const result = await submitSelectedResidentLogin({
-    rawMcr: 'M90001Z',
-    role: 'external_resident',
+  await submitSharedResidentLogin({
+    rawMcr: ' e90001z ',
     authenticate: async (payload) => {
       requests.push(payload)
       return sessionForRole('external_resident')
     },
   })
 
-  assert.deepEqual(requests, [
-    { role: 'resident', mcr: 'M90001Z' },
-    { role: 'external_resident', mcr: 'M90001Z' },
-  ])
-  assert.equal(result.session.identity.role, 'external_resident')
+  assert.deepEqual(requests, [{ role: 'resident', mcr: 'E90001Z' }])
 })
 
-test('failed NHG login neither probes the external table nor mutates the selected subtype', async () => {
-  const state = createInitialResidentLoginState()
+test('a failed shared login makes one request and does not retry another role', async () => {
   const requests: ResidentLoginPayload[] = []
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    await assert.rejects(
-      submitSelectedResidentLogin({
-        rawMcr: ' M90001Z ',
-        role: state.role,
-        authenticate: async (payload) => {
-          requests.push(payload)
-          throw new Error('Unauthorized')
-        },
-      }),
-    )
-  }
+  await assert.rejects(
+    submitSharedResidentLogin({
+      rawMcr: ' M90001Z ',
+      authenticate: async (payload) => {
+        requests.push(payload)
+        throw new Error('Unauthorized')
+      },
+    }),
+  )
 
-  assert.equal(state.role, 'resident')
-  assert.deepEqual(requests, [
-    { role: 'resident', mcr: 'M90001Z' },
-    { role: 'resident', mcr: 'M90001Z' },
-  ])
+  assert.deepEqual(requests, [{ role: 'resident', mcr: 'M90001Z' }])
 })
 
-test('MCR normalization is shared by both explicit resident payloads', () => {
-  assert.deepEqual(createResidentLoginPayload('\t m12345a \n', 'resident'), {
+test('an unexpected staff response is rejected before a resident session can be returned', async () => {
+  const requests: ResidentLoginPayload[] = []
+  const staffSession: StoredAuthSession = {
+    mode: 'supabase',
+    accessToken: 'unexpected-staff-token',
+    tokenType: 'bearer',
+    createdAt: '2026-07-16T00:00:00.000Z',
+    identity: {
+      role: 'programme_pc',
+      subjectId: 'unexpected-staff-id',
+      name: 'Synthetic Staff Account',
+      adminLevel: 'programme',
+      programmeScope: ['GRM'],
+      staffActorNameRequired: false,
+    },
+  }
+
+  await assert.rejects(
+    submitSharedResidentLogin({
+      rawMcr: 'M90001Z',
+      authenticate: async (payload) => {
+        requests.push(payload)
+        return staffSession
+      },
+    }),
+    /invalid role/,
+  )
+
+  assert.deepEqual(requests, [{ role: 'resident', mcr: 'M90001Z' }])
+})
+
+test('MCR normalization is fixed to the shared neutral resident payload', () => {
+  assert.deepEqual(createResidentLoginPayload('\t m12345a \n'), {
     role: 'resident',
     mcr: 'M12345A',
-  })
-  assert.deepEqual(createResidentLoginPayload('  e12345a  ', 'external_resident'), {
-    role: 'external_resident',
-    mcr: 'E12345A',
   })
 })
 
 test('ordinary auth, validation, and network failures map to the exact generic message', () => {
   const network = Object.assign(new Error('https://internal.example failed'), { isNetworkError: true })
 
-  for (const status of [401, 403, 404, 422]) {
+  for (const status of [401, 403, 404, 409, 422]) {
     const failure = Object.assign(new Error(`Sensitive backend detail for ${status}`), { status })
     assert.equal(
       resolveResidentLoginError(failure),
@@ -205,12 +165,4 @@ test('unexpected details are redacted and rate-limit timing remains specific', (
     resolveResidentLoginError(rateLimited),
     'Too many sign-in attempts. Please try again in 2 minutes.',
   )
-})
-
-test('error mapping does not change the selected resident role', () => {
-  const state = selectResidentLoginRole('external_resident')
-
-  resolveResidentLoginError(Object.assign(new Error('Unauthorized'), { status: 401 }))
-
-  assert.equal(state.role, 'external_resident')
 })

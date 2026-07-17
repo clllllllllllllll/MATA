@@ -139,15 +139,19 @@ const toAuthIdentity = (rawUser: Record<string, unknown>): AuthIdentity => {
     }
   }
 
-  return {
-    role: 'resident',
-    subjectId,
-    name,
-    mcr: requiredString(rawUser.mcr),
-    programmeCode: requiredString(rawUser.programme_code),
-    currentPostingCode: optionalString(rawUser.current_posting_code),
-    currentPostingLabel: optionalString(rawUser.current_posting_label),
+  if (backendRole === 'resident') {
+    return {
+      role: 'resident',
+      subjectId,
+      name,
+      mcr: requiredString(rawUser.mcr),
+      programmeCode: requiredString(rawUser.programme_code),
+      currentPostingCode: optionalString(rawUser.current_posting_code),
+      currentPostingLabel: optionalString(rawUser.current_posting_label),
+    }
   }
+
+  throw new Error('Invalid authentication response.')
 }
 
 export const createStoredSession = (response: BackendLoginResponse): StoredAuthSession => ({

@@ -15,16 +15,11 @@ import { IconChevRight } from '../../components/icons'
 import { defaultPathForRole, isPathAllowedForRole } from '../../config/navigation'
 import { useAuth } from '../../context/useAuth'
 import type { AppRole } from '../../types/app'
-import {
-  createInitialResidentLoginState,
-  selectResidentLoginRole,
-  submitSelectedResidentLogin,
-} from './residentLoginFlow'
-import type { ResidentLoginRole } from '../../api/loginPayloads'
+import { submitSharedResidentLogin } from './residentLoginFlow'
 type LoginFormId = 'staff' | 'resident'
 
 const RESIDENT_HELP =
-  'Use NHG Resident for RDB-backed resident accounts. Registered Non-NHG Residents must choose their separate sign-in mode.'
+  'NHG and registered Non-NHG residents use this shared MCR login.'
 const SUPABASE_CONFIGURATION_ERROR_MARKER = 'VITE_AUTH_MODE=supabase requires'
 
 const getRedirectPath = (role: AppRole, from?: string) => {
@@ -60,7 +55,6 @@ export const LoginPage = () => {
   const [staffEmail, setStaffEmail] = useState('')
   const [staffPassword, setStaffPassword] = useState('')
   const [residentMcr, setResidentMcr] = useState('')
-  const [residentLoginState, setResidentLoginState] = useState(createInitialResidentLoginState)
   const [error, setError] = useState<{ formId: LoginFormId; message: string } | null>(null)
   const [submittingForm, setSubmittingForm] = useState<LoginFormId | null>(null)
   const isSubmitting = submittingForm !== null
@@ -116,9 +110,8 @@ export const LoginPage = () => {
     setError(null)
     const loginGeneration = beginLoginAttempt()
     try {
-      const result = await submitSelectedResidentLogin({
+      const result = await submitSharedResidentLogin({
         rawMcr: residentMcr,
-        role: residentLoginState.role,
         authenticate: loginResident,
       })
       if (!isAuthRequestCurrent(loginGeneration)) {
@@ -141,14 +134,6 @@ export const LoginPage = () => {
         setSubmittingForm(null)
       }
     }
-  }
-
-  const chooseResidentLoginRole = (role: ResidentLoginRole) => {
-    if (submittingForm === 'resident') {
-      return
-    }
-    setResidentLoginState(selectResidentLoginRole(role))
-    setError((currentError) => currentError?.formId === 'resident' ? null : currentError)
   }
 
   const formError = (formId: LoginFormId) =>
@@ -213,36 +198,7 @@ export const LoginPage = () => {
 
         <div className="auth-divider">Resident MCR</div>
 
-        <div className="auth-resident-role-selector" role="group" aria-label="Resident account type">
-          <button
-            type="button"
-            className={residentLoginState.role === 'resident' ? 'is-active' : ''}
-            aria-pressed={residentLoginState.role === 'resident'}
-            onClick={() => chooseResidentLoginRole('resident')}
-            disabled={isSubmitting}
-          >
-            NHG Resident
-          </button>
-          <button
-            type="button"
-            className={residentLoginState.role === 'external_resident' ? 'is-active' : ''}
-            aria-pressed={residentLoginState.role === 'external_resident'}
-            onClick={() => chooseResidentLoginRole('external_resident')}
-            disabled={isSubmitting}
-          >
-            Registered Non-NHG Resident
-          </button>
-        </div>
-
         <form className="auth-form auth-form-block" onSubmit={submitResidentLogin}>
-          <div className="auth-section-heading">
-            <h2>
-              {residentLoginState.role === 'resident'
-                ? 'NHG Resident login'
-                : 'Registered Non-NHG Resident login'}
-            </h2>
-            <p>{RESIDENT_HELP}</p>
-          </div>
           <label className="auth-field">
             <span>MCR number</span>
             <input
@@ -253,6 +209,8 @@ export const LoginPage = () => {
               autoComplete="username"
             />
           </label>
+
+          <p className="auth-help">{RESIDENT_HELP}</p>
 
           {formError('resident')}
 

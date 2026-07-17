@@ -65,7 +65,7 @@ Every important decision made during the project, with reasoning and consequence
 - **User-facing label:** Use **Non-NHG Resident** in UI and user-facing documentation. Existing backend/internal terms such as `external_residents`, `external_resident_postings`, `external_attendance_records`, and `external_resident` role names remain valid implementation names.
 - **Registration capture fields:** `name`, `mcr`, `home_cluster` (`NUH` or `SingHealth`), and a date-bounded upcoming NHG posting schedule. The older single `current_nhg_posting_code` pointer may remain as a current/cache/backward-compatibility field, but it is no longer the long-term sole source for date-sensitive event/ad-hoc derivation.
 - **MCR uniqueness:** MCR is globally unique for every doctor. Because native and external identities use separate tables, enforce cross-table uniqueness in service logic: reject registration if MCR exists in either `residents` or `external_residents`.
-- **Workflow direction:** Non-NHG Residents self-register on first use. After registration, login is MCR-only. Non-NHG Residents may self-update their upcoming NHG posting schedule.
+- **Workflow direction:** Non-NHG Residents self-register on first use. After registration, they use the same shared Resident MCR field as NHG Residents. The frontend sends one neutral `role = resident` request and never selects, infers, or retries an identity subtype; the backend resolves the unique native/external match and returns the authenticated role. Non-NHG Residents may self-update their upcoming NHG posting schedule.
 - **Posting model:** Non-NHG date-bounded forecast postings are stored in `external_resident_postings`; do not use native `resident_postings`. Once the forecast schedule is implemented, authorization-sensitive event/ad-hoc derivation uses the row matching the selected event date.
 - **Functional scope:** Phase 5B must be completed before Phase 6 compliance. It includes Non-NHG registration/login, upcoming NHG posting schedule update, supported event listing, attendance submission, revised ad-hoc teaching submission, past attendance, admin/PC external attendance list/read, and Excel export for forwarding to NUH/SingHealth PCs.
 - **Explicit exclusions:** Non-NHG Residents are excluded from NHG compliance and clawback surfaces:
@@ -608,10 +608,10 @@ Every important decision made during the project, with reasoning and consequence
 
 #### Decision: Residents authenticate with MCR only — no password
 - **Status:** ✅ Confirmed
-- **Decision:** Residents authenticate with MCR number only. No password in Phase 1. This is an intentional design choice — no upgrade path planned.
+- **Decision:** NHG Residents and already-registered Non-NHG Residents authenticate through one shared MCR field. No password in Phase 1. First-time Non-NHG registration remains a separate action.
 - **Reasoning:** Residents are medical professionals with controlled MCR numbers. The system tracks attendance, not patient data. Low-friction login maximises adoption.
 - **Alternatives considered:** Password-based auth — rejected for UX friction.
-- **Consequences for codebase:** `POST /auth/login` with `role: 'resident'` accepts MCR only. Looks up `residents` table by MCR. Validates `status != 'inactive'`.
+- **Consequences for codebase:** `POST /auth/login` with `role: 'resident'` is the neutral shared resident request. It checks `residents` and `external_residents` in one backend resolution, relies on global MCR uniqueness, validates the resolved row is active, returns the resolved `resident | external_resident` role, and rejects cross-table duplicates without issuing a token. The frontend makes exactly one request and never probes the tables sequentially.
 - **Reference file and section:** `api.md` § POST `/auth/login`; `AGENTS.md` § Security Rules
 - **Do not change without PM/stakeholder approval:** Yes
 

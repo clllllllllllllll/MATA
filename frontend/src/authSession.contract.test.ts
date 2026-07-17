@@ -2,6 +2,9 @@
 
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { createServer } from 'vite'
+import type { ResidentLoginPayload } from './api/loginPayloads.ts'
+import type { StoredAuthSession } from './types/auth.ts'
 
 const read = (relativePath: string) =>
   readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8')
@@ -19,6 +22,7 @@ const appSource = read('./App.tsx')
 const mainSource = read('./main.tsx')
 const authApiSource = read('./api/auth.ts')
 const loginErrorMessagesSource = read('./api/loginErrorMessages.ts')
+const loginPayloadsSource = read('./api/loginPayloads.ts')
 const httpSource = read('./api/http.ts')
 const authContextSource = read('./context/AuthContext.tsx')
 const authContextTypeSource = read('./context/authContext.ts')
@@ -69,6 +73,144 @@ const {
   resolveProtectedRoute,
   resolveRootRoute,
 } = await import('./routeGuards.ts')
+
+interface RawLoginResponse {
+  access_token: string
+  token_type: string
+  user: Record<string, unknown>
+}
+
+type CreateStoredSession = (response: RawLoginResponse) => StoredAuthSession
+type SubmitSharedResidentLogin = (options: {
+  rawMcr: string
+  authenticate: (payload: ResidentLoginPayload) => Promise<StoredAuthSession>
+}) => Promise<{ session: StoredAuthSession; redirectPath: string }>
+
+const productionAuthModules = await (async () => {
+  const moduleServer = await createServer({
+    root: fileURLToPath(new URL('../', import.meta.url)),
+    configFile: false,
+    envFile: false,
+    logLevel: 'silent',
+    appType: 'custom',
+    server: { middlewareMode: true },
+  })
+  try {
+    const [authModule, residentLoginFlowModule] = await Promise.all([
+      moduleServer.ssrLoadModule('/src/api/auth.ts'),
+      moduleServer.ssrLoadModule('/src/pages/auth/residentLoginFlow.ts'),
+    ])
+    return {
+      createStoredSession: authModule.createStoredSession as CreateStoredSession,
+      submitSharedResidentLogin:
+        residentLoginFlowModule.submitSharedResidentLogin as SubmitSharedResidentLogin,
+    }
+  } finally {
+    await moduleServer.close()
+  }
+})()
+
+const rawLoginResponse = (user: Record<string, unknown>): RawLoginResponse => ({
+  access_token: 'synthetic-access-token',
+  token_type: 'bearer',
+  user,
+})
+
+const assertInvalidRawLoginResponse = async (
+  label: string,
+  response: RawLoginResponse,
+) => {
+  let parsedSession: StoredAuthSession | undefined
+  let parserError: unknown
+  try {
+    parsedSession = productionAuthModules.createStoredSession(response)
+  } catch (error) {
+    parserError = error
+  }
+
+  assert(parsedSession === undefined, `${label} returns no stored session`)
+  assert(
+    parserError instanceof Error && parserError.message === 'Invalid authentication response.',
+    `${label} fails with a generic parser error`,
+  )
+
+  let loginResult: { session: StoredAuthSession; redirectPath: string } | undefined
+  let loginRejected = false
+  try {
+    loginResult = await productionAuthModules.submitSharedResidentLogin({
+      rawMcr: 'M90001Z',
+      authenticate: async () => productionAuthModules.createStoredSession(response),
+    })
+  } catch {
+    loginRejected = true
+  }
+
+  assert(loginRejected, `${label} rejects before loginWithSession`)
+  assert(loginResult === undefined, `${label} produces no session or resident redirect`)
+}
+
+await assertInvalidRawLoginResponse(
+  'missing backend role',
+  rawLoginResponse({
+    id: 'synthetic-missing-role-id',
+    mcr: 'M90001Z',
+    programme_code: 'GRM',
+  }),
+)
+await assertInvalidRawLoginResponse(
+  'unsupported backend role',
+  rawLoginResponse({
+    id: 'synthetic-unsupported-role-id',
+    role: 'unexpected_role',
+  }),
+)
+await assertInvalidRawLoginResponse(
+  'empty backend role',
+  rawLoginResponse({
+    id: 'synthetic-empty-role-id',
+    role: '',
+  }),
+)
+
+const nativeResidentSession = productionAuthModules.createStoredSession(
+  rawLoginResponse({
+    id: 'synthetic-native-resident-id',
+    role: 'resident',
+    mcr: 'M90001Z',
+    programme_code: 'GRM',
+  }),
+)
+const externalResidentSession = productionAuthModules.createStoredSession(
+  rawLoginResponse({
+    id: 'synthetic-external-resident-id',
+    role: 'external_resident',
+    mcr: 'E90002A',
+    home_cluster: 'NUH',
+  }),
+)
+const adminSession = productionAuthModules.createStoredSession(
+  rawLoginResponse({
+    id: 'synthetic-admin-id',
+    role: 'admin',
+    admin_level: 'programme',
+    programme_scope: ['GRM'],
+  }),
+)
+const secretarySession = productionAuthModules.createStoredSession(
+  rawLoginResponse({
+    id: 'synthetic-secretary-id',
+    role: 'secretary',
+    posting_code: 'TTSHGerMed',
+  }),
+)
+
+assert(nativeResidentSession.identity.role === 'resident', 'raw native Resident response parses')
+assert(
+  externalResidentSession.identity.role === 'external_resident',
+  'raw Non-NHG Resident response parses',
+)
+assert(adminSession.identity.role === 'programme_pc', 'raw admin response parsing is unchanged')
+assert(secretarySession.identity.role === 'secretary', 'raw secretary response parsing is unchanged')
 
 assert(appSource.includes('path="/login"'), 'universal /login route is registered outside AppShell')
 assert(!appSource.includes('RedirectIfAuthenticated'), '/login redirects authenticated users through the top-level access boundary')
@@ -334,17 +476,21 @@ assert(
   !loginPageSource.includes('loginOrder') &&
     !loginPageSource.includes('isRateLimitError') &&
     !loginPageSource.includes("startsWith('E')") &&
-    residentLoginFlowSource.includes('const session = await authenticate(payload)'),
-  'resident login sends one request for the explicitly selected identity path without table probing',
+    !loginPageSource.includes('external_resident') &&
+    !residentLoginFlowSource.includes('loginOrder') &&
+    !residentLoginFlowSource.includes('catch') &&
+    residentLoginFlowSource.includes('const session = await authenticate(payload)') &&
+    loginPayloadsSource.includes("role: 'resident'") &&
+    !loginPayloadsSource.includes("role: 'external_resident'"),
+  'shared resident login sends one neutral request without prefix inference or frontend table probing',
 )
 assert(loginPageSource.includes('loginStaff'), 'staff login is separate from MCR resident login')
 assert(
   !loginPageSource.includes('residentSupabaseUnsupported') &&
     !loginPageSource.includes('MCR-only resident sign-in is available in local/demo mode. Supabase staff sessions are enabled here.') &&
     !loginPageSource.includes('Non-NHG Resident sign-in remains deferred') &&
-    loginPageSource.includes('Use NHG Resident for RDB-backed resident accounts.') &&
-    loginPageSource.includes('Registered Non-NHG Residents must choose their separate sign-in mode.'),
-  'login page enables NHG and registered Non-NHG Resident MCR login in supabase mode',
+    loginPageSource.includes('NHG and registered Non-NHG residents use this shared MCR login.'),
+  'login page explains the shared NHG and registered Non-NHG Resident MCR login',
 )
 assert(!loginPageSource.includes('auth-login-grid'), 'login page does not use the three-equal-card layout')
 assert(!loginPageSource.includes('auth-login-panel'), 'login page does not render Staff/NHG/Non-NHG as equal cards')
@@ -359,13 +505,26 @@ assert(
   'login page does not expose staff implementation role chooser copy',
 )
 assert(
-  loginPageSource.includes('auth-resident-role-selector') &&
-    loginPageSource.includes("chooseResidentLoginRole('resident')") &&
-    loginPageSource.includes("chooseResidentLoginRole('external_resident')") &&
-    loginPageSource.includes('submitSelectedResidentLogin') &&
-    residentLoginFlowSource.includes("role: 'resident'") &&
+  !loginPageSource.includes('auth-resident-role-selector') &&
+    !loginPageSource.includes('chooseResidentLoginRole') &&
+    !loginPageSource.includes('residentLoginState') &&
+    loginPageSource.includes('submitSharedResidentLogin') &&
     registrationPageSource.includes('to="/login"'),
-  'NHG is the default resident mode and Non-NHG login requires an explicit visible selection',
+  'registration returns to the same shared Resident MCR form without subtype state or controls',
+)
+const residentFormStart = loginPageSource.indexOf(
+  '<form className="auth-form auth-form-block" onSubmit={submitResidentLogin}>',
+)
+const residentFormEnd = loginPageSource.indexOf('</form>', residentFormStart)
+const residentFormSource = loginPageSource.slice(residentFormStart, residentFormEnd)
+assert(
+  residentFormStart >= 0 &&
+    residentFormEnd > residentFormStart &&
+    (residentFormSource.match(/<input/g) ?? []).length === 1 &&
+    (residentFormSource.match(/<button/g) ?? []).length === 1 &&
+    (residentFormSource.match(/'Continue'/g) ?? []).length === 1 &&
+    residentFormSource.includes('MCR number'),
+  'shared Resident MCR form renders one MCR input and one Continue button',
 )
 assert(
   authApiSource.includes("return login({ role: 'staff', email, password })"),

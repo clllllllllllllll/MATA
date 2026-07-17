@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from app.config import Settings
+from app.dependencies import persistent_rate_limit as persistent_rate_limit_dependency
 from app.middleware.errors import install_error_handlers
 from app.routers import admin, auth, external_residents
 from app.services import persistent_rate_limit
@@ -318,6 +319,59 @@ def test_auth_login_repeated_invalid_attempts_return_safe_429() -> None:
     assert responses[5].json()["detail"] == "Too many attempts. Please try again later."
     assert "UNKNOWN" not in responses[5].text
     assert "UNKNOWN" not in repr(session.rate_limit_rows)
+
+
+def test_auth_login_resident_roles_share_one_identifier_allowance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        persistent_rate_limit_dependency,
+        "AUTH_LOGIN_IP_POLICY",
+        persistent_rate_limit.RateLimitPolicy(
+            scope="auth_login_ip",
+            limit=100,
+            window_seconds=60,
+            message="Too many attempts. Please try again later.",
+        ),
+    )
+    session = _RateLimitResidentSession()
+    client = _auth_client(session)
+    shared_mcr_payloads = [
+        {
+            "role": "resident" if attempt % 2 == 0 else "external_resident",
+            "mcr": "M90001Z" if attempt % 2 == 0 else "m90001z",
+        }
+        for attempt in range(11)
+    ]
+
+    identifiers = [
+        persistent_rate_limit_dependency._login_identifier(payload)
+        for payload in shared_mcr_payloads
+    ]
+    responses = [
+        client.post("/auth/login", json=payload)
+        for payload in shared_mcr_payloads
+    ]
+
+    assert identifiers == ["resident:mcr:M90001Z"] * 11
+    assert [response.status_code for response in responses[:10]] == [401] * 10
+    assert responses[10].status_code == 429
+    assert responses[10].headers["Retry-After"]
+    assert responses[10].json()["detail"] == "Too many attempts. Please try again later."
+
+    different_mcr_payload = {"role": "external_resident", "mcr": "M90002A"}
+    assert (
+        persistent_rate_limit_dependency._login_identifier(different_mcr_payload)
+        == "resident:mcr:M90002A"
+    )
+    assert client.post("/auth/login", json=different_mcr_payload).status_code == 401
+    assert (
+        persistent_rate_limit_dependency._login_identifier(
+            {"role": "staff", "email": " Staff@Example.com "},
+        )
+        == "staff:email:staff@example.com"
+    )
+    assert "M90001Z" not in repr(session.rate_limit_rows)
 
 
 def test_external_registration_invalid_probes_return_429_without_creating_resident() -> None:

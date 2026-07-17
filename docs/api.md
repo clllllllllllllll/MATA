@@ -6,7 +6,7 @@ Base URL: `http://localhost:8000/api/v1`
 
 ## Authentication Model
 
-There are separate identity paths. They share the JWT infrastructure but resolve identity from different tables and carry different claims.
+There are separate identity paths. They share the JWT infrastructure but resolve identity from different tables and carry different claims. The login UI exposes one shared Resident MCR field: it sends exactly one `{ "role": "resident", "mcr": "<NORMALIZED_MCR>" }` request, and the backend resolves the unique active row from `residents` or `external_residents`. Global cross-table MCR uniqueness makes that resolution deterministic.
 
 ### Path 1 — Admin and Secretary (`users` table)
 
@@ -39,13 +39,13 @@ Residents are **not** in the `users` table. They authenticate with their **MCR n
 }
 ```
 
-In stub/demo mode this is represented by the local session/header shim. In `AUTH_MODE=supabase`, NHG Residents still do not get Supabase Auth accounts; backend `/auth/login` validates MCR against active `residents` rows and issues a backend-signed MATA resident session token using server-only `MATA_RESIDENT_SESSION_SECRET`. The MATA resident token must not include current posting, staff actor name, `admin_level`, or `programme_scope`.
+In stub/demo mode this is represented by the local session/header shim. In `AUTH_MODE=supabase`, NHG Residents still do not get Supabase Auth accounts; backend `/auth/login` resolves the shared MCR request to an active `residents` row and issues a backend-signed MATA resident session token using server-only `MATA_RESIDENT_SESSION_SECRET`. The MATA resident token must not include current posting, staff actor name, `admin_level`, or `programme_scope`.
 
 `programme_code` is embedded at login time from `residents.programme_code`. It scopes all compliance lookups to the resident's native programme. **`posting_code` is NOT in the JWT** — current posting is always derived at request time from `resident_postings`.
 
 ### Path 3 — Non-NHG Residents (`external_residents` table)
 
-Non-NHG/cross-cluster residents are **not** in the `users` table and are **not** native `residents`. They self-register first, then authenticate with their **MCR number only**. Allowed `home_cluster` values are strictly `NUH` and `SingHealth`. The JWT payload carries:
+Non-NHG/cross-cluster residents are **not** in the `users` table and are **not** native `residents`. They self-register first, then authenticate through the same shared Resident MCR field as NHG Residents. Allowed `home_cluster` values are strictly `NUH` and `SingHealth`. The JWT payload carries:
 
 ```json
 {
@@ -61,7 +61,7 @@ Non-NHG/cross-cluster residents are **not** in the `users` table and are **not**
 }
 ```
 
-In `AUTH_MODE=supabase`, Non-NHG Residents do not get Supabase Auth accounts. Backend `/auth/login` validates MCR against active `external_residents` rows and issues a backend-signed MATA resident session token using server-only `MATA_RESIDENT_SESSION_SECRET`. The token must not include current posting, posting schedule, staff actor name, `admin_level`, `programme_code`, `programme_scope`, or `posting_code`.
+In `AUTH_MODE=supabase`, Non-NHG Residents do not get Supabase Auth accounts. Backend `/auth/login` resolves the neutral shared request to an active `external_residents` row, returns `user.role = external_resident`, and issues a backend-signed MATA resident session token using server-only `MATA_RESIDENT_SESSION_SECRET`. The token must not include current posting, posting schedule, staff actor name, `admin_level`, `programme_code`, `programme_scope`, or `posting_code`.
 
 Posting state and posting schedule are not trusted from JWT for authorization-sensitive reads. Fetch the Non-NHG Resident from `external_residents` and derive date-specific posting from `external_resident_postings` where relevant. `external_residents.current_nhg_posting_code` may remain a current/cache/backward-compatibility pointer, but schedule-aware resident flows use `external_resident_postings`. Non-NHG Residents do not receive NHG compliance or clawback surfaces.
 
@@ -1586,9 +1586,11 @@ Unified login endpoint.
 ```json
 { "role": "resident", "mcr": "M12345A" }
 ```
-Looks up `residents` table by MCR. Validates `status != 'inactive'`. **No password required in Phase 1.**
+This is the shared NHG/registered Non-NHG Resident request. The backend normalizes MCR, queries both resident identity tables in one request, and resolves exactly one active match. It returns `user.role = resident` for a native match or `user.role = external_resident` for an external match. The frontend sends no explicit external role, performs no prefix inference, and makes no fallback request. **No password required in Phase 1.**
 
-- **Response:**
+Explicit `{ "role": "external_resident", "mcr": "..." }` remains temporarily accepted for compatibility with older clients. That compatibility path considers only the external identity for authentication and never falls back to a native resident.
+
+- **Native resident response:**
 ```json
 {
   "access_token": "<jwt>",
@@ -1603,9 +1605,25 @@ Looks up `residents` table by MCR. Validates `status != 'inactive'`. **No passwo
 }
 ```
 
+- **Registered Non-NHG resident response:**
+```json
+{
+  "access_token": "<mata-resident-token>",
+  "token_type": "bearer",
+  "user": {
+    "id": "<external_residents.id>",
+    "role": "external_resident",
+    "name": "<resident name>",
+    "home_cluster": "NUH",
+    "mcr": "E12345A"
+  }
+}
+```
+
 - **Error responses:**
-  - `401` — MCR not found or resident inactive
-  - `401` — Invalid email or password (admin/secretary)
+  - `401` - MCR not found or the resolved native/external resident is inactive; the response does not disclose which condition occurred
+  - `409` - the MCR exists in both resident identity tables; no token is issued and the response/logs contain no identity details
+  - `401` - Invalid email or password (admin/secretary)
 
 ### GET `/auth/me`
 
