@@ -7,6 +7,14 @@ import { ApiRequestError } from '../../api/http'
 import { teachingEventCreatedByDisplay } from '../../utils/teachingEventSource'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 import {
+  isEffectivelyActiveReportingPeriod,
+  reportingPeriodDisplayStatus,
+} from '../../utils/reportingPeriods'
+import {
+  canAddTeachingFromOptions,
+  resolveTeachingNameOptionsState,
+} from '../../utils/teachingNameOptionsState'
+import {
   loadSecretaryEventsForPeriod,
   shouldApplySecretaryEventLoad,
 } from '../../utils/secretaryEventPeriodScope'
@@ -145,7 +153,7 @@ const normaliseApiError = (error: ApiRequestError, mode: 'list' | 'create' | 'op
     return 'Unable to load teaching events right now.'
   }
   if (mode === 'options') {
-    return 'Unable to load teaching name options. Use manual name entry for now.'
+    return 'Unable to load teaching name options right now.'
   }
   return 'Unable to create teaching event right now. Please try again.'
 }
@@ -214,7 +222,6 @@ export const SecretaryTeachingSchedulePage = () => {
   const [nameOptions, setNameOptions] = useState<TeachingNameOption[]>([])
   const [nameOptionsLoading, setNameOptionsLoading] = useState(false)
   const [nameOptionsError, setNameOptionsError] = useState<string | null>(null)
-  const [supportsNameOptionsEndpoint, setSupportsNameOptionsEndpoint] = useState(true)
   const [nameOptionsPeriodId, setNameOptionsPeriodId] = useState<string | null>(null)
 
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -225,16 +232,16 @@ export const SecretaryTeachingSchedulePage = () => {
   const [submitState, setSubmitState] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle')
   const [submitMessage, setSubmitMessage] = useState<string | null>(null)
 
-  const selectedPeriod = useMemo(
-    () => reportingPeriods.find((period) => period.id === reportingPeriodId),
-    [reportingPeriods, reportingPeriodId],
-  )
+  const selectedPeriod = useMemo(() => {
+    const candidate = reportingPeriods.find((period) => period.id === reportingPeriodId)
+    return candidate && isEffectivelyActiveReportingPeriod(candidate) ? candidate : undefined
+  }, [reportingPeriods, reportingPeriodId])
   const selectedPeriodId = selectedPeriod?.id ?? null
   const selectedPeriodIdRef = useRef<string | null>(selectedPeriodId)
   useEffect(() => {
     selectedPeriodIdRef.current = selectedPeriodId
   }, [selectedPeriodId])
-  const nameOptionsLoaded = nameOptionsPeriodId === reportingPeriodId
+  const nameOptionsLoaded = Boolean(selectedPeriod && nameOptionsPeriodId === selectedPeriod.id)
 
   const loadEvents = useCallback(async (): Promise<SecretaryTeachingEvent[]> => {
     return (await loadSecretaryEventsForPeriod(selectedPeriod, listSecretaryTeachingEvents)) ?? []
@@ -303,35 +310,54 @@ export const SecretaryTeachingSchedulePage = () => {
     if (!selectedPeriod) {
       setNameOptions([])
       setNameOptionsError(null)
-      setNameOptionsPeriodId(reportingPeriodId)
+      setNameOptionsPeriodId(null)
       setNameOptionsLoading(false)
       return
     }
+    const requestedPeriodId = selectedPeriod.id
+    setNameOptions([])
     setNameOptionsLoading(true)
     setNameOptionsError(null)
+    setNameOptionsPeriodId(null)
     try {
       const options = await listSecretaryTeachingNameOptions({
-        reportingPeriodId: selectedPeriod.id,
+        reportingPeriodId: requestedPeriodId,
       })
-      setSupportsNameOptionsEndpoint(true)
-      setNameOptions(options)
-      setNameOptionsPeriodId(reportingPeriodId)
-    } catch (error) {
-      if (error instanceof ApiRequestError && error.status === 404) {
-        setSupportsNameOptionsEndpoint(false)
-        setNameOptions([])
-      } else {
-        const message =
-          error instanceof ApiRequestError
-            ? normaliseApiError(error, 'options')
-            : 'Unable to load teaching name options.'
-        setNameOptionsError(message)
+      if (!shouldApplySecretaryEventLoad(requestedPeriodId, selectedPeriodIdRef.current)) {
+        return
       }
-      setNameOptionsPeriodId(reportingPeriodId)
+      setNameOptions(options)
+      setNameOptionsPeriodId(requestedPeriodId)
+    } catch (error) {
+      if (!shouldApplySecretaryEventLoad(requestedPeriodId, selectedPeriodIdRef.current)) {
+        return
+      }
+      const message =
+        error instanceof ApiRequestError
+          ? normaliseApiError(error, 'options')
+          : 'Unable to load teaching name options.'
+      setNameOptions([])
+      setNameOptionsError(message)
+      setNameOptionsPeriodId(requestedPeriodId)
     } finally {
-      setNameOptionsLoading(false)
+      if (shouldApplySecretaryEventLoad(requestedPeriodId, selectedPeriodIdRef.current)) {
+        setNameOptionsLoading(false)
+      }
     }
-  }, [reportingPeriodId, selectedPeriod])
+  }, [selectedPeriod])
+
+  useEffect(() => {
+    let active = true
+    void Promise.resolve().then(() => {
+      if (active) {
+        return loadTeachingNameOptions()
+      }
+      return undefined
+    })
+    return () => {
+      active = false
+    }
+  }, [loadTeachingNameOptions])
 
   const teachingTypeByName = useMemo(() => {
     const map = new Map<string, string>()
@@ -348,11 +374,26 @@ export const SecretaryTeachingSchedulePage = () => {
       ? events
       : recentCreatedEvents
     : EMPTY_EVENTS
-  const hasNameOptions = supportsNameOptionsEndpoint && nameOptionsLoaded && nameOptions.length > 0
-  const isNameOptionsInitialLoading = nameOptionsLoading && (!nameOptionsLoaded || nameOptions.length === 0)
-  const shouldUseTextFallback =
-    !isNameOptionsInitialLoading
-    && (!supportsNameOptionsEndpoint || !nameOptionsLoaded || !!nameOptionsError || nameOptions.length === 0)
+  const nameOptionsState = resolveTeachingNameOptionsState({
+    hasContext: Boolean(selectedPeriod),
+    isLoading: nameOptionsLoading,
+    isLoaded: nameOptionsLoaded,
+    error: nameOptionsError,
+    optionCount: nameOptions.length,
+  })
+  const canAddTeaching = canAddTeachingFromOptions(nameOptionsState)
+  const nameOptionsUnavailableMessage =
+    nameOptionsState === 'unavailable'
+      ? 'Select an active reporting period to load teaching names.'
+      : nameOptionsState === 'loading'
+        ? 'Loading teaching name options...'
+        : nameOptionsState === 'error'
+          ? nameOptionsError ?? 'Unable to load teaching name options.'
+          : 'No teaching-name options are available for this posting and reporting period.'
+  const addTeachingTitle =
+    nameOptionsState === 'ready'
+      ? 'Add a posting-owned teaching event.'
+      : nameOptionsUnavailableMessage
   const selectedPeriodDateError = useMemo(() => {
     if (!formState.eventDate || !selectedPeriod) {
       return null
@@ -430,18 +471,14 @@ export const SecretaryTeachingSchedulePage = () => {
   }
 
   const openDrawer = () => {
-    if (!selectedPeriod) {
+    if (!canAddTeaching) {
       setSubmitState('error')
-      setSubmitMessage('Select an active reporting period before creating a teaching event.')
+      setSubmitMessage(addTeachingTitle)
       return
     }
     setDrawerMode('create')
     resetForm()
     setDrawerOpen(true)
-    if (!supportsNameOptionsEndpoint || nameOptionsLoaded || nameOptionsLoading) {
-      return
-    }
-    void loadTeachingNameOptions()
   }
 
   const clearSelection = () => {
@@ -467,10 +504,6 @@ export const SecretaryTeachingSchedulePage = () => {
     setSubmitState('idle')
     setSubmitMessage(null)
     setDrawerOpen(true)
-    if (!supportsNameOptionsEndpoint || nameOptionsLoaded || nameOptionsLoading) {
-      return
-    }
-    void loadTeachingNameOptions()
   }
 
   const handleOpenEdit = (eventToEdit?: SecretaryTeachingEvent) => {
@@ -496,10 +529,6 @@ export const SecretaryTeachingSchedulePage = () => {
     setSubmitState('idle')
     setSubmitMessage(null)
     setDrawerOpen(true)
-    if (!supportsNameOptionsEndpoint || nameOptionsLoaded || nameOptionsLoading) {
-      return
-    }
-    void loadTeachingNameOptions()
   }
 
   const handleDeleteSelected = async () => {
@@ -621,6 +650,8 @@ export const SecretaryTeachingSchedulePage = () => {
     const nextErrors: Partial<Record<keyof TeachingFormState, string>> = {}
     if (!formState.teachingName.trim()) {
       nextErrors.teachingName = 'Teaching name is required.'
+    } else if (!nameOptions.some((option) => option.keyword === formState.teachingName.trim())) {
+      nextErrors.teachingName = 'Select a teaching name from the approved catalogue.'
     }
     if (!selectedPeriod) {
       nextErrors.eventDate = 'An active reporting period is required.'
@@ -710,19 +741,27 @@ export const SecretaryTeachingSchedulePage = () => {
             {reportingPeriodsLoading ? <span className="inline-muted">Loading reporting periods...</span> : null}
             {!reportingPeriodsLoading && reportingPeriods.length > 0 ? (
               <div className="filter-row">
-                {reportingPeriods.map((period) => (
-                  <button
-                    key={period.id}
-                    type="button"
-                    className={`filter-chip ${period.id === reportingPeriodId ? 'active' : ''}`}
-                    onClick={() => setReportingPeriodId(period.id)}
-                  >
-                    {period.label}
-                  </button>
-                ))}
+                {reportingPeriods.map((period) => {
+                  const active = isEffectivelyActiveReportingPeriod(period)
+                  return (
+                    <button
+                      key={period.id}
+                      type="button"
+                      className={`filter-chip ${period.id === selectedPeriod?.id ? 'active' : ''}`}
+                      onClick={() => setReportingPeriodId(period.id)}
+                      disabled={!active}
+                      title={active ? reportingPeriodDisplayStatus(period) : 'This reporting period is inactive.'}
+                    >
+                      {period.label}
+                    </button>
+                  )
+                })}
               </div>
             ) : null}
             {reportingPeriodsError ? <p className="upload-validation-text">{reportingPeriodsError}</p> : null}
+            {!reportingPeriodsLoading && !reportingPeriodsError && !selectedPeriod ? (
+              <p className="upload-validation-text">Select an active reporting period.</p>
+            ) : null}
           </div>
         </div>
 
@@ -748,8 +787,8 @@ export const SecretaryTeachingSchedulePage = () => {
                 type="button"
                 className="button button-primary"
                 onClick={openDrawer}
-                disabled={!selectedPeriod}
-                title={!selectedPeriod ? 'Select an active reporting period before creating a teaching event.' : undefined}
+                disabled={!canAddTeaching}
+                title={addTeachingTitle}
               >
                 <IconPlus size={14} />
                 Add Teaching
@@ -1008,21 +1047,24 @@ export const SecretaryTeachingSchedulePage = () => {
                 disabled={
                   submitState === 'submitting' ||
                   !selectedPeriod ||
+                  !canAddTeaching ||
                   !!selectedPeriodDateError ||
                   (drawerMode === 'edit' && (!sourceEvent || sourceEvent.hasAttendance))
                 }
                 title={
                   !selectedPeriod
                     ? 'Select an active reporting period before creating a teaching event.'
-                    : selectedPeriodDateError
-                    ? 'Event date must be within the selected reporting period.'
-                    : drawerMode === 'edit' && sourceEvent?.hasAttendance
-                      ? 'Editing and deleting are disabled because attendance has been submitted for this event.'
-                      : drawerMode === 'edit'
-                        ? 'Save changes to the selected teaching event.'
-                        : drawerMode === 'duplicate'
-                          ? 'Create a duplicate teaching event with the selected event values.'
-                          : 'Create this teaching event.'
+                    : !canAddTeaching
+                      ? addTeachingTitle
+                      : selectedPeriodDateError
+                        ? 'Event date must be within the selected reporting period.'
+                        : drawerMode === 'edit' && sourceEvent?.hasAttendance
+                          ? 'Editing and deleting are disabled because attendance has been submitted for this event.'
+                          : drawerMode === 'edit'
+                            ? 'Save changes to the selected teaching event.'
+                            : drawerMode === 'duplicate'
+                              ? 'Create a duplicate teaching event with the selected event values.'
+                              : 'Create this teaching event.'
                 }
               >
               {drawerMode === 'duplicate'
@@ -1037,7 +1079,7 @@ export const SecretaryTeachingSchedulePage = () => {
         <div className="secretary-form-grid">
           <label>
             Teaching name
-            {hasNameOptions ? (
+            {nameOptionsState === 'ready' ? (
               <select
                 value={formState.teachingName}
                 onChange={(event) =>
@@ -1054,36 +1096,19 @@ export const SecretaryTeachingSchedulePage = () => {
                   </option>
                 ))}
               </select>
-            ) : shouldUseTextFallback ? (
-              <>
-                <input
-                  type="text"
-                  value={formState.teachingName}
-                  onChange={(event) =>
-                    setFormState((previous) => ({
-                      ...previous,
-                      teachingName: event.target.value,
-                    }))
-                  }
-                  placeholder="e.g. GRM Journal Club"
-                />
-                <small>
-                  Teaching name must match an available catalogue keyword for resident visibility.
-                </small>
-              </>
             ) : (
               <>
-                <input type="text" value="Loading teaching name options..." readOnly disabled />
-                <small>Loading teaching names for this secretary posting.</small>
+                <input type="text" value={nameOptionsUnavailableMessage} readOnly disabled />
+                <small>Teaching names must come from the approved catalogue or global session types.</small>
               </>
             )}
             {formErrors.teachingName ? (
               <small className="upload-validation-text">{formErrors.teachingName}</small>
             ) : null}
             {nameOptionsError ? <small className="upload-validation-text">{nameOptionsError}</small> : null}
-            {!nameOptionsLoading && nameOptions.length === 0 && !nameOptionsError ? (
+            {nameOptionsState === 'empty' ? (
               <small className="inline-muted">
-                No teaching-name options were returned. You can type a teaching name manually.
+                No teaching-name options were returned for this posting and reporting period.
               </small>
             ) : null}
           </label>

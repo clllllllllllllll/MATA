@@ -547,6 +547,15 @@ async def current_residents(
     return {"residents": residents}
 
 
+@router.get("/reporting-periods")
+async def reporting_periods(
+    secretary_context: SecretaryContext = Depends(require_secretary_context),
+    db: AsyncSession = Depends(get_db_session),
+) -> list[dict[str, Any]]:
+    del secretary_context
+    return await secretary_events.list_reporting_periods(db)
+
+
 @router.get("/teaching-name-options")
 async def teaching_name_options(
     reporting_period_id: UUID | None = Query(default=None),

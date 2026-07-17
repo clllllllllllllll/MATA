@@ -864,8 +864,10 @@ assert(
 assert(
   appStateSource.includes("identity.role === 'master_admin'") &&
     appStateSource.includes("identity.role === 'programme_pc'") &&
-    appStateSource.includes('identity.programmeScope.length > 0'),
-  'reporting periods auto-load only for Master Admin or scoped PC sessions',
+    appStateSource.includes('identity.programmeScope.length > 0') &&
+    appStateSource.includes("identity.role === 'secretary'") &&
+    appStateSource.includes('listSecretaryReportingPeriods()'),
+  'reporting periods auto-load from role-scoped endpoints for Master Admin, scoped PC, and Secretary sessions',
 )
 assert(
   pcUploadTtfSource.includes('reportingPeriods') && pcUploadTtfSource.includes('reportingPeriodId'),

@@ -23,6 +23,7 @@ import {
 } from '../utils/warnings'
 import { authSessionChangedEvent, readStoredAuthSession } from '../api/auth'
 import { listReportingPeriods } from '../api/reportingPeriods'
+import { listSecretaryReportingPeriods } from '../api/secretaryEvents'
 import { formatUserFacingApiError } from '../utils/userFacingErrors'
 import type { AuthIdentity } from '../types/auth'
 import {
@@ -48,6 +49,9 @@ const canIdentityLoadReportingPeriodData = (identity: AuthIdentity | null): bool
     return false
   }
   if (identity.role === 'master_admin') {
+    return true
+  }
+  if (identity.role === 'secretary') {
     return true
   }
   return identity.role === 'programme_pc' && identity.programmeScope.length > 0
@@ -135,10 +139,12 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
       }
       const { data } = await readThroughMemoryCache(
         makeScopedCacheKey(adminCacheScope, 'admin.reporting-periods.list', {}),
-        () => listReportingPeriods({
-          adminId: sessionIdentity?.subjectId ?? frontendConfig.demoAdminId,
-          adminProgrammes: reportingPeriodProgrammeScope(sessionIdentity),
-        }),
+        () => sessionIdentity?.role === 'secretary'
+          ? listSecretaryReportingPeriods()
+          : listReportingPeriods({
+              adminId: sessionIdentity?.subjectId ?? frontendConfig.demoAdminId,
+              adminProgrammes: reportingPeriodProgrammeScope(sessionIdentity),
+            }),
       )
       return data
     },

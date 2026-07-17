@@ -471,6 +471,60 @@ def test_non_tracked_rows_persist_with_false_flags() -> None:
     assert all(row["is_tracked"] is False for row in session.catalogue_rows)
 
 
+def test_geri_upload_seeds_ttshgermed_catalogue_for_zero_and_untracked_rows() -> None:
+    session = FakeTTFSession()
+    period_id = uuid4()
+
+    result = _run(
+        parse_ttf_upload(
+            file_bytes=_ttf_bytes(
+                [
+                    _base_row(
+                        programme="GERI",
+                        r_year="R1,R2",
+                        posting="TTSHGerMed",
+                        monthly_target=0,
+                        details="Zero Target GERI Teaching",
+                    ),
+                    _base_row(
+                        programme="GERI",
+                        r_year="R3",
+                        posting="TTSHGerMed",
+                        session_type="Untracked GERI Session [2h]",
+                        is_tracked="No",
+                        details="Untracked GERI Teaching",
+                    ),
+                ]
+            ),
+            original_filename="geri-ttf.xlsx",
+            reporting_period_id=period_id,
+            programme_code="GERI",
+            db_session=session,
+        )
+    )
+
+    assert result.errors == []
+    rows = [
+        row
+        for row in session.catalogue_rows
+        if row["programme_code"] == "GERI"
+        and row["posting_code"] == "TTSHGerMed"
+        and row["reporting_period_id"] == str(period_id)
+    ]
+    assert {row["keyword"] for row in rows} == {
+        "Untracked GERI Teaching",
+        "Zero Target GERI Teaching",
+    }
+    assert {row["r_year"] for row in rows} == {"ALL"}
+    assert next(row for row in rows if row["keyword"] == "Untracked GERI Teaching")["is_tracked"] is False
+    zero_target = next(
+        row
+        for row in session.teaching_targets
+        if row["programme_code"] == "GERI" and row["monthly_target"] == 0
+    )
+    assert zero_target["r_year"] == "ALL"
+
+
 def test_posting_groups_seed_and_update_from_column_e() -> None:
     session = FakeTTFSession()
     period_id = uuid4()

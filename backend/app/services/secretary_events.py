@@ -889,6 +889,30 @@ async def teaching_name_options(
     return sorted(options, key=lambda row: (_natural_sort_key(row["keyword"]), row["is_global"]))
 
 
+async def list_reporting_periods(db: AsyncSession) -> list[dict[str, Any]]:
+    """Return reporting-period choices for the authenticated secretary workflow."""
+    result = await db.execute(
+        text(
+            """
+            /* secretary_events:list_reporting_periods */
+            SELECT
+                id,
+                label,
+                start_date,
+                end_date,
+                status,
+                activate_on,
+                deactivate_on,
+                created_at,
+                updated_at
+            FROM reporting_periods
+            ORDER BY start_date DESC, label ASC
+            """
+        )
+    )
+    return [dict(row) for row in result.mappings().all()]
+
+
 async def current_residents(
     db: AsyncSession,
     *,

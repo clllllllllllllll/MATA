@@ -366,6 +366,9 @@ class FakeSecretarySession:
         sql = str(statement)
         payload = dict(params or {})
 
+        if "/* secretary_events:list_reporting_periods */" in sql:
+            return _FakeResult(rows=list(self.reporting_periods))
+
         if "/* reporting_period_resolution:list */" in sql:
             return _FakeResult(rows=list(self.reporting_periods))
 
@@ -793,6 +796,7 @@ def test_secretary_read_endpoints_do_not_require_actor_name() -> None:
     client = _client(fake_db)
     headers = _headers(fake_db)
     paths = [
+        "/secretary/reporting-periods",
         "/secretary/teaching-events",
         "/secretary/cme-dashboard",
         "/secretary/residents",
@@ -802,6 +806,22 @@ def test_secretary_read_endpoints_do_not_require_actor_name() -> None:
     for path in paths:
         response = client.get(path, headers=headers)
         assert response.status_code == 200, path
+
+
+def test_secretary_reporting_periods_are_available_without_admin_scope() -> None:
+    fake_db = FakeSecretarySession()
+    client = _client(fake_db)
+
+    response = client.get("/secretary/reporting-periods", headers=_headers(fake_db))
+    denied = client.get(
+        "/secretary/reporting-periods",
+        headers=_headers(fake_db, role="admin"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()[0]["id"] == fake_db.reporting_period_id
+    assert response.json()[0]["status"] == "active"
+    assert denied.status_code == 403
 
 
 def test_secretary_teaching_event_mutations_write_audit_logs() -> None:
@@ -1188,6 +1208,28 @@ def test_create_event_accepts_keyword_from_mapped_programme_pool() -> None:
     payload = response.json()
     assert payload["posting_code"] == "TTSHGerMed"
     assert payload["teaching_name"] == "GERI Demo Row 22"
+    assert payload["created_for_programme_code"] is None
+
+
+def test_other_secretary_posting_cannot_use_ttshgermed_catalogue_option() -> None:
+    fake_db = FakeSecretarySession()
+    client = _client(fake_db)
+
+    response = client.post(
+        "/secretary/teaching-events",
+        headers=_headers(fake_db, site="TTSHCardio"),
+        json={
+            "teaching_name": "GERI Demo Row 22",
+            "event_date": "2026-05-18",
+            "start_time": "10:00",
+        },
+    )
+
+    assert response.status_code == 422
+    assert all(
+        row["teaching_name"] != "GERI Demo Row 22" or row["posting_code"] != "TTSHCardio"
+        for row in fake_db.events
+    )
 
 
 def test_teaching_name_options_fall_back_to_exact_posting_when_unmapped() -> None:

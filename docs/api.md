@@ -1227,6 +1227,14 @@ Delete a programme-owned scheduled teaching event.
 
 ## Secretary Endpoints
 
+### GET `/secretary/reporting-periods`
+
+List reporting periods for the secretary Teaching Schedule period selector.
+
+- **Auth:** secretary only
+- **Purpose:** Read-only period metadata for explicit selection, including an effectively active reopened historical period. This does not grant access to Admin reporting-period CRUD.
+- **Response:** Same reporting-period fields as the Admin list response (`id`, `label`, `start_date`, `end_date`, stored `status`, `activate_on`, `deactivate_on`, timestamps).
+
 ### GET `/secretary/teaching-events`
 
 List teaching events for the secretary's posting site.

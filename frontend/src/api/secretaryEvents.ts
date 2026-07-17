@@ -1,5 +1,7 @@
 import { httpClient, toApiRequestError } from './http'
 import { buildSecretaryDemoHeaders } from './authHeaders'
+import type { ReportingPeriodOption } from '../types/upload'
+import { parseReportingPeriodListResponse } from '../utils/reportingPeriodResponse'
 
 export interface SecretaryTeachingEvent {
   id: string
@@ -103,6 +105,17 @@ export const listSecretaryTeachingEvents = async (params?: {
     return events
       .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
       .map(toTeachingEvent)
+  } catch (error) {
+    throw toApiRequestError(error)
+  }
+}
+
+export const listSecretaryReportingPeriods = async (): Promise<ReportingPeriodOption[]> => {
+  try {
+    const response = await httpClient.get('/secretary/reporting-periods', {
+      headers: buildSecretaryDemoHeaders(),
+    })
+    return parseReportingPeriodListResponse(response.data)
   } catch (error) {
     throw toApiRequestError(error)
   }

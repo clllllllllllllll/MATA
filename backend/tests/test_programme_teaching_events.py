@@ -499,6 +499,39 @@ def test_pc_can_create_event_for_own_programme() -> None:
     assert session.events[-1]["created_by_role"] == "programme_pc"
 
 
+def test_geri_pc_creates_programme_owned_event_from_all_year_catalogue() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    client = _client(session)
+
+    response = client.post(
+        "/admin/programme-teaching-events",
+        headers=_headers(scope="GERI"),
+        json={
+            "programme_code": "GERI",
+            "posting_code": "TTSHGerMed",
+            "teaching_name": "Geri Teaching",
+            "event_date": "2026-05-20",
+            "start_time": "10:00",
+        },
+    )
+    unsupported = client.post(
+        "/admin/programme-teaching-events",
+        headers=_headers(scope="GERI"),
+        json={
+            "programme_code": "GERI",
+            "posting_code": "TTSHGerMed",
+            "teaching_name": "Free-text teaching",
+            "event_date": "2026-05-20",
+            "start_time": "10:00",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["created_for_programme_code"] == "GERI"
+    assert session.events[-1]["created_for_programme_code"] == "GERI"
+    assert unsupported.status_code == 422
+
+
 def test_pc_can_create_global_department_meeting_for_safe_programme_posting() -> None:
     session = FakeProgrammeTeachingEventsSession()
     client = _client(session)
@@ -706,6 +739,46 @@ def test_teaching_name_options_are_programme_scoped() -> None:
     assert "Grand Round" in keywords
     assert "Department Meeting [1h]" in keywords
     assert "Geri Teaching" not in keywords
+
+
+def test_geri_pc_options_accept_all_year_rows_and_enforce_programme_scope() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    client = _client(session)
+
+    response = client.get(
+        "/admin/programme-teaching-name-options",
+        headers=_headers(scope="GERI"),
+        params={"programme_code": "GERI", "reporting_period_id": session.period_id},
+    )
+    denied = client.get(
+        "/admin/programme-teaching-name-options",
+        headers=_headers(scope="DR"),
+        params={"programme_code": "GERI", "reporting_period_id": session.period_id},
+    )
+
+    assert response.status_code == 200
+    option = next(row for row in response.json()["options"] if row["keyword"] == "Geri Teaching")
+    assert option["posting_codes"] == ["TTSHGerMed"]
+    assert next(
+        row for row in session.catalogue if row["keyword"] == "Geri Teaching"
+    )["r_year"] == "ALL"
+    assert denied.status_code == 403
+
+
+def test_geri_pc_options_return_controlled_empty_state_for_empty_catalogue() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    session.catalogue = [row for row in session.catalogue if row["programme_code"] != "GERI"]
+    session.global_session_types = []
+    client = _client(session)
+
+    response = client.get(
+        "/admin/programme-teaching-name-options",
+        headers=_headers(scope="GERI"),
+        params={"programme_code": "GERI", "reporting_period_id": session.period_id},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"options": []}
 
 
 def test_teaching_name_options_do_not_leak_from_future_period() -> None:

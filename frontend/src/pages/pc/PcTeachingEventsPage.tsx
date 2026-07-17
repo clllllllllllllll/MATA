@@ -26,7 +26,16 @@ import {
 } from './pcTeachingEventsPageLogic'
 import { resolvePcProgrammeScope } from './pcUploadTtfPageLogic'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
-import { validatedReportingPeriod, withValidatedReportingPeriod } from '../../utils/reportingPeriods'
+import {
+  formatReportingPeriodOptionLabel,
+  isEffectivelyActiveReportingPeriod,
+  validatedReportingPeriod,
+  withValidatedReportingPeriod,
+} from '../../utils/reportingPeriods'
+import {
+  canAddTeachingFromOptions,
+  resolveTeachingNameOptionsState,
+} from '../../utils/teachingNameOptionsState'
 
 type DrawerMode = 'create' | 'edit' | 'duplicate'
 
@@ -100,6 +109,7 @@ export const PcTeachingEventsPage = () => {
   const {
     reportingPeriodId,
     reportingPeriods,
+    setReportingPeriodId,
     selectedProgrammeCode,
     setSelectedProgrammeCode,
     demoAdminId,
@@ -112,6 +122,7 @@ export const PcTeachingEventsPage = () => {
   const [nameOptions, setNameOptions] = useState<ProgrammeTeachingNameOption[]>([])
   const [nameOptionsLoading, setNameOptionsLoading] = useState(false)
   const [nameOptionsError, setNameOptionsError] = useState<string | null>(null)
+  const [loadedNameOptionsContextKey, setLoadedNameOptionsContextKey] = useState<string | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerMode, setDrawerMode] = useState<DrawerMode>('create')
   const [sourceEvent, setSourceEvent] = useState<ProgrammeTeachingEvent | null>(null)
@@ -133,10 +144,39 @@ export const PcTeachingEventsPage = () => {
     [pcProgrammeScope, selectedProgrammeCode],
   )
   const selectedPcProgrammeCode = programmeScope.selectedProgrammeCode
-  const selectedPeriod = useMemo(
-    () => validatedReportingPeriod(reportingPeriods, reportingPeriodId),
-    [reportingPeriodId, reportingPeriods],
-  )
+  const selectedPeriod = useMemo(() => {
+    const candidate = validatedReportingPeriod(reportingPeriods, reportingPeriodId)
+    return candidate && isEffectivelyActiveReportingPeriod(candidate) ? candidate : undefined
+  }, [reportingPeriodId, reportingPeriods])
+  const nameOptionsContextKey = selectedPcProgrammeCode && selectedPeriod
+    ? `${selectedPcProgrammeCode}:${selectedPeriod.id}`
+    : null
+  const nameOptionsState = resolveTeachingNameOptionsState({
+    hasContext: Boolean(nameOptionsContextKey),
+    isLoading: nameOptionsLoading,
+    isLoaded: loadedNameOptionsContextKey === nameOptionsContextKey,
+    error: nameOptionsError,
+    optionCount: nameOptions.length,
+  })
+  const canAddTeaching = canAddTeachingFromOptions(nameOptionsState)
+  const addTeachingTitle = useMemo(() => {
+    if (programmeScope.mode === 'none') {
+      return 'No programme scope is available.'
+    }
+    if (nameOptionsState === 'unavailable') {
+      return 'Select an active reporting period before adding teaching.'
+    }
+    if (nameOptionsState === 'loading') {
+      return 'Teaching-name options are loading.'
+    }
+    if (nameOptionsState === 'error') {
+      return 'Teaching-name options could not be loaded.'
+    }
+    if (nameOptionsState === 'empty') {
+      return 'No teaching-name options are available for this programme and reporting period.'
+    }
+    return 'Add a programme teaching event.'
+  }, [nameOptionsState, programmeScope.mode])
   const dateRange = useMemo(() => selectedPeriodRange(selectedPeriod), [selectedPeriod])
   const optionsByKeyword = useMemo(() => {
     const byKeyword = new Map<string, ProgrammeTeachingNameOption>()
@@ -287,12 +327,17 @@ export const PcTeachingEventsPage = () => {
       if (!selectedPcProgrammeCode || !selectedPeriod) {
         if (active) {
           setNameOptions([])
+          setNameOptionsError(null)
+          setNameOptionsLoading(false)
+          setLoadedNameOptionsContextKey(null)
         }
         return
       }
       if (active) {
+        setNameOptions([])
         setNameOptionsLoading(true)
         setNameOptionsError(null)
+        setLoadedNameOptionsContextKey(null)
       }
       try {
         const options = await withValidatedReportingPeriod(
@@ -310,11 +355,13 @@ export const PcTeachingEventsPage = () => {
         }
         if (active) {
           setNameOptions(options)
+          setLoadedNameOptionsContextKey(nameOptionsContextKey)
         }
       } catch (error) {
         if (active) {
           setNameOptionsError(eventErrorMessage(error, 'Unable to load teaching name options.'))
           setNameOptions([])
+          setLoadedNameOptionsContextKey(nameOptionsContextKey)
         }
       } finally {
         if (active) {
@@ -326,7 +373,15 @@ export const PcTeachingEventsPage = () => {
     return () => {
       active = false
     }
-  }, [pcAdminId, pcProgrammeScope, reportingPeriodId, reportingPeriods, selectedPcProgrammeCode, selectedPeriod])
+  }, [
+    nameOptionsContextKey,
+    pcAdminId,
+    pcProgrammeScope,
+    reportingPeriodId,
+    reportingPeriods,
+    selectedPcProgrammeCode,
+    selectedPeriod,
+  ])
 
   const toggleSelected = (id: string) => {
     setSelectedIds((previous) => {
@@ -361,6 +416,9 @@ export const PcTeachingEventsPage = () => {
   }
 
   const openCreateDrawer = () => {
+    if (!canAddTeaching) {
+      return
+    }
     setDrawerMode('create')
     setSourceEvent(null)
     setFormState(emptyForm(selectedPcProgrammeCode))
@@ -580,7 +638,8 @@ export const PcTeachingEventsPage = () => {
               type="button"
               className="button button-primary"
               onClick={openCreateDrawer}
-              disabled={programmeScope.mode === 'none' || nameOptionsLoading || nameOptions.length === 0}
+              disabled={programmeScope.mode === 'none' || !canAddTeaching}
+              title={addTeachingTitle}
             >
               <IconPlus size={14} />
               Add Teaching
@@ -619,23 +678,40 @@ export const PcTeachingEventsPage = () => {
           </label>
           <label>
             Reporting period
-            <select value={reportingPeriodId} disabled>
-              {selectedPeriod ? (
-                <option value={selectedPeriod.id}>{selectedPeriod.label}</option>
-              ) : (
-                <option value="">All available events</option>
-              )}
+            <select
+              value={selectedPeriod?.id ?? ''}
+              onChange={(event) => setReportingPeriodId(event.target.value)}
+            >
+              <option value="">Select an active reporting period</option>
+              {reportingPeriods.map((period) => {
+                const active = isEffectivelyActiveReportingPeriod(period)
+                return (
+                  <option key={period.id} value={period.id} disabled={!active}>
+                    {formatReportingPeriodOptionLabel(period)}{active ? '' : ' — inactive'}
+                  </option>
+                )
+              })}
             </select>
           </label>
         </div>
-        {nameOptionsError ? (
+        {nameOptionsState === 'loading' ? (
+          <div className="inline-callout pc-teaching-events-callout">
+            <span>Loading teaching-name options...</span>
+          </div>
+        ) : null}
+        {nameOptionsState === 'unavailable' && selectedPcProgrammeCode ? (
+          <div className="inline-callout callout-warning pc-teaching-events-callout">
+            <span>Select an active reporting period to load teaching-name options.</span>
+          </div>
+        ) : null}
+        {nameOptionsState === 'error' && nameOptionsError ? (
           <div className="inline-callout callout-warning pc-teaching-events-callout">
             <span>{nameOptionsError}</span>
           </div>
         ) : null}
-        {!nameOptionsLoading && selectedPcProgrammeCode && nameOptions.length === 0 ? (
+        {nameOptionsState === 'empty' ? (
           <div className="inline-callout callout-warning pc-teaching-events-callout">
-            <span>No teaching-name options are available for this programme.</span>
+            <span>No teaching-name options are available for this programme and reporting period.</span>
           </div>
         ) : null}
       </section>
@@ -895,7 +971,11 @@ export const PcTeachingEventsPage = () => {
               type="button"
               className="button button-primary"
               onClick={() => void saveEvent()}
-              disabled={submitting || (drawerMode === 'edit' && !canMutateProgrammeTeachingEvent(sourceEvent))}
+              disabled={
+                submitting
+                || !canAddTeaching
+                || (drawerMode === 'edit' && !canMutateProgrammeTeachingEvent(sourceEvent))
+              }
             >
               {submitting
                 ? 'Saving...'
@@ -944,7 +1024,7 @@ export const PcTeachingEventsPage = () => {
             <select
               value={formState.teachingName}
               onChange={(event) => updateField('teachingName', event.target.value)}
-              disabled={nameOptionsLoading || nameOptions.length === 0}
+              disabled={!canAddTeaching}
             >
               <option value="">Select teaching name</option>
               {nameOptions.map((option) => (
