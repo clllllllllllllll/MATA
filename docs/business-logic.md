@@ -454,7 +454,17 @@ Programme PC-created scheduled events are programme-owned: planned `teaching_eve
 
 Null or empty admin `programme_scope` grants no programme access. Master admin all-programme access must be explicit; never infer master access from null programme scope.
 
-PC-created events are scheduled teaching events, not ad-hoc submissions. Public holiday hard-block and delete-with-attendance guardrails apply.
+PC-created events are scheduled teaching events, not ad-hoc submissions. Public holiday hard-block and ordinary delete-with-attendance guardrails apply.
+
+### Master Admin scheduled-event force-delete override
+
+Ordinary deletion contracts remain unchanged: Secretary and Programme PC deletion are blocked with `409` when submitted native or Non-NHG attendance exists. Programme PCs and Secretaries never receive force-delete authority.
+
+The dedicated **Secretary/PC Events** override is restricted to an authenticated admin whose persisted/verified `admin_level` is explicitly `master`; null or empty `programme_scope` is not Master Admin authority. Eligible rows are scheduled Secretary events (`is_adhoc = false` and no programme owner) or Programme PC events (`created_for_programme_code IS NOT NULL`). `created_for_programme_code` is the authoritative source classifier; ad-hoc resident events are rejected.
+
+Force deletion affects only the selected event occurrence. In one transaction the service locks the event, captures the event snapshot and linked counts, verifies that the counts still match the impact confirmed by the Master Admin, explicitly removes native and Non-NHG attendance, removes the event, and writes action `admin.teaching_event.force_delete`. A changed confirmation impact returns `409` before deletion. Any transactional failure rolls back the attendance deletions, event deletion, and audit row together. Series siblings and the `event_series` row remain unchanged.
+
+After commit, affected event, attendance, resident-view, Master Admin list, and report caches are invalidated. A post-commit cache invalidation failure is logged without falsely returning failure for the committed deletion. Removed attendance no longer contributes to future live/JIT reads; this is an explicit destructive operational correction, not a new compliance rule.
 
 ### Native NHG Resident event visibility (Phase 5B)
 
@@ -1019,6 +1029,7 @@ Invalidate affected compliance/report caches after:
 - `posting_groups`, `multi_posting_rules`, `weekend_exceptions`, `global_session_types`, `programmes`, or `loa_types` CRUD change
 - secretary teaching event create/update/delete
 - Programme PC teaching event create/update/delete/duplicate/recurrence mutation
+- Master Admin Secretary/PC event force deletion, including linked native and Non-NHG attendance removal
 - resident attendance submit/delete
 - resident ad-hoc teaching create
 - reporting period create/update/delete/activate/deactivate or scheduled transition edits

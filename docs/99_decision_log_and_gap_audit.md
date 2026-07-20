@@ -110,6 +110,18 @@ Every important decision made during the project, with reasoning and consequence
 - **Do not change without PM/stakeholder approval:** Yes
 ---
 
+#### Decision: Master Admin audited force deletion for Secretary/PC scheduled events
+- **Status:** ✅ Confirmed and implemented
+- **Decision:** Rename the user-facing Master Admin review surface to **Secretary/PC Events** while retaining `/admin/secretary-events`. The list includes Secretary and Programme PC scheduled events, classifying Programme PC ownership from `created_for_programme_code`; NHG and Non-NHG Resident ad-hoc events are excluded.
+- **Authorization:** Force deletion is available only when the authenticated actor has `role = admin` and persisted/verified `admin_level = master`. Null or empty `programme_scope` never implies Master Admin. Programme PCs, Secretaries, residents, and Non-NHG Residents are forbidden.
+- **Destructive semantics:** After an explicit reason and exact `DELETE` confirmation, lock one eligible event occurrence; capture its bounded audit snapshot and linked counts; verify those counts still match the displayed confirmation impact; explicitly delete native `attendance_records`, Non-NHG `external_attendance_records`, and the event; write `admin.teaching_event.force_delete`; then commit once. A changed impact returns `409` before deletion, and any transactional failure rolls back all four changes. No cascade or schema migration is introduced, and series siblings remain intact.
+- **Guardrail:** Ordinary Secretary and Programme PC delete-with-attendance `409` behaviour remains unchanged. The override is a dedicated Master Admin action and is not exposed through either role's mutation endpoint.
+- **Consequences for codebase:** The Master Admin list/detail expose source ownership and split attendance counts; the confirmation UI states the irreversible impact; successful deletion attempts to invalidate event, attendance, resident-view, admin-list, and report caches, and logs any post-commit invalidation failure without misreporting the committed deletion; future live/JIT reads reflect the removal.
+- **Reference file and section:** `api.md` § Master Admin Secretary/PC Events; `schema.md` § `teaching_events`; `business-logic.md` § Master Admin scheduled-event force-delete override
+- **Do not change without PM/stakeholder approval:** Yes
+
+---
+
 #### Decision: Secretary-created event visibility capability flag
 - **Status:** ✅ Confirmed implementation direction
 - **Decision:** Use `posting_codes.supports_secretary_events BOOLEAN DEFAULT false` as the scalable capability flag for secretary-created event visibility.
@@ -1225,6 +1237,7 @@ These are implementation errors that would fail silently — no exception thrown
 | 36 | Posting codes must resolve through `posting_codes` and validated/configured mapping, never string concatenation or regex | Data integrity for non-uniform RDB posting codes | PM / Programme Director | Posting selection, registration, ad-hoc options |
 | 37 | Native programme to TTSH teaching-posting visibility requires explicit mapping, not string inference | Avoids accidental cross-department event exposure | PM / Programme Director | `programmes.native_teaching_posting_code` or `programme_teaching_posting_map` |
 | 38 | Non-NHG programme/institution mapping uses a two-stage all-pending then all-approved rollout, with no GERI exception and no cross-domain fallback | Prevents guessed posting identity, partial rollout, and accidental Secretary/native/compliance coupling | PM / Programme Director | `programme_institution_posting_map` and trusted resolver |
+| 39 | Master Admin force deletion is an explicit, audited, transactional exception for Secretary/PC scheduled events only | Prevents silent partial deletion or privilege expansion while allowing destructive operational correction | PM / Security owner | Dedicated `/admin/secretary-events/{id}/force-delete` action and audit service |
 
 > **⚠️ Most likely LLM mistake:** Changing the 70% threshold to 75% or 65% because it "seems more reasonable." The threshold is a regulatory requirement. The silent consequence is every compliance calculation being wrong for every resident.
 

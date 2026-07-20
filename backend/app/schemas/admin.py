@@ -978,10 +978,17 @@ class AdminSecretaryEventListItem(BaseModel):
     session_type_name: str | None = None
     series_id: UUID | None = None
     is_recurring: bool
+    is_adhoc: bool
     attendance_count: int
+    native_attendance_count: int
     external_attendance_count: int
+    non_nhg_attendance_count: int
+    total_attendance_count: int
     has_attendance: bool
+    source_type: Literal["secretary", "programme_pc"]
     created_by_role: str | None = None
+    created_for_programme_code: str | None = None
+    force_delete_allowed: bool
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -1035,6 +1042,39 @@ class AdminSecretaryEventDetailResponse(AdminSecretaryEventListItem):
     recurrence: AdminSecretaryEventRecurrenceMetadata | None = None
     attendance_counts: AdminSecretaryEventAttendanceCounts
     notes: AdminSecretaryEventDetailNotes
+
+
+class AdminSecretaryEventForceDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=1000)
+    confirmation: str
+    expected_native_attendance_count: int = Field(ge=0)
+    expected_external_attendance_count: int = Field(ge=0)
+
+    @field_validator("reason")
+    @classmethod
+    def _validate_reason(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("Deletion reason is required")
+        return trimmed
+
+    @field_validator("confirmation")
+    @classmethod
+    def _validate_confirmation(cls, value: str) -> str:
+        if value != "DELETE":
+            raise ValueError('Confirmation must be exactly "DELETE"')
+        return value
+
+
+class AdminSecretaryEventForceDeleteResponse(BaseModel):
+    event_id: UUID
+    deleted: bool
+    source_type: Literal["secretary", "programme_pc"]
+    native_attendance_deleted: int
+    external_attendance_deleted: int
+    total_attendance_deleted: int
 
 
 class AdminResidentSubmissionListItem(BaseModel):

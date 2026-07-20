@@ -316,6 +316,30 @@ def invalidate_after_secretary_event_mutation(
     )
 
 
+def invalidate_after_admin_event_force_delete(
+    *,
+    event_id: Any,
+    posting_code: Any,
+    programme_code: Any = None,
+) -> list[CacheInvalidationCall]:
+    return invalidate_cache(
+        (
+            "teaching_events",
+            "secretary_events",
+            "programme_teaching_events",
+            "admin_secretary_events",
+            "resident_events",
+            "resident_attendance",
+            "external_attendance",
+            "resident_dashboard",
+            "admin_reports",
+        ),
+        event_id=event_id,
+        posting_code=posting_code,
+        programme_code=programme_code,
+    )
+
+
 def invalidate_after_resident_attendance_mutation(
     *,
     resident_id: Any = None,

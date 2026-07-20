@@ -1,13 +1,35 @@
 from __future__ import annotations
 
-from datetime import date
+import logging
+from datetime import date, datetime, timezone
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dependencies.staff_actor import StaffActorContext
 from app.errors import ApiError, ErrorCode
+from app.services import cache_invalidation
+from app.services.audit import write_audit_log
+
+
+logger = logging.getLogger(__name__)
+
+
+SOURCE_SECRETARY = "secretary"
+SOURCE_PROGRAMME_PC = "programme_pc"
+SOURCE_ALL = "all"
+_SOURCE_TYPES = {SOURCE_ALL, SOURCE_SECRETARY, SOURCE_PROGRAMME_PC}
+
+
+def _source_type(created_for_programme_code: str | None) -> str:
+    return (
+        SOURCE_PROGRAMME_PC
+        if created_for_programme_code is not None
+        else SOURCE_SECRETARY
+    )
 
 
 def _base_where(
@@ -21,12 +43,22 @@ def _base_where(
     has_attendance: bool | None,
     session_type_id: UUID | None,
     series_id: UUID | None,
+    source_type: str,
 ) -> tuple[list[str], dict[str, Any]]:
-    where = [
-        "te.is_adhoc = false",
-        "(te.created_by_role = 'secretary' OR te.created_by_role IS NULL)",
-    ]
+    if source_type not in _SOURCE_TYPES:
+        raise ApiError(
+            status_code=422,
+            detail="Invalid teaching event source filter",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
+
+    where = ["te.is_adhoc = false"]
     params: dict[str, Any] = {}
+
+    if source_type == SOURCE_SECRETARY:
+        where.append("te.created_for_programme_code IS NULL")
+    elif source_type == SOURCE_PROGRAMME_PC:
+        where.append("te.created_for_programme_code IS NOT NULL")
 
     if reporting_period_id is not None:
         params["reporting_period_id"] = str(reporting_period_id)
@@ -82,10 +114,7 @@ def _base_where(
                 )
             )
         """
-        if has_attendance:
-            where.append(attendance_predicate)
-        else:
-            where.append(f"NOT {attendance_predicate}")
+        where.append(f"{attendance_predicate} = :has_attendance")
     if session_type_id is not None:
         params["session_type_id"] = str(session_type_id)
         where.append("te.session_type_id = :session_type_id")
@@ -99,6 +128,7 @@ def _base_where(
 _EVENT_SELECT_COLUMNS = """
     te.id,
     te.posting_code,
+    te.created_for_programme_code,
     pc.display_name AS posting_display_name,
     pc.institution AS posting_institution,
     pc.department AS posting_department,
@@ -126,6 +156,16 @@ _EVENT_SELECT_COLUMNS = """
         WHERE ear.teaching_event_id = te.id
           AND ear.status = 'submitted'
     ) AS external_attendance_count,
+    (
+        SELECT COUNT(*)
+        FROM attendance_records ar
+        WHERE ar.teaching_event_id = te.id
+    ) AS native_attendance_count,
+    (
+        SELECT COUNT(*)
+        FROM external_attendance_records ear
+        WHERE ear.teaching_event_id = te.id
+    ) AS non_nhg_attendance_count,
     te.created_at,
     te.updated_at
 """
@@ -134,7 +174,16 @@ _EVENT_SELECT_COLUMNS = """
 def _list_item(row: dict[str, Any]) -> dict[str, Any]:
     attendance_count = int(row.get("attendance_count") or 0)
     external_attendance_count = int(row.get("external_attendance_count") or 0)
+    native_attendance_count = int(
+        row.get("native_attendance_count", attendance_count) or 0
+    )
+    non_nhg_attendance_count = int(
+        row.get("non_nhg_attendance_count", external_attendance_count) or 0
+    )
+    total_attendance_count = native_attendance_count + non_nhg_attendance_count
     series_id = row.get("series_id")
+    is_adhoc = bool(row.get("is_adhoc", False))
+    source_type = _source_type(row.get("created_for_programme_code"))
     return {
         "id": row["id"],
         "teaching_name": row["teaching_name"],
@@ -150,10 +199,18 @@ def _list_item(row: dict[str, Any]) -> dict[str, Any]:
         "session_type_name": row.get("session_type_name"),
         "series_id": series_id,
         "is_recurring": series_id is not None,
+        "is_adhoc": is_adhoc,
         "attendance_count": attendance_count,
+        "native_attendance_count": native_attendance_count,
         "external_attendance_count": external_attendance_count,
+        "non_nhg_attendance_count": non_nhg_attendance_count,
+        "total_attendance_count": total_attendance_count,
         "has_attendance": (attendance_count + external_attendance_count) > 0,
+        "source_type": source_type,
         "created_by_role": row.get("created_by_role"),
+        "created_for_programme_code": row.get("created_for_programme_code"),
+        "force_delete_allowed": not is_adhoc
+        and source_type in {SOURCE_SECRETARY, SOURCE_PROGRAMME_PC},
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
@@ -187,6 +244,7 @@ async def list_secretary_events(
     offset: int,
     session_type_id: UUID | None = None,
     series_id: UUID | None = None,
+    source_type: str = SOURCE_ALL,
 ) -> dict[str, Any]:
     where, params = _base_where(
         reporting_period_id=reporting_period_id,
@@ -198,6 +256,7 @@ async def list_secretary_events(
         has_attendance=has_attendance,
         session_type_id=session_type_id,
         series_id=series_id,
+        source_type=source_type,
     )
     params.update({"limit": limit, "offset": offset})
     where_sql = " AND ".join(f"({clause})" for clause in where)
@@ -247,7 +306,6 @@ async def list_secretary_events(
                     ) AS external_attendance_count
                 FROM teaching_events te
                 LEFT JOIN posting_codes pc ON pc.code = te.posting_code
-                LEFT JOIN session_types st ON st.id = te.session_type_id
                 WHERE {where_sql}
             )
             SELECT
@@ -300,7 +358,6 @@ async def get_secretary_event(
             LEFT JOIN event_series es ON es.id = te.series_id
             WHERE te.id = :event_id
               AND te.is_adhoc = false
-              AND (te.created_by_role = 'secretary' OR te.created_by_role IS NULL)
             """
         ),
         {"event_id": str(event_id)},
@@ -315,8 +372,8 @@ async def get_secretary_event(
 
     data = dict(row)
     item = _list_item(data)
-    attendance_count = item["attendance_count"]
-    external_attendance_count = item["external_attendance_count"]
+    native_attendance_count = item["native_attendance_count"]
+    non_nhg_attendance_count = item["non_nhg_attendance_count"]
     recurrence = None
     if item["series_id"] is not None:
         recurrence = {
@@ -339,15 +396,262 @@ async def get_secretary_event(
         },
         "recurrence": recurrence,
         "attendance_counts": {
-            "native": attendance_count,
-            "external": external_attendance_count,
-            "total": attendance_count + external_attendance_count,
+            "native": native_attendance_count,
+            "external": non_nhg_attendance_count,
+            "total": native_attendance_count + non_nhg_attendance_count,
         },
         "notes": {
-            "event_source": "secretary_scheduled_legacy"
-            if item["created_by_role"] is None
-            else "secretary_scheduled",
+            "event_source": f"{item['source_type']}_scheduled",
             "session_type_authority": "display_only",
         },
     }
 
+
+def _is_foreign_key_conflict(exc: IntegrityError) -> bool:
+    original = getattr(exc, "orig", None)
+    sqlstate = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+    return sqlstate == "23503"
+
+
+def _require_master_admin_actor(actor: StaffActorContext) -> None:
+    admin_level = (actor.actor_admin_level or "").strip().lower()
+    if actor.actor_role != "admin" or admin_level != "master":
+        raise ApiError(
+            status_code=403,
+            detail="Forbidden - master admin access required",
+            error_code=ErrorCode.FORBIDDEN.value,
+        )
+
+
+async def force_delete_event(
+    db: AsyncSession,
+    *,
+    event_id: UUID,
+    reason: str,
+    expected_native_attendance_count: int,
+    expected_external_attendance_count: int,
+    actor: StaffActorContext,
+) -> dict[str, Any]:
+    """Hard-delete one scheduled event occurrence and its linked attendance atomically."""
+
+    event_snapshot: dict[str, Any] | None = None
+    result_payload: dict[str, Any] | None = None
+    try:
+        _require_master_admin_actor(actor)
+        deletion_reason = reason.strip()
+        if not deletion_reason:
+            raise ApiError(
+                status_code=422,
+                detail="Deletion reason is required",
+                error_code=ErrorCode.VALIDATION_FAILED.value,
+            )
+
+        event_result = await db.execute(
+            text(
+                """
+                /* admin_secretary_events:force_delete_lock */
+                SELECT
+                    te.id,
+                    te.posting_code,
+                    te.created_for_programme_code,
+                    te.teaching_name,
+                    te.details_of_session,
+                    te.event_date,
+                    te.start_time,
+                    te.end_time,
+                    te.duration_hours,
+                    te.session_type_id,
+                    te.series_id,
+                    te.cme_points_awarded,
+                    te.smc_event_code,
+                    te.is_adhoc,
+                    te.created_by_role,
+                    te.created_at,
+                    te.updated_at
+                FROM teaching_events te
+                WHERE te.id = :event_id
+                FOR UPDATE OF te
+                """
+            ),
+            {"event_id": str(event_id)},
+        )
+        locked_row = event_result.mappings().one_or_none()
+        if locked_row is None:
+            raise ApiError(
+                status_code=404,
+                detail="Teaching event not found",
+                error_code=ErrorCode.NOT_FOUND.value,
+            )
+
+        event_snapshot = dict(locked_row)
+        if bool(event_snapshot.get("is_adhoc")):
+            raise ApiError(
+                status_code=422,
+                detail="Ad-hoc teaching events cannot be force deleted from this surface",
+                error_code=ErrorCode.VALIDATION_FAILED.value,
+            )
+
+        source_type = _source_type(event_snapshot.get("created_for_programme_code"))
+        counts_result = await db.execute(
+            text(
+                """
+                /* admin_secretary_events:force_delete_counts */
+                SELECT
+                    (
+                        SELECT COUNT(*)
+                        FROM attendance_records ar
+                        WHERE ar.teaching_event_id = :event_id
+                    ) AS native_attendance_count,
+                    (
+                        SELECT COUNT(*)
+                        FROM external_attendance_records ear
+                        WHERE ear.teaching_event_id = :event_id
+                    ) AS external_attendance_count
+                """
+            ),
+            {"event_id": str(event_id)},
+        )
+        counts = dict(counts_result.mappings().one())
+        native_attendance_count = int(counts.get("native_attendance_count") or 0)
+        external_attendance_count = int(counts.get("external_attendance_count") or 0)
+        if (
+            native_attendance_count != expected_native_attendance_count
+            or external_attendance_count != expected_external_attendance_count
+        ):
+            raise ApiError(
+                status_code=409,
+                detail=(
+                    "Linked attendance changed since confirmation; "
+                    "review the updated impact and retry"
+                ),
+                error_code=ErrorCode.CONFLICT.value,
+            )
+
+        native_delete_result = await db.execute(
+            text(
+                """
+                /* admin_secretary_events:force_delete_native_attendance */
+                DELETE FROM attendance_records
+                WHERE teaching_event_id = :event_id
+                RETURNING id
+                """
+            ),
+            {"event_id": str(event_id)},
+        )
+        native_deleted = len(native_delete_result.mappings().all())
+
+        external_delete_result = await db.execute(
+            text(
+                """
+                /* admin_secretary_events:force_delete_external_attendance */
+                DELETE FROM external_attendance_records
+                WHERE teaching_event_id = :event_id
+                RETURNING id
+                """
+            ),
+            {"event_id": str(event_id)},
+        )
+        external_deleted = len(external_delete_result.mappings().all())
+
+        if (
+            native_deleted != native_attendance_count
+            or external_deleted != external_attendance_count
+        ):
+            raise ApiError(
+                status_code=409,
+                detail="Teaching event attendance changed during deletion; please retry",
+                error_code=ErrorCode.CONFLICT.value,
+            )
+
+        event_delete_result = await db.execute(
+            text(
+                """
+                /* admin_secretary_events:force_delete_event */
+                DELETE FROM teaching_events
+                WHERE id = :event_id
+                RETURNING id
+                """
+            ),
+            {"event_id": str(event_id)},
+        )
+        if event_delete_result.mappings().one_or_none() is None:
+            raise ApiError(
+                status_code=409,
+                detail="Teaching event changed during deletion; please retry",
+                error_code=ErrorCode.CONFLICT.value,
+            )
+
+        deleted_at = datetime.now(timezone.utc)
+        total_deleted = native_deleted + external_deleted
+        result_payload = {
+            "event_id": event_id,
+            "deleted": True,
+            "source_type": source_type,
+            "native_attendance_deleted": native_deleted,
+            "external_attendance_deleted": external_deleted,
+            "total_attendance_deleted": total_deleted,
+        }
+        await write_audit_log(
+            db,
+            actor=actor,
+            action="admin.teaching_event.force_delete",
+            entity_type="teaching_event",
+            entity_id=event_id,
+            before=event_snapshot,
+            after={
+                "deleted": True,
+                "native_attendance_deleted": native_deleted,
+                "external_attendance_deleted": external_deleted,
+                "total_attendance_deleted": total_deleted,
+                "deleted_at": deleted_at,
+            },
+            metadata={
+                "route_context": "master_admin_secretary_pc_events",
+                "deletion_reason": deletion_reason,
+                "event_id": str(event_id),
+                "event_source_type": source_type,
+                "posting_code": event_snapshot["posting_code"],
+                "owner_programme_code": event_snapshot.get(
+                    "created_for_programme_code"
+                ),
+                "event_date": event_snapshot["event_date"],
+                "teaching_name": event_snapshot["teaching_name"],
+                "series_id": event_snapshot.get("series_id"),
+                "native_attendance_deleted": native_deleted,
+                "external_attendance_deleted": external_deleted,
+                "total_attendance_deleted": total_deleted,
+                "deleted_at": deleted_at,
+                "attendance_identifiers_included": False,
+            },
+        )
+        await db.commit()
+    except ApiError:
+        await db.rollback()
+        raise
+    except IntegrityError as exc:
+        await db.rollback()
+        if _is_foreign_key_conflict(exc):
+            raise ApiError(
+                status_code=409,
+                detail="Teaching event attendance changed during deletion; please retry",
+                error_code=ErrorCode.CONFLICT.value,
+            ) from exc
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+
+    assert event_snapshot is not None
+    assert result_payload is not None
+    try:
+        cache_invalidation.invalidate_after_admin_event_force_delete(
+            event_id=event_id,
+            posting_code=event_snapshot["posting_code"],
+            programme_code=event_snapshot.get("created_for_programme_code"),
+        )
+    except Exception:
+        logger.exception(
+            "Cache invalidation failed after committed admin teaching event force deletion",
+            extra={"event_id": str(event_id)},
+        )
+    return result_payload

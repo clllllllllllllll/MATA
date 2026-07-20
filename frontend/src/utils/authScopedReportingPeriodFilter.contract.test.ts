@@ -253,6 +253,16 @@ const registerPageBehaviorTests = (pageName: string) => {
     assert.equal(reset.selectedDetail, null)
     assert.equal(reset.detailId, '')
   })
+
+  test(`${pageName}: stale prior-principal mutation cannot update the new context`, async () => {
+    const pending = deferred<{ deleted: true }>()
+    const controller = new AuthScopedReportingPageRequestController('principal-a')
+    const request = controller.runMutationRequest(async () => pending.promise)
+    assert.equal(controller.synchronizeAuthenticationContext('principal-b'), true)
+    pending.resolve({ deleted: true })
+
+    assert.equal((await request).status, 'stale')
+  })
 }
 
 registerPageBehaviorTests('Admin Resident Submissions')

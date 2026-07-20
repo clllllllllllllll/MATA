@@ -1,11 +1,20 @@
 import { buildAdminDemoHeaders, type AdminDemoLevel } from './authHeaders'
 import { httpClient, toApiRequestError } from './http'
+import {
+  resolveAdminSecretaryEventSourceType,
+  type AdminSecretaryEventSourceFilter,
+  type AdminSecretaryEventSourceType,
+} from './adminSecretaryEventSource'
+
+export type { AdminSecretaryEventSourceFilter, AdminSecretaryEventSourceType }
 
 export interface AdminSecretaryEventListItem {
   id: string
+  sourceType: AdminSecretaryEventSourceType
   teachingName: string
   postingCode: string
   postingDisplayName?: string | null
+  createdForProgrammeCode?: string | null
   eventDate: string
   startTime: string
   endTime?: string | null
@@ -16,9 +25,13 @@ export interface AdminSecretaryEventListItem {
   sessionTypeName?: string | null
   seriesId?: string | null
   isRecurring: boolean
+  isAdhoc: boolean
+  nativeAttendanceCount: number
   attendanceCount: number
   externalAttendanceCount: number
+  totalAttendanceCount: number
   hasAttendance: boolean
+  forceDeleteAllowed: boolean
   createdByRole?: string | null
   createdAt?: string | null
   updatedAt?: string | null
@@ -83,6 +96,7 @@ export interface ListAdminSecretaryEventsParams {
   dateTo?: string
   teachingName?: string
   search?: string
+  sourceType?: AdminSecretaryEventSourceFilter
   hasAttendance?: boolean | null
   sessionTypeId?: string
   seriesId?: string
@@ -95,6 +109,22 @@ export interface GetAdminSecretaryEventParams {
   adminProgrammes: string[]
   adminLevel?: AdminDemoLevel
   eventId: string
+}
+
+export interface ForceDeleteAdminSecretaryEventParams extends GetAdminSecretaryEventParams {
+  reason: string
+  confirmation: string
+  expectedNativeAttendanceCount: number
+  expectedExternalAttendanceCount: number
+}
+
+export interface ForceDeleteAdminSecretaryEventResponse {
+  eventId: string
+  deleted: boolean
+  sourceType: AdminSecretaryEventSourceType
+  nativeAttendanceDeleted: number
+  externalAttendanceDeleted: number
+  totalAttendanceDeleted: number
 }
 
 const toRecord = (value: unknown): Record<string, unknown> => {
@@ -157,28 +187,51 @@ const addStringParam = (
   }
 }
 
-const toListItem = (value: Record<string, unknown>): AdminSecretaryEventListItem => ({
-  id: String(value.id ?? ''),
-  teachingName: String(value.teaching_name ?? ''),
-  postingCode: String(value.posting_code ?? ''),
-  postingDisplayName: optionalString(value.posting_display_name),
-  eventDate: String(value.event_date ?? ''),
-  startTime: String(value.start_time ?? ''),
-  endTime: optionalString(value.end_time),
-  durationHours: optionalNumber(value.duration_hours),
-  cmePointsAwarded: toBoolean(value.cme_points_awarded),
-  smcEventCode: optionalString(value.smc_event_code),
-  sessionTypeId: optionalString(value.session_type_id),
-  sessionTypeName: optionalString(value.session_type_name),
-  seriesId: optionalString(value.series_id),
-  isRecurring: toBoolean(value.is_recurring),
-  attendanceCount: finiteNumber(value.attendance_count),
-  externalAttendanceCount: finiteNumber(value.external_attendance_count),
-  hasAttendance: toBoolean(value.has_attendance),
-  createdByRole: optionalString(value.created_by_role),
-  createdAt: optionalString(value.created_at),
-  updatedAt: optionalString(value.updated_at),
-})
+const toListItem = (value: Record<string, unknown>): AdminSecretaryEventListItem => {
+  const attendanceCount = finiteNumber(value.attendance_count)
+  const nativeAttendanceCount = finiteNumber(
+    value.native_attendance_count,
+    attendanceCount,
+  )
+  const externalAttendanceCount = finiteNumber(
+    value.non_nhg_attendance_count,
+    finiteNumber(value.external_attendance_count),
+  )
+  const totalAttendanceCount = finiteNumber(
+    value.total_attendance_count,
+    nativeAttendanceCount + externalAttendanceCount,
+  )
+  return {
+    id: String(value.id ?? ''),
+    sourceType: resolveAdminSecretaryEventSourceType(value.source_type, {
+      createdForProgrammeCode: value.created_for_programme_code,
+    }),
+    teachingName: String(value.teaching_name ?? ''),
+    postingCode: String(value.posting_code ?? ''),
+    postingDisplayName: optionalString(value.posting_display_name),
+    createdForProgrammeCode: optionalString(value.created_for_programme_code),
+    eventDate: String(value.event_date ?? ''),
+    startTime: String(value.start_time ?? ''),
+    endTime: optionalString(value.end_time),
+    durationHours: optionalNumber(value.duration_hours),
+    cmePointsAwarded: toBoolean(value.cme_points_awarded),
+    smcEventCode: optionalString(value.smc_event_code),
+    sessionTypeId: optionalString(value.session_type_id),
+    sessionTypeName: optionalString(value.session_type_name),
+    seriesId: optionalString(value.series_id),
+    isRecurring: toBoolean(value.is_recurring),
+    isAdhoc: toBoolean(value.is_adhoc),
+    nativeAttendanceCount,
+    attendanceCount,
+    externalAttendanceCount,
+    totalAttendanceCount,
+    hasAttendance: toBoolean(value.has_attendance),
+    forceDeleteAllowed: toBoolean(value.force_delete_allowed),
+    createdByRole: optionalString(value.created_by_role),
+    createdAt: optionalString(value.created_at),
+    updatedAt: optionalString(value.updated_at),
+  }
+}
 
 const toSummary = (value: unknown): AdminSecretaryEventListSummary => {
   const record = toRecord(value)
@@ -218,26 +271,36 @@ const toRecurrence = (value: unknown): AdminSecretaryEventRecurrenceMetadata | n
   }
 }
 
-const toAttendanceCounts = (value: unknown): AdminSecretaryEventAttendanceCounts => {
+const toAttendanceCounts = (
+  value: unknown,
+  fallback: AdminSecretaryEventAttendanceCounts,
+): AdminSecretaryEventAttendanceCounts => {
   const record = toRecord(value)
   return {
-    native: finiteNumber(record.native),
-    external: finiteNumber(record.external),
-    total: finiteNumber(record.total),
+    native: finiteNumber(record.native, fallback.native),
+    external: finiteNumber(record.external, fallback.external),
+    total: finiteNumber(record.total, fallback.total),
   }
 }
 
-const toDetail = (value: Record<string, unknown>): AdminSecretaryEventDetail => ({
-  ...toListItem(value),
-  posting: toPosting(value.posting),
-  recurrence: toRecurrence(value.recurrence),
-  attendanceCounts: toAttendanceCounts(value.attendance_counts),
-  notes: {
-    eventSource: optionalString(toRecord(value.notes).event_source) ?? 'secretary_scheduled',
-    sessionTypeAuthority:
-      optionalString(toRecord(value.notes).session_type_authority) ?? 'display_only',
-  },
-})
+const toDetail = (value: Record<string, unknown>): AdminSecretaryEventDetail => {
+  const item = toListItem(value)
+  return {
+    ...item,
+    posting: toPosting(value.posting),
+    recurrence: toRecurrence(value.recurrence),
+    attendanceCounts: toAttendanceCounts(value.attendance_counts, {
+      native: item.nativeAttendanceCount,
+      external: item.externalAttendanceCount,
+      total: item.totalAttendanceCount,
+    }),
+    notes: {
+      eventSource: optionalString(toRecord(value.notes).event_source) ?? `${item.sourceType}_scheduled`,
+      sessionTypeAuthority:
+        optionalString(toRecord(value.notes).session_type_authority) ?? 'display_only',
+    },
+  }
+}
 
 const headersFor = (
   adminId: string,
@@ -255,6 +318,7 @@ export const listAdminSecretaryEvents = async (
   addStringParam(queryParams, 'date_to', params.dateTo)
   addStringParam(queryParams, 'teaching_name', params.teachingName)
   addStringParam(queryParams, 'search', params.search)
+  addStringParam(queryParams, 'source_type', params.sourceType)
   addStringParam(queryParams, 'session_type_id', params.sessionTypeId)
   addStringParam(queryParams, 'series_id', params.seriesId)
   if (typeof params.hasAttendance === 'boolean') {
@@ -296,6 +360,41 @@ export const getAdminSecretaryEvent = async ({
       headers: headersFor(adminId, adminProgrammes, adminLevel),
     })
     return toDetail(toRecord(response.data))
+  } catch (error) {
+    throw toApiRequestError(error)
+  }
+}
+
+export const forceDeleteAdminSecretaryEvent = async ({
+  adminId,
+  adminProgrammes,
+  adminLevel = 'master',
+  eventId,
+  reason,
+  confirmation,
+  expectedNativeAttendanceCount,
+  expectedExternalAttendanceCount,
+}: ForceDeleteAdminSecretaryEventParams): Promise<ForceDeleteAdminSecretaryEventResponse> => {
+  try {
+    const response = await httpClient.post(
+      `/admin/secretary-events/${encodeURIComponent(eventId)}/force-delete`,
+      {
+        reason,
+        confirmation,
+        expected_native_attendance_count: expectedNativeAttendanceCount,
+        expected_external_attendance_count: expectedExternalAttendanceCount,
+      },
+      { headers: headersFor(adminId, adminProgrammes, adminLevel) },
+    )
+    const payload = toRecord(response.data)
+    return {
+      eventId: String(payload.event_id ?? eventId),
+      deleted: toBoolean(payload.deleted),
+      sourceType: resolveAdminSecretaryEventSourceType(payload.source_type),
+      nativeAttendanceDeleted: finiteNumber(payload.native_attendance_deleted),
+      externalAttendanceDeleted: finiteNumber(payload.external_attendance_deleted),
+      totalAttendanceDeleted: finiteNumber(payload.total_attendance_deleted),
+    }
   } catch (error) {
     throw toApiRequestError(error)
   }

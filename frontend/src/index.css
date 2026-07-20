@@ -6159,7 +6159,7 @@ button:disabled,
 }
 
 .admin-secretary-events-filters {
-  grid-template-columns: minmax(220px, 1.4fr) repeat(5, minmax(128px, 1fr)) minmax(108px, auto);
+  grid-template-columns: minmax(220px, 1.4fr) repeat(6, minmax(118px, 1fr)) minmax(108px, auto);
   align-items: end;
 }
 
@@ -6453,17 +6453,77 @@ button:disabled,
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-@media (max-width: 1120px) {
-  .admin-secretary-events-filters {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+.admin-event-delete-confirmation {
+  display: grid;
+  gap: 14px;
+  border-color: #fda29b;
+  background: #fffafa;
+}
 
-  .external-attendance-filters {
+.admin-event-delete-confirmation h3,
+.admin-event-delete-confirmation p {
+  margin: 0;
+}
+
+.admin-event-delete-warning {
+  color: var(--red);
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.admin-event-delete-impact {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.admin-event-delete-impact span {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fff;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.admin-event-delete-impact strong {
+  color: var(--ink);
+  font-size: 16px;
+}
+
+.admin-event-delete-confirmation textarea {
+  min-height: 88px;
+}
+
+.admin-event-delete-confirmation input {
+  min-height: var(--touch-target);
+}
+
+.admin-event-delete-footer-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  width: 100%;
+}
+
+@media (max-width: 1480px) {
+  .admin-secretary-events-filters {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .admin-secretary-events-filter-actions {
     padding-bottom: 0;
+  }
+}
+
+@media (max-width: 1120px) {
+
+  .external-attendance-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .secretary-event-metrics {
@@ -6476,6 +6536,10 @@ button:disabled,
   .external-attendance-filters,
   .secretary-event-metrics,
   .secretary-event-detail .parsed-data-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-event-delete-impact {
     grid-template-columns: 1fr;
   }
 }

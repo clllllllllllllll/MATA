@@ -121,10 +121,16 @@ export type AuthScopedRequestResult<T> =
   | { status: 'stale' }
   | { status: 'error'; error: unknown }
 
+export type AuthScopedMutationResult<T> = Exclude<
+  AuthScopedRequestResult<T>,
+  { status: 'invalid-period' }
+>
+
 export class AuthScopedReportingPageRequestController {
   private authenticationContextVersion: string
   private listRequestVersion = 0
   private detailRequestVersion = 0
+  private mutationRequestVersion = 0
 
   constructor(authenticationContextVersion: string) {
     this.authenticationContextVersion = authenticationContextVersion
@@ -142,6 +148,7 @@ export class AuthScopedReportingPageRequestController {
   invalidateAll() {
     this.listRequestVersion += 1
     this.detailRequestVersion += 1
+    this.mutationRequestVersion += 1
   }
 
   invalidateList() {
@@ -193,6 +200,22 @@ export class AuthScopedReportingPageRequestController {
     }
   }
 
+  async runMutationRequest<T>(request: () => Promise<T>): Promise<AuthScopedMutationResult<T>> {
+    const requestVersion = this.mutationRequestVersion + 1
+    this.mutationRequestVersion = requestVersion
+    const authenticationContextVersion = this.authenticationContextVersion
+    try {
+      const value = await request()
+      return this.isMutationRequestCurrent(authenticationContextVersion, requestVersion)
+        ? { status: 'success', value }
+        : { status: 'stale' }
+    } catch (error) {
+      return this.isMutationRequestCurrent(authenticationContextVersion, requestVersion)
+        ? { status: 'error', error }
+        : { status: 'stale' }
+    }
+  }
+
   private isListRequestCurrent(authenticationContextVersion: string, requestVersion: number) {
     return authenticationContextVersion === this.authenticationContextVersion
       && requestVersion === this.listRequestVersion
@@ -201,5 +224,10 @@ export class AuthScopedReportingPageRequestController {
   private isDetailRequestCurrent(authenticationContextVersion: string, requestVersion: number) {
     return authenticationContextVersion === this.authenticationContextVersion
       && requestVersion === this.detailRequestVersion
+  }
+
+  private isMutationRequestCurrent(authenticationContextVersion: string, requestVersion: number) {
+    return authenticationContextVersion === this.authenticationContextVersion
+      && requestVersion === this.mutationRequestVersion
   }
 }

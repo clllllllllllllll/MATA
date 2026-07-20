@@ -88,7 +88,7 @@ export const navItems: NavItem[] = [
     icon: 'settings',
   },
   {
-    label: 'Secretary Events',
+    label: 'Secretary/PC Events',
     path: '/admin/secretary-events',
     roles: ['master_admin'],
     icon: 'calendar',
@@ -176,7 +176,7 @@ export const breadcrumbMap: Record<string, string[]> = {
   '/admin/logs': ['Master Admin', 'Admin Logs'],
   '/admin/upload-logs': ['Master Admin', 'Upload Logs'],
   '/admin/parsed-data': ['Master Admin', 'Live Data'],
-  '/admin/secretary-events': ['Master Admin', 'Secretary Events'],
+  '/admin/secretary-events': ['Master Admin', 'Secretary/PC Events'],
   '/admin/staff-accounts': ['Master Admin', 'Staff Accounts'],
   '/admin/submissions': ['Master Admin', 'Resident Submissions'],
   '/admin/external-attendance': ['Master Admin', 'Non-NHG Attendance'],

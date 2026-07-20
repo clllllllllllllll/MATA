@@ -1154,6 +1154,58 @@ List FormF1 active/inactive records.
 
 ---
 
+## Master Admin Secretary/PC Events
+
+The user-facing Master Admin surface is **Secretary/PC Events**. Its existing route and API prefix remain `/admin/secretary-events` for backward compatibility.
+
+### GET `/admin/secretary-events`
+
+List scheduled teaching events created by Secretaries and Programme PCs, with one response row per `teaching_events.id`.
+
+- **Auth:** explicit Master Admin only (`role = admin` and persisted/verified `admin_level = master`). Null or empty `programme_scope` never grants this authority.
+- **Included sources:** Secretary events have `is_adhoc = false` and `created_for_programme_code IS NULL`; Programme PC events have `created_for_programme_code IS NOT NULL`. `created_for_programme_code` is authoritative even when legacy `created_by_role` metadata is absent or inconsistent.
+- **Excluded:** NHG Resident and Non-NHG Resident ad-hoc events.
+- **Query/filter behavior:** existing search, posting, date, attendance, fixed ordering, and pagination remain supported; `source_type` accepts `all`, `secretary`, or `programme_pc`.
+- **Counts:** each item exposes all-linked `native_attendance_count`, `non_nhg_attendance_count`, and `total_attendance_count` without catalogue, target, programme, or attendance joins multiplying event rows. Existing `attendance_count`, `external_attendance_count`, `has_attendance`, attendance filtering, and summary metrics retain their submitted-only semantics.
+- **Response fields:** existing event fields plus `source_type`, `created_by_role`, `created_for_programme_code`, `posting_code`, `series_id`, `is_adhoc`, the all-linked attendance counts, and `force_delete_allowed`.
+
+### GET `/admin/secretary-events/{event_id}`
+
+Return the corresponding Secretary or Programme PC scheduled event detail, including source ownership, series metadata, CME/SMC data, and the three attendance counts.
+
+### POST `/admin/secretary-events/{event_id}/force-delete`
+
+Permanently delete one eligible scheduled occurrence and all linked native and Non-NHG attendance submissions.
+
+- **Auth:** explicit Master Admin only. Programme PCs, Secretaries, residents, and Non-NHG Residents receive `403`.
+- **Body:**
+```json
+{
+  "reason": "Required operational reason",
+  "confirmation": "DELETE",
+  "expected_native_attendance_count": 2,
+  "expected_external_attendance_count": 1
+}
+```
+- **Validation:** `reason` must be non-blank, `confirmation` must exactly equal `DELETE`, and both expected counts must be non-negative. The expected counts bind the destructive action to the impact shown in the confirmation UI; if the locked event has different linked counts, the action returns `409` without deleting anything. Ad-hoc events are ineligible and return `422`.
+- **Transaction:** lock the event, capture the audit snapshot and counts, explicitly delete `attendance_records`, explicitly delete `external_attendance_records`, delete only the selected `teaching_events` row, and write `admin.teaching_event.force_delete` in one transaction. Series siblings and the `event_series` row are preserved.
+- **Response:**
+```json
+{
+  "event_id": "3eec9f56-49a8-49db-a719-7a2f3304ca29",
+  "deleted": true,
+  "source_type": "programme_pc",
+  "native_attendance_deleted": 2,
+  "external_attendance_deleted": 1,
+  "total_attendance_deleted": 3
+}
+```
+- **Status codes:** `200` success, `403` non-Master-Admin, `404` missing event, `422` invalid confirmation/reason/counts or ineligible ad-hoc event, `409` changed confirmation impact or proven transactional integrity conflict, and a generic safe `500` for unexpected failures. Cache invalidation runs after commit; an invalidation failure is logged for operational follow-up but does not misreport the already-committed deletion as failed.
+
+Ordinary Secretary and Programme PC mutation endpoints are unchanged: both deletion paths still return `409` when submitted native or Non-NHG attendance exists. Neither role gains force-delete authority.
+
+---
+
 ## `4B` Programme PC Teaching Event CRUD endpoints
 
 Programme PCs manage scheduled teaching events for their own programmes before Phase 6 compliance. PC-created rows use `teaching_events.created_for_programme_code` for explicit programme ownership; secretary-created rows normally leave that field null and remain posting-owned/programme-neutral.

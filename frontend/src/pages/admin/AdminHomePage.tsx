@@ -48,10 +48,10 @@ const workspaceTiles = [
     icon: <IconDatabase size={18} />,
   },
   {
-    title: 'Secretary Events',
+    title: 'Secretary/PC Events',
     path: '/admin/secretary-events',
-    description: 'View teaching events created across postings.',
-    stat: 'Pending endpoint',
+    description: 'Review scheduled Secretary and Programme PC teaching events.',
+    stat: 'Operational review',
     icon: <IconCalendar size={18} />,
   },
   {

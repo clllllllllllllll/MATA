@@ -752,8 +752,8 @@ assert(
 )
 assert(
   navigationSource.indexOf("label: 'Staff Accounts'") <
-    navigationSource.indexOf("label: 'Secretary Events'"),
-  'Master Admin nav shows Staff Accounts above Secretary Events',
+    navigationSource.indexOf("label: 'Secretary/PC Events'"),
+  'Master Admin nav shows Staff Accounts above Secretary/PC Events',
 )
 assert(
   staffAccountsPageSource.includes("programme_pc: 'PC'") &&

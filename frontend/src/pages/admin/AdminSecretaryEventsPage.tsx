@@ -2,11 +2,13 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, u
 import type { SetStateAction } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
+  forceDeleteAdminSecretaryEvent,
   getAdminSecretaryEvent,
   listAdminSecretaryEvents,
   type AdminSecretaryEventDetail,
   type AdminSecretaryEventListItem,
   type AdminSecretaryEventListSummary,
+  type AdminSecretaryEventSourceFilter,
 } from '../../api/adminSecretaryEvents'
 import { listPostingCodes, type PostingCodeOption } from '../../api/postingCodes'
 import { DetailDrawer } from '../../components/DetailDrawer'
@@ -22,6 +24,13 @@ import {
   type AuthScopedReportingPageState,
 } from '../../utils/authScopedReportingPeriodFilter'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
+import {
+  adminEventForceDeleteSuccessMessage,
+  adminEventListOffsetAfterDeletion,
+  adminTeachingEventSourceLabel,
+  canCloseAdminEventDetail,
+  isAdminEventForceDeleteConfirmationValid,
+} from './adminSecretaryEventsPageLogic'
 
 type AttendanceFilter = 'all' | 'with' | 'without'
 
@@ -31,6 +40,7 @@ interface FilterState {
   dateFrom: string
   dateTo: string
   search: string
+  sourceType: AdminSecretaryEventSourceFilter
   hasAttendance: AttendanceFilter
 }
 
@@ -43,6 +53,7 @@ const emptyFilters = (reportingPeriodId = ''): FilterState => ({
   dateFrom: '',
   dateTo: '',
   search: '',
+  sourceType: 'all',
   hasAttendance: 'all',
 })
 
@@ -109,11 +120,9 @@ const fieldValue = (value?: string | number | null) => {
   return String(value)
 }
 
-const sourceLabel = (event?: Pick<AdminSecretaryEventListItem, 'createdByRole'> | null) =>
-  event?.createdByRole ? 'Secretary-created scheduled event' : 'Legacy scheduled secretary event'
-
-const compactSourceLabel = (event: Pick<AdminSecretaryEventListItem, 'createdByRole'>) =>
-  event.createdByRole ? 'Secretary-created' : 'Legacy scheduled'
+const sourceBadgeTone = (
+  event: Pick<AdminSecretaryEventListItem, 'sourceType'>,
+): 'info' | 'neutral' => event.sourceType === 'programme_pc' ? 'info' : 'neutral'
 
 const toAttendanceParam = (value: AttendanceFilter): boolean | null => {
   if (value === 'with') {
@@ -266,6 +275,14 @@ export const AdminSecretaryEventsPage = () => {
   const [eventsError, setEventsError] = useState<string | null>(null)
   const [postingOptions, setPostingOptions] = useState<PostingCodeOption[]>([])
   const [postingError, setPostingError] = useState<string | null>(null)
+  const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false)
+  const [deleteReason, setDeleteReason] = useState('')
+  const [deleteConfirmation, setDeleteConfirmation] = useState('')
+  const [deletePending, setDeletePending] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [deleteSuccess, setDeleteSuccess] = useState<string | null>(null)
+  const deleteButtonRef = useRef<HTMLButtonElement | null>(null)
+  const deleteReasonInputRef = useRef<HTMLTextAreaElement | null>(null)
   const hasLoadedRef = useRef(false)
   const selectedEventSearchParam = searchParams.get('event_id')?.trim() ?? ''
   const selectedEventId = pageState.detailId
@@ -315,6 +332,12 @@ export const AdminSecretaryEventsPage = () => {
       setEventsError(null)
       setPostingOptions([])
       setPostingError(null)
+      setDeleteConfirmationOpen(false)
+      setDeleteReason('')
+      setDeleteConfirmation('')
+      setDeletePending(false)
+      setDeleteError(null)
+      setDeleteSuccess(null)
       hasLoadedRef.current = false
       setSearchParams((previous) => {
         const next = new URLSearchParams(previous)
@@ -334,12 +357,22 @@ export const AdminSecretaryEventsPage = () => {
     if (authenticationResetPending || selectedEventSearchParam === pageState.detailId) {
       return
     }
+    if (deletePending && pageState.detailId) {
+      setSearchParams((previous) => {
+        const next = new URLSearchParams(previous)
+        next.set('event_id', pageState.detailId)
+        return next
+      }, { replace: true })
+      return
+    }
     mergePageState({ detailId: selectedEventSearchParam })
   }, [
     authenticationResetPending,
+    deletePending,
     mergePageState,
     pageState.detailId,
     selectedEventSearchParam,
+    setSearchParams,
   ])
 
   useEffect(() => {
@@ -420,6 +453,7 @@ export const AdminSecretaryEventsPage = () => {
       dateFrom: filters.dateFrom,
       dateTo: filters.dateTo,
       search: debouncedSearch,
+      sourceType: filters.sourceType,
       hasAttendance: toAttendanceParam(filters.hasAttendance),
       limit: pageSize,
       offset,
@@ -433,6 +467,7 @@ export const AdminSecretaryEventsPage = () => {
     filters.dateTo,
     filters.hasAttendance,
     filters.postingCode,
+    filters.sourceType,
     offset,
   ])
 
@@ -466,7 +501,7 @@ export const AdminSecretaryEventsPage = () => {
       setTotal(0)
       hasLoadedRef.current = true
       setEventsError(formatUserFacingApiError(result.error, {
-        fallbackMessage: 'Unable to load secretary events.',
+        fallbackMessage: 'Unable to load Secretary/PC events.',
       }))
     } else {
       setEvents(result.value.items)
@@ -504,7 +539,20 @@ export const AdminSecretaryEventsPage = () => {
     }
   }, [authenticationResetPending, fetchEvents, requestController])
 
+  const resetDeleteConfirmation = useCallback(() => {
+    setDeleteConfirmationOpen(false)
+    setDeleteReason('')
+    setDeleteConfirmation('')
+    setDeletePending(false)
+    setDeleteError(null)
+  }, [])
+
   const openDetail = (event: AdminSecretaryEventListItem) => {
+    if (!canCloseAdminEventDetail(deletePending)) {
+      return
+    }
+    resetDeleteConfirmation()
+    setDeleteSuccess(null)
     const nextParams = new URLSearchParams(searchParams)
     nextParams.set('event_id', event.id)
     setSearchParams(nextParams, { replace: true })
@@ -522,15 +570,23 @@ export const AdminSecretaryEventsPage = () => {
     setSelectedEvent(null)
     setSelectedDetail(null)
     setDetailError(null)
+    resetDeleteConfirmation()
     mergePageState({ detailId: '' })
   }, [
     mergePageState,
     requestController,
+    resetDeleteConfirmation,
     setDetailError,
     setSearchParams,
     setSelectedDetail,
     setSelectedEvent,
   ])
+
+  const requestCloseDetail = useCallback(() => {
+    if (canCloseAdminEventDetail(deletePending)) {
+      closeDetail()
+    }
+  }, [closeDetail, deletePending])
 
   useEffect(() => {
     if (authenticationResetPending || !selectedEventId) {
@@ -582,6 +638,7 @@ export const AdminSecretaryEventsPage = () => {
     filters.dateFrom ||
     filters.dateTo ||
     filters.search ||
+    filters.sourceType !== 'all' ||
     filters.hasAttendance !== 'all'
 
   const firstItem = total === 0 ? 0 : offset + 1
@@ -597,6 +654,107 @@ export const AdminSecretaryEventsPage = () => {
     () => reportingPeriods.find((period) => period.id === filters.reportingPeriodId),
     [filters.reportingPeriodId, reportingPeriods],
   )
+  const canForceDelete = Boolean(
+    role === 'master_admin'
+      && currentDetail?.forceDeleteAllowed
+      && !currentDetail.isAdhoc,
+  )
+  const deleteConfirmationValid = isAdminEventForceDeleteConfirmationValid(
+    deleteReason,
+    deleteConfirmation,
+  )
+
+  useEffect(() => {
+    if (!deleteConfirmationOpen || !currentDetail) {
+      return
+    }
+    const frame = window.requestAnimationFrame(() => {
+      deleteReasonInputRef.current?.scrollIntoView({ block: 'center' })
+      deleteReasonInputRef.current?.focus()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [currentDetail, deleteConfirmationOpen])
+
+  const beginDeleteConfirmation = () => {
+    setDeleteConfirmationOpen(true)
+    setDeleteReason('')
+    setDeleteConfirmation('')
+    setDeleteError(null)
+  }
+
+  const cancelDeleteConfirmation = () => {
+    if (!deletePending) {
+      resetDeleteConfirmation()
+      window.requestAnimationFrame(() => deleteButtonRef.current?.focus())
+    }
+  }
+
+  const submitForceDelete = async () => {
+    if (!currentDetail || !canForceDelete || !deleteConfirmationValid || deletePending) {
+      return
+    }
+
+    setDeletePending(true)
+    setDeleteError(null)
+    const mutationResult = await requestController.runMutationRequest(() =>
+      forceDeleteAdminSecretaryEvent({
+        adminId: demoAdminId,
+        adminProgrammes: demoAdminProgrammes,
+        adminLevel,
+        eventId: currentDetail.id,
+        reason: deleteReason.trim(),
+        confirmation: deleteConfirmation,
+        expectedNativeAttendanceCount: currentDetail.attendanceCounts.native,
+        expectedExternalAttendanceCount: currentDetail.attendanceCounts.external,
+      }),
+    )
+    if (mutationResult.status === 'stale') {
+      return
+    }
+    if (mutationResult.status === 'error') {
+      setDeleteError(formatUserFacingApiError(mutationResult.error, {
+        fallbackMessage: 'Unable to delete this event.',
+      }))
+      const errorStatus = mutationResult.error && typeof mutationResult.error === 'object'
+        ? (mutationResult.error as { status?: unknown }).status
+        : undefined
+      if (errorStatus === 409) {
+        const detailResult = await requestController.runDetailRequest(() =>
+          getAdminSecretaryEvent({
+            adminId: demoAdminId,
+            adminProgrammes: demoAdminProgrammes,
+            adminLevel,
+            eventId: currentDetail.id,
+          }),
+        )
+        if (detailResult.status === 'stale') {
+          return
+        }
+        if (detailResult.status === 'success') {
+          setSelectedDetail(detailResult.value)
+          setSelectedEvent(detailResult.value)
+          setDeleteConfirmation('')
+        }
+      }
+      setDeletePending(false)
+      return
+    }
+
+    const result = mutationResult.value
+    if (!result.deleted) {
+      setDeleteError('The event was not deleted. Please try again.')
+      setDeletePending(false)
+      return
+    }
+    setDeleteSuccess(adminEventForceDeleteSuccessMessage(result))
+    const nextOffset = adminEventListOffsetAfterDeletion(offset, events.length, pageSize)
+    closeDetail()
+    if (nextOffset !== offset) {
+      setOffset(nextOffset)
+    } else {
+      await fetchEvents(false)
+    }
+  }
 
   if (authenticationResetPending) {
     return null
@@ -605,8 +763,8 @@ export const AdminSecretaryEventsPage = () => {
   return (
     <div className="page admin-secretary-events-page">
       <PageHero
-        title="Secretary Events"
-        subtitle="Master Admin - teaching schedule visibility"
+        title="Secretary/PC Events"
+        subtitle="Master Admin - review scheduled Secretary and Programme PC teaching events"
         actions={
           <button
             type="button"
@@ -623,7 +781,7 @@ export const AdminSecretaryEventsPage = () => {
       <section className="card filter-bar admin-secretary-events-filters">
         <div className="admin-filter-summary">
           <span>Filters</span>
-          <strong>{hasFilters ? 'Active filters applied' : 'All secretary events'}</strong>
+          <strong>{hasFilters ? 'Active filters applied' : 'All Secretary/PC events'}</strong>
         </div>
         <label className="admin-secretary-events-search">
           Search
@@ -661,6 +819,20 @@ export const AdminSecretaryEventsPage = () => {
                 {posting.displayName ? `${posting.code} - ${posting.displayName}` : posting.code}
               </option>
             ))}
+          </select>
+        </label>
+        <label>
+          Source
+          <select
+            value={filters.sourceType}
+            onChange={(event) => updateFilter(
+              'sourceType',
+              event.target.value as AdminSecretaryEventSourceFilter,
+            )}
+          >
+            <option value="all">All sources</option>
+            <option value="secretary">Secretary</option>
+            <option value="programme_pc">Programme PC</option>
           </select>
         </label>
         <label>
@@ -708,12 +880,18 @@ export const AdminSecretaryEventsPage = () => {
         </section>
       ) : null}
 
-      <section className="secretary-event-metrics" aria-label="Secretary event counts">
+      <section className="secretary-event-metrics" aria-label="Secretary/PC event counts">
         <MetricTile label="Events" value={summary.totalEvents} />
         <MetricTile label="With attendance" value={summary.withAttendance} />
         <MetricTile label="NHG attendances" value={summary.totalAttendanceCount} />
         <MetricTile label="Non-NHG attendances" value={summary.totalExternalAttendanceCount} />
       </section>
+
+      {deleteSuccess ? (
+        <section className="inline-callout callout-success" role="status">
+          <span>{deleteSuccess}</span>
+        </section>
+      ) : null}
 
       {eventsError && events.length > 0 ? (
         <section className="inline-callout callout-warning">
@@ -722,10 +900,10 @@ export const AdminSecretaryEventsPage = () => {
       ) : null}
 
       {eventsLoading ? (
-        <section className="card warning-state-card">Loading secretary events...</section>
+        <section className="card warning-state-card">Loading Secretary/PC events...</section>
       ) : eventsError && events.length === 0 ? (
         <section className="card warning-state-card">
-          <strong>Secretary events could not be loaded.</strong>
+          <strong>Secretary/PC events could not be loaded.</strong>
           <p>{eventsError}</p>
           <button type="button" className="button button-secondary" onClick={() => void fetchEvents(true)}>
             Retry
@@ -733,11 +911,11 @@ export const AdminSecretaryEventsPage = () => {
         </section>
       ) : events.length === 0 ? (
         <section className="card warning-state-card">
-          <strong>{hasFilters ? 'No secretary events match these filters' : 'No secretary events yet'}</strong>
+          <strong>{hasFilters ? 'No Secretary/PC events match these filters' : 'No Secretary/PC events yet'}</strong>
           <p>
             {selectedPeriod
-              ? `No scheduled secretary-created events are visible for ${selectedPeriod.label}.`
-              : 'Scheduled secretary-created events will appear here after secretaries create them.'}
+              ? `No scheduled Secretary or Programme PC events are visible for ${selectedPeriod.label}.`
+              : 'Scheduled Secretary and Programme PC events will appear here after they are created.'}
           </p>
         </section>
       ) : (
@@ -745,7 +923,7 @@ export const AdminSecretaryEventsPage = () => {
           <div className="warning-group-header">
             <div>
               <span className="warning-group-kicker">Teaching schedule</span>
-              <h2>Secretary-created scheduled events</h2>
+              <h2>Secretary/PC scheduled events</h2>
             </div>
             <div className="parsed-data-count-status">
               {isRefetching ? <span className="parsed-data-updating">Refreshing...</span> : null}
@@ -806,7 +984,7 @@ export const AdminSecretaryEventsPage = () => {
                     <td>{formatDuration(event.durationHours)}</td>
                     <td>
                       <div className="secretary-event-stack">
-                        <strong>{event.attendanceCount + event.externalAttendanceCount}</strong>
+                        <strong>{event.totalAttendanceCount}</strong>
                       </div>
                     </td>
                     <td>
@@ -826,7 +1004,15 @@ export const AdminSecretaryEventsPage = () => {
                       </div>
                     </td>
                     <td className="secretary-event-source-cell">
-                      <StatusBadge label={sourceLabel(event)} tone={event.createdByRole ? 'info' : 'warning'} />
+                      <div className="secretary-event-stack">
+                        <StatusBadge
+                          label={adminTeachingEventSourceLabel(event.sourceType)}
+                          tone={sourceBadgeTone(event)}
+                        />
+                        {event.sourceType === 'programme_pc' && event.createdForProgrammeCode ? (
+                          <span>Owner: {event.createdForProgrammeCode}</span>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="cell-chevron">
                       <IconChevRight size={14} />
@@ -836,20 +1022,20 @@ export const AdminSecretaryEventsPage = () => {
               </tbody>
             </table>
           </div>
-          <div className="responsive-card-list admin-mobile-record-list admin-secretary-events-mobile-card-list" aria-label="Secretary event cards">
+          <div className="responsive-card-list admin-mobile-record-list admin-secretary-events-mobile-card-list" aria-label="Secretary/PC event cards">
             {events.map((event) => (
               <button
                 key={`${event.id}-mobile`}
                 type="button"
                 className="mobile-record-card admin-mobile-record-card admin-secretary-events-mobile-card"
                 onClick={() => openDetail(event)}
-                aria-label={`Open secretary event detail for ${event.teachingName}`}
+                aria-label={`Open Secretary/PC event detail for ${event.teachingName}`}
               >
                 <span className="admin-mobile-card-header">
                   <span className="admin-mobile-card-title safe-wrap">{event.teachingName}</span>
                   <StatusBadge
-                    label={event.cmePointsAwarded ? 'CME Yes' : 'No CME'}
-                    tone={event.cmePointsAwarded ? 'success' : 'neutral'}
+                    label={adminTeachingEventSourceLabel(event.sourceType)}
+                    tone={sourceBadgeTone(event)}
                   />
                 </span>
                 <span className="admin-mobile-card-meta">
@@ -861,17 +1047,23 @@ export const AdminSecretaryEventsPage = () => {
                     ])}
                   </span>
                   <span className="admin-mobile-card-source safe-wrap">
-                    {compactParts([event.postingCode, compactSourceLabel(event)])}
+                    {compactParts([event.postingCode, event.postingDisplayName])}
                   </span>
+                  {event.sourceType === 'programme_pc' && event.createdForProgrammeCode ? (
+                    <span className="admin-mobile-card-source safe-wrap">
+                      Owner programme: {event.createdForProgrammeCode}
+                    </span>
+                  ) : null}
                   {event.sessionTypeName ? (
                     <span className="safe-wrap">{event.sessionTypeName}</span>
                   ) : null}
                   <span>
-                    NHG {event.attendanceCount} - Non-NHG {event.externalAttendanceCount}
+                    NHG {event.nativeAttendanceCount} - Non-NHG {event.externalAttendanceCount} - Total {event.totalAttendanceCount}
                   </span>
-                  {event.smcEventCode || event.isRecurring ? (
+                  {event.cmePointsAwarded || event.smcEventCode || event.isRecurring ? (
                     <span className="admin-mobile-card-source safe-wrap">
                       {compactParts([
+                        event.cmePointsAwarded ? 'CME awarded' : 'No CME',
                         event.smcEventCode ? `SMC ${event.smcEventCode}` : null,
                         event.isRecurring ? 'Recurring series' : null,
                       ])}
@@ -908,9 +1100,44 @@ export const AdminSecretaryEventsPage = () => {
       )}
 
       <DetailDrawer
-        title={activeDetail?.teachingName ?? 'Secretary event detail'}
+        title={activeDetail?.teachingName ?? 'Secretary/PC event detail'}
         open={Boolean(selectedEventId)}
-        onClose={closeDetail}
+        onClose={requestCloseDetail}
+        closeDisabled={deletePending}
+        busy={deletePending}
+        footer={currentDetail && canForceDelete ? (
+          deleteConfirmationOpen ? (
+            <div className="admin-event-delete-footer-actions">
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={cancelDeleteConfirmation}
+                disabled={deletePending}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button button-danger"
+                onClick={() => void submitForceDelete()}
+                disabled={!deleteConfirmationValid || deletePending}
+                aria-label="Permanently delete event and all linked attendance submissions"
+              >
+                {deletePending ? 'Deleting event...' : 'Permanently delete event'}
+              </button>
+            </div>
+          ) : (
+            <button
+              ref={deleteButtonRef}
+              type="button"
+              className="button button-danger"
+              onClick={beginDeleteConfirmation}
+              aria-label="Delete event and all linked attendance submissions"
+            >
+              Delete event
+            </button>
+          )
+        ) : undefined}
       >
         {detailLoading ? (
           <div className="warning-detail">
@@ -932,9 +1159,12 @@ export const AdminSecretaryEventsPage = () => {
           <div className="warning-detail secretary-event-detail">
             <div className="detail-block">
               <div className="admin-log-detail-heading">
-                <StatusBadge label={sourceLabel(activeDetail)} tone={activeDetail.createdByRole ? 'info' : 'warning'} />
                 <StatusBadge
-                  label={activeDetail.hasAttendance ? 'Attendance submitted' : 'No attendance'}
+                  label={adminTeachingEventSourceLabel(activeDetail.sourceType)}
+                  tone={sourceBadgeTone(activeDetail)}
+                />
+                <StatusBadge
+                  label={activeDetail.hasAttendance ? 'Attendance submitted' : 'No submitted attendance'}
                   tone={activeDetail.hasAttendance ? 'success' : 'neutral'}
                 />
                 {activeDetail.isRecurring ? <StatusBadge label="Recurring" tone="info" /> : null}
@@ -953,8 +1183,12 @@ export const AdminSecretaryEventsPage = () => {
                 <DetailField label="Start time" value={formatTime(activeDetail.startTime)} />
                 <DetailField label="End time" value={formatTime(activeDetail.endTime)} />
                 <DetailField label="Duration" value={formatDuration(activeDetail.durationHours)} />
-                <DetailField label="Created by role" value={activeDetail.createdByRole ?? 'legacy secretary'} />
+                <DetailField label="Created by role" value={activeDetail.createdByRole} />
+                <DetailField label="Event mode" value={activeDetail.isAdhoc ? 'Ad-hoc' : 'Scheduled'} />
                 <DetailField label="Created at" value={formatDate(activeDetail.createdAt)} />
+                {activeDetail.sourceType === 'programme_pc' && activeDetail.createdForProgrammeCode ? (
+                  <DetailField label="Owner programme" value={activeDetail.createdForProgrammeCode} />
+                ) : null}
               </div>
             </div>
 
@@ -971,13 +1205,13 @@ export const AdminSecretaryEventsPage = () => {
             <div className="detail-block">
               <h3>Attendance counts</h3>
               <div className="parsed-data-detail-grid">
-                <DetailField label="NHG attendance" value={currentDetail?.attendanceCounts.native ?? activeDetail.attendanceCount} />
+                <DetailField label="NHG attendance" value={currentDetail?.attendanceCounts.native ?? activeDetail.nativeAttendanceCount} />
                 <DetailField label="Non-NHG attendance" value={currentDetail?.attendanceCounts.external ?? activeDetail.externalAttendanceCount} />
                 <DetailField
                   label="Total attendance"
                   value={
                     currentDetail?.attendanceCounts.total ??
-                    activeDetail.attendanceCount + activeDetail.externalAttendanceCount
+                    activeDetail.totalAttendanceCount
                   }
                 />
               </div>
@@ -1010,6 +1244,54 @@ export const AdminSecretaryEventsPage = () => {
                 <p className="inline-muted">This event is not attached to a recurrence series.</p>
               )}
             </div>
+
+            {deleteConfirmationOpen && currentDetail ? (
+              <section
+                className="detail-block admin-event-delete-confirmation"
+                aria-labelledby="admin-event-delete-confirmation-heading"
+                aria-live="polite"
+                role="region"
+              >
+                <h3 id="admin-event-delete-confirmation-heading">Confirm permanent deletion</h3>
+                <p className="admin-event-delete-warning">
+                  This permanently deletes the event and all linked attendance submissions. This action cannot be undone.
+                </p>
+                <div className="admin-event-delete-impact" aria-label="Attendance deletion impact">
+                  <span><strong>{currentDetail.attendanceCounts.native}</strong> NHG Resident attendance submissions</span>
+                  <span><strong>{currentDetail.attendanceCounts.external}</strong> Non-NHG Resident attendance submissions</span>
+                  <span><strong>{currentDetail.attendanceCounts.total}</strong> total attendance submissions</span>
+                </div>
+                <label>
+                  Deletion reason
+                  <textarea
+                    ref={deleteReasonInputRef}
+                    value={deleteReason}
+                    onChange={(event) => setDeleteReason(event.target.value)}
+                    rows={3}
+                    disabled={deletePending}
+                    placeholder="Required operational reason"
+                    aria-required="true"
+                  />
+                </label>
+                <label>
+                  Type DELETE to confirm
+                  <input
+                    type="text"
+                    value={deleteConfirmation}
+                    onChange={(event) => setDeleteConfirmation(event.target.value)}
+                    autoComplete="off"
+                    spellCheck={false}
+                    disabled={deletePending}
+                    aria-required="true"
+                  />
+                </label>
+                {deleteError ? (
+                  <div className="inline-callout callout-error" role="alert">
+                    <span>{deleteError}</span>
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
           </div>
         ) : null}
       </DetailDrawer>

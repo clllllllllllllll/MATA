@@ -28,6 +28,8 @@ from app.schemas import (
     AdminResidentSubmissionDetailResponse,
     AdminResidentSubmissionListResponse,
     AdminSecretaryEventDetailResponse,
+    AdminSecretaryEventForceDeleteRequest,
+    AdminSecretaryEventForceDeleteResponse,
     AdminSecretaryEventListResponse,
     AdminLogActorRole,
     AdminLogDetailResponse,
@@ -2875,6 +2877,7 @@ async def list_admin_secretary_events(
     has_attendance: bool | None = Query(default=None),
     session_type_id: UUID | None = Query(default=None),
     series_id: UUID | None = Query(default=None),
+    source_type: Literal["all", "secretary", "programme_pc"] = Query(default="all"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     admin_context: AdminContext = Depends(require_admin_context),
@@ -2908,6 +2911,7 @@ async def list_admin_secretary_events(
         has_attendance=has_attendance,
         session_type_id=session_type_id,
         series_id=series_id,
+        source_type=source_type,
         limit=limit,
         offset=offset,
     )
@@ -2929,6 +2933,34 @@ async def get_admin_secretary_event(
         )
     payload = await admin_secretary_events.get_secretary_event(db, event_id=event_id)
     return AdminSecretaryEventDetailResponse.model_validate(payload)
+
+
+@router.post(
+    "/secretary-events/{event_id}/force-delete",
+    response_model=AdminSecretaryEventForceDeleteResponse,
+)
+async def force_delete_admin_secretary_event(
+    event_id: UUID,
+    request: AdminSecretaryEventForceDeleteRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> AdminSecretaryEventForceDeleteResponse:
+    _require_master_admin(admin_context)
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    payload = await admin_secretary_events.force_delete_event(
+        db,
+        event_id=event_id,
+        reason=request.reason,
+        expected_native_attendance_count=request.expected_native_attendance_count,
+        expected_external_attendance_count=request.expected_external_attendance_count,
+        actor=_admin_actor_context(admin_context),
+    )
+    return AdminSecretaryEventForceDeleteResponse.model_validate(payload)
 
 
 @router.get(

@@ -7,6 +7,8 @@ interface DetailDrawerProps {
   onClose: () => void
   children: ReactNode
   footer?: ReactNode
+  closeDisabled?: boolean
+  busy?: boolean
 }
 
 export const DetailDrawer = ({
@@ -15,6 +17,8 @@ export const DetailDrawer = ({
   onClose,
   children,
   footer,
+  closeDisabled = false,
+  busy = false,
 }: DetailDrawerProps) => {
   const titleId = useId()
 
@@ -25,7 +29,7 @@ export const DetailDrawer = ({
 
     const previousOverflow = document.body.style.overflow
     const onEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' && !closeDisabled) {
         onClose()
       }
     }
@@ -37,7 +41,7 @@ export const DetailDrawer = ({
       document.body.style.overflow = previousOverflow
       document.removeEventListener('keydown', onEscape)
     }
-  }, [onClose, open])
+  }, [closeDisabled, onClose, open])
 
   if (!open) {
     return null
@@ -45,15 +49,28 @@ export const DetailDrawer = ({
 
   return (
     <>
-      <button type="button" className="scrim drawer-backdrop" onClick={onClose} aria-label="Close drawer" />
-      <aside className="drawer" aria-modal="true" aria-labelledby={titleId} role="dialog">
+      <button
+        type="button"
+        className="scrim drawer-backdrop"
+        onClick={onClose}
+        aria-label={closeDisabled ? 'Close drawer unavailable while action is pending' : 'Close drawer'}
+        disabled={closeDisabled}
+      />
+      <aside
+        className="drawer"
+        aria-busy={busy || undefined}
+        aria-modal="true"
+        aria-labelledby={titleId}
+        role="dialog"
+      >
         <header className="drawer-header">
           <h2 className="drawer-title" id={titleId}>{title}</h2>
           <button
             type="button"
             className="button btn button-ghost btn-ghost drawer-close-button"
             onClick={onClose}
-            aria-label="Close drawer"
+            aria-label={closeDisabled ? 'Close drawer unavailable while action is pending' : 'Close drawer'}
+            disabled={closeDisabled}
           >
             <IconX size={18} />
           </button>
