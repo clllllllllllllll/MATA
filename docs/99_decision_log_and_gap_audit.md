@@ -81,6 +81,20 @@ Every important decision made during the project, with reasoning and consequence
 - **Do not change without PM/stakeholder approval:** Yes
 ---
 
+#### Decision: Two-stage programme/institution posting mapping rollout (Phase 5B)
+- **Status:** ✅ Confirmed and Stage 1 implemented
+- **Decision:** Non-NHG registration and schedule updates resolve `(programme_code, institution_code)` only through `programme_institution_posting_map`. The resolver trims/uppercases inputs, rejects blanks/control characters, requires one active row with a non-null valid posting FK, and fails closed for pending, inactive, missing, or malformed configuration.
+- **Stage 1:** Create generic backend/frontend infrastructure and seed exactly one TTSH row for each of the 28 baseline programmes. All 28 rows are `pending`, all posting codes are `NULL`, and active count is zero. There is no GERI exception and `GERI + TTSH -> TTSHGerMed` is not activated.
+- **Stage 2:** Await one complete owner-approved table of exactly 28 unique TTSH mappings. Apply it through one separate transactional data-only Alembic migration only after validating the entire list, every programme, every posting code, every target mapping row, duplicates, blanks, and final counts. Activate all 28 together or roll back all changes. No placeholders, inferred codes, partial activation, or manual production SQL.
+- **Public options:** TTSH and all 28 programmes remain visible during Stage 1; every pair is unavailable/pending and cannot be submitted. Inactive rows are omitted. Posting codes are never exposed by the registration-options response.
+- **Scalability:** Future KTPH, WH, or other institutions are added through mapping rows only. No institution enum, resolver branch, or frontend production array is allowed.
+- **Forbidden derivation:** Do not construct codes, fuzzy-match metadata, use posting prefixes, pick a first candidate, or fall back to `programmes.native_teaching_posting_code`, Secretary programme pools, teaching targets, or `posting_codes.institution`.
+- **Isolation:** External-registration mappings do not grant Secretary event creation/visibility, alter native resident visibility, populate `native_teaching_posting_code`, toggle `supports_secretary_events`, or change compliance attribution.
+- **Reference file and section:** `schema.md` § `programme_institution_posting_map`; `api.md` § Non-NHG Resident Endpoints; `business-logic.md` § BL-12; `auth-account-contract.md` § Non-NHG Resident Register + MCR Login
+- **Do not change without PM/stakeholder approval:** Yes
+
+---
+
 #### Decision: Programme PC teaching event CRUD before compliance
 - **Status:** Implemented in Phase 4B
 - **Implementation phase:** Implemented in Phase 4B.
@@ -475,14 +489,14 @@ Every important decision made during the project, with reasoning and consequence
 #### Decision A: Non-NHG Resident forecast posting schedule (Phase 5B)
 - **Status:** ✅ Confirmed Phase 5B requirement
 - **Decision:** Replace the single registration field "current NHG posting" with a repeatable "Upcoming NHG postings" section.
-- **Schedule row fields:** Each row captures `start_date`, `end_date`, `programme_code` displayed as code plus full programme name, `institution` limited to `TTSH`, `WH`, or `KTPH`, and a resolved `posting_code` from `posting_codes`.
+- **Schedule row fields:** Each row captures `start_date`, `end_date`, `programme_code` displayed as code plus full programme name, and an institution supplied by the backend registration-options response. The backend resolves the canonical posting code from `programme_institution_posting_map`; the client does not submit it. Current Stage 1 data exposes TTSH only.
 - **Date ranges:** Ranges may cross calendar months, for example `8 Jan` to `7 Feb`.
 - **UI direction:** Use a multi-row "Add posting row" interaction.
 - **Storage:** Persist date-bounded rows in `external_resident_postings`. `external_residents.current_nhg_posting_code` may remain as a current/cache/backward-compatibility pointer if implementation needs it.
 - **Authorization-sensitive derivation:** Once forecast posting schedule is implemented, event/ad-hoc derivation must use the date-matching `external_resident_postings` row.
 - **Range validation:** Rows for the same Non-NHG Resident must not overlap. Gaps are allowed, but event/ad-hoc options for a date in a gap return unavailable/no posting for selected date.
 - **Identity and compliance:** Global MCR uniqueness still applies. Non-NHG attendance remains export-only and excluded from NHG compliance, clawback, numerator, denominator, surplus, snapshots, and native reports.
-- **Posting-code resolution:** Do not concatenate strings to create RDB posting codes. Resolve `posting_code` against `posting_codes` using validated/configured mapping from selected institution plus programme/department. Multiple matches require explicit selection; no match returns a clear unavailable/invalid state.
+- **Posting-code resolution:** Do not concatenate strings or search metadata to create/choose RDB posting codes. Require one exact active `programme_institution_posting_map` row; pending, inactive, missing, or malformed configuration returns a controlled unavailable state.
 - **Reference file and section:** `schema.md` § `external_resident_postings`; `api.md` § Non-NHG Resident Endpoints; `business-logic.md` § BL-12
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -1210,6 +1224,7 @@ These are implementation errors that would fail silently — no exception thrown
 | 35 | Non-NHG forecast posting schedule uses date-bounded `external_resident_postings`; `current_nhg_posting_code` is not the long-term sole derivation source | Supports cross-month postings and date-specific authorization | PM / Programme Director | Non-NHG resident registration/update; BL-12 |
 | 36 | Posting codes must resolve through `posting_codes` and validated/configured mapping, never string concatenation or regex | Data integrity for non-uniform RDB posting codes | PM / Programme Director | Posting selection, registration, ad-hoc options |
 | 37 | Native programme to TTSH teaching-posting visibility requires explicit mapping, not string inference | Avoids accidental cross-department event exposure | PM / Programme Director | `programmes.native_teaching_posting_code` or `programme_teaching_posting_map` |
+| 38 | Non-NHG programme/institution mapping uses a two-stage all-pending then all-approved rollout, with no GERI exception and no cross-domain fallback | Prevents guessed posting identity, partial rollout, and accidental Secretary/native/compliance coupling | PM / Programme Director | `programme_institution_posting_map` and trusted resolver |
 
 > **⚠️ Most likely LLM mistake:** Changing the 70% threshold to 75% or 65% because it "seems more reasonable." The threshold is a regulatory requirement. The silent consequence is every compliance calculation being wrong for every resident.
 

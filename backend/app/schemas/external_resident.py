@@ -29,9 +29,7 @@ class ExternalResidentRegisterRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     mcr: str = Field(min_length=1, max_length=20)
     home_cluster: str = Field(min_length=1, max_length=20)
-    current_nhg_posting_code: str | None = Field(default=None, min_length=1, max_length=50)
-    posting_schedule: list[ExternalResidentPostingScheduleRow] | None = Field(
-        default=None,
+    posting_schedule: list[ExternalResidentPostingScheduleRow] = Field(
         min_length=1,
     )
 
@@ -41,16 +39,6 @@ class ExternalResidentRegisterRequest(BaseModel):
         trimmed = value.strip()
         if not trimmed:
             raise ValueError("value is required")
-        return trimmed
-
-    @field_validator("current_nhg_posting_code")
-    @classmethod
-    def _trim_optional_posting(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        trimmed = value.strip()
-        if not trimmed:
-            raise ValueError("current_nhg_posting_code is required")
         return trimmed
 
     @field_validator("mcr")
@@ -75,14 +63,15 @@ class ExternalResidentRegisterRequest(BaseModel):
 class ExternalResidentPostingUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    current_nhg_posting_code: str = Field(min_length=1, max_length=50)
+    programme_code: str = Field(min_length=1, max_length=20)
+    institution: str = Field(min_length=1, max_length=20)
 
-    @field_validator("current_nhg_posting_code")
+    @field_validator("programme_code", "institution")
     @classmethod
-    def _trim_non_empty(cls, value: str) -> str:
-        trimmed = value.strip()
+    def _trim_upper_non_empty(cls, value: str) -> str:
+        trimmed = value.strip().upper()
         if not trimmed:
-            raise ValueError("current_nhg_posting_code is required")
+            raise ValueError("value is required")
         return trimmed
 
 
@@ -92,7 +81,23 @@ class ExternalResidentPostingScheduleUpdateRequest(BaseModel):
     posting_schedule: list[ExternalResidentPostingScheduleRow] = Field(min_length=1)
 
 
-class ExternalResidentRegistrationOption(BaseModel):
+class ExternalResidentRegistrationInstitution(BaseModel):
+    code: str
+    name: str
+
+
+class ExternalResidentRegistrationAvailability(BaseModel):
+    institution_code: str
+    available: bool
+    status: Literal["pending", "active"]
+
+
+class ExternalResidentRegistrationProgramme(BaseModel):
     programme_code: str
     programme_name: str
-    institutions: list[Literal["TTSH", "WH", "KTPH"]]
+    institutions: list[ExternalResidentRegistrationAvailability]
+
+
+class ExternalResidentRegistrationOptions(BaseModel):
+    institutions: list[ExternalResidentRegistrationInstitution]
+    programmes: list[ExternalResidentRegistrationProgramme]

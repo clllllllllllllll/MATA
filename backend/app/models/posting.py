@@ -4,7 +4,19 @@ from datetime import date, time
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Boolean, Date, ForeignKey, Index, Numeric, String, Time, UniqueConstraint, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Time,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, UUIDTimestampMixin
@@ -38,6 +50,58 @@ class PostingCode(UUIDTimestampMixin, Base):
         Boolean,
         nullable=False,
         server_default=text("false"),
+    )
+
+
+class ProgrammeInstitutionPostingMap(UUIDTimestampMixin, Base):
+    __tablename__ = "programme_institution_posting_map"
+    __table_args__ = (
+        UniqueConstraint(
+            "programme_code",
+            "institution_code",
+            name="uq_programme_institution_posting_map_scope",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'active', 'inactive')",
+            name="ck_programme_institution_posting_map_status",
+        ),
+        CheckConstraint(
+            "status <> 'active' OR posting_code IS NOT NULL",
+            name="ck_programme_institution_posting_map_active_posting",
+        ),
+        Index(
+            "idx_programme_institution_posting_map_institution_status",
+            "institution_code",
+            "status",
+        ),
+        Index(
+            "idx_programme_institution_posting_map_programme_status",
+            "programme_code",
+            "status",
+        ),
+        Index(
+            "idx_programme_institution_posting_map_posting",
+            "posting_code",
+            postgresql_where=text("posting_code IS NOT NULL"),
+        ),
+    )
+
+    programme_code: Mapped[str] = mapped_column(
+        String(20),
+        ForeignKey("programmes.code"),
+        nullable=False,
+    )
+    institution_code: Mapped[str] = mapped_column(String(20), nullable=False)
+    posting_code: Mapped[str | None] = mapped_column(
+        String(50),
+        ForeignKey("posting_codes.code"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    display_order: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("0"),
     )
 
 

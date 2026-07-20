@@ -44,10 +44,13 @@ def _assert_local_postgres(database_url: str) -> None:
     if (
         url.drivername != "postgresql+asyncpg"
         or url.host not in {"localhost", "127.0.0.1"}
-        or url.database != "mata_db"
+        or not (
+            url.database == "mata_db"
+            or (url.database or "").startswith("mata_phase5b_verify_")
+        )
     ):
         pytest.fail(
-            "PostgreSQL auth integration tests require the local mata_db test service",
+            "PostgreSQL auth integration tests require a local MATA test database",
             pytrace=False,
         )
 

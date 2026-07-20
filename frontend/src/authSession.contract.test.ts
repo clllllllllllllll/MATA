@@ -85,11 +85,18 @@ type SubmitSharedResidentLogin = (options: {
   rawMcr: string
   authenticate: (payload: ResidentLoginPayload) => Promise<StoredAuthSession>
 }) => Promise<{ session: StoredAuthSession; redirectPath: string }>
-type ParseNonNhgRegistrationOptions = (value: unknown) => Array<{
-  programmeCode: string
-  programmeName: string
-  institutions: Array<'TTSH' | 'WH' | 'KTPH'>
-}>
+type ParseNonNhgRegistrationOptions = (value: unknown) => {
+  institutions: Array<{ code: string; name: string }>
+  programmes: Array<{
+    programmeCode: string
+    programmeName: string
+    institutions: Array<{
+      institutionCode: string
+      available: boolean
+      status: 'pending' | 'active'
+    }>
+  }>
+}
 
 const productionAuthModules = await (async () => {
   const moduleServer = await createServer({
@@ -123,40 +130,100 @@ const rawLoginResponse = (user: Record<string, unknown>): RawLoginResponse => ({
   user,
 })
 
-const parsedRegistrationOptions = productionAuthModules.parseNonNhgRegistrationOptions([
-  {
-    programme_code: 'GERI',
-    programme_name: 'Geriatric Medicine',
-    institutions: ['TTSH', 'KTPH'],
-  },
-])
-assert(
-  JSON.stringify(parsedRegistrationOptions) ===
-    JSON.stringify([
-      {
-        programmeCode: 'GERI',
-        programmeName: 'Geriatric Medicine',
-        institutions: ['TTSH', 'KTPH'],
-      },
-    ]),
-  'Non-NHG registration parses backend-supported programme/institution pairs',
-)
-let malformedRegistrationOptionsRejected = false
-try {
-  productionAuthModules.parseNonNhgRegistrationOptions([
+const parsedRegistrationOptions = productionAuthModules.parseNonNhgRegistrationOptions({
+  institutions: [
+    { code: 'TTSH', name: 'TTSH' },
+    { code: 'KTPH', name: 'KTPH' },
+  ],
+  programmes: [
     {
       programme_code: 'GERI',
       programme_name: 'Geriatric Medicine',
-      institutions: ['TTSH', 'UNSUPPORTED'],
+      institutions: [
+        { institution_code: 'TTSH', available: false, status: 'pending' },
+        { institution_code: 'KTPH', available: true, status: 'active' },
+      ],
     },
-  ])
+  ],
+})
+assert(
+  JSON.stringify(parsedRegistrationOptions) ===
+    JSON.stringify({
+      institutions: [
+        { code: 'TTSH', name: 'TTSH' },
+        { code: 'KTPH', name: 'KTPH' },
+      ],
+      programmes: [
+        {
+          programmeCode: 'GERI',
+          programmeName: 'Geriatric Medicine',
+          institutions: [
+            { institutionCode: 'TTSH', available: false, status: 'pending' },
+            { institutionCode: 'KTPH', available: true, status: 'active' },
+          ],
+        },
+      ],
+    }),
+  'Non-NHG registration parses backend mapping availability states',
+)
+let malformedRegistrationOptionsRejected = false
+try {
+  productionAuthModules.parseNonNhgRegistrationOptions({
+    institutions: [{ code: 'TTSH', name: 'TTSH' }],
+    programmes: [
+      {
+        programme_code: 'GERI',
+        programme_name: 'Geriatric Medicine',
+        institutions: [
+          { institution_code: 'TTSH', available: true, status: 'pending' },
+        ],
+      },
+    ],
+  })
 } catch (error) {
   malformedRegistrationOptionsRejected =
     error instanceof Error && error.message === 'Malformed registration options response.'
 }
 assert(
   malformedRegistrationOptionsRejected,
-  'Non-NHG registration fails closed on unsupported backend institution options',
+  'Non-NHG registration fails closed on inconsistent backend mapping states',
+)
+const twentyEightPendingProgrammes = Array.from({ length: 28 }, (_value, index) => ({
+  programme_code: `P${String(index + 1).padStart(2, '0')}`,
+  programme_name: `Programme ${index + 1}`,
+  institutions: [
+    { institution_code: 'TTSH', available: false, status: 'pending' },
+  ],
+}))
+const parsedPendingOptions = productionAuthModules.parseNonNhgRegistrationOptions({
+  institutions: [{ code: 'TTSH', name: 'TTSH' }],
+  programmes: twentyEightPendingProgrammes,
+})
+assert(
+  parsedPendingOptions.programmes.length === 28 &&
+    parsedPendingOptions.programmes.every((programme) =>
+      programme.institutions.every(
+        (mapping) => !mapping.available && mapping.status === 'pending',
+      ),
+  ),
+  'Non-NHG registration parser preserves all 28 pending programmes',
+)
+const parsedFutureInstitution = productionAuthModules.parseNonNhgRegistrationOptions({
+  institutions: [{ code: 'WH', name: 'Woodlands Health' }],
+  programmes: [
+    {
+      programme_code: 'DR',
+      programme_name: 'Diagnostic Radiology',
+      institutions: [
+        { institution_code: 'WH', available: true, status: 'active' },
+      ],
+    },
+  ],
+})
+assert(
+  parsedFutureInstitution.institutions[0]?.code === 'WH' &&
+    parsedFutureInstitution.programmes[0]?.institutions[0]?.available === true,
+  'Non-NHG registration parser accepts future backend-configured institutions without source changes',
 )
 
 const assertInvalidRawLoginResponse = async (
@@ -601,9 +668,9 @@ assert(
 )
 assert(
   registrationPageSource.includes('postingResolutionError') &&
-    registrationPageSource.includes('No posting could be resolved') &&
+    registrationPageSource.includes('Posting configuration') &&
     registrationPageSource.includes('auth-schedule-row-error'),
-  'Non-NHG registration shows posting-resolution validation near schedule rows',
+  'Non-NHG registration shows configuration validation near schedule rows',
 )
 assert(
   registrationPageSource.includes("error.status === 429") &&
@@ -613,7 +680,7 @@ assert(
 assert(
   registrationPageSource.includes('formatSchedulePosting') &&
     registrationPageSource.includes('auth-confirmation-schedule'),
-  'Non-NHG registration success recap displays resolved posting codes as read-only output',
+  'Non-NHG registration success recap displays programme/institution schedule details',
 )
 assert(
   !loginPageSource.includes('auth-register-cta is-disabled') &&
@@ -626,6 +693,28 @@ assert(
     !registrationPageSource.includes('const PROGRAMME_OPTIONS') &&
     !registrationPageSource.includes('const INSTITUTION_OPTIONS'),
   'public Non-NHG registration uses backend-supported pairs without admin APIs or a duplicate static matrix',
+)
+assert(
+  registrationPageSource.includes('registrationOptionsLoading') &&
+    registrationPageSource.includes('Loading posting options...') &&
+    registrationPageSource.includes('REGISTRATION_OPTIONS_ERROR') &&
+    registrationPageSource.includes('NO_CONFIGURED_INSTITUTIONS'),
+  'Non-NHG registration keeps loading, request-error, and empty-configuration states distinct',
+)
+assert(
+  registrationPageSource.includes('PENDING_MAPPING_MESSAGE') &&
+    registrationPageSource.includes('Posting configuration for this programme is pending.') &&
+    registrationPageSource.includes('disabled={!mapping.available}') &&
+    registrationPageSource.includes('isAvailableScheduleRow'),
+  'pending mappings remain visible, unavailable, and unable to satisfy submission validation',
+)
+assert(
+  !registrationPageSource.includes('posting_code') &&
+    !registrationPageSource.includes('TTSHGerMed') &&
+    !authApiSource.includes("value === 'TTSH'") &&
+    !authApiSource.includes("value === 'KTPH'") &&
+    !authApiSource.includes("value === 'WH'"),
+  'Non-NHG registration UI exposes no posting code and has no institution-specific parser branches',
 )
 assert(
   navigationSource.includes("id: 'master_admin'") &&

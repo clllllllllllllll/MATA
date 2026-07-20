@@ -27,6 +27,7 @@ References checked:
 - Secretary scope is `posting_code`; Programme PC scope is `programme_scope`.
 - NHG Resident current posting is always derived server-side from `resident_postings` at request time.
 - Non-NHG Resident date-specific posting is not derived from native `resident_postings`; derive it from `external_resident_postings` where event/ad-hoc logic needs a selected date.
+- Non-NHG programme/institution selection resolves only through `programme_institution_posting_map`. It must not reuse native teaching mappings, Secretary pools/capabilities, teaching targets, posting metadata, or constructed posting-code strings.
 - MATA external resident tokens must not carry current posting or posting schedule claims as trusted authorization data.
 - User-facing labels are NHG Resident and Non-NHG Resident. Existing backend/internal names such as `resident`, `external_resident`, `/external/*`, and `external_attendance_records` remain acceptable.
 - MCR-only resident login is a legacy low-assurance identity flow, not strong authentication. It is preserved for resident UX compatibility and must be tightly scoped to the resident's own NHG Resident or Non-NHG Resident APIs.
@@ -48,6 +49,7 @@ Backend:
 - `backend/app/routers/auth.py` has `POST /auth/login` and `GET /auth/me`.
 - `backend/app/services/auth.py` issues `stub.<role>.<id>` tokens in stub/demo mode. In Supabase mode, staff sessions come from Supabase Auth and NHG/Non-NHG resident sessions use backend-signed MATA resident tokens.
 - `backend/app/routers/external_residents.py` and `backend/app/services/external_residents.py` already implement partial Non-NHG self-enrolment and posting update.
+- Phase 5B mapping infrastructure adds `programme_institution_posting_map` and one trusted resolver shared by registration options, registration, current-posting compatibility update, and schedule replacement. The infrastructure migration seeds all 28 TTSH mappings as `pending` with null posting codes; no programme, including GERI, is active yet.
 - The current Non-NHG service writes `external_residents` and `external_resident_postings`. Phase 5B posting schedule requirements supersede the older single-current-posting contract: authorization-sensitive event/ad-hoc derivation uses `external_resident_postings` by selected date, while `external_residents.current_nhg_posting_code` may remain a current/cache/backward-compatibility pointer.
 - `users.admin_level` is now the persisted explicit master marker with allowed values `programme` and `master`. Runtime admin context and staff actor audit metadata prefer `request.state.identity` when middleware provides it; direct-header fallback branches are limited to local stub/demo compatibility.
 - `backend/app/dependencies/auth.py` provides central typed identity helpers over `request.state.identity`.
@@ -116,16 +118,17 @@ The MATA resident session token must not contain `posting_code`, current posting
 
 ### Non-NHG Resident Register + MCR Login
 
-5B-F registration input: `name`, `mcr`, `home_cluster`, and `posting_schedule[]` rows containing `start_date`, `end_date`, `programme_code`, and `institution`. The client does not send editable `posting_code`; the backend resolves posting codes from trusted programme/institution posting configuration. `current_nhg_posting_code` may remain a compatibility/cache field, but it is not the current UI contract.
+5B-F registration input: `name`, `mcr`, `home_cluster`, and `posting_schedule[]` rows containing `start_date`, `end_date`, `programme_code`, and `institution`. The client does not send editable `posting_code`; the backend resolves posting codes only from active `programme_institution_posting_map` rows. `current_nhg_posting_code` may remain a compatibility/cache field, but it is backend-derived and is not the current UI contract.
 
-The public registration form loads its programme/institution pairs from `GET /external-residents/registration-options`, which is derived from the same trusted resolution configuration. Unresolved or ambiguous pairs are not presented, but the registration endpoint remains authoritative and revalidates every submitted row.
+The public registration form loads its data from `GET /external-residents/registration-options`, which is derived from the same trusted resolution table. Pending pairs remain visible with `available = false`; inactive pairs are omitted. The registration endpoint remains authoritative and revalidates every submitted row.
 
 Source table: `external_residents`.
 
 Server behaviour:
 - Accept only `home_cluster = NUH | SingHealth`.
 - Reject MCR if it exists in `residents` or `external_residents`.
-- Validate each schedule row and resolve exactly one safe posting code from trusted data/config; reject unresolved or ambiguous schedule rows with `422`.
+- Normalize each schedule pair and require one active mapping with a non-null, referentially valid posting code; pending, inactive, missing, malformed, or invalid rows fail closed with controlled `422`.
+- Resolve every row before writing. A single unavailable row creates no partial external resident or posting schedule.
 - Do not create `users`, native `residents`, or native `resident_postings`.
 - After registration, use the same shared Resident MCR field and neutral `role = resident` request as NHG Residents. The backend returns `user.role = external_resident` when the unique active match is in `external_residents`.
 - In `AUTH_MODE=supabase`, do not create a Supabase Auth user for the external resident.
@@ -349,10 +352,19 @@ Current Non-NHG registration:
 - Fields: name, MCR, home cluster, and posting schedule rows with date range, programme, and institution.
 - Enforces global MCR uniqueness server-side.
 - After registration, login remains MCR-only.
+- Current backend configuration returns TTSH and all 28 programmes, but every programme is pending/unavailable until the complete owner-approved mapping table arrives.
+- Loading, request error, no configured institutions, pending configuration, active availability, and submission validation are distinct UI states.
 
 Implemented Non-NHG posting schedule work:
-- Schedule rows capture date range, programme code plus full programme name, and institution (`TTSH`, `WH`, `KTPH`). Resolved posting code is backend-derived and may be displayed only as read-only output.
-- Rows validate date order, overlap, controlled institution values, and posting-code resolution without string-generated or client-entered posting codes.
+- Schedule rows capture date range, programme code plus full programme name, and an institution supplied by the backend options response. Resolved posting code is backend-derived and is not requested or displayed in the registration form.
+- Rows validate date order, overlap, and mapping availability without string-generated or client-entered posting codes.
+- Future KTPH, WH, or other institutions require mapping data only; no frontend institution union or resolver branch exists.
+
+Phase 5B programme/institution mapping rollout:
+
+- **Stage 1 (implemented):** generic table/service/API/frontend infrastructure plus exactly 28 pending TTSH rows, zero active mappings, and zero non-null posting codes.
+- **Stage 2 (awaiting owner input):** receive one complete approved set of exactly 28 TTSH mappings and apply it through one separate all-or-nothing data-only Alembic migration. The migration must validate every programme, posting code, target row, duplicate, blank, and final count before committing. No GERI exception and no inferred/placeholder code is allowed.
+- External-registration mapping remains isolated from native teaching visibility, Secretary capabilities, event creation, and compliance attribution.
 
 ## Implementation TODOs
 

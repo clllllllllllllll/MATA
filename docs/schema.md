@@ -66,7 +66,7 @@ Master list of residency programmes.
 
 **Note:** FM uses the standard compliance engine. There is no `compliance_variant` column — FM compliance is handled through FM-specific rule annotations within the standard path. See `docs/business-logic.md` § BL-FM.
 
-**Native teaching posting mapping (planned / required for Phase 5B):** NHG Resident visibility for native programme department secretary events requires an explicit native-programme-to-TTSH-posting mapping. Preferred single-default schema is a nullable `programmes.native_teaching_posting_code` FK to `posting_codes.code`. If a programme can have multiple default teaching postings, use a separate `programme_teaching_posting_map` table with `programme_code`, `posting_code`, and optional display/order metadata. Do not infer this mapping by string manipulation.
+**Native teaching posting mapping:** NHG Resident visibility for native programme department secretary events uses the nullable `programmes.native_teaching_posting_code` FK. This native visibility field is independent from `programme_institution_posting_map`, which is exclusively for Non-NHG registration and posting-schedule resolution. Activating an external-registration mapping must not populate or change `native_teaching_posting_code`.
 
 **Seed data (from Programme_ABBREV.xlsx — 28 programmes):**
 
@@ -131,6 +131,41 @@ Canonical registry of all posting sites. Seeded from both RDB (active sites) and
 **Important:** Posting codes are NOT derivable by regex from institution+department. Real codes like `MOHHGTG1`, `AICAIC`, `RenCiCommHosp`, `NHGPlyNHGPly` break any uniform pattern. This table is the source of truth — no string parsing.
 
 **Secretary-event visibility capability:** `supports_secretary_events` is a scalable onboarding/capability signal and useful UI metadata. NHG Resident event visibility must stay data-driven (assigned/native source context + valid events/catalogue/global matching) and must not be hardcoded to institution names.
+
+---
+
+## Table: `programme_institution_posting_map`
+
+Authoritative configuration for resolving a Non-NHG Resident's selected programme and institution to one canonical RDB posting code. It is not used for native teaching visibility, Secretary capabilities, event ownership, or compliance attribution.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| id | UUID | PK | |
+| programme_code | VARCHAR(20) | FK → programmes.code, NOT NULL | Exact normalized programme code |
+| institution_code | VARCHAR(20) | NOT NULL | Open configuration value; no database enum, so later institutions require data only |
+| posting_code | VARCHAR(50) | FK → posting_codes.code, nullable | Canonical posting returned only by the trusted backend resolver |
+| status | VARCHAR(20) | NOT NULL, CHECK IN (`pending`, `active`, `inactive`) | `active` requires non-null `posting_code` |
+| display_order | INTEGER | NOT NULL, DEFAULT 0 | Stable public programme ordering |
+| created_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | |
+| updated_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | |
+
+**Constraints and public behavior:**
+
+- `UNIQUE(programme_code, institution_code)` permits only one authoritative row for a pair.
+- `CHECK (status <> 'active' OR posting_code IS NOT NULL)` prevents unsafe activation.
+- `pending` rows are visible in public registration options with `available = false` and may have `posting_code = NULL`.
+- `active` rows are visible with `available = true` only when both foreign keys resolve.
+- `inactive` rows may retain their prior posting code for audit/restoration and are omitted from public registration options.
+- Services trim and uppercase institution/programme codes and reject blanks or control characters. They never construct or infer posting codes.
+
+**Two-stage TTSH rollout:**
+
+1. Stage 1 creates the generic table and seeds exactly one TTSH row for each of the 28 baseline programmes. Every row is `pending`, every `posting_code` is `NULL`, and no GERI exception exists.
+2. Stage 2 waits for one complete owner-approved list of exactly 28 TTSH mappings. One separate transactional data-only Alembic migration must validate the whole set before updating anything, then activate all 28 rows together.
+
+The Stage 2 migration must reject duplicate/missing programme entries, blank or inferred posting codes, missing programme/posting FK targets, and missing TTSH mapping rows. After its update it must verify `active = 28`, `pending = 0`, and `posting_code IS NULL = 0`; any failure rolls back the whole migration. It must leave future KTPH, WH, and other institution rows untouched. No executable placeholder mapping list belongs in a migration and no manual production SQL is permitted.
+
+**Configuration isolation:** This table must never update or grant `programmes.native_teaching_posting_code`, `posting_codes.supports_secretary_events`, Secretary programme pools, native resident visibility, event-creation rights, or compliance posting attribution.
 
 ---
 
@@ -394,7 +429,7 @@ One row per Non-NHG/cross-cluster resident who self-registers to submit attendan
 | name | VARCHAR(100) | NOT NULL | Self-registered display name |
 | mcr | VARCHAR(20) | UNIQUE, NOT NULL | MCR is the login credential. Service layer must also reject MCRs already present in native `residents`. |
 | home_cluster | VARCHAR(20) | NOT NULL, CHECK IN (`NUH`, `SingHealth`) | External home cluster only. No other values accepted. |
-| current_nhg_posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Current/cache/backward-compatibility pointer selected/updated by the Non-NHG Resident. Not derived from native `resident_postings`. Phase 5B date-specific event/ad-hoc derivation uses `external_resident_postings` once the forecast posting schedule is implemented. |
+| current_nhg_posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Current/cache/backward-compatibility pointer derived by the backend from the trusted programme/institution mapping. It is never client-selected and is not derived from native `resident_postings`. |
 | status | VARCHAR(20) | DEFAULT 'active' | `active`, `inactive` |
 
 **Global MCR uniqueness:** MCR is a unique identifier for every doctor. Because native and external identities live in separate tables, enforce cross-table uniqueness in the service layer: registration must reject if the MCR exists in either `residents.mcr` or `external_residents.mcr`.
@@ -424,7 +459,7 @@ Confirmed Phase 5B source for Non-NHG forecasted/date-specific posting derivatio
 - Rows for the same `external_resident_id` must not overlap in date range. Enforce in service validation and preferably with a DB exclusion/constraint when migrations are added.
 - Gaps are allowed. Event/ad-hoc options for a date in a gap return unavailable/no posting for selected date.
 - Date ranges may cross calendar months.
-- Registration/update UI may collect institution (`TTSH`, `WH`, `KTPH`) and programme, but storage must keep the resolved `posting_code` as the operational source.
+- Registration/update UI collects configured institutions and programmes from the public mapping-options endpoint. Current Stage 1 data exposes TTSH only; future KTPH/WH rows appear automatically. Storage keeps only the backend-resolved `posting_code` as the operational source.
 - Current schema does not include `programme_code` or `institution` columns. Preferred implementation is to avoid storing them and derive display metadata from `posting_codes`/`programmes`; add planned audit/display metadata only if later requirements need it.
 
 ---
@@ -971,6 +1006,21 @@ ON posting_codes(institution, department);
 
 CREATE INDEX idx_posting_codes_supports_secretary_events
 ON posting_codes(supports_secretary_events);
+```
+
+#### `programme_institution_posting_map`
+
+```sql
+-- UNIQUE(programme_code, institution_code) covers exact resolver lookup.
+CREATE INDEX idx_programme_institution_posting_map_institution_status
+ON programme_institution_posting_map(institution_code, status);
+
+CREATE INDEX idx_programme_institution_posting_map_programme_status
+ON programme_institution_posting_map(programme_code, status);
+
+CREATE INDEX idx_programme_institution_posting_map_posting
+ON programme_institution_posting_map(posting_code)
+WHERE posting_code IS NOT NULL;
 ```
 
 #### `reporting_periods`

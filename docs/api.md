@@ -1731,17 +1731,39 @@ Non-NHG Residents are Phase 5B pre-compliance scope. They use separate identity 
 
 ### GET `/external-residents/registration-options`
 
-Return the public programme/institution pairs that currently resolve to exactly one canonical posting through the same trusted configuration used by registration. The response does not expose or accept a client-selected posting code. Missing or ambiguous mappings are omitted, and `POST /external-residents/register` independently validates the submitted pair.
+Return the public institutions and programme availability states from `programme_institution_posting_map`. The response never exposes `posting_code`, and registration independently resolves every submitted pair through the same trusted service.
 
 ```json
-[
-  {
-    "programme_code": "GERI",
-    "programme_name": "Geriatric Medicine",
-    "institutions": ["TTSH"]
-  }
-]
+{
+  "institutions": [
+    { "code": "TTSH", "name": "TTSH" }
+  ],
+  "programmes": [
+    {
+      "programme_code": "AIM",
+      "programme_name": "Advanced Internal Medicine",
+      "institutions": [
+        {
+          "institution_code": "TTSH",
+          "available": false,
+          "status": "pending"
+        }
+      ]
+    }
+  ]
+}
 ```
+
+Current Stage 1 response rules:
+
+- exactly one institution, TTSH;
+- all 28 seeded programmes in deterministic seed order;
+- every TTSH mapping has `available = false` and `status = pending`;
+- pending mappings remain visible but cannot be submitted;
+- inactive mappings are omitted;
+- no KTPH, WH, or other institution appears until mapping rows for it exist.
+
+The response is data-driven. Adding a future institution's rows makes it appear without application changes, and changing a valid mapping to `active` makes that pair available without frontend changes.
 
 ### POST `/external-residents/register`
 
@@ -1769,23 +1791,26 @@ Self-register a Non-NHG/cross-cluster resident.
   2. `mcr` must not exist in native `residents`.
   3. `mcr` must not exist in `external_residents`.
   4. Each schedule row must have `start_date <= end_date`; schedule rows must not overlap.
-  5. Each schedule row resolves exactly one posting code from trusted programme/institution posting configuration. The client must not send or choose `posting_code`.
+  5. Each schedule row resolves exactly one `active`, non-null canonical posting code from `programme_institution_posting_map`. The client must not send or choose `posting_code`.
+  6. Pending, inactive, missing, malformed, or referentially invalid mapping rows return controlled `422` errors. Pending uses `Posting configuration for this programme is pending.` so the UI can distinguish configuration readiness from invalid user input.
 - **Writes:** `external_residents` plus one `external_resident_postings` row per resolved schedule row. Do not create `users`, native `residents`, or native `resident_postings` rows.
 - **Response convenience:** May return `current_nhg_posting_code` as today's derived/current posting for display/backward compatibility.
 - **Duplicate/conflict:** `409` when MCR already exists.
+- **Transactionality:** all schedule rows are resolved and validated before any insert. One unavailable row prevents creation of both the resident and all schedule rows.
 
 ### PUT `/external-residents/me/posting`
 
-Update the Non-NHG Resident's current NHG posting pointer. Route name remains for compatibility with older clients; schedule-aware clients should use `/external-residents/me/posting-schedule`.
+Update the Non-NHG Resident's current NHG posting pointer through the trusted mapping resolver. Route name remains for compatibility with older clients; schedule-aware clients should use `/external-residents/me/posting-schedule`.
 
 - **Auth:** Non-NHG Resident only (`external_resident` role)
 - **Body:**
 ```json
 {
-  "current_nhg_posting_code": "KTPHDiagRd"
+  "programme_code": "DR",
+  "institution": "KTPH"
 }
 ```
-- **Validation:** `current_nhg_posting_code` must exist in `posting_codes`.
+- **Validation:** the normalized pair must have an active mapping with a valid canonical posting FK. Client-supplied posting codes are forbidden.
 - **Behaviour:** updates the authenticated Non-NHG Resident's current/cache pointer and current `external_resident_postings` row. No native `resident_postings` rows are created.
 
 ### PUT `/external-residents/me/posting-schedule`
@@ -1806,8 +1831,10 @@ Replace the authenticated Non-NHG Resident's date-specific NHG posting schedule.
   ]
 }
 ```
-- **Validation:** same schedule-row validation and trusted posting-code resolution as registration. If no single safe posting can be resolved, return `422` and keep the existing schedule.
+- **Validation:** same schedule-row validation and trusted mapping resolution as registration. Pending/inactive/missing/malformed mappings return controlled `422`; the existing schedule remains unchanged.
 - **Behaviour:** replaces `external_resident_postings`, updates the current/cache pointer from the resolved schedule, and never creates native `resident_postings`.
+
+The registration mapping is isolated from `programmes.native_teaching_posting_code`, `posting_codes.supports_secretary_events`, Secretary programme pools, native event visibility, and compliance attribution. Activating an external-registration mapping changes none of those capabilities.
 
 ### GET `/resident/events` for Non-NHG Residents
 

@@ -3,9 +3,9 @@ import { Link, useNavigate } from 'react-router-dom'
 import {
   listNonNhgRegistrationOptions,
   registerNonNhgResident,
-  type NonNhgRegistrationOption,
+  type NonNhgRegistrationAvailability,
+  type NonNhgRegistrationOptions,
   type NonNhgRegistrationResult,
-  type NonNhgScheduleInstitution,
 } from '../../api/auth'
 import { ApiRequestError } from '../../api/http'
 import { IconCheck, IconChevRight } from '../../components/icons'
@@ -19,7 +19,7 @@ interface PostingScheduleRowState {
   startDate: string
   endDate: string
   programmeCode: string
-  institution: NonNhgScheduleInstitution | ''
+  institution: string
 }
 
 interface RegistrationFormState {
@@ -47,6 +47,12 @@ const INITIAL_FORM: RegistrationFormState = {
 const REGISTER_ERROR = 'Unable to register. Check your details and try again.'
 const REGISTRATION_RATE_LIMIT_ERROR = 'Too many registration attempts. Please try again later.'
 const REGISTRATION_OPTIONS_ERROR = 'Posting options are unavailable. Please try again later.'
+const NO_CONFIGURED_INSTITUTIONS = 'No institutions are configured for registration.'
+const PENDING_MAPPING_MESSAGE = 'Posting configuration for this programme is pending.'
+const EMPTY_REGISTRATION_OPTIONS: NonNhgRegistrationOptions = {
+  institutions: [],
+  programmes: [],
+}
 
 export const NonNhgRegistrationPage = () => {
   const navigate = useNavigate()
@@ -55,7 +61,10 @@ export const NonNhgRegistrationPage = () => {
   const [submitState, setSubmitState] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle')
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [registrationResult, setRegistrationResult] = useState<NonNhgRegistrationResult | null>(null)
-  const [registrationOptions, setRegistrationOptions] = useState<NonNhgRegistrationOption[]>([])
+  const [registrationOptions, setRegistrationOptions] = useState<NonNhgRegistrationOptions>(
+    EMPTY_REGISTRATION_OPTIONS,
+  )
+  const [registrationOptionsLoading, setRegistrationOptionsLoading] = useState(true)
   const [registrationOptionsError, setRegistrationOptionsError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -65,11 +74,13 @@ export const NonNhgRegistrationPage = () => {
         const options = await listNonNhgRegistrationOptions()
         if (!active) return
         setRegistrationOptions(options)
-        setRegistrationOptionsError(options.length > 0 ? null : REGISTRATION_OPTIONS_ERROR)
+        setRegistrationOptionsError(null)
       } catch {
         if (!active) return
-        setRegistrationOptions([])
+        setRegistrationOptions(EMPTY_REGISTRATION_OPTIONS)
         setRegistrationOptionsError(REGISTRATION_OPTIONS_ERROR)
+      } finally {
+        if (active) setRegistrationOptionsLoading(false)
       }
     }
     void loadRegistrationOptions()
@@ -78,17 +89,35 @@ export const NonNhgRegistrationPage = () => {
     }
   }, [])
 
-  const supportedInstitutions = (programmeCode: string): NonNhgScheduleInstitution[] =>
-    registrationOptions.find((option) => option.programmeCode === programmeCode)?.institutions ?? []
+  const programmeInstitutionMappings = (
+    programmeCode: string,
+  ): NonNhgRegistrationAvailability[] =>
+    registrationOptions.programmes.find((option) => option.programmeCode === programmeCode)
+      ?.institutions ?? []
 
-  const isSupportedScheduleRow = (row: PostingScheduleRowState): boolean =>
-    Boolean(row.institution) && supportedInstitutions(row.programmeCode).includes(
-      row.institution as NonNhgScheduleInstitution,
+  const institutionName = (institutionCode: string): string =>
+    registrationOptions.institutions.find(({ code }) => code === institutionCode)?.name ??
+    institutionCode
+
+  const isAvailableScheduleRow = (row: PostingScheduleRowState): boolean =>
+    Boolean(row.institution) &&
+    programmeInstitutionMappings(row.programmeCode).some(
+      (mapping) =>
+        mapping.institutionCode === row.institution && mapping.available,
     )
 
+  const hasPendingMapping = (row: PostingScheduleRowState): boolean =>
+    Boolean(row.programmeCode) &&
+    programmeInstitutionMappings(row.programmeCode).some(
+      (mapping) => mapping.status === 'pending' && !mapping.available,
+    ) &&
+    !isAvailableScheduleRow(row)
+
   const canSubmit =
+    !registrationOptionsLoading &&
     !registrationOptionsError &&
-    registrationOptions.length > 0 &&
+    registrationOptions.institutions.length > 0 &&
+    registrationOptions.programmes.length > 0 &&
     form.name.trim().length > 0 &&
     form.mcr.trim().length > 0 &&
     Boolean(form.homeCluster) &&
@@ -97,7 +126,7 @@ export const NonNhgRegistrationPage = () => {
       row.endDate &&
       row.startDate <= row.endDate &&
       row.programmeCode &&
-      isSupportedScheduleRow(row),
+      isAvailableScheduleRow(row),
     )
 
   const updateForm = <Key extends keyof RegistrationFormState>(
@@ -123,7 +152,9 @@ export const NonNhgRegistrationPage = () => {
   }
 
   const selectScheduleProgramme = (rowId: string, programmeCode: string) => {
-    const institutions = supportedInstitutions(programmeCode)
+    const firstAvailableInstitution = programmeInstitutionMappings(programmeCode).find(
+      (mapping) => mapping.available,
+    )?.institutionCode
     setForm((prev) => ({
       ...prev,
       postingSchedule: prev.postingSchedule.map((row) =>
@@ -131,7 +162,7 @@ export const NonNhgRegistrationPage = () => {
           ? {
               ...row,
               programmeCode,
-              institution: institutions[0] ?? '',
+              institution: firstAvailableInstitution ?? '',
             }
           : row,
       ),
@@ -179,7 +210,7 @@ export const NonNhgRegistrationPage = () => {
           startDate: row.startDate,
           endDate: row.endDate,
           programmeCode: row.programmeCode,
-          institution: row.institution as NonNhgScheduleInstitution,
+          institution: row.institution,
         })),
       })
       setRegistrationResult(result)
@@ -191,8 +222,8 @@ export const NonNhgRegistrationPage = () => {
           message = REGISTRATION_RATE_LIMIT_ERROR
         } else if (
           error.status === 422 &&
-          (error.message.includes('No posting could be resolved') ||
-            error.message.includes('Multiple postings could be resolved'))
+          (error.message.includes('Posting configuration') ||
+            error.message.includes('No posting configuration'))
         ) {
           message = error.message
         }
@@ -213,20 +244,19 @@ export const NonNhgRegistrationPage = () => {
 
   const postingResolutionError =
     submitError &&
-    (submitError.includes('No posting could be resolved') ||
-      submitError.includes('Multiple postings could be resolved'))
+    (submitError.includes('Posting configuration') ||
+      submitError.includes('No posting configuration'))
       ? submitError
       : null
 
   const formatSchedulePosting = (row: Record<string, unknown>) => {
-    const postingCode = typeof row.posting_code === 'string' ? row.posting_code : ''
     const programmeCode = typeof row.programme_code === 'string' ? row.programme_code : ''
     const institution = typeof row.institution === 'string' ? row.institution : ''
     const startDate = typeof row.start_date === 'string' ? row.start_date : ''
     const endDate = typeof row.end_date === 'string' ? row.end_date : ''
     const scope = [programmeCode, institution].filter(Boolean).join(' - ')
     const dates = [startDate, endDate].filter(Boolean).join(' to ')
-    return [postingCode, scope, dates].filter(Boolean).join(' | ')
+    return [scope, dates].filter(Boolean).join(' | ')
   }
 
   if (submitState === 'success' && registrationResult) {
@@ -269,14 +299,12 @@ export const NonNhgRegistrationPage = () => {
                 {registrationResult.postingSchedule?.length ? (
                   <ul className="auth-confirmation-schedule">
                     {registrationResult.postingSchedule.map((row, index) => (
-                      <li key={`${String(row.posting_code ?? 'posting')}-${index}`}>
+                      <li key={`${String(row.programme_code ?? 'posting')}-${index}`}>
                         {formatSchedulePosting(row)}
                       </li>
                     ))}
                   </ul>
-                ) : (
-                  resident.currentNhgPostingCode
-                )}
+                ) : null}
               </dd>
             </div>
           </dl>
@@ -400,7 +428,7 @@ export const NonNhgRegistrationPage = () => {
                         onChange={(event) => selectScheduleProgramme(row.id, event.target.value)}
                       >
                         <option value="">Select programme</option>
-                        {registrationOptions.map((option) => (
+                        {registrationOptions.programmes.map((option) => (
                           <option value={option.programmeCode} key={option.programmeCode}>
                             {option.programmeCode} - {option.programmeName}
                           </option>
@@ -415,20 +443,31 @@ export const NonNhgRegistrationPage = () => {
                           updateScheduleRow(
                             row.id,
                             'institution',
-                            event.target.value as NonNhgScheduleInstitution,
+                            event.target.value,
                           )
                         }
                         disabled={!row.programmeCode}
                       >
                         <option value="">Select institution</option>
-                        {supportedInstitutions(row.programmeCode).map((institution) => (
-                          <option value={institution} key={institution}>
-                            {institution}
+                        {programmeInstitutionMappings(row.programmeCode).map((mapping) => (
+                          <option
+                            value={mapping.institutionCode}
+                            key={mapping.institutionCode}
+                            disabled={!mapping.available}
+                          >
+                            {institutionName(mapping.institutionCode)}
+                            {mapping.status === 'pending' ? ' - configuration pending' : ''}
                           </option>
                         ))}
                       </select>
                     </label>
                   </div>
+                  {hasPendingMapping(row) ? (
+                    <div className="auth-info-callout" role="status">
+                      <span aria-hidden="true">i</span>
+                      <p>{PENDING_MAPPING_MESSAGE}</p>
+                    </div>
+                  ) : null}
                   {postingResolutionError ? (
                     <div className="auth-schedule-row-error" role="alert">
                       {postingResolutionError}
@@ -437,16 +476,33 @@ export const NonNhgRegistrationPage = () => {
                 </div>
               ))}
             </div>
+            {registrationOptionsLoading ? (
+              <div className="auth-info-callout" role="status">
+                <span aria-hidden="true">i</span>
+                <p>Loading posting options...</p>
+              </div>
+            ) : null}
             {registrationOptionsError ? (
               <div className="auth-schedule-row-error" role="alert">
                 {registrationOptionsError}
+              </div>
+            ) : null}
+            {!registrationOptionsLoading &&
+            !registrationOptionsError &&
+            registrationOptions.institutions.length === 0 ? (
+              <div className="auth-info-callout" role="status">
+                <span aria-hidden="true">i</span>
+                <p>{NO_CONFIGURED_INSTITUTIONS}</p>
               </div>
             ) : null}
             <button
               type="button"
               className="auth-schedule-add"
               onClick={addScheduleRow}
-              disabled={registrationOptions.length === 0}
+              disabled={
+                registrationOptionsLoading ||
+                registrationOptions.institutions.length === 0
+              }
             >
               Add posting row
             </button>

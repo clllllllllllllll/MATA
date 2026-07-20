@@ -31,12 +31,28 @@ interface BackendLoginResponse {
   user: Record<string, unknown>
 }
 
-export type NonNhgScheduleInstitution = 'TTSH' | 'WH' | 'KTPH'
+export type NonNhgMappingStatus = 'pending' | 'active'
 
-export interface NonNhgRegistrationOption {
+export interface NonNhgRegistrationInstitution {
+  code: string
+  name: string
+}
+
+export interface NonNhgRegistrationAvailability {
+  institutionCode: string
+  available: boolean
+  status: NonNhgMappingStatus
+}
+
+export interface NonNhgRegistrationProgramme {
   programmeCode: string
   programmeName: string
-  institutions: NonNhgScheduleInstitution[]
+  institutions: NonNhgRegistrationAvailability[]
+}
+
+export interface NonNhgRegistrationOptions {
+  institutions: NonNhgRegistrationInstitution[]
+  programmes: NonNhgRegistrationProgramme[]
 }
 
 export interface NonNhgRegistrationPayload {
@@ -47,7 +63,7 @@ export interface NonNhgRegistrationPayload {
     startDate: string
     endDate: string
     programmeCode: string
-    institution: NonNhgScheduleInstitution
+    institution: string
   }>
 }
 
@@ -69,40 +85,68 @@ const optionalString = (value: unknown): string | undefined =>
 
 const requiredString = (value: unknown): string => optionalString(value) ?? ''
 
-const isNonNhgScheduleInstitution = (value: unknown): value is NonNhgScheduleInstitution =>
-  value === 'TTSH' || value === 'WH' || value === 'KTPH'
+const isNonNhgMappingStatus = (value: unknown): value is NonNhgMappingStatus =>
+  value === 'pending' || value === 'active'
 
 export const parseNonNhgRegistrationOptions = (
   value: unknown,
-): NonNhgRegistrationOption[] => {
-  if (!Array.isArray(value)) {
+): NonNhgRegistrationOptions => {
+  if (!value || typeof value !== 'object') {
+    throw new Error('Malformed registration options response.')
+  }
+  const response = value as Record<string, unknown>
+  if (!Array.isArray(response.institutions) || !Array.isArray(response.programmes)) {
     throw new Error('Malformed registration options response.')
   }
 
-  return value.map((entry) => {
+  const institutions = response.institutions.map((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error('Malformed registration options response.')
+    }
+    const row = entry as Record<string, unknown>
+    const code = requiredString(row.code)
+    const name = requiredString(row.name)
+    if (!code || !name) {
+      throw new Error('Malformed registration options response.')
+    }
+    return { code, name }
+  })
+
+  const programmes = response.programmes.map((entry) => {
     if (!entry || typeof entry !== 'object') {
       throw new Error('Malformed registration options response.')
     }
     const row = entry as Record<string, unknown>
     const programmeCode = requiredString(row.programme_code)
     const programmeName = requiredString(row.programme_name)
-    const institutions = Array.isArray(row.institutions)
-      ? row.institutions.filter(isNonNhgScheduleInstitution)
-      : []
-    if (
-      !programmeCode ||
-      !programmeName ||
-      institutions.length === 0 ||
-      institutions.length !== (row.institutions as unknown[]).length
-    ) {
+    if (!programmeCode || !programmeName || !Array.isArray(row.institutions)) {
       throw new Error('Malformed registration options response.')
     }
-    return {
-      programmeCode,
-      programmeName,
-      institutions: [...new Set(institutions)],
-    }
+    const programmeInstitutions = row.institutions.map((entryValue) => {
+      if (!entryValue || typeof entryValue !== 'object') {
+        throw new Error('Malformed registration options response.')
+      }
+      const institution = entryValue as Record<string, unknown>
+      const institutionCode = requiredString(institution.institution_code)
+      const status = institution.status
+      if (
+        !institutionCode ||
+        typeof institution.available !== 'boolean' ||
+        !isNonNhgMappingStatus(status) ||
+        (status === 'pending' && institution.available)
+      ) {
+        throw new Error('Malformed registration options response.')
+      }
+      return {
+        institutionCode,
+        available: institution.available,
+        status,
+      }
+    })
+    return { programmeCode, programmeName, institutions: programmeInstitutions }
   })
+
+  return { institutions, programmes }
 }
 
 const toStringArray = (value: unknown): string[] => {
@@ -474,7 +518,12 @@ export const registerNonNhgResident = async (
         currentNhgPostingCode: requiredString(resident.current_nhg_posting_code),
         status: optionalString(resident.status),
       },
-      postingSchedule: response.data.posting_schedule as Array<Record<string, unknown>> | undefined,
+      postingSchedule: payload.postingSchedule.map((row) => ({
+        start_date: row.startDate,
+        end_date: row.endDate,
+        programme_code: row.programmeCode,
+        institution: row.institution,
+      })),
       session: loginLikeResponse,
     }
   } catch (error) {
@@ -483,7 +532,7 @@ export const registerNonNhgResident = async (
 }
 
 export const listNonNhgRegistrationOptions = async (): Promise<
-  NonNhgRegistrationOption[]
+  NonNhgRegistrationOptions
 > => {
   try {
     const response = await httpClient.get<unknown>(

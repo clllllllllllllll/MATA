@@ -11,7 +11,13 @@ from app.config import Settings
 from app.middleware.auth_stub import AuthIdentity, AuthStubMiddleware
 from app.middleware.errors import install_error_handlers
 from app.routers import external_residents
-from tests.resident_fakes import FakeResidentSession
+from tests.resident_fakes import PROGRAMME_SEED_ROWS, FakeResidentSession
+
+
+MAPPING_PENDING_DETAIL = "Posting configuration for this programme is pending."
+MAPPING_MISSING_DETAIL = (
+    "No posting configuration is available for this programme and institution."
+)
 
 
 def _client(
@@ -63,8 +69,55 @@ def _middleware_client(fake_db: FakeResidentSession) -> TestClient:
     return TestClient(app)
 
 
+def _configure_mapping(
+    fake_db: FakeResidentSession,
+    *,
+    programme_code: str = "GERI",
+    institution_code: str = "TTSH",
+    posting_code: str | None = "TTSHCardio",
+    status: str = "active",
+) -> None:
+    mapping = next(
+        (
+            row
+            for row in fake_db.programme_institution_posting_map
+            if row["programme_code"] == programme_code
+            and row["institution_code"] == institution_code
+        ),
+        None,
+    )
+    if mapping is None:
+        fake_db.programme_institution_posting_map.append(
+            {
+                "programme_code": programme_code,
+                "institution_code": institution_code,
+                "posting_code": posting_code,
+                "status": status,
+                "display_order": len(fake_db.programme_institution_posting_map),
+            }
+        )
+        return
+    mapping.update(posting_code=posting_code, status=status)
+
+
+def _registration_schedule(
+    *,
+    programme_code: str = "GERI",
+    institution: str = "TTSH",
+) -> list[dict[str, str]]:
+    return [
+        {
+            "start_date": "2026-09-01",
+            "end_date": "2026-09-30",
+            "programme_code": programme_code,
+            "institution": institution,
+        }
+    ]
+
+
 def test_external_registration_succeeds_for_nuh() -> None:
     fake_db = FakeResidentSession()
+    _configure_mapping(fake_db)
     client = _client(fake_db)
 
     response = client.post(
@@ -73,7 +126,7 @@ def test_external_registration_succeeds_for_nuh() -> None:
             "name": "NUH Resident",
             "mcr": "E11111A",
             "home_cluster": "NUH",
-            "current_nhg_posting_code": "TTSHCardio",
+            "posting_schedule": _registration_schedule(),
         },
     )
 
@@ -85,6 +138,7 @@ def test_external_registration_succeeds_for_nuh() -> None:
 
 def test_external_registration_succeeds_for_singhealth() -> None:
     fake_db = FakeResidentSession()
+    _configure_mapping(fake_db)
     client = _client(fake_db)
 
     response = client.post(
@@ -93,7 +147,7 @@ def test_external_registration_succeeds_for_singhealth() -> None:
             "name": "SH Resident",
             "mcr": "E22222B",
             "home_cluster": "SingHealth",
-            "current_nhg_posting_code": "TTSHCardio",
+            "posting_schedule": _registration_schedule(),
         },
     )
 
@@ -103,6 +157,11 @@ def test_external_registration_succeeds_for_singhealth() -> None:
 
 def test_external_registration_creates_initial_posting_history_row() -> None:
     fake_db = FakeResidentSession()
+    _configure_mapping(
+        fake_db,
+        institution_code="KTPH",
+        posting_code="KTPHGerMed",
+    )
     before = len(fake_db.external_resident_postings)
     client = _client(fake_db)
 
@@ -112,7 +171,7 @@ def test_external_registration_creates_initial_posting_history_row() -> None:
             "name": "History Resident",
             "mcr": "E33333C",
             "home_cluster": "NUH",
-            "current_nhg_posting_code": "KTPHGerMed",
+            "posting_schedule": _registration_schedule(institution="KTPH"),
         },
     )
 
@@ -121,11 +180,17 @@ def test_external_registration_creates_initial_posting_history_row() -> None:
     row = fake_db.external_resident_postings[-1]
     assert row["posting_code"] == "KTPHGerMed"
     assert row["is_current"] is True
-    assert row["end_date"] is None
+    assert row["end_date"] == date(2026, 9, 30)
 
 
 def test_external_registration_creates_forecast_posting_schedule_rows() -> None:
     fake_db = FakeResidentSession()
+    _configure_mapping(fake_db)
+    _configure_mapping(
+        fake_db,
+        institution_code="KTPH",
+        posting_code="KTPHGerMed",
+    )
     before = len(fake_db.external_resident_postings)
     client = _client(fake_db)
 
@@ -170,6 +235,11 @@ def test_external_registration_resolution_is_independent_of_native_occupancy(
     with_native_occupancy: bool,
 ) -> None:
     fake_db = FakeResidentSession()
+    _configure_mapping(
+        fake_db,
+        institution_code="KTPH",
+        posting_code="KTPHGerMed",
+    )
     assert not any(
         row["posting_code"] == "KTPHGerMed" for row in fake_db.resident_postings
     )
@@ -211,44 +281,29 @@ def test_external_registration_resolution_is_independent_of_native_occupancy(
     assert fake_db.resident_postings == native_postings_before
 
 
-def test_external_registration_options_only_return_resolvable_pairs() -> None:
+def test_external_registration_options_return_all_pending_ttsh_programmes() -> None:
     fake_db = FakeResidentSession()
     response = _client(fake_db).get("/external-residents/registration-options")
 
     assert response.status_code == 200
-    assert response.json() == [
-        {
-            "programme_code": "GERI",
-            "programme_name": "Geriatric Medicine",
-            "institutions": ["TTSH", "KTPH"],
-        },
-        {
-            "programme_code": "GRM",
-            "programme_name": "Geriatric Medicine",
-            "institutions": ["TTSH"],
-        },
+    payload = response.json()
+    assert payload["institutions"] == [{"code": "TTSH", "name": "TTSH"}]
+    assert [row["programme_code"] for row in payload["programmes"]] == [
+        code for code, _name in PROGRAMME_SEED_ROWS
     ]
-
-    for index, option in enumerate(response.json()):
-        for institution_index, institution in enumerate(option["institutions"]):
-            candidate_db = FakeResidentSession()
-            registration = _client(candidate_db).post(
-                "/external-residents/register",
-                json={
-                    "name": "Synthetic Listed Option Resident",
-                    "mcr": f"TST91{index}{institution_index}A",
-                    "home_cluster": "NUH",
-                    "posting_schedule": [
-                        {
-                            "start_date": "2026-09-01",
-                            "end_date": "2026-09-30",
-                            "programme_code": option["programme_code"],
-                            "institution": institution,
-                        }
-                    ],
-                },
-            )
-            assert registration.status_code == 200
+    assert len(payload["programmes"]) == 28
+    assert all(
+        row["institutions"]
+        == [
+            {
+                "institution_code": "TTSH",
+                "available": False,
+                "status": "pending",
+            }
+        ]
+        for row in payload["programmes"]
+    )
+    assert "posting_code" not in response.text
 
 
 def test_external_registration_options_are_public_through_auth_middleware() -> None:
@@ -258,22 +313,8 @@ def test_external_registration_options_are_public_through_auth_middleware() -> N
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload == [
-        {
-            "programme_code": "GERI",
-            "programme_name": "Geriatric Medicine",
-            "institutions": ["TTSH", "KTPH"],
-        },
-        {
-            "programme_code": "GRM",
-            "programme_name": "Geriatric Medicine",
-            "institutions": ["TTSH"],
-        },
-    ]
-    assert all(
-        set(option) == {"programme_code", "programme_name", "institutions"}
-        for option in payload
-    )
+    assert payload["institutions"] == [{"code": "TTSH", "name": "TTSH"}]
+    assert len(payload["programmes"]) == 28
 
 
 def test_external_registration_options_ignore_stale_bearer_header() -> None:
@@ -291,7 +332,9 @@ def test_external_registration_options_ignore_stale_bearer_header() -> None:
 
 
 def test_external_registration_remains_public_through_auth_middleware() -> None:
-    response = _middleware_client(FakeResidentSession()).post(
+    fake_db = FakeResidentSession()
+    _configure_mapping(fake_db)
+    response = _middleware_client(fake_db).post(
         "/external-residents/register",
         json={
             "name": "Synthetic Public Registration Resident",
@@ -356,7 +399,7 @@ def test_external_registration_options_route_has_no_collision() -> None:
     assert route.endpoint is external_residents.list_registration_options
 
 
-def test_external_registration_options_omit_ambiguous_and_unmapped_pairs() -> None:
+def test_external_registration_options_ignore_secretary_pool_metadata() -> None:
     fake_db = FakeResidentSession()
     fake_db.secretary_programme_pools.append(
         {
@@ -370,10 +413,17 @@ def test_external_registration_options_omit_ambiguous_and_unmapped_pairs() -> No
 
     assert response.status_code == 200
     geri_option = next(
-        row for row in response.json() if row["programme_code"] == "GERI"
+        row
+        for row in response.json()["programmes"]
+        if row["programme_code"] == "GERI"
     )
-    assert geri_option["institutions"] == ["KTPH"]
-    assert all("WH" not in row["institutions"] for row in response.json())
+    assert geri_option["institutions"] == [
+        {
+            "institution_code": "TTSH",
+            "available": False,
+            "status": "pending",
+        }
+    ]
 
 
 def test_external_registration_rejects_overlapping_forecast_rows() -> None:
@@ -511,7 +561,7 @@ def test_external_registration_rejects_mcr_already_in_native_residents() -> None
             "name": "Conflict Native",
             "mcr": "M12345A",
             "home_cluster": "NUH",
-            "current_nhg_posting_code": "TTSHCardio",
+            "posting_schedule": _registration_schedule(),
         },
     )
 
@@ -532,7 +582,7 @@ def test_external_registration_rejects_mcr_already_in_external_residents() -> No
             "name": "Conflict External",
             "mcr": "E12345A",
             "home_cluster": "NUH",
-            "current_nhg_posting_code": "TTSHCardio",
+            "posting_schedule": _registration_schedule(),
         },
     )
 
@@ -582,7 +632,7 @@ def test_external_registration_rejects_unresolved_forecast_posting_without_parti
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "No posting could be resolved for this programme and institution. Contact an administrator."
+    assert response.json()["detail"] == MAPPING_MISSING_DETAIL
     assert len(fake_db.external_residents) == before_residents
     assert len(fake_db.external_resident_postings) == before_postings
 
@@ -618,10 +668,7 @@ def test_external_registration_rejects_atomic_multi_row_resolution_failure() -> 
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == (
-        "No posting could be resolved for this programme and institution. "
-        "Contact an administrator."
-    )
+    assert response.json()["detail"] == MAPPING_MISSING_DETAIL
     assert fake_db.external_residents == residents_before
     assert fake_db.external_resident_postings == postings_before
     assert fake_db.residents == native_residents_before
@@ -656,7 +703,7 @@ def test_external_registration_checks_global_mcr_before_schedule_resolution() ->
     assert fake_db.external_resident_postings == postings_before
 
 
-def test_external_registration_rejects_ambiguous_forecast_posting() -> None:
+def test_external_registration_does_not_use_ambiguous_secretary_pool_metadata() -> None:
     fake_db = FakeResidentSession()
     fake_db.secretary_programme_pools.append(
         {
@@ -687,13 +734,18 @@ def test_external_registration_rejects_ambiguous_forecast_posting() -> None:
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "Multiple postings could be resolved for this programme and institution. Contact an administrator."
+    assert response.json()["detail"] == MAPPING_PENDING_DETAIL
     assert fake_db.external_residents == residents_before
     assert fake_db.external_resident_postings == postings_before
 
 
 def test_external_posting_update_closes_old_and_creates_new_current_row() -> None:
     fake_db = FakeResidentSession()
+    _configure_mapping(
+        fake_db,
+        institution_code="KTPH",
+        posting_code="KTPHGerMed",
+    )
     before = len(fake_db.external_resident_postings)
     current_row = next(row for row in fake_db.external_resident_postings if row["is_current"])
     client = _client(
@@ -707,7 +759,7 @@ def test_external_posting_update_closes_old_and_creates_new_current_row() -> Non
 
     response = client.put(
         "/external-residents/me/posting",
-        json={"current_nhg_posting_code": "KTPHGerMed"},
+        json={"programme_code": "GERI", "institution": "KTPH"},
     )
 
     assert response.status_code == 200
@@ -722,6 +774,7 @@ def test_external_posting_update_closes_old_and_creates_new_current_row() -> Non
 
 def test_external_posting_update_same_posting_is_idempotent() -> None:
     fake_db = FakeResidentSession()
+    _configure_mapping(fake_db)
     before = len(fake_db.external_resident_postings)
     client = _client(
         fake_db,
@@ -734,7 +787,7 @@ def test_external_posting_update_same_posting_is_idempotent() -> None:
 
     response = client.put(
         "/external-residents/me/posting",
-        json={"current_nhg_posting_code": "TTSHCardio"},
+        json={"programme_code": "GERI", "institution": "TTSH"},
     )
 
     assert response.status_code == 200
@@ -745,6 +798,12 @@ def test_external_posting_update_same_posting_is_idempotent() -> None:
 
 def test_external_posting_schedule_update_replaces_rows() -> None:
     fake_db = FakeResidentSession()
+    _configure_mapping(fake_db)
+    _configure_mapping(
+        fake_db,
+        institution_code="KTPH",
+        posting_code="KTPHGerMed",
+    )
     client = _client(
         fake_db,
         AuthIdentity(
@@ -817,11 +876,11 @@ def test_external_posting_schedule_update_rejects_unresolved_posting_without_del
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "No posting could be resolved for this programme and institution. Contact an administrator."
+    assert response.json()["detail"] == MAPPING_PENDING_DETAIL
     assert fake_db.external_resident_postings == before
 
 
-def test_external_posting_schedule_update_rejects_ambiguous_posting_without_deleting_rows() -> None:
+def test_external_posting_schedule_update_ignores_secretary_pool_without_deleting_rows() -> None:
     fake_db = FakeResidentSession()
     fake_db.secretary_programme_pools.append(
         {
@@ -855,7 +914,7 @@ def test_external_posting_schedule_update_rejects_ambiguous_posting_without_dele
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "Multiple postings could be resolved for this programme and institution. Contact an administrator."
+    assert response.json()["detail"] == MAPPING_PENDING_DETAIL
     assert fake_db.external_resident_postings == before
 
 
@@ -872,7 +931,240 @@ def test_native_resident_cannot_update_external_posting() -> None:
 
     response = client.put(
         "/external-residents/me/posting",
-        json={"current_nhg_posting_code": "KTPHGerMed"},
+        json={"programme_code": "GERI", "institution": "KTPH"},
     )
 
     assert response.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "programme_code",
+    [code for code, _name in PROGRAMME_SEED_ROWS],
+)
+def test_every_seeded_ttsh_mapping_returns_controlled_pending_422(
+    programme_code: str,
+) -> None:
+    fake_db = FakeResidentSession()
+    residents_before = deepcopy(fake_db.external_residents)
+    postings_before = deepcopy(fake_db.external_resident_postings)
+
+    response = _client(fake_db).post(
+        "/external-residents/register",
+        json={
+            "name": "Pending Mapping Resident",
+            "mcr": f"TST{programme_code}9A"[:20],
+            "home_cluster": "NUH",
+            "posting_schedule": _registration_schedule(
+                programme_code=programme_code,
+            ),
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == MAPPING_PENDING_DETAIL
+    assert fake_db.external_residents == residents_before
+    assert fake_db.external_resident_postings == postings_before
+
+
+def test_inactive_mapping_is_omitted_from_options_and_rejected() -> None:
+    fake_db = FakeResidentSession()
+    _configure_mapping(fake_db, status="inactive")
+
+    options = _client(fake_db).get("/external-residents/registration-options")
+    response = _client(fake_db).post(
+        "/external-residents/register",
+        json={
+            "name": "Inactive Mapping Resident",
+            "mcr": "TSTINACTIVE1A",
+            "home_cluster": "NUH",
+            "posting_schedule": _registration_schedule(),
+        },
+    )
+
+    assert options.status_code == 200
+    assert all(
+        row["programme_code"] != "GERI"
+        for row in options.json()["programmes"]
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Posting configuration for this programme is unavailable."
+    )
+
+
+def test_future_institutions_appear_from_mapping_data_only() -> None:
+    fake_db = FakeResidentSession()
+    _configure_mapping(
+        fake_db,
+        institution_code="KTPH",
+        posting_code="KTPHGerMed",
+    )
+    _configure_mapping(
+        fake_db,
+        programme_code="DR",
+        institution_code="WH",
+        posting_code=None,
+        status="pending",
+    )
+
+    response = _client(fake_db).get("/external-residents/registration-options")
+
+    assert response.status_code == 200
+    assert {row["code"] for row in response.json()["institutions"]} == {
+        "TTSH",
+        "KTPH",
+        "WH",
+    }
+    geri = next(
+        row
+        for row in response.json()["programmes"]
+        if row["programme_code"] == "GERI"
+    )
+    assert any(
+        row
+        == {
+            "institution_code": "KTPH",
+            "available": True,
+            "status": "active",
+        }
+        for row in geri["institutions"]
+    )
+
+
+def test_mixed_active_pending_registration_is_atomic() -> None:
+    fake_db = FakeResidentSession()
+    _configure_mapping(fake_db)
+    residents_before = deepcopy(fake_db.external_residents)
+    postings_before = deepcopy(fake_db.external_resident_postings)
+
+    response = _client(fake_db).post(
+        "/external-residents/register",
+        json={
+            "name": "Mixed Mapping Resident",
+            "mcr": "TSTMIXED001A",
+            "home_cluster": "NUH",
+            "posting_schedule": [
+                {
+                    "start_date": "2026-09-01",
+                    "end_date": "2026-09-30",
+                    "programme_code": "GERI",
+                    "institution": "TTSH",
+                },
+                {
+                    "start_date": "2026-10-01",
+                    "end_date": "2026-10-31",
+                    "programme_code": "DR",
+                    "institution": "TTSH",
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == MAPPING_PENDING_DETAIL
+    assert fake_db.external_residents == residents_before
+    assert fake_db.external_resident_postings == postings_before
+
+
+def test_mixed_active_pending_schedule_replacement_keeps_prior_rows() -> None:
+    fake_db = FakeResidentSession()
+    _configure_mapping(fake_db)
+    before = deepcopy(fake_db.external_resident_postings)
+    client = _client(
+        fake_db,
+        AuthIdentity(
+            role="external_resident",
+            subject_id=fake_db.external_resident_id,
+            home_cluster="NUH",
+        ),
+    )
+
+    response = client.put(
+        "/external-residents/me/posting-schedule",
+        json={
+            "posting_schedule": [
+                {
+                    "start_date": "2026-09-01",
+                    "end_date": "2026-09-30",
+                    "programme_code": "GERI",
+                    "institution": "TTSH",
+                },
+                {
+                    "start_date": "2026-10-01",
+                    "end_date": "2026-10-31",
+                    "programme_code": "DR",
+                    "institution": "TTSH",
+                },
+            ]
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == MAPPING_PENDING_DETAIL
+    assert fake_db.external_resident_postings == before
+
+
+def test_client_cannot_include_posting_code_in_schedule_row() -> None:
+    fake_db = FakeResidentSession()
+    _configure_mapping(fake_db)
+
+    response = _client(fake_db).post(
+        "/external-residents/register",
+        json={
+            "name": "Untrusted Posting Resident",
+            "mcr": "TSTUNTRUST1A",
+            "home_cluster": "NUH",
+            "posting_schedule": [
+                {
+                    **_registration_schedule()[0],
+                    "posting_code": "TTSHNeuro",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert not any(
+        row["mcr"] == "TSTUNTRUST1A"
+        for row in fake_db.external_residents
+    )
+
+
+def test_active_mapping_does_not_mutate_native_or_secretary_configuration() -> None:
+    fake_db = FakeResidentSession()
+    native_programmes = deepcopy(fake_db.programmes)
+    native_postings = deepcopy(fake_db.resident_postings)
+    secretary_pools = deepcopy(fake_db.secretary_programme_pools)
+    posting_codes = deepcopy(fake_db.posting_codes)
+    _configure_mapping(fake_db)
+
+    response = _client(fake_db).post(
+        "/external-residents/register",
+        json={
+            "name": "Isolated Mapping Resident",
+            "mcr": "TSTISOLATE1A",
+            "home_cluster": "NUH",
+            "posting_schedule": _registration_schedule(),
+        },
+    )
+
+    assert response.status_code == 200
+    assert fake_db.programmes == native_programmes
+    assert fake_db.resident_postings == native_postings
+    assert fake_db.secretary_programme_pools == secretary_pools
+    assert fake_db.posting_codes == posting_codes
+
+
+def test_embedded_control_character_in_mapping_input_is_rejected() -> None:
+    response = _client(FakeResidentSession()).post(
+        "/external-residents/register",
+        json={
+            "name": "Control Character Resident",
+            "mcr": "TSTCONTROL1A",
+            "home_cluster": "NUH",
+            "posting_schedule": _registration_schedule(institution="TT\u0007SH"),
+        },
+    )
+
+    assert response.status_code == 422
+    assert "control characters" in response.json()["detail"]

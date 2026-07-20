@@ -744,13 +744,21 @@ Phase 5B must be completed before Phase 6 compliance calculation begins.
 No other `home_cluster` values are valid.
 
 **Forecast posting schedule:**
-Non-NHG registration captures a repeatable upcoming NHG postings schedule instead of one "current NHG posting" field. Each row captures `start_date`, `end_date`, `programme_code` displayed as code plus full programme name, `institution` limited to `TTSH`, `WH`, or `KTPH`, and a resolved `posting_code` from `posting_codes`.
+Non-NHG registration captures a repeatable upcoming NHG postings schedule instead of one "current NHG posting" field. Each row captures `start_date`, `end_date`, `programme_code` displayed as code plus full programme name, an institution returned by the backend registration-options response, and a backend-resolved `posting_code` from `programme_institution_posting_map`.
 
 Rows are persisted in `external_resident_postings`. Rows for the same Non-NHG Resident must not overlap. Gaps are allowed; event/ad-hoc options for a date in a gap return unavailable/no posting for selected date. Date ranges may cross calendar months.
 
 `external_residents.current_nhg_posting_code` may remain as a current/cache/backward-compatibility pointer if implementation needs it, but once forecast posting schedule is implemented, authorization-sensitive event/ad-hoc derivation uses the date-matching `external_resident_postings` row.
 
-Posting codes must resolve through `posting_codes` using validated/configured mapping from selected institution plus programme/department. Do not concatenate strings to create RDB posting codes. If multiple posting codes match, require explicit user selection. If no posting code matches, return a clear unavailable/invalid selection state.
+Posting codes resolve only through the exact normalized `(programme_code, institution_code)` row in `programme_institution_posting_map`. The row must exist, have `status = active`, have a non-null posting code, and retain valid programme/posting foreign keys. Pending, inactive, missing, malformed, or invalid rows fail closed with controlled `422`; no fallback or alternative candidate search is allowed.
+
+Never concatenate strings, infer an RDB code from a posting/institution name or prefix, fuzzy-match posting metadata, select a teaching-target/native/Secretary candidate, trust a client-provided posting code, or fall back to another programme/institution.
+
+All schedule rows are resolved before registration or replacement writes begin. One unavailable row creates no external resident and no partial posting schedule; a failed replacement preserves the prior schedule.
+
+**Current two-stage rollout:** Stage 1 exposes TTSH plus all 28 programmes, with all TTSH mappings pending, unavailable, and null-posting. There is no GERI exception. Stage 2 requires one complete owner-approved 28-row table and one transactional data-only migration that activates all TTSH rows together. KTPH, WH, and later institutions are discovered from future mapping rows without resolver or frontend branches.
+
+**Isolation:** This external-registration mapping does not set or consult `programmes.native_teaching_posting_code`, `posting_codes.supports_secretary_events`, Secretary programme pools, resident event visibility configuration, or compliance posting attribution. Those domains retain their own rules.
 
 **Secretary-created event visibility:**
 Use `posting_codes.supports_secretary_events` as the scalable capability flag:

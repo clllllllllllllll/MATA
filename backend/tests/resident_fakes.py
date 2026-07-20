@@ -7,6 +7,38 @@ from uuid import uuid4
 from app.services.reporting_period_status import is_reporting_period_effectively_active
 
 
+PROGRAMME_SEED_ROWS = (
+    ("AIM", "Advanced Internal Medicine"),
+    ("ANAES", "Anaesthesiology"),
+    ("CARDIO", "Cardiology"),
+    ("DERM", "Dermatology"),
+    ("DR", "Diagnostic Radiology"),
+    ("EM", "Emergency Medicine"),
+    ("ENDO", "Endocrinology"),
+    ("ENT", "Otorhinolaryngology"),
+    ("EYE", "Ophthalmology"),
+    ("FM", "Family Medicine"),
+    ("GASTRO", "Gastroenterology"),
+    ("GERI", "Geriatric Medicine"),
+    ("GS", "General Surgery"),
+    ("ID", "Infectious Diseases"),
+    ("IM", "Internal Medicine"),
+    ("MEDONCO", "Medical Oncology"),
+    ("ORTHO", "Orthopaedic Surgery"),
+    ("PATH", "Pathology"),
+    ("PSY", "Psychiatry"),
+    ("REHAB", "Rehabilitation Medicine"),
+    ("RENAL", "Renal Medicine"),
+    ("RESPI", "Respiratory Medicine"),
+    ("RHEUM", "Rheumatology"),
+    ("SPORTSMED", "Sports Medicine"),
+    ("SIG", "Surgery-In-General"),
+    ("URO", "Urology"),
+    ("MICROB", "Pathology (Microbiology)"),
+    ("PALLMED", "Palliative Medicine"),
+)
+
+
 class FakeResult:
     def __init__(
         self,
@@ -157,6 +189,17 @@ class FakeResidentSession:
                 "name": "Diagnostic Radiology",
                 "native_teaching_posting_code": None,
             },
+        ]
+        self.programme_institution_posting_map = [
+            {
+                "id": str(uuid4()),
+                "programme_code": code,
+                "institution_code": "TTSH",
+                "posting_code": None,
+                "status": "pending",
+                "display_order": display_order,
+            }
+            for display_order, (code, _name) in enumerate(PROGRAMME_SEED_ROWS)
         ]
         self.secretary_programme_pools = [
             {
@@ -621,6 +664,101 @@ class FakeResidentSession:
             codes = set(payload.get("posting_codes") or [])
             rows = [row for row in self.posting_codes if row["code"] in codes]
             return FakeResult(rows=rows)
+
+        if "programme_institution_posting_options" in sql:
+            rows = []
+            for mapping in sorted(
+                self.programme_institution_posting_map,
+                key=lambda row: (
+                    row["display_order"],
+                    row["programme_code"],
+                    row["institution_code"],
+                ),
+            ):
+                if mapping["status"] not in {"pending", "active"}:
+                    continue
+                programme = next(
+                    (
+                        row
+                        for row in self.programmes
+                        if row["code"] == mapping["programme_code"]
+                    ),
+                    None,
+                )
+                if programme is None:
+                    programme_name = next(
+                        (
+                            name
+                            for code, name in PROGRAMME_SEED_ROWS
+                            if code == mapping["programme_code"]
+                        ),
+                        None,
+                    )
+                    if programme_name is None:
+                        continue
+                    programme = {
+                        "code": mapping["programme_code"],
+                        "name": programme_name,
+                    }
+                posting = next(
+                    (
+                        row
+                        for row in self.posting_codes
+                        if row["code"] == mapping["posting_code"]
+                    ),
+                    None,
+                )
+                rows.append(
+                    {
+                        "programme_code": programme["code"],
+                        "programme_name": programme["name"],
+                        "institution_code": mapping["institution_code"],
+                        "status": mapping["status"],
+                        "posting_code": mapping["posting_code"],
+                        "resolved_posting_code": posting["code"] if posting else None,
+                        "display_order": mapping["display_order"],
+                    }
+                )
+            return FakeResult(rows=rows)
+
+        if "programme_institution_posting_resolve" in sql:
+            mapping = next(
+                (
+                    row
+                    for row in self.programme_institution_posting_map
+                    if row["programme_code"] == payload.get("programme_code")
+                    and row["institution_code"] == payload.get("institution_code")
+                ),
+                None,
+            )
+            if mapping is None:
+                return FakeResult()
+            programme = next(
+                (
+                    row
+                    for row in self.programmes
+                    if row["code"] == mapping["programme_code"]
+                ),
+                None,
+            )
+            posting = next(
+                (
+                    row
+                    for row in self.posting_codes
+                    if row["code"] == mapping["posting_code"]
+                ),
+                None,
+            )
+            return FakeResult(
+                rows=[
+                    {
+                        "status": mapping["status"],
+                        "posting_code": mapping["posting_code"],
+                        "resolved_programme_code": programme["code"] if programme else None,
+                        "resolved_posting_code": posting["code"] if posting else None,
+                    }
+                ]
+            )
 
         if "external_registration_options:native" in sql:
             rows = []

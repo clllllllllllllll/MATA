@@ -17,7 +17,7 @@ from app.middleware.auth_stub import AuthIdentity
 from app.schemas.external_resident import (
     ExternalResidentPostingScheduleUpdateRequest,
     ExternalResidentPostingUpdateRequest,
-    ExternalResidentRegistrationOption,
+    ExternalResidentRegistrationOptions,
     ExternalResidentRegisterRequest,
 )
 from app.services import external_residents
@@ -66,13 +66,13 @@ async def require_external_resident_context(
 
 @router.get(
     "/registration-options",
-    response_model=list[ExternalResidentRegistrationOption],
+    response_model=ExternalResidentRegistrationOptions,
 )
 async def list_registration_options(
     db: AsyncSession = Depends(get_db_session),
-) -> list[ExternalResidentRegistrationOption]:
+) -> ExternalResidentRegistrationOptions:
     rows = await external_residents.list_registration_options(db)
-    return [ExternalResidentRegistrationOption.model_validate(row) for row in rows]
+    return ExternalResidentRegistrationOptions.model_validate(rows)
 
 
 @router.post("/register", dependencies=[Depends(_persistent_registration_rate_limit)])
@@ -85,7 +85,6 @@ async def register_external_resident(
         name=request.name,
         mcr=request.mcr,
         home_cluster=request.home_cluster,
-        current_nhg_posting_code=request.current_nhg_posting_code,
         posting_schedule=request.posting_schedule,
     )
 
@@ -101,7 +100,8 @@ async def update_my_posting(
     return await external_residents.update_my_posting(
         db,
         external_resident_id=external_context.external_resident_id,
-        current_nhg_posting_code=request.current_nhg_posting_code,
+        programme_code=request.programme_code,
+        institution=request.institution,
     )
 
 

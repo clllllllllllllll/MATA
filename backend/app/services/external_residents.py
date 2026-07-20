@@ -8,16 +8,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
+from app.services import programme_institution_posting
 
 
 ALLOWED_HOME_CLUSTERS = {"NUH", "SingHealth"}
-ALLOWED_SCHEDULE_INSTITUTIONS = {"TTSH", "WH", "KTPH"}
-POSTING_RESOLUTION_NOT_FOUND = (
-    "No posting could be resolved for this programme and institution. Contact an administrator."
-)
-POSTING_RESOLUTION_AMBIGUOUS = (
-    "Multiple postings could be resolved for this programme and institution. Contact an administrator."
-)
 
 
 def normalise_mcr(raw_mcr: str) -> str:
@@ -31,263 +25,8 @@ def normalise_mcr(raw_mcr: str) -> str:
     return cleaned
 
 
-async def _posting_exists(db: AsyncSession, posting_code: str) -> bool:
-    result = await db.execute(
-        text(
-            """
-            SELECT 1
-            FROM posting_codes
-            WHERE code = :posting_code
-            LIMIT 1
-            """
-        ),
-        {"posting_code": posting_code},
-    )
-    return result.scalar_one_or_none() is not None
-
-
-async def _posting_metadata(db: AsyncSession, posting_code: str) -> dict[str, Any] | None:
-    result = await db.execute(
-        text(
-            """
-            SELECT code, institution
-            FROM posting_codes
-            WHERE code = :posting_code
-            LIMIT 1
-            """
-        ),
-        {"posting_code": posting_code},
-    )
-    row = result.mappings().one_or_none()
-    return dict(row) if row is not None else None
-
-
-async def _programme_exists(db: AsyncSession, programme_code: str) -> bool:
-    result = await db.execute(
-        text(
-            """
-            SELECT 1
-            FROM programmes
-            WHERE code = :programme_code
-            LIMIT 1
-            """
-        ),
-        {"programme_code": programme_code},
-    )
-    return result.scalar_one_or_none() is not None
-
-
-async def _native_programme_posting(
-    db: AsyncSession,
-    *,
-    programme_code: str,
-    institution: str,
-) -> str | None:
-    result = await db.execute(
-        text(
-            """
-            SELECT p.native_teaching_posting_code
-            FROM programmes p
-            JOIN posting_codes pc
-              ON pc.code = p.native_teaching_posting_code
-            WHERE p.code = :programme_code
-              AND p.native_teaching_posting_code IS NOT NULL
-              AND pc.institution = :institution
-            LIMIT 1
-            """
-        ),
-        {"programme_code": programme_code, "institution": institution},
-    )
-    row = result.mappings().one_or_none()
-    if row is None:
-        return None
-    return row.get("native_teaching_posting_code")
-
-
-async def _resolve_posting_candidates_from_secretary_pool(
-    db: AsyncSession,
-    *,
-    programme_code: str,
-    institution: str,
-) -> list[str]:
-    result = await db.execute(
-        text(
-            """
-            SELECT DISTINCT pc.code AS posting_code
-            FROM secretary_programme_pools spp
-            JOIN posting_codes pc
-              ON pc.code = spp.posting_code
-            WHERE spp.programme_code = :programme_code
-              AND spp.is_active = true
-              AND pc.institution = :institution
-            ORDER BY pc.code
-            """
-        ),
-        {"programme_code": programme_code, "institution": institution},
-    )
-    return [str(row["posting_code"]) for row in result.mappings().all()]
-
-
-async def _resolve_posting_candidates_from_targets(
-    db: AsyncSession,
-    *,
-    programme_code: str,
-    institution: str,
-) -> list[str]:
-    result = await db.execute(
-        text(
-            """
-            SELECT DISTINCT pc.code AS posting_code
-            FROM teaching_targets tt
-            JOIN posting_codes pc
-              ON pc.code = tt.posting_code
-            WHERE tt.programme_code = :programme_code
-              AND pc.institution = :institution
-            ORDER BY pc.code
-            """
-        ),
-        {"programme_code": programme_code, "institution": institution},
-    )
-    return [str(row["posting_code"]) for row in result.mappings().all()]
-
-
-def _select_registration_candidate(
-    candidate_sources: list[list[str]],
-) -> str | None:
-    for candidates in candidate_sources:
-        distinct_candidates = sorted(set(candidates))
-        if not distinct_candidates:
-            continue
-        if len(distinct_candidates) > 1:
-            raise _schedule_validation_error(POSTING_RESOLUTION_AMBIGUOUS)
-        return distinct_candidates[0]
-    return None
-
-
-async def _resolve_posting_code(
-    db: AsyncSession,
-    *,
-    programme_code: str,
-    institution: str,
-) -> str:
-    native_posting = await _native_programme_posting(
-        db,
-        programme_code=programme_code,
-        institution=institution,
-    )
-    if native_posting:
-        return native_posting
-
-    candidates = await _resolve_posting_candidates_from_secretary_pool(
-        db,
-        programme_code=programme_code,
-        institution=institution,
-    )
-    selected = _select_registration_candidate([candidates])
-    if selected is not None:
-        return selected
-
-    candidates = await _resolve_posting_candidates_from_targets(
-        db,
-        programme_code=programme_code,
-        institution=institution,
-    )
-    selected = _select_registration_candidate([candidates])
-    if selected is not None:
-        return selected
-
-    raise _schedule_validation_error(POSTING_RESOLUTION_NOT_FOUND)
-
-
-async def list_registration_options(db: AsyncSession) -> list[dict[str, Any]]:
-    native_result = await db.execute(
-        text(
-            """
-            /* external_registration_options:native */
-            SELECT p.code AS programme_code,
-                   p.name AS programme_name,
-                   pc.institution,
-                   pc.code AS posting_code
-            FROM programmes p
-            JOIN posting_codes pc
-              ON pc.code = p.native_teaching_posting_code
-            WHERE pc.institution IN ('TTSH', 'WH', 'KTPH')
-            """
-        )
-    )
-    pool_result = await db.execute(
-        text(
-            """
-            /* external_registration_options:secretary_pool */
-            SELECT p.code AS programme_code,
-                   p.name AS programme_name,
-                   pc.institution,
-                   pc.code AS posting_code
-            FROM secretary_programme_pools spp
-            JOIN programmes p
-              ON p.code = spp.programme_code
-            JOIN posting_codes pc
-              ON pc.code = spp.posting_code
-            WHERE spp.is_active = true
-              AND pc.institution IN ('TTSH', 'WH', 'KTPH')
-            """
-        )
-    )
-    target_result = await db.execute(
-        text(
-            """
-            /* external_registration_options:teaching_targets */
-            SELECT DISTINCT p.code AS programme_code,
-                   p.name AS programme_name,
-                   pc.institution,
-                   pc.code AS posting_code
-            FROM teaching_targets tt
-            JOIN programmes p
-              ON p.code = tt.programme_code
-            JOIN posting_codes pc
-              ON pc.code = tt.posting_code
-            WHERE pc.institution IN ('TTSH', 'WH', 'KTPH')
-            """
-        )
-    )
-
-    source_maps: list[dict[tuple[str, str], list[str]]] = []
-    programme_names: dict[str, str] = {}
-    for result in (native_result, pool_result, target_result):
-        source_map: dict[tuple[str, str], list[str]] = {}
-        for row in result.mappings().all():
-            programme_code = str(row["programme_code"])
-            institution = str(row["institution"])
-            programme_names[programme_code] = str(row["programme_name"])
-            source_map.setdefault((programme_code, institution), []).append(
-                str(row["posting_code"])
-            )
-        source_maps.append(source_map)
-
-    candidate_keys = set().union(*(source_map.keys() for source_map in source_maps))
-    institutions_by_programme: dict[str, list[str]] = {}
-    institution_order = {"TTSH": 0, "WH": 1, "KTPH": 2}
-    for programme_code, institution in sorted(candidate_keys):
-        try:
-            selected = _select_registration_candidate(
-                [source_map.get((programme_code, institution), []) for source_map in source_maps]
-            )
-        except ApiError:
-            continue
-        if selected is not None:
-            institutions_by_programme.setdefault(programme_code, []).append(institution)
-
-    return [
-        {
-            "programme_code": programme_code,
-            "programme_name": programme_names[programme_code],
-            "institutions": sorted(
-                institutions,
-                key=lambda institution: institution_order[institution],
-            ),
-        }
-        for programme_code, institutions in sorted(institutions_by_programme.items())
-    ]
+async def list_registration_options(db: AsyncSession) -> dict[str, Any]:
+    return await programme_institution_posting.list_registration_options(db)
 
 
 async def _mcr_exists_in_native_residents(db: AsyncSession, mcr: str) -> bool:
@@ -370,16 +109,24 @@ async def _validate_posting_schedule(
 
         if start_date > end_date:
             raise _schedule_validation_error("posting_schedule start_date must be on or before end_date")
-        if institution not in ALLOWED_SCHEDULE_INSTITUTIONS:
-            raise _schedule_validation_error("institution must be TTSH, WH, or KTPH")
-        if not await _programme_exists(db, programme_code):
-            raise _schedule_validation_error("programme_code is not valid")
-
-        posting_code = await _resolve_posting_code(
-            db,
-            programme_code=programme_code,
-            institution=institution,
-        )
+        try:
+            programme_code = programme_institution_posting.normalise_mapping_code(
+                programme_code,
+                field_name="programme_code",
+            )
+            institution = programme_institution_posting.normalise_mapping_code(
+                institution,
+                field_name="institution_code",
+            )
+            posting_code = (
+                await programme_institution_posting.resolve_programme_institution_posting(
+                    db,
+                    programme_code=programme_code,
+                    institution_code=institution,
+                )
+            )
+        except programme_institution_posting.PostingMappingUnavailableError as exc:
+            raise _schedule_validation_error(exc.detail) from exc
 
         normalised.append(
             {
@@ -460,8 +207,7 @@ async def register_external_resident(
     name: str,
     mcr: str,
     home_cluster: str,
-    current_nhg_posting_code: str | None = None,
-    posting_schedule: list[Any] | None = None,
+    posting_schedule: list[Any],
     today: date | None = None,
 ) -> dict[str, Any]:
     today = today or date.today()
@@ -494,22 +240,11 @@ async def register_external_resident(
             error_code=ErrorCode.CONFLICT.value,
         )
 
-    normalised_schedule: list[dict[str, Any]] | None = None
-    if posting_schedule is not None:
-        normalised_schedule = await _validate_posting_schedule(db, posting_schedule)
-        current_nhg_posting_code = _current_posting_from_schedule(
-            normalised_schedule,
-            today,
-        )
-    elif current_nhg_posting_code:
-        if not await _posting_exists(db, current_nhg_posting_code):
-            raise ApiError(
-                status_code=422,
-                detail="current_nhg_posting_code is not valid",
-                error_code=ErrorCode.VALIDATION_FAILED.value,
-            )
-    else:
-        raise _schedule_validation_error("posting_schedule is required")
+    normalised_schedule = await _validate_posting_schedule(db, posting_schedule)
+    current_nhg_posting_code = _current_posting_from_schedule(
+        normalised_schedule,
+        today,
+    )
 
     resident_insert = await db.execute(
         text(
@@ -540,52 +275,20 @@ async def register_external_resident(
     )
     resident = dict(resident_insert.mappings().one())
 
-    schedule_rows: list[dict[str, Any]] | None = None
-    if normalised_schedule is not None:
-        schedule_rows = await _insert_schedule_rows(
-            db,
-            external_resident_id=resident["id"],
-            posting_schedule=normalised_schedule,
-            current_nhg_posting_code=current_nhg_posting_code,
-        )
-        posting = schedule_rows[0]
-    else:
-        posting_insert = await db.execute(
-            text(
-                """
-                INSERT INTO external_resident_postings (
-                    external_resident_id,
-                    posting_code,
-                    start_date,
-                    end_date,
-                    is_current
-                )
-                VALUES (
-                    :external_resident_id,
-                    :posting_code,
-                    :start_date,
-                    :end_date,
-                    true
-                )
-                RETURNING id, external_resident_id, posting_code, start_date, end_date, is_current
-                """
-            ),
-            {
-                "external_resident_id": str(resident["id"]),
-                "posting_code": current_nhg_posting_code,
-                "start_date": today,
-                "end_date": None,
-            },
-        )
-        posting = dict(posting_insert.mappings().one())
+    schedule_rows = await _insert_schedule_rows(
+        db,
+        external_resident_id=resident["id"],
+        posting_schedule=normalised_schedule,
+        current_nhg_posting_code=current_nhg_posting_code,
+    )
+    posting = schedule_rows[0]
 
     await db.commit()
     response = {
         "resident": resident,
         "posting_history": posting,
     }
-    if schedule_rows is not None:
-        response["posting_schedule"] = schedule_rows
+    response["posting_schedule"] = schedule_rows
     return response
 
 
@@ -593,18 +296,23 @@ async def update_my_posting(
     db: AsyncSession,
     *,
     external_resident_id: UUID,
-    current_nhg_posting_code: str,
+    programme_code: str,
+    institution: str,
     today: date | None = None,
 ) -> dict[str, Any]:
     today = today or date.today()
     resident = await _external_resident_or_unauthorized(db, external_resident_id)
 
-    if not await _posting_exists(db, current_nhg_posting_code):
-        raise ApiError(
-            status_code=422,
-            detail="current_nhg_posting_code is not valid",
-            error_code=ErrorCode.VALIDATION_FAILED.value,
+    try:
+        current_nhg_posting_code = (
+            await programme_institution_posting.resolve_programme_institution_posting(
+                db,
+                programme_code=programme_code,
+                institution_code=institution,
+            )
         )
+    except programme_institution_posting.PostingMappingUnavailableError as exc:
+        raise _schedule_validation_error(exc.detail) from exc
 
     if resident["current_nhg_posting_code"] == current_nhg_posting_code:
         return {
