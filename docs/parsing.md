@@ -94,7 +94,7 @@ This stop marker takes priority over any parseable-looking values below the red 
 | C | mcr | Primary identifier |
 | D | classification | `Junior Resident` or `Senior Resident` |
 | E | base_institution | May be `-` |
-| F | r_year | `R1`..`R7` — may be remapped for subspecialty programmes (see § R Year Handling) |
+| F | r_year | `R1`..`R7` — normalized and then stored unchanged when R year is required; otherwise stored as `ALL` (see § R Year Handling) |
 | G | specialization | Maps to programme_code via `programmes` table lookup (with alias normalisation) |
 | H | reg_type | `Full` or `Conditional` |
 | I–T | posting per month | 12 month-phase columns (detected dynamically — do NOT assume fixed column range) |
@@ -160,22 +160,18 @@ def resolve_r_year(raw_r_year: str, programme: Programme) -> str:
         # Programme does not differentiate by r_year — use sentinel
         return 'ALL'
 
-    if programme.is_subspecialty:
-        # Apply subspecialty remapping
-        SS_MAP = {'R4': 'SS1', 'R5': 'SS2', 'R6': 'SS3'}
-        return SS_MAP.get(raw_r_year, raw_r_year)
-
-    return raw_r_year
+    # Required programmes preserve the normalized RDB value.
+    # SPORTSMED/PALLMED therefore retain R4, R5, and R6.
+    return raw_r_year.strip().upper()
 ```
 
-**r_year_required = false (22 programmes — use 'ALL'):**
-AIM, CARDIO, EM, ENDO, ENT, EYE, GASTRO, GERI, GS, ID, IM, MEDONCO, ORTHO, PATH, REHAB, RENAL, RHEUM, SPORTSMED, SIG, URO, MICROB, PALLMED
+**r_year_required = false (20 programmes — use 'ALL'):**
+AIM, CARDIO, EM, ENDO, ENT, EYE, GASTRO, GERI, GS, ID, IM, MEDONCO, ORTHO, PATH, REHAB, RENAL, RHEUM, SIG, URO, MICROB
 
-**r_year_required = true (6 programmes — use actual r_year):**
-ANAES, DERM, DR, FM, PSY, RESPI
+**r_year_required = true (8 programmes — use actual r_year):**
+ANAES, DERM, DR, FM, PSY, RESPI, SPORTSMED, PALLMED
 
-**is_subspecialty = true (2 programmes — apply remapping):**
-SPORTSMED (R4→SS1, R5→SS2), PALLMED (R4→SS1, R5→SS2)
+**SPORTSMED/PALLMED:** both have `is_subspecialty = false`; accept and store R4, R5, and R6 in the RDB and TTF paths. Do not remap to SS1–SS3.
 
 ### Posting Cell Parsing
 
@@ -269,15 +265,15 @@ NHGPlyNHGPly
 4. Aggregate total date ranges per posting code
 5. Look up explicit `multi_posting_rules` rows for this programme + posting code combination. Explicit `combine`, `half_month`, and two-code `main_posting` rules take priority.
 6. Apply the matching explicit rule type:
-   - `combine` → create one `resident_postings` row with `combined_label` as posting_code
-   - `half_month` → create two rows each with `active_months_weight = 0.5`
-   - explicit `main_posting` with both `posting_code_1` and `posting_code_2` → collapse to `main_posting_code`
+   - `combine` → resolve to the configured canonical combined code in `combined_label`; require that code in `posting_codes` with TTF rows, persist one row using it, and do not persist component compliance identities
+   - `half_month` → preserve both source posting codes as separate rows, each with `active_months_weight = 0.5`; keep each uploaded TTF `monthly_target` unchanged so the factor is applied exactly once
+   - explicit `main_posting` with both `posting_code_1` and `posting_code_2` → collapse to the configured existing `main_posting_code`, which is the compliance identity; do not create a combined identity
 7. If no explicit rule matched and `programme_code = 'FM'`, apply the FM main-posting trigger-list semantics:
    - Count how many distinct posting codes in the cell appear as `RDB Posting #1` / `posting_code_1` in FM `main_posting` rows where `posting_code_2 IS NULL`.
    - Exact one recognised posting → collapse the whole cell to that row's configured `main_posting_code`.
    - Zero recognised postings → collapse the whole cell to the configured `exclusion_code` from the FM `main_posting` seed rows, usually `NHGPlyNHGPly`.
    - Two or more recognised postings → do not infer. Persist each posting independently and emit `unmatched_multi_posting` unless an explicit rule exists.
-8. If no matching rule found → create separate `resident_postings` rows for each posting code. Each posting is calculated independently for compliance. Active months use whole-month counting — a posting is credited a full calendar month for any month it appears in, regardless of how many days. No proration. Add a warning to upload response: `"unmatched_multi_posting": ["MCR=M12345A: TTSHCardio + TTSHAnaes — no combine/half_month/main_posting rule found. Compliance calculated independently per posting. Add a multi_posting_rule or posting_group if these should be combined."]`
+8. If no matching rule found → create separate `resident_postings` rows for each posting code. Each posting is calculated independently for compliance. Active months use whole-AY-bucket counting — a posting is credited the bucket's full configured weight when it appears, subject to the FormF1 status selected by that bucket label. Do not prorate the bucket across raw calendar months. Add a warning to upload response: `"unmatched_multi_posting": ["MCR=M12345A: TTSHCardio + TTSHAnaes — no combine/half_month/main_posting rule found. Compliance calculated independently per posting. Add a multi_posting_rule or posting_group if these should be combined."]`
 
 **Note:** This multi-posting cell variant applies to ALL sheets — not FM only. Any RDB sheet (Phase 1 & 2, Phase 3, etc.) may contain cells with multiple posting codes and explicit date ranges.
 
@@ -436,17 +432,17 @@ The SSR (Sub-Specialty Registrar) sheet has a different structure: MCR, Name, SI
 ### Processing Order
 
 1. Parse all sheets, collect resident data and posting schedules
-2. Load `programmes` table (with `r_year_required`, `is_subspecialty`, `rdb_alias` flags) into memory for lookup
+2. Load `programmes` table (with `r_year_required` and `rdb_alias` configuration) into memory for lookup
 3. Upsert `posting_codes` table from distinct posting codes found
 4. Upsert `residents` table (keyed by MCR) — `residents.r_year` is updated to the value in column F for display only. Do not use it for compliance target lookup.
 5. **Delete** existing `resident_postings` rows for the reporting period (scoped to residents present in this upload)
 6. For each resident, for each posting cell:
    - Resolve programme code via `programmes` table (with alias normalisation)
-   - Apply `resolve_r_year()` based on `r_year_required` and `is_subspecialty` flags
+   - Apply `resolve_r_year()` based on `r_year_required`; do not perform subspecialty remapping
    - Apply multi-posting rule lookup from `multi_posting_rules` table
 7. Insert `resident_postings` rows with resolved `r_year` per row
 8. Compute and store `working_days_in_month` per row
-9. Call `hibernate_stale_surplus()` after insert
+9. Call `hibernate_stale_surplus()` after insert. This only updates lifecycle state; it does not carry a stored balance into attendance. On the next compliance read, recompute each ledger value as `max(cumulative raw eligible attendance - cumulative target_100, 0)` and replace it idempotently before tag reallocation.
 
 ---
 
@@ -482,15 +478,15 @@ def detect_ttf_sheet(workbook) -> str | None:
 |--------|-------|-------|
 | A | reporting_period | e.g. `Jan - June` — validated against reporting_periods table |
 | B | programme_code | e.g. `DR`, `GERI` |
-| C | r_year | Single (`R2`) or multi (`R4, R5, R6`) — must be exploded. Set to `'ALL'` for programmes with `r_year_required = false`. |
+| C | r_year | Single (`R2`) or multi (`R4, R5, R6`) — must be exploded. Set to `'ALL'` for programmes with `r_year_required = false`. SPORTSMED/PALLMED accept R4–R6 unchanged. |
 | D | posting_code | Bare code (e.g. `KTPHDiagRd`) or legacy bracket format |
-| E | dashboard_posting | Compliance grouping key. When non-empty, this value seeds `posting_groups.group_code`; the resolved Column D posting code becomes `posting_groups.            posting_code`. All posting codes sharing the same Column E value and programme are aggregated under that group for active-month counting, `target_100`, `target_70`, posting-level percentage, shortage, and clawback. When empty, no posting group row is created and the posting remains standalone under its resolved Column D posting code. |
+| E | dashboard_posting | Ordinary-compliance grouping key. When non-empty, this value seeds `posting_groups.group_code`; the resolved Column D posting code becomes `posting_groups.posting_code`. Group members aggregate only after physical-posting reallocation/capping. When empty, no posting group row is created and the posting remains standalone. Grouped-posting clawback identity remains deferred. |
 | F | session_type | Full name with duration, e.g. `Department/Programme Teaching [1h]` |
 | G | monthly_target | Non-negative integer frequency target at 100%; `0` is valid |
 | H | is_tracked | `Yes` → true, anything else → false |
 | I | is_reallocatable | `Y` → true, anything else → false |
-| J | tag | Reallocation group label, e.g. `A`, `B`. Empty = no reallocation |
-| K | details_of_training | Comma-separated keywords (e.g. `Journal Club, Grand Round, M&M`). Each `(keyword, duration)` combination must map to exactly one session type within a posting per programme. |
+| J | tag | Reallocation tier label, e.g. `A1`, `A2`, `A3`. Empty = no reallocation |
+| K | details_of_training | Comma-separated canonical event-option names (e.g. `Journal Club, Grand Round, M&M`). Exact resolution is scoped by period, programme, posting, R-year, and canonical name. |
 
 ### TTF Column E — Posting Group / Dashboard Posting
 
@@ -509,7 +505,7 @@ Compliance impact:
 - Events/attendance still match through the actual posting code from Column D.
 - Each posting keeps its own TTF monthly target from Column G.
 - During compliance calculation, postings sharing the same `group_code` are aggregated.
-- Active months, `target_100`, `target_70`, posting-level percentage, shortage, and clawback are calculated on the grouped basis.
+- Physical postings calculate targets, raw-count reallocation, and R-year-context caps first; only then are ordinary posting-level fields aggregated under the group. Group membership never permits cross-posting transfers. Grouped clawback identity remains deferred.
 
 ### Duration Extraction from Session Type Name
 
@@ -540,12 +536,10 @@ Column C may contain comma-separated years: `R4, R5, R6`. Each becomes a separat
 def explode_r_years(r_year_str: str, programme: Programme) -> list[str]:
     if not programme.r_year_required:
         return ['ALL']
-    years = [y.strip() for y in r_year_str.split(',') if y.strip()]
-    if programme.is_subspecialty:
-        SS_MAP = {'R4': 'SS1', 'R5': 'SS2', 'R6': 'SS3'}
-        return [SS_MAP.get(y, y) for y in years]
-    return years
+    return [y.strip().upper() for y in r_year_str.split(',') if y.strip()]
 ```
+
+For SPORTSMED and PALLMED, Column C must use R4, R5, and R6. Do not accept an `ALL` substitute or remap these values to SS1–SS3.
 
 ### Posting Code Parsing
 
@@ -588,8 +582,8 @@ Before inserting, validate:
 4. `session_type` name contains a duration bracket `[Xh]`
 5. No duplicate `(reporting_period_id, programme_code, r_year, posting_code, session_type_id)` after explosion
 6. If `is_reallocatable = true`, `tag` must not be empty
-7. If `tag` is set, there must be at least one other row at the same posting with the same tag
-8. **Keyword deduplication:** For each keyword in `details_of_training`, the `(keyword, duration_hours)` combination must map to exactly one session type within the same `(posting_code, programme_code)`. If the same keyword appears under two different session types with the same duration at the same posting, reject the upload with a descriptive 422 error.
+7. If a tag is set, there must be at least one other reallocatable row in the same R-year context at the same physical posting and in the same configured tag prefix so alphabetical flow can occur; do not treat posting-group membership or another R-year context as transfer eligibility
+8. **Canonical-name deduplication:** Within one `(reporting_period_id, programme_code, posting_code, r_year, canonical teaching name)` scope, the name must resolve to exactly one session type. The same canonical name at another posting is valid and may map differently. Case/spacing variants are upload/event-option data quality to reject or clean within scope; runtime compliance uses exact canonical names and never fuzzy-matches.
 9. **Tag order vs duration warning (not block):** For each tag group at a posting, check that tag label alphabetical order aligns with duration descending (e.g. `A1` should map to longer duration than `A2`). If misaligned, add a warning to the upload response: `"tag_order_warnings": ["Posting TTSHGerMed: tag A1 maps to [1h] but A2 maps to [2h] — reallocation will flow A1→A2, which is shorter→longer. Verify tag assignment is intentional."]`. Upload still proceeds.
 
 ### Column E — Posting Groups
@@ -710,21 +704,23 @@ Resident identity/profile/programme/r_year/posting remain authoritative from RDB
 ### Month Labels
 
 - Month labels must be derived from the selected reporting period dates (not hardcoded AY25/AY26 assumptions).
-- Persisted `month_label` format must align with `resident_postings.month_label`, e.g. `Jul-25`.
+- Persisted `month_label` format must align with `academic_month_boundaries.month_label`, e.g. `Jul-25`.
+- FormF1 remains calendar-month stored. At compliance read time, the AY bucket label selects the FormF1 row for every numerator and denominator contribution in that entire bucket. Do not split/prorate a bucket or use the event's raw calendar month when it differs from the label.
+- Example: if AY bucket `Jul-26` covers 8 July–3 August, 3 August uses July FormF1; 4 August uses the August bucket and August FormF1.
 
 ### Status Normalisation
 
 | Raw value | is_active | Notes |
 |-----------|-----------|-------|
 | `Active` | true | Standard active |
-| `Extension` | true | Always track — funding not allocated, clawback not exercised (`clawback_suppressed_reason = 'Extension'`) |
+| `Extension` | true | Active for ordinary compliance; financial treatment is deferred |
 | `Inactive` | false | Excluded from both numerator and denominator |
 | blank, `NULL`, or whitespace-only | false | Recognised inactive monthly status; persists an inactive row |
 
 **Expected status list:** `Active`, `Inactive`, `Extension`.
 For every valid MCR row, every in-scope reporting-period month persists a record. Blank monthly status cells persist `status_raw = ''` and `is_active = false`; they do not produce an unknown-status warning. A blank MCR with no monthly values remains the end/skip-row condition. Unknown non-blank values preserve `status_raw`, use the existing active fallback, and do not fail upload. They create a persisted `unknown_formf1_status` warning containing the unknown value, Excel cell reference, MCR, and month label.
 
-**When is_active = false:** The resident-month is excluded from both the compliance numerator and denominator. Sessions attended in that month are stored but not counted.
+**When is_active = false:** Every attendance and denominator contribution in the AY bucket carrying that month label is excluded. Sessions remain stored but are not counted. The gate does not switch merely because the event's raw date crosses into another calendar month within the same bucket.
 
 ### Promotion Date Parsing
 

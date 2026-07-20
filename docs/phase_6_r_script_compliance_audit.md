@@ -1,26 +1,17 @@
 # Phase 6-A — R Script-to-Compliance Specification Audit
 
-Audit date: 2026-07-17
+Audit date: 2026-07-17; Phase 6-A decision reconciliation: 2026-07-20
 Scope: specification audit only; no application, migration, test, source workbook, or R-script changes
 
 ## 1. Final Verdict
 
-**BLOCKED ON UNRESOLVED BUSINESS LOGIC**
+**NON-CLAWBACK SPECIFICATION RESOLVED; CLAWBACK DEFERRED**
 
-The core legacy arithmetic is recoverable and several current decisions are sound: compliance counts sessions, caps per session type, aggregates at posting/posting-group level, uses `ceiling(target_100 * 0.70)`, and keeps monthly percentages display-only. The current specification is nevertheless not deterministic enough to implement safely.
+The Phase 6-A ordinary compliance business logic is resolved at specification level. This reconciliation updates the source-of-truth documents for FormF1/AY boundaries, distinct-event overlap rejection, exact-type ORTHO mutation, the three multi-posting outcomes, native-programme attribution, canonical catalogue matching, SPORTSMED/PALLMED R-years, mid-period R-year contexts, fractional-target status, raw-count tag reallocation, and persistent-surplus lifecycle.
 
-The blocking issues are not requests to restore legacy workarounds. They are unresolved current-system contracts:
+This verdict makes **no claim that Phase 6 application code or tests are implemented**. Implementation and verification remain future work. The legacy evidence and defect descriptions below are retained so known legacy defects—especially reusable donor supply, duplicated R-year months, formatted clawback triggering, and temporary in-memory transfer behavior—are not reproduced.
 
-1. The documented post-cap tag transfer conserves the posting numerator and therefore cannot improve posting compliance, unlike the legacy raw-count-then-recap algorithm. The intended effect of reallocation must be stated.
-2. `surplus_ledger` is described as using capped achievement but its formula uses raw achievement; capped-minus-`target_100` can never be positive. Carry-in/resumption semantics are also absent.
-3. FormF1 is calendar-month authoritative while posting/attendance buckets are AY-date based; a phase crossing a calendar boundary has no deterministic gate.
-4. Combined-posting phases/targets use a combined label, but component-site events cannot pass the documented exact posting/catalogue joins.
-5. Fractional targets make the `met = achieved >= ceil(target_100 * .70)` rule disagree with the percentage-based traffic-light rule.
-6. `SPORTSMED` and `PALLMED` are simultaneously configured as `r_year_required = false` and `is_subspecialty = true`, making the documented SS remap unreachable.
-7. Clawback lacks authoritative rate values/storage, year-dependent funding R-year selection, the IM-sub-specialty set, mixed/overlapping suppression precedence, standalone and posting-group billing-source rules, safe missing-rate behavior, and a deterministic final-close transaction/rerun contract.
-8. A resident can cross R years within one reporting period. Current phase-specific target weighting correctly supersedes C’s duplicated posting-wide month multiplier, but the documents still do not state whether correctly weighted R-year contexts remain separate, are capped separately then summed, or merge before capping.
-
-Several additional blockers and HIGH documentation defects—half-month double-halving wording, the incomplete admin SQL, the over-broad ORTHO seed, tag validation, and API/report grain conflicts—must also be patched before implementation. Sections 9 and 10 deliberately mark affected steps/tests as pending rather than inventing answers.
+Clawback remains explicitly **DEFERRED** and separate from ordinary compliance readiness. Norm rates/effective dating, funding R-year, financial programme classification, Extension/R7/SAF/SCDF suppression granularity/precedence, grouped-posting identity, billing attribution, missing-rate behavior, rounding/precision, and final-close transaction/rerun/idempotency are unresolved and must not be inferred from legacy scripts.
 
 ## 2. Scope and Sources Reviewed
 
@@ -177,7 +168,32 @@ These details were inspected so report/file behavior is not mistaken for calcula
 
 ## 4. Rule Coverage Matrix
 
-“Pending” means a blocker in sections 6–7/11 must be resolved. “Specified” means the current authoritative rule is deterministic, even when it intentionally differs from R.
+The following matrix supersedes the original pre-decision matrix. `Resolved` means the non-clawback source-of-truth specification is deterministic; it does not mean code or tests exist. `Deferred` is reserved for clawback/final-close rules.
+
+| Rule area | Legacy evidence | Confirmed MATA behavior | Classification | Current status |
+|---|---|---|---|---|
+| Session unit | B/C count attendance rows | One session equals one; hours never multiply or transfer | `EXACT_MATCH` | Resolved |
+| FormF1/AY gate | Legacy calendar/AY paths conflicted | AY bucket label selects one calendar-month FormF1 status for numerator and denominator | `INTENTIONAL_OVERRIDE_RESOLVED` | Resolved |
+| Capping and R-year grain | C capped rows but duplicated posting-wide months across R-years | Target/cap each physical-posting/session-type/R-year context separately, then sum | `LEGACY_DEFECT_SUPERSEDED` | Resolved |
+| Fractional status | Legacy ceil target and percentage artifacts could disagree | Unrounded posting percentage is canonical; `target_70` is display-oriented | `INTENTIONAL_OVERRIDE_RESOLVED` | Resolved |
+| Tag reallocation | C transfers raw counts then recaps but reuses donor supply | Transfer raw one-for-one counts before caps within physical posting/R-year context/prefix; decrement supply; no cross-posting transfer | `LEGACY_DEFECT_SUPERSEDED` | Resolved |
+| Persistent surplus | Legacy had temporary `bringover`, no ledger | Idempotent pre-tag raw-minus-target derived state; never add to attendance | `DOCUMENTED_NEW_BEHAVIOR` | Resolved |
+| Multi-posting | Legacy used workbook/string paths | Distinct main/combine/half outcomes; half-month factor once | `ARCHITECTURAL_TRANSLATION` | Resolved |
+| Combined posting | Legacy combined labels fed combined targets | Use configured canonical combined code with TTF rows; no component results | `ARCHITECTURAL_TRANSLATION` | Resolved |
+| Native-programme event | No direct legacy equivalent | Project approved outside event to one assigned-posting 1h session | `DOCUMENTED_NEW_BEHAVIOR` | Resolved |
+| Catalogue matching | Legacy fuzzy/first-match behavior | Exact canonical scoped match; same name may differ by posting; no fuzzy match | `INTENTIONAL_OVERRIDE_RESOLVED` | Resolved |
+| SPORTSMED/PALLMED | Previous docs made remap unreachable | R-year required, not subspecialty; store/use R4–R6 | `DOC_CONTRADICTION_RESOLVED` | Resolved |
+| Overlapping events | Legacy adjacency behavior was fragile | Reject later overlapping submission; preserve earlier attendance | `INTENTIONAL_OVERRIDE_RESOLVED` | Resolved |
+| ORTHO mutation | Legacy exact mutation/order evidence | Exact 3h type only; adjust time, project type, then Saturday window | `ARCHITECTURAL_TRANSLATION` | Resolved |
+| Posting groups | Legacy dashboard aggregate | Aggregate after physical-posting transfer/caps; no cross-posting transfer | `ARCHITECTURAL_TRANSLATION` | Resolved |
+| Resident/admin parity | Legacy D1/D2 shared C outputs | Both surfaces use one BL-6 contract; optimization is non-normative | `ARCHITECTURAL_TRANSLATION` | Resolved specification |
+| Non-NHG isolation | Legacy native/non-native split | External attendance never enters NHG compliance state | `ARCHITECTURAL_TRANSLATION` | Resolved |
+| Clawback/close | E/F evidence is incomplete and contains defects | Only future use of unrounded failure predicate is known | `LEGACY_EVIDENCE_ONLY` | **Deferred** |
+
+<details>
+<summary>Original pre-decision coverage matrix (historical audit state; not current specification status)</summary>
+
+In this preserved matrix, “Pending” and “BLOCKER” describe the 2026-07-17 state before the confirmed Phase 6-A decisions. They are superseded by the current matrix above except for clawback.
 
 | Rule area | Legacy source | Current doc section | Classification | Severity | Implementation status |
 |---|---|---|---|---|---|
@@ -224,9 +240,31 @@ These details were inspected so report/file behavior is not mistaken for calcula
 | Non-NHG isolation | B `1019-1059` | BL-6/BL-12; `AGENTS.md` | `ARCHITECTURAL_TRANSLATION` | LOW | Specified |
 | Final close/freeze | F2 is only file archival | BL-10; API reports | `DOC_GAP` | BLOCKER | New DB workflow is specified only at high level; BD-16 transaction/rerun contract is pending |
 
+</details>
+
 ### 4.1 Detailed material finding register
 
-The fields below are intentionally repetitive so an implementation or documentation owner can act on each finding without inferring missing context.
+The fields below preserve the original 2026-07-17 evidence and defect analysis. Their words “pending” or “blocker” are historical unless the current disposition table says `DEFERRED`.
+
+| Finding | Current disposition | Confirmed resolution |
+|---|---|---|
+| F-03/F-08 | RESOLVED | AY bucket label selects the FormF1 month for both numerator and denominator across the whole bucket. |
+| F-04/F-06 | RESOLVED | Reallocate raw one-for-one counts within physical posting/R-year context/prefix before caps; use configured prefix/tier labels in alphabetical order; decrement donor; duration never transfers. |
+| F-05/F-18 | RESOLVED | Ledger is unique per resident/physical posting/type/period and idempotently replaces pre-tag raw-minus-target derived state; never carry it into attendance. |
+| F-07 | RESOLVED | Half-month persists two rows at weight 0.5 and leaves monthly target unchanged. |
+| F-09 | RESOLVED | SPORTSMED/PALLMED require R-year, are not subspecialties, and use R4–R6; overall split is 20/8. |
+| F-10 | RESOLVED | Unrounded posting percentage is canonical; `target_70` is display-only. |
+| F-11 | RESOLVED | `combine` uses one configured canonical combined posting code with TTF rows and no component results. |
+| F-12 | RESOLVED SPECIFICATION | Resident and admin paths share the same BL-6 contract; no implementation claim. |
+| F-13 | RESOLVED | Exact original ORTHO 3h type only; adjust end time, project type, then Saturday-window check. |
+| F-14/F-15/F-16 | **DEFERRED** | Clawback financial, suppression, identity, billing, precision, and close behavior await confirmation. |
+| F-17 | RESOLVED | Canonical exact scoped match; native outside events project under assigned posting; global/session/report semantics ordered in BL-6. |
+| F-19/F-20 | RESOLVED AS AUDIT CONTEXT | Legacy report/Word claims remain evidence only and do not override source-of-truth rules. |
+| F-21 | RESOLVED | Reject later overlapping distinct submission and preserve earlier attendance; same-event uniqueness is separate. |
+| F-22 | RESOLVED | Target/cap each physical-posting/session-type/R-year context separately, then sum without duplicated months. |
+| F-23 | NON-BLOCKING | Unmatched cells retain independent rows and parser warnings; reliability annotation details do not change ordinary arithmetic. |
+
+The fields below are intentionally repetitive so an implementation or documentation owner can trace each conclusion without inferring missing legacy context.
 
 #### F-01 — Core capping and posting aggregation
 
@@ -723,10 +761,10 @@ These differences must **not** be “corrected back” to legacy behavior.
 | No response-row duplication for consecutive/dept-meeting answers | B clones FormSG responses (`638-700`) | `LEGACY_DISCARD_CONFIRMED` | Each event/attendance is a discrete DB row. |
 | FormF1 is final authority; `Extension` is active | C retains exact `Active` only (`63-64`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Explicit current confirmed decision; account status/RDB LOA must not replace it. |
 | Blank/NULL/whitespace FormF1 month is inactive without unknown-status warning | Legacy missing values become inactive through brittle matching | `INTENTIONAL_OVERRIDE_RESOLVED` | Explicit parser/current-system rule. |
-| AY boundaries are DB data and inclusive | B uses external changeover matrices (`148-166`) | `ARCHITECTURAL_TRANSLATION` | Same date-bucket intent, configurable and auditable. F-08 still requires cross-calendar gate semantics. |
-| `resident_postings.r_year` per phase; `ALL` sentinel | A/B use external date mapping and a long sentinel | `ARCHITECTURAL_TRANSLATION` | Explicit current rule, necessary for historical phase correctness; do not use `residents.r_year`. F-09 is a configuration contradiction, not permission to restore the XLSM. |
-| Phase-specific active-month targets at an R-year change | C computes posting-wide active months without R year, then applies that count to each R-year row (`286-295`, `380-395`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Current phase `resident_postings.r_year`/weight must select only its applicable target months. F-22 decides cap/result grain after this legacy multiplier defect is rejected. |
-| Generic `multi_posting_rules` and `active_months_weight` | A hardcodes/replays workbook string replacements; C has brittle GASTRO branch | `ARCHITECTURAL_TRANSLATION` | DB configuration replaces spreadsheet-specific code. Apply the weight once after F-07. |
+| AY boundaries are DB data and inclusive | B uses external changeover matrices (`148-166`) | `ARCHITECTURAL_TRANSLATION` | The resolved bucket label selects FormF1 for both numerator and denominator across the whole bucket. |
+| `resident_postings.r_year` per phase; `ALL` sentinel | A/B use external date mapping and a long sentinel | `ARCHITECTURAL_TRANSLATION` | Use phase R-year; 20 programmes use `ALL`, while SPORTSMED/PALLMED preserve R4–R6. |
+| Phase-specific active-month targets at an R-year change | C computes posting-wide active months without R year, then applies that count to each R-year row (`286-295`, `380-395`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Weight target and cap separately per physical-posting/session-type/R-year context, then sum; do not duplicate months. |
+| Generic `multi_posting_rules` and `active_months_weight` | A hardcodes/replays workbook string replacements; C has brittle GASTRO branch | `ARCHITECTURAL_TRANSLATION` | DB configuration replaces spreadsheet code. Half-month applies 0.5 through the weight once and leaves TTF target unchanged. |
 | Posting groups seeded from TTF Column E | C uses `Posting Site(Dashboard)` labels | `ARCHITECTURAL_TRANSLATION` | Preserves grouping outcome while keeping member targets explicit. Do not conflate with multi-posting rules. |
 | Exact TTF Column K catalogue, read-time session resolution, full scoped replace | Legacy TTF has only A–J and FormSG session type is matched directly | `DOCUMENTED_NEW_BEHAVIOR` | Confirmed architecture enabling current TTF corrections without rewriting attendance. |
 | STP is not a system input | Legacy attendance/session matching depends on FormSG/TTF strings; no current STP ingestion is authorized | `LEGACY_DISCARD_CONFIRMED` | PCs place Details of Training keywords in mandatory TTF Column K; do not add an STP parser or hidden dependency. |
@@ -734,18 +772,36 @@ These differences must **not** be “corrected back” to legacy behavior.
 | Global session types excluded before catalogue | No exact R equivalent | `DOCUMENTED_NEW_BEHAVIOR` | Explicit confirmed rule; trackable attendance is not necessarily PTT compliance. |
 | PH event/ad-hoc creation hard-blocked | B accepts/rejects PH rows after submission, including emergency subsets (`896-925`, `1014-1017`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Confirmed current product decision. Do not recreate PH exception ingestion. |
 | Only confirmed URO, DERM and ORTHO weekend rules | B also accepts SIG, FM, ANAES and emergency postings (`923-947`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Later PC-confirmed list supersedes R. Schema’s stale emergency note must be patched. |
-| ORTHO mutation is read-time and raw attendance is preserved | B mutates the working attendance data (`912-918`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Auditability/current decision. F-13 concerns the predicate, not read-time timing. |
-| Tag flow is same posting, alphabetical, one-for-one, with consumable donor balance | R may cross postings with the same prefix and can double-spend donors (`403-443`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Explicit guardrails fix unsafe legacy behavior. F-04 still requires the source/effect of supply. |
+| ORTHO mutation is read-time and raw attendance is preserved | B mutates the working attendance data (`912-918`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Auditability/current decision; the exact original type, adjusted-time order, Saturday window, and Sunday exclusion are now confirmed. |
+| Tag flow is same physical posting/R-year context, alphabetical, one-for-one, with consumable donor balance | R may cross postings with the same prefix and can double-spend donors (`403-443`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Confirmed raw-minus-row-70% supply and row-70% demand make the effect deterministic; decrementing supply fixes double-spend. |
 | Tag participation requires `is_reallocatable=true` and a valid tag | C keys on non-NA `Tag`; its separate reallocation flag is not consumed | `INTENTIONAL_OVERRIDE_RESOLVED` | Current TTF schema/validator makes participation explicit; a stray tag alone must not move sessions. |
 | FM uses the standard engine | D1 selects a separate FM workbook template (`202-213`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Template selection is not a separate compliance engine/formula. The FM template is also an external clawback-rate source read by E, so its missing cells remain an F-14 evidence gap; retain only confirmed FM attribution/parser annotations in the compliance path. |
 | Countable native ad-hoc uses fixed assigned-posting 1h attribution | Legacy FormSG does not implement the current dedicated authenticated branch | `DOCUMENTED_NEW_BEHAVIOR` | Detailed BL-9/API semantics supersede broad “same treatment” shorthand; selected attended keyword/duration must not drive compliance. |
 | Native/external attendance uses separate tables; external never enters NHG math | B identifies/filter non-residents from FormSG (`1019-1059`) | `ARCHITECTURAL_TRANSLATION` | Explicit security/data-boundary decision. |
-| Period snapshots/final close are DB workflows | F2 only copies/deletes files and RDS snapshots | `DOCUMENTED_NEW_BEHAVIOR` | File archival is not a reliable compliance freeze. Operational deactivate remains separate. |
-| Unformatted current clawback trigger | E applies `format(...,digits=2)` before comparison (`36-41`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Formatted display values must not decide money. The authoritative docs must state the unformatted canonical predicate selected by F-10/BD-05. |
+| Period snapshots/final close are not legacy F2 behavior | F2 only copies/deletes files and RDS snapshots | `LEGACY_DISCARD_CONFIRMED` | File archival is not a reliable compliance freeze. Any MATA final-close workflow remains deferred with clawback. |
+| Unformatted future clawback failure predicate | E applies `format(...,digits=2)` before comparison (`36-41`) | `INTENTIONAL_OVERRIDE_RESOLVED` | A future clawback candidacy check must reuse the unrounded ordinary-compliance percentage; all financial behavior remains deferred. |
 
 ## 6. Documentation Gaps
 
-This section lists rules that are absent, not cases where two documents state different answers.
+### 6.1 Current unresolved/deferred register
+
+No ordinary non-clawback calculation decision remains unresolved at specification level. The current open register is clawback-only:
+
+| Deferred area | Why deferred |
+|---|---|
+| Norm-rate values, persistence, effective dating, and missing-rate behavior | No authoritative financial catalogue or safe failure contract exists. |
+| Funding/clawback R-year and financial programme classification | Legacy positional/FormF1 evidence is not a current rule. |
+| Extension/R7/SAF/SCDF granularity and precedence | Row visibility, amount, and overlapping reasons are unconfirmed. |
+| Grouped identity and billing attribution | Compliance grouping does not determine financial row/billing identity. |
+| Financial precision and rounding | Decimal scale/mode/timing are unconfirmed. |
+| Final-close transaction, rerun, reopen, and idempotency | Legacy F2 archival is not a database close contract. |
+
+Display/export rounding is a non-blocking presentation decision because API decision values remain unrounded. Historical migration remains separately tracked outside the ordinary Phase 6-A calculation contract.
+
+<details>
+<summary>Original 2026-07-17 gap register (historical; resolved rows are not current gaps)</summary>
+
+The table below preserves the reasons the Phase 6-A decisions were requested. Only its clawback/final-close rows remain open.
 
 | Gap | Finding | Why current documents do not resolve it | Required addition |
 |---|---|---|---|
@@ -768,7 +824,20 @@ This section lists rules that are absent, not cases where two documents state di
 | Display rounding policy | F-20 | D2 rounds upward, while current API does not define presentation precision. | Separate raw API values/decision values from optional export/UI formatting. |
 | Final-close generation contract | F-14–F-16 / BD-16 | Current docs say future/deferred and do not define atomicity, a natural unique key/replacement rule, rollback, immutable provenance, or rerun/reopen behavior. | An owner-approved close/freeze contract before clawback generation is implemented; JIT compliance can be designed after core blockers resolve. |
 
+</details>
+
 ## 7. Documentation Contradictions and Ambiguities
+
+### 7.1 Current disposition
+
+The non-clawback contradictions listed in the historical table below are resolved in the domain source-of-truth documents. In particular: raw-count transfer precedes caps; ledger state is raw-minus-target and never carry-in attendance; FormF1 follows the AY label; half-month weighting occurs once; SPORTSMED/PALLMED use R4–R6; R-year contexts cap separately; percentage is canonical; combined/native attribution is explicit; canonical catalogue matching is exact/scoped; later overlaps are rejected; ORTHO is exact-type/adjusted-time/Saturday-only; resident/admin calculation shares one contract; and the snapshot example is corrected.
+
+Remaining ambiguity is clawback-only and remains deferred. The multi-posting reliability annotation and display rounding are non-blocking response/presentation details; they do not change specified arithmetic.
+
+<details>
+<summary>Original contradiction table (historical audit state)</summary>
+
+Rows marked as blocking in this preserved table describe the pre-decision state. Domain documents now supersede them except for clawback/final-close rows.
 
 | Conflict | Evidence | Domain authority / winner | Patch required |
 |---|---|---|---|
@@ -804,6 +873,8 @@ This section lists rules that are absent, not cases where two documents state di
 | Ad-hoc “same treatment” shorthand versus fixed 1h attribution | `AGENTS.md:132`; API `1519-1529`; BL-9 | Detailed BL/API rule wins | Replace shorthand to avoid treating selected display duration as compliance type |
 | Clawback source named Script F | decision log `900-905`; actual E header/calculation | Direct R E wins; decision log is secondary | Correct attribution; do not rewrite history as authority |
 | FM report template attributed to E | decision log `951-957`; D1 `202-213`; E only reads rate cells `31-34` | Direct R wins | Correct attribution |
+
+</details>
 
 The decision log also contains stale entries describing defects that have already been corrected in domain docs (for example its old FM and FormF1-year notes). Those entries remain historical context and must not override the current domain files.
 
@@ -860,7 +931,31 @@ It remains safe for locating the broad C/E topics and identifying discarded Form
 
 ## 9. Phase 6 Implementation Contract
 
-This is the ordered contract supported by current authority **after** the identified pending decisions are resolved. A `PENDING` marker is a prohibition on guessing, not an optional enhancement. The resident and programme-wide batch paths must execute the same logical steps and produce identical calculation fields.
+This is the current non-clawback specification contract. It does not assert that code or tests exist.
+
+1. Resolve one applicable reporting period, resident scope, event-date physical posting phase, phase R-year, and inclusive AY bucket. Use the bucket label to select the FormF1 row for both numerator and denominator across the whole bucket.
+2. Read native attendance only. The submission service has already rejected later distinct-event overlaps while preserving earlier accepted attendance; same-event uniqueness remains separate.
+3. Resolve parse-time posting identity by the applicable distinct rule: existing main code, configured canonical combined code, or two half-month rows with unchanged targets and weight 0.5 once. Retain physical posting identity for tag transfer; posting groups aggregate only later.
+4. For an approved native-programme event outside the assigned posting, preserve the event and project exactly one assigned-posting `Department/Programme Teaching [1h]` session using the assigned target. Normal assigned-posting events use the catalogue path.
+5. Exclude active global session types before catalogue matching. Otherwise resolve the exact canonical name by period, resident programme, assigned/compliance posting, phase R-year, and name. Same names at different postings may map differently; never fuzzy-match.
+6. Apply weekday/weekend rules. For ORTHO, only the exact original 3h type subtracts two hours from end time, projects to the 1h type, and then tests the adjusted interval against Saturday 08:30–10:30. Sunday is excluded; other ORTHO types do not mutate and require any separately applicable acceptance rule.
+7. Exclude untracked and zero-target rows from ordinary math while retaining audit/visibility. Count eligible sessions one-for-one; duration never multiplies count.
+8. Calculate correctly FormF1-gated `target_100` for each `(resident, physical posting, session type, R-year context)`. Never apply posting-wide months to every R-year row.
+9. Recompute and idempotently replace persistent pre-tag ledger state as `max(cumulative raw eligible attendance - cumulative target_100, 0)` per resident/physical posting/type/period. Never read it back as attendance or a transfer balance.
+10. Reallocate raw achieved counts within one physical posting, R-year context, and tag prefix. Sort tags alphabetically; earlier donates to later; supply is raw above the type's `ceil(target_100 × .70)` and demand is only to that threshold. Decrement supply after every one-for-one session transfer. Never transfer hours or cross postings/R-year contexts.
+11. After all transfers, cap each session type/R-year context at its own `target_100`. Sum separately capped achievement and targets into the physical posting, then aggregate configured posting-group members.
+12. For positive target, compute unrounded `percentage = achieved_and_counted / target_100`; set `met_70pct = percentage >= .70`; green at ≥70%, amber at ≥50% and <70%, red below 50%. Display `target_70 = ceil(target_100 × .70)`. Shortage is zero if met, otherwise `ceil((target_100 × .70) - achieved_and_counted)`.
+13. Attach non-arithmetic reliability/display annotations without changing canonical values. Resident and admin/report surfaces execute this same contract and must return parity-identical decision values.
+14. Keep clawback/final-close generation outside this contract and **DEFERRED**. A future candidacy check reuses the unrounded percentage, but no finance, suppression, billing, rounding, or close behavior is inferred.
+
+### 9.1 Non-negotiable parity requirement
+
+Resident JIT and admin batch paths must share the same rule primitives or pass the section 10 fixtures with identical raw counts, targets, exclusions, transfers, caps, metrics, and annotations. Performance is not permission to omit rules. The source-of-truth documents make no claim that this parity is already implemented.
+
+<details>
+<summary>Original pre-decision implementation contract (historical)</summary>
+
+The following ordered contract contains `PENDING` markers from the 2026-07-17 audit. They are superseded for non-clawback behavior by the current contract above; clawback markers remain deferred.
 
 1. **Resolve reporting period and resident scope.** Resolve exactly one date-applicable/effectively active reporting period for current-date/event-date workflows; fail closed on overlap. For an explicitly selected historical report, scope to that period and the caller’s authorized programme/resident. Source: `docs/business-logic.md` BL-6 `408-445`; `docs/api.md` reporting-period/report endpoints; `AGENTS.md` authorization rules.
 
@@ -900,11 +995,41 @@ This is the ordered contract supported by current authority **after** the identi
 
 19. **Prepare clawback inputs; keep generation separate.** Expose the failing posting/group/R-year result, eligible active-month measure, phase/funding-year evidence, employer/billing context and period. Do not create `clawback_records` during JIT reads or operational deactivation. **PENDING F-14/F-15/F-16/F-22/BD-16/BD-17:** rates/classification, year-dependent funding year, Extension/overlapping suppressions, standalone/group billing source and identity, employer rows, missing-rate failure, Decimal rounding, cross-R-year result handoff, and the future close’s atomicity/rollback/uniqueness/replacement/rerun contract. Atomic/idempotent close is an audit recommendation, not yet current authority. Source: BL-10; BL-6 operational deactivation note; schema `clawback_records`/snapshots; API clawback/snapshot endpoints.
 
-### 9.1 Non-negotiable parity requirement
+### Historical parity note
 
 The illustrative batch SQL in BL-6 is not implementation-ready. Once the pending rules are resolved, the resident JIT and admin batch paths must share the same rule primitives or pass all section 10 fixtures with identical raw counts, target values, exclusions, transfers, metrics and annotations. Performance is not permission to omit rules.
 
+</details>
+
 ## 10. Required Golden Tests
+
+The following decision-lock fixtures supersede the `PENDING` branches in the historical table. They are recommendations for future tests, not claims that tests exist.
+
+| Fixture | Confirmed expected ordinary-compliance result |
+|---|---|
+| G-03 fractional half-month target | Keep monthly target 3 and weight .5 once: `target_100=1.5`, displayed `target_70=2`, cap 1.5, percentage 1.0, shortage 0, met/green. |
+| G-09 mid-period R-year change | R1 target2/raw3 caps2; R2 target4/raw0 caps0. Sum target6/counted2, displayed target70=5, percentage 1/3, shortage3, fail/red. Never use two posting-wide months on each row or merge raw before caps. |
+| G-11 two-tier tags | Raw `[6,2]`, targets `[4,4]`, row 70% targets `[3,3]`: transfer one A1→A2, adjusted `[5,3]`, caps `[4,3]`, posting 7/8=.875, met/green. |
+| G-12 three-tier tags | Raw `[6,2,2]`, targets 4 each: A1 supplies one to A2 and one to A3, adjusted/capped `[4,3,3]`, posting 10/12, met/green. |
+| G-13 insufficient donor | Raw `[5,0]`, targets 4 each: A1 supply2, transfer2, final `[3,2]`, posting 5/8=.625, shortage1, fail/amber. |
+| G-14 multiple donors | Raw `[5,5,0]`, targets 4 each: A1 donates2 and A2 donates1 to A3, final `[3,4,3]`, posting 10/12, met/green. Donor supply is decremented. |
+| G-16 ORTHO exact mutation | Exact 3h raw 08:30–11:30 preserves raw rows, adjusts end to 09:30, projects to the 1h type, passes Saturday 08:30–10:30, and counts once. Other ORTHO types do not mutate; Sunday is excluded. |
+| G-25 donor cannot be reused | Raw `[6,0,0]`, targets `[3,6,12]`: A1 supply3 goes to A2 only, final `[3,3,0]`; received credits do not become raw donor supply and A1 cannot be spent again. |
+| G-26 AY/calendar boundary | AY bucket `Jul-26` includes 3 August. With July Active/August Inactive, the 3 August event and denominator use July, so raw1 and July-bucket target apply. The next AY bucket uses August. |
+| G-34 distinct-event overlap | Earlier accepted event remains stored/countable once; later overlapping distinct submission is rejected. Same-event uniqueness remains a separate rejection. |
+| G-35 native event outside assigned posting | Preserve the PN event but count exactly one assigned-P1 `Department/Programme Teaching [1h]` session against P1's target; no PN/native-posting result. |
+| G-40 half-month multiple types | Weight .5 once with unchanged targets 3 and 1: caps `[1.5,.5]`, posting target2/counted2, met/green. |
+| G-45 canonical catalogue names | Scheduled creation stores canonical `Journal Club`. P1 and P2 may map it differently; assigned/compliance posting selects the mapping. Case/spacing variants are rejected/cleaned in upload/options and are never fuzzy-matched at runtime. |
+| G-46 persistent-surplus return | First phase target2/raw4 → ledger2. Return expands cumulative target to4 while raw remains4 → counted4 and idempotently replaced ledger0. Never calculate attendance as `4 + stored 2`. |
+| G-47 combined posting | `TTSHDiagRd + NNINeuRad` resolves to existing canonical `TTSHDiagRd & NNINeuRad`; persist/use one row and its TTF target, with no component compliance results. |
+| G-48 SPORTSMED/PALLMED years | SPORTSMED R4 and PALLMED R6 persist/match R4 and R6 catalogue/target rows. Neither resolves through `ALL` or SS1–SS3. |
+
+All ordinary fixtures must produce identical canonical values through resident and admin/report paths. Clawback expectations are intentionally absent until its deferred rules are confirmed.
+
+<details>
+<summary>Original pre-decision golden-test table (historical)</summary>
+
+The table below preserves the alternatives that motivated the decisions. Its non-clawback `PENDING` branches are superseded by the fixture outcomes above.
 
 ### 10.1 Fixture notation
 
@@ -970,9 +1095,13 @@ Unless a case overrides it:
 | G-44 Non-empty close rerun | One failing standalone P1/R2/Active result identical to G-02; valid injected rate1200; invoke authorized final close twice with unchanged frozen inputs | 5 on both runs | cap5 on both | 10; 7 | .5000; 2; fail/amber | Logical candidate amount100.00 on both; physical snapshot/clawback row count/version/replacement and rollback behavior are **PENDING BD-16** and must never create an accidental duplicate within one close version |
 | G-45 Catalogue keyword normalization | `P1`; R2/Active; `S1:4/T`; catalogue display keyword `Journal Club`; four distinct non-overlapping weekday events persist names `Journal Club`, `journal club`, ` Journal Club ` and `Journal  Club` | stored4; compliance raw **PENDING F-17/BD-09** (exact-only 1, case-fold+trim 3, plus internal-space collapse 4) | pending approved canonical match; cap equals approved raw | 4; 3 | exact-only 1/4=.25, shortage2, fail/red; case-fold+trim 3/4=.75, shortage0, met/green; collapsed4/4=1, met/green | Candidate only in exact-only branch; one normalization boundary must replace these branches before implementation |
 
-### 10.3 Clawback/close-specific cases required in addition to the table
+</details>
 
-The following are mandatory once F-14–F-16, F-22 and the close contract are resolved:
+### 10.3 Deferred clawback/close test register
+
+The preserved clawback cases are not executable acceptance criteria yet. Once the deferred contract is confirmed, tests must cover every approved rate/effective-date branch, funding year, classification, suppression precedence, grouped identity/billing attribution, missing-rate behavior, Decimal rounding, empty/non-empty close, rollback, and rerun/idempotency. Do not use the illustrative injected rates or legacy branch order as current business authority.
+
+Historical recommendations retained for future requirements analysis:
 
 1. Every approved rate branch and its precedence: `R7 → FM → SS* → IM → im_programmes → exact standard R-year → missing`. In particular, an approved IM-sub-specialty resident carrying `SS*` must take the SS positional/rate category before the IM-sub-specialty category, matching E’s branch order unless deliberately changed.
 2. A missing rate and missing funding year must fail final close or create the approved explicit error state; neither may silently produce an ordinary zero amount.
@@ -986,11 +1115,32 @@ The following are mandatory once F-14–F-16, F-22 and the close contract are re
 
 ### 10.4 Golden-test acceptance rule
 
-No Phase 6 implementation is acceptable if it marks a `PENDING` row as passing by selecting an arbitrary branch. The owner decision and documentation patch must land first; the test must then contain one expected value. All non-pending cases must pass identically through single-resident JIT, admin batch, snapshot preparation and clawback-input preparation (where applicable).
+No non-clawback implementation is acceptable unless it asserts the one confirmed outcome above and produces identical canonical values through single-resident and admin/report paths. Historical alternative branches are forbidden. Clawback/close tests must remain skipped/not authored as business assertions until the deferred owner decisions land; this document does not claim any current implementation or test coverage.
 
-## 11. Blocking Decisions
+## 11. Decision Disposition Register
 
-Recommendations below are audit recommendations only. They are not recorded as product decisions.
+The former non-clawback blockers are resolved:
+
+| IDs | Current disposition |
+|---|---|
+| BD-01 | RESOLVED: raw one-for-one tag transfers before caps; row 70% supply/demand; decrement donor; physical posting/R-year context/prefix only. |
+| BD-02 | RESOLVED: idempotent pre-tag raw-minus-target derived ledger; never carry into attendance. |
+| BD-03 | RESOLVED: half-month weight 0.5 once; monthly target unchanged. |
+| BD-04 | RESOLVED: AY label selects FormF1 for the whole bucket. |
+| BD-05 | RESOLVED: unrounded posting percentage is canonical; `target_70` display-only. |
+| BD-06 | RESOLVED: configured canonical combined posting/TTF identity; no component results. |
+| BD-07 | RESOLVED: SPORTSMED/PALLMED require R-year, are not subspecialties, and use R4–R6. |
+| BD-08 | RESOLVED: exact ORTHO 3h type; adjust/project before Saturday-window test; Sunday excluded. |
+| BD-09 | RESOLVED FOR COMPLIANCE: exact canonical scoped catalogue name, no fuzzy match; option/tag cleanup is upload data quality. |
+| BD-15 | RESOLVED: reject later overlapping submission and preserve earlier attendance. |
+| BD-17 | RESOLVED: target/cap R-year contexts separately, then sum without duplicated months. |
+| BD-18 | RESOLVED SPECIFICATION: one shared BL-6 contract; no implementation claim. |
+| BD-10–BD-14, BD-16 | **DEFERRED CLAWBACK/FINAL CLOSE.** No financial or close rule may be inferred. |
+
+<details>
+<summary>Original blocking-decision recommendations (historical)</summary>
+
+The recommendations below preserve the alternatives considered before confirmation. They are not current product decisions and must not override the disposition table above.
 
 ### BD-01 — Reallocation source, row threshold, and effect
 
@@ -1154,9 +1304,16 @@ Recommendations below are audit recommendations only. They are not recorded as p
 - **Recommended interpretation (not a decision):** Use one shared set of domain primitives and treat optimized batch queries as replaceable implementations that must pass every golden fixture field-for-field.
 - **Owner needed:** Backend architecture owner, reporting/API owner and data architect.
 
-## 12. Recommended Documentation Patches
+</details>
 
-Do not apply these patches as part of this audit. Blocking status refers to Phase 6 calculation implementation, not to unrelated application work.
+## 12. Documentation Alignment Outcome
+
+The Phase 6-A non-clawback patches represented by the historical recommendation table were applied to `AGENTS.md` and the domain documentation on 2026-07-20. This includes calculation order, FormF1/AY gating, R-year grain/configuration, multi-posting identity, overlap/native/catalogue rules, API parity wording, exact ORTHO behavior, ledger lifecycle, and examples. Clawback/final-close recommendations remain deferred, not applied as invented rules. The legacy Word/R artifacts were intentionally not modified.
+
+<details>
+<summary>Original recommended-patch table (historical)</summary>
+
+“Blocking” in this preserved table describes the pre-decision state, not the current non-clawback specification.
 
 | Target file / section | Exact issue | Recommended wording or rule change | Evidence | Blocking? |
 |---|---|---|---|---|
@@ -1201,28 +1358,29 @@ Do not apply these patches as part of this audit. Blocking status refers to Phas
 | `docs/99_decision_log_and_gap_audit.md` | Calls clawback Script F and FM report template Script E; some historical “open” entries are already resolved | Correct factual attribution and label stale entries historical; do not let the log override domain docs. | E header/calculation; D1 `202-213` | Low |
 | `MATA R Scripts/MATA_Core_Business_Logic_Audit.docx` | Presents inaccurate pseudocode as precise migration reference | Add a superseded/non-authoritative notice and the section 8 errata, or replace it with a link to current domain docs/audit. | F-19 | High, but Markdown source patches take priority |
 
+</details>
+
 ## 13. Safe Implementation Checklist
 
 ### 13.1 Before coding
 
-- [ ] Every BD-01 through BD-18 owner decision needed for the chosen implementation scope is recorded in the authoritative domain documents.
-- [ ] All `PENDING` golden-test branches are replaced by one asserted expected result.
-- [ ] Norm-rate values, category meanings, effective period, source/version and owner approval exist before clawback code is started.
-- [ ] SPORTSMED/PALLMED flags and parser behavior are coherent.
-- [ ] Combined-posting component membership and target attribution are explicit configuration, never regex/string inference.
-- [ ] Tag grammar and catalogue keyword case/whitespace normalization/cardinality are fixed across business logic, schema, parsing and API boundaries.
-- [ ] Native-programme event visibility outside the assigned posting has an explicit display/counting attribution rule.
-- [ ] Distinct-event exact-interval and overlap conflicts have one deterministic scheduled/ad-hoc persistence, API and numerator policy.
-- [ ] Multi-posting reliability uses one explicit cardinality/date grain and returns deterministic warning evidence for three-plus postings.
-- [ ] Cross-R-year cap/result grain and its posting-group/snapshot/clawback handoff are explicitly approved.
-- [ ] Surplus tuple uniqueness and state invariant are specified before a migration/model is written.
+- [x] Non-clawback BD-01–BD-09, BD-15, BD-17 and BD-18 decisions are recorded in the authoritative domain documents.
+- [x] Non-clawback `PENDING` golden-test branches have one asserted recommended outcome in section 10.
+- [ ] **DEFERRED:** norm-rate, funding-year, classification, suppression, billing, rounding, and final-close decisions must exist before clawback code/tests start.
+- [x] SPORTSMED/PALLMED flags and R4–R6 parser behavior are coherent.
+- [x] Combined-posting canonical identity and target attribution are explicit configuration, never regex inference.
+- [x] Tag-prefix and canonical catalogue-option behavior is fixed for compliance; case/spacing cleanup is upload/option data quality.
+- [x] Native-programme events outside the assigned posting have explicit assigned-posting attribution.
+- [x] Distinct-event overlap has deterministic later-reject/earlier-preserve behavior; same-event uniqueness remains separate.
+- [x] Cross-R-year cap/result grain and posting-group ordering are specified for ordinary compliance.
+- [x] Surplus tuple uniqueness and idempotent raw-minus-target state invariant are specified.
 
 ### 13.2 Calculation path
 
 - [ ] Count sessions, never hours or duration-weighted units.
-- [ ] Use only native attendance with the approved final countable statuses; preserve conflict evidence until policy resolution, and never let external attendance enter any native calculation.
-- [ ] Use `resident_postings.r_year`/approved funding-year source at the exact documented stages; never `residents.r_year` by convenience.
-- [ ] Apply FormF1 to numerator and denominator with the approved calendar/AY boundary rule.
+- [ ] Use only native accepted attendance; reject later overlaps at submission and never let external attendance enter any native calculation.
+- [ ] Use `resident_postings.r_year` for ordinary phase/target context; never `residents.r_year` by convenience and never infer the deferred clawback funding year from it.
+- [ ] Apply the AY-label FormF1 status to both numerator and denominator for the entire bucket.
 - [ ] Resolve AY buckets inclusively and fail safely on missing/overlap configuration.
 - [ ] Apply FM 5h attribution and combined/group identity in the approved order.
 - [ ] Apply native ad-hoc assigned-posting/fixed-1h attribution before generic keyword resolution; selected attended keyword/duration is audit/display only.
@@ -1233,11 +1391,11 @@ Do not apply these patches as part of this audit. Blocking status refers to Phas
 - [ ] Exclude untracked and zero-target rows before cap, surplus and reallocation.
 - [ ] Apply the half-month factor exactly once.
 - [ ] Preserve raw achieved separately from counted/adjusted values.
-- [ ] Apply the approved reallocation source/order; decrement donor supply once; never cross posting or tag group.
-- [ ] Store only approved pre-reallocation surplus and keep tag-adjusted results read-time only.
-- [ ] Apply the approved per-R-year versus merged cap grain, then aggregate all applicable types/physical members in the approved order before posting/group status.
+- [ ] Reallocate raw session counts before caps; decrement donor supply; never cross physical posting, R-year context, or tag prefix.
+- [ ] Idempotently replace pre-tag raw-minus-target ledger state, never add it to attendance, and keep tag-adjusted values read-time only.
+- [ ] Cap each R-year context separately, then aggregate applicable types/physical members before posting/group status.
 - [ ] Compute posting `target_70` from the summed `target_100`, not by summing per-type ceilings.
-- [ ] Keep raw percentage/status independent of export/UI formatting.
+- [ ] Use unrounded posting percentage as canonical status; keep displayed `target_70` and UI formatting non-authoritative.
 - [ ] Monthly and session-type percentages remain display/breakdown data only.
 
 ### 13.3 Persistence, API and close
@@ -1246,13 +1404,9 @@ Do not apply these patches as part of this audit. Blocking status refers to Phas
 - [ ] Cache keys include role/scope and cache invalidation follows uploads/config/event/attendance mutations and close/reopen.
 - [ ] Ledger updates are idempotent and concurrency-safe under the documented unique key.
 - [ ] Missing catalogue rows are stored/audited but silently excluded from compliance as specified; no guessing.
-- [ ] Missing financial configuration fails safely and visibly; it never becomes an ordinary zero exemption.
-- [ ] Clawback uses approved Decimal precision/rounding exactly once after the full formula.
-- [ ] Clawback uses the approved period-effective billing source/time grain and preserves standalone/group allocation evidence.
-- [ ] Overlapping SAF/SCDF, Extension and R7 suppressions follow an approved precedence or multi-reason representation.
+- [ ] **DEFERRED CLAWBACK:** missing-configuration, Decimal precision, billing identity, and suppression behavior require owner-approved rules first.
 - [ ] Operational period deactivation does not generate snapshots, clawback or close-time surplus mutations.
-- [ ] Final close/freeze has an owner-approved contract for atomicity, rollback, natural uniqueness/replacement, rerun behavior, separate authorization and immutable rate/config provenance.
-- [ ] SAF/SCDF, Extension and R7 row semantics match business logic, schema and API exactly, including collisions.
+- [ ] **DEFERRED:** final close/freeze has an owner-approved atomicity, rollback, uniqueness/replacement, rerun, authorization, and provenance contract.
 - [ ] No FormSG parser, dashboard feedback loop, fuzzy posting matching, free-text MCR extraction, duration weighting, separate FM engine or legacy exception list is reintroduced.
 
 ### 13.4 Required verification
@@ -1265,4 +1419,4 @@ Do not apply these patches as part of this audit. Blocking status refers to Phas
 - [ ] Add close tests for empty results, missing configuration, approved rerun behavior and rollback/atomicity once specified.
 - [ ] Review outputs with the compliance/finance owner before declaring Phase 6 complete.
 
-Until this checklist’s blocking prerequisites are satisfied, the safe action is to patch the specification—not to implement a plausible interpretation.
+Ordinary non-clawback implementation may proceed from the aligned specification, but every implementation/test item above remains unchecked until independently completed. Clawback/final-close implementation remains blocked on its explicitly deferred owner decisions.

@@ -61,7 +61,7 @@ Master list of residency programmes.
 | classification | VARCHAR(20) | | `junior` or `senior` or `both` |
 | ay_date_category | VARCHAR(30) | NOT NULL, CHECK IN (`im_subspec`, `non_im_subspec`) | Selects which AY month-boundary category is used for attendance month bucketing in compliance (`academic_month_boundaries`) |
 | r_year_required | BOOLEAN | DEFAULT true | If false, programme uses `r_year = 'ALL'` sentinel — TTF targets apply to all r_years equally |
-| is_subspecialty | BOOLEAN | DEFAULT false | If true, RDB parser remaps R4→SS1, R5→SS2, R6→SS3 for this programme |
+| is_subspecialty | BOOLEAN | DEFAULT false | Programme classification/configuration flag. It does not trigger R-year remapping. |
 | rdb_alias | VARCHAR(100) | nullable | Alternative programme name that appears in RDB cells. Used for normalisation at RDB parse time. |
 
 **Note:** FM uses the standard compliance engine. There is no `compliance_variant` column — FM compliance is handled through FM-specific rule annotations within the standard path. See `docs/business-logic.md` § BL-FM.
@@ -95,17 +95,17 @@ Master list of residency programmes.
 | RENAL | Renal Medicine | im_subspec | false | false | Renal Medicine Extended |
 | RESPI | Respiratory Medicine | im_subspec | true | false | NULL |
 | RHEUM | Rheumatology | im_subspec | false | false | NULL |
-| SPORTSMED | Sports Medicine | non_im_subspec | false | true | NULL |
+| SPORTSMED | Sports Medicine | non_im_subspec | true | false | NULL |
 | SIG | Surgery-In-General | non_im_subspec | false | false | Surgery-in-General |
 | URO | Urology | non_im_subspec | false | false | NULL |
 | MICROB | Pathology (Microbiology) | non_im_subspec | false | false | Microbiology |
-| PALLMED | Palliative Medicine | im_subspec | false | true | NULL |
+| PALLMED | Palliative Medicine | im_subspec | true | false | NULL |
 
-**r_year_required = false (22 programmes):** AIM, CARDIO, EM, ENDO, ENT, EYE, GASTRO, GERI, GS, ID, IM, MEDONCO, ORTHO, PATH, REHAB, RENAL, RHEUM, SPORTSMED, SIG, URO, MICROB, PALLMED
+**r_year_required = false (20 programmes):** AIM, CARDIO, EM, ENDO, ENT, EYE, GASTRO, GERI, GS, ID, IM, MEDONCO, ORTHO, PATH, REHAB, RENAL, RHEUM, SIG, URO, MICROB
 
-**r_year_required = true (6 programmes):** ANAES, DERM, DR, FM, PSY, RESPI
+**r_year_required = true (8 programmes):** ANAES, DERM, DR, FM, PSY, RESPI, SPORTSMED, PALLMED
 
-**is_subspecialty = true (2 programmes):** SPORTSMED, PALLMED — R4→SS1, R5→SS2, R6→SS3 remapping applied by RDB parser
+**SPORTSMED/PALLMED R-year rule:** both have `is_subspecialty = false`; RDB and TTF use R4, R5, and R6 unchanged. Neither uses `ALL` or SS1–SS3 remapping.
 
 **ay_date_category = im_subspec (14 programmes):** AIM, CARDIO, DERM, ENDO, GASTRO, GERI, ID, IM, MEDONCO, PALLMED, REHAB, RENAL, RESPI, RHEUM
 
@@ -124,8 +124,8 @@ Canonical registry of all posting sites. Seeded from both RDB (active sites) and
 | display_name | VARCHAR(100) | | Human-readable name, e.g. `TTSH Anaesthesiology` |
 | institution | VARCHAR(50) | | e.g. `TTSH`, `KTPH`, `SGH`, `NNI` |
 | department | VARCHAR(50) | | e.g. `Anaes`, `GerMed`, `DiagRd` |
-| billing_dept | VARCHAR(50) | | For clawback (Phase 10) |
-| is_emergency | BOOLEAN | DEFAULT false | Emergency postings accept weekend AND public holiday teachings |
+| billing_dept | VARCHAR(50) | | Legacy/planned billing metadata. Any future clawback attribution source and time grain remain deferred. |
+| is_emergency | BOOLEAN | DEFAULT false | Emergency-posting classification for audit/display. It does not bypass public-holiday blocking or create an automatic weekend exception. |
 | supports_secretary_events | BOOLEAN | DEFAULT false | Posting capability hint for secretary-event onboarding. For native residents, visibility/submission remains data-driven by posting context + teaching_name_catalogue/global matching; this flag is not a hard authorization clamp. External flow may apply additional controls. |
 
 **Important:** Posting codes are NOT derivable by regex from institution+department. Real codes like `MOHHGTG1`, `AICAIC`, `RenCiCommHosp`, `NHGPlyNHGPly` break any uniform pattern. This table is the source of truth — no string parsing.
@@ -225,7 +225,7 @@ One row per (resident, posting, month-phase). The 12-month rotation schedule fro
 | end_date | DATE | NOT NULL | Phase end date from RDB column header |
 | day_part | VARCHAR(2) | nullable, CHECK NULL/`AM`/`PM` | AM/PM fragment marker for same-day multi-posting rows. NULL means full-day/no half-day marker. |
 | month_label | VARCHAR(10) | | e.g. `Jul-25`, `Aug-25` |
-| r_year | VARCHAR(10) | NOT NULL | Residency year at this phase. For programmes with `r_year_required = false`, this is set to `'ALL'`. For subspecialty programmes (SPORTSMED, PALLMED), R4→SS1/R5→SS2 remapping is applied. Copied from RDB column F at parse time. Used for teaching_target lookup — do NOT use residents.r_year for compliance. |
+| r_year | VARCHAR(10) | NOT NULL | Residency year at this phase. For programmes with `r_year_required = false`, this is set to `'ALL'`; otherwise preserve the normalized RDB R-year. SPORTSMED/PALLMED use R4–R6 unchanged. Copied from RDB column F at parse time and used for target lookup — do NOT use `residents.r_year` for compliance. |
 | status | VARCHAR(20) | DEFAULT 'active' | `active`, `loa`, `loa_working`, `employed` |
 | loa_type | VARCHAR(50) | | e.g. `Maternity Leave`, `Annual Leaves`. Validated against loa_types table. |
 | loa_start_date | DATE | | Parsed from LOA annotation |
@@ -298,7 +298,7 @@ Catalogue of all session types. Seeded from TTF upload.
 | duration_hours | DECIMAL(4,2) | NOT NULL | Extracted from name: `[1h]` → 1.0, `[0.75h]` → 0.75 |
 | duration_label | VARCHAR(10) | | `[1h]`, `[2h]`, `[0.75h]`, `[3h]` etc. |
 
-**Note:** Duration is embedded in the session type name as `[Xh]`. There is no separate duration column in the TTF — duration is extracted from the name via regex at upload time. Duration is stored for reallocation flow direction and as a tiebreaker only. Compliance counts sessions, never multiplies by duration.
+**Note:** Duration is embedded in the session type name as `[Xh]`. There is no separate duration column in the TTF — duration is extracted from the name via regex at upload time for display and validation. Reallocation order is the alphabetical tag label, not duration. Compliance transfers and counts sessions one-for-one; duration is never a multiplier.
 
 ---
 
@@ -311,13 +311,13 @@ One row per (reporting_period, programme, residency_year, posting_code, session_
 | id | UUID | PK | |
 | reporting_period_id | UUID | FK → reporting_periods.id, NOT NULL | |
 | programme_code | VARCHAR(20) | FK → programmes.code, NOT NULL | |
-| r_year | VARCHAR(10) | NOT NULL | `R1`..`R7`, `SS1`..`SS3`, or `'ALL'` for programmes with `r_year_required = false` |
+| r_year | VARCHAR(10) | NOT NULL | `R1`..`R7`, or `'ALL'` for programmes with `r_year_required = false`; SPORTSMED/PALLMED use R4–R6 |
 | posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | |
 | session_type_id | UUID | FK → session_types.id, NOT NULL | |
 | monthly_target | INTEGER | NOT NULL, CHECK (`monthly_target >= 0`) | Non-negative sessions per active month at 100%. `0` is valid: the row remains catalogue-seeded and attendance-capable but is compliance-exempt. |
 | is_tracked | BOOLEAN | DEFAULT true | If false, attendance is stored but excluded from compliance numerator and denominator. Row still seeded into teaching_name_catalogue for event visibility. |
 | is_reallocatable | BOOLEAN | DEFAULT false | Whether surplus can be reallocated via tag |
-| tag | VARCHAR(10) | | Reallocation group label. If set, must match at least one other row at the same posting. |
+| tag | VARCHAR(10) | | Reallocation tier label. If set, its prefix must have at least one other reallocatable row at the same physical posting and R-year context. |
 | details_of_training | TEXT | | Raw column K text. Comma-separated keywords. Parsed into teaching_name_catalogue at upload time. |
 
 **Unique constraint:** `UNIQUE(reporting_period_id, programme_code, r_year, posting_code, session_type_id)`
@@ -335,14 +335,16 @@ First-class keyword→session_type mapping table. Seeded from TTF column K at up
 | session_type_id | UUID | FK → session_types.id, NOT NULL | |
 | posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | |
 | programme_code | VARCHAR(20) | FK → programmes.code, NOT NULL | |
-| r_year | VARCHAR(10) | NOT NULL | `R1`..`R7`, `SS1`..`SS3`, or `'ALL'` |
+| r_year | VARCHAR(10) | NOT NULL | `R1`..`R7`, or `'ALL'`; SPORTSMED/PALLMED use R4–R6 |
 | reporting_period_id | UUID | FK → reporting_periods.id, NOT NULL | |
-| duration_hours | DECIMAL(4,2) | NOT NULL | Copied from session_types for tiebreaker |
+| duration_hours | DECIMAL(4,2) | NOT NULL | Copied from `session_types` for event-option display/timing metadata only; never used to choose the compliance mapping |
 | is_tracked | BOOLEAN | DEFAULT true | Copied from teaching_targets.is_tracked |
 
 **Unique constraint:** `UNIQUE(keyword, posting_code, programme_code, r_year, reporting_period_id)`
 
 **Usage:** Seeded at TTF upload time. Deleted and re-seeded on each TTF upload within scope. Also deleted and re-seeded for the specific row when `PUT /admin/teaching-targets/{id}` updates `details_of_training`.
+
+The same canonical `keyword` may legitimately appear at different postings and map to different session types. Runtime resolution is exact and scoped by reporting period, resident programme, assigned/compliance posting, phase R-year, and canonical name. Do not use fuzzy matching. Case/spacing duplicate cleanup within one TTF scope is upload/event-option data quality, not a separate compliance matching rule.
 
 ---
 
@@ -360,7 +362,7 @@ Teaching sessions created by secretaries, Programme PC CRUD, or ad-hoc submissio
 | event_date | DATE | NOT NULL | |
 | start_time | TIME | NOT NULL | |
 | end_time | TIME | | Server-computed from start_time + session_type.duration_hours at creation |
-| duration_hours | DECIMAL(4,2) | | Copied from resolved session_type at creation time. Used as tiebreaker in catalogue lookup. |
+| duration_hours | DECIMAL(4,2) | | Copied from the selected event option for display/time computation only. Never used as a compliance multiplier or catalogue tiebreaker. |
 | session_type_id | UUID | FK → session_types.id, nullable | **Display/prototype only.** Resolved at event creation from teaching_name_catalogue for the secretary's native programme. NEVER used for compliance — compliance always re-resolves per resident at read time. |
 | series_id | UUID | FK → event_series.id, nullable | Set if this event is part of a recurring series |
 | cme_points_awarded | BOOLEAN | DEFAULT false | |
@@ -415,6 +417,8 @@ One row per (resident, teaching_event) submission.
 | posting_code | VARCHAR(50) | | Audit copy of event posting at submission time. **Never used for compliance attribution** — compliance always uses teaching_events.posting_code. |
 
 **Unique constraint:** `UNIQUE(resident_id, teaching_event_id)` — DB-level duplicate prevention.
+
+**Distinct-event overlap invariant:** Before inserting a later submission, the attendance service rejects it if its event interval overlaps an already accepted distinct event for the same resident. The earlier accepted attendance is preserved unchanged. This submission-time rule is separate from same-event uniqueness and requires no additional stored session-type field.
 
 **Session type is NOT stored here.** It is resolved at compliance read time from `teaching_name_catalogue` using the event's `teaching_name`, `posting_code`, and the resident's `programme_code` + `r_year`.
 
@@ -489,7 +493,7 @@ One row per Non-NHG Resident attendance submission. Stored separately from nativ
 
 ## Table: `surplus_ledger`
 
-Pre-reallocation surplus values per (resident, posting, session_type). Written by the compliance engine at calculation time.
+Pre-tag-reallocation derived audit state per resident, physical posting, session type, and reporting period. Written by the compliance engine at calculation time.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
@@ -498,10 +502,12 @@ Pre-reallocation surplus values per (resident, posting, session_type). Written b
 | posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | |
 | session_type_id | UUID | FK → session_types.id, NOT NULL | |
 | reporting_period_id | UUID | FK → reporting_periods.id, NOT NULL | |
-| surplus | INTEGER | DEFAULT 0 | Pre-reallocation surplus count |
+| surplus | NUMERIC | DEFAULT 0 | `max(cumulative raw eligible attendance - cumulative target_100, 0)` before tag reallocation; must preserve fractional target differences |
 | is_hibernating | BOOLEAN | DEFAULT false | True when resident is not actively posted here |
 
-**Critical:** Surplus values stored here are PRE-reallocation. Tag-based reallocation is always a read-time computation — never written back to this table.
+**Unique constraint:** `UNIQUE(resident_id, posting_code, session_type_id, reporting_period_id)`.
+
+**Critical lifecycle:** Recompute from raw eligible attendance and cumulative target, then replace the existing value idempotently; never increment it. The stored value is not carry-in attendance and must never be added back to raw attendance. Returning to a physical posting in the same period recomputes across all its phases, so expanded target can reduce the prior ledger value to zero. Mark the row hibernating when no active phase remains, unhibernate/recompute on return, reset at a reporting-period boundary, and preserve closed-period rows as historical evidence where supported. Tag reallocation is read-time only and never mutates this table.
 
 ---
 
@@ -525,7 +531,7 @@ Per-resident per-calendar-month active/inactive status parsed from the FormF1 fi
 
 **Status normalisation:**
 - `Active` → is_active = true
-- `Extension` → is_active = true (always track, funding not allocated, clawback not exercised — `clawback_suppressed_reason = 'Extension'`)
+- `Extension` → is_active = true for ordinary compliance; any future financial treatment remains deferred
 - `Inactive` → is_active = false (excluded from both numerator and denominator)
 - blank/`NULL`/whitespace-only monthly cell → is_active = false (excluded from both numerator and denominator; the record is still persisted)
 
@@ -535,7 +541,7 @@ Per-resident per-calendar-month active/inactive status parsed from the FormF1 fi
 - Persist only FormF1-derived fields: `mcr`, `month_label`, `status_raw`, `is_active`, `promotion_date`, and upload/reporting-period metadata (`reporting_period_id`, `upload_id`, timestamps).
 - FormF1 identity/profile columns outside MCR are non-authoritative and must not overwrite resident identity/programme/r_year/posting data from RDB-backed tables.
 
-**Note:** FormF1 is the final authoritative active/inactive source for compliance. `form_f1_records.is_active` is the denominator gate. RDB LOA/refresher/employed annotations are parser/audit/display data and are not used to derive active/inactive status.
+**Note:** FormF1 is the final authoritative active/inactive source for compliance. It remains calendar-month keyed, but the resolved `academic_month_boundaries.month_label` selects the FormF1 row that gates both numerator and denominator for the entire AY bucket. Do not split/prorate a bucket or use an event's raw calendar month when it differs from the bucket label. RDB LOA/refresher/employed annotations are parser/audit/display data and are not used to derive active/inactive status.
 
 ---
 
@@ -575,6 +581,8 @@ Academic-calendar month boundary ranges parsed from the **AY Dates** sheet in th
 
 **Unique constraint:** `UNIQUE(academic_year_label, ay_date_category, month_label)`
 
+The `month_label` is also the FormF1 lookup key for every attendance and denominator contribution in the inclusive date range. For example, if `Jul-26` ends on 3 August, 3 August still uses July FormF1; the next AY bucket uses August FormF1.
+
 **Validation and safety rules (parser-level):**
 - No overlapping ranges within the same `(academic_year_label, ay_date_category)`.
 - Missing category tables or missing month ranges are treated as unsafe and fail the upload (422).
@@ -594,7 +602,7 @@ Rules governing how multiple posting codes in a single RDB cell are interpreted.
 | posting_code_1 | VARCHAR(50) | FK → posting_codes.code, NOT NULL | First posting code in pair. For FM `main_posting` rows where `posting_code_2 IS NULL`, this is one entry in the recognised `RDB Posting #1` trigger list. |
 | posting_code_2 | VARCHAR(50) | FK → posting_codes.code, nullable | Second posting code. NULL for FM trigger-list `main_posting` rows and other single-trigger rules. |
 | rule_type | VARCHAR(20) | NOT NULL | `main_posting`, `combine`, `half_month` |
-| combined_label | VARCHAR(100) | | For `combine` type: the canonical combined posting code (e.g. `IMHGrPsyc & TTSHPsychi`) |
+| combined_label | VARCHAR(50) | FK → posting_codes.code, nullable | For `combine` type: the canonical existing combined posting code (e.g. `IMHGrPsyc & TTSHPsychi`) |
 | main_posting_code | VARCHAR(50) | FK → posting_codes.code, nullable | For `main_posting` type: the posting to collapse to when the rule is selected |
 | exclusion_code | VARCHAR(50) | FK → posting_codes.code, nullable | For FM `main_posting` trigger-list rows: fallback posting when zero recognised trigger-list codes appear in the multi-posting cell. Usually `NHGPlyNHGPly`, but read from configuration and not hardcoded globally. |
 | created_at | TIMESTAMPTZ | DEFAULT now() | |
@@ -602,9 +610,9 @@ Rules governing how multiple posting codes in a single RDB cell are interpreted.
 **Unique constraint:** `UNIQUE(programme_code, posting_code_1, posting_code_2, rule_type)`
 
 **Rule type behaviour:**
-- `combine`: Two RDB lines in same cell match this rule → create one `resident_postings` row with `combined_label` as posting_code. Combined label must exist as a `posting_codes` row. Compliance follows the combined posting's TTF row.
-- `half_month`: Two posting codes in same cell match this rule → create two `resident_postings` rows each with `active_months_weight = 0.5`. Both active_months and Target(mth) halved per posting. Numerator sessions count fully.
-- explicit two-code `main_posting`: Two posting codes in the same cell match this rule → collapse to `main_posting_code`.
+- `combine`: Source postings resolve to one configured canonical combined posting code in `combined_label`. It must already exist in `posting_codes` and have corresponding TTF rows. Persist one `resident_postings` row using it; target lookup uses it and no component compliance results are created.
+- `half_month`: Keep both source postings as separate `resident_postings` rows with their own codes, targets, and compliance identities. Set `active_months_weight = 0.5` on each and keep the uploaded TTF `monthly_target` unchanged; the factor is applied exactly once. Numerator sessions count fully. Separately configured posting groups may aggregate later.
+- explicit two-code `main_posting`: Collapse the sources to one configured existing `main_posting_code`, which becomes the compliance identity. Do not create a combined identity.
 - FM trigger-list `main_posting`: Rows with `posting_code_2 IS NULL` define the recognised `RDB Posting #1` list. Exact one recognised code in the cell collapses to that row's `main_posting_code`; zero recognised codes collapse to the configured `exclusion_code`; two or more recognised codes remain independent and emit `unmatched_multi_posting` unless an explicit rule exists.
 
 **Unmatched behaviour:** If no `multi_posting_rules` row applies, the parser preserves one `resident_postings` row per posting fragment and emits `unmatched_multi_posting`. This is intentional for PC review. It does not delete data or suppress the upload. A singular `NHGPlyNHGPly` cell is a valid standalone FM posting and is not an unmatched multi-posting case.
@@ -628,12 +636,14 @@ Groups multiple RDB posting codes under a single compliance aggregate. Seeded pr
 **How compliance uses posting_groups:**
 1. At compliance calculation time, for each `(resident, posting_code)`, look up `posting_groups` for that `(posting_code, programme_code)` pair
 2. If a group is found, fetch ALL posting codes sharing the same `group_code` and `programme_code`
-3. Sum `active_months` across ALL group members for that resident — using `form_f1_records.is_active` as the gate per calendar month (whole-month counting, no proration)
-4. Each posting's own `monthly_target` applies per phase: `target_100 = sum(monthly_target_at_posting × months_at_posting)` across all group members
-5. `target_70 = ceil(target_100 × 0.70)`
+3. Within each physical member posting and R-year context, apply the FormF1 status selected by each AY bucket label as the whole-bucket gate (no split or proration), calculate its own target, transfer raw tag counts only within that context, and cap it separately
+4. Sum the already capped achievements and correctly weighted targets across all member contexts. Each posting's own `monthly_target` applies per phase: grouped `target_100 = sum(monthly_target_at_posting × active_months_weight_at_posting)`
+5. Calculate the group/posting-level unrounded percentage as the canonical compliance predicate; expose `target_70 = ceil(target_100 × 0.70)` as the displayed whole-session target
 6. If no group is found for a posting code → calculate independently (posting stands alone)
 
 **Important clarification:** Column E / `group_code` does not replace the posting's own `monthly_target`. Each posting_code still contributes its own `monthly_target × months_at_posting`; grouping only changes the final posting-level aggregation identity.
+
+Posting-group membership is not a reallocation boundary override. Tag transfers remain inside one physical posting and R-year context and may never cross between group members or R-year contexts.
 
 **Seeding sources:**
 - **TTF upload (primary):** When TTF column E ("For Dashboard (RDB Posting/Subspeciality)") is non-empty for a posting code row, the parser automatically upserts a `posting_groups` row: `group_code = column_E_value`, `posting_code = column_D_value`, `programme_code = from TTF`
@@ -666,7 +676,7 @@ Programme-specific rules for accepting weekend teachings, and read-time mutation
 
 **Logic:** A weekend session is accepted for compliance if ANY row in this table matches `(programme_code OR posting_code) AND day_type AND time_window AND session_type AND session_name`. The OR logic for URO (which has two acceptance conditions) is represented as two separate rows.
 
-**Mutation logic (ORTHO):** When `mutates_to_session_type_id` is set on a matched row, the compliance engine resolves the attendance against the mutated session type and duration — not the original. Raw attendance data is never modified. This is applied at compliance read time only.
+**Mutation logic (ORTHO):** Mutation and weekend acceptance are two ordered predicates. Only the exact original session type `NHG Orthopaedic Surgery Residency Teaching [3h]` is eligible for mutation. Preserve raw rows, subtract two hours from the original end time, project the compliance type to `National Didactics & Department Teaching [1h]`, then evaluate the Saturday 08:30–10:30 window against the adjusted interval. Sunday remains excluded and all other ORTHO session types remain unmutated.
 
 **Confirmed seeded rows:**
 
@@ -675,12 +685,12 @@ Programme-specific rules for accepting weekend teachings, and read-time mutation
 | URO | NULL | sat | NULL | NULL | NULL | Urology National Teaching (Sat) | NULL | NULL |
 | URO | NULL | sat | NULL | NULL | National Teaching [2h] | NULL | NULL | NULL |
 | DERM | NULL | sat | NULL | NULL | NULL | NULL | NULL | NULL |
-| ORTHO | NULL | sat | 08:30 | 10:30 | NULL | NULL | National Didactics & Department Teaching [1h] | 1.0 |
+| ORTHO | NULL | sat | 08:30 | 10:30 | NHG Orthopaedic Surgery Residency Teaching [3h] | NULL | National Didactics & Department Teaching [1h] | 1.0 |
 
 **Notes:**
 - URO requires two rows — acceptance condition is an OR: session name `"Urology National Teaching (Sat)"` OR session type `"National Teaching [2h]"`. Two separate rows represent this OR logic.
 - DERM accepts all Saturday sessions unconditionally — no time window, no session type filter.
-- ORTHO time window 08:30–10:30. The original 3h session type is mutated to `National Didactics & Department Teaching [1h]` at compliance read time via `mutates_to_session_type_id` and `adjusted_duration_hours = 1.0`.
+- The ORTHO row's `session_type_id` is mandatory and names the exact original 3h type; it must not be replaced by a programme-wide wildcard. `adjusted_duration_hours = 1.0` represents the read-time two-hour end-time subtraction before the Saturday acceptance check.
 - SIG, FM, ANAES, and all emergency posting codes have been removed from this list per confirmed PC update. The previous list from the R script was outdated.
 
 **Admin CRUD UI:** All `weekend_exceptions` rows are manageable via admin CRUD UI. New entries can be added when additional programmes confirm weekend session policies.
@@ -894,7 +904,8 @@ Frozen compliance state captured by the future final close/freeze flow.
         {
           "posting_code": "TTSHDiagRd",
           "active_months": 3,
-          "target_70": 21,
+          "target_100": 21,
+          "target_70": 15,
           "achieved_and_counted": 18,
           "percentage": 0.857,
           "met_70pct": true,
@@ -919,30 +930,9 @@ Frozen compliance state captured by the future final close/freeze flow.
 
 ---
 
-## Table: `clawback_records`
+## Table: `clawback_records` — DEFERRED
 
-Generated at future final close/freeze for residents who failed to meet the 70% PTT threshold.
-
-| Column | Type | Constraints | Notes |
-|--------|------|-------------|-------|
-| id | UUID | PK | |
-| reporting_period_id | UUID | FK → reporting_periods.id, NOT NULL | |
-| resident_id | UUID | FK → residents.id, NOT NULL | |
-| posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | |
-| r_year | VARCHAR(10) | NOT NULL | Used for norm rate lookup |
-| active_months | DECIMAL(4,1) | NOT NULL | May be fractional for GASTRO split months |
-| compliance_percentage | DECIMAL(5,4) | NOT NULL | Posting-level percentage at future final close/freeze |
-| clawback_amount | DECIMAL(10,2) | NOT NULL | Calculated amount. 0.0 for exempted residents. |
-| clawback_suppressed_reason | VARCHAR(50) | nullable | Reason row is shown but amount is 0. Values: `Extension`, `R7`, `SAF_Employed`, `SCDF_Employed`. NULL = standard clawback row. |
-| billing_dept | VARCHAR(50) | | Copied from posting_codes.billing_dept at generation time |
-| generated_at | TIMESTAMPTZ | DEFAULT now() | |
-
-**Clawback display rule:** All rows are shown in the clawback tab regardless of `clawback_suppressed_reason`. Rows with a suppressed reason show `amount = 0` and display the reason to the admin. This ensures senior management can see that a resident failed 70% even when no financial action follows.
-
-**Suppression conditions:**
-- `Extension` — resident is on Extension status in FormF1. Compliance tracked, funding not allocated, clawback not exercised.
-- `R7` — R7 residents are exempted from clawback (consistent with R script behaviour).
-- `SAF_Employed` / `SCDF_Employed` — employer-funded residents excluded from clawback.
+No implementation-ready persistence contract is confirmed for clawback. Do not infer final fields, constraints, row identities, suppression values, or generation behavior from earlier drafts or legacy exports. Norm-rate persistence/effective dating, funding R-year, financial programme classification, Extension/R7/SAF/SCDF precedence, grouped-posting identity, billing attribution, missing-rate behavior, precision/rounding, and final-close transaction/rerun behavior all remain deferred. Any existing code or migration with this name must be audited against future confirmed decisions before use.
 
 ---
 
@@ -1286,15 +1276,9 @@ CREATE INDEX idx_period_snapshots_period_programme
 ON period_snapshots(reporting_period_id, programme_code);
 ```
 
-#### `clawback_records`
+#### `clawback_records` — DEFERRED
 
-```sql
-CREATE INDEX idx_clawback_records_period_programme
-ON clawback_records(reporting_period_id, programme_code);
-
-CREATE INDEX idx_clawback_records_resident
-ON clawback_records(resident_id);
-```
+No final index contract is documented until the clawback row identity and fields are confirmed.
 
 #### `global_session_types`
 

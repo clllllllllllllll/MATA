@@ -416,6 +416,7 @@ Upload FormF1 Excel file for active/inactive status per resident per calendar mo
 - **Parsed/persisted fields only:** MCR, monthly status columns, and promotion date/senior promotion date. Other FormF1 profile/identity columns are non-authoritative and are not persisted from FormF1.
 - **Column detection:** Dynamic header/column detection is preferred. Current-template fallback positions remain supported: column E = MCR, columns M–X = monthly statuses, column Y = promotion date.
 - **Behaviour:** Full replace per `reporting_period_id` scope. Re-upload allowed at any time (e.g. to update for unforeseen LOAs). Promotion date is parsed and persisted but is not used by compliance yet.
+- **Compliance gate:** Storage remains calendar-month keyed, but the resolved AY bucket `month_label` selects the FormF1 row used for both numerator and denominator across the entire bucket. The API/report layer must not switch to the event's raw calendar month or split/prorate a bucket.
 - **Monthly-status normalisation:** `Active` and `Extension` persist as active. `Inactive`, blank, `NULL`, and whitespace-only cells persist as inactive records for valid MCR rows. Unknown non-blank values preserve their raw value, retain the active fallback, do not fail the upload, and emit a persisted `unknown_formf1_status` warning containing the value and Excel cell reference. Blank values do not generate this warning.
 - **422 fail-fast with no replacement:** If duplicate MCR validation fails, or if header/month-column detection is unsafe, return `422` and preserve existing `form_f1_records` rows for the period.
 - **Audit log:** Writes `upload_logs` row with `upload_type = 'form_f1'`
@@ -726,11 +727,11 @@ Add a new multi-posting rule. This is the long-term PC workflow for maintaining 
 - **Body:**
 ```json
 {
-  "programme_code": "GRM",
-  "posting_code_1": "IMHGrPsyc",
-  "posting_code_2": "TTSHPsychi",
+  "programme_code": "DR",
+  "posting_code_1": "TTSHDiagRd",
+  "posting_code_2": "NNINeuRad",
   "rule_type": "combine",
-  "combined_label": "IMHGrPsyc & TTSHPsychi",
+  "combined_label": "TTSHDiagRd & NNINeuRad",
   "main_posting_code": null,
   "exclusion_code": null
 }
@@ -755,9 +756,9 @@ Delete a multi-posting rule.
 - **Response:** `200` with `{ "entity_type": "multi_posting_rule", "entity_id": "...", "deleted": true, "data_revalidation": {...} }`.
 
 **Rule-specific API semantics:**
-- `main_posting`: Used by FM Main Posting tab. Rows with `posting_code_2 = null` define the recognised `RDB Posting #1` trigger list. `exclusion_code` is the configured zero-match fallback, usually `NHGPlyNHGPly`.
-- `combine`: Used by To Combine Posting tab. Two posting codes collapse to `combined_label`.
-- `half_month`: Used by Half Month Posting tab. Two posting codes split into independent rows with `active_months_weight = 0.5`.
+- `main_posting`: Sources collapse to one configured existing `main_posting_code`, which is the compliance identity; no combined identity is created. FM rows with `posting_code_2 = null` define the recognised trigger list and `exclusion_code` is the configured zero-match fallback.
+- `combine`: Sources resolve to one configured canonical combined code in `combined_label`. It must already exist in `posting_codes` and have TTF rows; one `resident_postings` identity is produced and no component compliance results are returned.
+- `half_month`: Source codes remain independent rows with their own TTF targets and compliance identities. Each receives `active_months_weight = 0.5`; the API/config contract does not halve `monthly_target`. Posting groups may aggregate later only when separately configured.
 
 ### GET `/admin/posting-groups`
 
@@ -824,6 +825,7 @@ Add a new weekend exception rule.
 Update an existing weekend exception rule.
 
 - **Auth:** admin only
+- **ORTHO invariant:** The confirmed ORTHO mutation row must target only the exact original `NHG Orthopaedic Surgery Residency Teaching [3h]` session type. At compliance read time the original end time is reduced by two hours, the projected type becomes `National Didactics & Department Teaching [1h]`, and the Saturday 08:30–10:30 window is checked against that adjusted interval. Sunday is excluded and other ORTHO session types are not mutated. The API must not accept an update that broadens this confirmed seed into a wildcard ORTHO mutation.
 
 ### DELETE `/admin/weekend-exceptions/{id}`
 
@@ -847,11 +849,13 @@ Update programme configuration (r_year_required, is_subspecialty, rdb_alias).
 - **Body:**
 ```json
 {
-  "r_year_required": false,
-  "is_subspecialty": true,
-  "rdb_alias": "Surgery-in-General"
+  "r_year_required": true,
+  "is_subspecialty": false,
+  "rdb_alias": null
 }
 ```
+
+SPORTSMED and PALLMED must retain `r_year_required = true` and `is_subspecialty = false`; their R4–R6 values are not remapped to SS years.
 
 ### GET `/admin/loa-types`
 
@@ -1062,7 +1066,7 @@ Delete a single public holiday entry.
 
 ### Admin Compliance Reports
 
-> **Implementation note:** All four admin report endpoints compute compliance via a **SQL batch query** across all residents in the programme at once, then apply tag-based reallocation in Python over the result set. The SQL query joins `form_f1_records` as the active/inactive gate. See `docs/business-logic.md` § BL-6.
+> **Shared contract:** All admin reports and the resident dashboard must apply the same ordered specification in `docs/business-logic.md` § BL-6. Batch optimization is allowed, but the API contract does not claim that Phase 6 code or tests are implemented.
 
 > **Export format:** All four report endpoints support `?format=xlsx` in addition to JSON. Excel output mirrors the legacy Programme Reporting View format.
 
@@ -1072,7 +1076,7 @@ Monthly attendance summary per resident.
 
 - **Auth:** admin only
 - **Query params:** `reporting_period_id`, `programme_code`, `posting_code`, `month` (YYYY-MM)
-- **Response:** Per-resident rows with target per month, achieved, percentage, traffic light colour
+- **Response:** Per-resident rows with target per displayed AY bucket label, achieved, percentage, and traffic-light colour. Monthly percentages are display-only; the posting-level unrounded percentage is the canonical compliance predicate.
 
 ### GET `/admin/reports/posting-view`
 
@@ -1080,7 +1084,10 @@ Posting-level compliance summary.
 
 - **Auth:** admin only
 - **Query params:** `reporting_period_id`, `programme_code`, `format` (`json` | `xlsx`)
-- **Response:** Per-resident, per-posting rows with: `target100`, `target70`, `achieved_and_counted`, `shortage`, `percentage`, `met_70pct`, `colour`, `compliance_unreliable`, `compliance_unreliable_reason`
+- **Response:** Per-resident, per-posting rows with: `target100`, `target70`, `achieved_and_counted`, `shortage`, `percentage`, `met_70pct`, `colour`, `compliance_unreliable`, `compliance_unreliable_reason`.
+- **Semantics:** `percentage = achieved_and_counted / target100` is retained unrounded for the canonical `met_70pct = percentage >= 0.70` predicate and traffic light. `target70 = ceil(target100 × 0.70)` is display-oriented, including for fractional denominators; it must not override a passing percentage. Shortage is zero when percentage is at least 70%, otherwise `ceil((target100 × 0.70) - achieved_and_counted)`.
+- **R-year transitions:** Physical posting/session-type/R-year contexts are targeted and capped separately, then their capped achievement and targets are summed into the final posting row. Raw attendance and active months are not duplicated across contexts.
+- **Reallocation:** Reports transfer raw session counts one-for-one before final capping, within one physical posting, R-year context, and tag prefix. No duration-weighted, cross-posting, or cross-R-year transfer is exposed by the API.
 
 ### GET `/admin/reports/attendance-breakdown`
 
@@ -1099,45 +1106,7 @@ Raw flat export of all submitted attendance records.
 
 ### GET `/admin/reports/clawback`
 
-Clawback report for the reporting period. This is the **5th tab** in the admin/PC dashboard alongside Monthly View, Posting View, Attendance Breakdown, Submitted Attendances.
-
-- **Auth:** admin only
-- **Query params:** `reporting_period_id`, `programme_code`, `format` (`json` | `xlsx`)
-- **Scope:** Reads from `clawback_records` table generated by a future final close/freeze flow. All rows shown — including suppressed rows (Extension, R7) with `clawback_amount = 0` and `clawback_suppressed_reason` displayed.
-- **Response:**
-```json
-{
-  "clawback_rows": [
-    {
-      "mcr": "M12345A",
-      "name": "John Tan",
-      "programme": "Geriatric Medicine",
-      "r_year": "R3",
-      "posting_code": "TTSHGerMed",
-      "active_months": 3.0,
-      "compliance_percentage": 0.62,
-      "clawback_amount": 1250.00,
-      "clawback_suppressed_reason": null,
-      "billing_dept": "TTSH Geriatric Medicine"
-    },
-    {
-      "mcr": "M67890B",
-      "name": "Jane Lim",
-      "programme": "Geriatric Medicine",
-      "r_year": "R2",
-      "posting_code": "KTPHGerMed",
-      "active_months": 2.0,
-      "compliance_percentage": 0.55,
-      "clawback_amount": 0.00,
-      "clawback_suppressed_reason": "Extension",
-      "billing_dept": "KTPH Geriatric Medicine"
-    }
-  ],
-  "total_clawback_amount": 1250.00,
-  "period_label": "Jan - June 2026",
-  "programme_code": "GERI"
-}
-```
+**DEFERRED.** This route is a future placeholder only; no implementation-ready query, row identity, response fields, suppression contract, amount formula, or final-close behavior is confirmed. Norm rates/effective dating, funding R-year, financial classification, Extension/R7/SAF/SCDF precedence, grouped identity, billing attribution, missing-rate behavior, rounding, and final-close transaction/rerun rules remain unresolved. Ordinary compliance readiness is not blocked by this deferral.
 
 ### GET `/admin/exports/period-snapshot/{snapshot_id}`
 
@@ -1313,10 +1282,10 @@ Create a new teaching event.
 ```
 - **Backend auto-resolves:**
   - `posting_code` from `X-User-Site` header
-  - `session_type_id` from `teaching_name` → lookup against `teaching_name_catalogue` for the secretary's posting across all programmes. If multiple matches (same keyword, different duration), use `duration_hours` tiebreaker. Stored for display in Teaching Type column (display/prototype only — never used for compliance).
+  - `session_type_id` display metadata from the selected canonical teaching-name option. It remains display/prototype only and is never used for resident compliance. Do not fuzzy-match or choose a resident mapping by duration.
   - `end_time` = `start_time + session_type.duration_hours` (server-computed — NOT a request field)
-  - `duration_hours` copied from session_type for future tiebreaker use
-- **Returns 422 if:** `teaching_name` has no match in `teaching_name_catalogue` for this posting
+  - `duration_hours` copied from the selected option for event display/time computation only; it is never a compliance multiplier
+- **Returns 422 if:** `teaching_name` is not an allowed canonical option in the secretary's resolved teaching-name pool
 
 ### POST `/secretary/teaching-events/duplicate`
 
@@ -1436,9 +1405,9 @@ This allows one secretary-created event list to support residents from the same 
   ]
 }
 ```
-Deduplication: If the same keyword appears in multiple teaching_name_catalogue rows within the secretary’s native programme teaching pool, return it once. Where useful, include the contributing posting_codes.
+Deduplication: If the same canonical name appears in multiple `teaching_name_catalogue` rows within the secretary's native programme teaching pool, return the canonical name once. Where useful, include the contributing posting codes. Case/spacing variants within one TTF scope are upload/option data quality, not a runtime compliance matching mode.
 
-Session type ambiguity: If the same keyword maps to multiple session_type values across postings, the endpoint may return one option with the keyword and omit or null ambiguous session-type metadata. Compliance must not rely on the secretary dropdown’s displayed session type; compliance is resolved per resident at read time from teaching_name_catalogue.
+Session type ambiguity: The same canonical name may map to different session types at different postings. The endpoint may return one option with ambiguous display metadata omitted/null, but resident compliance always resolves exactly by reporting period, resident programme, assigned/compliance posting, phase R-year, and canonical name. No fuzzy matching or duration tiebreaker is part of that compliance lookup.
 
 Note: is_global = true entries come from global_session_types and are always excluded from PTT compliance. is_tracked = false entries from the TTF are also shown but excluded from compliance. Secretary sees a unified list — the compliance distinction is transparent to them.
 
@@ -1461,7 +1430,7 @@ List teaching events available for submission.
   6. Filter to `event_date <= today` (no future events).
   7. Exclude events already submitted by this resident.
   8. Apply the event-date-specific effectively active reporting-period check; never resolve historical visibility from today.
-  9. Apply `teaching_name_catalogue` / global-session matching. For catalogue-backed events, only show events whose `teaching_name` exists in the resident's catalogue for `(event posting context, resident.programme_code, resident_postings.r_year, reporting_period_id)`. Global session type exclusion/visibility follows the same source eligibility rules.
+  9. Apply exact canonical `teaching_name_catalogue` / global-session matching in the applicable source context. Normal assigned-posting events resolve by `(reporting period, resident programme, assigned posting, phase R-year, canonical name)`. An approved native-programme source outside the assigned posting remains eligible under the native-source rules and is projected for compliance as described below. Global session type exclusion/visibility follows the same source eligibility rules.
   10. Do not show PC-created events for non-native programmes.
   11. Do not show secretary-created events from arbitrary TTSH departments unless they are either the resident's assigned/current posting or the resident's native programme department.
 - **Query params:** `date_from`, `date_to`, `teaching_name`, `posting_code`. Filters apply to the combined cross-period collection and cannot widen resident scope.
@@ -1471,6 +1440,8 @@ List teaching events available for submission.
 - **Scenario A:** Native GRM Resident John is posted to TTSH Geriatric Medicine. John sees TTSH GRM Department Secretary events because he is posted there and GRM PC events because GRM is his native programme. The TTSH GRM secretary event source is deduped if it is both assigned posting and native programme department.
 - **Scenario B:** Native GRM Resident John is posted to TTSH Rehab. John sees TTSH Rehab Department Secretary events because he is posted there, TTSH GRM Department Secretary events because GRM is his native programme department, and GRM PC events because GRM is his native programme.
 - **Scenario C:** Native Rehab Resident Mary is posted to TTSH GRM. Mary sees TTSH GRM Department Secretary events because she is posted there, TTSH Rehab Department Secretary events because Rehab is her native programme department, and Rehab PC events because Rehab is her native programme.
+
+**Native-programme compliance attribution:** For an approved native-programme event outside the resident's assigned posting, resolve the assigned posting from `resident_postings` on the event date, preserve the original event, and project exactly one `Department/Programme Teaching [1h]` session under the assigned posting's TTF target. Do not return a compliance result for the event creator posting or `programmes.native_teaching_posting_code`. An event at the assigned posting follows normal catalogue resolution unless another explicit rule applies.
 
 ### GET `/resident/submission-periods`
 
@@ -1489,11 +1460,12 @@ Submit attendance for one or more events.
 - **Backend:**
   1. Validates event exists and is visible through the resident's allowed scheduled-event sources: assigned/current posting secretary event, native programme TTSH department secretary event, or native programme PC-created event
   2. Validates `event_date` falls within a `resident_postings` row with `status IN ('active', 'loa_working')` → `422` if outside tenure
-  3. Validates `teaching_name` exists in `teaching_name_catalogue` for resident's `(posting_code, programme_code, r_year, reporting_period_id)` → `422` if no match
+  3. For an assigned-posting event, validates the exact canonical name in `(reporting period, resident programme, assigned posting, phase R-year)`. For an approved native-programme event outside that posting, validates the allowed source and the assigned-posting `Department/Programme Teaching [1h]` target used by the read-time projection; it does not require the creator posting to become a compliance result.
   4. Validates programme ownership: events with `created_for_programme_code` set must match the resident's `programme_code`
   5. Validates no duplicate (`UNIQUE(resident_id, teaching_event_id)`)
-  6. Creates `attendance_records` rows — **does NOT store `session_type_id`**
-  7. Checks each submitted event against `weekend_exceptions` — if a weekend session has no matching rule, adds a `compliance_warning` to the response
+  6. Before insert, rejects a later submission whose distinct event interval overlaps an already accepted event for the same resident. The earlier accepted attendance remains unchanged; this check is separate from same-event uniqueness.
+  7. Creates accepted `attendance_records` rows — **does NOT store `session_type_id`**
+  8. Checks each submitted event against `weekend_exceptions` — if a weekend session has no matching rule, adds a `compliance_warning` to the response
 - **Response:**
 ```json
 {
@@ -1503,6 +1475,8 @@ Submit attendance for one or more events.
 }
 ```
 `compliance_warning` is `null` when all submitted sessions are either weekdays or match a weekend exception rule.
+
+An overlapping distinct event is returned as a submission conflict for the later event. No delete or replacement is performed, and the earlier accepted attendance remains available in history and compliance reads.
 
 ### DELETE `/resident/attendance/{attendance_id}`
 
@@ -1616,12 +1590,13 @@ Resident's personal compliance dashboard.
   "compliance_summary": [
     {
       "posting_code": "TTSHGerMed",
-      "session_type": "Department/Programme Teaching [1h]",
-      "target_70pct": 10,
-      "achieved": 7,
-      "shortfall": 3,
-      "percentage": 0.54,
-      "colour": "amber",
+      "target_100": 1.5,
+      "target_70": 2,
+      "achieved_and_counted": 1.5,
+      "shortage": 0,
+      "percentage": 1.0,
+      "met_70pct": true,
+      "colour": "green",
       "compliance_unreliable": false,
       "compliance_unreliable_reason": null
     }
@@ -1638,6 +1613,8 @@ Resident's personal compliance dashboard.
   ]
 }
 ```
+
+`percentage` is retained unrounded and is the canonical predicate for `met_70pct` and colour. `target_70 = ceil(target_100 × 0.70)` is a displayed whole-session threshold and must not make a capped 100% fractional-target result fail. When a resident changes R-year mid-period, the response's posting total sums targets and separately capped achievement from each physical-posting/session-type/R-year context; it never merges raw attendance before those caps or duplicates active months.
 
 ---
 
@@ -1995,6 +1972,7 @@ Workbook columns and programme/r_year routing metadata remain implementation-own
 { "detail": "Teaching event not found" }                                         // 404
 { "detail": "Cannot delete event with attendance" }                              // 409
 { "detail": "Duplicate attendance submission" }                                  // 409
+{ "detail": "Attendance overlaps an earlier accepted event" }                    // 409
 { "detail": "Another TTF upload for this scope is in progress" }                 // 409
 { "detail": "No active reporting period is available" }                          // 422
 { "detail": "TTF validation failed", "errors": [...] }                           // 422

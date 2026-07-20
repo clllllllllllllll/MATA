@@ -12,6 +12,26 @@
 
 Every important decision made during the project, with reasoning and consequences.
 
+### Phase 6-A confirmed non-clawback decisions (2026-07-20)
+
+These entries supersede any earlier contradictory current-state entry in this audit log. They resolve the ordinary compliance specification only; they do not claim that Phase 6 application code or tests are implemented.
+
+1. **FormF1 follows the AY bucket label.** Calendar-month storage remains, but the AY bucket `month_label` selects one FormF1 status for both numerator and denominator across the whole bucket. Do not split/prorate or use the event's raw calendar month.
+2. **Overlapping distinct events.** For the same resident, reject a later submission that overlaps an earlier accepted distinct event. Preserve the earlier attendance. Same-event database uniqueness remains separate.
+3. **ORTHO mutation.** Only exact original type `NHG Orthopaedic Surgery Residency Teaching [3h]` is eligible. Preserve raw rows, subtract two hours from original end time, project to `National Didactics & Department Teaching [1h]`, then apply the Saturday 08:30–10:30 window to adjusted time. Sunday remains excluded; other ORTHO types are not mutated.
+4. **Multi-posting types stay distinct.** `main_posting` collapses sources to one configured existing `main_posting_code`; `combine` persists one configured canonical combined posting code that already exists and has TTF rows; `half_month` preserves both posting identities and unchanged TTF targets with `active_months_weight = 0.5` applied once. Posting groups may aggregate later when separately configured.
+5. **Native-programme event attribution.** An approved native-programme event outside the assigned posting projects exactly one `Department/Programme Teaching [1h]` session under the assigned posting and its TTF target. Preserve the event; do not create creator-posting, native-teaching-posting, or separate native compliance results.
+6. **Catalogue matching is deterministic and not a Phase 6 blocker.** Scheduled events use canonical dropdown names. Exact resolution is scoped by reporting period, resident programme, assigned/compliance posting, phase R-year, and canonical name. The same name may map differently at different postings. Case/spacing cleanup within one scope is upload/option data quality; no fuzzy matching.
+7. **SPORTSMED/PALLMED use R4–R6.** Both have `r_year_required = true` and `is_subspecialty = false`; neither uses `ALL` nor R4→SS1/R5→SS2/R6→SS3 remapping. This supersedes the former 22/6 and subspecialty-remap decision: the split is now 20 `ALL` programmes and 8 R-year-required programmes.
+8. **Mid-period R-year contexts are independent until posting summation.** Resolve event phase R-year, calculate correctly weighted target, and cap each `(physical posting, session type, R-year context)` separately; then sum capped results/targets. Never merge raw attendance first or duplicate posting-wide active months.
+9. **Percentage is canonical.** `met_70pct = percentage >= 0.70` using the unrounded posting percentage. Green/amber/red boundaries are 70%/50%. `target_70 = ceil(target_100 × 0.70)` is a displayed whole-session target. For a failing result, displayed shortage may be `ceil((target_100 × 0.70) - achieved_and_counted)`; otherwise zero.
+10. **Tag reallocation uses raw session counts before final capping.** Transfers are one-for-one within one physical posting, R-year context, and tag prefix; tags sort alphabetically, earlier donates to later, donor supply is raw above the type's 70% target, recipient demand is only to that target, and supply is decremented. Duration is never transferred/multiplied; group membership never permits cross-posting transfer. Cap each type/R-year context after all transfers. Reallocation is read-time only and never stored in the ledger.
+11. **Persistent surplus is derived audit state.** Per resident/physical posting/session type/period, replace idempotently with `max(cumulative raw eligible attendance - cumulative target_100, 0)` before tag reallocation. Never increment it, add it back to attendance, or consume it as an independent credit. Recompute on return, hibernate/unhibernate by phase lifecycle, and reset at the period boundary while preserving closed history where supported.
+
+**Clawback status:** DEFERRED. Norm rates/effective dating, funding R-year, financial classification, suppression granularity/precedence, grouped identity, billing attribution, missing-rate behavior, rounding/precision, and final-close transaction/rerun/idempotency remain unresolved. The future failure trigger must use the same unrounded percentage, but no further financial contract is implied.
+
+---
+
 #### Decision: TTF zero monthly target semantics
 - **Status:** Confirmed
 - **Decision:** `teaching_targets.monthly_target = 0` is valid. The target row and its `teaching_name_catalogue` entries remain persisted, allowing event visibility, event creation, and attendance capture.
@@ -193,7 +213,7 @@ Every important decision made during the project, with reasoning and consequence
 - **Decision:** `surplus_ledger` values reset to zero at each `reporting_periods` boundary. Surplus does NOT carry across H1/H2.
 - **Reasoning:** Each 6-month reporting period is an independent compliance window. Carrying surplus across periods would mask chronic under-attendance.
 - **Alternatives considered:** Rolling surplus across periods — rejected by PM.
-- **Consequences for codebase:** `surplus_ledger` rows are period-scoped via `reporting_period_id`. Future final close/freeze sets `is_hibernating = true` on all rows. New period starts with zero surplus.
+- **Derived-state lifecycle:** The ledger is not carry-in attendance. Within a period, recompute/replace `max(cumulative raw eligible attendance - cumulative target_100, 0)` from all relevant phases; never increment or add it to attendance. Hibernate when no active phase remains and unhibernate/recompute on return. New period starts at zero, while closed-period evidence may remain stored.
 - **Reference file and section:** `business-logic.md` § BL-4; `AGENTS.md` confirmed decisions
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -212,10 +232,10 @@ Every important decision made during the project, with reasoning and consequence
 
 #### Decision: Tag-based reallocation scope — tag-group-only, alphabetical sort
 - **Status:** ✅ Confirmed
-- **Decision:** Surplus reallocation flows within tag groups only (same prefix). No cross-tag or cross-posting flow. Sort is alphabetical by tag label (A1→A2→A3), not by duration. One-for-one session count transfers.
+- **Decision:** Reallocation operates on raw achieved session counts before final capping, within one physical posting, R-year context, and tag prefix. Sort alphabetically (A1→A2→A3); earlier tags donate only to later tags. Donor supply is raw achieved above that type's 70% target, recipient demand is only to reach its 70% target, and supply is decremented after each one-for-one transfer. Duration is never a multiplier and posting groups do not permit cross-posting transfer.
 - **Reasoning:** Matches the R script's `order()` on the Tag column. By convention, PCs assign A1 = longest duration, A2 = shorter. Alphabetical sort preserves this convention without requiring a separate sort field.
 - **Alternatives considered:** (1) Duration-based sort — rejected, doesn't match R script behaviour. (2) Cross-tag flow — rejected by PM. (3) Weighted transfers based on duration ratio — rejected, adds complexity with no stakeholder request.
-- **Consequences for codebase:** `reallocate_by_tag()` in `surplus.py` sorts by `row['tag']` alphabetically. TTF upload validator warns (not blocks) if tag order doesn't align with duration descending.
+- **Specification consequence:** After all transfers, cap every session type/R-year context at its own `target_100`; final capped values feed posting compliance. The TTF validator may warn when tag order does not align with duration descending, but duration does not drive transfer. No claim of implementation is made here.
 - **Reference file and section:** `business-logic.md` § BL-3; `AGENTS.md` confirmed decisions
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -224,9 +244,9 @@ Every important decision made during the project, with reasoning and consequence
 #### Decision: Session counts, not hours — compliance unit
 - **Status:** ✅ Confirmed
 - **Decision:** Compliance is measured in number of sessions attended. Duration is never a multiplier. 1 session = 1 session regardless of 0.5h or 3h.
-- **Reasoning:** Matches the legacy R script behaviour and the regulatory framework. Duration is embedded in session type names for display and reallocation flow direction only.
+- **Reasoning:** Matches the legacy R script behavior and the regulatory framework. Duration is embedded in session type names for display/timing metadata and validation only; alphabetical tag labels—not hours—define reallocation direction.
 - **Alternatives considered:** Duration-weighted compliance — never proposed by stakeholders.
-- **Consequences for codebase:** No multiplication by `duration_hours` anywhere in `compliance.py`. Duration stored on `session_types` and `teaching_events` for display and as a tiebreaker only.
+- **Consequences for codebase:** No multiplication by `duration_hours` anywhere in the planned compliance path. Duration stored on `session_types`, catalogue options, and `teaching_events` is display/timing metadata and must not break ties in compliance resolution.
 - **Reference file and section:** `AGENTS.md` § Key Architectural Rules; `business-logic.md` § BL-1
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -234,10 +254,10 @@ Every important decision made during the project, with reasoning and consequence
 
 #### Decision: Reallocation is read-time only — never written to surplus_ledger
 - **Status:** ✅ Confirmed
-- **Decision:** `reallocate_by_tag()` is a read-time computation applied after fetching `surplus_ledger` values. Reallocated values are never written back to `surplus_ledger`.
+- **Decision:** `reallocate_by_tag()` is a read-time computation over raw eligible attendance counts before final caps. Reallocated values are never written to or read from `surplus_ledger` as transfer balances.
 - **Reasoning:** Writing reallocated values would corrupt the pre-reallocation audit trail and cause double-counting on the next compliance read. Surplus must always reflect the raw, pre-reallocation state.
 - **Alternatives considered:** Materialising reallocated values — rejected due to audit trail corruption risk.
-- **Consequences for codebase:** `surplus_ledger.surplus` stores pre-reallocation values only. `update_surplus()` is called BEFORE `reallocate_by_tag()`. The reallocation function modifies in-memory rows, never DB rows.
+- **Specification consequence:** `surplus_ledger.surplus` stores independently recomputed pre-tag derived audit state. It is not added to raw attendance and is not directly consumed by the in-memory transfer calculation.
 - **Reference file and section:** `business-logic.md` § BL-3, BL-4
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -303,7 +323,7 @@ Every important decision made during the project, with reasoning and consequence
 - **Decision:** Compliance target lookups use `resident_postings.r_year` (per phase), not `residents.r_year` (display only). A resident may cross a residency year boundary mid-period.
 - **Reasoning:** A resident might be R2 for the first 3 months and R3 for the last 3 months of a reporting period. Each phase must be matched against the correct teaching targets.
 - **Alternatives considered:** None — `residents.r_year` is a convenience display field only.
-- **Consequences for codebase:** All compliance joins use `resident_postings.r_year`. The `residents.r_year` field is never used in `compliance.py` or `surplus.py`.
+- **Specification consequence:** Resolve each attendance to the phase covering its event date. Calculate target and cap separately for every physical-posting/session-type/R-year context, then sum. Do not merge raw attendance before capping or duplicate the posting-wide active-month total across R-year rows.
 - **Reference file and section:** `business-logic.md` § BL-1, BL-6; `schema.md` § `residents` table
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -333,10 +353,10 @@ Every important decision made during the project, with reasoning and consequence
 
 #### Decision: FormF1 as final active/inactive source (TBD-7 resolved)
 - **Status:** ✅ Confirmed and final
-- **Decision:** `form_f1_records.is_active` per calendar month is the compliance denominator gate. `Active` and `Extension` → true. `Inactive` → false (excluded from both numerator and denominator).
-- **Reasoning:** FormF1 is calculated on a calendar month basis, which aligns with compliance targets. RDB posting phases use academic months (e.g. `08 Jul 25 - 03 Aug 25`). Using RDB phases creates date boundary inconsistencies.
+- **Decision:** FormF1 remains stored per calendar month, but the AY bucket `month_label` selects the one `form_f1_records.is_active` value that gates both numerator and denominator for the entire bucket. `Active`/`Extension` are true; inactive values exclude the whole bucket. Do not use an event's raw calendar month or split/prorate a bucket.
+- **Reasoning:** This preserves FormF1 authority while aligning it deterministically to AY attendance/target bucketing. For example, a `Jul-26` bucket ending 3 August still uses July FormF1 on 3 August.
 - **Alternatives considered:** RDB-derived active/inactive using ≥15 working calendar days rule — rejected for current architecture.
-- **Consequences for codebase:** `compliance.py` gates on `form_f1_records.is_active`. `formf1_parser.py` populates the table. FormF1 is per-resident per-month — not per posting code.
+- **Specification consequence:** `formf1_parser.py` remains calendar-month persistence; compliance joins through `academic_month_boundaries.month_label`. The same status gates numerator and denominator.
 - **Reference file and section:** `business-logic.md` § BL-1, BL-6, TBD-7 (closed)
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -352,12 +372,12 @@ Every important decision made during the project, with reasoning and consequence
 
 ---
 
-#### Decision: r_year = 'ALL' sentinel for 22 programmes
-- **Status:** ✅ Confirmed
-- **Decision:** 22 programmes with `r_year_required = false` use `r_year = 'ALL'` as a sentinel in `resident_postings`, `teaching_targets`, and `teaching_name_catalogue`. 6 programmes use actual r_year. 2 subspecialty programmes (SPORTSMED, PALLMED) remap R4→SS1, R5→SS2, R6→SS3.
+#### Decision: r_year configuration — supersedes former 22/6 and SS-remap entry
+- **Status:** ✅ Confirmed; previous entry superseded
+- **Decision:** 20 programmes with `r_year_required = false` use `r_year = 'ALL'`. Eight use actual R-year. SPORTSMED and PALLMED have `r_year_required = true`, `is_subspecialty = false`, and preserve R4, R5, and R6 in RDB, targets, and catalogue rows. No SS remapping applies.
 - **Reasoning:** Most programmes do not differentiate teaching targets by residency year — all years share the same targets. The sentinel avoids duplicating target rows.
 - **Alternatives considered:** NULL r_year — rejected because NULL complicates equality checks. Separate flag without sentinel — rejected, adds join complexity.
-- **Consequences for codebase:** `r_year_matches()` function handles sentinel: `if target_r_year == 'ALL' or posting_r_year == 'ALL': return True`. All catalogue lookups must account for the sentinel.
+- **Specification consequence:** The sentinel matcher remains for the 20 programmes. SPORTSMED/PALLMED must never use `ALL` or SS1–SS3 in current parser/compliance behavior.
 - **Reference file and section:** `business-logic.md` § BL-11; `schema.md` § `programmes` seed data; `parsing.md` § R Year Handling
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -376,10 +396,10 @@ Every important decision made during the project, with reasoning and consequence
 
 #### Decision: ORTHO weekend mutation — read-time only
 - **Status:** ✅ Confirmed
-- **Decision:** ORTHO Saturday sessions of type `NHG Orthopaedic Surgery Residency Teaching [3h]` are mutated to `National Didactics & Department Teaching [1h]` at compliance read time via `weekend_exceptions.mutates_to_session_type_id` and `adjusted_duration_hours`. Raw attendance data is never modified in the DB.
+- **Decision:** Only the exact original ORTHO type `NHG Orthopaedic Surgery Residency Teaching [3h]` is eligible. Preserve raw rows, subtract two hours from its original end time, project to `National Didactics & Department Teaching [1h]`, and then test Saturday 08:30–10:30 against adjusted time. Sunday remains excluded and other ORTHO types are not mutated.
 - **Reasoning:** Consistent with R script (batch post-processing). Preserves raw data for audit. If ORTHO changes policy, update the `weekend_exceptions` row — no data migration needed.
 - **Alternatives considered:** (A) Write mutation at submission time — rejected, corrupts raw data. (B) Read-time mutation (chosen). Both options documented in `AGENTS.md`.
-- **Consequences for codebase:** `compliance.py` calls `is_weekend_accepted()` which returns `mutation_row`. When present, compliance engine uses mutated session type and duration instead of originals. `attendance_records` row unchanged.
+- **Specification consequence:** Mutation predicate and weekend-acceptance predicate are ordered and must not be collapsed into a programme-wide wildcard. This audit makes no code-implementation claim.
 - **Reference file and section:** `business-logic.md` § BL-5 ORTHO weekend section; `schema.md` § `weekend_exceptions`
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -453,6 +473,7 @@ Every important decision made during the project, with reasoning and consequence
 - **Reasoning:** Multi-posting rules are stable configuration data, not per-period upload data. CRUD UI is simpler and allows immediate correction. The workbook provides initial/source-of-truth seed rows when configuration needs to be refreshed.
 - **Alternatives considered:** Parsing rules from RDB file — rejected, rules are cross-programme and don't belong in a per-programme upload.
 - **Consequences for codebase:** Admin CRUD endpoints for `multi_posting_rules`. `rdb_parser.py` looks up the table at parse time. No rule file parser.
+- **Persistence semantics:** `main_posting` collapses to one configured existing main code; `combine` persists one configured canonical combined code with its own TTF rows and no component results; `half_month` persists both source codes with `active_months_weight = 0.5` and leaves TTF `monthly_target` unchanged. These outcomes must not be collapsed into one `main_posting_code` behavior.
 - **Reference file and section:** `schema.md` § `multi_posting_rules`; `AGENTS.md` confirmed decisions
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -525,6 +546,7 @@ Every important decision made during the project, with reasoning and consequence
 - **Scenario A:** Native GRM Resident John is posted to TTSH Geriatric Medicine. John sees TTSH GRM Department Secretary events because he is posted there and GRM PC events because GRM is his native programme. The TTSH GRM secretary source is not duplicated when it is both assigned posting and native programme department.
 - **Scenario B:** Native GRM Resident John is posted to TTSH Rehab. John sees TTSH Rehab Department Secretary events because he is posted there, TTSH GRM Department Secretary events because GRM is his native programme department, and GRM PC events because GRM is his native programme.
 - **Scenario C:** Native Rehab Resident Mary is posted to TTSH GRM. Mary sees TTSH GRM Department Secretary events because she is posted there, TTSH Rehab Department Secretary events because Rehab is her native programme department, and Rehab PC events because Rehab is her native programme.
+- **Compliance attribution:** Visibility source is not compliance identity. An approved native-programme event outside the assigned posting is projected unchanged at read time to exactly one `Department/Programme Teaching [1h]` session under the assigned posting and its TTF target. Never count it under creator posting or `native_teaching_posting_code`, and do not create a separate native result.
 - **Reference file and section:** `api.md` § GET `/resident/events`; `business-logic.md` resident event visibility; `schema.md` § `programmes` / native teaching posting mapping
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -555,12 +577,11 @@ Every important decision made during the project, with reasoning and consequence
 
 ---
 
-#### Decision: Clawback tab — 5th tab, generated by future final close/freeze
-- **Status:** ✅ Confirmed
-- **Decision:** Clawback is the 5th tab in admin/PC dashboard. Read-only. Generated by the future final close/freeze flow via `clawback_records` table (BL-10). All rows shown including suppressed (Extension, R7) with amount = 0.
-- **Reasoning:** Senior management needs visibility into all compliance failures, even when no financial action follows.
-- **Alternatives considered:** Separate clawback report page — rejected, integrated tab is more convenient.
-- **Consequences for codebase:** Current reporting-period activate/deactivate routes do not generate `clawback_records`. A separate final close/freeze flow will generate them later. `GET /admin/reports/clawback` reads from that table. Suppressed rows included with `clawback_suppressed_reason` displayed.
+#### Decision: Clawback tab/contract — deferred (supersedes implementation-ready wording)
+- **Status:** DEFERRED
+- **Decision:** A future clawback tab/route may remain a roadmap placeholder, but no row-generation, suppression, response, financial, or final-close contract is implementation-ready. Earlier statements that fixed Extension/R7 rows or generation behavior are superseded.
+- **Boundary:** Ordinary compliance uses the unrounded percentage and is specification-ready independently. Clawback rates/effective dating, funding R-year, classifications, suppression granularity/precedence, grouped identity, billing, missing rates, rounding, and final-close transaction/rerun/idempotency all await confirmation.
+- **Consequences for codebase:** Do not implement or infer clawback from this audit record or legacy scripts. Operational period activate/deactivate continues to generate no clawback state.
 - **Reference file and section:** `business-logic.md` § BL-10; `api.md` § GET `/admin/reports/clawback`
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -820,10 +841,10 @@ Status: ✅ Resolved
 
 #### TBD-5b: Combined Posting Event Ownership
 - **Original question:** For combine-type postings (e.g. `IMHGrPsyc & TTSHPsychi`), who creates events?
-- **Final decision:** Secretaries at both individual sites create events under their own posting codes. Compliance = total attended across both / total sessions from both combined.
-- **Consequences for codebase:** Combined posting label must have its own TTF row. Compliance query unions events from both posting codes.
+- **Status:** ⚠️ Compliance-attribution wording superseded by Phase 6-A; event creator ownership remains historical operational context only.
+- **Current compliance decision:** A `combine` rule persists and calculates under one configured canonical combined posting code that already exists in `posting_codes` and has its own TTF rows. No component compliance result is produced, and the denominator comes from the canonical combined posting's targets—not from counting events created at component sites. Event rows may retain their original creator posting, but that field does not replace the configured combined compliance identity.
 - **File and section:** `business-logic.md` § BL-8; `AGENTS.md` confirmed decisions
-- **Mandatory instruction:** Do NOT reopen.
+- **Mandatory instruction:** Do not restore component-result or event-count-denominator behavior without a new confirmed decision.
 
 ---
 
@@ -879,7 +900,7 @@ Status: ✅ Resolved
 - **What it was:** Deriving active/inactive status from RDB posting phases using a ≥15 working calendar days rule.
 - **Why rejected:** RDB posting phases use academic months (e.g. `08 Jul 25 - 03 Aug 25`) which don't align with calendar-month compliance targets. Creates date boundary inconsistencies.
 - **When it might become valid:** Only if a separate future requirement explicitly changes the confirmed FormF1 decision.
-- **What replaced it:** FormF1 active/inactive gate (`form_f1_records.is_active`), which uses calendar months aligned with compliance targets.
+- **What replaced it:** FormF1 remains calendar-month stored, while the resolved AY bucket label selects the status that gates both numerator and denominator for the whole bucket.
 
 ---
 
@@ -918,35 +939,29 @@ Status: ✅ Resolved
 - **R script:** Script C — compliance calculation, `order()` function applied to Tag column
 - **What it does:** Sorts tag groups alphabetically by tag label (A1→A2→A3), which by convention maps to longest→shortest duration.
 - **Why retained:** The alphabetical sort order is the confirmed behaviour. PCs assign tags to align alphabetical order with duration descending.
-- **Where implemented:** `surplus.py` → `reallocate_by_tag()` function. Sort key is `row['tag']` (string sort).
-- **Modifications:** TTF upload validator warns (not blocks) if alphabetical order doesn't align with duration descending.
+- **MATA specification:** Planned `surplus.py` behavior sorts by tag string. It transfers raw session counts before caps; the TTF validator warns (not blocks) if alphabetical order does not align with duration descending. No code-implementation claim is made.
 
 ---
 
-#### KEEP: Clawback norm rate structure (R script F)
-- **R script:** Script F — clawback calculation
-- **What it does:** Applies per-r_year norm rates to compute clawback amounts. Separate rates for FM, IM, IM sub-specialties, and standard programmes.
-- **Why retained:** The clawback calculation formula and rate structure are regulatory requirements.
-- **Where implemented:** `clawback.py` → `compute_clawback()` function. See `business-logic.md` § BL-10.
-- **Modifications:** Rates seeded from template rather than hardcoded. Suppression logic for Extension and R7 added.
+#### DEFERRED EVIDENCE: Legacy clawback rate structure
+- **Legacy evidence:** The audited clawback script applied positional/per-R-year rate data and programme classifications.
+- **MATA status:** Evidence only, not retained authority and not an implementation claim. Rates, persistence/effective dating, funding R-year, classifications, suppressions, grouping/billing, missing-rate behavior, rounding, and final-close behavior remain deferred.
 
 ---
 
-#### KEEP: 70% compliance threshold and ceil() rounding
+#### KEEP WITH CONFIRMED PRECEDENCE: 70% percentage threshold and displayed ceil target
 - **R script:** Script C — compliance calculation
-- **What it does:** `target_70 = ceiling(target_100 * 0.70)` — uses ceiling function, matching R's `ceiling()`.
-- **Why retained:** Regulatory requirement. `math.ceil()` in Python matches R's `ceiling()`.
-- **Where implemented:** `compliance.py` → `posting_compliance()` function. See `business-logic.md` § BL-2.
-- **Modifications:** None — identical logic.
+- **Observed legacy behavior:** The script displayed `target_70 = ceiling(target_100 * 0.70)`.
+- **Confirmed MATA rule:** Use unrounded `percentage >= 0.70` as the canonical predicate. Retain `target_70` only as a displayed whole-session threshold. This precedence is essential for fractional targets.
+- **Implementation status:** Specification only; no application-code or test claim is made.
 
 ---
 
-#### KEEP: Session count capping (min of achieved vs target)
+#### KEEP WITH PHASE 6-A ORDERING: Session count capping
 - **R script:** Script C — compliance calculation
 - **What it does:** `achieved_and_counted = min(raw_achieved, target_100)` — caps achieved at 100% target.
 - **Why retained:** Prevents over-counting when a resident exceeds the target for one session type from inflating overall compliance.
-- **Where implemented:** `compliance.py` → `compute_achieved_and_counted()` function. See `business-logic.md` § BL-1.
-- **Modifications:** None — identical logic.
+- **Confirmed ordering:** Tag transfers use raw achieved session counts first. Each physical-posting/session-type/R-year context is capped at its own target only after transfers, then summed. No implementation claim is made.
 
 > **⚠️ Most likely LLM mistake:** Porting R script logic not listed in this section — particularly the fuzzy string matching or CSV parsing logic. These are explicitly discarded in Section 4B. The silent consequence is fragile, redundant code that conflicts with the structured data model.
 
@@ -1000,7 +1015,7 @@ Status: ✅ Resolved
 |---|----------|---------------|-------------|-----------------|
 | 1 | Active/inactive source (TBD-7 closed) | Gates compliance denominator for every resident | PM / Programme Director | Resolved — FormF1 is final authoritative source |
 | 2 | TBD-MIGRATION: Archive only, summary, or full migration for historical data? | Determines whether historical reports available in new system | PM / Senior Management | Yes — decision needed before future final close/freeze |
-| 3 | What is the exact list of clawback norm rates per r_year? | Required for BL-10 clawback calculation | PM / Finance | Yes — rates seeded from template, placeholder structure in place |
+| 3 | Clawback financial/final-close contract: rates/effective dating, funding R-year, classification, suppressions, grouped identity, billing, missing rates, rounding, and rerun/idempotency | Required before any clawback implementation | PM / Finance / Programme Director | No for clawback; ordinary compliance can proceed |
 | 4 | Are there any additional programmes beyond the 28 seeded in `programmes`? | Missing programmes would cause parse failures on RDB upload | PM | Yes — new programmes can be added via admin CRUD |
 
 ### Excel Format
@@ -1053,19 +1068,18 @@ Status: ✅ Resolved
 
 ---
 
-#### Ambiguity: FormF1 parser year suffix derivation
-- **What:** The `parse_formf1()` sample code in `parsing.md` hardcodes `year_suffix = '25' if month_offset < 6 else '26'`. This is specific to AY2025 (Jul 2025 – Jun 2026) and will break for other reporting periods.
-- **Which source to trust:** The logic is correct for AY2025 but must be made dynamic based on the reporting period's actual start date.
-- **PM resolution needed?** No — developer should make dynamic. Flag as [Needs verification] for the exact derivation logic.
+#### Resolved: FormF1 month-label year derivation
+- **Rule:** Derive every FormF1 `month_label` dynamically from the selected reporting period dates. Do not hardcode AY2025 suffixes.
+- **PM resolution needed?** No. This is parser correctness and is specified in `parsing.md`.
 
 ---
 
-#### Ambiguity: teaching_name_catalogue keyword case sensitivity
-- **What:** No explicit case-sensitivity rule stated in any document for `teaching_name_catalogue.keyword` matching. SQL default is case-sensitive.
-- **Which source to trust:** Not specified. Developer should implement case-insensitive matching (e.g. `ILIKE` or `LOWER()`) to be safe, or confirm with PM.
-- **PM resolution needed?** Recommended — case mismatch would silently exclude events from compliance.
+#### Resolved: teaching_name_catalogue canonical-name matching
+- **Confirmed rule:** Scheduled event creation uses standardized canonical dropdown names. Compliance uses exact canonical matching scoped by period, resident programme, assigned/compliance posting, phase R-year, and name. The same name may map differently at different postings.
+- **Data-quality boundary:** Case/spacing variants within one TTF scope are upload/event-option cleanup, not a runtime compliance ambiguity. Do not use fuzzy matching or `ILIKE` as a substitute for canonical options.
+- **PM resolution needed?** No for Phase 6 compliance.
 
-> **⚠️ Most likely LLM mistake:** Assuming the FM Saturday exception still exists because `business-logic.md` § BL-FM describes it. The seed data in `schema.md` is authoritative — no FM row exists. The silent consequence is seeding a weekend exception that should not exist, causing FM Saturday sessions to incorrectly count toward compliance.
+> **⚠️ Most likely LLM mistake:** Restoring the legacy FM Saturday exception. Current `business-logic.md`, `schema.md`, and `AGENTS.md` all confirm that no FM weekend-exception row is seeded.
 
 ---
 
@@ -1073,14 +1087,11 @@ Status: ✅ Resolved
 
 | # | What Is Missing | Why It Matters | Where Placeholder Is Used | Where to Update When Provided |
 |---|----------------|---------------|--------------------------|-------------------------------|
-| 1 | Active/inactive source lock (TBD-7 closed) | Gates compliance denominator | `compliance.py` — gate on `form_f1_records.is_active` | Keep FormF1 path authoritative |
 | 2 | TBD-MIGRATION option selection | Determines historical data availability | No code exists — placeholder TODO only | New migration script(s) when option confirmed |
-| 3 | Clawback norm rates per r_year | Required for BL-10 calculation amounts | `clawback.py` — rate lookup structure in place, actual rates need seeding | `clawback.py` → `norm_rates` and `norm_rates_fm` dicts |
-| 4 | Exact `teaching_name_catalogue` keyword case-sensitivity rule | Determines whether "Journal Club" matches "journal club" | Not specified — developer must choose | `compliance.py` and `ttf_parser.py` — matching query |
-| 5 | FormF1 year suffix dynamic derivation | Hardcoded '25'/'26' will break for non-AY2025 periods | `formf1_parser.py` sample code | `formf1_parser.py` — derive from `reporting_periods.start_date` |
+| 3 | Complete clawback financial/final-close contract | Required only for deferred clawback | No implementation-ready placeholder; legacy evidence is non-authoritative | Source-of-truth documents after stakeholder confirmation |
 | 6 | Actual implementation status of codebase | Source-of-truth files are design specs | This document marks all components as 📋 Planned | Verify against actual codebase and update Section 3 of `00_project_context.md` |
 
-> **⚠️ Most likely LLM mistake:** Assuming the clawback norm rates are already seeded because `business-logic.md` shows the calculation formula. The formula structure exists; the actual rate values are placeholders. The silent consequence is zero or wrong clawback amounts.
+> **⚠️ Most likely LLM mistake:** Treating legacy clawback evidence as an implementation-ready formula. The entire financial/final-close contract is deferred; ordinary compliance remains independently specified.
 
 ---
 
@@ -1093,21 +1104,21 @@ These are implementation errors that would fail silently — no exception thrown
 #### ⚠️ Blind Spot 1: Using `residents.r_year` instead of `resident_postings.r_year`
 - **Where:** `compliance.py` — any join to `teaching_targets`
 - **Silent consequence:** Wrong `teaching_targets` row matched for residents who cross a year boundary mid-period. Wrong compliance target applied. Wrong percentage. Wrong traffic light. No error thrown.
-- **How to detect:** Unit test: create a resident with R2 posting in months 1–3 and R3 posting in months 4–6. Verify that month-1 attendance matches R2 targets and month-4 attendance matches R3 targets.
+- **How to detect:** Unit test: create R2 and R3 phases at the same physical posting. Verify event-date phase resolution, correctly weighted targets, separate context caps, and posting-level summation without duplicated active months.
 
 ---
 
 #### ⚠️ Blind Spot 2: Writing reallocated surplus values to `surplus_ledger`
 - **Where:** `surplus.py` — after `reallocate_by_tag()` returns
-- **Silent consequence:** Next compliance read double-counts the reallocation. Audit trail corrupted. Surplus values grow unboundedly over multiple reads.
-- **How to detect:** Integration test: run compliance calculation twice. Verify `surplus_ledger` values are identical both times (pre-reallocation). Verify reallocated values only exist in the response, not in DB.
+- **Silent consequence:** Treating the ledger as a transfer balance or adding it back to attendance double-counts sessions. Incrementing instead of replacing makes repeated reads non-idempotent.
+- **How to detect:** Recompute twice and verify the value remains `max(cumulative raw eligible attendance - cumulative target_100, 0)`. Extend the target by a return phase and verify the stored surplus decreases without being added to attendance.
 
 ---
 
 #### ⚠️ Blind Spot 3: 70% threshold at session-type level instead of posting level
-- **Where:** `compliance.py` — `posting_compliance()` function
-- **Silent consequence:** Wrong traffic light colours for every resident. A resident could be green per session type but red at posting level, or vice versa.
-- **How to detect:** Unit test: create a resident with 2 session types at one posting. Set achieved high for type A and low for type B. Verify threshold is applied to the sum, not per type.
+- **Where:** Planned `compliance.py` posting aggregation
+- **Silent consequence:** Applying the session-type threshold or displayed `target_70` instead of the unrounded posting percentage gives wrong colours, especially for fractional targets.
+- **How to detect:** Verify a fractional target capped at 100% passes even when displayed `ceil(target_100 × 0.70)` exceeds the fractional cap; also verify aggregation across two session types.
 
 ---
 
@@ -1153,10 +1164,10 @@ These are implementation errors that would fail silently — no exception thrown
 
 ---
 
-#### ⚠️ Blind Spot 10: Using actual `r_year` instead of `'ALL'` for 22 programmes
+#### ⚠️ Blind Spot 10: Applying the wrong R-year configuration
 - **Where:** `compliance.py` — `teaching_name_catalogue` lookup; `ttf_parser.py` — target insertion
-- **Silent consequence:** Catalogue lookup returns zero results for 22 programmes. All compliance percentages show 0%. No error thrown.
-- **How to detect:** Unit test: create a GERI (r_year_required = false) resident with R3. Upload TTF with `r_year = 'ALL'`. Verify catalogue lookup succeeds.
+- **Silent consequence:** Catalogue lookup returns zero or wrong results for the 20 `ALL` programmes, or SPORTSMED/PALLMED are incorrectly stored as `ALL`/SS years.
+- **How to detect:** Verify GERI resolves through `ALL`, while SPORTSMED/PALLMED preserve and match R4, R5, and R6 with `is_subspecialty = false`.
 
 ---
 
@@ -1169,15 +1180,15 @@ These are implementation errors that would fail silently — no exception thrown
 
 #### ⚠️ Blind Spot 12: Ignoring `form_f1_records.is_active` gate
 - **Where:** `compliance.py` — active_months counting
-- **Silent consequence:** Inactive months included in denominator. Active_months inflated. Compliance percentages deflated for all residents with inactive months.
-- **How to detect:** Unit test: set a resident as Inactive for 2 of 6 months in FormF1. Verify `active_months = 4`, not 6. Verify attendance in inactive months excluded from numerator.
+- **Silent consequence:** Using raw event calendar month can apply two FormF1 states inside one AY bucket, inconsistently gating numerator and denominator.
+- **How to detect:** Use an AY `Jul-26` bucket ending 3 August. Verify 3 August uses July FormF1 for both numerator and denominator, while the next AY bucket uses August.
 
 ---
 
 #### ⚠️ Blind Spot 13: Writing ORTHO mutation to DB
 - **Where:** `compliance.py` or attendance submission endpoint
 - **Silent consequence:** Raw attendance data corrupted. Original session type and duration lost. If ORTHO changes policy, data migration needed instead of simple config change.
-- **How to detect:** Integration test: submit ORTHO Saturday attendance. Verify `attendance_records` row retains original session type. Verify compliance read returns mutated type. Verify DB row unchanged.
+- **How to detect:** Submit the exact 3h type and another ORTHO type. Verify only the exact type subtracts two end-time hours, projects to the 1h type, and is checked against Saturday 08:30–10:30; verify Sunday remains excluded and raw rows stay unchanged.
 
 ---
 
@@ -1197,27 +1208,27 @@ These are implementation errors that would fail silently — no exception thrown
 
 ## Section 9 — Things Not to Change Without PM/Stakeholder Approval
 
-| # | Rule / Decision | Why It Must Not Change | Who Approves | Where Implemented |
+| # | Rule / Decision | Why It Must Not Change | Who Approves | Specification location / planned module |
 |---|----------------|----------------------|-------------|-------------------|
-| 1 | 70% compliance threshold | Regulatory requirement | PM / Programme Director | `compliance.py` → `posting_compliance()` |
+| 1 | Unrounded posting percentage is the canonical 70% predicate; `target_70` is display-oriented | Regulatory requirement and fractional-target correctness | PM / Programme Director | `business-logic.md` BL-2; planned `compliance.py` |
 | 2 | Session counts as compliance unit (not hours) | Regulatory framework | PM / Programme Director | `compliance.py` — all counting logic |
 | 3 | Surplus resets at period boundary | PM-confirmed policy | PM | `surplus.py` — future final close/freeze surplus hibernation logic |
 | 4 | Tag-based reallocation sort: alphabetical by tag label | Matches R script; PC convention | PM | `surplus.py` → `reallocate_by_tag()` |
 | 5 | Reallocation is read-time only | Audit trail integrity | PM | `surplus.py` — never write back |
 | 6 | FormF1 as final active/inactive source | TBD-7 resolved | PM / Programme Director | `compliance.py` — `form_f1_records.is_active` gate |
-| 7 | `r_year = 'ALL'` sentinel for 22 programmes | Programme configuration | PM | `rdb_parser.py`, `ttf_parser.py`, `compliance.py` |
+| 7 | `ALL` for 20 programmes; SPORTSMED/PALLMED R4–R6 with no SS remap | Programme configuration | PM | `schema.md`, `parsing.md`, BL-11 |
 | 8 | `teaching_events.session_type_id` is display only | Cross-programme correctness | PM | Schema design; `compliance.py` ignores it |
 | 9 | TTF re-upload: warn, not 422 | PC workflow requirement | PM | `ttf_parser.py` — orphan detection |
 | 10 | Public holiday hard block (422) | Operational policy | PM | Event creation endpoints |
 | 11 | Posting codes from table only | Data integrity | PM | All code referencing posting codes |
 | 12 | Resident visibility gated by RDB upload | Logical necessity | PM | `GET /resident/events` |
 | 13 | `global_session_types` exclusion priority | Compliance correctness | PM | `compliance.py` BL-6 step 5 |
-| 14 | ORTHO mutation read-time only | Audit trail integrity | PM | `compliance.py` weekend exception handling |
+| 14 | Exact-type ORTHO adjusted-time Saturday mutation is read-time only | Audit trail and predicate correctness | PM | BL-5; `weekend_exceptions` specification |
 | 15 | `posting_groups` aggregation | Compliance correctness for grouped postings | PM | `compliance.py` group aggregation |
 | 16 | FM uses standard engine — no variant | R script audit confirmed | PM | `compliance.py` — no FM branch |
 | 17 | FM Saturday exception removed | PC confirmation | PM | `weekend_exceptions` seed data |
 | 18 | Hard legacy cutover | Operational decision | PM / Senior Management | System architecture |
-| 19 | Clawback tab: 5th tab, generated by future final close/freeze workflow | Reporting requirement | PM | `clawback.py`, admin dashboard |
+| 19 | Clawback financial/final-close contract remains deferred | Prevents invention of financial rules | PM / Finance | BL-10 deferred register |
 | 20 | Ad-hoc teaching uses catalogue-backed evidence and fixed NHG attribution to `Department/Programme Teaching [1h]` under assigned posting; no arbitrary free-text mapping | Policy decision | PM | BL-9; `POST /resident/adhoc-teaching` |
 | 21 | MCR-only resident auth (no password) | Intentional design choice | PM | `POST /auth/login` resident path |
 | 22 | Admin programme scope (TEXT[]) | Access control policy | PM | `users.programme_scope` |
@@ -1225,7 +1236,7 @@ These are implementation errors that would fail silently — no exception thrown
 | 24 | Duration embedded in session type name [Xh] | TTF format convention | PM | `parsing.md` — no separate column |
 | 25 | `posting_groups` independent from `multi_posting_rules` | Architectural separation | PM | Separate tables, separate usage contexts |
 | 26 | Weekend submission: stored + warning | Resident transparency policy | PM | `POST /resident/attendance` response |
-| 27 | Clawback suppressed rows shown (Extension, R7) | Senior management visibility | PM | `clawback_records` — all rows displayed |
+| 27 | Former fixed clawback suppression/display wording | Superseded; precedence and row behavior are deferred | PM / Finance | Deferred clawback register |
 | 28 | AY month bucketing via `academic_month_boundaries` + `programmes.ay_date_category` (ignore SR/SRs header wording) | Compliance month assignment correctness and parser stability across workbook header drift | PM / Programme Director | `parsing.md` AY Dates parser; `schema.md` programme/category + boundary tables; `business-logic.md` BL-5A |
 | 29 | Non-NHG resident workflow is Phase 5B before compliance, excluded from NHG compliance/clawback, and Excel-exportable for forwarding | Prevents accidental inclusion in NHG denominator/numerator and establishes forwarding workflow before Phase 6 | PM / Programme Director | Non-NHG resident auth/submission/export design |
 | 30 | Master admin must be explicit; never inferred from `programme_scope = NULL` | Access-control correctness and least-privilege integrity | PM / Security owner | `users` auth model and admin endpoint guards |
