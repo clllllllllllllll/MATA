@@ -49,7 +49,7 @@ Backend:
 - `backend/app/routers/auth.py` has `POST /auth/login` and `GET /auth/me`.
 - `backend/app/services/auth.py` issues `stub.<role>.<id>` tokens in stub/demo mode. In Supabase mode, staff sessions come from Supabase Auth and NHG/Non-NHG resident sessions use backend-signed MATA resident tokens.
 - `backend/app/routers/external_residents.py` and `backend/app/services/external_residents.py` already implement partial Non-NHG self-enrolment and posting update.
-- Phase 5B mapping infrastructure adds `programme_institution_posting_map` and one trusted resolver shared by registration options, registration, current-posting compatibility update, and schedule replacement. The infrastructure migration seeds all 28 TTSH mappings as `pending` with null posting codes; no programme, including GERI, is active yet.
+- Phase 5B mapping infrastructure adds `programme_institution_posting_map` and one trusted resolver shared by registration options, registration, current-posting compatibility update, and schedule replacement. The approved TTSH configuration contains 24 active mappings, four inactive/null mappings (`FM`, `PATH`, `SPORTSMED`, and `PALLMED`), and zero pending mappings. The inactive status applies only to Non-NHG registration and posting-schedule selection; it is not a global programme status.
 - The current Non-NHG service writes `external_residents` and `external_resident_postings`. Phase 5B posting schedule requirements supersede the older single-current-posting contract: authorization-sensitive event/ad-hoc derivation uses `external_resident_postings` by selected date, while `external_residents.current_nhg_posting_code` may remain a current/cache/backward-compatibility pointer.
 - `users.admin_level` is now the persisted explicit master marker with allowed values `programme` and `master`. Runtime admin context and staff actor audit metadata prefer `request.state.identity` when middleware provides it; direct-header fallback branches are limited to local stub/demo compatibility.
 - `backend/app/dependencies/auth.py` provides central typed identity helpers over `request.state.identity`.
@@ -352,7 +352,7 @@ Current Non-NHG registration:
 - Fields: name, MCR, home cluster, and posting schedule rows with date range, programme, and institution.
 - Enforces global MCR uniqueness server-side.
 - After registration, login remains MCR-only.
-- Current backend configuration returns TTSH and all 28 programmes, but every programme is pending/unavailable until the complete owner-approved mapping table arrives.
+- Current backend configuration returns TTSH with exactly 24 active programme choices. The inactive TTSH mappings for `FM`, `PATH`, `SPORTSMED`, and `PALLMED` are omitted from public Non-NHG registration options without changing those programmes elsewhere in MATA.
 - Loading, request error, no configured institutions, pending configuration, active availability, and submission validation are distinct UI states.
 
 Implemented Non-NHG posting schedule work:
@@ -362,8 +362,9 @@ Implemented Non-NHG posting schedule work:
 
 Phase 5B programme/institution mapping rollout:
 
-- **Stage 1 (implemented):** generic table/service/API/frontend infrastructure plus exactly 28 pending TTSH rows, zero active mappings, and zero non-null posting codes.
-- **Stage 2 (awaiting owner input):** receive one complete approved set of exactly 28 TTSH mappings and apply it through one separate all-or-nothing data-only Alembic migration. The migration must validate every programme, posting code, target row, duplicate, blank, and final count before committing. No GERI exception and no inferred/placeholder code is allowed.
+- **Stage 1 (implemented baseline):** generic table/service/API/frontend infrastructure plus exactly 28 pending/null TTSH rows.
+- **Stage 2 (approved state):** one validated all-or-nothing data-only Alembic migration sets 24 exact mappings active, sets `FM`, `PATH`, `SPORTSMED`, and `PALLMED` inactive with null posting codes, and leaves zero TTSH rows pending. `GERI + TTSH -> TTSHGerMed` is ordinary configuration data; no inferred/placeholder code or runtime exception is allowed.
+- The four inactive mappings restrict only Non-NHG programme/institution registration and posting-schedule selection. They do not change global programme availability or any native NHG Resident behavior.
 - External-registration mapping remains isolated from native teaching visibility, Secretary capabilities, event creation, and compliance attribution.
 
 ## Implementation TODOs

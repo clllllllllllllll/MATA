@@ -158,12 +158,14 @@ Authoritative configuration for resolving a Non-NHG Resident's selected programm
 - `inactive` rows may retain their prior posting code for audit/restoration and are omitted from public registration options.
 - Services trim and uppercase institution/programme codes and reject blanks or control characters. They never construct or infer posting codes.
 
-**Two-stage TTSH rollout:**
+**Two-stage TTSH rollout and current seeded state:**
 
 1. Stage 1 creates the generic table and seeds exactly one TTSH row for each of the 28 baseline programmes. Every row is `pending`, every `posting_code` is `NULL`, and no GERI exception exists.
-2. Stage 2 waits for one complete owner-approved list of exactly 28 TTSH mappings. One separate transactional data-only Alembic migration must validate the whole set before updating anything, then activate all 28 rows together.
+2. The approved Stage 2 data-only migration validates the complete 28-row baseline before updating anything, then sets exactly 24 rows to `active` with their approved posting codes and sets `FM`, `PATH`, `SPORTSMED`, and `PALLMED` to `inactive` with `posting_code = NULL`. Display order remains deterministic and consistent with programme seed order.
 
-The Stage 2 migration must reject duplicate/missing programme entries, blank or inferred posting codes, missing programme/posting FK targets, and missing TTSH mapping rows. After its update it must verify `active = 28`, `pending = 0`, and `posting_code IS NULL = 0`; any failure rolls back the whole migration. It must leave future KTPH, WH, and other institution rows untouched. No executable placeholder mapping list belongs in a migration and no manual production SQL is permitted.
+The Stage 2 migration must reject duplicate/missing mapping rows, programme entries, blank approved values, missing programme/posting FK targets, overlaps between the 24-code active set and four-code inactive set, or any union other than the exact 28-programme TTSH baseline. Posting codes are explicit approved values and are never inferred or validated by institution-name/prefix assumptions; more than one programme may validly target the same posting code because uniqueness is by `(programme_code, institution_code)`. After its update it must verify `active = 24`, `inactive = 4`, `pending = 0`, no active row has a null posting code, every active pair exactly matches the approved mapping, and no other institution row changed. Any failure rolls back the whole migration. No manual production SQL is permitted.
+
+The four inactive rows affect only Non-NHG registration and posting-schedule selection through this table. They do not change the corresponding `programmes` rows or disable `FM`, `PATH`, `SPORTSMED`, or `PALLMED` anywhere else in MATA.
 
 **Configuration isolation:** This table must never update or grant `programmes.native_teaching_posting_code`, `posting_codes.supports_secretary_events`, Secretary programme pools, native resident visibility, event-creation rights, or compliance posting attribution.
 
@@ -465,7 +467,7 @@ Confirmed Phase 5B source for Non-NHG forecasted/date-specific posting derivatio
 - Rows for the same `external_resident_id` must not overlap in date range. Enforce in service validation and preferably with a DB exclusion/constraint when migrations are added.
 - Gaps are allowed. Event/ad-hoc options for a date in a gap return unavailable/no posting for selected date.
 - Date ranges may cross calendar months.
-- Registration/update UI collects configured institutions and programmes from the public mapping-options endpoint. Current Stage 1 data exposes TTSH only; future KTPH/WH rows appear automatically. Storage keeps only the backend-resolved `posting_code` as the operational source.
+- Registration/update UI collects configured institutions and programmes from the public mapping-options endpoint. Current TTSH configuration exposes only the 24 active Non-NHG registration choices; the four inactive TTSH mappings for `FM`, `PATH`, `SPORTSMED`, and `PALLMED` are omitted. Future KTPH/WH rows appear automatically from configuration. Storage keeps only the backend-resolved `posting_code` as the operational source.
 - Current schema does not include `programme_code` or `institution` columns. Preferred implementation is to avoid storing them and derive display metadata from `posting_codes`/`programmes`; add planned audit/display metadata only if later requirements need it.
 
 ---

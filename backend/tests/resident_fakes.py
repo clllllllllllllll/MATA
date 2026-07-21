@@ -38,6 +38,40 @@ PROGRAMME_SEED_ROWS = (
     ("PALLMED", "Palliative Medicine"),
 )
 
+TTSH_ACTIVE_REGISTRATION_MAPPINGS = (
+    ("AIM", "TTSHGenMed"),
+    ("ANAES", "TTSHAnaes"),
+    ("CARDIO", "TTSHCardio"),
+    ("DERM", "NSCDermat"),
+    ("DR", "TTSHDiagRd"),
+    ("EM", "TTSHEmgMed"),
+    ("ENDO", "TTSHEndocr"),
+    ("ENT", "TTSHOtolar"),
+    ("EYE", "TTSHOphtha"),
+    ("GASTRO", "TTSHGas"),
+    ("GERI", "TTSHGerMed"),
+    ("GS", "TTSHGenSrg"),
+    ("ID", "TTSHInfect"),
+    ("IM", "TTSHGenMed"),
+    ("MEDONCO", "TTSHMedOnc"),
+    ("ORTHO", "TTSHOrtSrg"),
+    ("PSY", "TTSHPsychi"),
+    ("REHAB", "TTSHRehabi"),
+    ("RENAL", "TTSHRenal"),
+    ("RESPI", "TTSHRespir"),
+    ("RHEUM", "TTSHRheuma"),
+    ("SIG", "TTSHGenSrg"),
+    ("URO", "TTSHUrolog"),
+    ("MICROB", "TTSHLabMed"),
+)
+
+TTSH_INACTIVE_REGISTRATION_PROGRAMMES = (
+    "FM",
+    "PATH",
+    "SPORTSMED",
+    "PALLMED",
+)
+
 
 class FakeResult:
     def __init__(
@@ -173,6 +207,20 @@ class FakeResidentSession:
                 "supports_secretary_events": False,
             },
         ]
+        existing_posting_codes = {row["code"] for row in self.posting_codes}
+        self.posting_codes.extend(
+            {
+                "code": posting_code,
+                "display_name": posting_code,
+                "institution": None,
+                "supports_secretary_events": False,
+            }
+            for posting_code in dict.fromkeys(
+                posting_code
+                for _programme_code, posting_code in TTSH_ACTIVE_REGISTRATION_MAPPINGS
+            )
+            if posting_code not in existing_posting_codes
+        )
         self.programmes = [
             {
                 "code": "GRM",
@@ -190,13 +238,16 @@ class FakeResidentSession:
                 "native_teaching_posting_code": None,
             },
         ]
+        active_registration_mappings = dict(TTSH_ACTIVE_REGISTRATION_MAPPINGS)
         self.programme_institution_posting_map = [
             {
                 "id": str(uuid4()),
                 "programme_code": code,
                 "institution_code": "TTSH",
-                "posting_code": None,
-                "status": "pending",
+                "posting_code": active_registration_mappings.get(code),
+                "status": (
+                    "active" if code in active_registration_mappings else "inactive"
+                ),
                 "display_order": display_order,
             }
             for display_order, (code, _name) in enumerate(PROGRAMME_SEED_ROWS)
@@ -741,6 +792,18 @@ class FakeResidentSession:
                 ),
                 None,
             )
+            resolved_programme_code = (
+                programme["code"]
+                if programme is not None
+                else next(
+                    (
+                        code
+                        for code, _name in PROGRAMME_SEED_ROWS
+                        if code == mapping["programme_code"]
+                    ),
+                    None,
+                )
+            )
             posting = next(
                 (
                     row
@@ -754,7 +817,7 @@ class FakeResidentSession:
                     {
                         "status": mapping["status"],
                         "posting_code": mapping["posting_code"],
-                        "resolved_programme_code": programme["code"] if programme else None,
+                        "resolved_programme_code": resolved_programme_code,
                         "resolved_posting_code": posting["code"] if posting else None,
                     }
                 ]

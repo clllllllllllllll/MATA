@@ -11,10 +11,15 @@ from app.config import Settings
 from app.middleware.auth_stub import AuthIdentity, AuthStubMiddleware
 from app.middleware.errors import install_error_handlers
 from app.routers import external_residents
-from tests.resident_fakes import PROGRAMME_SEED_ROWS, FakeResidentSession
+from tests.resident_fakes import (
+    TTSH_ACTIVE_REGISTRATION_MAPPINGS,
+    TTSH_INACTIVE_REGISTRATION_PROGRAMMES,
+    FakeResidentSession,
+)
 
 
 MAPPING_PENDING_DETAIL = "Posting configuration for this programme is pending."
+MAPPING_INACTIVE_DETAIL = "Posting configuration for this programme is unavailable."
 MAPPING_MISSING_DETAIL = (
     "No posting configuration is available for this programme and institution."
 )
@@ -74,7 +79,7 @@ def _configure_mapping(
     *,
     programme_code: str = "GERI",
     institution_code: str = "TTSH",
-    posting_code: str | None = "TTSHCardio",
+    posting_code: str | None = "TTSHGerMed",
     status: str = "active",
 ) -> None:
     mapping = next(
@@ -219,9 +224,9 @@ def test_external_registration_creates_forecast_posting_schedule_rows() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["resident"]["current_nhg_posting_code"] == "TTSHCardio"
+    assert payload["resident"]["current_nhg_posting_code"] == "TTSHGerMed"
     assert [row["posting_code"] for row in payload["posting_schedule"]] == [
-        "TTSHCardio",
+        "TTSHGerMed",
         "KTPHGerMed",
     ]
     assert len(fake_db.external_resident_postings) == before + 2
@@ -281,7 +286,7 @@ def test_external_registration_resolution_is_independent_of_native_occupancy(
     assert fake_db.resident_postings == native_postings_before
 
 
-def test_external_registration_options_return_all_pending_ttsh_programmes() -> None:
+def test_external_registration_options_return_only_active_ttsh_programmes() -> None:
     fake_db = FakeResidentSession()
     response = _client(fake_db).get("/external-residents/registration-options")
 
@@ -289,20 +294,28 @@ def test_external_registration_options_return_all_pending_ttsh_programmes() -> N
     payload = response.json()
     assert payload["institutions"] == [{"code": "TTSH", "name": "TTSH"}]
     assert [row["programme_code"] for row in payload["programmes"]] == [
-        code for code, _name in PROGRAMME_SEED_ROWS
+        code for code, _posting_code in TTSH_ACTIVE_REGISTRATION_MAPPINGS
     ]
-    assert len(payload["programmes"]) == 28
+    assert len(payload["programmes"]) == 24
     assert all(
         row["institutions"]
         == [
             {
                 "institution_code": "TTSH",
-                "available": False,
-                "status": "pending",
+                "available": True,
+                "status": "active",
             }
         ]
         for row in payload["programmes"]
     )
+    assert not (
+        {row["programme_code"] for row in payload["programmes"]}
+        & set(TTSH_INACTIVE_REGISTRATION_PROGRAMMES)
+    )
+    geri = next(
+        row for row in payload["programmes"] if row["programme_code"] == "GERI"
+    )
+    assert geri["programme_name"] == "Geriatric Medicine"
     assert "posting_code" not in response.text
 
 
@@ -314,7 +327,7 @@ def test_external_registration_options_are_public_through_auth_middleware() -> N
     assert response.status_code == 200
     payload = response.json()
     assert payload["institutions"] == [{"code": "TTSH", "name": "TTSH"}]
-    assert len(payload["programmes"]) == 28
+    assert len(payload["programmes"]) == 24
 
 
 def test_external_registration_options_ignore_stale_bearer_header() -> None:
@@ -420,8 +433,8 @@ def test_external_registration_options_ignore_secretary_pool_metadata() -> None:
     assert geri_option["institutions"] == [
         {
             "institution_code": "TTSH",
-            "available": False,
-            "status": "pending",
+            "available": True,
+            "status": "active",
         }
     ]
 
@@ -712,8 +725,7 @@ def test_external_registration_does_not_use_ambiguous_secretary_pool_metadata() 
             "is_active": True,
         },
     )
-    residents_before = deepcopy(fake_db.external_residents)
-    postings_before = deepcopy(fake_db.external_resident_postings)
+    secretary_pools_before = deepcopy(fake_db.secretary_programme_pools)
     client = _client(fake_db)
 
     response = client.post(
@@ -733,10 +745,9 @@ def test_external_registration_does_not_use_ambiguous_secretary_pool_metadata() 
         },
     )
 
-    assert response.status_code == 422
-    assert response.json()["detail"] == MAPPING_PENDING_DETAIL
-    assert fake_db.external_residents == residents_before
-    assert fake_db.external_resident_postings == postings_before
+    assert response.status_code == 200
+    assert response.json()["posting_schedule"][0]["posting_code"] == "TTSHGerMed"
+    assert fake_db.secretary_programme_pools == secretary_pools_before
 
 
 def test_external_posting_update_closes_old_and_creates_new_current_row() -> None:
@@ -774,7 +785,7 @@ def test_external_posting_update_closes_old_and_creates_new_current_row() -> Non
 
 def test_external_posting_update_same_posting_is_idempotent() -> None:
     fake_db = FakeResidentSession()
-    _configure_mapping(fake_db)
+    _configure_mapping(fake_db, posting_code="TTSHCardio")
     before = len(fake_db.external_resident_postings)
     client = _client(
         fake_db,
@@ -836,9 +847,9 @@ def test_external_posting_schedule_update_replaces_rows() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["changed"] is True
-    assert payload["resident"]["current_nhg_posting_code"] == "TTSHCardio"
+    assert payload["resident"]["current_nhg_posting_code"] == "TTSHGerMed"
     assert [row["posting_code"] for row in payload["posting_schedule"]] == [
-        "TTSHCardio",
+        "TTSHGerMed",
         "KTPHGerMed",
     ]
     rows = [
@@ -846,10 +857,10 @@ def test_external_posting_schedule_update_replaces_rows() -> None:
         for row in fake_db.external_resident_postings
         if row["external_resident_id"] == fake_db.external_resident_id
     ]
-    assert [row["posting_code"] for row in rows] == ["TTSHCardio", "KTPHGerMed"]
+    assert [row["posting_code"] for row in rows] == ["TTSHGerMed", "KTPHGerMed"]
 
 
-def test_external_posting_schedule_update_rejects_unresolved_posting_without_deleting_rows() -> None:
+def test_external_posting_schedule_update_rejects_inactive_posting_without_deleting_rows() -> None:
     fake_db = FakeResidentSession()
     before = list(fake_db.external_resident_postings)
     client = _client(
@@ -868,7 +879,7 @@ def test_external_posting_schedule_update_rejects_unresolved_posting_without_del
                 {
                     "start_date": "2026-09-01",
                     "end_date": "2026-09-30",
-                    "programme_code": "DR",
+                    "programme_code": "FM",
                     "institution": "TTSH",
                 },
             ],
@@ -876,11 +887,11 @@ def test_external_posting_schedule_update_rejects_unresolved_posting_without_del
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == MAPPING_PENDING_DETAIL
+    assert response.json()["detail"] == MAPPING_INACTIVE_DETAIL
     assert fake_db.external_resident_postings == before
 
 
-def test_external_posting_schedule_update_ignores_secretary_pool_without_deleting_rows() -> None:
+def test_external_posting_schedule_update_ignores_secretary_pool_metadata() -> None:
     fake_db = FakeResidentSession()
     fake_db.secretary_programme_pools.append(
         {
@@ -889,7 +900,6 @@ def test_external_posting_schedule_update_ignores_secretary_pool_without_deletin
             "is_active": True,
         }
     )
-    before = list(fake_db.external_resident_postings)
     client = _client(
         fake_db,
         AuthIdentity(
@@ -913,9 +923,8 @@ def test_external_posting_schedule_update_ignores_secretary_pool_without_deletin
         },
     )
 
-    assert response.status_code == 422
-    assert response.json()["detail"] == MAPPING_PENDING_DETAIL
-    assert fake_db.external_resident_postings == before
+    assert response.status_code == 200
+    assert response.json()["posting_schedule"][0]["posting_code"] == "TTSHGerMed"
 
 
 def test_native_resident_cannot_update_external_posting() -> None:
@@ -938,20 +947,19 @@ def test_native_resident_cannot_update_external_posting() -> None:
 
 
 @pytest.mark.parametrize(
-    "programme_code",
-    [code for code, _name in PROGRAMME_SEED_ROWS],
+    ("programme_code", "expected_posting_code"),
+    TTSH_ACTIVE_REGISTRATION_MAPPINGS,
 )
-def test_every_seeded_ttsh_mapping_returns_controlled_pending_422(
+def test_every_active_ttsh_mapping_resolves_to_the_approved_posting(
     programme_code: str,
+    expected_posting_code: str,
 ) -> None:
     fake_db = FakeResidentSession()
-    residents_before = deepcopy(fake_db.external_residents)
-    postings_before = deepcopy(fake_db.external_resident_postings)
 
     response = _client(fake_db).post(
         "/external-residents/register",
         json={
-            "name": "Pending Mapping Resident",
+            "name": "Approved Mapping Resident",
             "mcr": f"TST{programme_code}9A"[:20],
             "home_cluster": "NUH",
             "posting_schedule": _registration_schedule(
@@ -960,36 +968,73 @@ def test_every_seeded_ttsh_mapping_returns_controlled_pending_422(
         },
     )
 
-    assert response.status_code == 422
-    assert response.json()["detail"] == MAPPING_PENDING_DETAIL
-    assert fake_db.external_residents == residents_before
-    assert fake_db.external_resident_postings == postings_before
+    assert response.status_code == 200
+    assert response.json()["posting_schedule"][0]["posting_code"] == (
+        expected_posting_code
+    )
 
 
-def test_inactive_mapping_is_omitted_from_options_and_rejected() -> None:
+@pytest.mark.parametrize(
+    "programme_code",
+    TTSH_INACTIVE_REGISTRATION_PROGRAMMES,
+)
+def test_inactive_mapping_is_omitted_from_options_and_registration_rejected(
+    programme_code: str,
+) -> None:
     fake_db = FakeResidentSession()
-    _configure_mapping(fake_db, status="inactive")
 
     options = _client(fake_db).get("/external-residents/registration-options")
     response = _client(fake_db).post(
         "/external-residents/register",
         json={
             "name": "Inactive Mapping Resident",
-            "mcr": "TSTINACTIVE1A",
+            "mcr": f"TST{programme_code}8A"[:20],
             "home_cluster": "NUH",
-            "posting_schedule": _registration_schedule(),
+            "posting_schedule": _registration_schedule(
+                programme_code=programme_code,
+            ),
         },
     )
 
     assert options.status_code == 200
     assert all(
-        row["programme_code"] != "GERI"
+        row["programme_code"] != programme_code
         for row in options.json()["programmes"]
     )
     assert response.status_code == 422
-    assert response.json()["detail"] == (
-        "Posting configuration for this programme is unavailable."
+    assert response.json()["detail"] == MAPPING_INACTIVE_DETAIL
+
+
+@pytest.mark.parametrize(
+    "programme_code",
+    TTSH_INACTIVE_REGISTRATION_PROGRAMMES,
+)
+def test_inactive_mapping_cannot_replace_posting_schedule(
+    programme_code: str,
+) -> None:
+    fake_db = FakeResidentSession()
+    before = deepcopy(fake_db.external_resident_postings)
+    client = _client(
+        fake_db,
+        AuthIdentity(
+            role="external_resident",
+            subject_id=fake_db.external_resident_id,
+            home_cluster="NUH",
+        ),
     )
+
+    response = client.put(
+        "/external-residents/me/posting-schedule",
+        json={
+            "posting_schedule": _registration_schedule(
+                programme_code=programme_code,
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == MAPPING_INACTIVE_DETAIL
+    assert fake_db.external_resident_postings == before
 
 
 def test_future_institutions_appear_from_mapping_data_only() -> None:
@@ -1031,7 +1076,34 @@ def test_future_institutions_appear_from_mapping_data_only() -> None:
     )
 
 
-def test_mixed_active_pending_registration_is_atomic() -> None:
+def test_future_pending_mapping_remains_unavailable() -> None:
+    fake_db = FakeResidentSession()
+    _configure_mapping(
+        fake_db,
+        programme_code="DR",
+        institution_code="WH",
+        posting_code=None,
+        status="pending",
+    )
+
+    response = _client(fake_db).post(
+        "/external-residents/register",
+        json={
+            "name": "Future Pending Mapping Resident",
+            "mcr": "TSTPENDING1A",
+            "home_cluster": "NUH",
+            "posting_schedule": _registration_schedule(
+                programme_code="DR",
+                institution="WH",
+            ),
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == MAPPING_PENDING_DETAIL
+
+
+def test_mixed_active_inactive_registration_is_atomic() -> None:
     fake_db = FakeResidentSession()
     _configure_mapping(fake_db)
     residents_before = deepcopy(fake_db.external_residents)
@@ -1053,7 +1125,7 @@ def test_mixed_active_pending_registration_is_atomic() -> None:
                 {
                     "start_date": "2026-10-01",
                     "end_date": "2026-10-31",
-                    "programme_code": "DR",
+                    "programme_code": "FM",
                     "institution": "TTSH",
                 },
             ],
@@ -1061,12 +1133,12 @@ def test_mixed_active_pending_registration_is_atomic() -> None:
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == MAPPING_PENDING_DETAIL
+    assert response.json()["detail"] == MAPPING_INACTIVE_DETAIL
     assert fake_db.external_residents == residents_before
     assert fake_db.external_resident_postings == postings_before
 
 
-def test_mixed_active_pending_schedule_replacement_keeps_prior_rows() -> None:
+def test_mixed_active_inactive_schedule_replacement_keeps_prior_rows() -> None:
     fake_db = FakeResidentSession()
     _configure_mapping(fake_db)
     before = deepcopy(fake_db.external_resident_postings)
@@ -1092,7 +1164,7 @@ def test_mixed_active_pending_schedule_replacement_keeps_prior_rows() -> None:
                 {
                     "start_date": "2026-10-01",
                     "end_date": "2026-10-31",
-                    "programme_code": "DR",
+                    "programme_code": "FM",
                     "institution": "TTSH",
                 },
             ]
@@ -1100,7 +1172,7 @@ def test_mixed_active_pending_schedule_replacement_keeps_prior_rows() -> None:
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == MAPPING_PENDING_DETAIL
+    assert response.json()["detail"] == MAPPING_INACTIVE_DETAIL
     assert fake_db.external_resident_postings == before
 
 
@@ -1130,12 +1202,17 @@ def test_client_cannot_include_posting_code_in_schedule_row() -> None:
     )
 
 
-def test_active_mapping_does_not_mutate_native_or_secretary_configuration() -> None:
+def test_active_mapping_does_not_mutate_native_secretary_or_compliance_configuration() -> None:
     fake_db = FakeResidentSession()
     native_programmes = deepcopy(fake_db.programmes)
     native_postings = deepcopy(fake_db.resident_postings)
     secretary_pools = deepcopy(fake_db.secretary_programme_pools)
     posting_codes = deepcopy(fake_db.posting_codes)
+    teaching_targets = deepcopy(fake_db.teaching_targets)
+    teaching_catalogue = deepcopy(fake_db.catalogue)
+    teaching_events = deepcopy(fake_db.events)
+    weekend_exceptions = deepcopy(fake_db.weekend_exceptions)
+    global_session_types = deepcopy(fake_db.global_session_types)
     _configure_mapping(fake_db)
 
     response = _client(fake_db).post(
@@ -1153,6 +1230,11 @@ def test_active_mapping_does_not_mutate_native_or_secretary_configuration() -> N
     assert fake_db.resident_postings == native_postings
     assert fake_db.secretary_programme_pools == secretary_pools
     assert fake_db.posting_codes == posting_codes
+    assert fake_db.teaching_targets == teaching_targets
+    assert fake_db.catalogue == teaching_catalogue
+    assert fake_db.events == teaching_events
+    assert fake_db.weekend_exceptions == weekend_exceptions
+    assert fake_db.global_session_types == global_session_types
 
 
 def test_embedded_control_character_in_mapping_input_is_rejected() -> None:

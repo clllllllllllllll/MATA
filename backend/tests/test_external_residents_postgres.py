@@ -16,11 +16,41 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.config import Settings
+from app.errors import ApiError
 from app.middleware.errors import install_error_handlers
 from app.routers import external_residents
 from app.schemas.external_resident import ExternalResidentPostingScheduleRow
 from app.services import external_residents as external_resident_service
-from app.errors import ApiError
+from app.services import programme_institution_posting
+
+
+APPROVED_TTSH_MAPPINGS = (
+    ("AIM", "TTSHGenMed"),
+    ("ANAES", "TTSHAnaes"),
+    ("CARDIO", "TTSHCardio"),
+    ("DERM", "NSCDermat"),
+    ("DR", "TTSHDiagRd"),
+    ("EM", "TTSHEmgMed"),
+    ("ENDO", "TTSHEndocr"),
+    ("ENT", "TTSHOtolar"),
+    ("EYE", "TTSHOphtha"),
+    ("GASTRO", "TTSHGas"),
+    ("GERI", "TTSHGerMed"),
+    ("GS", "TTSHGenSrg"),
+    ("ID", "TTSHInfect"),
+    ("IM", "TTSHGenMed"),
+    ("MEDONCO", "TTSHMedOnc"),
+    ("ORTHO", "TTSHOrtSrg"),
+    ("PSY", "TTSHPsychi"),
+    ("REHAB", "TTSHRehabi"),
+    ("RENAL", "TTSHRenal"),
+    ("RESPI", "TTSHRespir"),
+    ("RHEUM", "TTSHRheuma"),
+    ("SIG", "TTSHGenSrg"),
+    ("URO", "TTSHUrolog"),
+    ("MICROB", "TTSHLabMed"),
+)
+INACTIVE_TTSH_PROGRAMMES = ("FM", "PATH", "SPORTSMED", "PALLMED")
 
 
 class RollbackOnlyAsyncSession(AsyncSession):
@@ -62,24 +92,38 @@ async def postgres_external_registration_harness(
             transaction = await connection.begin()
             db = RollbackOnlyAsyncSession(bind=connection, expire_on_commit=False)
             try:
-                mapping_counts = await db.execute(
+                mapping_rows = await db.execute(
                     text(
                         """
-                        SELECT status, count(*) AS row_count,
-                               count(posting_code) AS posting_count
+                        SELECT programme_code, posting_code, status
                         FROM programme_institution_posting_map
                         WHERE institution_code = 'TTSH'
-                        GROUP BY status
+                        ORDER BY display_order
                         """
                     )
                 )
-                assert mapping_counts.mappings().all() == [
-                    {
-                        "status": "pending",
-                        "row_count": 28,
-                        "posting_count": 0,
-                    }
+                rows = mapping_rows.mappings().all()
+                active_rows = [
+                    (row["programme_code"], row["posting_code"])
+                    for row in rows
+                    if row["status"] == "active"
                 ]
+                inactive_rows = [
+                    (row["programme_code"], row["posting_code"])
+                    for row in rows
+                    if row["status"] == "inactive"
+                ]
+                assert len(rows) == 28
+                assert len(active_rows) == 24
+                assert len(inactive_rows) == 4
+                assert active_rows == list(APPROVED_TTSH_MAPPINGS)
+                assert inactive_rows == [
+                    (programme_code, None)
+                    for programme_code in INACTIVE_TTSH_PROGRAMMES
+                ]
+                assert not any(row["status"] == "pending" for row in rows)
+                assert dict(active_rows)["AIM"] == dict(active_rows)["IM"]
+                assert dict(active_rows)["GS"] == dict(active_rows)["SIG"]
 
                 await db.execute(
                     text(
@@ -215,31 +259,36 @@ async def test_seeded_registration_mapping_is_independent_of_native_occupancy_on
         "/external-residents/registration-options"
     )
     assert options_response.status_code == 200
+    options_payload = options_response.json()
+    assert options_payload["institutions"] == [{"code": "TTSH", "name": "TTSH"}]
+    assert [
+        option["programme_code"] for option in options_payload["programmes"]
+    ] == [programme_code for programme_code, _posting_code in APPROVED_TTSH_MAPPINGS]
+    assert all(
+        option["institutions"]
+        == [
+            {
+                "institution_code": "TTSH",
+                "available": True,
+                "status": "active",
+            }
+        ]
+        for option in options_payload["programmes"]
+    )
+    assert "posting_code" not in options_response.text
     geri_option = next(
         option
-        for option in options_response.json()["programmes"]
+        for option in options_payload["programmes"]
         if option["programme_code"] == "GERI"
     )
+    assert geri_option["programme_name"] == "Geriatric Medicine"
     assert geri_option["institutions"] == [
         {
             "institution_code": "TTSH",
-            "available": False,
-            "status": "pending",
+            "available": True,
+            "status": "active",
         }
     ]
-
-    await harness.db.execute(
-        text(
-            """
-            UPDATE programme_institution_posting_map
-            SET posting_code = 'TTSHGerMed',
-                status = 'active',
-                updated_at = now()
-            WHERE programme_code = 'GERI'
-              AND institution_code = 'TTSH'
-            """
-        )
-    )
 
     native_resident_count = await harness.db.scalar(text("SELECT count(*) FROM residents"))
     native_posting_count = await harness.db.scalar(text("SELECT count(*) FROM resident_postings"))
@@ -291,6 +340,25 @@ async def test_seeded_registration_mapping_is_independent_of_native_occupancy_on
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("programme_code", "expected_posting_code"),
+    APPROVED_TTSH_MAPPINGS,
+)
+async def test_each_approved_ttsh_pair_resolves_exactly_on_postgres(
+    postgres_external_registration_harness: PostgresExternalRegistrationHarness,
+    programme_code: str,
+    expected_posting_code: str,
+) -> None:
+    resolved = await programme_institution_posting.resolve_programme_institution_posting(
+        postgres_external_registration_harness.db,
+        programme_code=f" {programme_code.lower()} ",
+        institution_code=" ttsh ",
+    )
+
+    assert resolved == expected_posting_code
+
+
+@pytest.mark.asyncio
 async def test_mapping_constraints_are_enforced_on_postgres(
     postgres_external_registration_harness: PostgresExternalRegistrationHarness,
 ) -> None:
@@ -339,11 +407,13 @@ async def test_mapping_constraints_are_enforced_on_postgres(
 
 
 @pytest.mark.asyncio
-async def test_pending_registration_is_transactional_on_postgres(
+@pytest.mark.parametrize("programme_code", INACTIVE_TTSH_PROGRAMMES)
+async def test_inactive_registration_is_transactional_on_postgres(
     postgres_external_registration_harness: PostgresExternalRegistrationHarness,
+    programme_code: str,
 ) -> None:
     harness = postgres_external_registration_harness
-    mcr = f"TSTP{uuid4().hex[:10].upper()}"
+    mcr = f"TSTI{uuid4().hex[:9].upper()}"
     residents_before = await harness.db.scalar(
         text("SELECT count(*) FROM external_residents")
     )
@@ -354,14 +424,14 @@ async def test_pending_registration_is_transactional_on_postgres(
     response = await harness.client.post(
         "/external-residents/register",
         json={
-            "name": "Pending PostgreSQL Resident",
+            "name": "Inactive PostgreSQL Resident",
             "mcr": mcr,
             "home_cluster": "NUH",
             "posting_schedule": [
                 {
                     "start_date": "2026-09-01",
                     "end_date": "2026-09-30",
-                    "programme_code": "GERI",
+                    "programme_code": programme_code,
                     "institution": "TTSH",
                 }
             ],
@@ -370,7 +440,7 @@ async def test_pending_registration_is_transactional_on_postgres(
 
     assert response.status_code == 422
     assert response.json()["detail"] == (
-        "Posting configuration for this programme is pending."
+        "Posting configuration for this programme is unavailable."
     )
     assert await harness.db.scalar(
         text("SELECT count(*) FROM external_residents")
@@ -385,16 +455,6 @@ async def test_schedule_replacement_mixed_mapping_rolls_back_on_postgres(
     postgres_external_registration_harness: PostgresExternalRegistrationHarness,
 ) -> None:
     harness = postgres_external_registration_harness
-    await harness.db.execute(
-        text(
-            """
-            UPDATE programme_institution_posting_map
-            SET posting_code = 'TTSHGerMed', status = 'active'
-            WHERE programme_code = 'GERI'
-              AND institution_code = 'TTSH'
-            """
-        )
-    )
     mcr = f"TSTR{uuid4().hex[:10].upper()}"
     registration = await harness.client.post(
         "/external-residents/register",
@@ -442,12 +502,13 @@ async def test_schedule_replacement_mixed_mapping_rolls_back_on_postgres(
                 ExternalResidentPostingScheduleRow(
                     start_date=date(2026, 11, 1),
                     end_date=date(2026, 11, 30),
-                    programme_code="DR",
+                    programme_code="FM",
                     institution="TTSH",
                 ),
             ],
         )
     assert error.value.status_code == 422
+    assert error.value.detail == "Posting configuration for this programme is unavailable."
     current_rows = (
         await harness.db.execute(
             text(

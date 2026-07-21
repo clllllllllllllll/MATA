@@ -1769,13 +1769,13 @@ Return the public institutions and programme availability states from `programme
   ],
   "programmes": [
     {
-      "programme_code": "AIM",
-      "programme_name": "Advanced Internal Medicine",
+      "programme_code": "GERI",
+      "programme_name": "Geriatric Medicine",
       "institutions": [
         {
           "institution_code": "TTSH",
-          "available": false,
-          "status": "pending"
+          "available": true,
+          "status": "active"
         }
       ]
     }
@@ -1783,13 +1783,15 @@ Return the public institutions and programme availability states from `programme
 }
 ```
 
-Current Stage 1 response rules:
+Current TTSH response rules:
 
 - exactly one institution, TTSH;
-- all 28 seeded programmes in deterministic seed order;
-- every TTSH mapping has `available = false` and `status = pending`;
-- pending mappings remain visible but cannot be submitted;
-- inactive mappings are omitted;
+- exactly 24 programmes backed by active TTSH mapping rows, in deterministic programme seed order;
+- `programme_code` and `programme_name` come from `programmes.code` and `programmes.name`, so clients can display labels such as `GERI - Geriatric Medicine`;
+- every returned TTSH programme/institution entry has `available = true` and `status = active`;
+- the inactive TTSH mappings for `FM`, `PATH`, `SPORTSMED`, and `PALLMED` are omitted, and there are no pending TTSH mappings;
+- inactive here means unavailable only for Non-NHG programme/institution registration and posting-schedule selection, not global programme deactivation;
+- no `posting_code` appears anywhere in the public response;
 - no KTPH, WH, or other institution appears until mapping rows for it exist.
 
 The response is data-driven. Adding a future institution's rows makes it appear without application changes, and changing a valid mapping to `active` makes that pair available without frontend changes.
