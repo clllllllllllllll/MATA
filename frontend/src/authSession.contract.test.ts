@@ -896,32 +896,30 @@ assert(
   'Non-NHG submission portal uses the updated forwarding-only copy',
 )
 assert(
-  adminExternalAttendancePageSource.includes('secretary-event-metrics admin-resident-submissions-metrics external-attendance-metrics') &&
-    adminExternalAttendancePageSource.includes('resident-submissions-mobile-summary-card') &&
-    adminExternalAttendancePageSource.includes('resident-submissions-desktop-metric') &&
-    adminExternalAttendancePageSource.indexOf('label="Submitted"') < adminExternalAttendancePageSource.indexOf('label="Flagged"') &&
-    adminExternalAttendancePageSource.indexOf('label="Flagged"') < adminExternalAttendancePageSource.indexOf('label="Ad-hoc"') &&
-    !adminExternalAttendancePageSource.includes('label="Total"') &&
-    !adminExternalAttendancePageSource.includes('grid metrics-grid resident-submissions-metrics') &&
-    adminExternalAttendancePageSource.indexOf('external-attendance-filters') < adminExternalAttendancePageSource.indexOf('external-attendance-metrics'),
-  'Non-NHG Attendance metrics show Submitted / Flagged / Ad-hoc below filters without a Total card',
+  !adminExternalAttendancePageSource.includes('MetricTile') &&
+    !adminExternalAttendancePageSource.includes('external-attendance-metrics') &&
+    !adminExternalAttendancePageSource.includes('resident-submissions-mobile-summary-card') &&
+    !adminExternalAttendancePageSource.includes('summary.submittedCount') &&
+    adminExternalAttendancePageSource.indexOf('external-attendance-filters') < adminExternalAttendancePageSource.indexOf('external-attendance-table-card'),
+  'Non-NHG Attendance removes the Submitted / Flagged / Ad-hoc summary section and moves directly from filters to records',
 )
 assert(
-  adminExternalAttendancePageSource.includes('card filter-bar admin-resident-submissions-filters external-attendance-filters') &&
-    adminExternalAttendancePageSource.includes('admin-secretary-events-filter-actions external-attendance-filter-actions') &&
+  adminExternalAttendancePageSource.includes('card filter-bar pc-attendance-filter-card external-attendance-filters') &&
+    adminExternalAttendancePageSource.includes('pc-attendance-filter-actions external-attendance-filter-actions') &&
     adminExternalAttendancePageSource.indexOf('Status') < adminExternalAttendancePageSource.indexOf('Clear filters'),
-  'Non-NHG Attendance filters reuse admin filter styling with Clear filters aligned by Status',
+  'Non-NHG Attendance filters use the shared PC attendance presentation with Clear filters aligned by Status',
 )
 assert(
   adminExternalAttendancePageSource.includes('<StatusBadge tone="neutral" label={row.homeCluster} />') &&
-    !adminExternalAttendancePageSource.includes('<th>Status</th>') &&
-    !adminExternalAttendancePageSource.includes('StatusBadge tone={statusTone(row.status)}') &&
-    adminExternalAttendancePageSource.includes('admin-resident-submissions-table-card') &&
-    adminExternalAttendancePageSource.includes('admin-resident-submissions-table external-attendance-table') &&
+    adminExternalAttendancePageSource.includes('<th>Status</th>') &&
+    adminExternalAttendancePageSource.includes('StatusBadge tone={statusTone(row.status)}') &&
+    adminExternalAttendancePageSource.includes('pc-attendance-table-card external-attendance-table-card') &&
+    adminExternalAttendancePageSource.includes('pc-attendance-mobile-list external-attendance-mobile-list') &&
+    adminExternalAttendancePageSource.includes('table external-attendance-table') &&
     adminExternalAttendancePageSource.includes('secretary-event-title-cell') &&
     adminExternalAttendancePageSource.includes('secretary-event-stack') &&
     adminExternalAttendancePageSource.includes('secretary-event-source-cell'),
-  'Non-NHG Attendance table reuses resident submission styling and omits visible Status column/values',
+  'Non-NHG Attendance keeps home cluster/source detail and renders row Status in aligned table and mobile-card layouts',
 )
 assert(
   !adminResidentSubmissionsPageSource.includes('label="Submissions"') &&

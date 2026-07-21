@@ -126,6 +126,16 @@ assert(overviewSource.includes('No NHG residents found for the selected filters.
 assert(overviewSource.includes('Loading NHG residents...'))
 assert(overviewSource.includes('Retry'))
 assert(overviewSource.includes('Previous') && overviewSource.includes('Next'))
+assert(
+  overviewSource.indexOf('<th>Total attendance submissions</th>')
+    < overviewSource.indexOf('<th>Action</th>'),
+  'overview keeps distinct attendance-count and Action headers',
+)
+assert(
+  /\.pc-resident-attendance-overview-table th:nth-child\(6\),[\s\S]*?width: 220px;/.test(stylesSource)
+    && /\.pc-resident-attendance-overview-table th:nth-child\(7\),[\s\S]*?width: 180px;/.test(stylesSource),
+  'overview count and Action columns have independent usable widths',
+)
 
 assert(detailSource.includes('useParams<{ residentId: string }>()'))
 assert(detailSource.includes('Back to NHG Resident Attendance'))
@@ -154,6 +164,15 @@ for (const filter of [
 ]) {
   assert(detailSource.includes(filter), `detail exposes ${filter} filter`)
 }
+assert(detailSource.includes('Apply filters') && detailSource.includes('Clear filters'))
+assert(detailSource.includes('onSubmit={applyFilters}'))
+assert(detailSource.includes('onClick={clearFilters}'))
+assert(
+  stylesSource.includes('minmax(12rem, 1.2fr)')
+    && stylesSource.includes('minmax(13.5rem, auto)')
+    && stylesSource.includes('@media (max-width: 1380px)'),
+  'history filters use a compact single-row desktop grid with responsive wrapping',
+)
 
 for (const pageSource of [overviewSource, detailSource]) {
   assert(pageSource.includes('responsive-card-list'))
@@ -196,3 +215,24 @@ assert(
 
 assert(nonNhgSource.includes('title="Non-NHG Attendance"'))
 assert.equal(nonNhgSource.includes('PcResidentAttendancePage'), false)
+assert(nonNhgSource.includes('IconRefresh'))
+assert(nonNhgSource.includes('Export XLSX'))
+for (const filter of ['Start date', 'End date', 'Home cluster', 'Posting', 'MCR', 'Status']) {
+  assert(nonNhgSource.includes(filter), `Non-NHG Attendance retains ${filter}`)
+}
+assert(nonNhgSource.includes('pc-attendance-page external-attendance-page'))
+assert(nonNhgSource.includes('pc-attendance-filter-card external-attendance-filters'))
+assert(nonNhgSource.includes('pc-attendance-table-card external-attendance-table-card'))
+assert(nonNhgSource.includes('pc-attendance-mobile-list external-attendance-mobile-list'))
+assert(nonNhgSource.includes('Loading Non-NHG attendance...'))
+assert(nonNhgSource.includes('No Non-NHG attendance found.'))
+assert(nonNhgSource.includes('Retry'))
+assert(nonNhgSource.includes('<th>Status</th>'))
+assert(nonNhgSource.includes('StatusBadge tone={statusTone(row.status)}'))
+assert.equal(nonNhgSource.includes('MetricTile'), false)
+assert.equal(nonNhgSource.includes('external-attendance-metrics'), false)
+assert.equal(nonNhgSource.includes('resident-submissions-mobile-summary-card'), false)
+assert.equal(nonNhgSource.includes('summary.submittedCount'), false)
+assert.equal(/\b(Edit|Delete|Remove|Force delete)\b/.test(nonNhgSource), false)
+assert.equal(nonNhgSource.includes('target_70'), false)
+assert.equal(nonNhgSource.includes('target_100'), false)
