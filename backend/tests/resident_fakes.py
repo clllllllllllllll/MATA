@@ -286,6 +286,7 @@ class FakeResidentSession:
             {
                 "id": str(uuid4()),
                 "external_resident_id": self.external_resident_id,
+                "programme_code": "CARDIO",
                 "posting_code": "TTSHCardio",
                 "start_date": date(2026, 5, 1),
                 "end_date": None,
@@ -675,7 +676,23 @@ class FakeResidentSession:
                 and row["start_date"] <= end_date
                 and ((row.get("end_date") or date.max) >= start_date)
             ]
-            rows.sort(key=lambda row: (row["start_date"], row["posting_code"]))
+            if payload.get("posting_code") is not None:
+                rows = [
+                    row
+                    for row in rows
+                    if row["posting_code"] == payload["posting_code"]
+                ]
+            if "start_date > :today" in sql:
+                rows = [row for row in rows if row["start_date"] > payload["today"]]
+            if "is_current = true" in sql:
+                rows = [row for row in rows if row["is_current"] is True]
+            rows.sort(
+                key=lambda row: (
+                    row["start_date"],
+                    row["posting_code"],
+                    row.get("programme_code") or "",
+                )
+            )
             return FakeResult(rows=rows)
 
         if "SELECT supports_secretary_events" in sql and "FROM posting_codes" in sql:
@@ -1217,6 +1234,30 @@ class FakeResidentSession:
             ]
             return FakeResult(rows=rows[:1])
 
+        if "external_attendance_overlap_candidates" in sql:
+            rows = []
+            for attendance in self.external_attendance:
+                if (
+                    attendance["external_resident_id"]
+                    != str(payload.get("external_resident_id"))
+                    or attendance["status"] != "submitted"
+                    or attendance["teaching_event_id"] == str(payload.get("event_id"))
+                ):
+                    continue
+                existing = next(
+                    event
+                    for event in self.events
+                    if event["id"] == attendance["teaching_event_id"]
+                )
+                if existing["event_date"] == payload.get("event_date"):
+                    rows.append(
+                        {
+                            "start_time": existing["start_time"],
+                            "end_time": existing.get("end_time"),
+                        }
+                    )
+            return FakeResult(rows=rows)
+
         if "FROM external_attendance_records" in sql and "id = :attendance_id" in sql:
             rows = [
                 row
@@ -1354,6 +1395,7 @@ class FakeResidentSession:
             row = {
                 "id": str(uuid4()),
                 "external_resident_id": str(payload["external_resident_id"]),
+                "programme_code": payload.get("programme_code"),
                 "posting_code": payload["posting_code"],
                 "start_date": payload["start_date"],
                 "end_date": payload.get("end_date"),
@@ -1372,6 +1414,27 @@ class FakeResidentSession:
             return FakeResult(rowcount=before - len(self.external_resident_postings))
 
         if "UPDATE external_resident_postings" in sql:
+            if (
+                "SET posting_code = :posting_code" in sql
+                and "programme_code = :programme_code" in sql
+            ):
+                rows = []
+                for row in self.external_resident_postings:
+                    if row["id"] == str(payload["posting_id"]):
+                        row["posting_code"] = payload["posting_code"]
+                        row["programme_code"] = payload["programme_code"]
+                        rows.append(row)
+                return FakeResult(rows=rows, rowcount=len(rows))
+
+            if "WHERE id = :posting_id" in sql:
+                updated = 0
+                for row in self.external_resident_postings:
+                    if row["id"] == str(payload["posting_id"]):
+                        row["end_date"] = payload["end_date"]
+                        row["is_current"] = False
+                        updated += 1
+                return FakeResult(rowcount=updated)
+
             for row in self.external_resident_postings:
                 if (
                     row["external_resident_id"] == str(payload["external_resident_id"])

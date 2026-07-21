@@ -1824,7 +1824,7 @@ Self-register a Non-NHG/cross-cluster resident.
   4. Each schedule row must have `start_date <= end_date`; schedule rows must not overlap.
   5. Each schedule row resolves exactly one `active`, non-null canonical posting code from `programme_institution_posting_map`. The client must not send or choose `posting_code`.
   6. Pending, inactive, missing, malformed, or referentially invalid mapping rows return controlled `422` errors. Pending uses `Posting configuration for this programme is pending.` so the UI can distinguish configuration readiness from invalid user input.
-- **Writes:** `external_residents` plus one `external_resident_postings` row per resolved schedule row. Do not create `users`, native `residents`, or native `resident_postings` rows.
+- **Writes:** `external_residents` plus one `external_resident_postings` row per resolved schedule row. Each schedule row persists the validated `programme_code` and backend-resolved `posting_code`. Do not create `users`, native `residents`, or native `resident_postings` rows.
 - **Response convenience:** May return `current_nhg_posting_code` as today's derived/current posting for display/backward compatibility.
 - **Duplicate/conflict:** `409` when MCR already exists.
 - **Transactionality:** all schedule rows are resolved and validated before any insert. One unavailable row prevents creation of both the resident and all schedule rows.
@@ -1842,7 +1842,7 @@ Update the Non-NHG Resident's current NHG posting pointer through the trusted ma
 }
 ```
 - **Validation:** the normalized pair must have an active mapping with a valid canonical posting FK. Client-supplied posting codes are forbidden.
-- **Behaviour:** updates the authenticated Non-NHG Resident's current/cache pointer and current `external_resident_postings` row. No native `resident_postings` rows are created.
+- **Behaviour:** updates the authenticated Non-NHG Resident's current/cache pointer and current `external_resident_postings` row, preserving both the validated `programme_code` and resolved `posting_code`. No native `resident_postings` rows are created.
 
 ### PUT `/external-residents/me/posting-schedule`
 
@@ -1863,7 +1863,7 @@ Replace the authenticated Non-NHG Resident's date-specific NHG posting schedule.
 }
 ```
 - **Validation:** same schedule-row validation and trusted mapping resolution as registration. Pending/inactive/missing/malformed mappings return controlled `422`; the existing schedule remains unchanged.
-- **Behaviour:** replaces `external_resident_postings`, updates the current/cache pointer from the resolved schedule, and never creates native `resident_postings`.
+- **Behaviour:** replaces `external_resident_postings`, persists each validated `programme_code` with its resolved `posting_code`, updates the current/cache pointer from the resolved schedule, and never creates native `resident_postings`.
 
 The registration mapping is isolated from `programmes.native_teaching_posting_code`, `posting_codes.supports_secretary_events`, Secretary programme pools, native event visibility, and compliance attribution. Activating an external-registration mapping changes none of those capabilities.
 
@@ -1872,11 +1872,13 @@ The registration mapping is isolated from `programmes.native_teaching_posting_co
 The same route may support NHG and Non-NHG Residents through identity branching.
 
 - For native `role = resident`, use native Phase 5A behaviour from `resident_postings`.
-- For `role = external_resident`, derive date-specific posting from `external_resident_postings` for the event listing date/window. `external_residents.current_nhg_posting_code` may be used only as a current/cache/backward-compatibility pointer.
+- For `role = external_resident`, resolve the date-matching `external_resident_postings` row for each candidate event. That row's `programme_code` and `posting_code` are the authorization provenance; `external_residents.current_nhg_posting_code` may be used only as a current/cache/backward-compatibility pointer.
 - If no `external_resident_postings` row matches a requested date, return unavailable/no posting for that date.
-- If the posting's `posting_codes.supports_secretary_events = true`, return eligible secretary-created events for that posting.
+- If the posting's `posting_codes.supports_secretary_events = true`, return eligible Secretary-created events whose `posting_code` exactly matches the schedule row and whose `created_for_programme_code IS NULL`.
 - If `supports_secretary_events = false`, return no secretary-created event list but keep ad-hoc submission available in the frontend.
-- Programme-owned PC events (`created_for_programme_code IS NOT NULL`) are not shown to Non-NHG Residents unless a future explicit requirement defines external visibility for that host programme.
+- Return Programme PC-created events only when `event.posting_code = schedule.posting_code`, the schedule `programme_code` is non-null, and `event.created_for_programme_code = schedule.programme_code`. This PC-event source does not depend on `supports_secretary_events`.
+- Apply the exact match independently for every schedule row/date. Do not infer programme identity from posting-code prefixes, institution names, teaching targets, teaching-name catalogue rows, `programmes.native_teaching_posting_code`, fuzzy matching, or the first mapping row. AIM must not see IM events at shared `TTSHGenMed`; GS must not see SIG events at shared `TTSHGenSrg`.
+- Return normal scheduled events only. Exclude resident-created ad-hoc events, events outside the schedule date range or in a schedule gap, and events blocked by existing reporting-period or status rules.
 - Filter `event_date <= today`.
 - Exclude events already submitted by that Non-NHG Resident in `external_attendance_records`.
 - Do not apply native NHG compliance catalogue/denominator logic to Non-NHG Residents.
@@ -1885,7 +1887,9 @@ The same route may support NHG and Non-NHG Residents through identity branching.
 
 The same route may support NHG and Non-NHG Residents through identity branching.
 
-- For `role = external_resident`, validate the event belongs to the Non-NHG Resident's date-matched NHG posting.
+- For `role = external_resident`, authorize against the date-matched `external_resident_postings` row, not token claims or the current/cache pointer.
+- A Secretary-created event requires an exact posting match, `created_for_programme_code IS NULL`, and the existing Secretary capability, scheduled-event, reporting-period, status, duplicate, and overlap checks.
+- A Programme PC-created event requires exact posting and non-null programme matches: `event.posting_code = schedule.posting_code` and `event.created_for_programme_code = schedule.programme_code`. Another programme or posting returns controlled `422`; unresolved legacy schedule programme provenance never grants access. The same scheduled-event, reporting-period, status, duplicate, and overlap checks apply.
 - Create `external_attendance_records`, not native `attendance_records`.
 - Duplicate protected by `UNIQUE(external_resident_id, teaching_event_id)`.
 - Weekend non-exception attendance is stored and returns `compliance_warning`.

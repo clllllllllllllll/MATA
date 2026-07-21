@@ -83,6 +83,7 @@ def test_external_scheduled_attendance_supports_reopened_history_and_stays_exter
         {
             "id": str(uuid4()),
             "external_resident_id": fake_db.external_resident_id,
+            "programme_code": "CARDIO",
             "posting_code": "TTSHCardio",
             "start_date": historic_date,
             "end_date": historic_date,

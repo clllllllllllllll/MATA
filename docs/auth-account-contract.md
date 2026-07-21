@@ -26,7 +26,7 @@ References checked:
 - `programme_scope = NULL` or empty means no programme access.
 - Secretary scope is `posting_code`; Programme PC scope is `programme_scope`.
 - NHG Resident current posting is always derived server-side from `resident_postings` at request time.
-- Non-NHG Resident date-specific posting is not derived from native `resident_postings`; derive it from `external_resident_postings` where event/ad-hoc logic needs a selected date.
+- Non-NHG Resident date-specific programme and posting authorization is not derived from native `resident_postings` or token claims; derive both from the date-matching `external_resident_postings` row where event/ad-hoc logic needs a selected date.
 - Non-NHG programme/institution selection resolves only through `programme_institution_posting_map`. It must not reuse native teaching mappings, Secretary pools/capabilities, teaching targets, posting metadata, or constructed posting-code strings.
 - MATA external resident tokens must not carry current posting or posting schedule claims as trusted authorization data.
 - User-facing labels are NHG Resident and Non-NHG Resident. Existing backend/internal names such as `resident`, `external_resident`, `/external/*`, and `external_attendance_records` remain acceptable.
@@ -50,7 +50,7 @@ Backend:
 - `backend/app/services/auth.py` issues `stub.<role>.<id>` tokens in stub/demo mode. In Supabase mode, staff sessions come from Supabase Auth and NHG/Non-NHG resident sessions use backend-signed MATA resident tokens.
 - `backend/app/routers/external_residents.py` and `backend/app/services/external_residents.py` already implement partial Non-NHG self-enrolment and posting update.
 - Phase 5B mapping infrastructure adds `programme_institution_posting_map` and one trusted resolver shared by registration options, registration, current-posting compatibility update, and schedule replacement. The approved TTSH configuration contains 24 active mappings, four inactive/null mappings (`FM`, `PATH`, `SPORTSMED`, and `PALLMED`), and zero pending mappings. The inactive status applies only to Non-NHG registration and posting-schedule selection; it is not a global programme status.
-- The current Non-NHG service writes `external_residents` and `external_resident_postings`. Phase 5B posting schedule requirements supersede the older single-current-posting contract: authorization-sensitive event/ad-hoc derivation uses `external_resident_postings` by selected date, while `external_residents.current_nhg_posting_code` may remain a current/cache/backward-compatibility pointer.
+- The current Non-NHG service writes `external_residents` and `external_resident_postings`. Phase 5B posting schedule requirements supersede the older single-current-posting contract: each schedule row persists the validated programme and resolved posting, authorization-sensitive event/ad-hoc derivation uses that row by selected date, and `external_residents.current_nhg_posting_code` remains only a current/cache/backward-compatibility pointer.
 - `users.admin_level` is now the persisted explicit master marker with allowed values `programme` and `master`. Runtime admin context and staff actor audit metadata prefer `request.state.identity` when middleware provides it; direct-header fallback branches are limited to local stub/demo compatibility.
 - `backend/app/dependencies/auth.py` provides central typed identity helpers over `request.state.identity`.
 - As of 5B-B2, resident and secretary route contexts read central verified identity dependencies instead of raw route-level `X-*` headers.
@@ -133,7 +133,7 @@ Server behaviour:
 - After registration, use the same shared Resident MCR field and neutral `role = resident` request as NHG Residents. The backend returns `user.role = external_resident` when the unique active match is in `external_residents`.
 - In `AUTH_MODE=supabase`, do not create a Supabase Auth user for the external resident.
 - In `AUTH_MODE=supabase`, return a backend-signed MATA resident session token for `Authorization: Bearer <token>` on external resident API calls. The token is signed with server-only `MATA_RESIDENT_SESSION_SECRET`, uses a MATA issuer/audience distinct from Supabase Auth JWTs, and is accepted only for `role/app_role = external_resident`.
-- For authorization-sensitive reads, fetch `external_residents` and derive the date-specific posting from `external_resident_postings` where relevant. `/auth/me` may include display-only `current_posting_code` and `current_posting_label` resolved from today's `external_resident_postings` row first, then an effectively active reporting-period row, then the nearest future row, then the nearest recent past row. `external_residents.current_nhg_posting_code` may remain a cache/backward-compatibility pointer, but `/auth/me` must not fall back to it for shell scope.
+- For authorization-sensitive reads, fetch `external_residents` and derive the date-specific programme/posting pair from `external_resident_postings` where relevant. A Secretary event requires an exact schedule posting match and null programme owner; a Programme PC event requires exact schedule posting and programme-owner matches. `/auth/me` may include display-only `current_posting_code` and `current_posting_label` resolved from today's `external_resident_postings` row first, then an effectively active reporting-period row, then the nearest future row, then the nearest recent past row. `external_residents.current_nhg_posting_code` may remain a cache/backward-compatibility pointer, but `/auth/me` must not fall back to it for shell scope and no token programme claim is trusted.
 
 JWT/session claims:
 
@@ -357,6 +357,8 @@ Current Non-NHG registration:
 
 Implemented Non-NHG posting schedule work:
 - Schedule rows capture date range, programme code plus full programme name, and an institution supplied by the backend options response. Resolved posting code is backend-derived and is not requested or displayed in the registration form.
+- Each stored schedule row retains the validated `programme_code` as provenance alongside the resolved `posting_code`. Registration, schedule replacement, and the current-posting compatibility route preserve both values.
+- Legacy rows may retain a null programme only when authoritative mapping data cannot identify one unique value. Such rows fail closed for Programme PC-event visibility; shared postings such as AIM/IM `TTSHGenMed` and GS/SIG `TTSHGenSrg` are never resolved by first match or inference.
 - Rows validate date order, overlap, and mapping availability without string-generated or client-entered posting codes.
 - Future KTPH, WH, or other institutions require mapping data only; no frontend institution union or resolver branch exists.
 
@@ -435,7 +437,7 @@ Phase 5B programme/institution mapping rollout:
 - Supabase-mode protected routes accept verified MATA external resident tokens, reload active `external_residents` rows by `sub`, and ignore raw `X-User-*` headers.
 - `/auth/me` with a MATA external resident token returns external identity plus display-only current posting code/label when available, and omits `current_nhg_posting_code`, posting schedule, staff actor fields, trusted posting code claims, admin level, programme code, and programme scope.
 - Frontend Supabase mode uses the shared neutral MCR request, then stores, hydrates, transports, and logs out the resolved MATA token for both NHG and registered Non-NHG Resident sessions; staff calls still rely on the latest Supabase session token.
-- Non-NHG schedule rows, secretary-event visibility, ad-hoc submission, and admin/PC attendance export are implemented as recording/forwarding-only flows. NHG compliance, surplus, snapshots, and clawback remain excluded/deferred for Non-NHG Residents.
+- Non-NHG schedule rows, exact schedule-scoped Secretary/Programme PC event visibility and submission, ad-hoc submission, and admin/PC attendance export are implemented as recording/forwarding-only flows. Secretary events require the date-matched posting and a null event programme owner; PC events require exact date-matched posting and programme ownership. NHG compliance, surplus, snapshots, and clawback remain excluded/deferred for Non-NHG Residents.
 
 5B-F:
 - Complete Non-NHG resident submission parity where not already implemented.

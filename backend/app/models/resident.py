@@ -188,6 +188,14 @@ class ExternalResidentPosting(UUIDTimestampMixin, Base):
             "start_date",
             "end_date",
         ),
+        Index(
+            "idx_external_resident_postings_external_scope_dates",
+            "external_resident_id",
+            "posting_code",
+            "programme_code",
+            "start_date",
+            "end_date",
+        ),
     )
 
     external_resident_id: Mapped[UUID] = mapped_column(
@@ -198,6 +206,11 @@ class ExternalResidentPosting(UUIDTimestampMixin, Base):
         String(50),
         ForeignKey("posting_codes.code"),
         nullable=False,
+    )
+    programme_code: Mapped[str | None] = mapped_column(
+        String(20),
+        ForeignKey("programmes.code"),
+        nullable=True,
     )
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)

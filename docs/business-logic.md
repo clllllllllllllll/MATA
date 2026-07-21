@@ -679,7 +679,7 @@ Phase 5B must be completed before Phase 6 compliance calculation begins.
 No other `home_cluster` values are valid.
 
 **Forecast posting schedule:**
-Non-NHG registration captures a repeatable upcoming NHG postings schedule instead of one "current NHG posting" field. Each row captures `start_date`, `end_date`, `programme_code` displayed as code plus full programme name, an institution returned by the backend registration-options response, and a backend-resolved `posting_code` from `programme_institution_posting_map`.
+Non-NHG registration captures a repeatable upcoming NHG postings schedule instead of one "current NHG posting" field. Each row captures `start_date`, `end_date`, `programme_code` displayed as code plus full programme name, an institution returned by the backend registration-options response, and a backend-resolved `posting_code` from `programme_institution_posting_map`. Persist the validated `programme_code` and resolved `posting_code` together on each date-bounded `external_resident_postings` row; programme identity is schedule-row provenance, not a global field on `external_residents`.
 
 Rows are persisted in `external_resident_postings`. Rows for the same Non-NHG Resident must not overlap. Gaps are allowed; event/ad-hoc options for a date in a gap return unavailable/no posting for selected date. Date ranges may cross calendar months.
 
@@ -691,16 +691,21 @@ Never concatenate strings, infer an RDB code from a posting/institution name or 
 
 All schedule rows are resolved before registration or replacement writes begin. One unavailable row creates no external resident and no partial posting schedule; a failed replacement preserves the prior schedule.
 
+New registration, schedule replacement, and current-posting compatibility writes always preserve the validated programme on the schedule row. The database column remains nullable only for legacy rows that cannot be resolved safely. Backfill only when authoritative mapping data identifies exactly one programme; ambiguous shared postings such as `TTSHGenMed` (AIM/IM) and `TTSHGenSrg` (GS/SIG) remain null. Never select the first matching mapping, and never grant Programme PC-event visibility to a null-programme legacy row.
+
 **Current two-stage rollout:** Stage 1 established the generic mapping infrastructure and a 28-row pending/null TTSH safety baseline. The approved Stage 2 data-only migration produces exactly 24 active TTSH mappings, four inactive/null TTSH mappings (`FM`, `PATH`, `SPORTSMED`, and `PALLMED`), and zero pending TTSH mappings. Public Non-NHG registration options expose only the 24 active choices. The inactive status is scoped exclusively to Non-NHG programme/institution registration and schedule selection; it does not deactivate those programmes elsewhere in MATA. `GERI + TTSH` resolves through the same data-driven path to `TTSHGerMed`, with no runtime exception. KTPH, WH, and later institutions are discovered from future mapping rows without resolver or frontend branches.
 
 **Isolation:** This external-registration mapping does not set or consult `programmes.native_teaching_posting_code`, `posting_codes.supports_secretary_events`, Secretary programme pools, resident event visibility configuration, or compliance posting attribution. Those domains retain their own rules.
 
-**Secretary-created event visibility:**
-Use `posting_codes.supports_secretary_events` as the scalable capability flag:
-- `true` → external/native residents at that posting may see secretary-created event lists.
-- `false` → ad-hoc submission remains available, but no secretary-created list is expected.
+**Scheduled-event visibility and submission:**
+For each candidate event date, use the one `external_resident_postings` row whose date range covers that event. A gap produces no eligible event. The allowed scheduled-event sources are:
 
-Do not hardcode TTSH in service logic. Current TTSH pilot postings can be enabled by setting this flag in seed/config data; future hospitals such as KTPH can be onboarded the same way.
+1. **Department Secretary event:** `event.posting_code = schedule.posting_code` and `event.created_for_programme_code IS NULL`. `posting_codes.supports_secretary_events` must be true, and the normal scheduled-event, reporting-period, status, date, duplicate/submission, and other existing filters continue to apply.
+2. **Programme PC event:** the schedule `programme_code` must be present, `event.posting_code = schedule.posting_code`, and `event.created_for_programme_code = schedule.programme_code`. The normal scheduled-event, reporting-period, status, date, and duplicate/submission filters continue to apply. This source does not depend on the Secretary capability flag.
+
+Both listing and `POST /resident/attendance` enforce the same exact source rule. Exclude another programme's PC event even when it shares the posting, a matching-programme event at another posting, events outside a schedule range or in a gap, any resident ad-hoc event, and events already submitted by that Non-NHG Resident. Successful attendance writes only `external_attendance_records`.
+
+Do not hardcode TTSH or another institution in service logic. Never infer programme ownership from a posting-code prefix, institution name, teaching target, teaching-name catalogue row, `programmes.native_teaching_posting_code`, fuzzy match, or first mapping candidate. AIM and IM may share `TTSHGenMed`; GS and SIG may share `TTSHGenSrg`, so the persisted schedule programme is mandatory for PC-event authorization. Current TTSH pilot postings can enable Secretary listings through the capability flag; future hospitals such as KTPH can be onboarded through data.
 
 **Compliance exclusion:**
 Non-NHG Residents are excluded from all NHG compliance surfaces:
@@ -717,7 +722,7 @@ Non-NHG Residents are excluded from all NHG compliance surfaces:
 **Phase 6 guardrail:** Compliance reads native `attendance_records` only. It must never join `external_attendance_records`, even for reporting convenience.
 
 **Submission behaviour:**
-- Non-NHG Residents can submit attendance for eligible secretary-created events at their derived/date-matched NHG posting.
+- Non-NHG Residents can submit attendance for eligible Department Secretary events and exact-programme Programme PC events at their date-matched schedule posting.
 - Non-NHG Residents can submit ad-hoc teaching using the revised catalogue-backed dropdown model.
 - PH ad-hoc teaching is hard-blocked with `422`.
 - Weekend non-exception submissions are stored and return `compliance_warning`.

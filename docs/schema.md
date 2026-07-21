@@ -444,7 +444,7 @@ One row per Non-NHG/cross-cluster resident who self-registers to submit attendan
 
 **Compliance exclusion:** Non-NHG Residents are excluded from NHG compliance, NHG numerator/denominator, surplus, period snapshots, and clawback. Do not join this table into native compliance queries.
 
-**Non-NHG date-specific derivation:** `current_nhg_posting_code` is no longer the long-term sole source for Phase 5B event/ad-hoc option derivation. Once forecast posting schedule support is implemented, use the `external_resident_postings` row matching the selected event/ad-hoc date. If no row matches, return unavailable/no posting for selected date.
+**Non-NHG date-specific derivation:** `current_nhg_posting_code` is not an authorization source for Phase 5B event/ad-hoc derivation. Use the `external_resident_postings` row matching the selected event/ad-hoc date. If no row matches, return unavailable/no posting for selected date.
 
 **Implementation-pending external option fields:** Current models/migrations do not contain `attended_posting_code`. For Phase 5B, attended department/programme selection should resolve to a real `posting_codes.code` through validated lookup/config and can remain request/audit context until a dedicated storage field is approved. Do not create posting codes by concatenating strings or regex.
 
@@ -458,6 +458,7 @@ Confirmed Phase 5B source for Non-NHG forecasted/date-specific posting derivatio
 |--------|------|-------------|-------|
 | id | UUID | PK | |
 | external_resident_id | UUID | FK → external_residents.id, NOT NULL | |
+| programme_code | VARCHAR(20) | FK → programmes.code, nullable for legacy rows | Validated programme provenance for this date range. New registration, schedule-replacement, and compatibility writes always populate it. A null unresolved legacy value grants no Programme PC-event visibility. |
 | posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Resolved posting code only after backend validation against `posting_codes` and configured mapping from selected institution/programme/department. No string-derived codes. |
 | start_date | DATE | NOT NULL | |
 | end_date | DATE | nullable | |
@@ -467,8 +468,10 @@ Confirmed Phase 5B source for Non-NHG forecasted/date-specific posting derivatio
 - Rows for the same `external_resident_id` must not overlap in date range. Enforce in service validation and preferably with a DB exclusion/constraint when migrations are added.
 - Gaps are allowed. Event/ad-hoc options for a date in a gap return unavailable/no posting for selected date.
 - Date ranges may cross calendar months.
-- Registration/update UI collects configured institutions and programmes from the public mapping-options endpoint. Current TTSH configuration exposes only the 24 active Non-NHG registration choices; the four inactive TTSH mappings for `FM`, `PATH`, `SPORTSMED`, and `PALLMED` are omitted. Future KTPH/WH rows appear automatically from configuration. Storage keeps only the backend-resolved `posting_code` as the operational source.
-- Current schema does not include `programme_code` or `institution` columns. Preferred implementation is to avoid storing them and derive display metadata from `posting_codes`/`programmes`; add planned audit/display metadata only if later requirements need it.
+- Registration/update UI collects configured institutions and programmes from the public mapping-options endpoint. Current TTSH configuration exposes only the 24 active Non-NHG registration choices; the four inactive TTSH mappings for `FM`, `PATH`, `SPORTSMED`, and `PALLMED` are omitted. Future KTPH/WH rows appear automatically from configuration. Each stored row retains both the validated `programme_code` and backend-resolved `posting_code`; institution remains request/configuration context rather than duplicated schedule state.
+- A composite scope/date index on (`external_resident_id`, `posting_code`, `programme_code`, `start_date`, `end_date`) supports exact programme/posting authorization while retaining the existing resident/date lookup indexes.
+- A migration may backfill a legacy row only when its posting resolves to exactly one programme through authoritative mapping data. It must leave ambiguous rows null rather than pick the first candidate; `TTSHGenMed` may represent AIM or IM, and `TTSHGenSrg` may represent GS or SIG. Unique cases such as `TTSHGerMed` may be backfilled to GERI when the authoritative mapping data proves that resolution. Unrelated residents, schedules, and attendance remain unchanged.
+- For a date-matched schedule row, a Secretary-created scheduled event is eligible only when its `posting_code` matches and `created_for_programme_code IS NULL`, with the existing Secretary capability and event filters. A Programme PC-created scheduled event is eligible only when both its `posting_code` and `created_for_programme_code` exactly match the non-null schedule values. Never derive programme ownership from posting metadata or another domain.
 
 ---
 
@@ -1156,6 +1159,15 @@ ON external_resident_postings(external_resident_id, is_current);
 
 CREATE INDEX idx_external_resident_postings_external_dates
 ON external_resident_postings(external_resident_id, start_date, end_date);
+
+CREATE INDEX idx_external_resident_postings_external_scope_dates
+ON external_resident_postings(
+    external_resident_id,
+    posting_code,
+    programme_code,
+    start_date,
+    end_date
+);
 ```
 
 #### `external_attendance_records`
