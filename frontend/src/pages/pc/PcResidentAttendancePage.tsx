@@ -201,7 +201,7 @@ export const PcResidentAttendancePage = () => {
   )
 
   return (
-    <div className="page pc-resident-attendance-page">
+    <div className="page pc-attendance-page pc-resident-attendance-page">
       <PageHero
         title="NHG Resident Attendance"
         subtitle="Programme PC - read-only attendance history for residents in your assigned programmes"
@@ -218,7 +218,7 @@ export const PcResidentAttendancePage = () => {
         }
       />
 
-      <form className="card filter-bar pc-resident-attendance-filters" onSubmit={applyFilters}>
+      <form className="card filter-bar pc-attendance-filter-card pc-resident-attendance-filters" onSubmit={applyFilters}>
         <label>
           Resident name or MCR
           <input
@@ -322,8 +322,8 @@ export const PcResidentAttendancePage = () => {
       ) : null}
 
       {!error && visibleResidents.length > 0 ? (
-        <section className={`card pc-resident-attendance-table-card ${visibleLoading ? 'is-refetching' : ''}`}>
-          <div className="section-header pc-resident-attendance-list-header">
+        <section className={`card pc-attendance-table-card pc-resident-attendance-table-card ${visibleLoading ? 'is-refetching' : ''}`}>
+          <div className="section-header pc-attendance-list-header pc-resident-attendance-list-header">
             <div>
               <h2>NHG Residents</h2>
               <p>Attendance submissions are native NHG records only.</p>
@@ -369,16 +369,16 @@ export const PcResidentAttendancePage = () => {
           </div>
 
           <div
-            className="responsive-card-list pc-resident-attendance-mobile-list"
+            className="responsive-card-list pc-attendance-mobile-list pc-resident-attendance-mobile-list"
             aria-label="NHG resident attendance cards"
           >
             {visibleResidents.map((resident) => (
-              <article className="mobile-record-card pc-resident-attendance-card" key={resident.residentId}>
-                <div className="pc-resident-attendance-card-header">
+              <article className="mobile-record-card pc-attendance-record-card pc-resident-attendance-card" key={resident.residentId}>
+                <div className="pc-attendance-card-header pc-resident-attendance-card-header">
                   <strong className="safe-wrap">{resident.name}</strong>
                   <span className="mono">{resident.mcr}</span>
                 </div>
-                <dl className="pc-resident-attendance-card-details">
+                <dl className="pc-attendance-card-details pc-resident-attendance-card-details">
                   <div><dt>Programme</dt><dd>{resident.programmeCode}</dd></div>
                   <div><dt>R year</dt><dd>{resident.rYear ?? '-'}</dd></div>
                   <div><dt>Current posting</dt><dd>{displayCurrentPosting(resident)}</dd></div>

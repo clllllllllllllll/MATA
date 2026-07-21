@@ -6313,42 +6313,43 @@ button:disabled,
 }
 
 .external-attendance-table {
-  min-width: 1180px;
+  min-width: 1080px;
+  table-layout: fixed;
 }
 
 .external-attendance-table th:first-child,
 .external-attendance-table td:first-child {
-  width: 220px;
+  width: 185px;
 }
 
 .external-attendance-table th:nth-child(2),
 .external-attendance-table td:nth-child(2) {
-  width: 128px;
+  width: 120px;
 }
 
 .external-attendance-table th:nth-child(3),
 .external-attendance-table td:nth-child(3) {
-  width: 280px;
+  width: 240px;
 }
 
 .external-attendance-table th:nth-child(4),
 .external-attendance-table td:nth-child(4) {
-  width: 150px;
+  width: 135px;
 }
 
 .external-attendance-table th:nth-child(5),
 .external-attendance-table td:nth-child(5) {
-  width: 220px;
+  width: 180px;
 }
 
 .external-attendance-table th:nth-child(6),
 .external-attendance-table td:nth-child(6) {
-  width: 130px;
+  width: 115px;
 }
 
 .external-attendance-table th:last-child,
 .external-attendance-table td:last-child {
-  width: 120px;
+  width: 105px;
   padding-left: 12px;
   padding-right: 16px;
   text-align: left;
@@ -6520,12 +6521,13 @@ button:disabled,
   }
 }
 
-@media (max-width: 1120px) {
-
+@media (max-width: 1240px) {
   .external-attendance-filters {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
 
+@media (max-width: 1120px) {
   .secretary-event-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -8094,10 +8096,26 @@ button:disabled,
   }
 }
 
-/* Programme PC native NHG resident attendance */
+/* Programme PC attendance pages */
+.pc-attendance-page,
 .pc-resident-attendance-page,
 .pc-resident-attendance-detail-page {
   min-width: 0;
+}
+
+.pc-attendance-hero-actions,
+.pc-attendance-filter-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.pc-attendance-hero-actions .button,
+.pc-attendance-filter-actions .button {
+  white-space: nowrap;
 }
 
 .pc-resident-attendance-filters {
@@ -8105,7 +8123,14 @@ button:disabled,
 }
 
 .pc-resident-attendance-history-filters {
-  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  grid-template-columns:
+    minmax(12rem, 1.2fr)
+    minmax(8rem, 0.75fr)
+    repeat(2, minmax(8.25rem, 0.8fr))
+    repeat(2, minmax(8rem, 0.72fr))
+    minmax(13.5rem, auto);
+  gap: 10px;
+  padding: 14px 16px;
 }
 
 .pc-resident-attendance-filter-actions,
@@ -8123,31 +8148,47 @@ button:disabled,
   white-space: nowrap;
 }
 
+.pc-resident-attendance-history-filters .pc-resident-attendance-filter-actions {
+  justify-content: flex-start;
+  flex-wrap: nowrap;
+}
+
+.pc-resident-attendance-history-filters .pc-resident-attendance-filter-actions .button {
+  min-width: 6.25rem;
+}
+
+.pc-attendance-table-card,
 .pc-resident-attendance-table-card {
   min-width: 0;
   overflow: hidden;
 }
 
+.pc-attendance-table-card .table-scroll,
 .pc-resident-attendance-table-card .table-scroll {
   transition: opacity 140ms ease;
 }
 
+.pc-attendance-table-card.is-refetching .table-scroll,
+.pc-attendance-table-card.is-refetching .pc-attendance-mobile-list,
 .pc-resident-attendance-table-card.is-refetching .table-scroll,
 .pc-resident-attendance-table-card.is-refetching .pc-resident-attendance-mobile-list {
   opacity: 0.7;
 }
 
+.pc-attendance-list-header,
 .pc-resident-attendance-list-header {
   align-items: flex-start;
   padding-bottom: 12px;
 }
 
+.pc-attendance-list-header > div,
 .pc-resident-attendance-list-header > div {
   display: grid;
   gap: 4px;
   min-width: 0;
 }
 
+.pc-attendance-list-header p,
 .pc-resident-attendance-list-header p {
   margin: 0;
   color: var(--ink-3);
@@ -8155,40 +8196,42 @@ button:disabled,
 }
 
 .pc-resident-attendance-overview-table {
-  min-width: 1040px;
+  min-width: 1100px;
   table-layout: fixed;
 }
 
 .pc-resident-attendance-overview-table th:first-child,
 .pc-resident-attendance-overview-table td:first-child {
-  width: 190px;
+  width: 180px;
 }
 
 .pc-resident-attendance-overview-table th:nth-child(2),
 .pc-resident-attendance-overview-table td:nth-child(2) {
-  width: 120px;
+  width: 115px;
 }
 
 .pc-resident-attendance-overview-table th:nth-child(3),
 .pc-resident-attendance-overview-table td:nth-child(3),
 .pc-resident-attendance-overview-table th:nth-child(4),
 .pc-resident-attendance-overview-table td:nth-child(4) {
-  width: 110px;
+  width: 105px;
 }
 
 .pc-resident-attendance-overview-table th:nth-child(5),
 .pc-resident-attendance-overview-table td:nth-child(5) {
-  width: 210px;
+  width: 195px;
 }
 
 .pc-resident-attendance-overview-table th:nth-child(6),
 .pc-resident-attendance-overview-table td:nth-child(6) {
-  width: 155px;
+  width: 220px;
   text-align: center;
 }
 
+.pc-resident-attendance-overview-table th:nth-child(7),
+.pc-resident-attendance-overview-table td:nth-child(7),
 .pc-resident-attendance-action-cell {
-  width: 170px;
+  width: 180px;
   text-align: right;
 }
 
@@ -8258,11 +8301,13 @@ button:disabled,
 }
 
 .pc-resident-attendance-summary dl > div,
+.pc-attendance-card-details > div,
 .pc-resident-attendance-card-details > div {
   min-width: 0;
 }
 
 .pc-resident-attendance-summary dt,
+.pc-attendance-card-details dt,
 .pc-resident-attendance-card-details dt {
   color: var(--ink-3);
   font-size: 10.5px;
@@ -8272,6 +8317,7 @@ button:disabled,
 }
 
 .pc-resident-attendance-summary dd,
+.pc-attendance-card-details dd,
 .pc-resident-attendance-card-details dd {
   margin: 4px 0 0;
   color: var(--ink);
@@ -8280,14 +8326,17 @@ button:disabled,
   overflow-wrap: anywhere;
 }
 
+.pc-attendance-mobile-list,
 .pc-resident-attendance-mobile-list {
   display: none;
 }
 
+.pc-attendance-record-card,
 .pc-resident-attendance-card {
   gap: 10px;
 }
 
+.pc-attendance-card-header,
 .pc-resident-attendance-card-header {
   display: flex;
   align-items: flex-start;
@@ -8296,6 +8345,7 @@ button:disabled,
   min-width: 0;
 }
 
+.pc-attendance-card-details,
 .pc-resident-attendance-card-details {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -8310,8 +8360,32 @@ button:disabled,
   overflow-wrap: anywhere;
 }
 
+.external-attendance-card-teaching {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.external-attendance-card-teaching strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
 .pc-resident-attendance-pagination {
   min-width: 0;
+}
+
+@media (max-width: 1380px) {
+  .pc-resident-attendance-history-filters {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .pc-resident-attendance-history-filters .pc-resident-attendance-filter-actions {
+    grid-column: span 2;
+  }
 }
 
 @media (max-width: 1000px) {
@@ -8334,6 +8408,8 @@ button:disabled,
   }
 
   .pc-resident-attendance-filter-actions,
+  .pc-attendance-filter-actions,
+  .pc-attendance-hero-actions,
   .pc-resident-attendance-hero-actions {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -8341,6 +8417,8 @@ button:disabled,
   }
 
   .pc-resident-attendance-filter-actions .button,
+  .pc-attendance-filter-actions .button,
+  .pc-attendance-hero-actions .button,
   .pc-resident-attendance-hero-actions .button {
     width: 100%;
   }
@@ -8354,14 +8432,20 @@ button:disabled,
     gap: 10px;
   }
 
+  .pc-attendance-table-card .table-scroll,
   .pc-resident-attendance-table-card .table-scroll {
     display: none;
   }
 
+  .pc-attendance-mobile-list,
   .pc-resident-attendance-mobile-list {
     display: grid;
     gap: 8px;
     padding: 0 12px 12px;
+  }
+
+  .pc-resident-attendance-history-filters .pc-resident-attendance-filter-actions {
+    grid-column: 1 / -1;
   }
 
   .pc-resident-attendance-view-link {
@@ -8380,6 +8464,7 @@ button:disabled,
 }
 
 @media (max-width: 390px) {
+  .pc-attendance-card-details,
   .pc-resident-attendance-card-details {
     grid-template-columns: minmax(0, 1fr);
   }

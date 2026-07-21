@@ -257,12 +257,12 @@ export const PcResidentAttendanceDetailPage = () => {
     : 'Read-only NHG Resident attendance history'
 
   return (
-    <div className="page pc-resident-attendance-detail-page">
+    <div className="page pc-attendance-page pc-resident-attendance-detail-page">
       <PageHero
         title={visibleResident?.name ?? 'Resident attendance'}
         subtitle={residentSubtitle}
         actions={
-          <div className="pc-resident-attendance-hero-actions">
+          <div className="pc-attendance-hero-actions pc-resident-attendance-hero-actions">
             <Link className="button button-secondary" to={pcResidentAttendanceOverviewPath}>
               Back to NHG Resident Attendance
             </Link>
@@ -311,7 +311,7 @@ export const PcResidentAttendanceDetailPage = () => {
             </dl>
           </section>
 
-          <form className="card filter-bar pc-resident-attendance-history-filters" onSubmit={applyFilters}>
+          <form className="card filter-bar pc-attendance-filter-card pc-resident-attendance-history-filters" onSubmit={applyFilters}>
             <label>
               Reporting period
               <select
@@ -427,8 +427,8 @@ export const PcResidentAttendanceDetailPage = () => {
           ) : null}
 
           {visibleAttendance.length > 0 ? (
-            <section className={`card pc-resident-attendance-table-card ${visibleLoading ? 'is-refetching' : ''}`}>
-              <div className="section-header pc-resident-attendance-list-header">
+            <section className={`card pc-attendance-table-card pc-resident-attendance-table-card ${visibleLoading ? 'is-refetching' : ''}`}>
+              <div className="section-header pc-attendance-list-header pc-resident-attendance-list-header">
                 <div>
                   <h2>Attendance history</h2>
                   <p>Read-only native attendance submissions.</p>
@@ -477,17 +477,17 @@ export const PcResidentAttendanceDetailPage = () => {
               </div>
 
               <div
-                className="responsive-card-list pc-resident-attendance-mobile-list"
+                className="responsive-card-list pc-attendance-mobile-list pc-resident-attendance-mobile-list"
                 aria-label="Resident attendance history cards"
               >
                 {visibleAttendance.map((row) => (
                   <article
-                    className={`mobile-record-card pc-resident-attendance-card ${
+                    className={`mobile-record-card pc-attendance-record-card pc-resident-attendance-card ${
                       row.status.toLowerCase() === 'removed' ? 'is-removed' : ''
                     }`}
                     key={row.attendanceId}
                   >
-                    <div className="pc-resident-attendance-card-header">
+                    <div className="pc-attendance-card-header pc-resident-attendance-card-header">
                       <strong className="safe-wrap">{row.teachingName}</strong>
                       <StatusBadge
                         label={attendanceStatusLabel(row.status)}
@@ -497,7 +497,7 @@ export const PcResidentAttendanceDetailPage = () => {
                     {row.detailsOfSession ? (
                       <p className="pc-resident-attendance-card-note">{row.detailsOfSession}</p>
                     ) : null}
-                    <dl className="pc-resident-attendance-card-details">
+                    <dl className="pc-attendance-card-details pc-resident-attendance-card-details">
                       <div><dt>Date</dt><dd>{formatAttendanceDate(row.eventDate)}</dd></div>
                       <div><dt>Time</dt><dd>{formatAttendanceTimeRange(row.startTime, row.endTime)}</dd></div>
                       <div><dt>Posting</dt><dd>{displayAttendancePosting(row)}</dd></div>
