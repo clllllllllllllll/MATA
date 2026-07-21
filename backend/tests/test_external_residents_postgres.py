@@ -315,6 +315,7 @@ async def test_seeded_registration_mapping_is_independent_of_native_occupancy_on
     payload = response.json()
     assert payload["resident"]["current_nhg_posting_code"] == "TTSHGerMed"
     assert payload["posting_schedule"][0]["posting_code"] == "TTSHGerMed"
+    assert payload["posting_schedule"][0]["programme_code"] == "GERI"
     assert await harness.db.scalar(text("SELECT count(*) FROM residents")) == native_resident_count
     assert (
         await harness.db.scalar(text("SELECT count(*) FROM resident_postings"))
@@ -333,10 +334,526 @@ async def test_seeded_registration_mapping_is_independent_of_native_occupancy_on
               ON er.id = erp.external_resident_id
             WHERE er.mcr = :mcr
               AND erp.posting_code = 'TTSHGerMed'
+              AND erp.programme_code = 'GERI'
             """
         ),
         {"mcr": mcr},
     ) == 1
+
+
+@pytest.mark.asyncio
+async def test_schedule_replacement_persists_each_validated_programme_on_postgres(
+    postgres_external_registration_harness: PostgresExternalRegistrationHarness,
+) -> None:
+    harness = postgres_external_registration_harness
+    registration = await harness.client.post(
+        "/external-residents/register",
+        json={
+            "name": "Programme schedule replacement resident",
+            "mcr": f"TSTP{uuid4().hex[:10].upper()}",
+            "home_cluster": "NUH",
+            "posting_schedule": [
+                {
+                    "start_date": "2026-08-01",
+                    "end_date": "2026-08-31",
+                    "programme_code": "GERI",
+                    "institution": "TTSH",
+                }
+            ],
+        },
+    )
+    assert registration.status_code == 200
+    resident_id = registration.json()["resident"]["id"]
+
+    replacement = await external_resident_service.replace_my_posting_schedule(
+        harness.db,
+        external_resident_id=resident_id,
+        posting_schedule=[
+            ExternalResidentPostingScheduleRow(
+                start_date=date(2026, 9, 1),
+                end_date=date(2026, 9, 30),
+                programme_code=" aim ",
+                institution=" ttsh ",
+            ),
+            ExternalResidentPostingScheduleRow(
+                start_date=date(2026, 10, 1),
+                end_date=date(2026, 10, 31),
+                programme_code=" sig ",
+                institution=" ttsh ",
+            ),
+        ],
+        today=date(2026, 9, 15),
+    )
+
+    assert [row["programme_code"] for row in replacement["posting_schedule"]] == [
+        "AIM",
+        "SIG",
+    ]
+    persisted_rows = (
+        await harness.db.execute(
+            text(
+                """
+                SELECT programme_code, posting_code, start_date, end_date
+                FROM external_resident_postings
+                WHERE external_resident_id = :resident_id
+                ORDER BY start_date
+                """
+            ),
+            {"resident_id": resident_id},
+        )
+    ).mappings().all()
+    assert [
+        (row["programme_code"], row["posting_code"])
+        for row in persisted_rows
+    ] == [
+        ("AIM", "TTSHGenMed"),
+        ("SIG", "TTSHGenSrg"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_registration_marks_exact_shared_posting_schedule_row_current(
+    postgres_external_registration_harness: PostgresExternalRegistrationHarness,
+) -> None:
+    harness = postgres_external_registration_harness
+    registration = await external_resident_service.register_external_resident(
+        harness.db,
+        name="Shared current registration resident",
+        mcr=f"TSTC{uuid4().hex[:10].upper()}",
+        home_cluster="NUH",
+        posting_schedule=[
+            ExternalResidentPostingScheduleRow(
+                start_date=date(2026, 7, 1),
+                end_date=date(2026, 7, 15),
+                programme_code="AIM",
+                institution="TTSH",
+            ),
+            ExternalResidentPostingScheduleRow(
+                start_date=date(2026, 7, 16),
+                end_date=date(2026, 7, 31),
+                programme_code="IM",
+                institution="TTSH",
+            ),
+        ],
+        today=date(2026, 7, 20),
+    )
+
+    assert registration["resident"]["current_nhg_posting_code"] == "TTSHGenMed"
+    assert registration["posting_history"]["programme_code"] == "IM"
+    assert [row["posting_code"] for row in registration["posting_schedule"]] == [
+        "TTSHGenMed",
+        "TTSHGenMed",
+    ]
+    assert [row["programme_code"] for row in registration["posting_schedule"]] == [
+        "AIM",
+        "IM",
+    ]
+    assert [row["is_current"] for row in registration["posting_schedule"]] == [
+        False,
+        True,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_replacement_marks_exact_shared_posting_schedule_row_current(
+    postgres_external_registration_harness: PostgresExternalRegistrationHarness,
+) -> None:
+    harness = postgres_external_registration_harness
+    registration = await external_resident_service.register_external_resident(
+        harness.db,
+        name="Shared current replacement resident",
+        mcr=f"TSTU{uuid4().hex[:10].upper()}",
+        home_cluster="NUH",
+        posting_schedule=[
+            ExternalResidentPostingScheduleRow(
+                start_date=date(2026, 6, 1),
+                end_date=date(2026, 6, 30),
+                programme_code="GERI",
+                institution="TTSH",
+            )
+        ],
+        today=date(2026, 6, 15),
+    )
+    resident_id = registration["resident"]["id"]
+
+    replacement = await external_resident_service.replace_my_posting_schedule(
+        harness.db,
+        external_resident_id=resident_id,
+        posting_schedule=[
+            ExternalResidentPostingScheduleRow(
+                start_date=date(2026, 7, 1),
+                end_date=date(2026, 7, 15),
+                programme_code="GS",
+                institution="TTSH",
+            ),
+            ExternalResidentPostingScheduleRow(
+                start_date=date(2026, 7, 16),
+                end_date=date(2026, 7, 31),
+                programme_code="SIG",
+                institution="TTSH",
+            ),
+        ],
+        today=date(2026, 7, 20),
+    )
+
+    assert replacement["resident"]["current_nhg_posting_code"] == "TTSHGenSrg"
+    assert [row["posting_code"] for row in replacement["posting_schedule"]] == [
+        "TTSHGenSrg",
+        "TTSHGenSrg",
+    ]
+    assert [row["programme_code"] for row in replacement["posting_schedule"]] == [
+        "GS",
+        "SIG",
+    ]
+    assert [row["is_current"] for row in replacement["posting_schedule"]] == [
+        False,
+        True,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_registration_schedule_gap_prefers_nearest_future_row(
+    postgres_external_registration_harness: PostgresExternalRegistrationHarness,
+) -> None:
+    harness = postgres_external_registration_harness
+    registration = await external_resident_service.register_external_resident(
+        harness.db,
+        name="Gap fallback resident",
+        mcr=f"TSTG{uuid4().hex[:10].upper()}",
+        home_cluster="NUH",
+        posting_schedule=[
+            ExternalResidentPostingScheduleRow(
+                start_date=date(2026, 1, 1),
+                end_date=date(2026, 1, 31),
+                programme_code="GERI",
+                institution="TTSH",
+            ),
+            ExternalResidentPostingScheduleRow(
+                start_date=date(2026, 7, 1),
+                end_date=date(2026, 7, 31),
+                programme_code="IM",
+                institution="TTSH",
+            ),
+        ],
+        today=date(2026, 3, 1),
+    )
+
+    assert registration["posting_history"]["programme_code"] == "IM"
+    assert registration["resident"]["current_nhg_posting_code"] == "TTSHGenMed"
+    assert [row["is_current"] for row in registration["posting_schedule"]] == [
+        False,
+        True,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_compatibility_update_preserves_shared_posting_programme_history(
+    postgres_external_registration_harness: PostgresExternalRegistrationHarness,
+) -> None:
+    harness = postgres_external_registration_harness
+    registration = await harness.client.post(
+        "/external-residents/register",
+        json={
+            "name": "Shared posting transition resident",
+            "mcr": f"TSTS{uuid4().hex[:10].upper()}",
+            "home_cluster": "NUH",
+            "posting_schedule": [
+                {
+                    "start_date": "2026-01-01",
+                    "end_date": "2026-12-31",
+                    "programme_code": "AIM",
+                    "institution": "TTSH",
+                }
+            ],
+        },
+    )
+    assert registration.status_code == 200
+    resident_id = registration.json()["resident"]["id"]
+
+    update = await external_resident_service.update_my_posting(
+        harness.db,
+        external_resident_id=resident_id,
+        programme_code=" im ",
+        institution=" ttsh ",
+        today=date(2026, 8, 1),
+    )
+
+    assert update["changed"] is True
+    assert update["posting_history"]["posting_code"] == "TTSHGenMed"
+    assert update["posting_history"]["programme_code"] == "IM"
+    persisted_rows = (
+        await harness.db.execute(
+            text(
+                """
+                SELECT programme_code, posting_code, start_date, end_date, is_current
+                FROM external_resident_postings
+                WHERE external_resident_id = :resident_id
+                ORDER BY start_date
+                """
+            ),
+            {"resident_id": resident_id},
+        )
+    ).mappings().all()
+    assert [
+        (
+            row["programme_code"],
+            row["posting_code"],
+            row["start_date"],
+            row["end_date"],
+            row["is_current"],
+        )
+        for row in persisted_rows
+    ] == [
+        ("AIM", "TTSHGenMed", date(2026, 1, 1), date(2026, 7, 31), False),
+        (
+            "IM",
+            "TTSHGenMed",
+            date(2026, 8, 1),
+            date(2026, 12, 31),
+            True,
+        ),
+    ]
+
+    unchanged = await external_resident_service.update_my_posting(
+        harness.db,
+        external_resident_id=resident_id,
+        programme_code="IM",
+        institution="TTSH",
+        today=date(2026, 8, 2),
+    )
+    assert unchanged["changed"] is False
+
+
+@pytest.mark.asyncio
+async def test_compatibility_update_rewrites_future_current_row_without_invalid_dates(
+    postgres_external_registration_harness: PostgresExternalRegistrationHarness,
+) -> None:
+    harness = postgres_external_registration_harness
+    registration = await harness.client.post(
+        "/external-residents/register",
+        json={
+            "name": "Future compatibility resident",
+            "mcr": f"TSTF{uuid4().hex[:10].upper()}",
+            "home_cluster": "NUH",
+            "posting_schedule": [
+                {
+                    "start_date": "2099-01-01",
+                    "end_date": "2099-01-31",
+                    "programme_code": "AIM",
+                    "institution": "TTSH",
+                }
+            ],
+        },
+    )
+    assert registration.status_code == 200
+    resident_id = registration.json()["resident"]["id"]
+
+    update = await external_resident_service.update_my_posting(
+        harness.db,
+        external_resident_id=resident_id,
+        programme_code="GERI",
+        institution="TTSH",
+        today=date(2026, 8, 1),
+    )
+
+    assert update["changed"] is True
+    assert update["resident"]["current_nhg_posting_code"] == "TTSHGerMed"
+    row = (
+        await harness.db.execute(
+            text(
+                """
+                SELECT programme_code, posting_code, start_date, end_date, is_current
+                FROM external_resident_postings
+                WHERE external_resident_id = :resident_id
+                """
+            ),
+            {"resident_id": resident_id},
+        )
+    ).mappings().one()
+    assert tuple(row.values()) == (
+        "GERI",
+        "TTSHGerMed",
+        date(2099, 1, 1),
+        date(2099, 1, 31),
+        True,
+    )
+    assert row["start_date"] <= row["end_date"]
+
+
+@pytest.mark.asyncio
+async def test_compatibility_update_preserves_bounded_and_future_schedule_ranges(
+    postgres_external_registration_harness: PostgresExternalRegistrationHarness,
+) -> None:
+    harness = postgres_external_registration_harness
+    registration = await external_resident_service.register_external_resident(
+        harness.db,
+        name="Bounded compatibility resident",
+        mcr=f"TSTB{uuid4().hex[:10].upper()}",
+        home_cluster="NUH",
+        posting_schedule=[
+            ExternalResidentPostingScheduleRow(
+                start_date=date(2026, 1, 1),
+                end_date=date(2026, 6, 30),
+                programme_code="GERI",
+                institution="TTSH",
+            ),
+            ExternalResidentPostingScheduleRow(
+                start_date=date(2026, 7, 1),
+                end_date=date(2026, 7, 31),
+                programme_code="AIM",
+                institution="TTSH",
+            ),
+        ],
+        today=date(2026, 2, 1),
+    )
+    resident_id = registration["resident"]["id"]
+
+    update = await external_resident_service.update_my_posting(
+        harness.db,
+        external_resident_id=resident_id,
+        programme_code="CARDIO",
+        institution="TTSH",
+        today=date(2026, 3, 1),
+    )
+    assert update["changed"] is True
+
+    rows = (
+        await harness.db.execute(
+            text(
+                """
+                SELECT programme_code, posting_code, start_date, end_date, is_current
+                FROM external_resident_postings
+                WHERE external_resident_id = :resident_id
+                ORDER BY start_date
+                """
+            ),
+            {"resident_id": resident_id},
+        )
+    ).mappings().all()
+    assert [tuple(row.values()) for row in rows] == [
+        (
+            "GERI",
+            "TTSHGerMed",
+            date(2026, 1, 1),
+            date(2026, 2, 28),
+            False,
+        ),
+        (
+            "CARDIO",
+            "TTSHCardio",
+            date(2026, 3, 1),
+            date(2026, 6, 30),
+            True,
+        ),
+        (
+            "AIM",
+            "TTSHGenMed",
+            date(2026, 7, 1),
+            date(2026, 7, 31),
+            False,
+        ),
+    ]
+    assert sum(bool(row["is_current"]) for row in rows) == 1
+    assert all(
+        current["end_date"] is not None
+        and current["end_date"] < following["start_date"]
+        for current, following in zip(rows, rows[1:])
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_current_state", ["stale", "missing"])
+async def test_compatibility_gap_insert_stops_before_future_schedule(
+    postgres_external_registration_harness: PostgresExternalRegistrationHarness,
+    legacy_current_state: str,
+) -> None:
+    harness = postgres_external_registration_harness
+    registration = await external_resident_service.register_external_resident(
+        harness.db,
+        name=f"{legacy_current_state} compatibility resident",
+        mcr=f"TSTL{uuid4().hex[:10].upper()}",
+        home_cluster="NUH",
+        posting_schedule=[
+            ExternalResidentPostingScheduleRow(
+                start_date=date(2026, 1, 1),
+                end_date=date(2026, 1, 31),
+                programme_code="GERI",
+                institution="TTSH",
+            ),
+            ExternalResidentPostingScheduleRow(
+                start_date=date(2026, 7, 1),
+                end_date=date(2026, 7, 31),
+                programme_code="AIM",
+                institution="TTSH",
+            ),
+        ],
+        today=date(2026, 3, 1),
+    )
+    resident_id = registration["resident"]["id"]
+    await harness.db.execute(
+        text(
+            """
+            UPDATE external_resident_postings
+            SET is_current = CASE
+                WHEN :legacy_current_state = 'stale'
+                 AND start_date = DATE '2026-01-01'
+                THEN true
+                ELSE false
+            END
+            WHERE external_resident_id = :resident_id
+            """
+        ),
+        {
+            "legacy_current_state": legacy_current_state,
+            "resident_id": resident_id,
+        },
+    )
+
+    update = await external_resident_service.update_my_posting(
+        harness.db,
+        external_resident_id=resident_id,
+        programme_code="CARDIO",
+        institution="TTSH",
+        today=date(2026, 3, 1),
+    )
+    assert update["changed"] is True
+
+    rows = (
+        await harness.db.execute(
+            text(
+                """
+                SELECT programme_code, posting_code, start_date, end_date, is_current
+                FROM external_resident_postings
+                WHERE external_resident_id = :resident_id
+                ORDER BY start_date
+                """
+            ),
+            {"resident_id": resident_id},
+        )
+    ).mappings().all()
+    assert [tuple(row.values()) for row in rows] == [
+        (
+            "GERI",
+            "TTSHGerMed",
+            date(2026, 1, 1),
+            date(2026, 1, 31),
+            False,
+        ),
+        (
+            "CARDIO",
+            "TTSHCardio",
+            date(2026, 3, 1),
+            date(2026, 6, 30),
+            True,
+        ),
+        (
+            "AIM",
+            "TTSHGenMed",
+            date(2026, 7, 1),
+            date(2026, 7, 31),
+            False,
+        ),
+    ]
 
 
 @pytest.mark.asyncio
@@ -478,7 +995,7 @@ async def test_schedule_replacement_mixed_mapping_rolls_back_on_postgres(
         await harness.db.execute(
             text(
                 """
-                SELECT posting_code, start_date, end_date
+                SELECT programme_code, posting_code, start_date, end_date
                 FROM external_resident_postings
                 WHERE external_resident_id = :resident_id
                 ORDER BY start_date
@@ -513,7 +1030,7 @@ async def test_schedule_replacement_mixed_mapping_rolls_back_on_postgres(
         await harness.db.execute(
             text(
                 """
-                SELECT posting_code, start_date, end_date
+                SELECT programme_code, posting_code, start_date, end_date
                 FROM external_resident_postings
                 WHERE external_resident_id = :resident_id
                 ORDER BY start_date

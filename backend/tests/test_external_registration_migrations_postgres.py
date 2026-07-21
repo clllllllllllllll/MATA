@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 import re
 import subprocess
@@ -13,6 +14,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine, URL, make_url
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import NullPool
 
 from app.config import Settings
@@ -83,6 +85,10 @@ MAPPING_MIGRATION = _load_migration(
     "20260721_000021_seed_ttsh_external_registration_mappings.py",
     "ttsh_external_registration_mappings_migration",
 )
+POSTING_PROGRAMME_MIGRATION = _load_migration(
+    "20260721_000022_external_resident_posting_programme.py",
+    "external_resident_posting_programme_migration",
+)
 
 
 def test_external_registration_migration_chain_and_constants() -> None:
@@ -95,6 +101,8 @@ def test_external_registration_migration_chain_and_constants() -> None:
     assert MAPPING_MIGRATION.INACTIVE_PROGRAMME_CODES == (
         EXPECTED_INACTIVE_PROGRAMMES
     )
+    assert POSTING_PROGRAMME_MIGRATION.revision == "20260721_000022"
+    assert POSTING_PROGRAMME_MIGRATION.down_revision == "20260721_000021"
 
     source = (
         VERSIONS_DIR / "20260721_000020_seed_external_registration_posting_codes.py"
@@ -102,6 +110,14 @@ def test_external_registration_migration_chain_and_constants() -> None:
     assert "ON CONFLICT" not in source.upper()
     assert "WHERE id = :row_id" in source
     assert "AND code = :code" in source
+
+    provenance_source = (
+        VERSIONS_DIR / "20260721_000022_external_resident_posting_programme.py"
+    ).read_text(encoding="utf-8")
+    assert "SELECT DISTINCT posting_code, programme_code" in provenance_source
+    assert "WHERE NOT EXISTS" in provenance_source
+    assert "status = 'active'" not in provenance_source
+    assert "LIMIT 1" not in provenance_source.upper()
 
 
 def _assert_local_postgres_source(url: URL) -> None:
@@ -497,3 +513,264 @@ def test_external_registration_migration_lifecycle_on_clean_postgres(
         assert _revision(connection) == "20260721_000021"
         _assert_clean_seeded_codes(connection)
         _assert_stage_two_mappings(connection)
+
+
+def _external_posting_base_rows(connection: Connection) -> list[tuple[Any, ...]]:
+    return [
+        tuple(row)
+        for row in connection.execute(
+            text(
+                """
+                SELECT id, external_resident_id, posting_code, start_date, end_date,
+                       is_current, created_at, updated_at
+                FROM external_resident_postings
+                ORDER BY id
+                """
+            )
+        ).all()
+    ]
+
+
+def _external_posting_programmes(connection: Connection) -> dict[str, str | None]:
+    return {
+        str(row["posting_code"]): (
+            str(row["programme_code"])
+            if row["programme_code"] is not None
+            else None
+        )
+        for row in connection.execute(
+            text(
+                """
+                SELECT posting_code, programme_code
+                FROM external_resident_postings
+                ORDER BY posting_code
+                """
+            )
+        ).mappings()
+    }
+
+
+def _assert_posting_programme_schema(connection: Connection) -> None:
+    column = connection.execute(
+        text(
+            """
+            SELECT data_type, character_maximum_length, is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'external_resident_postings'
+              AND column_name = 'programme_code'
+            """
+        )
+    ).one()
+    assert tuple(column) == ("character varying", 20, "YES")
+
+    foreign_key = connection.execute(
+        text(
+            """
+            SELECT ccu.table_name, ccu.column_name
+            FROM information_schema.table_constraints AS tc
+            JOIN information_schema.constraint_column_usage AS ccu
+              ON ccu.constraint_schema = tc.constraint_schema
+             AND ccu.constraint_name = tc.constraint_name
+            WHERE tc.table_schema = current_schema()
+              AND tc.table_name = 'external_resident_postings'
+              AND tc.constraint_name =
+                  'fk_external_resident_postings_programme_code_programmes'
+              AND tc.constraint_type = 'FOREIGN KEY'
+            """
+        )
+    ).one()
+    assert tuple(foreign_key) == ("programmes", "code")
+
+    index_definition = connection.scalar(
+        text(
+            """
+            SELECT indexdef
+            FROM pg_indexes
+            WHERE schemaname = current_schema()
+              AND tablename = 'external_resident_postings'
+              AND indexname = 'idx_external_resident_postings_external_scope_dates'
+            """
+        )
+    )
+    assert index_definition is not None
+    assert (
+        "(external_resident_id, posting_code, programme_code, start_date, end_date)"
+        in str(index_definition)
+    )
+
+
+def test_external_posting_programme_migration_backfills_only_unique_mappings(
+    clean_migration_database: MigrationHarness,
+) -> None:
+    harness = clean_migration_database
+    _run_success(harness, "upgrade", "20260721_000021")
+
+    posting_codes = (
+        "TTSHGerMed",
+        "TTSHGenMed",
+        "TTSHGenSrg",
+        "KTPHGerMed",
+        "TTSHCardio",
+    )
+    resident_rows = []
+    posting_rows = []
+    for position, posting_code in enumerate(posting_codes):
+        resident_id = uuid4()
+        resident_rows.append(
+            {
+                "id": resident_id,
+                "name": f"Legacy migration resident {position}",
+                "mcr": f"MIG{uuid4().hex[:12].upper()}",
+                "posting_code": posting_code,
+            }
+        )
+        posting_rows.append(
+            {
+                "id": uuid4(),
+                "external_resident_id": resident_id,
+                "posting_code": posting_code,
+                "start_date": date(2026, position + 1, 1),
+                "end_date": date(2026, position + 1, 28),
+            }
+        )
+
+    with harness.engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                UPDATE programme_institution_posting_map
+                SET posting_code = 'TTSHCardio'
+                WHERE programme_code = 'FM'
+                  AND institution_code = 'TTSH'
+                  AND status = 'inactive'
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO external_residents (
+                    id, name, mcr, home_cluster, current_nhg_posting_code, status
+                )
+                VALUES (
+                    :id, :name, :mcr, 'NUH', :posting_code, 'active'
+                )
+                """
+            ),
+            resident_rows,
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO external_resident_postings (
+                    id, external_resident_id, posting_code,
+                    start_date, end_date, is_current
+                )
+                VALUES (
+                    :id, :external_resident_id, :posting_code,
+                    :start_date, :end_date, true
+                )
+                """
+            ),
+            posting_rows,
+        )
+
+    with harness.engine.connect() as connection:
+        base_rows = _external_posting_base_rows(connection)
+        resident_snapshot = connection.execute(
+            text(
+                """
+                SELECT id, name, mcr, home_cluster, current_nhg_posting_code,
+                       status, created_at, updated_at
+                FROM external_residents
+                ORDER BY id
+                """
+            )
+        ).all()
+        mapping_snapshot = connection.execute(
+            text(
+                """
+                SELECT id, programme_code, institution_code, posting_code, status,
+                       display_order, created_at, updated_at
+                FROM programme_institution_posting_map
+                ORDER BY id
+                """
+            )
+        ).all()
+
+    _run_success(harness, "upgrade", "20260721_000022")
+    with harness.engine.connect() as connection:
+        assert _revision(connection) == "20260721_000022"
+        _assert_posting_programme_schema(connection)
+        assert _external_posting_base_rows(connection) == base_rows
+        assert _external_posting_programmes(connection) == {
+            "KTPHGerMed": None,
+            "TTSHCardio": None,
+            "TTSHGenMed": None,
+            "TTSHGenSrg": None,
+            "TTSHGerMed": "GERI",
+        }
+        assert connection.execute(
+            text(
+                """
+                SELECT id, name, mcr, home_cluster, current_nhg_posting_code,
+                       status, created_at, updated_at
+                FROM external_residents
+                ORDER BY id
+                """
+            )
+        ).all() == resident_snapshot
+        assert connection.execute(
+            text(
+                """
+                SELECT id, programme_code, institution_code, posting_code, status,
+                       display_order, created_at, updated_at
+                FROM programme_institution_posting_map
+                ORDER BY id
+                """
+            )
+        ).all() == mapping_snapshot
+
+    with pytest.raises(IntegrityError):
+        with harness.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    UPDATE external_resident_postings
+                    SET programme_code = 'NOT_A_PROGRAMME'
+                    WHERE posting_code = 'TTSHGenMed'
+                    """
+                )
+            )
+
+    _run_success(harness, "downgrade", "20260721_000021")
+    with harness.engine.connect() as connection:
+        assert _revision(connection) == "20260721_000021"
+        assert not connection.scalar(
+            text(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'external_resident_postings'
+                      AND column_name = 'programme_code'
+                )
+                """
+            )
+        )
+        assert _external_posting_base_rows(connection) == base_rows
+
+    _run_success(harness, "upgrade", "20260721_000022")
+    with harness.engine.connect() as connection:
+        assert _revision(connection) == "20260721_000022"
+        _assert_posting_programme_schema(connection)
+        assert _external_posting_base_rows(connection) == base_rows
+        assert _external_posting_programmes(connection) == {
+            "KTPHGerMed": None,
+            "TTSHCardio": None,
+            "TTSHGenMed": None,
+            "TTSHGenSrg": None,
+            "TTSHGerMed": "GERI",
+        }

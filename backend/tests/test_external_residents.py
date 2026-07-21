@@ -184,6 +184,7 @@ def test_external_registration_creates_initial_posting_history_row() -> None:
     assert len(fake_db.external_resident_postings) == before + 1
     row = fake_db.external_resident_postings[-1]
     assert row["posting_code"] == "KTPHGerMed"
+    assert row["programme_code"] == "GERI"
     assert row["is_current"] is True
     assert row["end_date"] == date(2026, 9, 30)
 
@@ -228,6 +229,10 @@ def test_external_registration_creates_forecast_posting_schedule_rows() -> None:
     assert [row["posting_code"] for row in payload["posting_schedule"]] == [
         "TTSHGerMed",
         "KTPHGerMed",
+    ]
+    assert [row["programme_code"] for row in payload["posting_schedule"]] == [
+        "GERI",
+        "GERI",
     ]
     assert len(fake_db.external_resident_postings) == before + 2
     assert fake_db.external_resident_postings[-2]["start_date"] == date(2026, 7, 1)
@@ -781,6 +786,7 @@ def test_external_posting_update_closes_old_and_creates_new_current_row() -> Non
     assert current_row["end_date"] is not None
     assert len(fake_db.external_resident_postings) == before + 1
     assert fake_db.external_resident_postings[-1]["is_current"] is True
+    assert fake_db.external_resident_postings[-1]["programme_code"] == "GERI"
 
 
 def test_external_posting_update_same_posting_is_idempotent() -> None:
@@ -798,7 +804,7 @@ def test_external_posting_update_same_posting_is_idempotent() -> None:
 
     response = client.put(
         "/external-residents/me/posting",
-        json={"programme_code": "GERI", "institution": "TTSH"},
+        json={"programme_code": "CARDIO", "institution": "TTSH"},
     )
 
     assert response.status_code == 200
@@ -852,12 +858,17 @@ def test_external_posting_schedule_update_replaces_rows() -> None:
         "TTSHGerMed",
         "KTPHGerMed",
     ]
+    assert [row["programme_code"] for row in payload["posting_schedule"]] == [
+        "GERI",
+        "GERI",
+    ]
     rows = [
         row
         for row in fake_db.external_resident_postings
         if row["external_resident_id"] == fake_db.external_resident_id
     ]
     assert [row["posting_code"] for row in rows] == ["TTSHGerMed", "KTPHGerMed"]
+    assert [row["programme_code"] for row in rows] == ["GERI", "GERI"]
 
 
 def test_external_posting_schedule_update_rejects_inactive_posting_without_deleting_rows() -> None:

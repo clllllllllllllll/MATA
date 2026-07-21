@@ -30,6 +30,7 @@ ExternalEventIneligibilityReason = Literal[
     "event_scope",
     "secretary_events_not_supported",
     "already_attended",
+    "overlapping_attendance",
 ]
 
 
@@ -1182,6 +1183,19 @@ def _matching_context_for_event(
     )
 
 
+def _matching_external_contexts_for_date(
+    contexts: list[dict[str, Any]],
+    *,
+    event_date: date,
+) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in contexts
+        if row["start_date"] <= event_date
+        and (row.get("end_date") is None or event_date <= row["end_date"])
+    ]
+
+
 def _external_event_ineligibility_reason(
     *,
     event: dict[str, Any],
@@ -1194,19 +1208,24 @@ def _external_event_ineligibility_reason(
         return "future_event"
     if not posting_contexts:
         return "posting_unavailable"
-    if _matching_context_for_event(
+    matching_contexts = _matching_external_contexts_for_date(
         posting_contexts,
-        posting_code=event["posting_code"],
         event_date=event["event_date"],
-    ) is None:
-        return "posting_mismatch"
+    )
     if (
-        event.get("created_by_role") != "secretary"
-        or event.get("created_for_programme_code") is not None
+        len(matching_contexts) != 1
+        or matching_contexts[0]["posting_code"] != event["posting_code"]
     ):
+        return "posting_mismatch"
+    if bool(event.get("is_adhoc")):
         return "event_scope"
-    if not posting_capabilities.get(event["posting_code"], False):
-        return "secretary_events_not_supported"
+    owner = event.get("created_for_programme_code")
+    if owner is None:
+        if not posting_capabilities.get(event["posting_code"], False):
+            return "secretary_events_not_supported"
+    else:
+        if matching_contexts[0].get("programme_code") != owner:
+            return "event_scope"
     if already_attended:
         return "already_attended"
     return None
@@ -1215,10 +1234,14 @@ def _external_event_ineligibility_reason(
 def _external_event_ineligibility_error(
     reason: ExternalEventIneligibilityReason,
 ) -> ApiError:
-    if reason == "already_attended":
+    if reason in {"already_attended", "overlapping_attendance"}:
         return ApiError(
             status_code=409,
-            detail="Attendance already submitted for this teaching event",
+            detail=(
+                "Attendance already submitted for this teaching event"
+                if reason == "already_attended"
+                else "Attendance overlaps an earlier accepted event"
+            ),
             error_code=ErrorCode.CONFLICT.value,
         )
     detail_by_reason = {
@@ -1249,6 +1272,7 @@ async def _external_posting_contexts(
             """
             SELECT
                 external_resident_id,
+                programme_code,
                 posting_code,
                 start_date,
                 end_date,
@@ -1257,7 +1281,7 @@ async def _external_posting_contexts(
             WHERE external_resident_id = :external_resident_id
               AND start_date <= :end_date
               AND (end_date IS NULL OR end_date >= :start_date)
-            ORDER BY start_date ASC, posting_code ASC
+            ORDER BY start_date ASC, posting_code ASC, programme_code ASC NULLS LAST
             """
         ),
         {
@@ -1422,13 +1446,8 @@ async def list_available_events(
                 db,
                 posting_codes=eligible_codes,
             )
-            supported_codes = {
-                code
-                for code in selected_codes
-                if period_capabilities.get(code, False)
-            }
             supported_anywhere = supported_anywhere or any(period_capabilities.values())
-            for external_posting_code in sorted(supported_codes):
+            for external_posting_code in sorted(selected_codes):
                 raw_events = await _events_for_external_posting(
                     db,
                     external_resident_id=external_resident_id,
@@ -1494,7 +1513,7 @@ async def list_available_events(
                 "filter_options": filter_options,
                 "active_reporting_periods": active_period_rows,
             }
-        if not supported_anywhere:
+        if not supported_anywhere and not event_rows:
             return {
                 "events": [],
                 "reason": "secretary_events_not_supported",
@@ -1841,6 +1860,57 @@ async def _duplicate_external_attendance_exists(
     return result.scalar_one_or_none() is not None
 
 
+def _event_intervals_overlap(
+    *,
+    left_start: time,
+    left_end: time | None,
+    right_start: time,
+    right_end: time | None,
+) -> bool:
+    if left_start == right_start:
+        return True
+    effective_left_end = left_end or left_start
+    effective_right_end = right_end or right_start
+    return left_start < effective_right_end and right_start < effective_left_end
+
+
+async def _overlapping_external_attendance_exists(
+    db: AsyncSession,
+    *,
+    external_resident_id: UUID,
+    event: dict[str, Any],
+) -> bool:
+    result = await db.execute(
+        text(
+            """
+            /* external_attendance_overlap_candidates */
+            SELECT existing.start_time, existing.end_time
+            FROM external_attendance_records AS attendance
+            JOIN teaching_events AS existing
+              ON existing.id = attendance.teaching_event_id
+            WHERE attendance.external_resident_id = :external_resident_id
+              AND attendance.status = 'submitted'
+              AND existing.id <> :event_id
+              AND existing.event_date = :event_date
+            """
+        ),
+        {
+            "external_resident_id": str(external_resident_id),
+            "event_id": str(event["id"]),
+            "event_date": event["event_date"],
+        },
+    )
+    return any(
+        _event_intervals_overlap(
+            left_start=event["start_time"],
+            left_end=event.get("end_time"),
+            right_start=row["start_time"],
+            right_end=row.get("end_time"),
+        )
+        for row in result.mappings().all()
+    )
+
+
 async def _insert_external_attendance(
     db: AsyncSession,
     *,
@@ -2046,6 +2116,12 @@ async def submit_attendance(
             )
             if reason is not None:
                 raise _external_event_ineligibility_error(reason)
+            if await _overlapping_external_attendance_exists(
+                db,
+                external_resident_id=external_resident_id,
+                event=event,
+            ):
+                raise _external_event_ineligibility_error("overlapping_attendance")
             await _insert_external_attendance(
                 db,
                 external_resident_id=external_resident_id,

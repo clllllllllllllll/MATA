@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -147,14 +147,26 @@ async def _validate_posting_schedule(
     return normalised
 
 
-def _current_posting_from_schedule(
+def _current_schedule_index(
     posting_schedule: list[dict[str, Any]],
     today: date,
-) -> str:
-    for row in posting_schedule:
+) -> int:
+    for index, row in enumerate(posting_schedule):
         if row["start_date"] <= today <= row["end_date"]:
-            return row["posting_code"]
-    return posting_schedule[0]["posting_code"]
+            return index
+
+    future_rows = [
+        (index, row)
+        for index, row in enumerate(posting_schedule)
+        if row["start_date"] > today
+    ]
+    if future_rows:
+        return min(future_rows, key=lambda item: item[1]["start_date"])[0]
+
+    return max(
+        enumerate(posting_schedule),
+        key=lambda item: item[1]["end_date"],
+    )[0]
 
 
 async def _insert_schedule_rows(
@@ -162,19 +174,18 @@ async def _insert_schedule_rows(
     *,
     external_resident_id: UUID | str,
     posting_schedule: list[dict[str, Any]],
-    current_nhg_posting_code: str,
+    current_schedule_index: int,
 ) -> list[dict[str, Any]]:
     inserted: list[dict[str, Any]] = []
-    current_assigned = False
-    for row in posting_schedule:
-        is_current = not current_assigned and row["posting_code"] == current_nhg_posting_code
-        current_assigned = current_assigned or is_current
+    for index, row in enumerate(posting_schedule):
+        is_current = index == current_schedule_index
         posting_insert = await db.execute(
             text(
                 """
                 INSERT INTO external_resident_postings (
                     external_resident_id,
                     posting_code,
+                    programme_code,
                     start_date,
                     end_date,
                     is_current
@@ -182,16 +193,19 @@ async def _insert_schedule_rows(
                 VALUES (
                     :external_resident_id,
                     :posting_code,
+                    :programme_code,
                     :start_date,
                     :end_date,
                     :is_current
                 )
-                RETURNING id, external_resident_id, posting_code, start_date, end_date, is_current
+                RETURNING id, external_resident_id, posting_code, programme_code,
+                          start_date, end_date, is_current
                 """
             ),
             {
                 "external_resident_id": str(external_resident_id),
                 "posting_code": row["posting_code"],
+                "programme_code": row["programme_code"],
                 "start_date": row["start_date"],
                 "end_date": row["end_date"],
                 "is_current": is_current,
@@ -199,6 +213,49 @@ async def _insert_schedule_rows(
         )
         inserted.append(dict(posting_insert.mappings().one()))
     return inserted
+
+
+async def _insert_current_schedule_row(
+    db: AsyncSession,
+    *,
+    external_resident_id: UUID | str,
+    posting_code: str,
+    programme_code: str,
+    start_date: date,
+    end_date: date | None = None,
+) -> dict[str, Any]:
+    result = await db.execute(
+        text(
+            """
+            INSERT INTO external_resident_postings (
+                external_resident_id,
+                posting_code,
+                programme_code,
+                start_date,
+                end_date,
+                is_current
+            )
+            VALUES (
+                :external_resident_id,
+                :posting_code,
+                :programme_code,
+                :start_date,
+                :end_date,
+                true
+            )
+            RETURNING id, external_resident_id, posting_code, programme_code,
+                      start_date, end_date, is_current
+            """
+        ),
+        {
+            "external_resident_id": str(external_resident_id),
+            "posting_code": posting_code,
+            "programme_code": programme_code,
+            "start_date": start_date,
+            "end_date": end_date,
+        },
+    )
+    return dict(result.mappings().one())
 
 
 async def register_external_resident(
@@ -241,10 +298,11 @@ async def register_external_resident(
         )
 
     normalised_schedule = await _validate_posting_schedule(db, posting_schedule)
-    current_nhg_posting_code = _current_posting_from_schedule(
+    current_schedule_index = _current_schedule_index(
         normalised_schedule,
         today,
     )
+    current_nhg_posting_code = normalised_schedule[current_schedule_index]["posting_code"]
 
     resident_insert = await db.execute(
         text(
@@ -279,9 +337,9 @@ async def register_external_resident(
         db,
         external_resident_id=resident["id"],
         posting_schedule=normalised_schedule,
-        current_nhg_posting_code=current_nhg_posting_code,
+        current_schedule_index=current_schedule_index,
     )
-    posting = schedule_rows[0]
+    posting = schedule_rows[current_schedule_index]
 
     await db.commit()
     response = {
@@ -304,82 +362,156 @@ async def update_my_posting(
     resident = await _external_resident_or_unauthorized(db, external_resident_id)
 
     try:
+        normalised_programme_code = (
+            programme_institution_posting.normalise_mapping_code(
+                programme_code,
+                field_name="programme_code",
+            )
+        )
+        normalised_institution = programme_institution_posting.normalise_mapping_code(
+            institution,
+            field_name="institution_code",
+        )
         current_nhg_posting_code = (
             await programme_institution_posting.resolve_programme_institution_posting(
                 db,
-                programme_code=programme_code,
-                institution_code=institution,
+                programme_code=normalised_programme_code,
+                institution_code=normalised_institution,
             )
         )
     except programme_institution_posting.PostingMappingUnavailableError as exc:
         raise _schedule_validation_error(exc.detail) from exc
 
-    if resident["current_nhg_posting_code"] == current_nhg_posting_code:
+    current_result = await db.execute(
+        text(
+            """
+            SELECT id, external_resident_id, posting_code, programme_code,
+                   start_date, end_date, is_current
+            FROM external_resident_postings
+            WHERE external_resident_id = :external_resident_id
+              AND is_current = true
+            """
+        ),
+        {"external_resident_id": str(external_resident_id)},
+    )
+    current_posting = current_result.mappings().one_or_none()
+    if (
+        current_posting is not None
+        and current_posting["posting_code"] == current_nhg_posting_code
+        and current_posting["programme_code"] == normalised_programme_code
+    ):
         return {
             "resident": resident,
             "changed": False,
         }
 
-    await db.execute(
-        text(
-            """
-            UPDATE external_resident_postings
-            SET end_date = :end_date,
-                is_current = false
-            WHERE external_resident_id = :external_resident_id
-              AND is_current = true
-              AND end_date IS NULL
-            """
-        ),
-        {
-            "external_resident_id": str(external_resident_id),
-            "end_date": today,
-        },
-    )
-
-    posting_insert = await db.execute(
-        text(
-            """
-            INSERT INTO external_resident_postings (
-                external_resident_id,
-                posting_code,
-                start_date,
-                end_date,
-                is_current
+    if current_posting is not None and current_posting["start_date"] >= today:
+        posting_update = await db.execute(
+            text(
+                """
+                UPDATE external_resident_postings
+                SET posting_code = :posting_code,
+                    programme_code = :programme_code
+                WHERE id = :posting_id
+                RETURNING id, external_resident_id, posting_code, programme_code,
+                          start_date, end_date, is_current
+                """
+            ),
+            {
+                "posting_id": str(current_posting["id"]),
+                "posting_code": current_nhg_posting_code,
+                "programme_code": normalised_programme_code,
+            },
+        )
+        posting_row = dict(posting_update.mappings().one())
+    else:
+        replacement_end_date: date | None = None
+        if current_posting is not None:
+            previous_end_date = min(
+                current_posting["end_date"] or today,
+                today - timedelta(days=1),
             )
-            VALUES (
-                :external_resident_id,
-                :posting_code,
-                :start_date,
-                NULL,
-                true
+            if (
+                current_posting["end_date"] is not None
+                and current_posting["end_date"] >= today
+            ):
+                replacement_end_date = current_posting["end_date"]
+            await db.execute(
+                text(
+                    """
+                    UPDATE external_resident_postings
+                    SET end_date = :end_date,
+                        is_current = false
+                    WHERE id = :posting_id
+                    """
+                ),
+                {
+                    "posting_id": str(current_posting["id"]),
+                    "end_date": previous_end_date,
+                },
             )
-            RETURNING id, external_resident_id, posting_code, start_date, end_date, is_current
-            """
-        ),
-        {
-            "external_resident_id": str(external_resident_id),
-            "posting_code": current_nhg_posting_code,
-            "start_date": today,
-        },
-    )
-    posting_row = dict(posting_insert.mappings().one())
 
-    resident_update = await db.execute(
-        text(
-            """
-            UPDATE external_residents
-            SET current_nhg_posting_code = :posting_code
-            WHERE id = :external_resident_id
-            RETURNING id, name, mcr, home_cluster, current_nhg_posting_code, status
-            """
-        ),
-        {
-            "external_resident_id": str(external_resident_id),
-            "posting_code": current_nhg_posting_code,
-        },
-    )
-    updated_resident = dict(resident_update.mappings().one())
+        future_result = await db.execute(
+            text(
+                """
+                SELECT id, start_date
+                FROM external_resident_postings
+                WHERE external_resident_id = :external_resident_id
+                  AND start_date > :today
+                ORDER BY start_date ASC, id ASC
+                """
+            ),
+            {
+                "external_resident_id": str(external_resident_id),
+                "today": today,
+            },
+        )
+        current_posting_id = (
+            str(current_posting["id"]) if current_posting is not None else None
+        )
+        next_future_start = next(
+            (
+                row["start_date"]
+                for row in future_result.mappings().all()
+                if str(row["id"]) != current_posting_id
+            ),
+            None,
+        )
+        if next_future_start is not None:
+            next_future_boundary = next_future_start - timedelta(days=1)
+            replacement_end_date = min(
+                replacement_end_date or next_future_boundary,
+                next_future_boundary,
+            )
+
+        posting_row = await _insert_current_schedule_row(
+            db,
+            external_resident_id=external_resident_id,
+            posting_code=current_nhg_posting_code,
+            programme_code=normalised_programme_code,
+            start_date=today,
+            end_date=replacement_end_date,
+        )
+
+    if resident["current_nhg_posting_code"] == current_nhg_posting_code:
+        updated_resident = resident
+    else:
+        resident_update = await db.execute(
+            text(
+                """
+                UPDATE external_residents
+                SET current_nhg_posting_code = :posting_code
+                WHERE id = :external_resident_id
+                RETURNING id, name, mcr, home_cluster, current_nhg_posting_code, status
+                """
+            ),
+            {
+                "external_resident_id": str(external_resident_id),
+                "posting_code": current_nhg_posting_code,
+            },
+        )
+        updated_resident = dict(resident_update.mappings().one())
+
     await db.commit()
     return {
         "resident": updated_resident,
@@ -398,7 +530,8 @@ async def replace_my_posting_schedule(
     today = today or date.today()
     await _external_resident_or_unauthorized(db, external_resident_id)
     normalised_schedule = await _validate_posting_schedule(db, posting_schedule)
-    current_nhg_posting_code = _current_posting_from_schedule(normalised_schedule, today)
+    current_schedule_index = _current_schedule_index(normalised_schedule, today)
+    current_nhg_posting_code = normalised_schedule[current_schedule_index]["posting_code"]
 
     await db.execute(
         text(
@@ -413,7 +546,7 @@ async def replace_my_posting_schedule(
         db,
         external_resident_id=external_resident_id,
         posting_schedule=normalised_schedule,
-        current_nhg_posting_code=current_nhg_posting_code,
+        current_schedule_index=current_schedule_index,
     )
     resident_update = await db.execute(
         text(
