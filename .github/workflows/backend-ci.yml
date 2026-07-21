@@ -11,20 +11,20 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: mata_db
+          POSTGRES_DB: mata_phase5b_verify_ci
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d mata_db"
+          --health-cmd "pg_isready -U postgres -d mata_phase5b_verify_ci"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
 
     env:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/mata_db
-      SYNC_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mata_db
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/mata_phase5b_verify_ci
+      SYNC_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mata_phase5b_verify_ci
 
     steps:
       - name: Checkout repository
