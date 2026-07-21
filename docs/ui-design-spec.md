@@ -705,6 +705,68 @@ Same shell as S10 with two differences.
 
 ---
 
+### S17 — Programme PC NHG Resident Attendance Overview
+
+**Route.** `/pc/resident-attendance`
+
+**Hero.** Title: *NHG Resident Attendance*. Subtitle: *Review attendance submitted by NHG Residents in your assigned programmes*. The page is explicitly distinct from *Non-NHG Attendance*.
+
+**Filter bar.**
+
+- Programme dropdown only when the PC has more than one programme in scope.
+- Resident name or MCR search.
+- Current posting code field.
+- *Clear filters*.
+
+**Desktop table columns:**
+
+| Column | Notes |
+| --- | --- |
+| Resident name | Primary resident identity |
+| MCR | Mono; display only, never used as the route identifier |
+| Programme | Raw programme code |
+| R year | Display value or neutral fallback |
+| Current posting | Backend label, then code fallback; `No current posting` when null |
+| Total attendance submissions | Native `attendance_records` count only |
+| Action | *View attendance* routes to the resident UUID page |
+
+The overview uses bounded pagination. The frontend requests 25 rows and provides *Previous* / *Next* controls using the backend `total` and `offset` contract.
+
+**Mobile.** At `640px` and below, replace the table with resident cards containing the same identity, current-posting, count, and route action. The page itself must not overflow horizontally.
+
+**States.** Loading is distinct from empty. Errors show safe user-facing copy and a *Retry* action. Empty copy is exactly: *"No NHG residents found for the selected filters."*
+
+**Authorization and privacy.** Client route protection is only UX. The backend enforces `residents.programme_code IN programme_scope` and returns no out-of-scope residents through rows, counts, search, filters, or detail navigation. Only compact attendance-review identity is displayed; no phone, email, employee code, registration type, or unrelated employment metadata appears.
+
+---
+
+### S18 — Programme PC NHG Resident Personal Attendance History
+
+**Route.** `/pc/residents/{resident_id}/attendance`, where `{resident_id}` is the native resident UUID. MCR never appears in the route or query-string identity.
+
+**Hero / resident summary.** Show resident name, MCR, programme, R year, and backend-resolved current posting. A *Back to NHG Resident Attendance* action returns to the overview and normal browser back/forward navigation remains intact.
+
+**Filter bar.** Reporting period, event posting, inclusive date from/to, source, and status. Source choices are *Department Secretary*, *Programme PC*, and *Ad-hoc*. Status choices reflect persisted native values: *Submitted*, *Flagged*, and *Removed*.
+
+**Desktop table columns:**
+
+| Column | Notes |
+| --- | --- |
+| Teaching/session name | Canonical event display name; optional session details may appear as secondary text |
+| Date | Mono |
+| Start time | Mono; end time may be secondary display data |
+| Posting | Event posting label/code |
+| Source | Department Secretary / Programme PC / Ad-hoc |
+| Status | Submitted / Flagged / Removed, display only |
+
+Rows are ordered by event date descending, start time descending, then a stable identifier. Pagination requests 25 rows and uses *Previous* / *Next*. At `640px` and below, render dedicated attendance cards instead of allowing page-level horizontal overflow.
+
+**States.** Loading is distinct from empty. Safe authorization/not-found errors do not reveal resident details and provide an appropriate return or retry action. Empty copy is exactly: *"No attendance submissions found for this resident."*
+
+**Read-only boundary.** There is no drawer and no edit, delete, remove, force-delete, status-change, or notes control. Removed rows remain reviewable history. The page contains no compliance/dashboard tab or placeholder, targets, achieved-versus-target display, percentage, traffic light, shortage, surplus, reallocation, FormF1 denominator, or clawback UI.
+
+---
+
 ## 4. Component Inventory
 
 ### 4.1 Layouts
@@ -813,7 +875,9 @@ Idle → FileSelected → Uploading → Parsing → Success / Failure. Cancelabl
 /pc/warnings                        Scoped warnings (PC view)
 /pc/config                          S4 scoped
 /pc/parsed                          Parsed data (scoped, read-only)
-/pc/export                          S16
+/pc/resident-attendance             S17
+/pc/residents/{resident_id}/attendance S18
+/pc/external-attendance             S16  Non-NHG Attendance (separate)
 /secretary/schedule                 S7
 /resident/portal                    S8
 /resident/adhoc                     S9  (modal over /resident/portal)
@@ -826,7 +890,7 @@ Idle → FileSelected → Uploading → Parsing → Success / Failure. Cancelabl
 ### 5.2 Role-Specific Sidebar Navigation
 
 - **Master Admin.** Home · Upload Files · Warnings · Configuration · Upload Logs · Parsed Data · Secretary Events · Submissions · Settings.
-- **Programme PC.** Home · Upload TTF · Warnings · Configuration · Parsed Data · Non-NHG Export · Settings.
+- **Programme PC.** Home · Upload TTF · Teaching Events · Warnings · Configuration · NHG Resident Attendance · Non-NHG Attendance · Settings.
 - **Secretary.** Teaching Schedule · Dashboard · Structured Plan · Settings.
 - **NHG Resident.** Submission Portal · Past Attendance · Settings. *Submit Ad-hoc* lives as a button inside the portal, not as a nav item.
 - **Non-NHG Resident.** Submission Portal · Past Attendance · Update Upcoming NHG Postings · Settings.
@@ -843,6 +907,7 @@ Idle → FileSelected → Uploading → Parsing → Success / Failure. Cancelabl
 8. **Ad-hoc flow** — stepped 1 → 2 → 3 → success. Back is allowed until submit.
 9. **Non-NHG entry → register → portal** — selecting *Non-NHG Resident* in the role switcher takes the user to the entry screen; registering completes to the Non-NHG portal with the new profile applied.
 10. **Past attendance row click** — opens a read-only drawer using the same traceability layout as the warning drawer for visual consistency.
+11. **PC View attendance** — navigates from the NHG Resident Attendance overview to the resident UUID history page. It never opens a drawer; browser back/forward navigation restores page history.
 
 ### 5.4 Modal / Drawer Rules
 

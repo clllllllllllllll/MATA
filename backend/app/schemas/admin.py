@@ -1077,6 +1077,57 @@ class AdminSecretaryEventForceDeleteResponse(BaseModel):
     total_attendance_deleted: int
 
 
+class AdminResidentAttendanceOverviewItem(BaseModel):
+    resident_id: UUID
+    name: str
+    mcr: str
+    programme_code: str | None = None
+    r_year: str | None = None
+    current_posting_code: str | None = None
+    current_posting_label: str | None = None
+    attendance_count: int = Field(ge=0)
+
+
+class AdminResidentAttendanceOverviewResponse(BaseModel):
+    items: list[AdminResidentAttendanceOverviewItem]
+    total: int = Field(ge=0)
+    limit: int = Field(ge=1, le=200)
+    offset: int = Field(ge=0)
+
+
+class AdminResidentAttendanceResidentSummary(BaseModel):
+    resident_id: UUID
+    name: str
+    mcr: str
+    programme_code: str | None = None
+    r_year: str | None = None
+    current_posting_code: str | None = None
+    current_posting_label: str | None = None
+
+
+class AdminResidentAttendanceHistoryItem(BaseModel):
+    attendance_id: UUID
+    teaching_event_id: UUID
+    teaching_name: str
+    details_of_session: str | None = None
+    event_date: date
+    start_time: time
+    end_time: time | None = None
+    posting_code: str
+    posting_label: str
+    source: Literal["Department Secretary", "Programme PC", "Ad-hoc"]
+    status: Literal["submitted", "flagged", "removed"]
+    submitted_at: datetime
+
+
+class AdminResidentAttendanceDetailResponse(BaseModel):
+    resident: AdminResidentAttendanceResidentSummary
+    items: list[AdminResidentAttendanceHistoryItem]
+    total: int = Field(ge=0)
+    limit: int = Field(ge=1, le=200)
+    offset: int = Field(ge=0)
+
+
 class AdminResidentSubmissionListItem(BaseModel):
     id: UUID
     resident_id: UUID

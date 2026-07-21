@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
 from typing import Any
 from uuid import UUID
 
@@ -12,12 +11,15 @@ from app.config import Settings
 from app.dependencies.staff_actor import StaffActorContext
 from app.errors import ApiError, ErrorCode
 from app.services.audit import write_audit_log
+from app.services.current_posting import (
+    NATIVE_CURRENT_POSTING_JOIN_SQL,
+    current_reporting_period_params,
+)
 from app.services.mata_resident_token import (
     MataResidentTokenError,
     sign_mata_external_resident_token,
     sign_mata_resident_token,
 )
-from app.services.reporting_period_status import resolve_active_reporting_period_for_date
 
 
 logger = logging.getLogger(__name__)
@@ -185,27 +187,7 @@ def _normalise_mcr(raw_mcr: str | None) -> str | None:
 
 
 async def _current_reporting_period_params(db: AsyncSession) -> dict[str, Any]:
-    """Return the one period that may supply a display-only current posting."""
-
-    period = await resolve_active_reporting_period_for_date(
-        db,
-        relevant_date=date.today(),
-    )
-    if period is None:
-        # Keep bound date types concrete while making the external-period overlap
-        # predicate impossible. Native posting rows are constrained by the null id.
-        return {
-            "has_reporting_period": False,
-            "reporting_period_id": None,
-            "reporting_period_start": date.max,
-            "reporting_period_end": date.min,
-        }
-    return {
-        "has_reporting_period": True,
-        "reporting_period_id": str(period["id"]),
-        "reporting_period_start": period["start_date"],
-        "reporting_period_end": period["end_date"],
-    }
+    return await current_reporting_period_params(db)
 
 
 async def _lookup_resident_login_rows(
@@ -215,7 +197,7 @@ async def _lookup_resident_login_rows(
     period_params = await _current_reporting_period_params(db)
     resident_result = await db.execute(
         text(
-            """
+            f"""
             SELECT r.id,
                    r.name,
                    r.mcr,
@@ -224,32 +206,7 @@ async def _lookup_resident_login_rows(
                    current_posting.posting_code AS current_posting_code,
                    COALESCE(pc.display_name, current_posting.posting_code) AS current_posting_label
             FROM residents r
-            LEFT JOIN LATERAL (
-                SELECT rp.posting_code
-                FROM resident_postings rp
-                WHERE rp.resident_id = r.id
-                  AND rp.status IN ('active', 'loa_working')
-                  AND rp.reporting_period_id = :reporting_period_id
-                ORDER BY
-                  CASE
-                    WHEN rp.start_date <= CURRENT_DATE
-                     AND (rp.end_date IS NULL OR rp.end_date >= CURRENT_DATE)
-                      THEN 0
-                    WHEN rp.start_date > CURRENT_DATE
-                      THEN 1
-                    ELSE 2
-                  END,
-                  CASE
-                    WHEN rp.start_date > CURRENT_DATE
-                      THEN rp.start_date - CURRENT_DATE
-                    ELSE CURRENT_DATE - COALESCE(rp.end_date, rp.start_date)
-                  END,
-                  rp.start_date DESC,
-                  rp.posting_code
-                LIMIT 1
-            ) current_posting ON true
-            LEFT JOIN posting_codes pc
-              ON pc.code = current_posting.posting_code
+            {NATIVE_CURRENT_POSTING_JOIN_SQL}
             WHERE r.mcr = :mcr
             """
         ),
@@ -430,7 +387,7 @@ async def get_current_identity(
         period_params = await _current_reporting_period_params(db)
         result = await db.execute(
             text(
-                """
+                f"""
                 SELECT r.id,
                        r.name,
                        r.mcr,
@@ -439,32 +396,7 @@ async def get_current_identity(
                        current_posting.posting_code AS current_posting_code,
                        COALESCE(pc.display_name, current_posting.posting_code) AS current_posting_label
                 FROM residents r
-                LEFT JOIN LATERAL (
-                    SELECT rp.posting_code
-                    FROM resident_postings rp
-                    WHERE rp.resident_id = r.id
-                      AND rp.status IN ('active', 'loa_working')
-                      AND rp.reporting_period_id = :reporting_period_id
-                    ORDER BY
-                      CASE
-                        WHEN rp.start_date <= CURRENT_DATE
-                         AND (rp.end_date IS NULL OR rp.end_date >= CURRENT_DATE)
-                          THEN 0
-                        WHEN rp.start_date > CURRENT_DATE
-                          THEN 1
-                        ELSE 2
-                      END,
-                      CASE
-                        WHEN rp.start_date > CURRENT_DATE
-                          THEN rp.start_date - CURRENT_DATE
-                        ELSE CURRENT_DATE - COALESCE(rp.end_date, rp.start_date)
-                      END,
-                      rp.start_date DESC,
-                      rp.posting_code
-                    LIMIT 1
-                ) current_posting ON true
-                LEFT JOIN posting_codes pc
-                  ON pc.code = current_posting.posting_code
+                {NATIVE_CURRENT_POSTING_JOIN_SQL}
                 WHERE r.id = :resident_id
                 """
             ),

@@ -1174,6 +1174,7 @@ const implementedProtectedRoutesByRole = {
     '/pc/upload-ttf',
     '/pc/warnings',
     '/pc/config',
+    '/pc/resident-attendance',
     '/pc/external-attendance',
   ],
   secretary: [

@@ -15,6 +15,7 @@ interface RouteAccessRule {
   path: string
   kind: RouteAccessRuleKind
   allowedRoles?: readonly AppRole[]
+  matches?: (pathname: string) => boolean
 }
 
 export type RouteAccessDecision =
@@ -37,6 +38,18 @@ const defaultPathByRole: Record<AppRole, string> = {
 }
 
 export const defaultPathForGuardRole = (role: AppRole): string => defaultPathByRole[role]
+
+const uuidPathSegmentPattern =
+  '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+const pcResidentAttendanceDetailPattern = new RegExp(
+  `^/pc/residents/${uuidPathSegmentPattern}/attendance$`,
+)
+
+export const isPcResidentAttendanceDetailPath = (pathname: string): boolean => {
+  const pathOnly = pathname.split(/[?#]/)[0] || '/'
+  const normalisedPathname = pathOnly === '/' ? '/' : pathOnly.replace(/\/+$/, '')
+  return pcResidentAttendanceDetailPattern.test(normalisedPathname)
+}
 
 const protectedNamespaces = [
   { prefix: '/admin', role: 'master_admin' },
@@ -68,6 +81,13 @@ export const routeAccessRules = [
   { path: '/pc/upload-ttf', kind: 'protected', allowedRoles: ['programme_pc'] },
   { path: '/pc/warnings', kind: 'protected', allowedRoles: ['programme_pc'] },
   { path: '/pc/config', kind: 'protected', allowedRoles: ['programme_pc'] },
+  { path: '/pc/resident-attendance', kind: 'protected', allowedRoles: ['programme_pc'] },
+  {
+    path: '/pc/residents/:resident_id/attendance',
+    kind: 'protected',
+    allowedRoles: ['programme_pc'],
+    matches: isPcResidentAttendanceDetailPath,
+  },
   { path: '/pc/external-attendance', kind: 'protected', allowedRoles: ['programme_pc'] },
   { path: '/secretary', kind: 'protected', allowedRoles: ['secretary'] },
   { path: '/secretary/events', kind: 'protected', allowedRoles: ['secretary'] },
@@ -86,7 +106,9 @@ const normalisePathname = (pathname: string): string => {
 
 const findRouteAccessRule = (pathname: string): RouteAccessRule | undefined => {
   const normalisedPathname = normalisePathname(pathname)
-  return routeAccessRules.find((rule) => rule.path === normalisedPathname)
+  return routeAccessRules.find((rule) =>
+    rule.path === normalisedPathname
+    || ('matches' in rule && rule.matches(normalisedPathname)))
 }
 
 const findProtectedNamespace = (pathname: string): { prefix: string; role: AppRole } | undefined => {

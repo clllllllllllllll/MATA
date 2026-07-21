@@ -25,6 +25,8 @@ from app.schemas import (
     AcademicMonthBoundaryResponse,
     AdminExternalAttendanceDetailResponse,
     AdminExternalAttendanceListResponse,
+    AdminResidentAttendanceDetailResponse,
+    AdminResidentAttendanceOverviewResponse,
     AdminResidentSubmissionDetailResponse,
     AdminResidentSubmissionListResponse,
     AdminSecretaryEventDetailResponse,
@@ -111,6 +113,7 @@ from app.schemas.data_revalidation import (
 from app.services import (
     admin_config,
     admin_external_attendance,
+    admin_resident_attendance,
     admin_resident_submissions,
     admin_secretary_events,
     cache_invalidation,
@@ -2961,6 +2964,90 @@ async def force_delete_admin_secretary_event(
         actor=_admin_actor_context(admin_context),
     )
     return AdminSecretaryEventForceDeleteResponse.model_validate(payload)
+
+
+@router.get(
+    "/resident-attendance",
+    response_model=AdminResidentAttendanceOverviewResponse,
+)
+async def list_admin_resident_attendance(
+    programme_code: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    posting_code: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> AdminResidentAttendanceOverviewResponse:
+    admin_resident_attendance.ensure_read_access(
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+        programme_code=(programme_code.strip() or None) if programme_code else None,
+    )
+    if db is None:
+        return AdminResidentAttendanceOverviewResponse(
+            items=[],
+            total=0,
+            limit=limit,
+            offset=offset,
+        )
+    payload = await admin_resident_attendance.list_residents(
+        db,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+        programme_code=programme_code,
+        search=search,
+        posting_code=posting_code,
+        limit=limit,
+        offset=offset,
+    )
+    return AdminResidentAttendanceOverviewResponse.model_validate(payload)
+
+
+@router.get(
+    "/resident-attendance/{resident_id}",
+    response_model=AdminResidentAttendanceDetailResponse,
+)
+async def get_admin_resident_attendance(
+    resident_id: UUID,
+    reporting_period_id: UUID | None = Query(default=None),
+    posting_code: str | None = Query(default=None),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    source: Literal["department_secretary", "programme_pc", "adhoc"] | None = Query(
+        default=None
+    ),
+    status: Literal["submitted", "flagged", "removed"] | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession | None = Depends(get_db_session),
+) -> AdminResidentAttendanceDetailResponse:
+    admin_resident_attendance.ensure_read_access(
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+    )
+    if db is None:
+        raise ApiError(
+            status_code=500,
+            detail="Database unavailable",
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+    payload = await admin_resident_attendance.get_resident_attendance(
+        db,
+        resident_id=resident_id,
+        programme_scope=admin_context.programme_scope,
+        master_admin=admin_context.is_master_admin,
+        reporting_period_id=reporting_period_id,
+        posting_code=posting_code,
+        date_from=date_from,
+        date_to=date_to,
+        source=source,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+    return AdminResidentAttendanceDetailResponse.model_validate(payload)
 
 
 @router.get(

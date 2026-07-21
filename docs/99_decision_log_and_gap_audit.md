@@ -132,6 +132,21 @@ These entries supersede any earlier contradictory current-state entry in this au
 - **Do not change without PM/stakeholder approval:** Yes
 ---
 
+#### Decision: Programme PC NHG Resident Attendance is native-only, read-only, and pre-compliance
+- **Status:** ✅ Confirmed and implemented
+- **Decision:** Programme PCs have an `NHG Resident Attendance` overview and a dedicated personal attendance-history page for each resident. `View attendance` navigates to the resident UUID route; it does not open a drawer and never uses MCR as an authorization or route identifier.
+- **Authorization:** Backend authorization is authoritative. A Programme PC may see only residents whose `residents.programme_code` belongs to the authenticated `users.programme_scope`. Null or empty scope returns `403`; an unknown or out-of-scope resident UUID returns the same controlled `404`. Explicit Master Admin keeps read access in line with shared admin attendance-read routes; Master authority is never inferred from null scope.
+- **Data boundary:** The feature reads native `residents`, `resident_postings`, `attendance_records`, `teaching_events`, and display reference tables only. It does not query or combine `external_residents`, `external_resident_postings`, or `external_attendance_records`. Non-NHG Attendance remains a distinct page and workflow.
+- **History contract:** Attendance source is centrally classified as `Department Secretary`, `Programme PC`, or `Ad-hoc`, with `is_adhoc` first and `created_for_programme_code` authoritative for scheduled PC ownership. Persisted `submitted`, `flagged`, and `removed` rows may be displayed, but none can be edited, deleted, removed, or have status changed from this feature.
+- **Current posting:** Display uses the existing server-side native current-posting resolution contract and returns a controlled null state rendered as `No current posting`; client state, attendance recency, teaching-event posting, and programme mappings are not alternative resolvers.
+- **Explicit exclusion:** This phase does not implement compliance dashboards or placeholders for them, monthly targets, session-type target progress, percentages, traffic lights, shortages, surplus, reallocation, FormF1 denominator work, snapshots, or clawback. Those requirements remain deferred pending separate confirmation.
+- **Schema impact:** No migration is required; the feature is a read-only projection over existing native tables and ownership/status fields.
+- **Routes:** Backend `GET /admin/resident-attendance` and `GET /admin/resident-attendance/{resident_id}`; frontend `/pc/resident-attendance` and `/pc/residents/{resident_id}/attendance`.
+- **Reference file and section:** `api.md` § Programme PC NHG Resident Attendance (read-only); `ui-design-spec.md` S17–S18; `responsive-ui-plan.md` route inventory.
+- **Do not change without PM/stakeholder approval:** Yes
+
+---
+
 #### Decision: Master Admin audited force deletion for Secretary/PC scheduled events
 - **Status:** ✅ Confirmed and implemented
 - **Decision:** Rename the user-facing Master Admin review surface to **Secretary/PC Events** while retaining `/admin/secretary-events`. The list includes Secretary and Programme PC scheduled events, classifying Programme PC ownership from `created_for_programme_code`; NHG and Non-NHG Resident ad-hoc events are excluded.

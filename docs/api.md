@@ -1246,6 +1246,93 @@ Delete a programme-owned scheduled teaching event.
 
 ---
 
+## Programme PC NHG Resident Attendance (read-only)
+
+These endpoints provide a programme-level NHG Resident overview and one resident's personal attendance history. They are attendance-review reads only; they do not calculate compliance, targets, percentages, traffic-light states, shortages, surplus, reallocation, or clawback.
+
+- **Auth:** Scoped Programme PC or explicit Master Admin. Programme PC access is derived from the authenticated `users.programme_scope`; null or empty scope returns `403` and never means all programmes. Explicit Master Admin retains all-programme read access, matching the shared admin attendance-read convention.
+- **Scope:** For Programme PCs, every list count, search result, filter result, resident summary, and attendance row is constrained by `residents.programme_code IN programme_scope`. Authorization uses the resident UUID and programme membership, never MCR. An out-of-scope or unknown resident UUID returns the same controlled `404` response.
+- **Native-only boundary:** Reads use `residents`, `resident_postings`, `attendance_records`, `teaching_events`, and display reference tables. They do not read or combine `external_residents`, `external_resident_postings`, or `external_attendance_records`. Non-NHG Attendance remains a separate endpoint and UI workflow.
+- **Current posting:** The backend resolves the displayable current posting from native `resident_postings` within the single effectively active reporting period. It uses the established display ranking: an `active` or `loa_working` row covering today, then the nearest future eligible row, then the nearest recent past eligible row. It returns null when no posting is resolvable; the client displays `No current posting`.
+- **Source classification:** One centralized mapping returns `Department Secretary`, `Programme PC`, or `Ad-hoc`. `teaching_events.is_adhoc = true` is `Ad-hoc`; otherwise a non-null `created_for_programme_code` is `Programme PC`; the remaining scheduled events are `Department Secretary`. `created_for_programme_code` is authoritative programme ownership and must not be overridden by inconsistent legacy `created_by_role` metadata.
+- **Read-only:** Only the two `GET` routes below are provided. There is no edit, remove, delete, status-change, note, force-delete, or other attendance mutation action. Existing resident removal and Master Admin scheduled-event force-delete contracts are unchanged.
+
+### GET `/admin/resident-attendance`
+
+Return one compact row per authorized native NHG Resident.
+
+- **Query params:** `programme_code`, `search`, and `posting_code` optional; `limit` defaults to `50` and is bounded to `1..200`; `offset` defaults to `0`. `programme_code`, when supplied by a Programme PC, must be in scope or the API returns `403`. `search` matches resident name or MCR only within the already-authorized set. `posting_code` filters the server-resolved current posting.
+- **Ordering:** Deterministic resident ordering with a stable resident UUID tie-breaker.
+- **Response:**
+
+```json
+{
+  "items": [
+    {
+      "resident_id": "00000000-0000-0000-0000-000000000001",
+      "name": "Test Resident",
+      "mcr": "M00000D",
+      "programme_code": "GERI",
+      "r_year": "R2",
+      "current_posting_code": "TTSHGerMed",
+      "current_posting_label": "TTSH Geriatric Medicine",
+      "attendance_count": 4
+    }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+`attendance_count` is derived from native `attendance_records` only. External attendance never affects the value. The compact projection does not expose private profile fields such as email, phone, employee code, registration type, or unrelated employment metadata.
+
+### GET `/admin/resident-attendance/{resident_id}`
+
+Return the authorized resident summary plus a paginated native attendance history. `resident_id` is a resident UUID; MCR is display data and is never a path or query-string identifier for this lookup.
+
+- **Query params:** `reporting_period_id`, `posting_code`, `date_from`, `date_to`, `source`, and `status` optional; `limit` defaults to `50` and is bounded to `1..200`; `offset` defaults to `0`.
+- **Filter values:** `source` accepts `department_secretary`, `programme_pc`, or `adhoc`. `status` accepts the persisted native values `submitted`, `flagged`, or `removed`. `posting_code` filters the teaching event posting. `reporting_period_id` filters by the event date within that reporting period; date filters are inclusive.
+- **Ordering:** `event_date DESC`, `start_time DESC`, followed by a stable attendance/event identifier tie-breaker.
+- **Response:**
+
+```json
+{
+  "resident": {
+    "resident_id": "00000000-0000-0000-0000-000000000001",
+    "name": "Test Resident",
+    "mcr": "M00000D",
+    "programme_code": "GERI",
+    "r_year": "R2",
+    "current_posting_code": "TTSHGerMed",
+    "current_posting_label": "TTSH Geriatric Medicine"
+  },
+  "items": [
+    {
+      "attendance_id": "00000000-0000-0000-0000-000000000002",
+      "teaching_event_id": "00000000-0000-0000-0000-000000000003",
+      "teaching_name": "Journal Club",
+      "details_of_session": null,
+      "event_date": "2026-07-18",
+      "start_time": "14:00:00",
+      "end_time": "15:00:00",
+      "posting_code": "TTSHGerMed",
+      "posting_label": "TTSH Geriatric Medicine",
+      "source": "Department Secretary",
+      "status": "submitted",
+      "submitted_at": "2026-07-18T15:10:00Z"
+    }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+Removed attendance remains visible as read-only audit history. The response does not resolve or expose compliance-derived session types or target progress.
+
+---
+
 ## Secretary Endpoints
 
 ### GET `/secretary/reporting-periods`

@@ -122,6 +122,9 @@ Status terms:
 | `/pc/upload-ttf` | Programme PC | Stub only | Medium | Single upload card, compact recent-upload feed, reporting/programme controls stacked | `StubPage.tsx` now; future PC upload page, `UploadCard.tsx`, `index.css` | Medium |
 | `/pc/warnings` | Programme PC | Reuses AdminWarningsPage; scrollable warning tables | Medium | Same warning cards/drawer contract as admin, scoped copy only | `AdminWarningsPage.tsx`, `DetailDrawer.tsx`, `index.css` | Medium |
 | `/pc/config` | Programme PC | Reuses AdminConfigPage; side nav stacks below 1080px; config tables scroll | Medium | Horizontal section tabs or select on mobile, read-only locks preserved, forms fullscreen | `AdminConfigPage.tsx`, `DetailDrawer.tsx`, `index.css` | High |
+| `/pc/resident-attendance` | Programme PC | Responsive overview table/cards | Medium | Filters stack; desktop resident table becomes resident cards at 640px; full-width View attendance action; bounded pagination wraps safely | `PcResidentAttendancePage.tsx`, `PageHero.tsx`, `index.css` | Medium |
+| `/pc/residents/{resident_id}/attendance` | Programme PC | Responsive personal history table/cards | Medium | Summary and filters stack; history becomes cards at 640px; Back remains visible; no drawer or mutation controls | `PcResidentAttendanceDetailPage.tsx`, `PageHero.tsx`, `index.css` | Medium |
+| `/pc/external-attendance` | Programme PC | Separate Non-NHG attendance page | Medium | Preserve its existing table/card pattern and keep it visually distinct from native NHG attendance | `AdminExternalAttendancePage.tsx`, `index.css` | Medium |
 | `/admin` | Master Admin | Good desktop; grids stack at tablet/mobile; recent uploads table not mobile-specific | Low | Keep cards stacked; recent uploads becomes compact list; warnings list stays card-like | `AdminHomePage.tsx`, `index.css` | Medium |
 | `/admin/upload` | Master Admin | Upload grid stacks below 1080px; UploadCard mostly usable | Low | Single-column upload cards, compact file chip, full-width buttons | `AdminUploadPage.tsx`, `UploadCard.tsx`, `index.css` | Low |
 | `/admin/upload/warnings` | Master Admin | Dense filters; grouped table min-width 1160px; drawer details | Low | Collapsible filters, warning issue cards on mobile, fullscreen detail drawer | `AdminWarningsPage.tsx`, `DetailDrawer.tsx`, `index.css` | Medium |
@@ -491,32 +494,35 @@ Mobile patterns:
 - Small config tables can become key/value cards; high-density tables can stay in contained scroll where cards would be misleading.
 - Very dense Parsed Data / Config tables may use contained horizontal scroll on small screens, but the page itself must not overflow.
 
-Group 3: Admin Secretary Events and Resident Submissions
+Group 3: Admin Secretary Events and Native Resident Attendance
 
 - `/admin/secretary-events`
 - `/admin/submissions`
+- `/pc/resident-attendance`
+- `/pc/residents/{resident_id}/attendance`
 
 Mobile patterns:
 
 - Collapsible filters.
 - Metric cards stack.
 - Tables become event/submission cards.
-- Detail drawer fullscreen.
+- Existing admin detail drawers become fullscreen; the PC personal attendance route remains a page and must not become a drawer.
+- PC overview and history use dedicated cards at 640px and bounded Previous/Next pagination without page-level horizontal overflow.
 - Keep admin pages read-only and do not call resident/secretary mutation endpoints.
 
-Group 4: Upload, Home, PC Upload, PC Export
+Group 4: Upload, Home, PC Upload, PC Non-NHG Attendance
 
 - `/admin`
 - `/admin/upload`
 - `/pc/upload-ttf`
-- future `/pc/export`
+- `/pc/external-attendance`
 
 Mobile patterns:
 
 - Home tiles/summary lists stack.
 - Upload cards remain single-column and full width.
 - PC upload stub or future page follows UploadCard responsive rules.
-- Future export page uses filter collapse and cards/table scroll by density.
+- Non-NHG Attendance keeps its separate filter and card/table workflow; do not combine it with native NHG Resident Attendance.
 
 Likely shared files:
 
@@ -629,6 +635,15 @@ Login / role entry
 `/pc/warnings` and `/pc/config`
 
 - Reuse admin responsive primitives but preserve Programme PC scope and read-only/global lock behavior.
+
+`/pc/resident-attendance` and `/pc/residents/{resident_id}/attendance`
+
+- Keep the overview and personal history as separate routes so browser back/forward navigation works; do not substitute a drawer.
+- Stack search/programme/posting controls on narrow screens and convert the resident overview table to cards at 640px.
+- Stack the resident summary and reporting-period/posting/date/source/status filters on narrow screens; convert attendance rows to cards at 640px.
+- Preserve teaching name, date/time, posting, source, status, and the overview's resident identity/count in the card layouts.
+- Keep Previous/Next pagination usable without horizontal overflow and maintain 44px touch targets for route, retry, and pagination actions.
+- Do not expose edit, delete, remove, force-delete, or compliance/target-progress controls at any viewport.
 
 ### Lower-Priority Admin Mobile-Usable Flows
 
