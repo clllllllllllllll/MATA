@@ -4,6 +4,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { breadcrumbMap, navItems, roleOptions } from '../config/navigation'
 import { useAuth } from '../context/useAuth'
 import { useAppState } from '../context/useAppState'
+import { isPcResidentAttendanceDetailPath } from '../routeGuards'
 import type { AppRole } from '../types/app'
 import {
   effectiveProgrammePcScope,
@@ -75,7 +76,9 @@ export const AppShell = ({ children }: PropsWithChildren) => {
     }
     return currentRoleOption.scopeLabel
   })()
-  const breadcrumbs = breadcrumbMap[location.pathname] ?? [currentRoleOption.label]
+  const breadcrumbs = isPcResidentAttendanceDetailPath(location.pathname)
+    ? ['PC', 'NHG Resident Attendance', 'Resident attendance']
+    : breadcrumbMap[location.pathname] ?? [currentRoleOption.label]
   const visibleNavItems = navItems.filter((item) => item.roles.includes(activeRole))
 
   const isNavActive = (path: string) => {
@@ -91,6 +94,9 @@ export const AppShell = ({ children }: PropsWithChildren) => {
     }
     if (path === '/pc/config') {
       return currentPath === '/pc/config'
+    }
+    if (path === '/pc/resident-attendance') {
+      return currentPath === path || isPcResidentAttendanceDetailPath(currentPath)
     }
     if (path === '/secretary/events') {
       return currentPath === '/secretary' || currentPath === '/secretary/events'
@@ -341,7 +347,6 @@ export const AppShell = ({ children }: PropsWithChildren) => {
     </div>
   )
 }
-
 
 
 

@@ -130,6 +130,12 @@ export const navItems: NavItem[] = [
     icon: 'settings',
   },
   {
+    label: 'NHG Resident Attendance',
+    path: '/pc/resident-attendance',
+    roles: ['programme_pc'],
+    icon: 'file',
+  },
+  {
     label: 'Non-NHG Attendance',
     path: '/pc/external-attendance',
     roles: ['programme_pc'],
@@ -184,6 +190,7 @@ export const breadcrumbMap: Record<string, string[]> = {
   '/pc/teaching-events': ['PC', 'Teaching Events'],
   '/pc/warnings': ['PC', 'Warnings'],
   '/pc/config': ['PC', 'Configuration'],
+  '/pc/resident-attendance': ['PC', 'NHG Resident Attendance'],
   '/pc/external-attendance': ['PC', 'Non-NHG Attendance'],
   '/secretary': ['Secretary', 'Teaching Schedule'],
   '/secretary/events': ['Secretary', 'Teaching Schedule'],

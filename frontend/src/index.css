@@ -8093,3 +8093,294 @@ button:disabled,
     gap: 3px;
   }
 }
+
+/* Programme PC native NHG resident attendance */
+.pc-resident-attendance-page,
+.pc-resident-attendance-detail-page {
+  min-width: 0;
+}
+
+.pc-resident-attendance-filters {
+  grid-template-columns: minmax(220px, 1.4fr) minmax(180px, 0.8fr) minmax(190px, 1fr) auto;
+}
+
+.pc-resident-attendance-history-filters {
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+}
+
+.pc-resident-attendance-filter-actions,
+.pc-resident-attendance-hero-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.pc-resident-attendance-filter-actions .button,
+.pc-resident-attendance-view-link {
+  white-space: nowrap;
+}
+
+.pc-resident-attendance-table-card {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.pc-resident-attendance-table-card .table-scroll {
+  transition: opacity 140ms ease;
+}
+
+.pc-resident-attendance-table-card.is-refetching .table-scroll,
+.pc-resident-attendance-table-card.is-refetching .pc-resident-attendance-mobile-list {
+  opacity: 0.7;
+}
+
+.pc-resident-attendance-list-header {
+  align-items: flex-start;
+  padding-bottom: 12px;
+}
+
+.pc-resident-attendance-list-header > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pc-resident-attendance-list-header p {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
+.pc-resident-attendance-overview-table {
+  min-width: 1040px;
+  table-layout: fixed;
+}
+
+.pc-resident-attendance-overview-table th:first-child,
+.pc-resident-attendance-overview-table td:first-child {
+  width: 190px;
+}
+
+.pc-resident-attendance-overview-table th:nth-child(2),
+.pc-resident-attendance-overview-table td:nth-child(2) {
+  width: 120px;
+}
+
+.pc-resident-attendance-overview-table th:nth-child(3),
+.pc-resident-attendance-overview-table td:nth-child(3),
+.pc-resident-attendance-overview-table th:nth-child(4),
+.pc-resident-attendance-overview-table td:nth-child(4) {
+  width: 110px;
+}
+
+.pc-resident-attendance-overview-table th:nth-child(5),
+.pc-resident-attendance-overview-table td:nth-child(5) {
+  width: 210px;
+}
+
+.pc-resident-attendance-overview-table th:nth-child(6),
+.pc-resident-attendance-overview-table td:nth-child(6) {
+  width: 155px;
+  text-align: center;
+}
+
+.pc-resident-attendance-action-cell {
+  width: 170px;
+  text-align: right;
+}
+
+.pc-resident-attendance-view-link {
+  display: inline-flex;
+}
+
+.pc-resident-attendance-history-table {
+  min-width: 980px;
+  table-layout: fixed;
+}
+
+.pc-resident-attendance-history-table th:first-child,
+.pc-resident-attendance-history-table td:first-child {
+  width: 300px;
+}
+
+.pc-resident-attendance-history-table th:nth-child(2),
+.pc-resident-attendance-history-table td:nth-child(2) {
+  width: 130px;
+}
+
+.pc-resident-attendance-history-table th:nth-child(3),
+.pc-resident-attendance-history-table td:nth-child(3) {
+  width: 165px;
+}
+
+.pc-resident-attendance-history-table th:nth-child(4),
+.pc-resident-attendance-history-table td:nth-child(4) {
+  width: 190px;
+}
+
+.pc-resident-attendance-history-table th:nth-child(5),
+.pc-resident-attendance-history-table td:nth-child(5),
+.pc-resident-attendance-history-table th:nth-child(6),
+.pc-resident-attendance-history-table td:nth-child(6) {
+  width: 135px;
+}
+
+.pc-resident-attendance-history-table td:first-child strong,
+.pc-resident-attendance-cell-note {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.pc-resident-attendance-cell-note {
+  margin-top: 3px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.pc-resident-attendance-history-table tr.is-removed td,
+.pc-resident-attendance-card.is-removed {
+  color: var(--ink-4);
+  background: #fafafd;
+}
+
+.pc-resident-attendance-summary {
+  padding: 18px 22px;
+}
+
+.pc-resident-attendance-summary dl {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 14px 20px;
+  margin: 0;
+}
+
+.pc-resident-attendance-summary dl > div,
+.pc-resident-attendance-card-details > div {
+  min-width: 0;
+}
+
+.pc-resident-attendance-summary dt,
+.pc-resident-attendance-card-details dt {
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.pc-resident-attendance-summary dd,
+.pc-resident-attendance-card-details dd {
+  margin: 4px 0 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.pc-resident-attendance-mobile-list {
+  display: none;
+}
+
+.pc-resident-attendance-card {
+  gap: 10px;
+}
+
+.pc-resident-attendance-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.pc-resident-attendance-card-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin: 0;
+}
+
+.pc-resident-attendance-card-note {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.pc-resident-attendance-pagination {
+  min-width: 0;
+}
+
+@media (max-width: 1000px) {
+  .pc-resident-attendance-filters,
+  .pc-resident-attendance-history-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pc-resident-attendance-summary dl {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .pc-resident-attendance-filters,
+  .pc-resident-attendance-history-filters {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    padding: 12px;
+  }
+
+  .pc-resident-attendance-filter-actions,
+  .pc-resident-attendance-hero-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+  }
+
+  .pc-resident-attendance-filter-actions .button,
+  .pc-resident-attendance-hero-actions .button {
+    width: 100%;
+  }
+
+  .pc-resident-attendance-summary {
+    padding: 14px;
+  }
+
+  .pc-resident-attendance-summary dl {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .pc-resident-attendance-table-card .table-scroll {
+    display: none;
+  }
+
+  .pc-resident-attendance-mobile-list {
+    display: grid;
+    gap: 8px;
+    padding: 0 12px 12px;
+  }
+
+  .pc-resident-attendance-view-link {
+    width: 100%;
+  }
+
+  .pc-resident-attendance-pagination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .pc-resident-attendance-pagination > div,
+  .pc-resident-attendance-pagination .button {
+    flex: 1 1 0;
+  }
+}
+
+@media (max-width: 390px) {
+  .pc-resident-attendance-card-details {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -14,6 +14,8 @@ import { AdminStaffAccountsPage } from './pages/admin/AdminStaffAccountsPage'
 import { AdminUploadLogsPage } from './pages/admin/AdminUploadLogsPage'
 import { AdminUploadPage } from './pages/admin/AdminUploadPage'
 import { AdminWarningsPage } from './pages/admin/AdminWarningsPage'
+import { PcResidentAttendanceDetailPage } from './pages/pc/PcResidentAttendanceDetailPage'
+import { PcResidentAttendancePage } from './pages/pc/PcResidentAttendancePage'
 import { PcTeachingEventsPage } from './pages/pc/PcTeachingEventsPage'
 import { PcUploadTtfPage } from './pages/pc/PcUploadTtfPage'
 import { ResidentAttendancePage } from './pages/resident/ResidentAttendancePage'
@@ -161,6 +163,11 @@ const AppRoutes = () => {
       <Route path="/pc/teaching-events" element={shellElement(<PcTeachingEventsPage />)} />
       <Route path="/pc/config" element={shellElement(<AdminConfigPage configViewRole="programme_pc" />)} />
       <Route path="/pc/warnings" element={shellElement(<AdminWarningsPage />)} />
+      <Route path="/pc/resident-attendance" element={shellElement(<PcResidentAttendancePage />)} />
+      <Route
+        path="/pc/residents/:residentId/attendance"
+        element={shellElement(<PcResidentAttendanceDetailPage />)}
+      />
       <Route path="/pc/external-attendance" element={shellElement(<AdminExternalAttendancePage />)} />
       <Route path="/secretary" element={shellElement(<Navigate to="/secretary/events" replace />)} />
       <Route path="/secretary/events" element={shellElement(<SecretaryTeachingSchedulePage />)} />
@@ -180,4 +187,3 @@ function App() {
 }
 
 export default App
-

@@ -39,17 +39,18 @@ Residents log in via React frontend (MCR-only auth in Phase 1)
   → Submit attendance directly via POST /resident/attendance
   → OR submit ad-hoc teaching via POST /resident/adhoc-teaching
   → FastAPI backend validates, persists to PostgreSQL
-  → Compliance engine calculates JIT (just-in-time) on every read
-  → Admin/PC views compliance reports via 5-tab dashboard
+  → Programme PCs review native attendance for residents in their assigned programmes (read-only)
+  → Future Phase 6 compliance engine calculates JIT (just-in-time) on every read
+  → Future Admin/PC compliance dashboard requirements remain a separate phase
 ```
 
 ### Three User Roles
 
 | Role | Identity | Scope | Primary Actions |
 |------|----------|-------|-----------------|
-| **Admin / Programme Coordinator (PC)** | Email + password (Phase 1 stub) | Programme-scoped via `users.programme_scope TEXT[]` | Upload RDB, TTF, FormF1, PH files; manage configuration; view compliance reports; activate/deactivate reporting periods |
+| **Admin / Programme Coordinator (PC)** | Email + password (Phase 1 stub) | Programme-scoped via `users.programme_scope TEXT[]` | Upload RDB, TTF, FormF1, PH files; manage configuration; review native NHG Resident attendance for assigned programmes; activate/deactivate reporting periods; future compliance reporting remains Phase 6 |
 | **Secretary** | Email + password (Phase 1 stub) | Scoped to ONE posting site via `users.posting_code` | Create/manage teaching events; view CME dashboard; view teaching schedule |
-| **NHG Resident** | MCR number only (no password in Phase 1) | Own data only; events filtered by assigned posting, native programme department, and native programme PC events | Submit attendance; submit ad-hoc teaching; view personal compliance dashboard |
+| **NHG Resident** | MCR number only (no password in Phase 1) | Own data only; events filtered by assigned posting, native programme department, and native programme PC events | Submit attendance; submit ad-hoc teaching; view past attendance; future personal compliance dashboard remains Phase 6 |
 | **Non-NHG Resident** | MCR number only after self-registration | Own external attendance only; upcoming NHG posting schedule selected/updated by resident | Submit attendance/ad-hoc teaching; view past attendance; no NHG compliance dashboard or clawback |
 
 ### Reporting Periods
@@ -173,6 +174,7 @@ This file is navigation only. Detailed contracts live in `99_decision_log_and_ga
 - `5B-H` is next before stakeholder UAT and before Phase 6 compliance. Its immediate focus is Vercel/Supabase UAT security: deployment protection, frontend/backend env separation, backend `ENV=production` plus `AUTH_MODE=supabase`, tight CORS, Supabase table/Data API exposure review, migration smoke, first Master Admin bootstrap, and deployment smoke testing.
 - `5B-H-A`, `5B-H-B`, and `5B-H-C` are deployment-security/UAT phases. Do not treat full RLS policy implementation or Phase 6 compliance as part of those subphases.
 - RLS policy implementation is deferred to a dedicated later RLS/grants phase that uses `docs/5b_g_rls_grants_matrix.md` as input.
+- Programme PC NHG Resident Attendance is implemented as a pre-compliance, read-only overview plus a dedicated resident history page. Backend scope is `residents.programme_code IN users.programme_scope`; reads use native `attendance_records` only. Non-NHG Attendance remains separate, and no attendance mutation or compliance/target-progress UI is part of this feature.
 - Phase 6 compliance remains the next major feature phase after the protected deployment/security baseline is acceptable. Phase 6 compliance must read native `attendance_records` only and never join `external_attendance_records`.
 
 ### Open TBDs
