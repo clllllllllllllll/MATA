@@ -341,7 +341,7 @@ export const PcResidentAttendancePage = () => {
                   <th>R year</th>
                   <th>Current posting</th>
                   <th>Total attendance submissions</th>
-                  <th>Action</th>
+                  <th className="pc-resident-attendance-action-header">Action</th>
                 </tr>
               </thead>
               <tbody>

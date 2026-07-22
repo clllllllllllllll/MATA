@@ -128,13 +128,19 @@ assert(overviewSource.includes('Retry'))
 assert(overviewSource.includes('Previous') && overviewSource.includes('Next'))
 assert(
   overviewSource.indexOf('<th>Total attendance submissions</th>')
-    < overviewSource.indexOf('<th>Action</th>'),
+    < overviewSource.indexOf('<th className="pc-resident-attendance-action-header">Action</th>'),
   'overview keeps distinct attendance-count and Action headers',
 )
 assert(
   /\.pc-resident-attendance-overview-table th:nth-child\(6\),[\s\S]*?width: 220px;/.test(stylesSource)
     && /\.pc-resident-attendance-overview-table th:nth-child\(7\),[\s\S]*?width: 180px;/.test(stylesSource),
   'overview count and Action columns have independent usable widths',
+)
+assert(
+  overviewSource.includes('<th className="pc-resident-attendance-action-header">Action</th>')
+    && overviewSource.includes('<td className="pc-resident-attendance-action-cell">')
+    && /\.pc-resident-attendance-action-header,[\s\S]*?\.pc-resident-attendance-action-cell \{[\s\S]*?text-align: center;/.test(stylesSource),
+  'overview Action header and body cells share scoped centered alignment',
 )
 
 assert(detailSource.includes('useParams<{ residentId: string }>()'))

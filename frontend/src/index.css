@@ -8229,10 +8229,13 @@ button:disabled,
 }
 
 .pc-resident-attendance-overview-table th:nth-child(7),
-.pc-resident-attendance-overview-table td:nth-child(7),
-.pc-resident-attendance-action-cell {
+.pc-resident-attendance-overview-table td:nth-child(7) {
   width: 180px;
-  text-align: right;
+}
+
+.pc-resident-attendance-action-header,
+.pc-resident-attendance-action-cell {
+  text-align: center;
 }
 
 .pc-resident-attendance-view-link {
