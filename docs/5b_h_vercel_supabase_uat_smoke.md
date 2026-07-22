@@ -1,6 +1,6 @@
 # 5B-H-C Supabase/Vercel UAT Smoke Checklist
 
-Status: Final audit executed; stakeholder UAT and Phase 6 are NO-GO pending High findings and remaining deployment evidence
+Status: The two High local application-code findings are resolved in merged code and local disposable PostgreSQL verification passed; stakeholder UAT and Phase 6 remain NO-GO pending deployment, Supabase, environment, account, and Data API evidence
 Last updated: 2026-07-22
 
 ## 1. Purpose
@@ -8,6 +8,20 @@ Last updated: 2026-07-22
 This checklist is the required evidence template before stakeholder UAT on Vercel/Supabase. It confirms the protected deployment posture, Supabase auth wiring, first Master Admin bootstrap, migration smoke status, role-scoped API behavior, CORS behavior, no-secret exposure, and no direct browser access to sensitive MATA app tables.
 
 Historical baseline: when this checklist was created on 2026-07-06, every evidence row was `Not run`. The 2026-07-22 results below preserve unsupported deployed checks as `MANUAL VERIFICATION REQUIRED` or `BLOCKED`; local automated evidence is labelled as such. Full findings are in `docs/5b_h_c_deployment_security_audit.md`.
+
+## Post-remediation update — 2026-07-22
+
+| Field | Evidence |
+|---|---|
+| Remediation evidence date | 2026-07-22 |
+| Current `main` commit reviewed | `eaa3d7f1b1329030c88064c81f6fff7999d5fc86` |
+| Authorization remediation | Fix commit `e0efb0db6a163f4b6e82b726deba96ba9f82cef6`, merged by `9f10d587b3ddfe4f49fc10f37b956c689745fe31`; the source commit is an ancestor of current `main`. |
+| Native overlap remediation | Current merged fix commit `a0c4bd11bd67351c5b47274715328c09efc19791`, merged by `eaa3d7f1b1329030c88064c81f6fff7999d5fc86`. Original source hash `94bc0c4f320011580be7199b87c24e78fb62688f` is a historical non-ancestor source hash with the same stable patch ID as `a0c4bd1`. |
+| Post-remediation status | Resolved in merged code; `PASS — local automated` and `PASS — local disposable PostgreSQL`. Not proof of deployed Supabase/Vercel state. |
+
+- Global RDB, FormF1, and Public Holidays / AY Dates uploads now require explicit Master Admin authority. Middleware-backed requests derive that authority from persisted/verified admin level; the existing local header shim remains limited to non-production stub/demo mode. TTF retains its intended dual rule: Master Admin may upload for any programme, while any non-master admin (the Programme PC tier under the provisioning contract) may upload only for a normalized programme in normalized non-empty scope. Blank, null, empty, and whitespace-only Programme PC scope fails closed with `403/403/403` on the three global routes.
+- Native distinct-event overlaps are rejected while the earlier accepted attendance remains unchanged. Same-event duplicate handling remains separate, adjacent half-open intervals remain valid, scheduled and native ad-hoc submissions share the guard, and PostgreSQL transaction-scoped advisory locks prevent concurrent same-resident/date overlap submissions from both succeeding. External attendance remains separate and unchanged.
+- An operator completed a clean disposable PostgreSQL migration from baseline through `20260721_000022 (head)`. The focused command passed `66 passed, 1 warning`; the full backend suite passed `1009 passed, 6 warnings`. The temporary database was successfully dropped. No live database or deployment was accessed, and no persistent database or environment change was made.
 
 ## 2. Preconditions
 
@@ -89,6 +103,7 @@ Required evidence:
 | `attendance_records.session_type_id` remains absent | BLOCKED | Codex | 2026-07-22 | Migration history supports absence; deployed schema not queried. |
 | Native resident auth mapping path is present | BLOCKED | Codex | 2026-07-22 | Repository path exists; deployed schema/account mapping not verified. |
 | No 5B-H migration was introduced for this smoke | PASS | Codex | 2026-07-22 | Audit branch changes documentation only. |
+| Local disposable PostgreSQL clean migration | PASS — local disposable PostgreSQL | Operator | 2026-07-22 | Clean baseline-to-head migration completed; both `alembic current` and `alembic heads` reported `20260721_000022 (head)`. This confirms the migration chain and local PostgreSQL integration behavior only. It is not proof of the deployed Supabase UAT revision, project selection, schema, seed state, grants, or RLS. |
 
 ## 6. First Master Admin Bootstrap Smoke
 
@@ -98,7 +113,7 @@ Use `docs/5b_g_staff_bootstrap_runbook.md`. The bootstrap operator must not past
 |---|---|---|---|---|
 | First Supabase Auth staff user created or selected for UAT | BLOCKED | Codex | 2026-07-22 | No approved UAT account fixture supplied. |
 | Matching `users` row linked by `supabase_user_id` | BLOCKED | Codex | 2026-07-22 | No approved database/account access. |
-| `role='admin'`, `admin_level='master'`, `programme_scope=[]`, and active state verified | BLOCKED | Codex | 2026-07-22 | No approved database/account access. |
+| `role='admin'`, `admin_level='master'`, `programme_scope=[]`, and active state verified | BLOCKED | Codex | 2026-07-22 | No approved database/account access. The empty array is the bootstrap/runbook convention; explicit `admin_level='master'`, not scope shape, grants Master Admin authority. |
 | Master Admin can sign in from deployed frontend | BLOCKED | Codex | 2026-07-22 | Approved credentials unavailable. |
 | Master Admin can reach staff-account bootstrap UI/API | BLOCKED | Codex | 2026-07-22 | Approved credentials unavailable. |
 | Failed or non-master staff account cannot access Master Admin-only surfaces | BLOCKED | Codex | 2026-07-22 | Approved role fixtures unavailable; local authorization tests pass. |
@@ -112,8 +127,9 @@ Use UAT-safe test accounts and resident records only.
 | Staff | Supabase email/password sign-in succeeds for linked active staff user | BLOCKED | Codex | 2026-07-22 | Approved UAT credentials unavailable. |
 | Staff | `/auth/me` returns role/scope from backend DB, not Supabase `user_metadata` | BLOCKED | Codex | 2026-07-22 | Local tests pass; deployed account fixture unavailable. |
 | Master Admin | Can access Master Admin-only config/staff surfaces | BLOCKED | Codex | 2026-07-22 | Local tests pass; deployed account fixture unavailable. |
-| Programme PC | Can access only programme-scoped admin data | FAIL | Codex | 2026-07-22 | Blank-scope synthetic PC reached global RDB, FormF1, and Public Holidays upload mutations. |
-| Programme PC | Cannot access programmes outside `programme_scope` | FAIL | Codex | 2026-07-22 | The three global upload routes do not enforce non-empty scope or explicit Master Admin. |
+| Programme PC | Global RDB, FormF1, and Public Holidays uploads require explicit Master Admin | PASS — local automated | Codex | 2026-07-22 | Resolved in merged code. Blank, null, empty, and whitespace-only Programme PC scope receives `403/403/403`; regression tests verify no parser is called. Not proof of deployed account behavior. |
+| Programme PC | TTF remains limited to a normalized programme in normalized non-empty scope | PASS — local automated | Codex | 2026-07-22 | The source gate permits Master Admin for any programme and otherwise requires a normalized non-master admin scope match; provisioning maps that tier to Programme PC. Not proof of deployed account behavior. |
+| Deployed Programme PC account | Account-based role and scope matrix, including the three global upload denials | BLOCKED — deployed fixture unavailable | Codex | 2026-07-22 | No approved deployed Programme PC or Master Admin account fixture was tested. |
 | Secretary | Can manage only the verified posting scope | BLOCKED | Codex | 2026-07-22 | Local posting-scope tests pass; deployed account fixture unavailable. |
 | Secretary | Cannot create an event outside posting scope | BLOCKED | Codex | 2026-07-22 | Local posting-scope tests pass; deployed account fixture unavailable. |
 | NHG Resident | MCR-only login returns a backend-signed MATA resident session | BLOCKED | Codex | 2026-07-22 | Local auth tests pass; deployed resident fixture unavailable. |
@@ -156,13 +172,13 @@ Run only against UAT-safe fixtures.
 | Admin upload rejects invalid extension | PASS | Codex | 2026-07-22 | Direct local upload tests passed. |
 | Admin upload rejects oversized payload | PASS | Codex | 2026-07-22 | Direct local upload tests passed. |
 | Public holiday upload populates expected public holiday/month boundary data if fixture is available | BLOCKED | Codex | 2026-07-22 | No approved deployed fixture/account. |
-| RDB upload smoke completes if fixture is available | BLOCKED | Codex | 2026-07-22 | No approved deployed fixture/account; scope blocker remains. |
+| RDB upload smoke completes if fixture is available | BLOCKED | Codex | 2026-07-22 | No approved deployed fixture/account. The former local authorization blocker is resolved in merged code. |
 | TTF upload smoke completes if fixture is available | BLOCKED | Codex | 2026-07-22 | No approved deployed fixture/account. |
-| FormF1 upload smoke completes if fixture is available | BLOCKED | Codex | 2026-07-22 | No approved deployed fixture/account; scope blocker remains. |
+| FormF1 upload smoke completes if fixture is available | BLOCKED | Codex | 2026-07-22 | No approved deployed fixture/account. The former local authorization blocker is resolved in merged code. |
 | Secretary teaching event creation works on non-public-holiday date | PASS | Codex | 2026-07-22 | Direct local synthetic service/API tests passed. |
 | Secretary teaching event creation is blocked on public holiday date | PASS | Codex | 2026-07-22 | Direct local synthetic tests passed. |
-| Resident scheduled attendance submission stores one native record and blocks duplicate | PASS | Codex | 2026-07-22 | Direct local synthetic tests passed; distinct-event overlap separately fails below. |
-| Resident distinct-event overlap is rejected | FAIL | Codex | 2026-07-22 | Reproduced native path accepted a distinct event with the same interval and added one row. |
+| Resident scheduled attendance submission stores one native record and blocks same-event duplicate | PASS — local automated | Codex | 2026-07-22 | Same-event uniqueness remains a separate guard and adjacent non-overlapping events remain allowed. This is local evidence, not a deployed workflow result. |
+| Resident distinct-event overlap is rejected | PASS — local disposable PostgreSQL | Operator | 2026-07-22 | Resolved in merged code. Unit coverage and the real PostgreSQL concurrency test verify the earlier accepted attendance is preserved. This is not a deployed UAT workflow result. |
 | Resident ad-hoc submission is blocked on public holiday date | PASS | Codex | 2026-07-22 | Direct local synthetic tests passed. |
 | Non-NHG submission stores external attendance only | PASS | Codex | 2026-07-22 | Direct local synthetic tests passed. |
 | Secretary CSV export opens as text and formula-leading teaching names are neutralized | PASS | Codex | 2026-07-22 | Frontend export contract test passed. |
@@ -184,8 +200,16 @@ Expanded final-audit workflow checks:
 | Source labels distinguish Department Secretary, Programme PC, and Ad-hoc | PASS | Codex | 2026-07-22 | Local read-model tests passed. |
 | Ordinary Secretary/PC deletion is blocked when attendance exists | PASS | Codex | 2026-07-22 | Local service tests passed. |
 | Master force-delete shows split counts and requires exact `DELETE`, reason, and expected counts | PASS | Codex | 2026-07-22 | Local route/service tests passed. |
-| Mixed force-delete is atomic, removes all linked rows, records audit, and preserves unrelated events | BLOCKED | Codex | 2026-07-22 | Guarded PostgreSQL suite refused the non-disposable target; no mutation ran. |
+| Mixed force-delete is atomic, removes all linked rows, records audit, and preserves unrelated events | PASS — local disposable PostgreSQL | Operator | 2026-07-22 | Disposable PostgreSQL integration verified native-only, external-only, mixed, stale-impact, and injected-failure rollback cases. No deployed or live database was mutated. |
 | Conflicting raw headers cannot override a valid deployed identity | BLOCKED | Codex | 2026-07-22 | Local automated test passes; approved deployed bearer fixture unavailable. |
+| Distinct native overlap is rejected while the earlier attendance remains unchanged | PASS — local automated | Codex | 2026-07-22 | Maintained scheduled-attendance tests cover partial overlaps, containment, and request-order atomicity. |
+| Same-event duplicate handling remains separate and adjacent events remain allowed | PASS — local automated | Codex | 2026-07-22 | Duplicate and half-open interval boundary regression coverage passed. |
+| Only submitted native attendance blocks a later distinct overlap | PASS — local automated | Codex | 2026-07-22 | Removed and legacy flagged rows follow the existing inactive contract. |
+| Scheduled and native ad-hoc submissions use the same overlap guard | PASS — local automated | Codex | 2026-07-22 | Both paths reject the same-resident/date overlap before mutation. |
+| Concurrent overlapping native submissions cannot both succeed | PASS — local disposable PostgreSQL | Operator | 2026-07-22 | Transaction-scoped advisory-lock test produced one success, one controlled conflict, and one submitted row. |
+| Native-only, external-only, and mixed force-delete cases remove the intended linked rows and persist audit evidence | PASS — local disposable PostgreSQL | Operator | 2026-07-22 | Three successful PostgreSQL variants passed; the mixed variant also preserved unrelated rows and series siblings. |
+| Stale force-delete expected counts conflict before mutation | PASS — local disposable PostgreSQL | Operator | 2026-07-22 | Event, native attendance, external attendance, and audit state remained unchanged. |
+| Injected force-delete transactional failure rolls back every effect | PASS — local disposable PostgreSQL | Operator | 2026-07-22 | Event, native attendance, external attendance, and audit insertion all rolled back. |
 
 ## 11. Evidence Template
 
@@ -196,11 +220,14 @@ Use this table for each smoke command or manual action. Do not include secret va
 | HC-DEPLOY-001 | Deployment protection | Private/incognito and settings review | MANUAL VERIFICATION REQUIRED | Codex | 2026-07-22 | `docs/5b_h_c_deployment_security_audit.md` | Bot challenge is not proof of stakeholder access control. |
 | HC-ENV-001 | Env separation | Safe deployed env review | MANUAL VERIFICATION REQUIRED | Codex | 2026-07-22 | `docs/5b_h_c_deployment_security_audit.md` | Repository support only. |
 | HC-MIGRATION-001 | Migration smoke | `alembic heads`; target safety check | BLOCKED | Codex | 2026-07-22 | `docs/5b_h_c_deployment_security_audit.md` | Wrong effective database target; expected head `20260721_000022`. |
-| HC-AUTHZ-001 | Auth role smoke | Synthetic blank-scope upload probe | FAIL | Codex | 2026-07-22 | `docs/5b_h_c_deployment_security_audit.md` | Three global upload routes returned `200`. |
+| HC-AUTHZ-001 | Auth role smoke | Historical synthetic blank-scope upload probe | Historical FAIL | Codex | 2026-07-22 | `docs/5b_h_c_deployment_security_audit.md` | At the originally audited commit, the three global upload routes returned `200/200/200`. Preserved as pre-remediation evidence. |
 | HC-HEADERS-001 | Raw headers | Token-free deployed request | PASS | Codex | 2026-07-22 | `docs/5b_h_c_deployment_security_audit.md` | `401`, no identity/internal details. |
 | HC-CORS-001 | Exact CORS allowlist | Approved/rejected preflights plus deployed-list review | MANUAL VERIFICATION REQUIRED | Codex | 2026-07-22 | `docs/5b_h_c_deployment_security_audit.md` | Four runtime probes passed; exact deployed membership was not inspectable. |
 | HC-DATAAPI-001 | Supabase Data API boundary | Source scan only | MANUAL VERIFICATION REQUIRED | Codex | 2026-07-22 | `docs/5b_h_c_deployment_security_audit.md` | Live grants/network/public-key denial unverified. |
-| HC-FUNCTIONAL-001 | Functional smoke | Synthetic native overlap probe | FAIL | Codex | 2026-07-22 | `docs/5b_h_c_deployment_security_audit.md` | Native distinct overlap accepted. |
+| HC-FUNCTIONAL-001 | Functional smoke | Historical synthetic native overlap probe | Historical FAIL | Codex | 2026-07-22 | `docs/5b_h_c_deployment_security_audit.md` | At the originally audited commit, the native distinct overlap was accepted. Preserved as pre-remediation evidence. |
+| HC-AUTHZ-REMEDIATION-001 | Authorization remediation | Review merged fix and global-upload regression coverage | PASS — local automated | Codex | 2026-07-22 | `docs/5b_h_c_deployment_security_audit.md` | Resolved in merged code by `e0efb0d` / `9f10d58`; blank-scope reproduction changed from `200/200/200` to `403/403/403`. Operator-reported pre-merge branch verification included 44 upload, 46 auth, 127 affected parser/rate-limit, and 992 full-suite tests. |
+| HC-OVERLAP-REMEDIATION-001 | Native overlap remediation | Review merged guard and PostgreSQL concurrency coverage | PASS — local disposable PostgreSQL | Codex | 2026-07-22 | `docs/5b_h_c_deployment_security_audit.md` | Resolved by merged patch-equivalent commit `a0c4bd1` / merge `eaa3d7f`; native concurrent overlaps cannot both succeed. Operator-reported pre-merge branch verification included 156 focused, 2 exact reproduction, 1 PostgreSQL concurrency, and 993 full-suite tests. |
+| HC-POSTGRES-VERIFY-001 | Post-merge PostgreSQL verification | Clean migration, compile, focused suite, full suite, and cleanup | PASS — local disposable PostgreSQL | Operator | 2026-07-22 | `docs/5b_h_c_deployment_security_audit.md` | Head `20260721_000022`; focused `66 passed, 1 warning`; full `1009 passed, 6 warnings`; five force-delete cases and native concurrency passed; disposable database dropped. Local-only evidence and not proof of deployed Supabase/Vercel state. |
 
 ## 12. Go/No-Go For Stakeholder UAT
 
@@ -217,14 +244,21 @@ GO only when all are true:
 - No direct browser access to sensitive MATA app tables is found.
 - No high/critical finding remains open without owner-approved mitigation.
 
-Final 2026-07-22 result: `NO-GO — BLOCKERS MUST BE FIXED`.
+Final 2026-07-22 result: `NO-GO — CODE BLOCKERS RESOLVED; DEPLOYMENT EVIDENCE PENDING`.
 
-High blockers:
+The original two High local application-code findings are closed: global uploads require explicit Master Admin authority, and native distinct-event overlaps are rejected with PostgreSQL concurrency protection. The following deployed/manual evidence still prevents stakeholder UAT approval:
 
-- blank-scope Programme PC access to global RDB, FormF1, and Public Holidays upload mutations;
-- native distinct-event overlap accepted instead of rejected.
+- Vercel deployment access protection and stakeholder access membership are not verified.
+- Deployed backend `ENV=production` and `AUTH_MODE=supabase` are not safely verified.
+- Exact deployed `CORS_ORIGINS` membership has not been manually reviewed.
+- Deployed frontend/backend secret and environment separation has not been manually confirmed.
+- The approved Supabase UAT project, migration revision, schema, and seed state are not verified.
+- First Master Admin bootstrap and the deployed account-role workflow matrix are not verified.
+- Supabase Data API, grants, RLS, and exposed-schema boundaries are not verified.
+- The deployed valid-bearer conflicting-header case has not been executed.
+- The deployed role and functional workflow matrix remains incomplete.
 
-Deployment protection, backend production/Supabase modes, migration/schema state, Data API exposure, and approved deployed account workflows also remain manual or blocked. Phase 6 is not approved.
+The local disposable PostgreSQL evidence is not proof of deployed Supabase/Vercel state. Stakeholder UAT remains NO-GO and Phase 6 is not approved.
 
 ## 13. Rollback
 
