@@ -5,13 +5,16 @@ import importlib.util
 import json
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from app.config import Settings
+from app.middleware.auth_stub import AuthIdentity, AuthStubMiddleware
 from app.middleware.errors import install_error_handlers
 from app.routers import admin
 from app.services.parser_common import ParserResult, write_upload_log
@@ -31,9 +34,30 @@ def _settings_override() -> Settings:
     return Settings(max_upload_size_mb=10, _env_file=None)
 
 
-def _build_client() -> TestClient:
+def _build_client(settings: Settings | None = None) -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
+    app.include_router(admin.router)
+
+    async def _db_override():
+        yield None
+
+    app.dependency_overrides[admin.get_db_session] = _db_override
+    app.dependency_overrides[admin.get_settings] = (
+        (lambda: settings) if settings is not None else _settings_override
+    )
+    return TestClient(app)
+
+
+def _build_identity_client(identity: AuthIdentity) -> TestClient:
+    app = FastAPI()
+    install_error_handlers(app)
+
+    @app.middleware("http")
+    async def _set_verified_identity(request, call_next):  # noqa: ANN001
+        request.state.identity = identity
+        return await call_next(request)
+
     app.include_router(admin.router)
 
     async def _db_override():
@@ -44,12 +68,141 @@ def _build_client() -> TestClient:
     return TestClient(app)
 
 
+class _PersistedUserSession:
+    def __init__(self, user: SimpleNamespace) -> None:
+        self.user = user
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001, ARG002
+        return None
+
+    async def scalar(self, statement):  # noqa: ANN001, ARG002
+        return self.user
+
+
+def _build_local_middleware_client(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    auth_mode: str,
+    user: SimpleNamespace,
+) -> TestClient:
+    settings = Settings(
+        environment="test",
+        auth_mode=auth_mode,
+        max_upload_size_mb=10,
+        _env_file=None,
+    )
+    monkeypatch.setattr(
+        "app.middleware.auth_stub.AsyncSessionLocal",
+        lambda: _PersistedUserSession(user),
+    )
+    app = FastAPI()
+    install_error_handlers(app)
+    app.add_middleware(AuthStubMiddleware, settings=settings)
+    app.include_router(admin.router)
+
+    async def _db_override():
+        yield None
+
+    app.dependency_overrides[admin.get_db_session] = _db_override
+    app.dependency_overrides[admin.get_settings] = lambda: settings
+    return TestClient(app)
+
+
 def _admin_headers() -> dict[str, str]:
     return {
         "X-User-Role": "admin",
         "X-User-Id": str(uuid4()),
         "X-User-Programme": "DR,GRM",
+        "X-Admin-Level": "master",
     }
+
+
+def _global_upload_responses(
+    client: TestClient,
+    *,
+    headers: dict[str, str] | None = None,
+) -> dict[str, object]:
+    period_id = str(uuid4())
+    files = {
+        "file": (
+            "source.xlsx",
+            _make_valid_xlsx_bytes(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    return {
+        "rdb": client.post(
+            "/admin/upload/rdb",
+            headers=headers,
+            data={"reporting_period_id": period_id},
+            files=files,
+        ),
+        "form_f1": client.post(
+            "/admin/upload/form-f1",
+            headers=headers,
+            data={"reporting_period_id": period_id},
+            files=files,
+        ),
+        "public_holidays": client.post(
+            "/admin/upload/public-holidays",
+            headers=headers,
+            files=files,
+        ),
+    }
+
+
+def _ttf_upload_response(
+    client: TestClient,
+    *,
+    headers: dict[str, str] | None = None,
+):
+    return client.post(
+        "/admin/upload/ttf",
+        headers=headers,
+        data={
+            "reporting_period_id": str(uuid4()),
+            "programme_code": "DR",
+        },
+        files={
+            "file": (
+                "ttf.xlsx",
+                _make_valid_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+
+def _mock_upload_parsers(monkeypatch) -> list[str]:  # noqa: ANN001
+    called: list[str] = []
+
+    async def _fake_rdb_parser(**kwargs):  # noqa: ARG001
+        called.append("rdb")
+        return ParserResult(upload_type="rdb")
+
+    async def _fake_formf1_parser(**kwargs):  # noqa: ARG001
+        called.append("form_f1")
+        return ParserResult(upload_type="form_f1")
+
+    async def _fake_ttf_parser(**kwargs):  # noqa: ARG001
+        called.append("ttf")
+        return ParserResult(upload_type="ttf")
+
+    async def _fake_public_holiday_parser(**kwargs):  # noqa: ARG001
+        called.append("public_holidays")
+        return ParserResult(upload_type="public_holidays")
+
+    monkeypatch.setattr("app.services.rdb_parser.parse_rdb_upload", _fake_rdb_parser)
+    monkeypatch.setattr("app.routers.admin.parse_ttf_upload", _fake_ttf_parser)
+    monkeypatch.setattr("app.routers.admin.parse_formf1_upload", _fake_formf1_parser)
+    monkeypatch.setattr(
+        "app.routers.admin.parse_public_holiday_upload",
+        _fake_public_holiday_parser,
+    )
+    return called
 
 
 def test_endpoint_slot_determines_parser_not_filename(monkeypatch) -> None:
@@ -264,10 +417,11 @@ def test_non_admin_access_rejected() -> None:
     assert response.status_code == 403
 
 
-def test_all_upload_endpoints_reject_non_admin() -> None:
+@pytest.mark.parametrize("role", ["secretary", "resident"])
+def test_all_upload_endpoints_reject_non_admin(role: str) -> None:
     client = _build_client()
     headers = {
-        "X-User-Role": "secretary",
+        "X-User-Role": role,
         "X-User-Id": str(uuid4()),
     }
     period_id = str(uuid4())
@@ -306,6 +460,180 @@ def test_all_upload_endpoints_reject_non_admin() -> None:
     assert ttf.status_code == 403
     assert form_f1.status_code == 403
     assert public_holidays.status_code == 403
+
+
+def test_verified_explicit_master_admin_can_access_all_uploads(monkeypatch) -> None:
+    called = _mock_upload_parsers(monkeypatch)
+    identity = AuthIdentity(
+        role="admin",
+        subject_id=str(uuid4()),
+        admin_level="master",
+        programme_scope=[],
+    )
+    client = _build_identity_client(identity)
+    responses = _global_upload_responses(client)
+    responses["ttf"] = _ttf_upload_response(client)
+
+    assert {name: response.status_code for name, response in responses.items()} == {
+        "rdb": 200,
+        "form_f1": 200,
+        "public_holidays": 200,
+        "ttf": 200,
+    }
+    assert called == ["rdb", "form_f1", "public_holidays", "ttf"]
+
+
+def test_scoped_programme_pc_cannot_access_global_uploads(monkeypatch) -> None:
+    called = _mock_upload_parsers(monkeypatch)
+    responses = _global_upload_responses(
+        _build_client(),
+        headers={
+            "X-User-Role": "admin",
+            "X-User-Id": str(uuid4()),
+            "X-User-Programme": "DR,GRM",
+        },
+    )
+
+    assert {name: response.status_code for name, response in responses.items()} == {
+        "rdb": 403,
+        "form_f1": 403,
+        "public_holidays": 403,
+    }
+    assert called == []
+
+
+@pytest.mark.parametrize(
+    "programme_scope",
+    [None, [], [""], ["   "]],
+    ids=["null", "empty", "blank", "whitespace-only"],
+)
+def test_verified_non_master_empty_scope_never_grants_global_upload_access(
+    monkeypatch,
+    programme_scope: list[str] | None,
+) -> None:
+    called = _mock_upload_parsers(monkeypatch)
+    identity = AuthIdentity(
+        role="admin",
+        subject_id=str(uuid4()),
+        admin_level="programme",
+        programme_scope=programme_scope,
+    )
+    client = _build_identity_client(identity)
+    responses = _global_upload_responses(client)
+    responses["ttf"] = _ttf_upload_response(client)
+
+    assert {response.status_code for response in responses.values()} == {403}
+    assert called == []
+
+
+@pytest.mark.parametrize(
+    "scope_header",
+    [None, "", " ", " , "],
+    ids=["missing", "empty", "blank", "whitespace-only"],
+)
+def test_local_header_fallback_scope_never_implies_master(
+    monkeypatch,
+    scope_header: str | None,
+) -> None:
+    called = _mock_upload_parsers(monkeypatch)
+    headers = {
+        "X-User-Role": "admin",
+        "X-User-Id": str(uuid4()),
+    }
+    if scope_header is not None:
+        headers["X-User-Programme"] = scope_header
+
+    client = _build_client()
+    responses = _global_upload_responses(client, headers=headers)
+    responses["ttf"] = _ttf_upload_response(client, headers=headers)
+
+    assert {response.status_code for response in responses.values()} == {403}
+    assert called == []
+
+
+@pytest.mark.parametrize("auth_mode", ["stub", "demo"])
+def test_isolated_router_fallback_requires_explicit_master_header_for_global_uploads(
+    monkeypatch,
+    auth_mode: str,
+) -> None:
+    called = _mock_upload_parsers(monkeypatch)
+    settings = Settings(
+        environment="test",
+        auth_mode=auth_mode,
+        max_upload_size_mb=10,
+        _env_file=None,
+    )
+    client = _build_client(settings)
+    programme_pc = {
+        "X-User-Role": "admin",
+        "X-User-Id": str(uuid4()),
+        "X-User-Programme": "DR",
+    }
+    denied = _global_upload_responses(client, headers=programme_pc)
+    allowed = _global_upload_responses(client, headers=_admin_headers())
+
+    assert {response.status_code for response in denied.values()} == {403}
+    assert {response.status_code for response in allowed.values()} == {200}
+    assert called == ["rdb", "form_f1", "public_holidays"]
+
+
+@pytest.mark.parametrize("auth_mode", ["stub", "demo"])
+def test_local_auth_middleware_uses_persisted_master_state_for_global_uploads(
+    monkeypatch: pytest.MonkeyPatch,
+    auth_mode: str,
+) -> None:
+    called = _mock_upload_parsers(monkeypatch)
+    programme_pc_id = uuid4()
+    programme_pc = SimpleNamespace(
+        id=programme_pc_id,
+        role="admin",
+        is_active=True,
+        admin_level="programme",
+        programme_scope=["DR"],
+        current_staff_actor_name=None,
+    )
+    programme_pc_client = _build_local_middleware_client(
+        monkeypatch,
+        auth_mode=auth_mode,
+        user=programme_pc,
+    )
+    denied = _global_upload_responses(
+        programme_pc_client,
+        headers={
+            "X-User-Role": "admin",
+            "X-User-Id": str(programme_pc_id),
+            "X-User-Programme": "DR",
+            "X-Admin-Level": "master",
+        },
+    )
+
+    assert {response.status_code for response in denied.values()} == {403}
+    assert called == []
+
+    master_id = uuid4()
+    master = SimpleNamespace(
+        id=master_id,
+        role="admin",
+        is_active=True,
+        admin_level="master",
+        programme_scope=None,
+        current_staff_actor_name=None,
+    )
+    master_client = _build_local_middleware_client(
+        monkeypatch,
+        auth_mode=auth_mode,
+        user=master,
+    )
+    allowed = _global_upload_responses(
+        master_client,
+        headers={
+            "X-User-Role": "admin",
+            "X-User-Id": str(master_id),
+        },
+    )
+
+    assert {response.status_code for response in allowed.values()} == {200}
+    assert called == ["rdb", "form_f1", "public_holidays"]
 
 
 def test_upload_logs_helper_can_write_row() -> None:
@@ -959,6 +1287,44 @@ def test_programme_pc_can_upload_ttf_only_for_scoped_programme(monkeypatch) -> N
     assert allowed.status_code == 200
     assert forbidden.status_code == 403
     assert captured_programmes == ["DR"]
+
+
+def test_programme_pc_ttf_scope_check_normalizes_persisted_and_requested_code(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_ttf_parser(**kwargs):
+        captured.update(kwargs)
+        return ParserResult(upload_type="ttf")
+
+    monkeypatch.setattr("app.routers.admin.parse_ttf_upload", _fake_ttf_parser)
+
+    client = _build_identity_client(
+        AuthIdentity(
+            role="admin",
+            subject_id=str(uuid4()),
+            admin_level="programme",
+            programme_scope=[" dr "],
+        ),
+    )
+    response = client.post(
+        "/admin/upload/ttf",
+        data={
+            "reporting_period_id": str(uuid4()),
+            "programme_code": " dr ",
+        },
+        files={
+            "file": (
+                "ttf.xlsx",
+                _make_valid_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["programme_code"] == "DR"
 
 
 def test_programme_pc_with_empty_scope_cannot_upload_ttf(monkeypatch) -> None:

@@ -309,7 +309,7 @@ No push/live-update channel is implied in the current backend. After successful 
 
 Upload RDB Posting Schedule Excel file.
 
-- **Auth:** admin only
+- **Auth:** explicit Master Admin only (`role = admin` and persisted/verified `admin_level = master`). Programme PCs, including accounts with null, empty, blank, or whitespace-only `programme_scope`, receive `403`.
 - **Content-Type:** multipart/form-data
 - **Body:** `file` (xlsx), `reporting_period_id` (UUID)
 - **Processing:** See `docs/parsing.md` § RDB Parser
@@ -372,7 +372,7 @@ Upload RDB Posting Schedule Excel file.
 
 Upload Teaching Target File Excel.
 
-- **Auth:** admin only
+- **Auth:** explicit Master Admin for any programme, or Programme PC when the normalized requested `programme_code` is in the normalized persisted `programme_scope`. Null, empty, blank, whitespace-only, missing, or out-of-scope Programme PC scope receives `403`; none of these states imply Master Admin.
 - **Content-Type:** multipart/form-data
 - **Body:** `file` (xlsx), `reporting_period_id` (UUID), `programme_code` (string)
 - **Processing:** See `docs/parsing.md` § TTF Parser
@@ -409,7 +409,7 @@ Upload Teaching Target File Excel.
 
 Upload FormF1 Excel file for active/inactive status per resident per calendar month.
 
-- **Auth:** admin only
+- **Auth:** explicit Master Admin only (`role = admin` and persisted/verified `admin_level = master`). Programme PCs, including accounts with null, empty, blank, or whitespace-only `programme_scope`, receive `403`.
 - **Content-Type:** multipart/form-data
 - **Body:** `file` (xlsx), `reporting_period_id` (UUID)
 - **Processing:** See `docs/parsing.md` § FormF1 Parser
@@ -1031,7 +1031,7 @@ Upload the Academic Calendar / Public Holiday workbook to seed:
 
 Endpoint name remains unchanged for backward compatibility.
 
-- **Auth:** admin only
+- **Auth:** explicit Master Admin only (`role = admin` and persisted/verified `admin_level = master`). Programme PCs, including accounts with null, empty, blank, or whitespace-only `programme_scope`, receive `403`.
 - **Content-Type:** multipart/form-data
 - **Body:** `file` (xlsx or csv)
 - **Parser selection:** endpoint/upload slot determines parser; filename is audit-only

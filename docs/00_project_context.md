@@ -48,7 +48,7 @@ Residents log in via React frontend (MCR-only auth in Phase 1)
 
 | Role | Identity | Scope | Primary Actions |
 |------|----------|-------|-----------------|
-| **Admin / Programme Coordinator (PC)** | Email + password (Phase 1 stub) | Programme-scoped via `users.programme_scope TEXT[]` | Upload RDB, TTF, FormF1, PH files; manage configuration; review native NHG Resident attendance for assigned programmes; activate/deactivate reporting periods; future compliance reporting remains Phase 6 |
+| **Master Admin / Programme Coordinator (PC)** | Email + password (Phase 1 stub) | Master Admin is the explicit persisted `role = admin`, `admin_level = master` tier. PCs are programme-scoped via `users.programme_scope TEXT[]`; missing, null, empty, and blank scopes grant no programme access and never imply Master Admin. | Master Admin may upload RDB, FormF1, Academic Calendar / PH, and any programme's TTF. A PC may upload TTF only for a normalized programme in scope; other actions remain programme-scoped. |
 | **Secretary** | Email + password (Phase 1 stub) | Scoped to ONE posting site via `users.posting_code` | Create/manage teaching events; view CME dashboard; view teaching schedule |
 | **NHG Resident** | MCR number only (no password in Phase 1) | Own data only; events filtered by assigned posting, native programme department, and native programme PC events | Submit attendance; submit ad-hoc teaching; view past attendance; future personal compliance dashboard remains Phase 6 |
 | **Non-NHG Resident** | MCR number only after self-registration | Own external attendance only; upcoming NHG posting schedule selected/updated by resident | Submit attendance/ad-hoc teaching; view past attendance; no NHG compliance dashboard or clawback |
@@ -61,12 +61,12 @@ Six-month windows (H1: Jan–June, H2: Jul–Dec) stored in the `reporting_perio
 
 | File | Uploaded By | What It Contains | Tables Written |
 |------|------------|-----------------|----------------|
-| **RDB** (Resident Database / Posting Schedule) | Admin | Which resident is at which posting site by month | `residents`, `resident_postings`, `posting_codes` |
-| **TTF** (Teaching Target File) | Admin (PC creates from STP) | Compliance targets: session types, monthly targets, keywords, tags | `teaching_targets`, `session_types`, `teaching_name_catalogue`, `posting_codes`, `posting_groups` |
-| **FormF1** | Admin | Active/inactive status per resident per calendar month | `form_f1_records` |
-| **Academic Calendar / Public Holidays** | Admin | Public holiday dates plus AY date boundaries (`Public Holidays` + `AY Dates` sheets; `Fr RMT` ignored) | `public_holidays`, `academic_month_boundaries` |
+| **RDB** (Resident Database / Posting Schedule) | Master Admin | Which resident is at which posting site by month | `residents`, `resident_postings`, `posting_codes` |
+| **TTF** (Teaching Target File) | Master Admin, or Programme PC for a normalized programme in scope (PC creates from STP) | Compliance targets: session types, monthly targets, keywords, tags | `teaching_targets`, `session_types`, `teaching_name_catalogue`, `posting_codes`, `posting_groups` |
+| **FormF1** | Master Admin | Active/inactive status per resident per calendar month | `form_f1_records` |
+| **Academic Calendar / Public Holidays** | Master Admin | Public holiday dates plus AY date boundaries (`Public Holidays` + `AY Dates` sheets; `Fr RMT` ignored) | `public_holidays`, `academic_month_boundaries` |
 
-**STP (Structured Teaching Plan):** Created by Secretary. A planning document only. **STP is never uploaded to the system.** The PC manually converts STP to TTF before Admin uploads TTF. Column K (Details of Training / tag info) is absent from STP and must be added manually by PC — this is why conversion cannot be automated.
+**STP (Structured Teaching Plan):** Created by Secretary. A planning document only. **STP is never uploaded to the system.** The PC manually converts STP to TTF before a Master Admin or Programme PC for that normalized in-scope programme uploads it. Column K (Details of Training / tag info) is absent from STP and must be added manually by PC — this is why conversion cannot be automated.
 
 ### Legacy Cutover
 
@@ -401,10 +401,10 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 
 ### Admin / Programme Coordinator (PC)
 
-**Scope:** Programme-scoped via `users.programme_scope TEXT[]`. An admin account only sees residents, targets, and reports for their assigned programmes. `NULL` = no access (not all-access).
+**Scope:** Master Admin is an explicit persisted tier (`role = admin`, `admin_level = master`). Programme Coordinators are scoped via `users.programme_scope TEXT[]`; missing, `NULL`, empty, and blank scopes grant no programme access (not all-access) and never imply Master Admin.
 
 **RDB Upload Flow:**
-1. Admin selects reporting period and uploads `.xlsx` via `POST /admin/upload/rdb`
+1. Master Admin selects reporting period and uploads `.xlsx` via `POST /admin/upload/rdb`
 2. `rdb_parser.py` detects sheets dynamically (not by name — by scanning for date-range headers in row 2 and MCR patterns in column C)
 3. Parser looks up `programmes` table for each resident's specialization:
    - `rdb_alias` normalisation (e.g., `Infectious Disease` → `ID`, `Surgery-in-General` → `SIG`)
@@ -417,7 +417,7 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 8. Re-upload: safe — treats upload as complete snapshot and replaces all `resident_postings` within the selected `reporting_period_id` after successful parse/validation
 
 **TTF Upload Flow:**
-1. Admin selects reporting period AND programme code, then uploads `.xlsx` via `POST /admin/upload/ttf`
+1. Master Admin selects any programme, or a Programme PC selects a normalized programme in their scope, then uploads `.xlsx` via `POST /admin/upload/ttf`
 2. Acquires scope-level PostgreSQL advisory lock (returns 409 if contended)
 3. `ttf_parser.py` validates all rows before any writes
 4. Full replace within `(reporting_period_id, programme_code)` scope: deletes existing `teaching_targets` and `teaching_name_catalogue` rows, then inserts new ones
@@ -428,7 +428,7 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 9. Admin uses `PUT /admin/teaching-targets/{id}` CRUD for mid-period corrections (updates `details_of_training` and re-seeds catalogue rows for that specific target)
 
 **FormF1 Upload Flow:**
-1. Admin selects reporting period and uploads `.xlsx` via `POST /admin/upload/form-f1`
+1. Master Admin selects reporting period and uploads `.xlsx` via `POST /admin/upload/form-f1`
 2. `form_f1_parser.py` reads `Table 1`, detects header row/columns dynamically where possible (with current-template fallback E for MCR, M–X for monthly statuses, Y for promotion date)
 3. Persists only MCR, monthly statuses (`status_raw` + `is_active` by month), and promotion date; other FormF1 profile columns are non-authoritative
 4. Status normalisation: `Active`/`Extension` → `is_active = true`; `Inactive` → `is_active = false`
@@ -436,7 +436,7 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 6. Compliance uses the status selected by the AY bucket label for the entire bucket, including dates that cross a raw calendar-month boundary
 
 **Academic Calendar / Public Holidays Upload Flow:**
-1. Admin uploads workbook via `POST /admin/upload/public-holidays` (endpoint name unchanged)
+1. Master Admin uploads workbook via `POST /admin/upload/public-holidays` (endpoint name unchanged)
 2. Parser reads `Public Holidays` sheet into `public_holidays`
 3. Parser reads `AY Dates` sheet into `academic_month_boundaries`
 4. `Fr RMT` sheet is ignored
@@ -480,7 +480,7 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 - Recurrence: `POST /secretary/teaching-events/series` materialises individual event rows. PH occurrences skipped with warning. Three edit granularities: "this event only", "this and all following", "all events in the series"
 - Cannot delete events that have attendance records (409)
 
-**STP Ownership:** Secretary creates STP as a planning document. STP is never uploaded to the system. PC manually converts STP → TTF before Admin uploads. Column K (Details of Training) must be added manually.
+**STP Ownership:** Secretary creates STP as a planning document. STP is never uploaded to the system. PC manually converts STP → TTF before a Master Admin or Programme PC for that normalized in-scope programme uploads it. Column K (Details of Training) must be added manually.
 
 **Provisioning:** TTSH-only at launch — 1 account per TTSH posting code. No schema change needed for other institutions.
 
@@ -610,7 +610,7 @@ See `99_decision_log_and_gap_audit.md` for the full decision log with reasoning 
 
 ### RDB (Resident Database / Posting Schedule)
 
-- **Owner:** Admin uploads
+- **Owner:** Master Admin uploads
 - **Format:** `.xlsx`
 - **Sheets:** Dynamic — detected by scanning for date-range headers in row 2 and MCR patterns in column C. Known sheets: `Phase 1 & 2`, `Phase 3`, `Phase 1 & 2 (FM)`, `SSR`. Do NOT hardcode sheet names.
 - **Key columns:** A (employee_code), B (name), C (MCR), D (classification), E (base_institution), F (r_year), G (specialization → programme_code), H (reg_type), I+ (posting per month — dynamic range)
@@ -639,7 +639,7 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 
 ### TTF (Teaching Target File)
 
-- **Owner:** Admin uploads; PC manually created from STP
+- **Owner:** Master Admin uploads for any programme; Programme PC uploads only for a normalized programme in scope and manually creates it from STP
 - **Format:** `.xlsx`
 - **Columns:** A (reporting_period), B (programme_code), C (r_year — may be comma-separated), D (posting_code), E (dashboard_posting → seeds `posting_groups`), F (session_type with `[Xh]` duration), G (monthly_target), H (is_tracked), I (is_reallocatable), J (tag), K (details_of_training — comma-separated keywords, **mandatory**)
 - **Column K is mandatory.** Absent from STP — PC adds manually. Without it, `teaching_name_catalogue` is empty and residents see zero events.
@@ -652,7 +652,7 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 
 ### FormF1
 
-- **Owner:** Admin uploads
+- **Owner:** Master Admin uploads
 - **Format:** `.xlsx`
 - **Sheet:** `Table 1`; detect header row and required columns dynamically where practical (current template often has row 28 headers and row 29+ data)
 - **Columns used for persistence:** MCR, monthly status columns, promotion date/senior promotion date only
@@ -843,7 +843,7 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 ### Pages and Routes (Per Role)
 
 **Admin:**
-- Upload pages: RDB, TTF, FormF1, PH (each with file select + POST + result display)
+- Upload pages: Master Admin has RDB, TTF, FormF1, and PH; Programme PC has TTF only for a normalized programme in scope (each with file select + POST + result display)
 - Configuration panel: CRUD for `loa_types`, `weekend_exceptions`, `multi_posting_rules`, `posting_groups`, `global_session_types`, `programmes`
 - Programme teaching event management (planned 4B): scheduled PC-created events scoped by programme
 - Secretary/PC Events: Master Admin review of Secretary and Programme PC scheduled events with an audited force-delete confirmation flow

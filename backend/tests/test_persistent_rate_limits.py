@@ -155,12 +155,20 @@ def _upload_client(session: _UploadRateLimitSession) -> TestClient:
     return TestClient(app)
 
 
-def _admin_headers(user_id: str | None = None, programme_scope: str = "DR,GERI") -> dict[str, str]:
-    return {
+def _admin_headers(
+    user_id: str | None = None,
+    programme_scope: str = "DR,GERI",
+    *,
+    master: bool = False,
+) -> dict[str, str]:
+    headers = {
         "X-User-Role": "admin",
         "X-User-Id": user_id or str(uuid4()),
         "X-User-Programme": programme_scope,
     }
+    if master:
+        headers["X-Admin-Level"] = "master"
+    return headers
 
 
 @pytest.mark.asyncio
@@ -442,7 +450,10 @@ def test_upload_rate_limit_blocks_before_parser_work(monkeypatch: pytest.MonkeyP
     responses = [
         client.post(
             "/admin/upload/rdb",
-            headers=_admin_headers(user_id="11111111-1111-1111-1111-111111111111"),
+            headers=_admin_headers(
+                user_id="11111111-1111-1111-1111-111111111111",
+                master=True,
+            ),
             data={"reporting_period_id": period_id},
             files=files,
         )

@@ -348,7 +348,7 @@ These entries supersede any earlier contradictory current-state entry in this au
 
 #### Decision: STP never uploaded — TTF is the compliance input
 - **Status:** ✅ Confirmed
-- **Decision:** STP is a planning document created by secretaries. It is never uploaded to the system. No STP parser exists. PC manually converts STP to TTF before Admin uploads TTF. Column K (Details of Training) is absent from STP and must be added manually.
+- **Decision:** STP is a planning document created by secretaries. It is never uploaded to the system. No STP parser exists. PC manually converts STP to TTF before a Master Admin or Programme PC for that normalized in-scope programme uploads it. Column K (Details of Training) is absent from STP and must be added manually.
 - **Reasoning:** STP lacks the structured data needed for compliance (column K keywords, tags, reallocation flags). The PC adds this data during manual conversion. Automating the conversion is not possible without column K.
 - **Alternatives considered:** STP upload with auto-conversion — rejected because column K data does not exist in STP.
 - **Consequences for codebase:** No `stp_parser.py`. No STP upload endpoint. TTF is the only teaching target upload path.

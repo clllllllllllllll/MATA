@@ -73,7 +73,7 @@ mata/
 
 | Role | Auth Method | Scope |
 |------|------------|-------|
-| Admin (Programme Coordinator) | Email + password | Programme-scoped via `programme_scope TEXT[]`. Each account linked to one or more programmes. Manages RDB, TTF, FormF1, and Academic Calendar / Public Holidays uploads, teaching targets, period close, multi-posting rules, weekend exceptions, all reporting views for their programmes only. |
+| Admin (Master Admin / Programme Coordinator) | Email + password | Master Admin is an explicit persisted tier (`role = admin`, `admin_level = master`) and alone may upload RDB, FormF1, and Academic Calendar / Public Holidays; it may upload TTF for any programme. A Programme Coordinator is scoped via `programme_scope TEXT[]`, may upload TTF only for a normalized programme in that scope, and otherwise manages programme-scoped targets and reporting. A missing, null, empty, or blank scope grants no programme access and never implies Master Admin. |
 | Department Secretary | Email + password | Scoped to ONE specific posting site (e.g. TTSHAnaes only). Creates teaching events, views CME Dashboard and Teaching Schedule. Cannot create events on public holidays. |
 | Resident | MCR number only | Sees teachings for current posting and native programme posting. Submission Portal + personal Dashboard + ad-hoc teaching submission. |
 | External Resident | MCR number only after self-registration | NUH/SingHealth residents posted to NHG/TTSH departments. Uses separate external resident tables, can submit attendance/ad-hoc teaching, excluded from NHG compliance and clawback. |
@@ -97,10 +97,10 @@ These headers are local stub/demo only and must not be trusted in `AUTH_MODE=sup
 This is a strict dependency chain. Each step requires the previous one to be complete.
 
 1. **Admin seeds multi-posting rules** → database seeded with combine/half_month/main_posting rules (one-time setup, managed via CRUD UI)
-2. **Admin uploads Academic Calendar / Public Holidays** → `POST /admin/upload/public-holidays` parses `Public Holidays` + `AY Dates`, ignores `Fr RMT`, and populates `public_holidays` + `academic_month_boundaries` (PH event-creation block active)
-3. **Admin uploads RDB** → residents, postings, rotation schedule created. Multi-posting rules applied at parse time to FM and combined posting cells. - Always apply RDB cell normalisation before posting cell classification (see docs/parsing.md)
-4. **Admin uploads TTF** → session types, teaching targets, secretary dropdowns seeded
-5. **Admin uploads FormF1** → active/inactive status per resident per calendar month seeded (denominator gate for compliance)
+2. **Master Admin uploads Academic Calendar / Public Holidays** → `POST /admin/upload/public-holidays` parses `Public Holidays` + `AY Dates`, ignores `Fr RMT`, and populates `public_holidays` + `academic_month_boundaries` (PH event-creation block active)
+3. **Master Admin uploads RDB** → residents, postings, rotation schedule created. Multi-posting rules applied at parse time to FM and combined posting cells. - Always apply RDB cell normalisation before posting cell classification (see docs/parsing.md)
+4. **Master Admin or in-scope Programme Coordinator uploads TTF** → session types, teaching targets, secretary dropdowns seeded
+5. **Master Admin uploads FormF1** → active/inactive status per resident per calendar month seeded (denominator gate for compliance)
 6. **Secretary creates teaching events** → events appear in resident portal
 7. **Resident submits attendance** → compliance engine has data to calculate
 

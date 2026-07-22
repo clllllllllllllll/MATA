@@ -281,6 +281,13 @@ def _require_master_admin(admin_context: AdminContext) -> None:
         )
 
 
+async def require_master_admin_context(
+    admin_context: AdminContext = Depends(require_admin_context),
+) -> AdminContext:
+    _require_master_admin(admin_context)
+    return admin_context
+
+
 def _require_reporting_period_read_access(admin_context: AdminContext) -> None:
     if admin_context.is_master_admin:
         return
@@ -299,13 +306,18 @@ def _global_config_scope(admin_context: AdminContext) -> set[str]:
 def _require_programme_in_scope(admin_context: AdminContext, programme_code: str) -> None:
     if admin_context.is_master_admin:
         return
-    if not admin_context.programme_scope:
+    normalized_scope = {
+        value
+        for raw_value in admin_context.programme_scope
+        if (value := str(raw_value).strip().upper())
+    }
+    if not normalized_scope:
         raise ApiError(
             status_code=403,
             detail="Forbidden - admin programme scope is empty",
             error_code=ErrorCode.FORBIDDEN.value,
         )
-    if programme_code not in admin_context.programme_scope:
+    if programme_code.strip().upper() not in normalized_scope:
         raise ApiError(
             status_code=403,
             detail="Forbidden - programme not in admin scope",
@@ -1070,7 +1082,7 @@ async def reset_staff_account_password(
 async def upload_rdb(
     file: UploadFile = File(...),
     reporting_period_id: UUID = Form(...),
-    admin_context: AdminContext = Depends(require_admin_context),
+    admin_context: AdminContext = Depends(require_master_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
@@ -1144,6 +1156,7 @@ async def upload_ttf(
     db: AsyncSession | None = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
+    programme_code = programme_code.strip().upper()
     _require_programme_in_scope(admin_context, programme_code)
 
     file_bytes = await file.read()
@@ -1209,7 +1222,7 @@ async def upload_ttf(
 async def upload_formf1(
     file: UploadFile = File(...),
     reporting_period_id: UUID = Form(...),
-    admin_context: AdminContext = Depends(require_admin_context),
+    admin_context: AdminContext = Depends(require_master_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
@@ -1264,7 +1277,7 @@ async def upload_formf1(
 @router.post("/upload/public-holidays")
 async def upload_public_holidays(
     file: UploadFile = File(...),
-    admin_context: AdminContext = Depends(require_admin_context),
+    admin_context: AdminContext = Depends(require_master_admin_context),
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession | None = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
