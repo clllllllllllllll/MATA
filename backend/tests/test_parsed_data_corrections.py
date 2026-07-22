@@ -1604,7 +1604,7 @@ def test_rdb_upload_warns_when_it_will_overwrite_corrected_resident_postings(mon
 
     response = client.post(
         "/admin/upload/rdb",
-        headers=_headers(),
+        headers=_headers(master=True),
         data={"reporting_period_id": str(uuid4())},
         files={
             "file": (
