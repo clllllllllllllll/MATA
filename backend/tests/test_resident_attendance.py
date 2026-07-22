@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, time, timedelta
 from uuid import uuid4
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -31,6 +32,25 @@ def _headers(fake_db: FakeResidentSession) -> dict[str, str]:
         "X-User-Id": fake_db.resident_id,
         "X-User-Programme": "GRM",
     }
+
+
+def _add_scheduled_event(
+    fake_db: FakeResidentSession,
+    *,
+    event_date: date,
+    start_time: time,
+    end_time: time,
+) -> dict:
+    event = fake_db._event(  # noqa: SLF001
+        str(uuid4()),
+        "TTSHCardio",
+        "Journal Club",
+        event_date,
+        start_time=start_time,
+    )
+    event["end_time"] = end_time
+    fake_db.events.append(event)
+    return event
 
 
 def test_attendance_submission_creates_attendance_record() -> None:
@@ -112,6 +132,317 @@ def test_duplicate_attendance_is_rejected() -> None:
     )
 
     assert response.status_code == 409
+
+
+def test_audit_reproduction_rejects_distinct_event_with_exact_same_interval() -> None:
+    fake_db = FakeResidentSession()
+    existing_event = next(
+        row for row in fake_db.events if row["id"] == fake_db.second_event_id
+    )
+    later_event = _add_scheduled_event(
+        fake_db,
+        event_date=existing_event["event_date"],
+        start_time=existing_event["start_time"],
+        end_time=existing_event["end_time"],
+    )
+    attendance_before = [dict(row) for row in fake_db.attendance]
+    earlier_attendance_before = dict(fake_db.attendance[0])
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [later_event["id"]]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Attendance overlaps an earlier accepted event"
+    assert fake_db.attendance == attendance_before
+    assert fake_db.attendance[0] == earlier_attendance_before
+    assert not any(
+        row["teaching_event_id"] == later_event["id"] for row in fake_db.attendance
+    )
+
+
+@pytest.mark.parametrize(
+    ("new_start", "new_end"),
+    [
+        (time(10, 30), time(11, 30)),
+        (time(9, 30), time(10, 30)),
+        (time(10, 15), time(10, 45)),
+        (time(9, 30), time(11, 30)),
+    ],
+    ids=["starts-during", "ends-during", "contained", "contains-existing"],
+)
+def test_distinct_event_overlap_shapes_are_rejected(
+    new_start: time,
+    new_end: time,
+) -> None:
+    fake_db = FakeResidentSession()
+    existing_event = next(
+        row for row in fake_db.events if row["id"] == fake_db.second_event_id
+    )
+    later_event = _add_scheduled_event(
+        fake_db,
+        event_date=existing_event["event_date"],
+        start_time=new_start,
+        end_time=new_end,
+    )
+    attendance_before = [dict(row) for row in fake_db.attendance]
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [later_event["id"]]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Attendance overlaps an earlier accepted event"
+    assert fake_db.attendance == attendance_before
+
+
+@pytest.mark.parametrize(
+    ("new_start", "new_end"),
+    [
+        (time(11, 0), time(12, 0)),
+        (time(9, 0), time(10, 0)),
+    ],
+    ids=["starts-at-existing-end", "ends-at-existing-start"],
+)
+def test_adjacent_distinct_events_are_allowed(
+    new_start: time,
+    new_end: time,
+) -> None:
+    fake_db = FakeResidentSession()
+    existing_event = next(
+        row for row in fake_db.events if row["id"] == fake_db.second_event_id
+    )
+    adjacent_event = _add_scheduled_event(
+        fake_db,
+        event_date=existing_event["event_date"],
+        start_time=new_start,
+        end_time=new_end,
+    )
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [adjacent_event["id"]]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["submitted"] == 1
+    assert any(
+        row["resident_id"] == fake_db.resident_id
+        and row["teaching_event_id"] == adjacent_event["id"]
+        for row in fake_db.attendance
+    )
+
+
+def test_same_interval_on_different_date_is_allowed() -> None:
+    fake_db = FakeResidentSession()
+    existing_event = next(
+        row for row in fake_db.events if row["id"] == fake_db.second_event_id
+    )
+    other_date_event = _add_scheduled_event(
+        fake_db,
+        event_date=existing_event["event_date"] + timedelta(days=1),
+        start_time=existing_event["start_time"],
+        end_time=existing_event["end_time"],
+    )
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [other_date_event["id"]]},
+    )
+
+    assert response.status_code == 200
+    assert any(
+        row["resident_id"] == fake_db.resident_id
+        and row["teaching_event_id"] == other_date_event["id"]
+        for row in fake_db.attendance
+    )
+
+
+def test_same_interval_for_different_resident_is_allowed() -> None:
+    fake_db = FakeResidentSession()
+    other_posting = next(
+        row
+        for row in fake_db.resident_postings
+        if row["resident_id"] == fake_db.other_resident_id
+    )
+    other_posting["posting_code"] = "TTSHCardio"
+    existing_event = next(
+        row for row in fake_db.events if row["id"] == fake_db.second_event_id
+    )
+    other_resident_event = _add_scheduled_event(
+        fake_db,
+        event_date=existing_event["event_date"],
+        start_time=existing_event["start_time"],
+        end_time=existing_event["end_time"],
+    )
+    headers = {
+        **_headers(fake_db),
+        "X-User-Id": fake_db.other_resident_id,
+    }
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=headers,
+        json={"event_ids": [other_resident_event["id"]]},
+    )
+
+    assert response.status_code == 200
+    assert any(
+        row["resident_id"] == fake_db.other_resident_id
+        and row["teaching_event_id"] == other_resident_event["id"]
+        for row in fake_db.attendance
+    )
+
+
+@pytest.mark.parametrize("prior_status", ["removed", "flagged"])
+def test_non_active_distinct_prior_attendance_does_not_block_submission(
+    prior_status: str,
+) -> None:
+    fake_db = FakeResidentSession()
+    fake_db.attendance[0]["status"] = prior_status
+    existing_event = next(
+        row for row in fake_db.events if row["id"] == fake_db.second_event_id
+    )
+    later_event = _add_scheduled_event(
+        fake_db,
+        event_date=existing_event["event_date"],
+        start_time=existing_event["start_time"],
+        end_time=existing_event["end_time"],
+    )
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [later_event["id"]]},
+    )
+
+    assert response.status_code == 200
+    assert fake_db.attendance[0]["status"] == prior_status
+    assert any(
+        row["resident_id"] == fake_db.resident_id
+        and row["teaching_event_id"] == later_event["id"]
+        for row in fake_db.attendance
+    )
+
+
+def test_same_event_repeated_within_batch_is_rejected_atomically() -> None:
+    fake_db = FakeResidentSession()
+    attendance_before = [dict(row) for row in fake_db.attendance]
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [fake_db.event_id, fake_db.event_id]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Attendance already submitted for this teaching event"
+    assert fake_db.attendance == attendance_before
+
+
+def test_overlapping_events_within_batch_are_rejected_atomically_in_request_order() -> None:
+    fake_db = FakeResidentSession()
+    event_date = fake_db.today - timedelta(days=1)
+    earlier_request_event = _add_scheduled_event(
+        fake_db,
+        event_date=event_date,
+        start_time=time(8, 0),
+        end_time=time(10, 0),
+    )
+    later_request_event = _add_scheduled_event(
+        fake_db,
+        event_date=event_date,
+        start_time=time(9, 0),
+        end_time=time(11, 0),
+    )
+    attendance_before = [dict(row) for row in fake_db.attendance]
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [earlier_request_event["id"], later_request_event["id"]]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Attendance overlaps an earlier accepted event"
+    assert fake_db.attendance == attendance_before
+    assert not any(
+        row["teaching_event_id"]
+        in {earlier_request_event["id"], later_request_event["id"]}
+        for row in fake_db.attendance
+    )
+
+
+def test_earlier_overlap_conflict_precedes_later_eligibility_error() -> None:
+    fake_db = FakeResidentSession()
+    existing_event = next(
+        row for row in fake_db.events if row["id"] == fake_db.second_event_id
+    )
+    overlapping_event = _add_scheduled_event(
+        fake_db,
+        event_date=existing_event["event_date"],
+        start_time=existing_event["start_time"],
+        end_time=existing_event["end_time"],
+    )
+    attendance_before = [dict(row) for row in fake_db.attendance]
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [overlapping_event["id"], fake_db.future_event_id]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Attendance overlaps an earlier accepted event"
+    assert fake_db.attendance == attendance_before
+
+
+def test_non_overlapping_batch_preserves_request_order() -> None:
+    fake_db = FakeResidentSession()
+    event_date = fake_db.today - timedelta(days=1)
+    later_event = _add_scheduled_event(
+        fake_db,
+        event_date=event_date,
+        start_time=time(12, 0),
+        end_time=time(13, 0),
+    )
+    earlier_event = _add_scheduled_event(
+        fake_db,
+        event_date=event_date,
+        start_time=time(8, 0),
+        end_time=time(9, 0),
+    )
+    requested_ids = [later_event["id"], earlier_event["id"]]
+    attendance_count_before = len(fake_db.attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": requested_ids},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["submitted"] == 2
+    assert [row["id"] for row in response.json()["submitted_events"]] == requested_ids
+    assert [
+        row["teaching_event_id"] for row in fake_db.attendance[attendance_count_before:]
+    ] == requested_ids
 
 
 def test_attendance_outside_posting_window_is_rejected() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from hashlib import blake2b
 from typing import Any, Literal
 from uuid import UUID
 
@@ -1874,6 +1875,86 @@ def _event_intervals_overlap(
     return left_start < effective_right_end and right_start < effective_left_end
 
 
+def _native_attendance_lock_keys(
+    *,
+    resident_id: UUID,
+    event_date: date,
+) -> tuple[int, int]:
+    scope = f"native-attendance:{resident_id}:{event_date.isoformat()}".encode("utf-8")
+    signed = int.from_bytes(
+        blake2b(scope, digest_size=8).digest(),
+        byteorder="big",
+        signed=True,
+    )
+    key1 = signed >> 32
+    key2 = signed & 0xFFFFFFFF
+    if key2 >= 2**31:
+        key2 -= 2**32
+    return key1, key2
+
+
+async def _acquire_native_attendance_locks(
+    db: AsyncSession,
+    *,
+    resident_id: UUID,
+    event_dates: set[date],
+) -> None:
+    for event_date in sorted(event_dates):
+        key1, key2 = _native_attendance_lock_keys(
+            resident_id=resident_id,
+            event_date=event_date,
+        )
+        await db.execute(
+            text(
+                """
+                /* native_attendance_overlap_lock */
+                SELECT pg_advisory_xact_lock(:key1, :key2)
+                """
+            ),
+            {"key1": key1, "key2": key2},
+        )
+
+
+async def _overlapping_native_attendance_exists(
+    db: AsyncSession,
+    *,
+    resident_id: UUID,
+    event: dict[str, Any],
+) -> bool:
+    result = await db.execute(
+        text(
+            """
+            /* native_attendance_overlap_candidates */
+            SELECT existing.start_time, existing.end_time
+            FROM attendance_records AS attendance
+            JOIN teaching_events AS existing
+              ON existing.id = attendance.teaching_event_id
+            WHERE attendance.resident_id = :resident_id
+              AND attendance.status = 'submitted'
+              AND (
+                  CAST(:event_id AS uuid) IS NULL
+                  OR existing.id <> CAST(:event_id AS uuid)
+              )
+              AND existing.event_date = :event_date
+            """
+        ),
+        {
+            "resident_id": str(resident_id),
+            "event_id": str(event["id"]) if event.get("id") is not None else None,
+            "event_date": event["event_date"],
+        },
+    )
+    return any(
+        _event_intervals_overlap(
+            left_start=event["start_time"],
+            left_end=event.get("end_time"),
+            right_start=row["start_time"],
+            right_end=row.get("end_time"),
+        )
+        for row in result.mappings().all()
+    )
+
+
 async def _overlapping_external_attendance_exists(
     db: AsyncSession,
     *,
@@ -2167,13 +2248,34 @@ async def submit_attendance(
         )
     resident = await _resident(db, resident_id)
 
-    submitted = 0
-    submitted_events: list[dict[str, Any]] = []
-    weekend_warning_count = 0
-    touched_postings: set[str] = set()
-    touched_period_ids: set[str] = set()
+    event_lookups: list[tuple[UUID, dict[str, Any] | None, ApiError | None]] = []
     for event_id in event_ids:
-        event = await _get_event(db, event_id)
+        try:
+            event = await _get_event(db, event_id)
+        except ApiError as exc:
+            event_lookups.append((event_id, None, exc))
+        else:
+            event_lookups.append((event_id, event, None))
+
+    lock_dates: set[date] = set()
+    for _, event, lookup_error in event_lookups:
+        if lookup_error is not None:
+            break
+        assert event is not None
+        lock_dates.add(event["event_date"])
+    await _acquire_native_attendance_locks(
+        db,
+        resident_id=resident_id,
+        event_dates=lock_dates,
+    )
+
+    submission_plans: list[dict[str, Any]] = []
+    seen_event_ids: set[str] = set()
+    planned_events: list[dict[str, Any]] = []
+    for event_id, event, lookup_error in event_lookups:
+        if lookup_error is not None:
+            raise lookup_error
+        assert event is not None
         if event["event_date"] > today:
             raise ApiError(
                 status_code=422,
@@ -2236,6 +2338,13 @@ async def submit_attendance(
                 detail="Teaching event is not visible for this resident",
                 error_code=ErrorCode.VALIDATION_FAILED.value,
             )
+        event_key = str(event_id)
+        if event_key in seen_event_ids:
+            raise ApiError(
+                status_code=409,
+                detail="Attendance already submitted for this teaching event",
+                error_code=ErrorCode.CONFLICT.value,
+            )
         existing_attendance = await _attendance_for_event(
             db,
             resident_id=resident_id,
@@ -2247,18 +2356,62 @@ async def submit_attendance(
                 detail="Attendance already submitted for this teaching event",
                 error_code=ErrorCode.CONFLICT.value,
             )
-        if existing_attendance and existing_attendance["status"] == "removed":
+        if existing_attendance and existing_attendance["status"] != "removed":
+            raise ApiError(
+                status_code=409,
+                detail="Attendance already exists for this teaching event",
+                error_code=ErrorCode.CONFLICT.value,
+            )
+        overlaps_accepted = await _overlapping_native_attendance_exists(
+            db,
+            resident_id=resident_id,
+            event=event,
+        )
+        overlaps_planned = any(
+            prior_event["event_date"] == event["event_date"]
+            and _event_intervals_overlap(
+                left_start=event["start_time"],
+                left_end=event.get("end_time"),
+                right_start=prior_event["start_time"],
+                right_end=prior_event.get("end_time"),
+            )
+            for prior_event in planned_events
+        )
+        if overlaps_accepted or overlaps_planned:
+            raise ApiError(
+                status_code=409,
+                detail="Attendance overlaps an earlier accepted event",
+                error_code=ErrorCode.CONFLICT.value,
+            )
+        submission_plans.append(
+            {
+                "event_id": event_id,
+                "event": event,
+                "period": period,
+                "resolved": resolved,
+                "existing_attendance": existing_attendance,
+            }
+        )
+        seen_event_ids.add(event_key)
+        planned_events.append(event)
+
+    submitted = 0
+    submitted_events: list[dict[str, Any]] = []
+    weekend_warning_count = 0
+    touched_postings: set[str] = set()
+    touched_period_ids: set[str] = set()
+    for plan in submission_plans:
+        event_id = plan["event_id"]
+        event = plan["event"]
+        period = plan["period"]
+        resolved = plan["resolved"]
+        existing_attendance = plan["existing_attendance"]
+        if existing_attendance is not None:
             await _restore_removed_attendance(
                 db,
                 attendance_id=existing_attendance["id"],
                 resident_id=resident_id,
                 posting_code=event["posting_code"],
-            )
-        elif existing_attendance:
-            raise ApiError(
-                status_code=409,
-                detail="Attendance already exists for this teaching event",
-                error_code=ErrorCode.CONFLICT.value,
             )
         else:
             await _insert_attendance(
@@ -2546,6 +2699,26 @@ async def submit_adhoc_teaching(
 
     duration_hours = resolved["duration_hours"]
     end_time = _compute_end_time(event_date, start_time, duration_hours)
+    await _acquire_native_attendance_locks(
+        db,
+        resident_id=resident_id,
+        event_dates={event_date},
+    )
+    if await _overlapping_native_attendance_exists(
+        db,
+        resident_id=resident_id,
+        event={
+            "id": None,
+            "event_date": event_date,
+            "start_time": start_time,
+            "end_time": end_time,
+        },
+    ):
+        raise ApiError(
+            status_code=409,
+            detail="Attendance overlaps an earlier accepted event",
+            error_code=ErrorCode.CONFLICT.value,
+        )
     event_result = await db.execute(
         text(
             """

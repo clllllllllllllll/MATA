@@ -544,6 +544,33 @@ def test_adhoc_teaching_rejects_when_no_posting_exists_for_date() -> None:
     assert response.json()["detail"] == "No active reporting period is available"
 
 
+def test_native_adhoc_teaching_rejects_overlap_before_writing_event_or_attendance() -> None:
+    fake_db = _fake_db()
+    existing_event = next(
+        row for row in fake_db.events if row["id"] == fake_db.second_event_id
+    )
+    events_before = [dict(row) for row in fake_db.events]
+    attendance_before = [dict(row) for row in fake_db.attendance]
+    earlier_attendance_before = dict(fake_db.attendance[0])
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "date": existing_event["event_date"].isoformat(),
+            "start_time": existing_event["start_time"].isoformat(),
+            "teaching_name": "Journal Club",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Attendance overlaps an earlier accepted event"
+    assert fake_db.events == events_before
+    assert fake_db.attendance == attendance_before
+    assert fake_db.attendance[0] == earlier_attendance_before
+
+
 def test_adhoc_weekend_non_exception_returns_warning() -> None:
     fake_db = _fake_db()
     weekend_offset = (fake_db.today.weekday() - 5) % 7
@@ -555,7 +582,7 @@ def test_adhoc_weekend_non_exception_returns_warning() -> None:
         headers=_headers(fake_db),
         json={
             "date": weekend_date.isoformat(),
-            "start_time": "10:00",
+            "start_time": "12:00",
             "teaching_name": "Journal Club",
         },
     )

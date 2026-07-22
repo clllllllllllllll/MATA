@@ -1216,6 +1216,35 @@ class FakeResidentSession:
             ]
             return FakeResult(rows=rows)
 
+        if "native_attendance_overlap_lock" in sql:
+            return FakeResult()
+
+        if "native_attendance_overlap_candidates" in sql:
+            rows = []
+            for attendance in self.attendance:
+                if (
+                    attendance["resident_id"] != str(payload.get("resident_id"))
+                    or attendance["status"] != "submitted"
+                    or (
+                        payload.get("event_id") is not None
+                        and attendance["teaching_event_id"] == str(payload["event_id"])
+                    )
+                ):
+                    continue
+                existing = next(
+                    event
+                    for event in self.events
+                    if event["id"] == attendance["teaching_event_id"]
+                )
+                if existing["event_date"] == payload.get("event_date"):
+                    rows.append(
+                        {
+                            "start_time": existing["start_time"],
+                            "end_time": existing.get("end_time"),
+                        }
+                    )
+            return FakeResult(rows=rows)
+
         if "FROM attendance_records" in sql and "teaching_event_id = :event_id" in sql:
             rows = [
                 row
