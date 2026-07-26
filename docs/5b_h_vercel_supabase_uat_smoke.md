@@ -1,5 +1,7 @@
 # 5B-H-C Supabase/Vercel UAT Smoke Checklist
 
+> **Historical evidence boundary:** Sections and result rows dated 2026-07-22 preserve the Phase 5B-H-C point-in-time record. Do not rewrite their commit identifiers, migration head, test counts, deployment observations, or blocked/manual classifications. Phase 5B-H-D supersedes the earlier browser-bearer and mandatory outer-gate design assumptions; current local evidence is recorded separately in `docs/5b_h_d_production_security_implementation.md` and is not proof of deployed behavior.
+
 Status: The two High local application-code findings are resolved in merged code and local disposable PostgreSQL verification passed; stakeholder UAT and Phase 6 remain NO-GO pending deployment, Supabase, environment, account, and Data API evidence
 Last updated: 2026-07-22
 
@@ -269,3 +271,23 @@ The local disposable PostgreSQL evidence is not proof of deployed Supabase/Verce
 - Revert the Vercel deployment to the previous known-safe build if app behavior regresses.
 - Restore the UAT database from a known-safe snapshot if smoke data corrupts the database.
 - Document the rollback trigger, operator, time, and follow-up owner without pasting secrets.
+
+## Phase 5B-H-D Public-Entry and Session Checks
+
+This appendix is the current H-D post-deployment contract. It does not change the historical H-C results above.
+
+| Check | Required result |
+|---|---|
+| Public entry points | Staff login, Resident login, registration options, and Non-NHG registration are intentionally public. A Vercel outer gate is not an application requirement. |
+| Browser credential boundary | No app access token, refresh token, Supabase session, or routine bearer authorization is persisted or injected by the browser. |
+| Staff login | Credentials are submitted only to the backend; the backend mediates Supabase Auth and returns a MATA app session. |
+| App session | Browser receives only an opaque `HttpOnly` application-session cookie; stored database values are digests, not reusable raw tokens. |
+| Cookie attributes | Production cookie is `__Host-mata_session`, `Secure`, `HttpOnly`, `SameSite=Strict`, `Path=/`, and has no `Domain`. |
+| CSRF | Unsafe methods require the session-bound synchronizer token; logout and rotation invalidate old CSRF state. |
+| Lifecycle | Idle/absolute expiry, rotation, logout, password-reset revocation, account generation fencing, and session-family races fail closed. |
+| Same-origin API | Production browser traffic uses relative `/api/v1`; credentials are included and the CSRF header is added only to unsafe requests. |
+| Rate limiting | Production uses PostgreSQL-backed buckets with a keyed identity digest. |
+| Browser database access | `PUBLIC`, `anon`, and `authenticated` retain no application-object privileges. Full RLS remains Phase 5B-H-E work. |
+| Deployed verification | Local implementation evidence does not establish deployed Vercel, Supabase, environment, migration, grant, or runtime behavior. |
+
+PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED

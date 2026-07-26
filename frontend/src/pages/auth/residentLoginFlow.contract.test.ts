@@ -13,10 +13,7 @@ import { submitSharedResidentLogin } from './residentLoginFlow.ts'
 type AuthenticatedResidentRole = 'resident' | 'external_resident'
 
 const sessionForRole = (role: AuthenticatedResidentRole): StoredAuthSession => ({
-  mode: 'supabase',
-  accessToken: role === 'resident' ? 'mata-native-token' : 'mata-external-token',
-  tokenType: 'bearer',
-  createdAt: '2026-07-16T00:00:00.000Z',
+  csrfToken: role === 'resident' ? 'native-csrf' : 'external-csrf',
   identity: role === 'resident'
     ? {
         role: 'resident',
@@ -46,7 +43,7 @@ test('shared MCR submit sends one normalized neutral request and redirects a nat
   })
 
   assert.deepEqual(requests, [{ role: 'resident', mcr: 'M90001Z' }])
-  assert.equal(result.session.accessToken, 'mata-native-token')
+  assert.equal(result.session.csrfToken, 'native-csrf')
   assert.equal(result.redirectPath, '/resident/submissions')
 })
 
@@ -62,7 +59,7 @@ test('shared MCR submit keeps the neutral request and redirects an external resp
   })
 
   assert.deepEqual(requests, [{ role: 'resident', mcr: 'M90001Z' }])
-  assert.equal(result.session.accessToken, 'mata-external-token')
+  assert.equal(result.session.csrfToken, 'external-csrf')
   assert.equal(result.redirectPath, '/external/submissions')
 })
 
@@ -99,10 +96,7 @@ test('a failed shared login makes one request and does not retry another role', 
 test('an unexpected staff response is rejected before a resident session can be returned', async () => {
   const requests: ResidentLoginPayload[] = []
   const staffSession: StoredAuthSession = {
-    mode: 'supabase',
-    accessToken: 'unexpected-staff-token',
-    tokenType: 'bearer',
-    createdAt: '2026-07-16T00:00:00.000Z',
+    csrfToken: 'unexpected-staff-csrf',
     identity: {
       role: 'programme_pc',
       subjectId: 'unexpected-staff-id',

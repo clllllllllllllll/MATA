@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 from jwt.algorithms import RSAAlgorithm
+from jwt.warnings import InsecureKeyLengthWarning
 
 from app.config import Settings
 from app.dependencies.auth import require_master_admin, require_programme_pc, require_resident
@@ -143,6 +144,7 @@ def _external_resident_token(
 def _settings() -> Settings:
     return Settings(
         auth_mode="supabase",
+        auth_transport="bearer_compat",
         supabase_url="https://mata-test.supabase.co",
         mata_resident_session_secret=RESIDENT_SECRET,
     )
@@ -164,6 +166,8 @@ def _user(
         programme_scope=programme_scope,
         posting_code=posting_code,
         is_active=is_active,
+        session_generation=0,
+        session_issuance_blocked=False,
     )
 
 
@@ -174,6 +178,7 @@ def _resident(fake_db: FakeResidentSession, *, status: str = "active") -> Simple
         mcr="M12345A",
         programme_code="GRM",
         status=status,
+        session_generation=0,
     )
 
 
@@ -188,6 +193,7 @@ def _external_resident(
         mcr="E12345A",
         home_cluster="NUH",
         status=status,
+        session_generation=0,
     )
 
 
@@ -381,6 +387,25 @@ async def test_supabase_jwt_verifier_accepts_valid_rs256_token(monkeypatch: pyte
     assert claims["sub"] == "00000000-0000-0000-0000-000000000001"
     assert claims["iss"] == ISSUER
     assert claims["aud"] == AUDIENCE
+
+
+@pytest.mark.asyncio
+async def test_supabase_jwt_verifier_rejects_undersized_rsa_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=1024)
+    jwks = _jwks_for_key(private_key)
+
+    async def _fetch_jwks(self: SupabaseJwtVerifier) -> dict:
+        return jwks
+
+    monkeypatch.setattr(SupabaseJwtVerifier, "_fetch_jwks", _fetch_jwks)
+    verifier = SupabaseJwtVerifier(_settings())
+    with pytest.warns(InsecureKeyLengthWarning):
+        token = _token(private_key)
+
+    with pytest.raises(SupabaseJwtError, match="Invalid Supabase JWT"):
+        await verifier.verify(token)
 
 
 @pytest.mark.asyncio
@@ -622,10 +647,7 @@ def test_programme_scope_blank_only_is_denied_for_programme_pc(
 
     response = client.get(
         "/api/v1/programme-pc",
-        headers={
-            "Authorization": f"Bearer {_token(private_key)}",
-            "X-User-Programme": "DR",
-        },
+        headers={"Authorization": f"Bearer {_token(private_key)}"},
     )
 
     assert response.status_code == 403
@@ -676,10 +698,7 @@ def test_programme_scope_null_does_not_imply_master_admin(
 
     response = client.get(
         "/api/v1/master-only",
-        headers={
-            "Authorization": f"Bearer {_token(private_key)}",
-            "X-Admin-Level": "master",
-        },
+        headers={"Authorization": f"Bearer {_token(private_key)}"},
     )
 
     assert response.status_code == 403
@@ -754,17 +773,14 @@ def test_secretary_missing_posting_scope_is_rejected(
 
     response = client.get(
         "/api/v1/identity",
-        headers={
-            "Authorization": f"Bearer {_token(private_key)}",
-            "X-User-Site": "TTSHCardio",
-        },
+        headers={"Authorization": f"Bearer {_token(private_key)}"},
     )
 
     assert response.status_code == 403
     assert response.json()["error_code"] == "FORBIDDEN"
 
 
-def test_supabase_mode_ignores_conflicting_x_user_headers_with_valid_bearer(
+def test_supabase_mode_rejects_raw_identity_headers_even_with_valid_bearer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     private_key = _private_key()
@@ -790,10 +806,8 @@ def test_supabase_mode_ignores_conflicting_x_user_headers_with_valid_bearer(
         },
     )
 
-    assert response.status_code == 200
-    assert response.json()["role"] == "secretary"
-    assert response.json()["posting_code"] == "TTSHCardio"
-    assert response.json()["admin_level"] is None
+    assert response.status_code == 401
+    assert response.json()["error_code"] == "UNAUTHORIZED"
 
 
 def test_supabase_user_metadata_cannot_grant_authorization(

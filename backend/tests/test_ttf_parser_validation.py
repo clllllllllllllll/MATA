@@ -119,7 +119,10 @@ async def test_ttf_workbook_read_error_is_sanitized_and_logged(monkeypatch, capl
         "Workbook could not be read. Please upload a valid, non-password-protected Excel file."
     ]
     assert "private/uploads" not in str(result.to_summary())
-    assert "private/uploads" in caplog.text
+    assert "private/uploads" not in caplog.text
+    assert "ttf_workbook_read_failed" in caplog.text
+    assert "exception_class=OSError" in caplog.text
+    assert "Traceback" not in caplog.text
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,5 @@
 import { Fragment, type FormEvent, type ReactNode, useCallback, useMemo, useState } from 'react'
-import { Navigate, useLocation } from 'react-router-dom'
+import { Navigate, useLocation } from 'react-router'
 import {
   createMultiPostingRule,
   deleteMultiPostingRule,

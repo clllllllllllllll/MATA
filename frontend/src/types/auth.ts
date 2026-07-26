@@ -61,9 +61,7 @@ export interface AuthSessionState {
 }
 
 export interface StoredAuthSession {
-  mode: AuthMode
-  accessToken: string
-  tokenType: string
   identity: AuthIdentity
-  createdAt: string
+  csrfToken: string
+  sessionRefreshRequired?: boolean
 }

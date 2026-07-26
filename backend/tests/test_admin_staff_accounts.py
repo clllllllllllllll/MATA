@@ -12,6 +12,7 @@ from app.middleware.auth_stub import AuthIdentity
 from app.middleware.errors import install_error_handlers
 from app.routers import admin
 from app.services import staff_accounts
+from app.services.supabase_admin import SupabaseAdminError
 
 
 class _FakeResult:
@@ -19,9 +20,11 @@ class _FakeResult:
         self,
         rows: list[dict] | None = None,
         scalar: object | None = None,
+        rowcount: int = 0,
     ) -> None:
         self._rows = rows or []
         self._scalar = scalar
+        self.rowcount = rowcount
 
     def mappings(self) -> "_FakeResult":
         return self
@@ -88,6 +91,7 @@ class _FakeStaffAccountSession:
         ]
         self.audit_logs: list[dict] = []
         self.commits = 0
+        self.session_revocations = 0
 
     @staticmethod
     def _user(
@@ -115,6 +119,8 @@ class _FakeStaffAccountSession:
             "programme_scope": programme_scope,
             "admin_level": admin_level,
             "is_active": is_active,
+            "session_generation": 0,
+            "session_issuance_blocked": False,
             "current_staff_actor_name": current_staff_actor_name,
             "staff_actor_name_updated_at": None,
             "staff_actor_name_updated_by_user_id": None,
@@ -176,11 +182,30 @@ class _FakeStaffAccountSession:
             self.users.append(row)
             return _FakeResult([row])
 
+        if (
+            "UPDATE users" in sql
+            and "session_generation = session_generation + 1" in sql
+            and "password_hash = :password_hash" not in sql
+        ):
+            for row in self.users:
+                if row["id"] == str(payload["subject_id"]):
+                    row["session_generation"] += 1
+                    if payload.get("block_session_issuance"):
+                        row["session_issuance_blocked"] = True
+                    return _FakeResult(scalar=row["session_generation"])
+            return _FakeResult(scalar=None)
+
         if "UPDATE users" in sql and "staff_actor_name_updated_at = NULL" in sql:
             rows: list[dict] = []
             for row in self.users:
-                if row["id"] == str(payload["user_id"]):
+                if (
+                    row["id"] == str(payload["user_id"])
+                    and row["session_issuance_blocked"]
+                    and row["session_generation"] == payload["reset_generation"]
+                ):
                     row["password_hash"] = payload["password_hash"]
+                    row["session_generation"] += 1
+                    row["session_issuance_blocked"] = False
                     row["current_staff_actor_name"] = None
                     row["staff_actor_name_updated_at"] = None
                     row["staff_actor_name_updated_by_user_id"] = None
@@ -199,6 +224,10 @@ class _FakeStaffAccountSession:
                     row["is_active"] = payload["is_active"]
                     rows.append(row)
             return _FakeResult(rows)
+
+        if "UPDATE app_sessions" in sql:
+            self.session_revocations += 1
+            return _FakeResult(rowcount=2)
 
         raise AssertionError(f"Unhandled SQL: {sql}\nparams={payload}")
 
@@ -544,6 +573,10 @@ def test_reset_password_updates_supabase_and_clears_saved_actor_name(
             "password": "new-working-password-123",
         }
     ]
+    assert session.session_revocations == 1
+    assert session.users[1]["session_generation"] == 2
+    assert session.users[1]["session_issuance_blocked"] is False
+    assert session.commits == 2
     serialized_audit = json.dumps(session.audit_logs, default=str).lower()
     assert "new-working-password-123" not in serialized_audit
     audit_log = session.audit_logs[0]
@@ -597,3 +630,76 @@ def test_reset_password_in_stub_mode_keeps_local_password_hash() -> None:
     assert response.status_code == 200
     assert session.users[1]["password_hash"] == "plain:new-working-password-123"
     assert session.users[1]["current_staff_actor_name"] is None
+    assert session.session_revocations == 1
+    assert session.users[1]["session_generation"] == 2
+    assert session.users[1]["session_issuance_blocked"] is False
+    assert session.commits == 2
+
+
+def test_failed_supabase_password_reset_leaves_session_issuance_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _FakeStaffAccountSession()
+    supabase_user_id = uuid4()
+    session.users[1]["supabase_user_id"] = str(supabase_user_id)
+    original_hash = session.users[1]["password_hash"]
+    original_actor_name = session.users[1]["current_staff_actor_name"]
+
+    class _FailingSupabaseAdmin:
+        async def update_user_password(self, **_kwargs) -> None:
+            raise SupabaseAdminError(
+                status_code=502,
+                detail="Supabase Admin request failed",
+                error_code="INTERNAL_ERROR",
+            )
+
+    monkeypatch.setattr(
+        "app.services.staff_accounts.SupabaseAdminClient",
+        lambda settings: _FailingSupabaseAdmin(),
+    )
+    settings = Settings(
+        auth_mode="supabase",
+        supabase_url="https://mata-test.supabase.co",
+        supabase_service_role_key="server-only-placeholder",
+    )
+
+    response = _client(
+        identity=_master_identity(session),
+        session=session,
+        settings=settings,
+    ).post(
+        f"/api/v1/admin/staff-accounts/{session.pc_id}/reset-password",
+        json={"password": "replacement-password-never-logged"},
+    )
+
+    assert response.status_code == 502
+    assert "replacement-password-never-logged" not in response.text
+    assert session.users[1]["password_hash"] == original_hash
+    assert session.users[1]["current_staff_actor_name"] == original_actor_name
+    assert session.users[1]["session_generation"] == 1
+    assert session.users[1]["session_issuance_blocked"] is True
+    assert session.session_revocations == 1
+    assert session.commits == 1
+    assert session.audit_logs == []
+
+
+def test_staff_scope_or_active_state_change_revokes_existing_sessions() -> None:
+    session = _FakeStaffAccountSession()
+
+    response = _client(identity=_master_identity(session), session=session).patch(
+        f"/api/v1/admin/staff-accounts/{session.secretary_id}",
+        json={
+            "account_display_name": "Secretary",
+            "account_type": "secretary",
+            "is_active": False,
+            "posting_code": "TTSHCardio",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["is_active"] is False
+    assert session.session_revocations == 1
+    assert session.users[2]["session_generation"] == 1
+    audit_metadata = json.loads(session.audit_logs[-1]["metadata_json"])
+    assert audit_metadata["authorization_changed"] is True
+    assert audit_metadata["revoked_session_count"] == 2

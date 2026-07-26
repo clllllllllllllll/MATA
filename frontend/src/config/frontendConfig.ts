@@ -1,19 +1,5 @@
 import type { UploadType } from '../types/app'
-import type { AuthMode, FrontendAppEnv } from '../types/auth'
-
-const parseAppEnv = (input: string | undefined): FrontendAppEnv => {
-  if (input === 'preview' || input === 'production') {
-    return input
-  }
-  return 'local'
-}
-
-const parseAuthMode = (input: string | undefined): AuthMode => {
-  if (input === 'demo' || input === 'supabase') {
-    return input
-  }
-  return 'stub'
-}
+import { validateFrontendEnvironment } from './frontendEnvironment'
 
 const parseProgrammeList = (input: string | undefined): string[] => {
   if (!input) {
@@ -50,10 +36,18 @@ const defaultSecretaryScopeLabel =
 const defaultResidentScopeLabel =
   import.meta.env.VITE_DEMO_RESIDENT_SCOPE_LABEL ?? 'Resident account'
 
+const { appEnv, authMode } = validateFrontendEnvironment({
+  appEnv: import.meta.env.VITE_APP_ENV,
+  authMode: import.meta.env.VITE_AUTH_MODE,
+})
+
 export const frontendConfig = {
-  appEnv: parseAppEnv(import.meta.env.VITE_APP_ENV),
-  authMode: parseAuthMode(import.meta.env.VITE_AUTH_MODE),
-  apiBaseUrl: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1',
+  appEnv,
+  authMode,
+  apiBaseUrl:
+    appEnv === 'production' || authMode === 'supabase'
+      ? '/api/v1'
+      : import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1',
   defaultRole: 'master_admin' as const,
   defaultProgrammeCode,
   demoAdminId: defaultAdminId,
@@ -62,9 +56,6 @@ export const frontendConfig = {
   demoSecretarySite: defaultSecretarySite,
   demoSecretaryScopeLabel: defaultSecretaryScopeLabel,
   demoResidentScopeLabel: defaultResidentScopeLabel,
-  supabaseUrl: import.meta.env.VITE_SUPABASE_URL ?? '',
-  supabasePublishableKey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? '',
-  supabaseAnonKey: import.meta.env.VITE_SUPABASE_ANON_KEY ?? '',
 }
 
 export const uploadLabels: Record<UploadType, string> = {

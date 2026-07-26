@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.staff_actor import StaffActorContext
 from app.errors import ApiError, ErrorCode
+from app.security import log_safe_exception
 from app.services import cache_invalidation
 from app.services.audit import write_audit_log
 
@@ -649,9 +650,11 @@ async def force_delete_event(
             posting_code=event_snapshot["posting_code"],
             programme_code=event_snapshot.get("created_for_programme_code"),
         )
-    except Exception:
-        logger.exception(
-            "Cache invalidation failed after committed admin teaching event force deletion",
-            extra={"event_id": str(event_id)},
+    except Exception as exc:
+        log_safe_exception(
+            logger,
+            "admin_teaching_event_cache_invalidation_failed",
+            exc,
+            category="cache_invalidation",
         )
     return result_payload

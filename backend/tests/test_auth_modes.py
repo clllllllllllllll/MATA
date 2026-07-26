@@ -81,12 +81,21 @@ def test_supabase_mode_rejects_mock_identity_headers() -> None:
     assert response.json()["error_code"] == "UNAUTHORIZED"
 
 
-def test_production_rejects_raw_identity_headers_even_if_auth_mode_is_stub() -> None:
+def test_production_rejects_raw_identity_headers() -> None:
     client = _protected_client(
         Settings(
             environment="production",
-            auth_mode="stub",
+            auth_mode="supabase",
+            auth_transport="cookie",
             supabase_url="https://mata-test.supabase.co",
+            supabase_publishable_key="sb_publishable_test_key",
+            database_url="postgresql+asyncpg://runtime@db.example.invalid:5432/mata",
+            sync_database_url="postgresql+psycopg2://migration@db.example.invalid:5432/mata",
+            mata_session_hash_key="test-session-key-that-is-at-least-32-characters",
+            rate_limit_store="postgres",
+            rate_limit_hash_secret="test-rate-limit-key-that-is-at-least-32-characters",
+            cors_origins=["https://mata.example.com"],
+            allowed_hosts=["mata.example.com"],
         ),
     )
 

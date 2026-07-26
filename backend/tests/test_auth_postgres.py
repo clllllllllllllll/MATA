@@ -60,6 +60,7 @@ async def postgres_auth_harness() -> AsyncIterator[PostgresAuthHarness]:
     settings = Settings(
         _env_file=None,
         auth_mode="supabase",
+        auth_transport="bearer_compat",
         supabase_url="https://mata-postgres-test.invalid",
         mata_resident_session_secret=RESIDENT_SECRET,
     )

@@ -156,6 +156,8 @@ class FakeResidentSession:
                 "programme_scope": ["GRM", "DR"],
                 "admin_level": "programme",
                 "is_active": True,
+                "session_generation": 0,
+                "session_issuance_blocked": False,
             },
             {
                 "id": self.secretary_id,
@@ -167,6 +169,8 @@ class FakeResidentSession:
                 "programme_scope": None,
                 "admin_level": "programme",
                 "is_active": True,
+                "session_generation": 0,
+                "session_issuance_blocked": False,
             },
         ]
         self.residents = [
@@ -177,6 +181,7 @@ class FakeResidentSession:
                 "programme_code": "GRM",
                 "r_year": "R2",
                 "status": "active",
+                "session_generation": 0,
             },
             {
                 "id": self.other_resident_id,
@@ -185,6 +190,7 @@ class FakeResidentSession:
                 "programme_code": "GRM",
                 "r_year": "R2",
                 "status": "active",
+                "session_generation": 0,
             },
         ]
         self.posting_codes = [
@@ -272,6 +278,7 @@ class FakeResidentSession:
                 "home_cluster": "NUH",
                 "current_nhg_posting_code": "TTSHCardio",
                 "status": "active",
+                "session_generation": 0,
             },
             {
                 "id": self.other_external_resident_id,
@@ -280,6 +287,7 @@ class FakeResidentSession:
                 "home_cluster": "SingHealth",
                 "current_nhg_posting_code": "TTSHNeuro",
                 "status": "active",
+                "session_generation": 0,
             },
         ]
         self.external_resident_postings = [
@@ -576,6 +584,32 @@ class FakeResidentSession:
 
         if "DELETE FROM rate_limit_buckets" in sql:
             return FakeResult(rowcount=0)
+
+        if "FOR SHARE" in sql and "session_generation" in sql:
+            subject_id = str(payload.get("subject_id"))
+            if "FROM users" in sql:
+                rows = [
+                    row
+                    for row in self.users
+                    if row["id"] == subject_id
+                    and row["is_active"]
+                    and not row["session_issuance_blocked"]
+                ]
+            elif "FROM external_residents" in sql:
+                rows = [
+                    row
+                    for row in self.external_residents
+                    if row["id"] == subject_id and row["status"] == "active"
+                ]
+            else:
+                rows = [
+                    row
+                    for row in self.residents
+                    if row["id"] == subject_id and row["status"] == "active"
+                ]
+            return FakeResult(
+                scalar=rows[0]["session_generation"] if len(rows) == 1 else None
+            )
 
         if "FROM users" in sql:
             rows = [

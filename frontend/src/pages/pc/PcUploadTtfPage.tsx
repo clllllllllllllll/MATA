@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { uploadWorkbook } from '../../api/uploads'
 import { IconGrid } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'

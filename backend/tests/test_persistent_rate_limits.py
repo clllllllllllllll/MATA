@@ -2,16 +2,19 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
+from starlette.requests import Request
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from app.config import Settings
 from app.dependencies import persistent_rate_limit as persistent_rate_limit_dependency
 from app.middleware.errors import install_error_handlers
+from app.middleware import rate_limit as rate_limit_middleware
 from app.routers import admin, auth, external_residents
 from app.services import persistent_rate_limit
 from app.services.parser_common import ParserResult
@@ -34,11 +37,19 @@ class _RateLimitSession:
         self.commits = 0
         self.cleanup_calls = 0
         self.last_sql = ""
+        self.last_params: dict[str, object] = {}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        return None
 
     async def execute(self, statement, params=None):
         sql = str(statement)
         payload = dict(params or {})
         self.last_sql = sql
+        self.last_params = payload
         if "INSERT INTO rate_limit_buckets" in sql:
             assert "ON CONFLICT" in sql
             assert "DO UPDATE" in sql
@@ -312,6 +323,35 @@ async def test_service_hashing_does_not_store_raw_identifier() -> None:
     assert session.rate_limit_rows[0]["key_hash"] != raw_identifier
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_identifier",
+    [
+        "staff:email:coordinator@example.com",
+        "anonymous-ip:203.0.113.77",
+        "resident:mcr:M76543Z",
+    ],
+)
+async def test_service_never_persists_raw_email_ip_or_mcr(raw_identifier: str) -> None:
+    session = _RateLimitSession()
+
+    await persistent_rate_limit.check_rate_limit(
+        session,
+        settings=_settings(),
+        policy=persistent_rate_limit.RateLimitPolicy(
+            scope="privacy_check",
+            limit=5,
+            window_seconds=60,
+            message="Too many requests",
+        ),
+        identifier=raw_identifier,
+        now=datetime(2026, 7, 9, 12, 0, tzinfo=UTC),
+    )
+
+    assert raw_identifier not in repr(session.rate_limit_rows)
+    assert session.rate_limit_rows[0]["key_hash"] != raw_identifier
+
+
 def test_auth_login_repeated_invalid_attempts_return_safe_429() -> None:
     session = _RateLimitResidentSession()
     client = _auth_client(session)
@@ -324,7 +364,7 @@ def test_auth_login_repeated_invalid_attempts_return_safe_429() -> None:
     assert [response.status_code for response in responses[:5]] == [401] * 5
     assert responses[5].status_code == 429
     assert responses[5].headers["Retry-After"]
-    assert responses[5].json()["detail"] == "Too many attempts. Please try again later."
+    assert responses[5].json()["detail"] == "Too many requests"
     assert "UNKNOWN" not in responses[5].text
     assert "UNKNOWN" not in repr(session.rate_limit_rows)
 
@@ -365,7 +405,7 @@ def test_auth_login_resident_roles_share_one_identifier_allowance(
     assert [response.status_code for response in responses[:10]] == [401] * 10
     assert responses[10].status_code == 429
     assert responses[10].headers["Retry-After"]
-    assert responses[10].json()["detail"] == "Too many attempts. Please try again later."
+    assert responses[10].json()["detail"] == "Too many requests"
 
     different_mcr_payload = {"role": "external_resident", "mcr": "M90002A"}
     assert (
@@ -400,7 +440,7 @@ def test_external_registration_invalid_probes_return_429_without_creating_reside
 
     assert [response.status_code for response in responses[:3]] == [422] * 3
     assert responses[3].status_code == 429
-    assert responses[3].json()["detail"] == "Too many registration attempts. Please try again later."
+    assert responses[3].json()["detail"] == "Too many requests"
     assert len(session.external_residents) == before
     assert "E99999Z" not in repr(session.rate_limit_rows)
 
@@ -462,7 +502,7 @@ def test_upload_rate_limit_blocks_before_parser_work(monkeypatch: pytest.MonkeyP
 
     assert [response.status_code for response in responses[:10]] == [200] * 10
     assert responses[10].status_code == 429
-    assert responses[10].json()["detail"] == "Too many upload attempts. Please try again later."
+    assert responses[10].json()["detail"] == "Too many requests"
     assert parser_calls == 10
 
 
@@ -511,3 +551,167 @@ def test_ttf_upload_rate_limit_key_distinguishes_programme(monkeypatch: pytest.M
     assert dr_responses[10].status_code == 429
     assert geri_response.status_code == 200
     assert parser_programmes == ["DR"] * 10 + ["GERI"]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_is_retention_aware_and_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(persistent_rate_limit, "_cleanup_due", lambda _: True)
+    session = _RateLimitSession()
+    settings = Settings(
+        environment="test",
+        rate_limit_hash_secret="unit-test-rate-limit-hash-secret",
+        rate_limit_cleanup_retention_seconds=1234,
+        rate_limit_cleanup_batch_size=17,
+        _env_file=None,
+    )
+    now = datetime(2026, 7, 9, 12, 0, tzinfo=UTC)
+
+    await persistent_rate_limit.check_rate_limit(
+        session,
+        settings=settings,
+        policy=persistent_rate_limit.RateLimitPolicy(
+            scope="bounded_cleanup",
+            limit=2,
+            window_seconds=60,
+            message="Too many requests",
+        ),
+        identifier="203.0.113.11",
+        now=now,
+    )
+
+    assert session.cleanup_calls == 1
+    assert "LIMIT :batch_size" in session.last_sql
+    assert session.last_params["batch_size"] == 17
+    assert session.last_params["cutoff"] == now - timedelta(seconds=1234)
+
+
+def _request(path: str, method: str = "GET") -> Request:
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": method,
+            "scheme": "https",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "headers": [],
+            "client": ("203.0.113.44", 50000),
+            "server": ("testserver", 443),
+        }
+    )
+
+
+def test_middleware_classifies_security_sensitive_route_groups() -> None:
+    middleware = rate_limit_middleware.RateLimitMiddleware(
+        FastAPI(),
+        settings=_settings(),
+    )
+
+    assert middleware._resolve_limit_rule(
+        _request("/api/v1/resident/attendance", "POST")
+    )[2] == "resident_attendance"
+    assert middleware._resolve_limit_rule(
+        _request("/api/v1/admin/staff-accounts/000/reset-password", "POST")
+    )[2] == "staff_account_mutation"
+    assert middleware._resolve_limit_rule(
+        _request("/api/v1/admin/upload/public-holidays", "POST")
+    )[2] == "admin_upload"
+    assert middleware._resolve_limit_rule(
+        _request("/api/v1/secretary/teaching-events", "DELETE")
+    )[2] == "mutation"
+    assert middleware._resolve_limit_rule(
+        _request("/api/v1/admin/external-attendance", "GET")
+    )[2] == "report"
+    assert middleware._resolve_limit_rule(
+        _request("/api/v1/admin/external-attendance/export.xlsx", "GET")
+    )[2] == "report"
+
+
+def test_middleware_skips_only_routes_with_endpoint_persistent_dependencies() -> None:
+    memory_middleware = rate_limit_middleware.RateLimitMiddleware(
+        FastAPI(),
+        settings=_settings(),
+    )
+    postgres_middleware = rate_limit_middleware.RateLimitMiddleware(
+        FastAPI(),
+        settings=Settings(
+            environment="test",
+            rate_limit_store="postgres",
+            rate_limit_hash_secret="unit-test-rate-limit-hash-secret",
+            _env_file=None,
+        ),
+    )
+
+    assert memory_middleware._uses_endpoint_persistent_dependency(
+        _request("/api/v1/auth/login", "POST")
+    )
+    assert memory_middleware._uses_endpoint_persistent_dependency(
+        _request("/api/v1/admin/upload/rdb", "POST")
+    )
+    assert not postgres_middleware._uses_endpoint_persistent_dependency(
+        _request("/api/v1/admin/upload/rdb", "POST")
+    )
+    assert postgres_middleware._uses_endpoint_persistent_dependency(
+        _request("/api/v1/external-residents/register", "POST")
+    )
+
+
+@pytest.mark.asyncio
+async def test_postgres_upload_endpoint_hook_does_not_double_count() -> None:
+    class _UnexpectedSession:
+        async def execute(self, *args, **kwargs):
+            raise AssertionError("endpoint upload hook must not hit the route transaction")
+
+    await persistent_rate_limit_dependency.enforce_upload_persistent_rate_limit(
+        _UnexpectedSession(),  # type: ignore[arg-type]
+        settings=Settings(
+            environment="test",
+            rate_limit_store="postgres",
+            rate_limit_hash_secret="unit-test-rate-limit-hash-secret",
+            _env_file=None,
+        ),
+        user_id=uuid4(),
+        upload_type="rdb",
+    )
+
+
+@pytest.mark.asyncio
+async def test_postgres_middleware_uses_isolated_session_and_hashed_verified_subject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _RateLimitSession()
+    monkeypatch.setattr(rate_limit_middleware, "AsyncSessionLocal", lambda: session)
+    settings = Settings(
+        environment="test",
+        rate_limit_store="postgres",
+        rate_limit_hash_secret="unit-test-rate-limit-hash-secret",
+        _env_file=None,
+    )
+    middleware = rate_limit_middleware.RateLimitMiddleware(FastAPI(), settings=settings)
+    request = _request("/api/v1/resident/attendance", "POST")
+    subject_id = "11111111-1111-1111-1111-111111111111"
+    request.state.identity = SimpleNamespace(role="resident", subject_id=subject_id)
+
+    allowed, _ = await middleware._allow_persistent_request(
+        request,
+        "resident_attendance",
+        1,
+        60,
+    )
+    blocked, retry_after = await middleware._allow_persistent_request(
+        request,
+        "resident_attendance",
+        1,
+        60,
+    )
+
+    assert allowed is True
+    assert blocked is False
+    assert retry_after >= 1
+    stored = repr(session.rate_limit_rows)
+    assert subject_id not in stored
+    assert "203.0.113.44" not in stored
+    assert session.commits == 2

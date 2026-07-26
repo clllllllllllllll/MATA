@@ -1,17 +1,17 @@
 # 5B-H-D Session Transport Hardening Plan
 
-Status: Planning complete; implementation not started
-Last updated: 2026-07-06
+Status: Implemented in code and locally verified; deployment smoke pending; Phase 5B-H-E RLS excluded
+Last updated: 2026-07-26
 
 ## 1. Purpose
 
-5B-H-D defines the deeper session transport hardening required after the immediate protected UAT security cut. Its purpose is to replace temporary browser-visible bearer-token transport before real production, broader public use, or any deployment where Vercel access protection is not the primary outer gate.
+5B-H-D defines the session transport hardening implemented after the earlier protected-UAT security cut. It replaces the temporary browser-visible bearer-token transport with backend-owned opaque PostgreSQL sessions, strict cookies, CSRF, and same-origin API transport.
 
-This is a plan only. It does not implement cookies, CSRF, migrations, RLS, Supabase grants, Phase 6 compliance, final close, snapshots, or clawback.
+This document began as the design plan. The implemented state and exact local evidence are recorded here and in `docs/5b_h_d_production_security_implementation.md`. Full RLS, Phase 6 compliance, final close, snapshots, and clawback are not part of H-D.
 
-## 2. Current Temporary State
+## 2. Historical Pre-H-D Temporary State
 
-The current 5B-H UAT baseline accepts a controlled, protected deployment with known temporary transport risks:
+The following bearer/Supabase-browser description is retained only as the pre-H-D design baseline:
 
 - Staff users sign in with the browser Supabase client in `VITE_AUTH_MODE=supabase`.
 - The frontend retrieves the current staff Supabase access token and sends it to the backend as `Authorization: Bearer`.
@@ -20,9 +20,23 @@ The current 5B-H UAT baseline accepts a controlled, protected deployment with kn
 - Logout clears local MATA app identity and calls local Supabase sign-out for staff, but full server-side session invalidation and refresh-token rotation are not complete.
 - Production/Supabase backend mode rejects raw `X-User-*` identity headers, but bearer-token theft remains a browser compromise risk.
 
-This state is acceptable only for protected stakeholder UAT when 5B-H-C smoke confirms deployment protection, exact CORS, no backend-secret exposure, and no direct sensitive Supabase app-table access.
+This state was the historical H-C protected-UAT posture and is not the current H-D transport.
 
-## 3. Target Architecture Options
+## 2A. Implemented 5B-H-D State
+
+Production/Supabase mode uses backend-owned opaque PostgreSQL sessions. The browser receives the `HttpOnly`, `Secure`, `SameSite=Strict`, host-only `__Host-mata_session` cookie and retains only identity plus the non-secret CSRF synchronizer value in memory. Unsafe methods require `X-CSRF-Token` and an approved `Origin`; production frontend API traffic uses same-origin relative `/api/v1` requests with credentials.
+
+Staff password authentication is backend-mediated through Supabase, and no Supabase access/refresh token is returned to or persisted by the browser. Login, Non-NHG registration, and registration-options routes are intentionally public application entry points. They remain bounded by exact-origin checks where applicable, JSON-only mutations, generic errors, and persistent PostgreSQL rate limits. A Vercel outer gate is not an application-auth requirement.
+
+Session and CSRF credentials are 256-bit values stored only as keyed digests. Rotation is serialized by subject, transaction-scoped family advisory lock, and locked/refreshed session row, with a unique parent-to-child constraint. Logout revokes a device session family. Subject generation fencing invalidates sessions after authorization change, password reset, or deactivation and prevents reset/rotation races from resurrecting access.
+
+Revision `20260722_000023` creates `app_sessions` and subject-generation state. Revision `20260722_000024` revokes application-object and default privileges from `PUBLIC` and optional browser roles `anon`/`authenticated`. That privilege boundary is not full RLS; full RLS is Phase 5B-H-E.
+
+Code completion and local verification do not prove that the deployed environment has these controls.
+
+PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
+
+## 3. Historical Target Architecture Options
 
 | Option | Shape | Benefits | Costs/risks | Recommendation |
 |---|---|---|---|---|
@@ -31,28 +45,27 @@ This state is acceptable only for protected stakeholder UAT when 5B-H-C smoke co
 | Continue Supabase client-only staff sessions | Keep browser Supabase tokens and only tighten CSP/CORS/XSS controls. | Lowest implementation cost. | Does not remove browser-visible bearer-token risk; weak fit for real production/public use. | Not sufficient beyond protected UAT. |
 | Hybrid transitional mode | Support both bearer and cookie transport behind explicit environment flags while migrating tests/users. | Safer rollout and rollback. | Two auth paths increase complexity and must have an expiry date. | Acceptable only as a short migration slice. |
 
-## 4. Recommended Target
+## 4. Selected and Implemented Target
 
-Adopt backend-managed app session cookies for all roles, with backend-mediated authorization remaining the source of truth.
+The selected design is backend-managed application-session cookies for all roles, with backend-mediated authorization remaining the source of truth.
 
 Required properties:
 
-- Cookies are `HttpOnly`, `Secure`, and scoped to the approved API domain.
-- `SameSite` is `Strict` where the deployment topology allows it; otherwise use `Lax` with explicit CSRF controls for unsafe methods.
+- The production host-only cookie is `__Host-mata_session` with `HttpOnly`, `Secure`, `SameSite=Strict`, and `Path=/`.
 - Unsafe methods (`POST`, `PUT`, `PATCH`, `DELETE`) require a CSRF token that is independent from the session cookie.
 - Backend validates session state on every protected request and derives role, staff scope, resident id, external resident id, posting scope, and admin level from trusted backend state.
 - Supabase `user_metadata` is never used for MATA authorization.
 - Resident posting/programme claims in client-visible state are display-only and never trusted for access control.
 - Staff, NHG Resident, and Non-NHG Resident sessions have separate creation paths but converge into one backend identity shape.
 - Logout invalidates the backend session server-side and clears cookies.
-- Refresh/rotation uses short-lived access cookies or opaque session ids plus a server-side session record.
+- Refresh/rotation uses opaque session ids backed by PostgreSQL `app_sessions`.
 - Session keys and refresh material are stored server-side only.
 
 ## 5. CSRF Design
 
-When cookies become the auth transport, CSRF protection becomes mandatory for unsafe API methods.
+Cookie transport makes CSRF protection mandatory for unsafe API methods.
 
-Recommended design:
+Implemented design:
 
 - Backend issues an opaque CSRF token after login/session hydration.
 - CSRF token is readable by the frontend only as a non-secret anti-CSRF value, not as an auth credential.
@@ -63,30 +76,26 @@ Recommended design:
 - Failed CSRF validation returns a generic `403` without revealing session internals.
 - Tests cover missing, mismatched, replayed-after-logout, and rotated token cases.
 
-Open decision:
+The selected pattern is a per-session synchronizer token. The raw value exists only in frontend module memory; PostgreSQL stores only its keyed digest. Rotation and logout invalidate the old CSRF state.
 
-- Choose synchronizer-token storage in the server session record or a signed double-submit token. The synchronizer pattern is safer if a durable session store is already introduced.
+## 6. Implemented Backend Changes
 
-## 6. Backend Changes Needed
-
-Planned backend slices:
+The implementation slices were completed as follows:
 
 1. Session store design.
-   - Decide Postgres, Redis/platform cache, or hybrid storage.
-   - Track session id, subject id, role, auth source, expiry, rotation state, revoked time, created IP/user-agent hash if approved, and CSRF token metadata.
-   - Add a migration only in the future implementation task if persistent storage is selected.
+   - PostgreSQL stores the keyed token and CSRF digests, subject id/type and generation snapshot, auth source, family/rotation state, expiry/revocation state, and optional keyed user-agent hash.
+   - It stores no raw session, raw CSRF, IP address, role, or scope.
+   - Migration `20260722_000023` adds the durable session and subject-generation state; `20260722_000024` adds browser-role grant hardening.
 
 2. Cookie/session endpoints.
-   - Add login/exchange endpoints that issue app cookies.
-   - Add session hydration endpoint that resolves cookies to the existing identity response.
-   - Add refresh endpoint if short-lived cookie rotation is used.
-   - Add logout endpoint that revokes server-side session state and clears cookies.
+   - Login issues the opaque application cookie.
+   - `/auth/me` resolves the cookie to the current identity and CSRF state without rotating it.
+   - `/auth/session/refresh` performs serialized one-winner rotation.
+   - `/auth/logout` revokes the current family and clears the cookie.
 
 3. Staff Supabase exchange.
-   - Verify a Supabase staff JWT once at exchange time.
-   - Map `sub` to `users.supabase_user_id`.
-   - Persist only backend session state required for MATA auth.
-   - Never copy Supabase `user_metadata` into authorization state.
+   - The backend performs the Supabase password call, verifies the returned access token, maps `sub` to `users.supabase_user_id`, and discards upstream credentials.
+   - Authorization state is reloaded from `users`; Supabase `user_metadata` is never authoritative.
 
 4. Resident MCR session exchange.
    - Keep MCR credential checks server-side.
@@ -94,8 +103,8 @@ Planned backend slices:
    - Keep native and external resident tables separate.
 
 5. Middleware update.
-   - Resolve identity from the backend session cookie before bearer fallback.
-   - Keep bearer fallback only behind a temporary, explicit UAT migration flag.
+   - Resolve normal production identity from the backend session cookie.
+   - `bearer_compat` is emergency-only and requires both explicit transport selection and the separate production rollback opt-in.
    - Preserve production rejection of raw `X-User-*` identity headers.
 
 6. Security controls.
@@ -104,17 +113,17 @@ Planned backend slices:
    - Add rate-limit keys that use verified backend session identity.
    - Add safe error handling for expired, revoked, missing, and malformed sessions.
 
-## 7. Frontend Changes Needed
+## 7. Implemented Frontend Changes
 
-Planned frontend slices:
+The frontend slices were completed as follows:
 
 1. Auth transport.
-   - Stop storing app access tokens in `sessionStorage`.
-   - Remove routine `Authorization: Bearer` injection for app API calls after cookie mode is active.
-   - Send `credentials: include` or the Axios equivalent for API calls.
+   - App access tokens are not stored in `sessionStorage` or `localStorage`.
+   - Routine `Authorization: Bearer` injection was removed.
+   - Axios uses credentialed requests.
 
 2. Staff login.
-   - Either exchange a freshly obtained Supabase access token with the backend and then clear browser-visible Supabase session state, or move staff password/OAuth handling behind a backend-mediated flow if approved.
+   - Staff credentials are submitted to the MATA backend for mediated Supabase password authentication.
    - Continue showing generic sign-in errors and rate-limit feedback.
 
 3. Resident login.
@@ -122,7 +131,7 @@ Planned frontend slices:
    - Hydrate identity from backend session endpoint.
 
 4. CSRF header.
-   - Store the non-secret CSRF token in memory or a non-credential cookie as selected.
+   - Store the non-secret CSRF value only in frontend module memory.
    - Attach CSRF header to unsafe methods only.
    - Clear token on logout/session expiry.
 
@@ -132,10 +141,12 @@ Planned frontend slices:
    - Keep route guards synchronous and based on hydrated identity, not raw token claims.
 
 6. Cleanup.
-   - Remove obsolete bearer-token storage helpers after the migration window closes.
-   - Update frontend contract tests to reject app bearer persistence in production cookie mode.
+   - Browser Supabase and bearer-token storage clients were removed from the normal path.
+   - Frontend contract tests reject app bearer persistence and injection in production cookie mode.
 
-## 8. Testing Plan
+## 8. Verification Contract
+
+Final local H-D evidence is recorded in `docs/5b_h_d_production_security_implementation.md`: `1104 passed, 7 warnings` for the complete backend suite; `230 passed, 1 warning` for the focused security set; `13 passed` for PostgreSQL security integration; 20/20 process-isolated one-winner rotation repeats; and `78 passed` plus lint, typecheck, and production/Supabase build for the frontend. Deployment/manual checks remain pending.
 
 Backend tests:
 
@@ -167,31 +178,32 @@ End-to-end/manual tests:
 
 ## 9. Rollback
 
-Rollback plan for the future implementation task:
+Rollback is emergency-only:
 
-- Keep the current bearer transport behind a temporary protected-UAT-only feature flag until cookie mode passes smoke.
-- If cookie mode breaks UAT, disable cookie mode and restrict access back to the protected bearer-token baseline.
+- `bearer_compat` requires explicit transport selection plus the separate production rollback opt-in; it must be time-bounded and monitored.
+- If cookie mode breaks after deployment, restrict access while diagnosing and use the compatibility path only under the documented emergency authorization.
 - Revoke new backend sessions and clear cookies through logout/expiry response.
 - Rotate session-signing or encryption material if exposure is suspected.
-- Preserve database rollback steps for any future session-store migration.
+- Migration `20260722_000023` downgrade removes session state and generation columns and therefore requires an application rollback coordinated with forced reauthentication.
+- Migration `20260722_000024` downgrade intentionally does not recreate unknown broad grants; restore only an independently reviewed prior grant set.
 - Document rollback trigger, operator, and follow-up owner.
 
-Rollback must not re-enable raw `X-User-*` production trust or relax CORS.
+Rollback must not re-enable raw `X-User-*` production trust, weaken CSRF/cookie settings, or relax CORS.
 
 ## 10. Risks And Decisions
 
-Open decisions before implementation:
+Resolved implementation choices:
 
-- Session store: Postgres, Redis/platform cache, or hybrid.
-- Cookie domain strategy for Vercel frontend/backend topology and preview URLs.
-- `SameSite=Strict` versus `SameSite=Lax` for the deployed domains.
-- Staff login exchange design: short-lived Supabase browser token exchange versus fully backend-mediated auth flow.
-- Refresh strategy: opaque session id rotation, split access/refresh cookies, or server-side sliding expiry.
-- CSRF token pattern: synchronizer token versus signed double-submit token.
-- Whether to bind sessions to user-agent/IP signals and how to handle hospital network changes.
-- Session duration and idle timeout for staff versus residents.
-- Migration window length for bearer fallback, if any.
-- Operational controls for revoking all sessions after a suspected incident.
+- PostgreSQL durable session store.
+- Same-origin proxy and host-only `__Host-mata_session` cookie.
+- `SameSite=Strict`.
+- Fully backend-mediated staff password authentication through Supabase.
+- Opaque session-family rotation with bounded idle and absolute lifetimes.
+- Per-session synchronizer CSRF token.
+- Keyed user-agent hash recorded for audit signal but not used as an authorization bypass.
+- Separately configured staff and resident timeouts.
+- Subject generation fencing and subject-wide revocation.
+- Emergency-only, double-opted-in production bearer compatibility.
 
 Known risks:
 
@@ -202,7 +214,7 @@ Known risks:
 
 ## 11. Acceptance Criteria
 
-The future implementation is complete only when all are true:
+The code and local-verification criteria below are satisfied. Deployed Vercel/Supabase configuration, migrations, grants, cookie behavior, and post-deployment smoke remain separate evidence.
 
 - No app access token or refresh token is stored in `sessionStorage` or `localStorage`.
 - Normal app API calls no longer send app bearer tokens from browser storage.
@@ -215,3 +227,7 @@ The future implementation is complete only when all are true:
 - Raw identity headers remain rejected in production/Supabase mode.
 - Tests cover session creation, hydration, CSRF, expiry, rotation, logout, revocation, and cross-role denial.
 - 5B-H-C smoke is updated to include cookie/session checks before production/public launch.
+
+Full RLS is specifically Phase 5B-H-E and was not implemented by H-D privilege revocation.
+
+PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED

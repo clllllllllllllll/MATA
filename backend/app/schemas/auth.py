@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -11,7 +13,7 @@ class LoginRequest(BaseModel):
     password: str | None = Field(default=None, max_length=255)
     mcr: str | None = Field(default=None, max_length=20)
 
-    @field_validator("role", "email", "password", "mcr")
+    @field_validator("role", "email", "mcr")
     @classmethod
     def _trim_strings(cls, value: str | None) -> str | None:
         if value is None:
@@ -38,6 +40,20 @@ class LoginRequest(BaseModel):
         if not self.email or not self.password:
             raise ValueError("email and password are required for staff login")
         return self
+
+
+class SessionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user: dict[str, Any]
+    csrf_token: str = Field(min_length=32, max_length=256)
+    session_refresh_required: bool = False
+
+
+class LogoutResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: bool = True
 
 
 class StaffActorNameRequest(BaseModel):

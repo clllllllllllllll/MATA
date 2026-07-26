@@ -1,5 +1,7 @@
 # Phase 5B-H-C live Vercel and Supabase evidence
 
+> **Historical evidence boundary — 2026-07-22:** This document is a point-in-time Phase 5B-H-C record. Its commit identifiers, migration revision, test counts, live observations, and `BLOCKED` / `MANUAL VERIFICATION REQUIRED` results must remain unchanged. Phase 5B-H-D later replaced the browser-bearer transport described here; current implementation and local verification evidence is recorded in `docs/5b_h_d_production_security_implementation.md`. That later local evidence does not retroactively change any deployed result in this document.
+
 Execution date: 2026-07-22
 
 Environment: MATA UAT/staging

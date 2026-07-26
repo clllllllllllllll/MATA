@@ -13,6 +13,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.security import log_safe_exception
 from app.services.parser_common import ParserResult
 
 logger = logging.getLogger(__name__)
@@ -624,7 +625,12 @@ async def parse_ttf_upload(
 
         workbook = load_workbook(filename=BytesIO(file_bytes), data_only=True)
     except Exception as exc:
-        logger.exception("Unable to read TTF workbook")
+        log_safe_exception(
+            logger,
+            "ttf_workbook_read_failed",
+            exc,
+            category="workbook_read",
+        )
         return ParserResult(
             upload_type="ttf",
             errors=[

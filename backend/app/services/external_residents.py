@@ -287,13 +287,13 @@ async def register_external_resident(
     if await _mcr_exists_in_native_residents(db, normalised_mcr):
         raise ApiError(
             status_code=409,
-            detail="MCR already exists",
+            detail="Registration could not be completed",
             error_code=ErrorCode.CONFLICT.value,
         )
     if await _mcr_exists_in_external_residents(db, normalised_mcr):
         raise ApiError(
             status_code=409,
-            detail="MCR already exists",
+            detail="Registration could not be completed",
             error_code=ErrorCode.CONFLICT.value,
         )
 

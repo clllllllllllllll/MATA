@@ -1,11 +1,6 @@
 import { useState, type FormEvent } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
-import {
-  STAFF_SUPABASE_BACKEND_AUTH_ERROR,
-  loginResident,
-  loginStaff,
-} from '../../api/auth'
-import { ApiRequestError } from '../../api/http'
+import { Link, useLocation, useNavigate } from 'react-router'
+import { loginResident, loginStaff } from '../../api/auth'
 import {
   GENERIC_LOGIN_ERROR,
   getRateLimitLoginErrorMessage,
@@ -20,7 +15,6 @@ type LoginFormId = 'staff' | 'resident'
 
 const RESIDENT_HELP =
   'NHG and registered Non-NHG residents use this shared MCR login.'
-const SUPABASE_CONFIGURATION_ERROR_MARKER = 'VITE_AUTH_MODE=supabase requires'
 
 const getRedirectPath = (role: AppRole, from?: string) => {
   if (from && isPathAllowedForRole(from, role)) {
@@ -31,19 +25,7 @@ const getRedirectPath = (role: AppRole, from?: string) => {
 
 const getStaffLoginErrorMessage = (loginError: unknown) => {
   const rateLimitMessage = getRateLimitLoginErrorMessage(loginError)
-  if (rateLimitMessage) {
-    return rateLimitMessage
-  }
-  if (!(loginError instanceof ApiRequestError)) {
-    return GENERIC_LOGIN_ERROR
-  }
-  if (
-    loginError.message.includes(SUPABASE_CONFIGURATION_ERROR_MARKER) ||
-    loginError.message.includes(STAFF_SUPABASE_BACKEND_AUTH_ERROR)
-  ) {
-    return loginError.message
-  }
-  return GENERIC_LOGIN_ERROR
+  return rateLimitMessage ?? GENERIC_LOGIN_ERROR
 }
 
 export const LoginPage = () => {
@@ -84,7 +66,7 @@ export const LoginPage = () => {
       if (!isAuthRequestCurrent(loginGeneration)) {
         return
       }
-      const clearedCurrentRequest = await clearCurrentAuthRequest(loginGeneration, { signOutSupabase: true })
+      const clearedCurrentRequest = await clearCurrentAuthRequest(loginGeneration)
       if (!clearedCurrentRequest) {
         return
       }

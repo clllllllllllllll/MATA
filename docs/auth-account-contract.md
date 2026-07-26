@@ -1,8 +1,8 @@
 # Auth and Account Contract
 
-Status: 5B-A through 5B-F-B auth/account foundation, July 4, 2026.
+Status: Phase 5B-H-D locally implemented and verified, July 26, 2026. Deployment verification remains pending.
 
-This document defines the Supabase-ready auth/account contract for upcoming 5B login/register work. It is also a repo audit: source-of-truth docs describe the intended design, while the implementation has partial stub/demo and Non-NHG resident support already present.
+This document defines the current auth/account contract. Phase 5B-H-D replaced normal browser bearer transport with backend-owned opaque PostgreSQL sessions, a host-only cookie, and synchronizer CSRF. Historical implementation entries below are retained as an audit trail; where they describe browser Supabase or resident bearer tokens, this H-D contract supersedes them.
 
 References checked:
 - `AGENTS.md`
@@ -12,6 +12,24 @@ References checked:
 - `docs/business-logic.md` BL-9 and BL-12 Non-NHG / Cross-Cluster Resident Attendance
 - `docs/99_decision_log_and_gap_audit.md` decisions for Non-NHG Residents, master admin, secretary visibility capability flag, bulk TTF deferral, latest TTF export/email deferral
 - Supabase docs: JWTs, user management, RLS, and changelog
+
+## Phase 5B-H-D Current Session Contract
+
+- Login, registration options, and Non-NHG registration are intentionally public entry points. An outer Vercel access gate is not required, but no protected data is available without application authentication and server-side authorization.
+- Normal production transport is `AUTH_TRANSPORT=cookie` for Master Admin, Programme PC, Secretary, NHG Resident, and Non-NHG Resident.
+- Staff email/password authentication is mediated by the backend against Supabase Auth. The browser does not create or retain a Supabase session.
+- Resident MCR authentication remains backend-only and creates the same kind of opaque application session while preserving native/external table separation.
+- The raw session token exists only in the `HttpOnly`, production `Secure`, `SameSite=Strict`, host-only `__Host-mata_session` cookie. Only keyed token and CSRF digests are stored in `app_sessions`.
+- `POST /auth/login`, `GET /auth/me`, `POST /auth/session/refresh`, and `POST /auth/logout` are the session lifecycle endpoints.
+- Session responses contain `user`, `csrf_token`, and `session_refresh_required`; they do not return a normal-production access token.
+- Protected unsafe methods require the current `X-CSRF-Token`; the frontend holds it only in module memory and sends credentials through the relative same-origin `/api/v1` path. Intentionally unauthenticated login and registration mutations do not require an existing-session CSRF token.
+- Protected requests reload the current subject row and compare `session_generation`. Ordinary role/scope/active-state changes atomically increment generation and revoke sessions. Password reset is deliberately two-stage: the issuance block, generation fence, and revocation commit before the upstream credential call; successful completion clears the block in a second transaction, while failure leaves issuance blocked for authorized retry.
+- Rotation locks subject, family, and the database session row in a fixed order. `SELECT ... FOR UPDATE` plus `populate_existing=True` prevents stale SQLAlchemy identity-map state from bypassing the locked row.
+- `AUTH_TRANSPORT=bearer_compat` is emergency rollback only. Production also requires the explicit rollback flag and a minimum 32-byte resident signing secret.
+- Migration `20260722_000024` revokes public/browser-role object privileges. It is not full RLS; the complete runtime-role, trusted-context, and policy implementation is Phase 5B-H-E.
+- Detailed implementation and evidence: `docs/5b_h_d_production_security_implementation.md`.
+
+PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
 
 ## Principles
 
@@ -28,10 +46,10 @@ References checked:
 - NHG Resident current posting is always derived server-side from `resident_postings` at request time.
 - Non-NHG Resident date-specific programme and posting authorization is not derived from native `resident_postings` or token claims; derive both from the date-matching `external_resident_postings` row where event/ad-hoc logic needs a selected date.
 - Non-NHG programme/institution selection resolves only through `programme_institution_posting_map`. It must not reuse native teaching mappings, Secretary pools/capabilities, teaching targets, posting metadata, or constructed posting-code strings.
-- MATA external resident tokens must not carry current posting or posting schedule claims as trusted authorization data.
+- Emergency `bearer_compat` external-resident tokens must not carry current posting or posting schedule claims as trusted authorization data.
 - User-facing labels are NHG Resident and Non-NHG Resident. Existing backend/internal names such as `resident`, `external_resident`, `/external/*`, and `external_attendance_records` remain acceptable.
 - MCR-only resident login is a legacy low-assurance identity flow, not strong authentication. It is preserved for resident UX compatibility and must be tightly scoped to the resident's own NHG Resident or Non-NHG Resident APIs.
-- Staff/admin/secretary authentication remains separate from resident MCR identity and should use stronger Supabase-backed authentication later.
+- Staff/admin/secretary authentication remains separate from resident MCR identity and uses backend-mediated Supabase password authentication in production.
 - Resident second factor is deferred. Future MCR + email OTP, magic link, phone OTP, or equivalent verification can be added before identity construction without changing protected-route authorization, because resident routes depend on central backend identity.
 - Backend authorization remains the final authority. Frontend route guards are UX convenience only.
 
@@ -44,10 +62,10 @@ Backend:
 - As of 5B-C cleanup, backend auth is mode-gated:
   - `AUTH_MODE=stub` or `AUTH_MODE=demo` with non-production `ENV`: local header identity is accepted and validated against database rows before routers run.
   - `AUTH_MODE=supabase` or production `ENV`: raw `X-User-*` identity headers are not trusted for protected routes.
-- As of 5B-D1, backend Supabase Auth JWT verification is implemented for staff accounts. Protected Supabase-mode requests require `Authorization: Bearer <Supabase access token>`, verify the token, map `claims.sub` to `users.supabase_user_id`, and derive MATA role/scope from the active `users` row.
+- In H-D cookie mode, staff credentials are sent to the backend, which mediates Supabase password authentication, maps the returned Supabase subject to `users.supabase_user_id`, and derives MATA role/scope only from the active `users` row.
 - Supabase `user_metadata` is ignored for MATA authorization. `role`, `admin_level`, `programme_scope`, and `posting_code` remain server-owned in the database.
-- `backend/app/routers/auth.py` has `POST /auth/login` and `GET /auth/me`.
-- `backend/app/services/auth.py` issues `stub.<role>.<id>` tokens in stub/demo mode. In Supabase mode, staff sessions come from Supabase Auth and NHG/Non-NHG resident sessions use backend-signed MATA resident tokens.
+- `backend/app/routers/auth.py` implements login, hydration, rotation, logout, and staff actor-name endpoints.
+- Stub/demo retains local compatibility identity. Supabase cookie mode converges all roles into backend-owned `app_sessions`; bearer tokens are not the normal browser transport.
 - `backend/app/routers/external_residents.py` and `backend/app/services/external_residents.py` already implement partial Non-NHG self-enrolment and posting update.
 - Phase 5B mapping infrastructure adds `programme_institution_posting_map` and one trusted resolver shared by registration options, registration, current-posting compatibility update, and schedule replacement. The approved TTSH configuration contains 24 active mappings, four inactive/null mappings (`FM`, `PATH`, `SPORTSMED`, and `PALLMED`), and zero pending mappings. The inactive status applies only to Non-NHG registration and posting-schedule selection; it is not a global programme status.
 - The current Non-NHG service writes `external_residents` and `external_resident_postings`. Phase 5B posting schedule requirements supersede the older single-current-posting contract: each schedule row persists the validated programme and resolved posting, authorization-sensitive event/ad-hoc derivation uses that row by selected date, and `external_residents.current_nhg_posting_code` remains only a current/cache/backward-compatibility pointer.
@@ -64,21 +82,23 @@ Frontend:
 - `frontend/src/config/navigation.ts` defines role options, route-role mapping, and redirect targets.
 - `frontend/src/api/authHeaders.ts` builds local/demo stub headers only from a stored authenticated session identity.
 - As of 5B-C cleanup, the frontend no longer synthesizes pre-login demo identity headers and no longer has a visible role switcher.
-- `frontend/src/types/auth.ts` defines the typed frontend auth/session identity contract for later real session wiring.
+- `frontend/src/types/auth.ts` defines the implemented typed frontend auth/session identity contract.
 - As of 5B-C, the frontend has a universal `/login`, frontend auth/session provider, role-aware route guards, logout/session clearing, and Non-NHG Resident registration plus confirmation UI.
-- As of 5B-D2, `VITE_AUTH_MODE=supabase` uses the Supabase browser session for staff login, hydration, API bearer transport, and logout. MATA role/scope still comes only from backend `/auth/me`.
-- As of 5B-F-A/5B-F-B, `AUTH_MODE=supabase` supports one shared NHG/registered Non-NHG Resident MCR login without creating Supabase Auth users. The backend checks both resident identity tables in one request, relies on global MCR uniqueness for deterministic resolution, issues the matching backend-signed MATA resident token, and reloads the resolved active row on protected requests.
+- In `VITE_AUTH_MODE=supabase`, the frontend uses backend cookie-session APIs only. It has no Supabase browser client, bearer persistence, or routine bearer injection.
+- The shared NHG/registered Non-NHG Resident MCR login checks both identity tables in one request, relies on global MCR uniqueness, creates an opaque application session, and reloads the resolved active row on protected requests.
 - As of 5B-E, staff accounts are generic pass-down role accounts. Master Admin can manage staff accounts at `/admin/staff-accounts`; Supabase-mode create/reset calls are backend-only service-role operations and are mocked in tests.
 - As of 5B-E, staff users save `current_staff_actor_name` once after login and can change it from Settings. This is self-declared audit/display metadata only and never an authorization source. Resetting a staff account password clears the saved actor name for handover.
 
 Docker/env:
 - `docker-compose.yml` has local backend `AUTH_MODE=stub`, Docker DB URLs using host `db`, and frontend build args for local stub mode.
-- `frontend/Dockerfile` now passes `VITE_APP_ENV`, `VITE_AUTH_MODE`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` into the Vite build.
+- `frontend/Dockerfile` passes `VITE_APP_ENV`, `VITE_AUTH_MODE`, and `VITE_API_BASE_URL`; no browser Supabase configuration is required.
 - `frontend/nginx.conf` proxies `/api/v1/` to the backend service, so local Docker frontend can use `VITE_API_BASE_URL=/api/v1`.
 
 ## Identity Paths
 
 The login UI has one Resident MCR field. NHG Residents and already-registered Non-NHG Residents both submit the neutral request role `resident`; the frontend does not infer an identity type from the MCR and does not retry against another role. The backend resolves the unique matching table and returns `user.role = resident | external_resident`. A first-time Non-NHG Resident uses the separate registration action before subsequently using this shared login. Explicit `role = external_resident` requests remain temporarily accepted for compatibility, are scoped only to `external_residents`, and never fall back to native residents.
+
+The JWT examples retained in the identity subsections are historical/rollback documentation for `bearer_compat`. Normal H-D production sessions expose no identity claims or reusable application token to browser code.
 
 ### NHG Resident MCR Login
 
@@ -93,12 +113,12 @@ Server behaviour:
 - Reject missing or inactive residents.
 - Reject a cross-table duplicate without selecting an identity or issuing a token, and log no MCR, names, rows, or SQL.
 - Return/log in as subject `residents.id`.
-- Include resident `programme_code` as a native programme claim.
-- Do not put current posting in the token. Resolve posting from `resident_postings` on each request.
+- Reload resident `programme_code` from the current row for the application identity and compliance scope. Emergency `bearer_compat` may include it as a claim.
+- Never trust current posting from a token or browser state. Resolve posting from `resident_postings` on each request.
 - In `AUTH_MODE=supabase`, do not create a Supabase Auth user for the resident and do not write residents into `users`.
-- In `AUTH_MODE=supabase`, return a backend-signed MATA resident session token for `Authorization: Bearer <token>` on resident API calls. The token is signed with server-only `MATA_RESIDENT_SESSION_SECRET`, uses a MATA issuer/audience distinct from Supabase Auth JWTs, and is accepted only for `role/app_role = resident`.
+- In normal `AUTH_MODE=supabase` cookie mode, create a backend-owned `app_sessions` row and set the opaque session cookie; do not return a browser bearer token.
 
-JWT/session claims:
+Legacy emergency bearer-compatibility claims:
 
 ```json
 {
@@ -132,10 +152,10 @@ Server behaviour:
 - Do not create `users`, native `residents`, or native `resident_postings`.
 - After registration, use the same shared Resident MCR field and neutral `role = resident` request as NHG Residents. The backend returns `user.role = external_resident` when the unique active match is in `external_residents`.
 - In `AUTH_MODE=supabase`, do not create a Supabase Auth user for the external resident.
-- In `AUTH_MODE=supabase`, return a backend-signed MATA resident session token for `Authorization: Bearer <token>` on external resident API calls. The token is signed with server-only `MATA_RESIDENT_SESSION_SECRET`, uses a MATA issuer/audience distinct from Supabase Auth JWTs, and is accepted only for `role/app_role = external_resident`.
+- In normal `AUTH_MODE=supabase` cookie mode, create a backend-owned `app_sessions` row and set the opaque session cookie; do not return a browser bearer token.
 - For authorization-sensitive reads, fetch `external_residents` and derive the date-specific programme/posting pair from `external_resident_postings` where relevant. A Secretary event requires an exact schedule posting match and null programme owner; a Programme PC event requires exact schedule posting and programme-owner matches. `/auth/me` may include display-only `current_posting_code` and `current_posting_label` resolved from today's `external_resident_postings` row first, then an effectively active reporting-period row, then the nearest future row, then the nearest recent past row. `external_residents.current_nhg_posting_code` may remain a cache/backward-compatibility pointer, but `/auth/me` must not fall back to it for shell scope and no token programme claim is trusted.
 
-JWT/session claims:
+Legacy emergency bearer-compatibility claims:
 
 ```json
 {
@@ -167,22 +187,22 @@ Server behaviour:
 - Programme PC identity carries `programme_scope`.
 - Empty or NULL `programme_scope` grants no programme access.
 
-Programme PC claims:
+Programme PC derived application identity:
 
 ```json
 {
-  "sub": "<users.id>",
+  "id": "<users.id>",
   "app_role": "admin",
   "admin_level": "programme",
   "programme_scope": ["DR", "GRM"]
 }
 ```
 
-Secretary claims:
+Secretary derived application identity:
 
 ```json
 {
-  "sub": "<users.id>",
+  "id": "<users.id>",
   "app_role": "secretary",
   "posting_code": "TTSHGerMed"
 }
@@ -194,11 +214,11 @@ Source: backend-created or seeded staff account.
 
 Representation: explicit persisted field `users.admin_level = 'master' | 'programme'`.
 
-Claims:
+Derived application identity:
 
 ```json
 {
-  "sub": "<users.id>",
+  "id": "<users.id>",
   "app_role": "admin",
   "admin_level": "master",
   "programme_scope": []
@@ -221,15 +241,16 @@ Staff accounts are shared role accounts, not personal workforce identities:
 - Password reset/handover clears the saved actor name and timestamps; no new local user is created.
 - Production should eventually replace self-declared actor names with SSO/corporate identity. Until then, these names are audit context, not strong identity proof.
 
-## Supabase-Ready Claim Rules
+## Backend Session and Supabase Rules
 
-Use Supabase Auth JWTs for production sessions, but keep MATA authorization data server-owned:
-- Store authorization attributes in server-owned DB rows and/or Supabase `app_metadata`, not user-editable user metadata.
-- Keep JWT claims small: role, subject id, admin level/scope, secretary posting code, resident programme code, or external home cluster only.
-- Use `sub` as the authenticated account subject for the identity path, not as a guessed role-specific foreign key without role context.
-- Backend authorization must validate role + scope server-side before DB work.
-- RLS policies later must use explicit `TO authenticated` policies plus ownership/scope predicates. Do not rely on authentication alone.
-- Server-side backend operations that span residents or programmes must use server-only credentials. Never expose `SUPABASE_SERVICE_ROLE_KEY` to the frontend or any `VITE_` variable.
+Supabase Auth is the staff credential authority, not the browser application-session owner:
+
+- Supabase `user_metadata` and arbitrary JWT claims are never MATA authorization sources.
+- Backend maps the authenticated Supabase subject to `users.supabase_user_id`, then reloads role, admin level, programme scope, posting code, active state, issuance block, and session generation.
+- The browser receives only the MATA `HttpOnly` session cookie plus non-secret session-response state.
+- Backend authorization validates role and scope before database work.
+- H-E RLS must use only trusted backend-derived transaction-local context and must not grant browser roles table access.
+- Server-only Supabase credentials must never appear in frontend code or any `VITE_` variable.
 
 ## Auth Modes and Environments
 
@@ -282,16 +303,17 @@ Backend:
 ```env
 ENV=production
 AUTH_MODE=supabase
+AUTH_TRANSPORT=cookie
 DATABASE_URL=<supabase production database url>
 SYNC_DATABASE_URL=<supabase production sync database url>
 SUPABASE_URL=<supabase project url>
-SUPABASE_JWKS_URL=<optional explicit JWKS url>
-SUPABASE_JWT_ISSUER=<optional explicit issuer, defaults to SUPABASE_URL/auth/v1>
-SUPABASE_JWT_AUDIENCE=authenticated
-SUPABASE_PUBLISHABLE_KEY=<optional publishable/anon key for legacy HS256 Auth-server validation>
+SUPABASE_PUBLISHABLE_KEY=<backend publishable key>
 SUPABASE_SERVICE_ROLE_KEY=<server-only key>
-MATA_RESIDENT_SESSION_SECRET=<backend-only secret for NHG Resident and Non-NHG Resident MATA session tokens>
+MATA_SESSION_HASH_KEY=<server-only random key of at least 32 characters>
+MATA_ALLOWED_HOSTS=<exact deployment host>
 CORS_ORIGINS=<production frontend origin>
+RATE_LIMIT_STORE=postgres
+RATE_LIMIT_HASH_SECRET=<server-only random key of at least 32 characters>
 ```
 
 Frontend:
@@ -299,31 +321,30 @@ Frontend:
 ```env
 VITE_APP_ENV=production
 VITE_AUTH_MODE=supabase
-VITE_API_BASE_URL=<deployed backend api base>
-VITE_SUPABASE_URL=<production Supabase URL>
-VITE_SUPABASE_PUBLISHABLE_KEY=<production Supabase publishable key>
-# VITE_SUPABASE_ANON_KEY=<legacy anon key fallback>
+VITE_API_BASE_URL=/api/v1
 ```
 
-`SUPABASE_SERVICE_ROLE_KEY` is server-only and is not used for JWT verification. Server-only variables must not use the `VITE_` prefix.
+`SUPABASE_SERVICE_ROLE_KEY`, database URLs, session/rate-limit keys, and rollback secrets are server-only. Server-only variables must not use the `VITE_` prefix.
 
 ## Frontend Auth State Contract
 
-`AuthSessionState` should eventually be the frontend source of truth:
+The in-memory frontend session is the source of truth:
 
 ```ts
 {
-  mode: 'stub' | 'demo' | 'supabase'
-  identity: AuthIdentity | null
-  role: AppRole | null
-  isAuthenticated: boolean
+  identity: AuthIdentity
+  csrfToken: string
+  sessionRefreshRequired?: boolean
 }
 ```
 
+`mode`, `role`, and `isAuthenticated` are derived `AuthSessionState` fields, not persisted credential fields.
+
 Responsibilities:
 - Stub/demo mode derives frontend identity from `/auth/login` and `/auth/me`; local header emission is based on the stored session identity.
-- Supabase mode derives staff identity from verified Supabase session state and backend `/auth/me`.
-- Supabase mode derives NHG Resident and Non-NHG Resident identity from the stored MATA resident token and backend `/auth/me` when no valid staff Supabase session exists.
+- Supabase mode derives every role from backend session responses and `/auth/me`.
+- The session cookie is browser-unreadable. Identity and CSRF are held in module memory and cleared together.
+- Unsafe requests use the current CSRF header; no app bearer is stored or routinely injected.
 - Route guards are UX only. Backend remains the security boundary.
 - The frontend must redirect after login by role:
   - NHG Resident -> `/resident/submissions`
@@ -344,7 +365,7 @@ Implemented `/login`:
 - One shared Resident MCR field for NHG Residents and already-registered Non-NHG Residents. The frontend sends one neutral request, never selects or infers a subtype, and redirects from the backend-returned role.
 - Staff/Admin panel: username/email + password login; backend derives Master Admin, Programme PC, or Secretary from `users`.
 - First-time Non-NHG Resident registration CTA using user-facing label "Non-NHG Resident".
-- Successful login stores/loads the real session identity and redirects using the target table above.
+- Successful login loads identity and CSRF into module memory and redirects using the target table above; it does not persist a browser credential.
 - Stub/demo local mode keeps using session-derived stub headers after login, without a user-facing role switcher.
 
 Current Non-NHG registration:
@@ -369,7 +390,7 @@ Phase 5B programme/institution mapping rollout:
 - The four inactive mappings restrict only Non-NHG programme/institution registration and posting-schedule selection. They do not change global programme availability or any native NHG Resident behavior.
 - External-registration mapping remains isolated from native teaching visibility, Secretary capabilities, event creation, and compliance attribution.
 
-## Implementation TODOs
+## Historical Implementation Timeline and Current Follow-up
 
 5B-B1 implemented:
 - Added `users.admin_level` as a non-null explicit master marker.
@@ -448,17 +469,23 @@ Phase 5B programme/institution mapping rollout:
 - 5B-G produced the staff bootstrap runbook, RLS/grants/Data API planning matrix, Supabase migration smoke plan, service-role / privileged backend access review, and updated readiness audit.
 - 5B-G did not implement RLS, add RLS policy SQL, implement cookie/BFF/CSRF session transport, or implement compliance.
 
-5B-H is now the Vercel/Supabase stakeholder UAT security phase:
+5B-H-D locally implemented:
+
+- Added backend-owned opaque PostgreSQL sessions, strict cookie/CSRF transport, rotation-family locking, generation fencing, logout/revocation, persistent rate limiting, upload/archive hardening, error redaction, same-origin frontend transport, and browser-role privilege revocation.
+- Removed the normal frontend Supabase session and bearer-token paths.
+- Verified migrations through `20260722_000024`, dependency audits, backend/frontend suites, PostgreSQL races, and source scans locally.
+- Deployment remains unverified. See `docs/5b_h_d_production_security_implementation.md`.
+
+5B-H historical sequencing:
 - `5B-H-A`: Vercel UAT security audit and minimal deployment hardening plan.
 - `5B-H-B`: Minimal UAT security fixes.
 - `5B-H-C`: Supabase/Vercel UAT deployment smoke.
-- `5B-H-D`: Full session transport hardening plan in `docs/5b_h_session_transport_hardening_plan.md`; implementation remains required before real production or public use.
+- `5B-H-D`: Locally implemented and verified; post-deployment verification remains required.
 
 5B-H sequencing:
 - `5B-H-A`, `5B-H-B`, and `5B-H-C` are required before stakeholder UAT.
-- `5B-H-D` planning can be a deeper follow-up if time is tight, but the actual cookie/BFF/CSRF implementation must be completed before real production or public use.
-- Browser-visible bearer-token transport remains a known temporary risk until `5B-H-D`.
-- Full RLS enablement and policy SQL remain a later dedicated RLS/grants phase, not part of `5B-H-A`, `5B-H-B`, or `5B-H-C`.
+- Browser-visible bearer transport is removed from the normal production path.
+- Full RLS enablement, runtime-role separation, trusted transaction context, and policy SQL are specifically Phase 5B-H-E.
 - Phase 6 compliance starts only after the protected deployment/security baseline is acceptable.
 
 Still deferred beyond this auth/account roadmap alignment:

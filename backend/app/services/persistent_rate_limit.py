@@ -79,18 +79,32 @@ def _cleanup_due(key_hash: str) -> bool:
 async def cleanup_expired_buckets(
     db: AsyncSession,
     *,
+    settings: Settings,
     now: datetime | None = None,
 ) -> None:
     current_time = now or datetime.now(UTC)
-    cutoff = current_time - timedelta(days=1)
+    cutoff = current_time - timedelta(
+        seconds=settings.rate_limit_cleanup_retention_seconds,
+    )
     await db.execute(
         text(
             """
-            DELETE FROM rate_limit_buckets
-            WHERE expires_at < :cutoff
+            WITH expired AS (
+                SELECT id
+                FROM rate_limit_buckets
+                WHERE expires_at < :cutoff
+                ORDER BY expires_at ASC, id ASC
+                LIMIT :batch_size
+            )
+            DELETE FROM rate_limit_buckets AS buckets
+            USING expired
+            WHERE buckets.id = expired.id
             """
         ),
-        {"cutoff": cutoff},
+        {
+            "cutoff": cutoff,
+            "batch_size": settings.rate_limit_cleanup_batch_size,
+        },
     )
 
 
@@ -103,6 +117,8 @@ async def check_rate_limit(
     now: datetime | None = None,
 ) -> RateLimitResult:
     current_time = now or datetime.now(UTC)
+    if policy.limit <= 0 or policy.window_seconds <= 0:
+        raise PersistentRateLimitConfigurationError("Invalid rate-limit policy")
     window_start = fixed_window_start(current_time, policy.window_seconds)
     expires_at = window_start + timedelta(seconds=policy.window_seconds)
     key_hash = hash_rate_limit_key(
@@ -150,7 +166,11 @@ async def check_rate_limit(
     request_count = int(row["request_count"])
 
     if _cleanup_due(key_hash):
-        await cleanup_expired_buckets(db, now=current_time)
+        await cleanup_expired_buckets(
+            db,
+            settings=settings,
+            now=current_time,
+        )
     await db.commit()
 
     return RateLimitResult(

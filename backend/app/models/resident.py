@@ -5,6 +5,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -27,6 +28,10 @@ from app.models.base import Base, UUIDTimestampMixin
 class Resident(UUIDTimestampMixin, Base):
     __tablename__ = "residents"
     __table_args__ = (
+        CheckConstraint(
+            "session_generation >= 0",
+            name="ck_residents_session_generation_nonnegative",
+        ),
         Index(
             "idx_residents_programme_status",
             "programme_code",
@@ -59,6 +64,11 @@ class Resident(UUIDTimestampMixin, Base):
         server_default=text("'active'"),
     )
     employer_tag: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    session_generation: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        server_default=text("0"),
+    )
 
 
 class ResidentPosting(UUIDTimestampMixin, Base):
@@ -150,6 +160,10 @@ class ExternalResident(UUIDTimestampMixin, Base):
             "home_cluster IN ('NUH', 'SingHealth')",
             name="ck_external_residents_home_cluster",
         ),
+        CheckConstraint(
+            "session_generation >= 0",
+            name="ck_external_residents_session_generation_nonnegative",
+        ),
         Index("idx_external_residents_mcr", "mcr", unique=True),
         Index(
             "idx_external_residents_current_posting",
@@ -171,6 +185,11 @@ class ExternalResident(UUIDTimestampMixin, Base):
         String(20),
         nullable=False,
         server_default=text("'active'"),
+    )
+    session_generation: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        server_default=text("0"),
     )
 
 
@@ -228,6 +247,10 @@ class User(UUIDTimestampMixin, Base):
             "admin_level IN ('programme', 'master')",
             name="ck_users_admin_level",
         ),
+        CheckConstraint(
+            "session_generation >= 0",
+            name="ck_users_session_generation_nonnegative",
+        ),
         Index("idx_users_role", "role"),
         Index(
             "idx_users_posting_code",
@@ -268,6 +291,16 @@ class User(UUIDTimestampMixin, Base):
         Boolean,
         nullable=False,
         server_default=text("true"),
+    )
+    session_generation: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        server_default=text("0"),
+    )
+    session_issuance_blocked: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
     )
     current_staff_actor_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     staff_actor_name_updated_at: Mapped[datetime | None] = mapped_column(

@@ -24,7 +24,7 @@ Residents in medical training programmes are required to attend a minimum number
 | Backend | FastAPI (Python 3.12+), SQLAlchemy 2.0 (async), Alembic |
 | Frontend | React (Vite + TypeScript) |
 | Database | PostgreSQL (local dev → Supabase hosted) |
-| Auth | Stubbed header middleware (Phase 1) → Supabase Auth (later) |
+| Auth | Backend-owned opaque PostgreSQL sessions; backend-mediated Supabase staff authentication |
 
 ---
 
@@ -51,7 +51,7 @@ Notes:
 ### Prerequisites
 
 - Python 3.12+
-- Node.js 18+
+- Node.js 22.22+
 - PostgreSQL 15+ (or a Supabase project)
 
 ### Backend Setup
@@ -69,7 +69,7 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 # Copy and configure environment variables
-cp .env.example .env
+cp ../.env.example .env
 # Edit .env with your DATABASE_URL and other settings
 
 # Run migrations
@@ -85,7 +85,7 @@ uvicorn app.main:app --reload
 cd mata/frontend
 
 # Install dependencies
-npm install
+npm ci
 
 # Copy and configure environment variables
 cp .env.example .env
@@ -107,24 +107,32 @@ The backend runs on `http://localhost:8000` and the frontend on `http://localhos
 |----------|-------------|---------|
 | `ENV` | `development`, `test`, or `production` | `development` |
 | `AUTH_MODE` | `stub`, `demo`, or `supabase` | `stub` |
+| `AUTH_TRANSPORT` | Normal app transport; `cookie` is required for production | `cookie` |
 | `DATABASE_URL` | Backend-only async PostgreSQL connection string | `postgresql+asyncpg://user:pass@localhost/mata` |
 | `SYNC_DATABASE_URL` | Backend-only sync PostgreSQL URL for Alembic | `postgresql://user:pass@localhost/mata` |
 | `SUPABASE_URL` | Backend Supabase project URL for Supabase mode | `https://<project-ref>.supabase.co` |
-| `SUPABASE_PUBLISHABLE_KEY` | Publishable/anon key for legacy JWT validation fallback | `<publishable-or-anon-key>` |
+| `SUPABASE_PUBLISHABLE_KEY` | Backend-used key for mediated staff authentication and legacy verification | `<placeholder>` |
 | `SUPABASE_SERVICE_ROLE_KEY` | Backend-only Supabase Admin/service-role key | `<server-only-service-role-key>` |
-| `MATA_RESIDENT_SESSION_SECRET` | Backend-only signing secret for MATA resident tokens | `<backend-only-random-secret>` |
+| `MATA_SESSION_HASH_KEY` | Backend-only keyed-digest secret; minimum 32 characters | `<backend-only-random-value>` |
+| `MATA_ALLOWED_HOSTS` | Explicit accepted Host values | `localhost,127.0.0.1,testserver` |
+| `MATA_STAFF_IDLE_TIMEOUT_SECONDS` | Staff idle timeout | `1800` |
+| `MATA_STAFF_ABSOLUTE_TIMEOUT_SECONDS` | Staff absolute timeout | `28800` |
+| `MATA_RESIDENT_IDLE_TIMEOUT_SECONDS` | Resident idle timeout | `3600` |
+| `MATA_RESIDENT_ABSOLUTE_TIMEOUT_SECONDS` | Resident absolute timeout | `43200` |
+| `MATA_SESSION_ROTATION_SECONDS` | Refresh hint/rotation interval | `900` |
+| `MATA_CSRF_HEADER_NAME` | Synchronizer-token request header | `X-CSRF-Token` |
+| `RATE_LIMIT_STORE` | `postgres` is required in production | `memory` |
+| `RATE_LIMIT_HASH_SECRET` | Backend-only HMAC secret; minimum 32 characters | `<backend-only-random-value>` |
+| `MATA_RESIDENT_SESSION_SECRET` | Rollback-only bearer compatibility secret; minimum 32 UTF-8 bytes | `<rollback-only-placeholder>` |
 
 ### Frontend (`.env`)
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `VITE_API_BASE_URL` | Backend API base URL | `http://localhost:8000/api/v1` |
+| `VITE_API_BASE_URL` | Backend API base URL; production is same-origin | `/api/v1` |
 | `VITE_AUTH_MODE` | Frontend auth mode | `stub` |
-| `VITE_SUPABASE_URL` | Public Supabase project URL for browser Supabase mode | `https://<project-ref>.supabase.co` |
-| `VITE_SUPABASE_PUBLISHABLE_KEY` | Public Supabase publishable key | `<public-publishable-key>` |
-| `VITE_SUPABASE_ANON_KEY` | Legacy public anon-key fallback | `<legacy-public-anon-key>` |
 
-All `VITE_*` variables are public browser-exposed values. Never put `SUPABASE_SERVICE_ROLE_KEY`, `MATA_RESIDENT_SESSION_SECRET`, database passwords, JWT signing secrets, private keys, or other backend-only secrets in frontend env files or Vite build args.
+All `VITE_*` variables are public browser-exposed values. The production browser needs no Supabase URL/key. Never put backend secrets, database credentials, signing keys, or session/rate-limit secrets in frontend env files or Vite build args.
 
 ---
 
@@ -175,7 +183,7 @@ All technical specifications live in `docs/`:
 
 ## Development Notes
 
-### Auth
+### Auth and session transport
 
 In `AUTH_MODE=stub` or local `AUTH_MODE=demo`, identity is passed via request headers for local development and tests only:
 
@@ -186,7 +194,13 @@ X-User-Site: <posting_code>        # secretary only
 X-User-Programme: <programme_code> # admin/resident
 ```
 
-In `AUTH_MODE=supabase` or `ENV=production`, protected requests must send `Authorization: Bearer <Supabase access token>`. The backend verifies the Supabase JWT, maps `claims.sub` to `users.supabase_user_id`, and derives staff role/scope from the `users` row. It does not trust `X-User-*` or `X-Admin-Level` headers in Supabase mode. `SUPABASE_SERVICE_ROLE_KEY` remains server-only and is not required for JWT verification.
+Normal Supabase/production operation uses `AUTH_TRANSPORT=cookie`. Staff credentials are submitted to the backend, which mediates Supabase Auth and maps the verified subject to database-owned role and scope. NHG Resident and Non-NHG Resident login is also backend-mediated. Every role receives a backend-owned opaque application session through an `HttpOnly` cookie; raw app access tokens and refresh tokens are not stored in browser storage or sent on normal application requests.
+
+Unsafe cookie-authenticated requests require the session-bound `X-CSRF-Token`. Logout, rotation, password reset, account changes, expiry, and revocation invalidate server-side session state. Production bearer compatibility is disabled unless the narrowly scoped rollback flag is explicitly enabled.
+
+Staff login, Resident login, registration options, and Non-NHG registration are intentionally public entry points. Application authentication, authorization, rate limiting, CSRF, and session controls protect them; a Vercel outer gate is not required by the H-D design.
+
+PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
 
 Frontend route guards are UX only; backend authorization remains authoritative.
 
@@ -194,7 +208,8 @@ Frontend route guards are UX only; backend authorization remains authoritative.
 
 ```bash
 cd backend
-pytest
+python -B -m compileall app tests
+python -B -m pytest -q --tb=short -p no:cacheprovider
 ```
 
 ### Database Migrations
@@ -214,13 +229,7 @@ alembic downgrade -1
 
 ## Project Status
 
-MATA is currently in active development. The system is being built in phases — core data pipeline and compliance engine first, followed by reporting views, then the keyword-based teaching event matching layer (Phase 8a, pending PM-confirmed keyword catalogue across all 28 programmes).
-
-**Open items pending PM confirmation:**
-- LOA and Employed resident compliance treatment
-- Refresher Training compliance treatment
-- Dormant posting code canonicalisation (15 codes across GRM and DR)
-- Dual posting main-posting rule
+MATA remains in active phased development. Phase 5B-H-D session transport and production-security hardening is implemented and locally verified; see `docs/5b_h_d_production_security_implementation.md`. Full PostgreSQL RLS is Phase 5B-H-E, and Phase 6 compliance remains separate. Local code completion is not proof of deployed Vercel/Supabase controls.
 
 ---
 

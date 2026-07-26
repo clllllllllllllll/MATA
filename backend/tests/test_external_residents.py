@@ -70,7 +70,7 @@ def _middleware_client(fake_db: FakeResidentSession) -> TestClient:
     app.dependency_overrides[
         external_residents._persistent_registration_rate_limit
     ] = _rate_limit_override
-    app.include_router(external_residents.router)
+    app.include_router(external_residents.router, prefix="/api/v1")
     return TestClient(app)
 
 
@@ -327,7 +327,7 @@ def test_external_registration_options_return_only_active_ttsh_programmes() -> N
 def test_external_registration_options_are_public_through_auth_middleware() -> None:
     client = _middleware_client(FakeResidentSession())
 
-    response = client.get("/external-residents/registration-options")
+    response = client.get("/api/v1/external-residents/registration-options")
 
     assert response.status_code == 200
     payload = response.json()
@@ -338,9 +338,9 @@ def test_external_registration_options_are_public_through_auth_middleware() -> N
 def test_external_registration_options_ignore_stale_bearer_header() -> None:
     client = _middleware_client(FakeResidentSession())
 
-    anonymous_response = client.get("/external-residents/registration-options")
+    anonymous_response = client.get("/api/v1/external-residents/registration-options")
     stale_session_response = client.get(
-        "/external-residents/registration-options",
+        "/api/v1/external-residents/registration-options",
         headers={"Authorization": "Bearer synthetic-expired-token"},
     )
 
@@ -353,7 +353,7 @@ def test_external_registration_remains_public_through_auth_middleware() -> None:
     fake_db = FakeResidentSession()
     _configure_mapping(fake_db)
     response = _middleware_client(fake_db).post(
-        "/external-residents/register",
+        "/api/v1/external-residents/register",
         json={
             "name": "Synthetic Public Registration Resident",
             "mcr": "TST92001A",
@@ -379,7 +379,7 @@ def test_external_posting_schedule_remains_protected_through_auth_middleware() -
     commits_before = fake_db.commits
 
     response = _middleware_client(fake_db).put(
-        "/external-residents/me/posting-schedule",
+        "/api/v1/external-residents/me/posting-schedule",
         json={
             "posting_schedule": [
                 {
@@ -410,7 +410,7 @@ def test_external_registration_options_route_has_no_collision() -> None:
     route = next(
         route
         for route in client.app.routes
-        if getattr(route, "path", None) == "/external-residents/registration-options"
+        if getattr(route, "path", None) == "/api/v1/external-residents/registration-options"
         and "GET" in getattr(route, "methods", set())
     )
 
@@ -716,7 +716,8 @@ def test_external_registration_checks_global_mcr_before_schedule_resolution() ->
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "MCR already exists"
+    assert response.json()["detail"] == "Registration could not be completed"
+    assert "M12345A" not in response.text
     assert fake_db.external_residents == residents_before
     assert fake_db.external_resident_postings == postings_before
 

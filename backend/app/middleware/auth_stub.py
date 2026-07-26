@@ -13,6 +13,7 @@ from app.config import Settings, get_settings
 from app.database import AsyncSessionLocal
 from app.errors import ErrorCode, build_error_response
 from app.models import ExternalResident, Resident, User
+from app.services.app_sessions import resolve_session, revoke_session, validate_csrf
 from app.services.mata_resident_token import (
     MataResidentTokenError,
     extract_bearer_token,
@@ -20,6 +21,8 @@ from app.services.mata_resident_token import (
     verify_mata_resident_token,
 )
 from app.services.supabase_jwt import SupabaseJwtError, SupabaseJwtVerifier
+from app.services.session_transport import clear_session_cookie, session_cookie_name
+from app.middleware.security import is_approved_origin, is_unsafe_method
 
 
 @dataclass
@@ -42,6 +45,14 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         "/openapi.json",
         "/redoc",
     }
+    RAW_IDENTITY_HEADERS = {
+        "x-user-role",
+        "x-user-id",
+        "x-user-programme",
+        "x-user-site",
+        "x-user-mcr",
+        "x-admin-level",
+    }
 
     def __init__(self, app: Starlette, settings: Settings | None = None) -> None:
         super().__init__(app)
@@ -50,20 +61,45 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
+        login_path = f"{self._settings.api_prefix}/auth/login"
+        registration_path = f"{self._settings.api_prefix}/external-residents/register"
+        registration_options_path = (
+            f"{self._settings.api_prefix}/external-residents/registration-options"
+        )
+
+        if (
+            self._settings.environment == "production"
+            and is_unsafe_method(request.method)
+            and not is_approved_origin(request.headers.get("Origin"), self._settings)
+        ):
+            return self._forbidden_response()
+
+        if path in {login_path, registration_path} and request.method == "POST":
+            if not self._public_json_request_allowed(request):
+                return build_error_response(
+                    status_code=415,
+                    detail="Unsupported media type",
+                    error_code=ErrorCode.VALIDATION_FAILED.value,
+                )
+            return await call_next(request)
+
         if (
             request.method == "OPTIONS"
             or path in self.OPEN_PATHS
-            or path.endswith("/auth/login")
-            or path.endswith("/external-residents/register")
-            or (
-                request.method == "GET"
-                and path.endswith("/external-residents/registration-options")
-            )
+            or (request.method == "GET" and path == registration_options_path)
         ):
             return await call_next(request)
 
+        if not self._stub_header_auth_allowed() and self._has_raw_identity_headers(request):
+            return self._unauthorized_response()
+
+        if self._settings.auth_transport == "cookie":
+            cookie_result = await self._dispatch_cookie_auth(request, call_next)
+            if cookie_result is not None:
+                return cookie_result
+
         if not self._stub_header_auth_allowed():
-            if self._supabase_auth_required():
+            if self._supabase_auth_required() and self._bearer_compat_allowed():
                 identity_or_error = await self._resolve_supabase_identity(request)
                 if isinstance(identity_or_error, Response):
                     return identity_or_error
@@ -97,7 +133,147 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             return identity_or_error
 
         request.state.identity = identity_or_error
-        return await call_next(request)
+        response = await call_next(request)
+        if response.status_code == 401:
+            clear_session_cookie(response, settings=self._settings)
+        return response
+
+    async def _dispatch_cookie_auth(self, request: Request, call_next) -> Response | None:
+        if request.headers.get("Authorization") and not self._stub_header_auth_allowed():
+            return self._unauthorized_response()
+
+        raw_session_token = request.cookies.get(session_cookie_name(self._settings))
+        logout_path = f"{self._settings.api_prefix}/auth/logout"
+        if not raw_session_token:
+            if request.url.path == logout_path and request.method == "POST":
+                return await call_next(request)
+            if self._stub_header_auth_allowed():
+                return None
+            return self._unauthorized_response()
+
+        try:
+            async with AsyncSessionLocal() as session_db:
+                app_session = await resolve_session(
+                    session_db,
+                    self._settings,
+                    raw_session_token,
+                    touch=is_unsafe_method(request.method),
+                )
+                await session_db.commit()
+        except Exception:
+            response = build_error_response(
+                status_code=503,
+                detail="Authentication service unavailable",
+                error_code=ErrorCode.INTERNAL_ERROR.value,
+            )
+            clear_session_cookie(response, settings=self._settings)
+            return response
+
+        if app_session is None:
+            if request.url.path == logout_path and request.method == "POST":
+                response = await call_next(request)
+            else:
+                response = self._unauthorized_response()
+            clear_session_cookie(response, settings=self._settings)
+            return response
+
+        identity_or_error = await self._resolve_app_session_identity(app_session, request)
+        if isinstance(identity_or_error, Response):
+            try:
+                async with AsyncSessionLocal() as session_db:
+                    await revoke_session(
+                        session_db,
+                        app_session,
+                        reason="subject_inactive_or_invalid",
+                    )
+                    await session_db.commit()
+            except Exception:
+                pass
+            clear_session_cookie(identity_or_error, settings=self._settings)
+            return identity_or_error
+
+        request.state.identity = identity_or_error
+        request.state.app_session = app_session
+        request.state.session_token = raw_session_token
+
+        if is_unsafe_method(request.method):
+            csrf_token = request.headers.get(self._settings.csrf_header_name)
+            if not validate_csrf(app_session, csrf_token, self._settings):
+                return self._forbidden_response()
+
+        response = await call_next(request)
+        if response.status_code == 401:
+            clear_session_cookie(response, settings=self._settings)
+        return response
+
+    async def _resolve_app_session_identity(
+        self,
+        app_session,
+        request: Request,
+    ) -> AuthIdentity | Response:
+        if app_session.subject_type == "staff":
+            return await self._resolve_session_user_identity(
+                app_session.subject_id,
+                request,
+                expected_session_generation=app_session.subject_session_generation,
+            )
+        if app_session.subject_type == "resident":
+            return await self._resolve_mata_resident_identity(
+                app_session.subject_id,
+                request,
+                expected_session_generation=app_session.subject_session_generation,
+            )
+        if app_session.subject_type == "external_resident":
+            return await self._resolve_mata_external_resident_identity(
+                app_session.subject_id,
+                request,
+                expected_session_generation=app_session.subject_session_generation,
+            )
+        return self._unauthorized_response()
+
+    async def _resolve_session_user_identity(
+        self,
+        user_id: UUID,
+        request: Request,
+        *,
+        expected_session_generation: int,
+    ) -> AuthIdentity | Response:
+        async with AsyncSessionLocal() as session:
+            user = await session.scalar(select(User).where(User.id == user_id))
+        if (
+            user is None
+            or not user.is_active
+            or user.session_issuance_blocked
+            or user.session_generation != expected_session_generation
+        ):
+            return self._supabase_unauthorized_response(request, "staff_missing_or_inactive")
+        return self._identity_from_user(user)
+
+    def _identity_from_user(self, user: User) -> AuthIdentity | Response:
+        if user.role not in {"admin", "secretary"}:
+            return self._unauthorized_response()
+        if user.role == "admin":
+            return AuthIdentity(
+                role="admin",
+                subject_id=str(user.id),
+                programme_scope=self._normalise_programme_scope(user.programme_scope),
+                admin_level=self._resolve_admin_level(
+                    persisted_admin_level=getattr(user, "admin_level", None),
+                ),
+                current_staff_actor_name=getattr(user, "current_staff_actor_name", None),
+            )
+        if not user.posting_code:
+            return build_error_response(
+                status_code=403,
+                detail="Forbidden",
+                error_code=ErrorCode.FORBIDDEN.value,
+            )
+        return AuthIdentity(
+            role="secretary",
+            subject_id=str(user.id),
+            posting_code=user.posting_code,
+            current_staff_actor_name=getattr(user, "current_staff_actor_name", None),
+        )
 
     async def _resolve_supabase_identity(self, request: Request) -> AuthIdentity | Response:
         try:
@@ -144,11 +320,20 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         self,
         resident_id: UUID,
         request: Request | None = None,
+        *,
+        expected_session_generation: int | None = None,
     ) -> AuthIdentity | Response:
         async with AsyncSessionLocal() as session:
             resident = await session.scalar(select(Resident).where(Resident.id == resident_id))
 
-        if resident is None or resident.status == "inactive":
+        if (
+            resident is None
+            or resident.status != "active"
+            or (
+                expected_session_generation is not None
+                and resident.session_generation != expected_session_generation
+            )
+        ):
             if request is not None:
                 return self._supabase_unauthorized_response(request, "mata_resident_missing_or_inactive")
             return self._unauthorized_response()
@@ -164,8 +349,14 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         self,
         external_resident_id: UUID,
         request: Request | None = None,
+        *,
+        expected_session_generation: int | None = None,
     ) -> AuthIdentity | Response:
-        return await self._resolve_external_resident_identity(external_resident_id, request)
+        return await self._resolve_external_resident_identity(
+            external_resident_id,
+            request,
+            expected_session_generation=expected_session_generation,
+        )
 
     async def _resolve_supabase_user_identity(
         self,
@@ -180,7 +371,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         if user is None:
             return self._supabase_unauthorized_response(request, "supabase_user_unmapped")
 
-        if not user.is_active:
+        if not user.is_active or user.session_issuance_blocked:
             return self._supabase_unauthorized_response(request, "supabase_user_inactive")
 
         if user.role not in {"admin", "secretary"}:
@@ -222,7 +413,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
                 select(User).where(User.id == subject_id, User.is_active.is_(True)),
             )
 
-        if user is None or user.role != role:
+        if user is None or user.role != role or user.session_issuance_blocked:
             return build_error_response(
                 status_code=401,
                 detail="Unauthorized",
@@ -278,7 +469,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         async with AsyncSessionLocal() as session:
             resident = await session.scalar(select(Resident).where(Resident.id == subject_id))
 
-        if resident is None or resident.status == "inactive":
+        if resident is None or resident.status != "active":
             return build_error_response(
                 status_code=401,
                 detail="Unauthorized",
@@ -304,13 +495,22 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         self,
         subject_id: UUID,
         request: Request | None = None,
+        *,
+        expected_session_generation: int | None = None,
     ) -> AuthIdentity | Response:
         async with AsyncSessionLocal() as session:
             resident = await session.scalar(
                 select(ExternalResident).where(ExternalResident.id == subject_id),
             )
 
-        if resident is None or resident.status == "inactive":
+        if (
+            resident is None
+            or resident.status != "active"
+            or (
+                expected_session_generation is not None
+                and resident.session_generation != expected_session_generation
+            )
+        ):
             if request is not None:
                 return self._supabase_unauthorized_response(
                     request,
@@ -336,6 +536,22 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             detail="Unauthorized",
             error_code=ErrorCode.UNAUTHORIZED.value,
         )
+
+    @staticmethod
+    def _forbidden_response() -> Response:
+        return build_error_response(
+            status_code=403,
+            detail="Forbidden",
+            error_code=ErrorCode.FORBIDDEN.value,
+        )
+
+    @staticmethod
+    def _public_json_request_allowed(request: Request) -> bool:
+        content_type = (request.headers.get("Content-Type") or "").split(";", 1)[0]
+        return content_type.strip().lower() == "application/json"
+
+    def _has_raw_identity_headers(self, request: Request) -> bool:
+        return any(header in request.headers for header in self.RAW_IDENTITY_HEADERS)
 
     @staticmethod
     def _parse_programme_header(raw_value: str | None) -> list[str]:
@@ -368,6 +584,14 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
 
     def _supabase_auth_required(self) -> bool:
         return self._settings.environment == "production" or self._settings.auth_mode == "supabase"
+
+    def _bearer_compat_allowed(self) -> bool:
+        if self._settings.auth_transport != "bearer_compat":
+            return False
+        return (
+            self._settings.environment != "production"
+            or self._settings.enable_production_bearer_rollback
+        )
 
     def _get_supabase_verifier(self) -> SupabaseJwtVerifier:
         if self._supabase_verifier is None:

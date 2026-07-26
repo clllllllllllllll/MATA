@@ -12,6 +12,7 @@ from app.models.posting import (
 )
 from app.models.programme import Programme
 from app.models.rate_limit import RateLimitBucket
+from app.models.session import AppSession
 from app.models.reporting import (
     AcademicMonthBoundary,
     ClawbackRecord,
@@ -35,6 +36,7 @@ from app.models.teaching import (
 
 __all__ = [
     "AttendanceRecord",
+    "AppSession",
     "AuditLog",
     "ExternalAttendanceRecord",
     "ExternalResident",

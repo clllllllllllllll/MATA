@@ -1,6 +1,6 @@
 ﻿import { useEffect, useRef, useState } from 'react'
 import type { FormEvent, PropsWithChildren } from 'react'
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import { breadcrumbMap, navItems, roleOptions } from '../config/navigation'
 import { useAuth } from '../context/useAuth'
 import { useAppState } from '../context/useAppState'

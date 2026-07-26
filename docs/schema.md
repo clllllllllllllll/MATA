@@ -1,6 +1,6 @@
 # Database Schema
 
-All tables use UUID primary keys (`id UUID DEFAULT gen_random_uuid()`), `created_at TIMESTAMPTZ DEFAULT now()`, and `updated_at TIMESTAMPTZ DEFAULT now()` unless noted otherwise.
+All tables use UUID primary keys (`id UUID DEFAULT gen_random_uuid()`), `created_at TIMESTAMPTZ DEFAULT now()`, and `updated_at TIMESTAMPTZ DEFAULT now()` unless noted otherwise. `app_sessions` is an explicit exception: it has `created_at` and `last_seen_at`, but no `updated_at`.
 
 ## Entity Relationship Summary
 
@@ -22,9 +22,11 @@ posting_codes ─1:N─ posting_groups
 residents ─1:N─ resident_postings
 residents ─1:N─ attendance_records
 residents ─1:N─ surplus_ledger
+residents ─logical 1:N─ app_sessions (subject_type = resident)
 
 external_residents ─1:N─ external_attendance_records
 external_residents ─1:N─ external_resident_postings
+external_residents ─logical 1:N─ app_sessions (subject_type = external_resident)
 teaching_events ─1:N─ external_attendance_records
 
 teaching_events ─1:N─ attendance_records
@@ -44,7 +46,10 @@ posting_codes ─1:N─ teaching_name_catalogue
 programmes ─1:N─ teaching_name_catalogue
 
 users ─1:N─ upload_logs
+users ─logical 1:N─ app_sessions (subject_type = staff)
 upload_logs ─1:N─ academic_month_boundaries
+
+rate_limit_buckets (standalone security infrastructure)
 ```
 
 ---
@@ -193,7 +198,7 @@ Six-month reporting windows.
 
 ## Table: `residents`
 
-One row per resident. Created from RDB upload. Also serves as the **identity source for resident authentication** — MCR is the login credential and `programme_code` is embedded in the JWT at login time to scope all compliance lookups to the resident's native residency programme.
+One row per resident. Created from RDB upload. Also serves as the **identity source for resident authentication**: MCR is the login credential, while `programme_code` is reloaded from this row for cookie-session identity and compliance scope. Only emergency `bearer_compat` embeds it in a MATA JWT.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
@@ -210,6 +215,7 @@ One row per resident. Created from RDB upload. Also serves as the **identity sou
 | phone | VARCHAR(20) | | |
 | status | VARCHAR(20) | DEFAULT 'active' | `active`, `inactive`, `loa`, `employed` |
 | employer_tag | VARCHAR(20) | | NULL for normal residents, "SAF", "SCDF", "KTPH" etc. |
+| session_generation | BIGINT | NOT NULL, DEFAULT 0, CHECK >= 0 | Subject-wide application-session invalidation generation |
 
 ---
 
@@ -439,6 +445,7 @@ One row per Non-NHG/cross-cluster resident who self-registers to submit attendan
 | home_cluster | VARCHAR(20) | NOT NULL, CHECK IN (`NUH`, `SingHealth`) | External home cluster only. No other values accepted. |
 | current_nhg_posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Current/cache/backward-compatibility pointer derived by the backend from the trusted programme/institution mapping. It is never client-selected and is not derived from native `resident_postings`. |
 | status | VARCHAR(20) | DEFAULT 'active' | `active`, `inactive` |
+| session_generation | BIGINT | NOT NULL, DEFAULT 0, CHECK >= 0 | Subject-wide application-session invalidation generation |
 
 **Global MCR uniqueness:** MCR is a unique identifier for every doctor. Because native and external identities live in separate tables, enforce cross-table uniqueness in the service layer: registration must reject if the MCR exists in either `residents.mcr` or `external_residents.mcr`.
 
@@ -721,12 +728,61 @@ For admin and secretary authentication **only**. Residents are **not** stored he
 | current_staff_actor_name | TEXT | nullable | Self-declared current human using this shared staff role account. Audit/display metadata only; never an authorization source. |
 | staff_actor_name_updated_at | TIMESTAMPTZ | nullable | Last time the saved staff actor name was changed. |
 | staff_actor_name_updated_by_user_id | UUID | FK -> users.id, nullable | Staff account that last updated the saved actor name. Usually the same role account. |
+| session_generation | BIGINT | NOT NULL, DEFAULT 0, CHECK >= 0 | Subject-wide application-session invalidation generation |
+| session_issuance_blocked | BOOLEAN | NOT NULL, DEFAULT false | Fail-closed staff login/session-creation fence during password reset |
 
 **Secretary provisioning:** At launch, one account per TTSH posting code (e.g. TTSHAnaes, TTSHGerMed, TTSHCardio). Architecture is flexible — when other institutions onboard, provision new secretary accounts scoped to their posting codes (e.g. KTPHAnaes, SGHGerMed) with no schema change required.
 
 **Admin/PC provisioning:** Account count is flexible. `programme_scope TEXT[]` supports multiple programmes per account, allowing PCs who manage several programmes to use a single login.
 
 **5B-E role-account note:** Staff accounts are generic pass-down role accounts. `users.name` remains the generic account display name (for example `Programme PC - DR`), while `current_staff_actor_name` stores the current human's self-declared name for audit context. Password reset/handover clears the saved actor name. Master Admin is explicit via `admin_level = 'master'`; Programme PC access requires `admin_level = 'programme'` and non-empty `programme_scope`; Secretary access requires `posting_code`.
+
+---
+
+## Table: `app_sessions`
+
+Backend-owned opaque browser-session state added by migration `20260722_000023`. `subject_id` is deliberately polymorphic and has no database foreign key; the session service validates it against the table selected by `subject_type`. Raw session and CSRF tokens are never stored.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| id | UUID | PK | |
+| token_digest | BYTEA(32) | UNIQUE, NOT NULL, exact 32-byte check | Keyed digest only |
+| subject_type | VARCHAR(30) | NOT NULL, CHECK | `staff`, `resident`, or `external_resident` |
+| subject_id | UUID | NOT NULL | Logical identity reference |
+| subject_session_generation | BIGINT | NOT NULL, CHECK >= 0 | Generation snapshot at issuance |
+| session_family_id | UUID | NOT NULL | Root identifier for the rotation/device family |
+| auth_source | VARCHAR(30) | NOT NULL, CHECK | `supabase_staff` or `mata_resident`, constrained to subject type |
+| csrf_token_digest | BYTEA(32) | NOT NULL, exact 32-byte check | Keyed digest only |
+| created_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Session-child creation time |
+| last_seen_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Last unsafe-request session resolution that touched idle expiry |
+| idle_expires_at | TIMESTAMPTZ | NOT NULL, <= absolute expiry | Sliding idle bound |
+| absolute_expires_at | TIMESTAMPTZ | NOT NULL | Preserved across rotation |
+| revoked_at | TIMESTAMPTZ | nullable | |
+| revoked_reason | TEXT | nullable | |
+| rotated_from_session_id | UUID | nullable, UNIQUE | At most one child per parent |
+| user_agent_hash | BYTEA(32) | nullable, exact 32-byte check | Optional keyed digest; no raw user agent |
+
+Root rows satisfy `session_family_id = id`; child rows have `rotated_from_session_id`. Rotation locks in global order: subject row, transaction-scoped family advisory lock, then fresh `SELECT ... FOR UPDATE` session reload. `populate_existing=True` prevents SQLAlchemy identity-map state from bypassing the locked database row. Transaction-scoped advisory locks disappear on commit, rollback, cancellation, or connection loss, so pooled connections cannot retain them.
+
+---
+
+## Table: `rate_limit_buckets`
+
+Persistent atomic fixed-window counters added by migration `20260709_000016`.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| id | UUID | PK | |
+| scope | TEXT | NOT NULL | Route/policy group |
+| key_hash | TEXT | NOT NULL | HMAC-SHA256 hex digest; never a raw identifier |
+| window_start | TIMESTAMPTZ | NOT NULL | Fixed-window boundary |
+| window_seconds | INTEGER | NOT NULL, CHECK > 0 | |
+| request_count | INTEGER | NOT NULL, CHECK >= 1 | |
+| expires_at | TIMESTAMPTZ | NOT NULL | Cleanup boundary |
+| created_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | |
+| updated_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | |
+
+The unique constraint is `(scope, key_hash, window_start, window_seconds)`. Atomic `INSERT ... ON CONFLICT DO UPDATE` prevents concurrent lost updates. This table has RLS enabled from its original migration; the current backend owner/runtime path remains usable pending the dedicated restricted-role and full-policy work in Phase 5B-H-E.
 
 ---
 
@@ -966,6 +1022,16 @@ The `GET /secretary/teaching-name-options` endpoint returns a unified dropdown c
 Visibility follows the same rule as all other events. A global session type does not bypass source eligibility: NHG Residents only see secretary-created events from their assigned/current posting or their explicit native-programme TTSH department posting mapping, plus PC-created events for their native programme. A Department Meeting created by TTSHGerMed secretary is visible only to residents for whom TTSHGerMed is an allowed source.
 
 **Admin CRUD UI:** Managed alongside `loa_types`, `weekend_exceptions`, `multi_posting_rules`, `posting_groups` in the admin configuration panel. Same access level, same UI pattern.
+
+---
+
+## Browser/Data API Privilege Boundary
+
+Migration `20260722_000024` revokes all existing table, sequence, and function privileges in `public` from `PUBLIC` and, when present, Supabase browser roles `anon` and `authenticated`. It also revokes corresponding default privileges for future objects created by the migration owner. Its downgrade intentionally does not recreate unknowable broad grants.
+
+This is grant hardening, not full RLS. `app_sessions` currently has neither RLS nor forced RLS, and the existing backend owner/runtime remains usable. Phase 5B-H-E must separately introduce a non-owner `NOBYPASSRLS` runtime role, trusted transaction-local identity context, helpers, policies, and full-table verification.
+
+PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
 
 ---
 
@@ -1268,6 +1334,38 @@ WHERE posting_code IS NOT NULL;
 
 CREATE INDEX idx_users_programme_scope_gin
 ON users USING GIN(programme_scope);
+```
+
+#### `app_sessions`
+
+```sql
+CREATE INDEX idx_app_sessions_active_expiry
+ON app_sessions(revoked_at, idle_expires_at, absolute_expires_at);
+
+CREATE INDEX idx_app_sessions_subject
+ON app_sessions(subject_type, subject_id);
+
+CREATE INDEX idx_app_sessions_family_revoked
+ON app_sessions(session_family_id, revoked_at);
+
+CREATE INDEX idx_app_sessions_revoked_at
+ON app_sessions(revoked_at);
+
+CREATE INDEX idx_app_sessions_absolute_expires_at
+ON app_sessions(absolute_expires_at);
+
+CREATE INDEX idx_app_sessions_idle_expires_at
+ON app_sessions(idle_expires_at);
+```
+
+#### `rate_limit_buckets`
+
+```sql
+CREATE INDEX idx_rate_limit_buckets_scope_key_window
+ON rate_limit_buckets(scope, key_hash, window_start);
+
+CREATE INDEX idx_rate_limit_buckets_expires_at
+ON rate_limit_buckets(expires_at);
 ```
 
 #### `upload_logs`

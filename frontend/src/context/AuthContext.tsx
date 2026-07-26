@@ -9,14 +9,14 @@ import {
 import {
   authSessionChangedEvent,
   clearAuthSession,
-  hydrateMataResidentSession,
-  hydrateSupabaseSession,
-  me,
+  hydrateAuthSession,
+  logoutAuthSession,
+  readAuthSessionRevision,
   readStoredAuthSession,
+  refreshAuthSession,
   saveAuthSession,
   updateStaffActorName as updateStaffActorNameApi,
 } from '../api/auth'
-import { signOutFromSupabase } from '../api/supabaseClient'
 import { frontendConfig } from '../config/frontendConfig'
 import type { AuthIdentity, AuthSessionState, StoredAuthSession } from '../types/auth'
 import { clearMemoryCache } from '../utils/memoryReadCache'
@@ -25,12 +25,8 @@ import { useAppState } from './useAppState'
 
 export const AuthProvider = ({ children }: PropsWithChildren) => {
   const { setRole } = useAppState()
-  const [session, setSession] = useState<StoredAuthSession | null>(() =>
-    frontendConfig.authMode === 'supabase' ? null : readStoredAuthSession(),
-  )
-  const [isLoading, setIsLoading] = useState(() =>
-    frontendConfig.authMode === 'supabase' || readStoredAuthSession() !== null,
-  )
+  const [session, setSession] = useState<StoredAuthSession | null>(readStoredAuthSession)
+  const [isLoading, setIsLoading] = useState(true)
   const authRequestGenerationRef = useRef(0)
 
   const nextAuthRequestGeneration = useCallback(() => {
@@ -46,9 +42,18 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
   const clearLocalAuthState = useCallback(() => {
     clearAuthSession()
     setSession(null)
+    setRole(frontendConfig.defaultRole)
     setIsLoading(false)
     clearMemoryCache()
-  }, [])
+  }, [setRole])
+
+  const commitSession = useCallback((nextSession: StoredAuthSession) => {
+    saveAuthSession(nextSession)
+    setSession(nextSession)
+    setRole(nextSession.identity.role)
+    setIsLoading(false)
+    clearMemoryCache()
+  }, [setRole])
 
   const beginLoginAttempt = useCallback(() => {
     const generation = nextAuthRequestGeneration()
@@ -57,19 +62,9 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
   }, [clearLocalAuthState, nextAuthRequestGeneration])
 
   const clearCurrentAuthRequest = useCallback(
-    async (generation: number, options?: { signOutSupabase?: boolean }) => {
+    async (generation: number) => {
       if (!isCurrentAuthRequest(generation)) {
         return false
-      }
-      if (options?.signOutSupabase && frontendConfig.authMode === 'supabase') {
-        try {
-          await signOutFromSupabase()
-        } catch {
-          // A latest-request cleanup must still clear local MATA state if Supabase sign-out fails.
-        }
-        if (!isCurrentAuthRequest(generation)) {
-          return false
-        }
       }
       clearLocalAuthState()
       return true
@@ -77,57 +72,42 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     [clearLocalAuthState, isCurrentAuthRequest],
   )
 
+  const loadHydratedSession = useCallback(async (
+    generation: number,
+    expectedSessionRevision: number,
+  ) => {
+    const hydratedSession = await hydrateAuthSession()
+    if (
+      !isCurrentAuthRequest(generation) ||
+      readAuthSessionRevision() !== expectedSessionRevision
+    ) {
+      return null
+    }
+    if (!hydratedSession.sessionRefreshRequired) {
+      return hydratedSession
+    }
+
+    // Stage the synchronizer token only after this hydration request wins.
+    saveAuthSession(hydratedSession)
+    const stagedSessionRevision = readAuthSessionRevision()
+    const refreshedSession = await refreshAuthSession()
+    return (
+      isCurrentAuthRequest(generation) &&
+      readAuthSessionRevision() === stagedSessionRevision
+    )
+      ? refreshedSession
+      : null
+  }, [isCurrentAuthRequest])
+
   const hydrateSession = useCallback(async () => {
     const generation = nextAuthRequestGeneration()
-    if (frontendConfig.authMode === 'supabase') {
-      setIsLoading(true)
-      try {
-        const hydratedSession =
-          await hydrateSupabaseSession() ?? await hydrateMataResidentSession()
-        if (!isCurrentAuthRequest(generation)) {
-          return
-        }
-        if (!hydratedSession) {
-          clearLocalAuthState()
-          return
-        }
-        saveAuthSession(hydratedSession)
-        setSession(hydratedSession)
-        setRole(hydratedSession.identity.role)
-      } catch {
-        if (!isCurrentAuthRequest(generation)) {
-          return
-        }
-        clearLocalAuthState()
-      } finally {
-        if (isCurrentAuthRequest(generation)) {
-          setIsLoading(false)
-        }
-      }
-      return
-    }
-
-    const storedSession = readStoredAuthSession()
-    if (!storedSession) {
-      if (isCurrentAuthRequest(generation)) {
-        clearLocalAuthState()
-      }
-      return
-    }
-
+    const sessionRevision = readAuthSessionRevision()
     setIsLoading(true)
     try {
-      const hydratedIdentity = await me(storedSession)
-      if (!isCurrentAuthRequest(generation)) {
-        return
+      const hydratedSession = await loadHydratedSession(generation, sessionRevision)
+      if (hydratedSession && isCurrentAuthRequest(generation)) {
+        commitSession(hydratedSession)
       }
-      const hydratedSession: StoredAuthSession = {
-        ...storedSession,
-        identity: hydratedIdentity,
-      }
-      saveAuthSession(hydratedSession)
-      setSession(hydratedSession)
-      setRole(hydratedIdentity.role)
     } catch {
       if (isCurrentAuthRequest(generation)) {
         clearLocalAuthState()
@@ -137,46 +117,24 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
         setIsLoading(false)
       }
     }
-  }, [clearLocalAuthState, isCurrentAuthRequest, nextAuthRequestGeneration, setRole])
+  }, [
+    clearLocalAuthState,
+    commitSession,
+    isCurrentAuthRequest,
+    loadHydratedSession,
+    nextAuthRequestGeneration,
+  ])
 
   useEffect(() => {
     let active = true
     const generation = nextAuthRequestGeneration()
+    const sessionRevision = readAuthSessionRevision()
     ;(async () => {
       try {
-        if (frontendConfig.authMode === 'supabase') {
-          const hydratedSession =
-            await hydrateSupabaseSession() ??
-            await hydrateMataResidentSession()
-          if (!active || !isCurrentAuthRequest(generation)) {
-            return
-          }
-          if (!hydratedSession) {
-            clearLocalAuthState()
-            return
-          }
-          saveAuthSession(hydratedSession)
-          setSession(hydratedSession)
-          setRole(hydratedSession.identity.role)
-          return
+        const hydratedSession = await loadHydratedSession(generation, sessionRevision)
+        if (hydratedSession && active && isCurrentAuthRequest(generation)) {
+          commitSession(hydratedSession)
         }
-
-        const storedSession = readStoredAuthSession()
-        if (!storedSession) {
-          return
-        }
-
-        const hydratedIdentity = await me(storedSession)
-        if (!active || !isCurrentAuthRequest(generation)) {
-          return
-        }
-        const hydratedSession: StoredAuthSession = {
-          ...storedSession,
-          identity: hydratedIdentity,
-        }
-        saveAuthSession(hydratedSession)
-        setSession(hydratedSession)
-        setRole(hydratedIdentity.role)
       } catch {
         if (active && isCurrentAuthRequest(generation)) {
           clearLocalAuthState()
@@ -191,68 +149,63 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     return () => {
       active = false
     }
-  }, [clearLocalAuthState, isCurrentAuthRequest, nextAuthRequestGeneration, setRole])
+  }, [
+    clearLocalAuthState,
+    commitSession,
+    isCurrentAuthRequest,
+    loadHydratedSession,
+    nextAuthRequestGeneration,
+  ])
 
   useEffect(() => {
     const onSessionChanged = () => {
-      setSession(readStoredAuthSession())
+      const nextSession = readStoredAuthSession()
+      setSession(nextSession)
+      setRole(nextSession?.identity.role ?? frontendConfig.defaultRole)
     }
     window.addEventListener(authSessionChangedEvent, onSessionChanged)
     return () => window.removeEventListener(authSessionChangedEvent, onSessionChanged)
-  }, [])
+  }, [setRole])
 
   const loginWithSession = useCallback(
     (nextSession: StoredAuthSession) => {
       nextAuthRequestGeneration()
-      saveAuthSession(nextSession)
-      setSession(nextSession)
-      setIsLoading(false)
-      setRole(nextSession.identity.role)
-      clearMemoryCache()
+      commitSession(nextSession)
     },
-    [nextAuthRequestGeneration, setRole],
+    [commitSession, nextAuthRequestGeneration],
   )
 
   const logout = useCallback(async () => {
     nextAuthRequestGeneration()
-    if (frontendConfig.authMode === 'supabase') {
-      try {
-        await signOutFromSupabase()
-      } catch {
-        // A local logout must still clear the MATA session if the network is unavailable.
-      }
+    try {
+      await logoutAuthSession()
+    } catch {
+      // Server expiry or a network failure must not leave protected UI mounted locally.
+    } finally {
+      clearLocalAuthState()
     }
-    clearAuthSession()
-    setSession(null)
-    setIsLoading(false)
-    clearMemoryCache()
-  }, [nextAuthRequestGeneration])
+  }, [clearLocalAuthState, nextAuthRequestGeneration])
 
   const updateStaffActorName = useCallback(
     async (fullName: string) => {
       if (!session) {
         throw new Error('No active staff session.')
       }
-      const updatedIdentity = await updateStaffActorNameApi(session, fullName)
+      const updatedIdentity = await updateStaffActorNameApi(fullName)
       const updatedSession: StoredAuthSession = {
         ...session,
         identity: updatedIdentity,
       }
-      saveAuthSession(updatedSession)
-      setSession(updatedSession)
-      setRole(updatedIdentity.role)
-      clearMemoryCache()
+      commitSession(updatedSession)
       return updatedIdentity
     },
-    [session, setRole],
+    [commitSession, session],
   )
 
-  const effectiveIdentity = useMemo<AuthIdentity | null>(() => {
-    if (session?.identity) {
-      return session.identity
-    }
-    return null
-  }, [session])
+  const effectiveIdentity = useMemo<AuthIdentity | null>(
+    () => session?.identity ?? null,
+    [session],
+  )
 
   const authState = useMemo<AuthSessionState>(() => ({
     mode: frontendConfig.authMode,
@@ -288,14 +241,14 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     beginLoginAttempt,
     clearCurrentAuthRequest,
     effectiveIdentity,
-    session,
-    isLoading,
-    staffActorNameRequired,
     hydrateSession,
     isCurrentAuthRequest,
+    isLoading,
     loginWithSession,
-    updateStaffActorName,
     logout,
+    session,
+    staffActorNameRequired,
+    updateStaffActorName,
   ])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

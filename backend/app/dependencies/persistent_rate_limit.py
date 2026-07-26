@@ -7,6 +7,7 @@ from fastapi import HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
+from app.database import AsyncSessionLocal
 from app.errors import ErrorCode
 from app.services.persistent_rate_limit import (
     RateLimitPolicy,
@@ -18,31 +19,31 @@ AUTH_LOGIN_IP_POLICY = RateLimitPolicy(
     scope="auth_login_ip",
     limit=5,
     window_seconds=60,
-    message="Too many attempts. Please try again later.",
+    message="Too many requests",
 )
 AUTH_LOGIN_IDENTIFIER_POLICY = RateLimitPolicy(
     scope="auth_login_identifier",
     limit=10,
     window_seconds=3600,
-    message="Too many attempts. Please try again later.",
+    message="Too many requests",
 )
 EXTERNAL_REGISTER_IP_POLICY = RateLimitPolicy(
     scope="external_register_ip",
     limit=3,
     window_seconds=600,
-    message="Too many registration attempts. Please try again later.",
+    message="Too many requests",
 )
 EXTERNAL_REGISTER_MCR_POLICY = RateLimitPolicy(
     scope="external_register_mcr",
     limit=5,
     window_seconds=3600,
-    message="Too many registration attempts. Please try again later.",
+    message="Too many requests",
 )
 UPLOAD_POLICY = RateLimitPolicy(
     scope="admin_upload",
     limit=10,
     window_seconds=3600,
-    message="Too many upload attempts. Please try again later.",
+    message="Too many requests",
 )
 
 
@@ -86,13 +87,13 @@ def _external_register_mcr_identifier(payload: dict[str, Any]) -> str | None:
     return f"mcr:{mcr.upper()}" if mcr else None
 
 
-def _raise_if_blocked(*, allowed: bool, retry_after_seconds: int, message: str) -> None:
+def _raise_if_blocked(*, allowed: bool, retry_after_seconds: int) -> None:
     if allowed:
         return
     raise HTTPException(
         status_code=429,
         detail={
-            "detail": message,
+            "detail": "Too many requests",
             "error_code": ErrorCode.RATE_LIMITED.value,
             "errors": [],
             "warnings": [],
@@ -109,18 +110,26 @@ async def _enforce_policy(
     policy: RateLimitPolicy,
     identifier: str,
 ) -> None:
-    if db is None:
-        return
-    result = await check_rate_limit(
-        db,
-        settings=settings,
-        policy=policy,
-        identifier=identifier,
-    )
+    if settings.rate_limit_store == "postgres":
+        async with AsyncSessionLocal() as isolated_db:
+            result = await check_rate_limit(
+                isolated_db,
+                settings=settings,
+                policy=policy,
+                identifier=identifier,
+            )
+    else:
+        if db is None:
+            return
+        result = await check_rate_limit(
+            db,
+            settings=settings,
+            policy=policy,
+            identifier=identifier,
+        )
     _raise_if_blocked(
         allowed=result.allowed,
         retry_after_seconds=result.retry_after_seconds,
-        message=policy.message,
     )
 
 
@@ -182,6 +191,10 @@ async def enforce_upload_persistent_rate_limit(
     upload_type: str,
     programme_code: str | None = None,
 ) -> None:
+    # PostgreSQL mode is enforced once by RateLimitMiddleware for every upload
+    # route. The legacy endpoint call remains for local/test compatibility only.
+    if settings.rate_limit_store == "postgres":
+        return
     programme_part = f"|programme:{programme_code.strip().upper()}" if programme_code else ""
     user_part = str(user_id) if user_id is not None else "unknown"
     identifier = f"user:{user_part}|upload:{upload_type.strip().lower()}{programme_part}"

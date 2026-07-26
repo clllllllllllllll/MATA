@@ -1,0 +1,190 @@
+name: Production Security
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  repository-source-security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test security scanners and report sanitization
+        run: python -m unittest discover -s .github/scripts -p "test_*.py"
+
+      - name: Scan browser auth and frontend secret boundaries
+        run: python .github/scripts/security_source_scan.py --frontend
+
+      - name: Scan added diff for likely secrets without echoing values
+        env:
+          SECURITY_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python .github/scripts/security_source_scan.py --diff-base "$SECURITY_DIFF_BASE"
+
+  backend-production-security:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: mata_phase5b_verify_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d mata_phase5b_verify_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/mata_phase5b_verify_ci
+      SYNC_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mata_phase5b_verify_ci
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend and scanner dependencies
+        run: pip install -r backend/requirements.txt pip-audit
+
+      - name: Compile backend application and tests
+        working-directory: backend
+        run: python -m compileall app tests
+
+      - name: Verify a single Alembic head
+        working-directory: backend
+        run: test "$(alembic heads | wc -l)" -eq 1
+
+      - name: Apply clean baseline-to-head migration
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: Verify the disposable database is at every Alembic head
+        working-directory: backend
+        run: alembic current --check-heads
+
+      - name: Run focused security tests
+        working-directory: backend
+        run: >-
+          pytest -q --tb=short -p no:cacheprovider
+          tests/test_app_sessions.py
+          tests/test_cookie_session_transport.py
+          tests/test_auth_modes.py
+          tests/test_auth_resident.py
+          tests/test_external_auth.py
+          tests/test_auth_postgres.py
+          tests/test_auth_supabase.py
+          tests/test_admin_staff_accounts.py
+          tests/test_security_postgres_integration.py
+          tests/test_persistent_rate_limits.py
+          tests/test_workbook_security.py
+          tests/test_security_redaction.py
+          tests/test_error_responses.py
+          tests/test_grant_hardening_migration.py
+
+      - name: Run full backend regression suite
+        working-directory: backend
+        run: pytest -q --tb=short -p no:cacheprovider
+
+      - name: Audit Python runtime dependencies
+        id: pip_audit
+        shell: bash
+        run: |
+          set +e
+          pip-audit -r backend/requirements.txt --format json > "$RUNNER_TEMP/pip-audit.json"
+          audit_status=$?
+          python .github/scripts/sanitize_dependency_audit.py --pip "$RUNNER_TEMP/pip-audit.json" --output security-reports/backend.json
+          sanitizer_status=$?
+          rm -f "$RUNNER_TEMP/pip-audit.json"
+          set -e
+          if [ "$sanitizer_status" -ne 0 ]; then
+            exit "$sanitizer_status"
+          fi
+          exit "$audit_status"
+
+      - name: Upload sanitized backend security report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-security-advisories
+          path: security-reports/backend.json
+          if-no-files-found: warn
+
+  frontend-production-security:
+    runs-on: ubuntu-latest
+    env:
+      VITE_APP_ENV: production
+      VITE_AUTH_MODE: supabase
+      VITE_API_BASE_URL: /api/v1
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Python for sanitized audit reports
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run frontend tests
+        run: npm test
+
+      - name: Lint frontend
+        run: npm run lint
+
+      - name: Type-check frontend
+        run: npm run typecheck
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Audit frontend production dependencies
+        shell: bash
+        run: |
+          set +e
+          npm audit --omit=dev --audit-level=high --json > "$RUNNER_TEMP/npm-audit.json"
+          audit_status=$?
+          python ../.github/scripts/sanitize_dependency_audit.py --npm "$RUNNER_TEMP/npm-audit.json" --npm-lock package-lock.json --output ../security-reports/frontend.json
+          sanitizer_status=$?
+          rm -f "$RUNNER_TEMP/npm-audit.json"
+          set -e
+          if [ "$sanitizer_status" -ne 0 ]; then
+            exit "$sanitizer_status"
+          fi
+          exit "$audit_status"
+
+      - name: Upload sanitized frontend security report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-security-advisories
+          path: security-reports/frontend.json
+          if-no-files-found: warn

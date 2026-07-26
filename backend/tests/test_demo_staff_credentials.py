@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.config import Settings
@@ -55,7 +57,11 @@ def test_demo_staff_reset_refuses_non_local_modes() -> None:
 
     with pytest.raises(RuntimeError, match="local development/test"):
         reset_demo_staff_logins.ensure_local_demo_reset_allowed(
-            Settings(environment="production", auth_mode="stub"),
+            SimpleNamespace(
+                environment="production",
+                auth_mode="stub",
+                sync_database_url="postgresql://postgres:postgres@localhost:5432/mata_db",
+            ),
         )
 
     with pytest.raises(RuntimeError, match="AUTH_MODE=supabase"):

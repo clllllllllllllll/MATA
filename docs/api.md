@@ -4,17 +4,31 @@ Base URL: `http://localhost:8000/api/v1`
 
 ---
 
-## Authentication Model
+## Phase 5B-H-D Authentication and Browser Transport
 
-There are separate identity paths. They share the JWT infrastructure but resolve identity from different tables and carry different claims. The login UI exposes one shared Resident MCR field: it sends exactly one `{ "role": "resident", "mcr": "<NORMALIZED_MCR>" }` request, and the backend resolves the unique active row from `residents` or `external_residents`. Global cross-table MCR uniqueness makes that resolution deterministic.
+MATA has three server-owned identity sources—`users`, `residents`, and `external_residents`—but one normal production browser transport: an opaque backend application session in `__Host-mata_session`. The cookie contains no identity or scope claims. The backend resolves its keyed digest in `app_sessions`, reloads the current subject, checks the stored generation snapshot, and derives role/scope from the subject table on every protected request.
+
+Staff credentials are verified through a backend-mediated Supabase password call. Supabase access and refresh tokens are not returned to or persisted by the browser. Residents remain MCR-backed and do not become Supabase Auth users.
+
+Login, registration options, and Non-NHG registration are intentionally public application endpoints. They do not require a Vercel outer gate. In production they remain protected by exact Origin validation where applicable, JSON-only public mutations, persistent PostgreSQL rate limits, generic errors, and strict authorization on every protected resource.
+
+Normal production responses use the same-origin relative `/api/v1` path and credentialed cookie requests. The frontend holds only identity, session-bound CSRF, and a refresh hint in module memory. It stores no application access/refresh token and does not routinely send `Authorization: Bearer`.
+
+`bearer_compat` is retained only for emergency rollback and is disabled in production unless the separate rollback flag is enabled. The claim examples retained below document that fallback, not the normal H-D transport.
+
+PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
+
+## Identity Sources
+
+There are separate identity paths, but they share the opaque application-session envelope. The login UI exposes one shared Resident MCR field: it sends exactly one `{ "role": "resident", "mcr": "<NORMALIZED_MCR>" }` request, and the backend resolves the unique active row from `residents` or `external_residents`. Global cross-table MCR uniqueness makes that resolution deterministic.
 
 ### Path 1 — Admin and Secretary (`users` table)
 
-Admin and secretary accounts are managed in the `users` table (email + password). Login via `POST /auth/login` with email and password. The JWT payload carries:
+Admin and secretary accounts are managed in the `users` table (email + password). Login via `POST /auth/login` with email and password. In cookie mode, the following identity shape is returned inside `user`; no JWT is returned:
 
 ```json
 {
-  "sub": "<users.id>",
+  "id": "<users.id>",
   "role": "admin" | "secretary",
   "programme_scope": ["DR", "GRM"],   // admin only
   "posting_code": "TTSHGerMed"        // secretary only
@@ -23,7 +37,9 @@ Admin and secretary accounts are managed in the `users` table (email + password)
 
 ### Path 2 — Residents (`residents` table)
 
-Residents are **not** in the `users` table. They authenticate with their **MCR number only** — no password in Phase 1. The JWT payload carries:
+Residents are **not** in the `users` table. They authenticate with their **MCR number only** under the currently approved contract. In normal cookie mode, successful authentication creates an opaque backend session and returns identity plus session-bound CSRF state; it does not return a JWT or bearer token.
+
+The following claim shape is retained only for explicitly enabled emergency `bearer_compat`:
 
 ```json
 {
@@ -39,13 +55,15 @@ Residents are **not** in the `users` table. They authenticate with their **MCR n
 }
 ```
 
-In stub/demo mode this is represented by the local session/header shim. In `AUTH_MODE=supabase`, NHG Residents still do not get Supabase Auth accounts; backend `/auth/login` resolves the shared MCR request to an active `residents` row and issues a backend-signed MATA resident session token using server-only `MATA_RESIDENT_SESSION_SECRET`. The MATA resident token must not include current posting, staff actor name, `admin_level`, or `programme_scope`.
+In stub/demo mode, identity may be represented by the local session/header shim. In `AUTH_MODE=supabase`, NHG Residents still do not get Supabase Auth accounts; backend `/auth/login` resolves the shared MCR request to an active `residents` row and creates the opaque application session. The backend reloads the active resident row and current `session_generation` on protected requests.
 
-`programme_code` is embedded at login time from `residents.programme_code`. It scopes all compliance lookups to the resident's native programme. **`posting_code` is NOT in the JWT** — current posting is always derived at request time from `resident_postings`.
+`programme_code` is derived from the current `residents` row. It scopes all compliance lookups to the resident's native programme. Current posting is always derived at request time from `resident_postings`; it is not trusted from browser state or the opaque cookie.
 
 ### Path 3 — Non-NHG Residents (`external_residents` table)
 
-Non-NHG/cross-cluster residents are **not** in the `users` table and are **not** native `residents`. They self-register first, then authenticate through the same shared Resident MCR field as NHG Residents. Allowed `home_cluster` values are strictly `NUH` and `SingHealth`. The JWT payload carries:
+Non-NHG/cross-cluster residents are **not** in the `users` table and are **not** native `residents`. They self-register first, then authenticate through the same shared Resident MCR field as NHG Residents. Allowed `home_cluster` values are strictly `NUH` and `SingHealth`. Normal cookie mode creates the same opaque application-session envelope used by other identities.
+
+The following claim shape is retained only for explicitly enabled emergency `bearer_compat`:
 
 ```json
 {
@@ -61,15 +79,15 @@ Non-NHG/cross-cluster residents are **not** in the `users` table and are **not**
 }
 ```
 
-In `AUTH_MODE=supabase`, Non-NHG Residents do not get Supabase Auth accounts. Backend `/auth/login` resolves the neutral shared request to an active `external_residents` row, returns `user.role = external_resident`, and issues a backend-signed MATA resident session token using server-only `MATA_RESIDENT_SESSION_SECRET`. The token must not include current posting, posting schedule, staff actor name, `admin_level`, `programme_code`, `programme_scope`, or `posting_code`.
+In `AUTH_MODE=supabase`, Non-NHG Residents do not get Supabase Auth accounts. Backend `/auth/login` resolves the neutral shared request to an active `external_residents` row, returns `user.role = external_resident`, and creates an opaque application session. The backend reloads the current external-resident row and generation on protected requests.
 
-Posting state and posting schedule are not trusted from JWT for authorization-sensitive reads. Fetch the Non-NHG Resident from `external_residents` and derive date-specific posting from `external_resident_postings` where relevant. `external_residents.current_nhg_posting_code` may remain a current/cache/backward-compatibility pointer, but schedule-aware resident flows use `external_resident_postings`. Non-NHG Residents do not receive NHG compliance or clawback surfaces.
+Posting state and posting schedule are not trusted from browser state for authorization-sensitive reads. Fetch the Non-NHG Resident from `external_residents` and derive date-specific posting from `external_resident_postings` where relevant. `external_residents.current_nhg_posting_code` may remain a current/cache/backward-compatibility pointer, but schedule-aware resident flows use `external_resident_postings`. Non-NHG Residents do not receive NHG compliance or clawback surfaces.
 
 **Global MCR uniqueness:** `POST /external-residents/register` must reject an MCR that already exists in either native `residents` or `external_residents`.
 
 ### How the compliance chain resolves from login
 
-1. Resident logs in with MCR → JWT issued with `programme_code = 'GRM'`
+1. Resident logs in with MCR → opaque application session created; identity is reloaded from `residents`
 2. On `GET /resident/events` or `GET /resident/dashboard`:
    - Current posting derived from `resident_postings` WHERE today falls within `start_date..end_date` AND `status IN ('active', 'loa_working')`
    - Compliance targets from `teaching_targets` WHERE `programme_code = 'GRM'` AND `posting_code` from current phase AND `r_year` from **resident_postings row** (not residents.r_year) AND `reporting_period_id` from the active/effectively active period
@@ -89,6 +107,15 @@ X-User-Site: <posting_code>          # secretary only
 ## Cross-Cutting API Security, Validation, Rate Limiting, and Caching
 
 These rules apply to every endpoint unless a stricter endpoint-specific rule is documented.
+
+### Browser session transport, Origin, and CSRF
+
+- Production/Supabase frontend requests use relative same-origin `/api/v1` with credentials enabled.
+- Protected unsafe methods (`POST`, `PUT`, `PATCH`, `DELETE`) require `X-CSRF-Token` matching the active session digest.
+- Every production unsafe request also requires an exact `Origin` from `CORS_ORIGINS`; missing, wildcard, malformed, or unapproved origins fail with generic `403`.
+- Public login and Non-NHG registration do not require an existing-session CSRF token because these endpoints are intentionally unauthenticated, but require exact production Origin and `application/json`; form-encoded variants return `415`.
+- `GET /auth/me` hydration is side-effect-free for session timestamps. Unsafe-request session resolution may extend idle expiry before a later CSRF or business-rule rejection, never beyond absolute expiry.
+- Normal cookie mode ignores raw client identity headers and does not use caller-provided authorization as the application credential. Local stub/demo and explicitly gated emergency bearer compatibility remain separate.
 
 ### Request validation and sanitisation
 
@@ -124,27 +151,28 @@ These rules apply to every endpoint unless a stricter endpoint-specific rule is 
 
 ### Authentication and authorization
 
-- All non-auth endpoints require authenticated identity from middleware.
+- All endpoints require authenticated identity except `/health`, non-production docs, `POST /auth/login`, `GET /external-residents/registration-options`, and `POST /external-residents/register`.
 - Authorization is server-side only. Frontend role checks are UX only.
 - Admin access is programme-scoped via `users.programme_scope`; `NULL` means no access, not all-access.
-- Secretary access is posting-scoped via `users.posting_code` / `X-User-Site`.
+- Secretary access is posting-scoped from current `users.posting_code`; `X-User-Site` is local stub/demo compatibility only.
 - Resident access is identity-scoped via `residents.id`; current posting is derived from `resident_postings` at request time.
 - Do not expose resources across roles even when IDs are guessed correctly.
 
 ### Rate limiting
 
-Implement rate limiting middleware before public/UAT use. In local Phase 1 it may be an in-memory implementation; production should use Redis or the deployment platform equivalent.
+Production requires `RATE_LIMIT_STORE=postgres`. `rate_limit_buckets` uses atomic fixed-window PostgreSQL upserts and stores only a keyed HMAC-SHA256 identifier; raw IP, email, MCR, or subject identifiers are never persisted. In-memory limiting remains non-production compatibility only.
 
 Required default limits, configurable via environment variables:
 
 | Endpoint group | Suggested default | Key |
 |---|---:|---|
-| `POST /auth/login` | 5 attempts / minute | IP + role + identifier where available |
-| `POST /admin/upload/*` | 10 uploads / hour | authenticated admin id + upload type |
-| mutation endpoints (`POST`, `PUT`, `DELETE`) | 60 requests / minute | authenticated user id + route group |
-| report/export endpoints | 20 requests / minute | authenticated user id + report type |
+| `POST /auth/login` | 5 attempts / minute by IP; 10/hour by normalized identifier | keyed digest only |
+| `POST /external-residents/register` | 3 attempts / 10 minutes by IP; 5/hour by MCR | keyed digest only |
+| `POST /admin/upload/*` | 10 uploads / hour | shared `admin_upload` subject bucket |
+| mutation endpoints (`POST`, `PUT`, `PATCH`, `DELETE`) | 60 requests / minute | authenticated subject + mutation bucket |
+| report/export endpoints | 20 requests / minute | shared `report` subject bucket |
 | resident attendance submission | 30 requests / minute | resident id |
-| general authenticated `GET` endpoints | 300 requests / minute | authenticated user id |
+| general `GET` endpoints | 300 requests / minute | verified subject, or anonymous IP for public GETs |
 
 When a limit is exceeded, return:
 
@@ -152,7 +180,7 @@ When a limit is exceeded, return:
 { "detail": "Too many requests" }
 ```
 
-with HTTP `429` and `Retry-After` where possible.
+with HTTP `429` and `Retry-After`.
 
 ### Caching policy
 
@@ -252,9 +280,9 @@ Frontend-facing `data_revalidation` responses expose stable summary fields at th
 }
 ```
 
-In `AUTH_MODE=supabase`, protected staff requests use a Supabase Auth access token. The Supabase token `sub` is `auth.users.id` and maps to `users.supabase_user_id`; the backend then derives `role`, `admin_level`, `programme_scope`, `posting_code`, and saved staff actor metadata from the active `users` row. Protected NHG Resident requests use the backend-signed MATA resident token issued by `/auth/login`; the backend verifies its MATA issuer/audience/signature/expiry, reloads the active `residents` row by `sub`, and derives resident identity from that row. Protected Non-NHG Resident requests use the same MATA issuer/audience/signature/expiry path with `role/app_role = external_resident`; the backend reloads the active `external_residents` row by `sub` and derives external resident identity from that row. Raw client headers and Supabase `user_metadata` are not authorization sources.
+In `AUTH_MODE=supabase`, protected browser requests use the opaque MATA application cookie. Staff Supabase JWTs are transient backend credential-verification proof only, and resident MATA JWTs are not normal browser application credentials. The backend reloads the active `users`, `residents`, or `external_residents` row, checks `session_generation`, and derives current role and scope on every protected request. Raw client headers, cookie contents, browser state, and Supabase `user_metadata` are not authorization sources. `bearer_compat` is retained only as an explicitly gated emergency rollback mode.
 
-5B-E staff accounts are generic role accounts. `users.name` is the account display name. `current_staff_actor_name` is a self-declared current human name used for audit/display context only; it never grants role, programme scope, admin level, or posting scope. Browser-visible `Authorization: Bearer <Supabase access token>` and `Authorization: Bearer <MATA resident token>` transport remains the temporary 5B-D2/5B-F-B implementation. TODO 5B-H: replace browser-visible bearer transport with backend-managed `HttpOnly`, `Secure`, `SameSite` cookies/BFF flow plus CSRF protection.
+5B-E staff accounts are generic role accounts. `users.name` is the account display name. `current_staff_actor_name` is a self-declared current human name used for audit/display context only; it never grants role, programme scope, admin level, or posting scope.
 
 When `warning_candidate_limit_reached = true`, the backend has capped the warning candidate scan. `affected_warning_count_is_partial = true` means `affected_warning_count` is the capped count, not an exact total. `affected_warning_details_are_partial = true` means `affected_warning_issue_ids` and `affected_warning_summaries` are intentionally bounded for response size.
 
@@ -1348,7 +1376,7 @@ List reporting periods for the secretary Teaching Schedule period selector.
 List teaching events for the secretary's posting site.
 
 - **Auth:** secretary only
-- **Scope:** Filtered to `X-User-Site` posting code
+- **Scope:** Filtered to the current secretary subject's database-owned `users.posting_code`
 - **Query params:** `date_from`, `date_to`, `session_type_id` (all optional)
 
 ### POST `/secretary/teaching-events`
@@ -1368,7 +1396,7 @@ Create a new teaching event.
 }
 ```
 - **Backend auto-resolves:**
-  - `posting_code` from `X-User-Site` header
+  - `posting_code` from the current secretary subject's database-owned `users.posting_code`
   - `session_type_id` display metadata from the selected canonical teaching-name option. It remains display/prototype only and is never used for resident compliance. Do not fuzzy-match or choose a resident mapping by duration.
   - `end_time` = `start_time + session_type.duration_hours` (server-computed — NOT a request field)
   - `duration_hours` copied from the selected option for event display/time computation only; it is never a compliance multiplier
@@ -1446,7 +1474,7 @@ Get available teaching name keywords for the secretary event-creation dropdown.
 - **Auth:** secretary only
 - **Query params:** `reporting_period_id` or `event_date` optional. An explicit period must be effectively active. When both are supplied, `event_date` must belong to the explicit period or the API returns `422`. With neither option, the backend resolves the single effectively active period containing today. TTF-derived options are scoped to that resolved period.
 - **Scope:** Returns a unified, deduplicated list combining:
-  1. Keywords from `teaching_name_catalogue` for the secretary’s **native programme teaching pool**, not only the exact `posting_code = X-User-Site`.
+  1. Keywords from `teaching_name_catalogue` for the secretary’s **native programme teaching pool**, not only the exact database-owned secretary posting.
   2. Active entries from `global_session_types` (compliance-exempt, available to all secretaries).
 
 For the TTSH pilot workflow, a secretary assigned to a native department/site such as `TTSHGerMed` should be able to create teaching events using the deduplicated teaching-name pool from the relevant native programme TTF, e.g. `GERI`, across that programme’s applicable postings.
@@ -1728,41 +1756,43 @@ Explicit `{ "role": "external_resident", "mcr": "..." }` remains temporarily acc
 - **Native resident response:**
 ```json
 {
-  "access_token": "<jwt>",
-  "token_type": "bearer",
   "user": {
     "id": "<uuid>",
     "role": "resident",
     "name": "John Tan",
     "programme_code": "GRM",
     "mcr": "M12345A"
-  }
+  },
+  "csrf_token": "<opaque session-bound CSRF value>",
+  "session_refresh_required": false
 }
 ```
 
 - **Registered Non-NHG resident response:**
 ```json
 {
-  "access_token": "<mata-resident-token>",
-  "token_type": "bearer",
   "user": {
     "id": "<external_residents.id>",
     "role": "external_resident",
     "name": "<resident name>",
     "home_cluster": "NUH",
     "mcr": "E12345A"
-  }
+  },
+  "csrf_token": "<opaque session-bound CSRF value>",
+  "session_refresh_required": false
 }
 ```
 
+Success sets `__Host-mata_session=<opaque>` with `Secure; HttpOnly; SameSite=Strict; Path=/` and no `Domain` in production. No `access_token`, refresh token, or `token_type` is returned in normal cookie mode.
+
 - **Error responses:**
   - `401` - MCR not found or the resolved native/external resident is inactive; the response does not disclose which condition occurred
-  - `409` - the MCR exists in both resident identity tables; no token is issued and the response/logs contain no identity details
+  - `401` - the MCR exists in both resident identity tables; cookie mode uses the same generic invalid-credentials outcome and the response/logs contain no identity details
   - `401` - Invalid email or password (admin/secretary)
 
 ### GET `/auth/me`
 
-Return current identity from validated JWT.
+Return current identity from the validated opaque application session, together with `csrf_token` and `session_refresh_required`. This route does not return, rotate, or expose the session cookie and does not mutate session timestamps.
 
 - Resident: returns `residents` row identity fields (`id`, `role`, `name`, `programme_code`, `mcr`) plus display-only `current_posting_code` and `current_posting_label` when a usable `resident_postings` row exists in the single effectively active period containing today. Within that period, display resolution prefers today's row, then the nearest future row, then the nearest recent past row. It does not return a trusted `posting_code` claim.
 - Resident current posting for authorization-sensitive endpoints is still resolved server-side from `resident_postings` at request time.
@@ -1772,6 +1802,14 @@ Return current identity from validated JWT.
   - `staff_actor_name_required` (`true` when the staff account has no saved non-blank actor name)
   - `staff_actor_name_updated_at`
   - `staff_actor_name_updated_by_user_id`
+
+### POST `/auth/session/refresh`
+
+Requires an active cookie session and valid CSRF. It atomically revokes the current session row and creates one replacement in the same family, preserving absolute expiry and rotating both cookie and CSRF state. Concurrent refresh permits exactly one child; the losing attempt receives a controlled `401` and cannot create another replacement. The old cookie and old CSRF material are unusable.
+
+### POST `/auth/logout`
+
+With an active session, requires valid CSRF, revokes every active row in the current rotation family, and clears the cookie. Other device/session families remain active. Calling logout without a usable cookie remains idempotent and clears the cookie.
 
 ### POST `/auth/staff-actor-name`
 
@@ -1825,6 +1863,8 @@ Create a generic staff role account.
 
 Edit account display name, account type/scope fields, posting code, and `is_active`. Email changes may be rejected. Hard delete is not supported. The backend rejects deactivating or demoting the last active Master Admin.
 
+Changes to role, admin level, programme scope, posting, or active state increment `session_generation` and revoke all active application-session families for the subject. Display-only changes do not create authorization authority.
+
 #### POST `/admin/staff-accounts/{user_id}/reset-password`
 
 ```json
@@ -1833,7 +1873,7 @@ Edit account display name, account type/scope fields, posting code, and `is_acti
 }
 ```
 
-Updates the Supabase Auth password in Supabase mode when `supabase_user_id` exists, updates the local password hash, and clears `current_staff_actor_name` plus actor-name timestamps for handover. The password is not returned or logged.
+Before the upstream password reset, the backend serializes the subject, commits `session_issuance_blocked = true`, and revokes active application sessions. Concurrent reset attempts serialize. On success it updates the credential, increments `session_generation` again, clears the issuance block and staff actor name, and commits. A failed upstream reset leaves issuance blocked and sessions revoked so an authorized retry cannot race with new login or rotation. The password is not returned or logged.
 
 ### PUT `/auth/settings`
 
@@ -2061,16 +2101,20 @@ Workbook columns and programme/r_year routing metadata remain implementation-own
 ## Common Error Responses
 
 ```json
-{ "detail": "Unauthorized" }                                                    // 401
+{ "detail": "Unauthorized" }                                                    // 401 invalid, expired, revoked, rotated, or generation-stale app session
 { "detail": "Forbidden — admin role required" }                                  // 403
+{ "detail": "Forbidden" }                                                       // 403 missing/mismatched CSRF or unapproved production Origin
 { "detail": "Teaching event not found" }                                         // 404
 { "detail": "Cannot delete event with attendance" }                              // 409
 { "detail": "Duplicate attendance submission" }                                  // 409
 { "detail": "Attendance overlaps an earlier accepted event" }                    // 409
 { "detail": "Another TTF upload for this scope is in progress" }                 // 409
+{ "detail": "Unsupported media type" }                                           // 415 public login/registration is not application/json
 { "detail": "No active reporting period is available" }                          // 422
 { "detail": "TTF validation failed", "errors": [...] }                           // 422
 { "detail": "Event date is a public holiday — event creation not allowed" }      // 422
 { "detail": "Attendance submission invalid: event date is outside your tenure at this posting" }  // 422
 { "detail": "Teaching name not found in catalogue for your programme and posting" }  // 422
+{ "detail": "Too many requests" }                                                // 429 persistent limit exceeded; Retry-After supplied
+{ "detail": "Authentication service unavailable" }                              // 503 session store unavailable; cookie cleared
 ```

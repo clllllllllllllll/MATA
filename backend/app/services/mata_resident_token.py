@@ -8,7 +8,7 @@ from uuid import UUID
 import jwt
 from jwt import InvalidTokenError
 
-from app.config import Settings
+from app.config import MINIMUM_HS256_SECRET_BYTES, Settings
 
 
 class MataResidentTokenError(Exception):
@@ -41,6 +41,10 @@ def extract_bearer_token(authorization: str | None) -> str:
 def _resident_secret(settings: Settings) -> str:
     configured_secret = (settings.mata_resident_session_secret or "").strip()
     if configured_secret:
+        if len(configured_secret.encode("utf-8")) < MINIMUM_HS256_SECRET_BYTES:
+            raise MataResidentTokenError(
+                "MATA_RESIDENT_SESSION_SECRET must contain at least 32 bytes"
+            )
         return configured_secret
 
     if settings.environment != "production":
@@ -130,7 +134,10 @@ def verify_mata_resident_token(
             algorithms=["HS256"],
             audience=settings.mata_resident_session_audience,
             issuer=settings.mata_resident_session_issuer,
-            options={"require": ["iss", "aud", "sub", "exp", "iat"]},
+            options={
+                "require": ["iss", "aud", "sub", "exp", "iat"],
+                "enforce_minimum_key_length": True,
+            },
         )
     except InvalidTokenError as exc:
         raise MataResidentTokenError("Invalid MATA resident token") from exc

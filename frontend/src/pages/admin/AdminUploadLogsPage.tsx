@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router'
 import { listUploadLogs } from '../../api/uploadLogs'
 import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconChevRight, IconRefresh } from '../../components/icons'

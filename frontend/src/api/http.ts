@@ -1,12 +1,21 @@
 import axios from 'axios'
 import { frontendConfig } from '../config/frontendConfig'
 import { clearMemoryCache } from '../utils/memoryReadCache'
-import { readStoredAuthSession } from './authSessionStore'
-import { getCurrentSupabaseAccessToken } from './supabaseClient'
+import {
+  clearAuthSession,
+  readAuthSessionRevision,
+  readStoredAuthSession,
+} from './authSessionStore'
+import {
+  applySessionRequestHeaders,
+  isUnsafeRequestMethod,
+  shouldClearSessionForUnauthorized,
+} from './httpTransport'
 
 declare module 'axios' {
   interface AxiosRequestConfig {
     skipMemoryCacheClear?: boolean
+    authSessionRevision?: number
   }
 }
 
@@ -32,10 +41,8 @@ export class ApiRequestError extends Error {
 export const httpClient = axios.create({
   baseURL: frontendConfig.apiBaseUrl,
   timeout: 60000,
+  withCredentials: true,
 })
-
-const isMataResidentSessionRole = (role: string) =>
-  role === 'resident' || role === 'external_resident'
 
 const headerValue = (headers: unknown, name: string): unknown => {
   if (!headers || typeof headers !== 'object') {
@@ -59,53 +66,16 @@ const headerValue = (headers: unknown, name: string): unknown => {
   return undefined
 }
 
-const setHeaderValue = (headers: unknown, name: string, value: string) => {
-  if (!headers || typeof headers !== 'object') {
-    return
-  }
-  const setter = (headers as { set?: unknown }).set
-  if (typeof setter === 'function') {
-    setter.call(headers, name, value)
-    return
-  }
-  ;(headers as Record<string, unknown>)[name] = value
-}
-
-httpClient.interceptors.request.use(async (request) => {
+httpClient.interceptors.request.use((request) => {
   request.headers = request.headers ?? {}
-
-  if (frontendConfig.authMode !== 'supabase') {
-    return request
-  }
-
-  delete request.headers['X-User-Role']
-  delete request.headers['X-User-Id']
-  delete request.headers['X-User-Programme']
-  delete request.headers['X-User-Site']
-  delete request.headers['X-User-MCR']
-  delete request.headers['X-Admin-Level']
-
-  const explicitAuthorization = headerValue(request.headers, 'Authorization')
-  const hasExplicitAuthorization =
-    typeof explicitAuthorization === 'string' && explicitAuthorization.trim().length > 0
-  if (hasExplicitAuthorization) {
-    return request
-  }
+  request.authSessionRevision = readAuthSessionRevision()
 
   const storedSession = readStoredAuthSession()
-  if (
-    storedSession?.mode === 'supabase' &&
-    isMataResidentSessionRole(storedSession.identity.role) &&
-    storedSession?.accessToken
-  ) {
-    setHeaderValue(request.headers, 'Authorization', `Bearer ${storedSession.accessToken}`)
-    return request
-  }
-
-  const accessToken = await getCurrentSupabaseAccessToken()
-  if (accessToken) {
-    setHeaderValue(request.headers, 'Authorization', `Bearer ${accessToken}`)
-  }
+  applySessionRequestHeaders(request.headers, {
+    method: request.method,
+    csrfToken: storedSession?.csrfToken,
+    stripLegacyCredentials: frontendConfig.authMode === 'supabase',
+  })
 
   return request
 })
@@ -113,8 +83,7 @@ httpClient.interceptors.request.use(async (request) => {
 httpClient.interceptors.response.use((response) => {
   const method = response.config.method?.toUpperCase()
   if (
-    method &&
-    method !== 'GET' &&
+    isUnsafeRequestMethod(method) &&
     response.status >= 200 &&
     response.status < 300 &&
     !response.config.skipMemoryCacheClear
@@ -122,6 +91,19 @@ httpClient.interceptors.response.use((response) => {
     clearMemoryCache()
   }
   return response
+}, (error: unknown) => {
+  if (
+    axios.isAxiosError(error) &&
+    shouldClearSessionForUnauthorized(
+      error.response?.status,
+      error.config?.authSessionRevision,
+      readAuthSessionRevision(),
+    )
+  ) {
+    clearAuthSession()
+    clearMemoryCache()
+  }
+  return Promise.reject(error)
 })
 
 export const parseRetryAfterSeconds = (value: unknown): number | undefined => {

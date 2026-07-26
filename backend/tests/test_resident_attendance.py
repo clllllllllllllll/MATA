@@ -687,7 +687,8 @@ def test_attendance_accepts_valid_secretary_event_even_when_supports_flag_is_fal
 
 
 def test_weekend_non_exception_attendance_is_stored_with_warning() -> None:
-    fake_db = FakeResidentSession()
+    # Keep the derived Saturday distinct from the pre-existing ``today - 2`` event.
+    fake_db = FakeResidentSession(today=date(2026, 7, 29))
     client = _client(fake_db)
 
     response = client.post(

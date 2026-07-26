@@ -857,7 +857,8 @@ def test_external_cannot_submit_secretary_event_when_support_disabled() -> None:
 
 
 def test_external_weekend_non_exception_stores_and_returns_warning() -> None:
-    fake_db = FakeResidentSession()
+    # Keep the derived Saturday distinct from the pre-existing ``today - 2`` event.
+    fake_db = FakeResidentSession(today=date(2026, 7, 29))
     before = len(fake_db.external_attendance)
     client = _client(fake_db)
 

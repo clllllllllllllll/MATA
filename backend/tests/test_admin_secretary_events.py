@@ -1012,7 +1012,10 @@ def test_force_delete_cache_failure_does_not_misreport_committed_deletion(
     assert session.committed is True
     assert session.event_id not in session.events
     assert len(session.audit_logs) == 1
-    assert "Cache invalidation failed after committed" in caplog.text
+    assert "admin_teaching_event_cache_invalidation_failed" in caplog.text
+    assert "exception_class=RuntimeError" in caplog.text
+    assert "forced cache invalidation failure" not in caplog.text
+    assert "Traceback" not in caplog.text
 
 
 def test_explicit_master_with_empty_scope_can_force_delete_secretary_event(

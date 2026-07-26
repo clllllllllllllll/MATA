@@ -146,6 +146,7 @@ from app.services.parser_common import (
     ParserResult,
     UploadValidationError,
     normalise_scope_values,
+    read_upload_bytes_limited,
     validate_upload_payload,
     write_upload_log,
 )
@@ -1087,8 +1088,11 @@ async def upload_rdb(
     db: AsyncSession | None = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
-    file_bytes = await file.read()
     try:
+        file_bytes = await read_upload_bytes_limited(
+            file,
+            max_size_bytes=settings.max_upload_size_bytes,
+        )
         validated = validate_upload_payload(
             upload_type="rdb",
             filename=file.filename,
@@ -1159,8 +1163,11 @@ async def upload_ttf(
     programme_code = programme_code.strip().upper()
     _require_programme_in_scope(admin_context, programme_code)
 
-    file_bytes = await file.read()
     try:
+        file_bytes = await read_upload_bytes_limited(
+            file,
+            max_size_bytes=settings.max_upload_size_bytes,
+        )
         validated = validate_upload_payload(
             upload_type="ttf",
             filename=file.filename,
@@ -1227,8 +1234,11 @@ async def upload_formf1(
     db: AsyncSession | None = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
-    file_bytes = await file.read()
     try:
+        file_bytes = await read_upload_bytes_limited(
+            file,
+            max_size_bytes=settings.max_upload_size_bytes,
+        )
         validated = validate_upload_payload(
             upload_type="form_f1",
             filename=file.filename,
@@ -1282,8 +1292,11 @@ async def upload_public_holidays(
     db: AsyncSession | None = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
-    file_bytes = await file.read()
     try:
+        file_bytes = await read_upload_bytes_limited(
+            file,
+            max_size_bytes=settings.max_upload_size_bytes,
+        )
         validated = validate_upload_payload(
             upload_type="public_holidays",
             filename=file.filename,

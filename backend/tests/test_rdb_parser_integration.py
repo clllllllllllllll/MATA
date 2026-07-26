@@ -795,7 +795,11 @@ def test_rdb_persistence_exception_is_sanitized_and_logged(caplog) -> None:
 
     assert result.errors == ["Upload failed. Please contact administrator."]
     assert "SQLSTATE 23505" not in str(result.to_summary())
-    assert "SQLSTATE 23505" in caplog.text
+    assert "SQLSTATE 23505" not in caplog.text
+    assert "private/database.sql" not in caplog.text
+    assert "rdb_upload_processing_failed" in caplog.text
+    assert "exception_class=RuntimeError" in caplog.text
+    assert "Traceback" not in caplog.text
 
 
 def test_blank_rdb_resident_month_cell_emits_info_warning_without_posting_row() -> None:

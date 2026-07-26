@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { listProgrammes, type Programme } from '../../api/programmes'
 import { uploadWorkbook } from '../../api/uploads'
 import { IconCalendar, IconFile, IconGrid } from '../../components/icons'

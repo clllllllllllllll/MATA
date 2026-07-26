@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy import text
@@ -20,9 +21,22 @@ from app.services.mata_resident_token import (
     sign_mata_external_resident_token,
     sign_mata_resident_token,
 )
+from app.services.supabase_password_auth import (
+    SupabasePasswordAuthError,
+    authenticate_supabase_password,
+)
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class AuthenticatedSubject:
+    subject_type: Literal["staff", "resident", "external_resident"]
+    subject_id: UUID
+    auth_source: Literal["supabase_staff", "mata_resident"]
+    session_generation: int
+    user: dict[str, Any]
 
 
 def _auth_failure() -> ApiError:
@@ -186,6 +200,16 @@ def _normalise_mcr(raw_mcr: str | None) -> str | None:
     return cleaned or None
 
 
+def _session_generation(row: Any) -> int:
+    try:
+        generation = int(row["session_generation"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _auth_failure() from exc
+    if generation < 0:
+        raise _auth_failure()
+    return generation
+
+
 async def _current_reporting_period_params(db: AsyncSession) -> dict[str, Any]:
     return await current_reporting_period_params(db)
 
@@ -203,6 +227,7 @@ async def _lookup_resident_login_rows(
                    r.mcr,
                    r.programme_code,
                    r.status,
+                   r.session_generation,
                    current_posting.posting_code AS current_posting_code,
                    COALESCE(pc.display_name, current_posting.posting_code) AS current_posting_label
             FROM residents r
@@ -220,6 +245,7 @@ async def _lookup_resident_login_rows(
                    er.mcr,
                    er.home_cluster,
                    er.status,
+                   er.session_generation,
                    current_posting.posting_code AS current_posting_code,
                    COALESCE(pc.display_name, current_posting.posting_code) AS current_posting_label
             FROM external_residents er
@@ -261,6 +287,175 @@ async def _lookup_resident_login_rows(
     return (
         resident_result.mappings().one_or_none(),
         external_result.mappings().one_or_none(),
+    )
+
+
+async def authenticate_for_app_session(
+    db: AsyncSession,
+    *,
+    role: str,
+    email: str | None,
+    password: str | None,
+    mcr: str | None,
+    settings: Settings,
+) -> AuthenticatedSubject:
+    """Authenticate credentials without returning or persisting an upstream token."""
+
+    if role in {"resident", "external_resident"}:
+        normalised_mcr = _normalise_mcr(mcr)
+        if not normalised_mcr:
+            raise _auth_failure()
+        resident_row, external_resident_row = await _lookup_resident_login_rows(
+            db,
+            normalised_mcr,
+        )
+        if resident_row is not None and external_resident_row is not None:
+            logger.error(
+                "Resident login rejected because the global identity uniqueness invariant failed"
+            )
+            raise _auth_failure()
+
+        if role == "external_resident":
+            resolved_role = "external_resident"
+            identity_row = external_resident_row
+        elif resident_row is not None:
+            resolved_role = "resident"
+            identity_row = resident_row
+        else:
+            resolved_role = "external_resident"
+            identity_row = external_resident_row
+
+        if identity_row is None or identity_row.get("status") != "active":
+            raise _auth_failure()
+        row = dict(identity_row)
+        return AuthenticatedSubject(
+            subject_type=resolved_role,
+            subject_id=UUID(str(row["id"])),
+            auth_source="mata_resident",
+            session_generation=_session_generation(row),
+            user=(
+                _resident_user(row)
+                if resolved_role == "resident"
+                else _external_resident_user(row)
+            ),
+        )
+
+    if not email or not password:
+        raise _auth_failure()
+
+    if settings.auth_mode == "supabase":
+        snapshot_result = await db.execute(
+            text(
+                """
+                SELECT
+                    id,
+                    supabase_user_id,
+                    session_generation
+                FROM users
+                WHERE lower(email) = lower(:email)
+                """
+            ),
+            {"email": email},
+        )
+        authentication_snapshot = snapshot_result.mappings().one_or_none()
+        try:
+            claims = await authenticate_supabase_password(
+                email=email,
+                password=password,
+                settings=settings,
+            )
+        except SupabasePasswordAuthError as exc:
+            raise _auth_failure() from exc
+        raw_supabase_subject = claims.get("sub")
+        if not isinstance(raw_supabase_subject, str):
+            raise _auth_failure()
+        try:
+            supabase_user_id = UUID(raw_supabase_subject)
+        except ValueError as exc:
+            raise _auth_failure() from exc
+
+        result = await db.execute(
+            text(
+                """
+                SELECT
+                    id,
+                    email,
+                    password_hash,
+                    role,
+                    name,
+                    posting_code,
+                    programme_scope,
+                    admin_level,
+                    is_active,
+                    session_generation,
+                    session_issuance_blocked,
+                    current_staff_actor_name,
+                    staff_actor_name_updated_at,
+                    staff_actor_name_updated_by_user_id
+                FROM users
+                WHERE supabase_user_id = :supabase_user_id
+                  AND is_active = true
+                """
+            ),
+            {"supabase_user_id": str(supabase_user_id)},
+        )
+        user_row = result.mappings().one_or_none()
+        if authentication_snapshot is None or user_row is None:
+            raise _auth_failure()
+        snapshot = dict(authentication_snapshot)
+        current = dict(user_row)
+        if (
+            UUID(str(snapshot["id"])) != UUID(str(current["id"]))
+            or snapshot.get("supabase_user_id") != current.get("supabase_user_id")
+            or _session_generation(snapshot) != _session_generation(current)
+        ):
+            raise _auth_failure()
+    else:
+        result = await db.execute(
+            text(
+                """
+                SELECT
+                    id,
+                    email,
+                    password_hash,
+                    role,
+                    name,
+                    posting_code,
+                    programme_scope,
+                    admin_level,
+                    is_active,
+                    session_generation,
+                    session_issuance_blocked,
+                    current_staff_actor_name,
+                    staff_actor_name_updated_at,
+                    staff_actor_name_updated_by_user_id
+                FROM users
+                WHERE lower(email) = lower(:email)
+                  AND is_active = true
+                """
+            ),
+            {"email": email},
+        )
+        user_row = result.mappings().one_or_none()
+        if user_row is None or not _password_matches(user_row["password_hash"], password):
+            raise _auth_failure()
+
+    if (
+        user_row is None
+        or user_row["role"] not in {"admin", "secretary"}
+        or bool(user_row.get("session_issuance_blocked"))
+    ):
+        raise _auth_failure()
+    if role in {"admin", "secretary"} and user_row["role"] != role:
+        raise _auth_failure()
+
+    row = dict(user_row)
+    return AuthenticatedSubject(
+        subject_type="staff",
+        subject_id=UUID(str(row["id"])),
+        auth_source="supabase_staff",
+        session_generation=_session_generation(row),
+        user=_user_identity(row),
     )
 
 
@@ -307,7 +502,7 @@ async def login(
             resolved_role = "external_resident"
             identity_row = external_resident_row
 
-        if identity_row is None or identity_row.get("status") == "inactive":
+        if identity_row is None or identity_row.get("status") != "active":
             raise _auth_failure()
         user = (
             _resident_user(dict(identity_row))
@@ -354,6 +549,7 @@ async def login(
                 programme_scope,
                 admin_level,
                 is_active,
+                session_issuance_blocked,
                 current_staff_actor_name,
                 staff_actor_name_updated_at,
                 staff_actor_name_updated_by_user_id
@@ -361,6 +557,7 @@ async def login(
             WHERE lower(email) = lower(:email)
               AND (:role = 'staff' OR role = :role)
               AND is_active = true
+              AND session_issuance_blocked = false
             """
         ),
         {"email": email, "role": role},
@@ -403,7 +600,7 @@ async def get_current_identity(
             {"resident_id": str(subject_id), **period_params},
         )
         resident = result.mappings().one_or_none()
-        if resident is None or resident.get("status") == "inactive":
+        if resident is None or resident.get("status") != "active":
             raise _auth_failure()
         return _resident_user(dict(resident))
 
@@ -456,7 +653,7 @@ async def get_current_identity(
             {"external_resident_id": str(subject_id), **period_params},
         )
         resident = result.mappings().one_or_none()
-        if resident is None or resident.get("status") == "inactive":
+        if resident is None or resident.get("status") != "active":
             raise _auth_failure()
         return _external_resident_user(dict(resident))
 
@@ -473,12 +670,14 @@ async def get_current_identity(
                 programme_scope,
                 admin_level,
                 is_active,
+                session_issuance_blocked,
                 current_staff_actor_name,
                 staff_actor_name_updated_at,
                 staff_actor_name_updated_by_user_id
             FROM users
             WHERE id = :user_id
               AND is_active = true
+              AND session_issuance_blocked = false
             """
         ),
         {"user_id": str(subject_id)},

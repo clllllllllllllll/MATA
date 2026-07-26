@@ -12,6 +12,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.security import log_safe_exception
 from app.services.parser_common import ParserResult
 
 
@@ -2463,7 +2464,12 @@ async def parse_rdb_upload(
         )
     except Exception as exc:
         await db_session.rollback()
-        logger.exception("Unexpected RDB upload processing failure")
+        log_safe_exception(
+            logger,
+            "rdb_upload_processing_failed",
+            exc,
+            category="upload_processing",
+        )
         return ParserResult(
             upload_type="rdb",
             errors=[UNEXPECTED_UPLOAD_FAILURE_MESSAGE],

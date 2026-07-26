@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router'
 import {
   listNonNhgRegistrationOptions,
   registerNonNhgResident,
@@ -9,8 +9,6 @@ import {
 } from '../../api/auth'
 import { ApiRequestError } from '../../api/http'
 import { IconCheck, IconChevRight } from '../../components/icons'
-import { defaultPathForRole } from '../../config/navigation'
-import { useAuth } from '../../context/useAuth'
 
 type HomeCluster = 'NUH' | 'SingHealth'
 
@@ -56,7 +54,6 @@ const EMPTY_REGISTRATION_OPTIONS: NonNhgRegistrationOptions = {
 
 export const NonNhgRegistrationPage = () => {
   const navigate = useNavigate()
-  const { loginWithSession } = useAuth()
   const [form, setForm] = useState<RegistrationFormState>(INITIAL_FORM)
   const [submitState, setSubmitState] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle')
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -234,11 +231,6 @@ export const NonNhgRegistrationPage = () => {
   }
 
   const continueAfterSuccess = () => {
-    if (registrationResult?.session) {
-      loginWithSession(registrationResult.session)
-      navigate(defaultPathForRole(registrationResult.session.identity.role), { replace: true })
-      return
-    }
     navigate('/login', { replace: true })
   }
 
@@ -317,7 +309,7 @@ export const NonNhgRegistrationPage = () => {
           </div>
 
           <button type="button" className="auth-confirmation-action" onClick={continueAfterSuccess}>
-            {registrationResult.session ? 'Continue to portal' : 'Continue to login'}
+            Continue to login
           </button>
         </section>
       </main>
