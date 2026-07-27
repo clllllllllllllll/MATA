@@ -9,11 +9,18 @@ import {
 } from './nonNhgRegistrationOptions'
 import { parseAuthSessionResponse, toAuthIdentity } from './authSessionResponse'
 import {
+  announceAuthSessionEstablished,
   authSessionChangedEvent,
+  authSessionRevalidationEvent,
+  captureAuthSessionFence,
   clearAuthSession,
+  isAuthSessionFenceCurrent,
+  readAuthSessionEpoch,
   readAuthSessionRevision,
   readStoredAuthSession,
   saveAuthSession,
+  saveHydratedAuthSession,
+  type AuthSessionFence,
 } from './authSessionStore'
 
 type BackendLoginRole = 'staff' | 'admin' | 'secretary' | 'resident' | 'external_resident'
@@ -56,12 +63,19 @@ const optionalString = (value: unknown): string | undefined =>
 const requiredString = (value: unknown): string => optionalString(value) ?? ''
 
 export {
+  announceAuthSessionEstablished,
   authSessionChangedEvent,
+  authSessionRevalidationEvent,
+  captureAuthSessionFence,
   clearAuthSession,
+  isAuthSessionFenceCurrent,
+  readAuthSessionEpoch,
   readAuthSessionRevision,
   readStoredAuthSession,
   saveAuthSession,
+  saveHydratedAuthSession,
 }
+export type { AuthSessionFence }
 export { parseNonNhgRegistrationOptions }
 export type {
   NonNhgMappingStatus,
@@ -162,9 +176,16 @@ export const hydrateAuthSession = async (): Promise<StoredAuthSession> => {
   }
 }
 
-export const logoutAuthSession = async (): Promise<void> => {
+export const logoutAuthSession = async (
+  session: StoredAuthSession,
+  fence: AuthSessionFence,
+): Promise<void> => {
   try {
-    await httpClient.post('/auth/logout')
+    await httpClient.post('/auth/logout', undefined, {
+      authSessionCsrfToken: session.csrfToken,
+      authSessionEpoch: fence.sessionEpoch,
+      authSessionRevision: fence.revision,
+    })
   } catch (error) {
     throw toApiRequestError(error)
   }

@@ -50,7 +50,7 @@ Staff password authentication is backend-mediated through Supabase, and no Supab
 
 Session rotation is serialized by subject, transaction-scoped family advisory lock, and locked/refreshed database row. Subject generation fencing invalidates sessions after authorization change, password reset, or deactivation. Revision `20260722_000024` revokes browser-role object privileges.
 
-**5B-H-E current local state (2026-07-27):** Revisions `20260726_000025` and `20260726_000026` add separate non-owner runtime and auth-helper capabilities, database-revalidated signed transaction context, reviewed service helpers, database-enforced global MCR uniqueness, and the full policy/grant cutover. All 34 application tables have RLS enabled locally; 84 policies target only `mata_app_runtime`. The runtime, auth-helper, and migration/ownership credentials must be distinct, and startup attestation fails closed on unsafe roles, ownership, grants, helpers, policies, schema access, sequences, PUBLIC, or browser-role state. FastAPI authorization remains mandatory.
+**5B-H-E/current lifecycle local state (2026-07-27):** Revisions `20260726_000025` and `20260726_000026` add separate non-owner runtime and auth-helper capabilities, database-revalidated signed transaction context, reviewed service helpers, database-enforced global MCR uniqueness, and the full policy/grant cutover. Revision `20260727_000027` narrows restricted session-helper results, adds interval-gated activity, and denies signed RLS context after session expiry/revocation. All 34 application tables have RLS enabled locally; 84 policies target only `mata_app_runtime`. The runtime, auth-helper, and migration/ownership credentials must be distinct, and startup attestation fails closed on unsafe roles, ownership, grants, helpers, policies, schema access, sequences, PUBLIC, or browser-role state. FastAPI authorization remains mandatory.
 
 Local code and disposable-database verification are not proof of deployed Supabase behavior.
 
@@ -158,7 +158,7 @@ The source-of-truth files began as build specifications, but substantial pre-com
 | Component | Status | Notes |
 |-----------|--------|-------|
 | **Database schema design** (`schema.md`) | ✅ Implemented pre-compliance schema | `clawback_records` remains a deferred placeholder pending its final contract |
-| **Alembic migrations** | ✅ Implemented | Linear history through `20260726_000026` |
+| **Alembic migrations** | ✅ Implemented | Linear history through `20260727_000027` |
 | **FastAPI backend structure** | ✅ Implemented pre-compliance surfaces | Routers, services, middleware, models, schemas, and tests are present |
 | **RDB parser** (`rdb_parser.py`) | ✅ Implemented | Contract and edge cases remain governed by `parsing.md` |
 | **TTF parser** (`ttf_parser.py`) | ✅ Implemented | Contract and edge cases remain governed by `parsing.md` |
@@ -1003,7 +1003,7 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
 | FM Saturday exception | Removed from confirmed list | No FM row in `weekend_exceptions` seed data |
 | Resident second factor not approved | MCR-only production assurance remains unresolved | Do not invent a factor; retain the explicit blocker pending stakeholder approval |
 | Local verification versus deployment | Passing code/tests do not prove deployed environment, migrations, grants, or cookie behavior | Run the documented post-deployment smoke against the approved target |
-| Local H-E versus deployed RLS | A locally verified role/policy catalogue can be mistaken for deployed Supabase protection | Independently verify revision `20260726_000026`, credentials, ownership, policies, grants, helpers, PUBLIC/browser roles, and five-role workflows on the approved target |
+| Local H-E/lifecycle versus deployed RLS | A locally verified role/policy/session catalogue can be mistaken for deployed Supabase protection | Independently verify revision `20260727_000027`, lifecycle settings, credentials, ownership, policies, grants, helpers, PUBLIC/browser roles, expiry behavior, and five-role workflows on the approved target |
 | Emergency bearer compatibility | Routine enablement would reintroduce browser-token risk | Keep double opt-in, time-bounded, and rollback-only |
 
 See `99_decision_log_and_gap_audit.md` for the full risk register.

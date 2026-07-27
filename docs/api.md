@@ -130,8 +130,27 @@ These rules apply to every endpoint unless a stricter endpoint-specific rule is 
 - Protected unsafe methods (`POST`, `PUT`, `PATCH`, `DELETE`) require `X-CSRF-Token` matching the active session digest.
 - Every production unsafe request also requires an exact `Origin` from `CORS_ORIGINS`; missing, wildcard, malformed, or unapproved origins fail with generic `403`.
 - Public login and Non-NHG registration do not require an existing-session CSRF token because these endpoints are intentionally unauthenticated, but require exact production Origin and `application/json`; form-encoded variants return `415`.
-- `GET /auth/me` hydration is side-effect-free for session timestamps. Unsafe-request session resolution may extend idle expiry before a later CSRF or business-rule rejection, never beyond absolute expiry.
+- `GET /auth/me` hydration is side-effect-free for session timestamps. Session
+  resolution never touches. After session/CSRF validation and a successful 2xx
+  protected unsafe response, the server may atomically extend idle expiry when
+  the configured touch interval is due, never beyond absolute expiry. Failed
+  requests, safe reads, polling, refresh, and logout do not qualify. If the
+  final touch finds an expired, revoked, or stale session—or the lifecycle
+  store fails—the pending protected 2xx response is replaced by a controlled
+  cookie-clearing `401`.
 - Normal cookie mode ignores raw client identity headers and does not use caller-provided authorization as the application credential. Local stub/demo and explicitly gated emergency bearer compatibility remain separate.
+
+Effective expiry is the earlier of idle and family absolute expiry, with
+equality treated as expired. Refresh replaces the credential and CSRF value
+but extends neither the current idle deadline nor the original absolute
+deadline. Expired sessions receive a controlled `401`, cannot establish CSRF
+or RLS identity, and require full login.
+
+The application cookie is intentionally a non-persistent browser-session
+cookie: it carries neither `Max-Age` nor `Expires`. A relative lifetime derived
+before commit and response delivery cannot rigorously track the PostgreSQL
+absolute deadline. Server-side expiry remains authoritative even if a browser
+retains or restores a stale session cookie.
 
 ### Request validation and sanitisation
 
@@ -1799,7 +1818,7 @@ Explicit `{ "role": "external_resident", "mcr": "..." }` remains temporarily acc
 }
 ```
 
-Success sets `__Host-mata_session=<opaque>` with `Secure; HttpOnly; SameSite=Strict; Path=/` and no `Domain` in production. No `access_token`, refresh token, or `token_type` is returned in normal cookie mode.
+Success sets `__Host-mata_session=<opaque>` with `Secure; HttpOnly; SameSite=Strict; Path=/`, no `Domain`, and no persistent `Max-Age` or `Expires` in production. No `access_token`, refresh token, or `token_type` is returned in normal cookie mode.
 
 - **Error responses:**
   - `401` - MCR not found or the resolved native/external resident is inactive; the response does not disclose which condition occurred
@@ -1821,11 +1840,13 @@ Return current identity from the validated opaque application session, together 
 
 ### POST `/auth/session/refresh`
 
-Requires an active cookie session and valid CSRF. It atomically revokes the current session row and creates one replacement in the same family, preserving absolute expiry and rotating both cookie and CSRF state. Concurrent refresh permits exactly one child; the losing attempt receives a controlled `401` and cannot create another replacement. The old cookie and old CSRF material are unusable.
+Requires an active cookie session and valid CSRF. It atomically revokes the current session row and creates one replacement in the same family, preserving or tightening the parent's idle deadline, carrying forward the parent's last qualifying-activity timestamp, preserving absolute expiry, and rotating both cookie and CSRF state. Refresh is not qualifying activity, cannot slide either deadline, and cannot delay eligibility for the next real activity touch. Concurrent refresh permits exactly one child; the losing attempt receives a controlled `401` and cannot create another replacement. The old cookie and old CSRF material are unusable.
 
 ### POST `/auth/logout`
 
-With an active session, requires valid CSRF, revokes every active row in the current rotation family, and clears the cookie. Other device/session families remain active. Calling logout without a usable cookie remains idempotent and clears the cookie.
+Logout derives keyed token and CSRF digests from the presented cookie/header and sends only those digests to the auth-helper database boundary. After production origin and raw-authorization guards, the exact cookie-mode logout route bypasses ordinary active-session hydration and middleware CSRF handling; the termination helper alone evaluates the proof. Normally both digests identify the same active row, or the same row revoked only as `rotated`. A stale tab may instead present the current active child token with a rotated ancestor's CSRF value; that pair is accepted only when both rows have the same subject, subject generation, family, and authentication source, the child is before its idle and absolute deadlines, and the rotated proof is before the immutable family absolute deadline. The auth-only helper derives the subject and rotation family server-side; callers cannot supply a subject, session ID, or family ID. It then revokes every active row in only that family, returns no identity/context material, and grants no hydration, touch, rotation, or refresh authority. This permits a logout that began before refresh, or a stale tab updated to the child cookie, to terminate the refreshed child. Other device/session families remain active. Missing, malformed, cross-family, expired, or otherwise mismatched proof revokes nothing; the response still clears the presented browser cookie.
+
+The runtime capability cannot execute the termination helper. Missing, malformed, mismatched, absolute-expired, idle-expired active, or non-`rotated` revoked proof revokes nothing. Logout remains idempotent and clears the browser cookie.
 
 ### POST `/auth/staff-actor-name`
 
@@ -1880,6 +1901,8 @@ Create a generic staff role account.
 Edit account display name, account type/scope fields, posting code, and `is_active`. Email changes may be rejected. Hard delete is not supported. The backend rejects deactivating or demoting the last active Master Admin.
 
 Changes to role, admin level, programme scope, posting, or active state increment `session_generation` and revoke all active application-session families for the subject. Display-only changes do not create authorization authority.
+
+A self authorization change remains supported when it passes the last-active-Master-Admin guard. In one transaction, the service audits the planned final state while the request-start actor is still valid, applies the account mutation, and makes subject-wide session invalidation the final protected database statement before commit. Its audit deliberately records `revoked_session_count = null` and `revoked_session_count_is_exact = false`; a protected statement cannot safely read an exact count after invalidating its own signed context. Non-self changes continue to record the exact integer revocation count.
 
 #### POST `/admin/staff-accounts/{user_id}/reset-password`
 

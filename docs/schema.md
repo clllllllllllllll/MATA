@@ -737,6 +737,8 @@ For admin and secretary authentication **only**. Residents are **not** stored he
 
 **5B-E role-account note:** Staff accounts are generic pass-down role accounts. `users.name` remains the generic account display name (for example `Programme PC - DR`), while `current_staff_actor_name` stores the current human's self-declared name for audit context. Password reset/handover clears the saved actor name. Master Admin is explicit via `admin_level = 'master'`; Programme PC access requires `admin_level = 'programme'` and non-empty `programme_scope`; Secretary access requires `posting_code`.
 
+**Self authorization mutation ordering:** A self role/admin-level/scope/posting/deactivation change is allowed when the last-active-Master-Admin guard permits it. The service writes an audit of the planned final state before mutating `users`, then performs subject-wide generation/session invalidation as the final protected statement in the same transaction. The self-change audit marks `revoked_session_count` as null/non-exact because the invalidated signed context cannot perform a follow-up count read; non-self changes continue to record the exact count.
+
 ---
 
 ## Table: `app_sessions`
@@ -754,7 +756,7 @@ Backend-owned opaque browser-session state added by migration `20260722_000023`.
 | auth_source | VARCHAR(30) | NOT NULL, CHECK | `supabase_staff` or `mata_resident`, constrained to subject type |
 | csrf_token_digest | BYTEA(32) | NOT NULL, exact 32-byte check | Keyed digest only |
 | created_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Session-child creation time |
-| last_seen_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Last unsafe-request session resolution that touched idle expiry |
+| last_seen_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Last qualifying successful protected mutation recorded after the configured touch interval |
 | idle_expires_at | TIMESTAMPTZ | NOT NULL, <= absolute expiry | Sliding idle bound |
 | absolute_expires_at | TIMESTAMPTZ | NOT NULL | Preserved across rotation |
 | revoked_at | TIMESTAMPTZ | nullable | |
@@ -763,6 +765,34 @@ Backend-owned opaque browser-session state added by migration `20260722_000023`.
 | user_agent_hash | BYTEA(32) | nullable, exact 32-byte check | Optional keyed digest; no raw user agent |
 
 Root rows satisfy `session_family_id = id`; child rows have `rotated_from_session_id`. Rotation locks in global order: subject row, transaction-scoped family advisory lock, then fresh `SELECT ... FOR UPDATE` session reload. Under the H-E restricted-role path, `app_sessions` has no direct runtime table privilege and reviewed `mata_rls` helpers perform the authoritative fresh database lookup. The non-RLS ORM fallback retains `populate_existing=True`, so an existing SQLAlchemy identity-map object cannot bypass the locked row. Transaction-scoped advisory locks disappear on commit, rollback, cancellation, or connection loss, so pooled connections cannot retain them.
+
+The effective expiry is `min(idle_expires_at, absolute_expires_at)`, and
+equality is invalid. Touch uses PostgreSQL time, is interval-gated, and caps
+idle expiry at the immutable family absolute deadline. Rotation initializes a
+new row but preserves or tightens the parent's idle deadline as well as the
+family absolute deadline and carries forward `last_seen_at`; refresh is not an
+idle-expiry extension and cannot postpone eligibility for a later qualifying
+touch. Revision `20260727_000027` makes restricted lifecycle helpers return
+minimum identity/context material rather than full rows; stored token/CSRF
+digests, expiry fields, and derived client lifetimes remain private. The HTTP
+layer issues an intentional browser-session cookie with no `Max-Age` or
+`Expires`; signed RLS context ceases to validate when the backing session is
+revoked or reaches either deadline.
+
+Logout does not hydrate a session through this table. The auth-only
+`revoke_app_session_family_for_logout(bytea,bytea,text)` helper accepts keyed
+token and CSRF digests and derives the subject/family from the matching row.
+Active proof must be before both deadlines. A parent revoked specifically as
+`rotated` remains termination-only proof until the immutable family absolute
+deadline even when its superseded idle deadline has passed. The helper grants
+no identity/context/refresh authority and lets a logout that started first
+revoke a child when refresh commits first.
+
+Cleanup preserves a `rotated` parent as termination proof until
+`absolute_expires_at`, regardless of its superseded idle deadline or a shorter
+retention interval. Once that immutable family absolute deadline is reached,
+normal bounded retention rules apply. An unrevoked child with both deadlines
+still in the future is never selected by that proof-row exception.
 
 ---
 
@@ -1059,6 +1089,16 @@ Migrations `20260726_000025` and `20260726_000026` add the separate full-RLS lay
 Normal runtime access is explicit: 27 tables receive reviewed table actions, `users` additionally receives `INSERT`/`UPDATE` and column-limited `SELECT` that excludes `password_hash`, and six tables remain helper-only with no direct runtime table privilege: `app_sessions`, `clawback_records`, `period_snapshots`, `programme_institution_posting_map`, `rate_limit_buckets`, and `surplus_ledger`. `mata_auth_internal` has no direct application-table or sequence privileges.
 
 `PUBLIC` and optional `anon`, `authenticated`, and `service_role` roles receive no application relation, H-E helper, or schema-creation authority. Default privileges do not grant future tables, sequences, or functions to runtime, auth, browser, or PUBLIC roles. A future application table is therefore inaccessible by default and still requires explicit RLS, policy, grant, helper, ownership, and test review.
+
+Revision `20260727_000027` preserves the 34-table/84-policy posture and changes
+only session helper functions/grants plus signed-context validation. The
+superseded full-row resolve/issue/rotate functions are no longer executable by
+either restricted application capability.
+
+That revision owns exactly eight minimal lifecycle helpers: three auth-only
+issuance wrappers; shared resolve, touch, and CSRF helpers; one runtime-only
+rotation helper; and one auth-only logout termination helper. Runtime cannot
+execute `revoke_app_session_family_for_logout(bytea,bytea,text)`.
 
 These statements describe the local source and disposable-PostgreSQL implementation. They do not establish the revision, role catalogue, grants, policies, or behavior of a deployed Supabase project.
 

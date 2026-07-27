@@ -73,7 +73,7 @@ The lifecycle is:
 8. revoke the whole family on logout;
 9. delete expired/revoked rows only through bounded cleanup.
 
-Staff idle/absolute defaults are 1,800/28,800 seconds. Resident defaults are 3,600/43,200 seconds. Rotation defaults to 900 seconds. These remain configurable and must stay positive with idle not exceeding absolute expiry.
+Staff idle/absolute defaults are 1,800/28,800 seconds. Resident defaults are 3,600/43,200 seconds. Rotation defaults to 900 seconds. Revision `20260727_000027` subsequently adds a 60-second default touch interval, post-validation qualifying activity, minimal lifecycle helpers, and expiry-aware RLS context. All values remain configurable examples rather than approved production durations; see `docs/5b_h_session_lifecycle_assurance.md`.
 
 ### Concurrent rotation result
 
@@ -230,6 +230,7 @@ Required production names are documented without values:
 - `MATA_RESIDENT_IDLE_TIMEOUT_SECONDS`
 - `MATA_RESIDENT_ABSOLUTE_TIMEOUT_SECONDS`
 - `MATA_SESSION_ROTATION_SECONDS`
+- `MATA_SESSION_TOUCH_INTERVAL_SECONDS`
 - `MATA_SESSION_CLEANUP_RETENTION_SECONDS`
 - `MATA_SESSION_CLEANUP_BATCH_SIZE`
 - `MATA_CSRF_HEADER_NAME`
@@ -281,3 +282,9 @@ PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
 MCR-only login remains a low-assurance resident identity mechanism. No second-factor source or delivery channel has been approved, and none was invented in H-D. Unrestricted real-data production approval remains blocked on that owner decision.
 
 H-D code completion is not proof of deployed security. Phase 5B-H-E full PostgreSQL RLS is separate and must add the restricted runtime role, transaction-local trusted identity context, complete policies, and full-workflow testing without weakening FastAPI authorization or granting browser data access.
+
+The later focused lifecycle assurance phase supersedes H-D's former
+pre-validation touch behavior. Current requests resolve without touching;
+only successful protected mutations qualify after CSRF/business validation,
+and normal refresh extends neither the parent's idle deadline nor the family
+absolute deadline.

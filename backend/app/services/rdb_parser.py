@@ -1976,6 +1976,10 @@ async def _update_resident(
                 name = :name,
                 classification = :classification,
                 base_institution = :base_institution,
+                session_generation = session_generation + CASE
+                    WHEN programme_code IS DISTINCT FROM :programme_code THEN 1
+                    ELSE 0
+                END,
                 programme_code = :programme_code,
                 r_year = :r_year,
                 reg_type = :reg_type,

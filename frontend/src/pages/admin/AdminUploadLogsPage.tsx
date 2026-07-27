@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { listUploadLogs } from '../../api/uploadLogs'
 import { DetailDrawer } from '../../components/DetailDrawer'
@@ -11,11 +11,14 @@ import type { UploadLogListItem, UploadLogStatus } from '../../types/upload'
 import {
   clearMemoryCache,
   getMemoryCache,
+  isMemoryCacheInvalidatedError,
   makeScopedCacheKey,
   readThroughMemoryCache,
-  setMemoryCache,
-  type CacheScope,
 } from '../../utils/memoryReadCache'
+import {
+  captureProtectedAsyncRequestFence,
+  isProtectedAsyncRequestFenceCurrent,
+} from '../../utils/protectedAsyncFence'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 import { buildAdminUploadWarningsPath } from './adminUploadPageLogic'
 
@@ -99,7 +102,7 @@ export const AdminUploadLogsPage = () => {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const initialSearchTerm = searchParams.get('search')?.trim() ?? ''
-  const { role, demoAdminId, demoAdminProgrammes } = useAppState()
+  const { authCacheScope, demoAdminId, demoAdminProgrammes } = useAppState()
   const [logs, setLogs] = useState<UploadLogListItem[]>([])
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
@@ -115,21 +118,27 @@ export const AdminUploadLogsPage = () => {
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(initialSearchTerm)
   const [selectedLogId, setSelectedLogId] = useState<string | null>(null)
   const [selectedLog, setSelectedLog] = useState<UploadLogListItem | null>(null)
+  const authScopeKey = useMemo(
+    () => makeScopedCacheKey(authCacheScope, 'admin.upload-logs.auth-scope', {}),
+    [authCacheScope],
+  )
+  const listRequestRef = useRef(0)
 
-  const cacheScope = useMemo<CacheScope>(() => ({
-    role,
-    userId: demoAdminId,
-    programmeScope: demoAdminProgrammes,
-  }), [demoAdminId, demoAdminProgrammes, role])
-
-  const uploadLogsCacheKey = useCallback((querySearch: string) => makeScopedCacheKey(cacheScope, 'admin.upload-logs.list', {
+  const uploadLogsCacheKey = useCallback((querySearch: string) => makeScopedCacheKey(authCacheScope, 'admin.upload-logs.list', {
     uploadType: uploadTypeFilter,
     status: statusFilter,
     programmeCode: programmeFilter,
     search: querySearch,
     limit: pageSize,
     offset,
-  }), [cacheScope, offset, programmeFilter, statusFilter, uploadTypeFilter])
+  }), [authCacheScope, offset, programmeFilter, statusFilter, uploadTypeFilter])
+  const listRequestContextKey = uploadLogsCacheKey(searchTerm)
+  const currentListRequestContextKeyRef = useRef(listRequestContextKey)
+
+  useLayoutEffect(() => {
+    currentListRequestContextKeyRef.current = listRequestContextKey
+    listRequestRef.current += 1
+  }, [listRequestContextKey])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -137,6 +146,27 @@ export const AdminUploadLogsPage = () => {
     }, searchDebounceMs)
     return () => window.clearTimeout(timer)
   }, [searchTerm])
+
+  useEffect(() => {
+    let active = true
+    queueMicrotask(() => {
+      if (!active) {
+        return
+      }
+      hasLoadedLogsRef.current = false
+      setLogs([])
+      setTotal(0)
+      setError(null)
+      setSelectedLogId(null)
+      setSelectedLog(null)
+      setIsManualRefreshing(false)
+      setIsRefetching(false)
+      setIsInitialLoading(true)
+    })
+    return () => {
+      active = false
+    }
+  }, [authScopeKey])
 
   const loadLogs = useCallback(async (querySearch: string) => {
     return listUploadLogs({
@@ -160,18 +190,35 @@ export const AdminUploadLogsPage = () => {
   ])
 
   const fetchLogs = useCallback(async () => {
+    const requestId = listRequestRef.current + 1
+    listRequestRef.current = requestId
+    const requestFence = captureProtectedAsyncRequestFence(listRequestContextKey, requestId)
+    const isCurrentRequest = () => isProtectedAsyncRequestFenceCurrent(
+      requestFence,
+      currentListRequestContextKeyRef.current,
+      listRequestRef.current,
+    )
     setIsManualRefreshing(true)
     setError(null)
     try {
       const key = uploadLogsCacheKey(searchTerm)
       clearMemoryCache((cacheKey) => cacheKey === key)
-      const response = await loadLogs(searchTerm)
-      setMemoryCache(key, response)
+      const { data: response } = await readThroughMemoryCache(
+        key,
+        () => loadLogs(searchTerm),
+        { force: true },
+      )
+      if (!isCurrentRequest()) {
+        return
+      }
       setDebouncedSearchTerm((previous) => (previous === searchTerm ? previous : searchTerm))
       setLogs(response.items)
       setTotal(response.total)
       hasLoadedLogsRef.current = true
     } catch (fetchError) {
+      if (isMemoryCacheInvalidatedError(fetchError) || !isCurrentRequest()) {
+        return
+      }
       setLogs([])
       setTotal(0)
       hasLoadedLogsRef.current = true
@@ -179,18 +226,31 @@ export const AdminUploadLogsPage = () => {
         fallbackMessage: 'Unable to load upload logs.',
       }))
     } finally {
-      setIsManualRefreshing(false)
-      setIsInitialLoading(false)
-      setIsRefetching(false)
+      if (isCurrentRequest()) {
+        setIsManualRefreshing(false)
+        setIsInitialLoading(false)
+        setIsRefetching(false)
+      }
     }
-  }, [loadLogs, searchTerm, uploadLogsCacheKey])
+  }, [listRequestContextKey, loadLogs, searchTerm, uploadLogsCacheKey])
 
   useEffect(() => {
     let active = true
     ;(async () => {
+      if (uploadLogsCacheKey(debouncedSearchTerm) !== listRequestContextKey) {
+        return
+      }
+      const requestId = listRequestRef.current + 1
+      listRequestRef.current = requestId
+      const requestFence = captureProtectedAsyncRequestFence(listRequestContextKey, requestId)
+      const isCurrentRequest = () => active && isProtectedAsyncRequestFenceCurrent(
+        requestFence,
+        currentListRequestContextKeyRef.current,
+        listRequestRef.current,
+      )
       const key = uploadLogsCacheKey(debouncedSearchTerm)
       const cached = getMemoryCache<Awaited<ReturnType<typeof listUploadLogs>>>(key)
-      if (cached) {
+      if (cached && isCurrentRequest()) {
         setLogs(cached.data.items)
         setTotal(cached.data.total)
         hasLoadedLogsRef.current = true
@@ -209,13 +269,13 @@ export const AdminUploadLogsPage = () => {
           () => loadLogs(debouncedSearchTerm),
           { force: Boolean(cached) },
         )
-        if (active) {
+        if (isCurrentRequest()) {
           setLogs(response.items)
           setTotal(response.total)
           hasLoadedLogsRef.current = true
         }
       } catch (fetchError) {
-        if (active) {
+        if (!isMemoryCacheInvalidatedError(fetchError) && isCurrentRequest()) {
           if (!isBackgroundRefetch) {
             setLogs([])
             setTotal(0)
@@ -226,7 +286,7 @@ export const AdminUploadLogsPage = () => {
           }))
         }
       } finally {
-        if (active) {
+        if (isCurrentRequest()) {
           setIsInitialLoading(false)
           setIsRefetching(false)
         }
@@ -237,6 +297,7 @@ export const AdminUploadLogsPage = () => {
     }
   }, [
     debouncedSearchTerm,
+    listRequestContextKey,
     loadLogs,
     uploadLogsCacheKey,
   ])

@@ -14,14 +14,17 @@ from starlette.responses import Response
 from app.config import Settings, get_settings
 from app.database import AsyncSessionLocal
 from app.errors import ErrorCode, build_error_response
+from app.middleware.security import is_approved_origin, is_unsafe_method
 from app.models import ExternalResident, Resident, User
+from app.security.redaction import log_safe_exception
 from app.services.app_sessions import (
     AppSessionInvalidError,
     authorization_fingerprint_for_session,
     identity_context_for_session,
     resolve_session,
     revoke_session,
-    validate_csrf,
+    touch_session,
+    validate_session_csrf,
 )
 from app.services.mata_resident_token import (
     MataResidentTokenError,
@@ -31,7 +34,6 @@ from app.services.mata_resident_token import (
 )
 from app.services.supabase_jwt import SupabaseJwtError, SupabaseJwtVerifier
 from app.services.session_transport import clear_session_cookie, session_cookie_name
-from app.middleware.security import is_approved_origin, is_unsafe_method
 
 
 logger = logging.getLogger(__name__)
@@ -155,11 +157,18 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         if request.headers.get("Authorization") and not self._stub_header_auth_allowed():
             return self._unauthorized_response()
 
-        raw_session_token = request.cookies.get(session_cookie_name(self._settings))
         logout_path = f"{self._settings.api_prefix}/auth/logout"
+        refresh_path = f"{self._settings.api_prefix}/auth/session/refresh"
+        if request.url.path == logout_path and request.method == "POST":
+            # Logout is an identity-free auth-boundary operation. The route
+            # validates the exact cookie/CSRF proof through the termination-only
+            # helper and always clears the presented browser cookie. Resolving
+            # or CSRF-validating the cookie here would reject a stale or raced
+            # proof before that idempotent route can run.
+            return await call_next(request)
+
+        raw_session_token = request.cookies.get(session_cookie_name(self._settings))
         if not raw_session_token:
-            if request.url.path == logout_path and request.method == "POST":
-                return await call_next(request)
             if self._stub_header_auth_allowed():
                 return None
             return self._unauthorized_response()
@@ -170,8 +179,16 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
                     session_db,
                     self._settings,
                     raw_session_token,
-                    touch=is_unsafe_method(request.method),
+                    touch=False,
                 )
+                csrf_validation = None
+                if app_session is not None and is_unsafe_method(request.method):
+                    csrf_validation = await validate_session_csrf(
+                        session_db,
+                        app_session,
+                        request.headers.get(self._settings.csrf_header_name),
+                        self._settings,
+                    )
                 await session_db.commit()
         except AppSessionInvalidError:
             response = self._unauthorized_response()
@@ -187,12 +204,15 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             return response
 
         if app_session is None:
-            if request.url.path == logout_path and request.method == "POST":
-                response = await call_next(request)
-            else:
-                response = self._unauthorized_response()
+            response = self._unauthorized_response()
             clear_session_cookie(response, settings=self._settings)
             return response
+        if csrf_validation == "invalid_session":
+            response = self._unauthorized_response()
+            clear_session_cookie(response, settings=self._settings)
+            return response
+        if csrf_validation == "invalid_csrf":
+            return self._forbidden_response()
 
         if self._settings.database_rls_enabled:
             try:
@@ -229,9 +249,12 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
                         reason="subject_inactive_or_invalid",
                     )
                     await session_db.commit()
-            except Exception:
-                logger.exception(
-                    "Failed to revoke an invalid application session"
+            except Exception as exc:
+                log_safe_exception(
+                    logger,
+                    "Failed to revoke an invalid application session",
+                    exc,
+                    category="session_revocation",
                 )
             clear_session_cookie(identity_or_error, settings=self._settings)
             return identity_or_error
@@ -242,14 +265,37 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         if authorization_fingerprint is not None:
             request.state.authorization_fingerprint = authorization_fingerprint
 
-        if is_unsafe_method(request.method):
-            csrf_token = request.headers.get(self._settings.csrf_header_name)
-            if not validate_csrf(app_session, csrf_token, self._settings):
-                return self._forbidden_response()
-
         response = await call_next(request)
         if response.status_code == 401:
             clear_session_cookie(response, settings=self._settings)
+        elif (
+            is_unsafe_method(request.method)
+            and 200 <= response.status_code < 300
+            and request.url.path not in {logout_path, refresh_path}
+        ):
+            try:
+                async with AsyncSessionLocal() as session_db:
+                    touched = await touch_session(
+                        session_db,
+                        self._settings,
+                        app_session,
+                        session_token=raw_session_token,
+                    )
+                    await session_db.commit()
+            except Exception as exc:
+                log_safe_exception(
+                    logger,
+                    "Failed to record application-session activity",
+                    exc,
+                    category="session_touch",
+                )
+                touched = False
+            if not touched:
+                # The final lifecycle check is authoritative.  Do not release
+                # a protected success payload after it proves that the session
+                # expired, was revoked, or otherwise became stale.
+                response = self._unauthorized_response()
+                clear_session_cookie(response, settings=self._settings)
         return response
 
     def _identity_from_rls_session(

@@ -88,7 +88,6 @@ def test_production_cookie_is_host_only_secure_http_only_and_strict() -> None:
         response,
         settings=settings,
         session_token="opaque-session-value",
-        absolute_expires_at=datetime.now(UTC) + timedelta(hours=8),
     )
 
     cookie = response.headers["set-cookie"]
@@ -97,7 +96,8 @@ def test_production_cookie_is_host_only_secure_http_only_and_strict() -> None:
     assert "Secure" in cookie
     assert "SameSite=strict" in cookie
     assert "Path=/" in cookie
-    assert "Max-Age=" in cookie
+    assert "Max-Age=" not in cookie
+    assert "Expires=" not in cookie
     assert "Domain=" not in cookie
 
 
@@ -109,7 +109,6 @@ def test_local_cookie_has_separate_name_and_secure_is_off() -> None:
         response,
         settings=settings,
         session_token="local-session-value",
-        absolute_expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
     cookie = response.headers["set-cookie"]
 
@@ -118,6 +117,8 @@ def test_local_cookie_has_separate_name_and_secure_is_off() -> None:
     assert "SameSite=strict" in cookie
     assert "Secure" not in cookie
     assert "Domain=" not in cookie
+    assert "Max-Age=" not in cookie
+    assert "Expires=" not in cookie
 
     clear_session_cookie(response, settings=settings)
     clearing_cookie = response.headers.getlist("set-cookie")[-1]
@@ -531,12 +532,15 @@ def test_session_hydration_wraps_every_identity_family_without_db_mutation(
 def test_refresh_rotates_cookie_and_logout_revokes_then_clears(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    settings = Settings(environment="test", auth_mode="stub", _env_file=None)
     identity = AuthIdentity(role="resident", subject_id=str(SUBJECT_ID))
     original = _active_session(subject_type="resident")
     rotated_session = _active_session(subject_type="resident")
-    revoke_reasons: list[str] = []
+    revoke_calls: list[tuple[str | None, str | None, str]] = []
+    refresh_call_order: list[str] = []
 
     async def rotate(*args, **kwargs):
+        refresh_call_order.append("rotate")
         return CreatedSession(
             session=rotated_session,
             session_token="replacement-opaque-session",
@@ -544,17 +548,25 @@ def test_refresh_rotates_cookie_and_logout_revokes_then_clears(
         )
 
     async def current_identity(*args, **kwargs):
+        refresh_call_order.append("identity")
         return {"id": str(SUBJECT_ID), "role": "resident", "mcr": "M10000A"}
 
-    async def revoke(*args, reason: str, **kwargs):
-        revoke_reasons.append(reason)
-        return True
+    async def revoke(
+        *args,
+        session_token: str | None,
+        csrf_token: str | None,
+        reason: str,
+        **kwargs,
+    ):
+        revoke_calls.append((session_token, csrf_token, reason))
+        return 1
 
     monkeypatch.setattr(auth, "rotate_session", rotate)
-    monkeypatch.setattr(auth, "revoke_session_family", revoke)
+    monkeypatch.setattr(auth, "revoke_session_family_for_logout", revoke)
     monkeypatch.setattr(auth.auth_service, "get_current_identity", current_identity)
     client, db = _auth_router_client(
         monkeypatch,
+        settings=settings,
         identity=identity,
         app_session=original,
         session_token="original-opaque-session",
@@ -564,13 +576,67 @@ def test_refresh_rotates_cookie_and_logout_revokes_then_clears(
     assert refreshed.status_code == 200
     assert refreshed.json()["csrf_token"] == "replacement-csrf-token-memory-only"
     assert "replacement-opaque-session" in refreshed.headers["set-cookie"]
+    assert refresh_call_order == ["identity", "rotate"]
 
-    logged_out = client.post("/api/v1/auth/logout")
+    logged_out = client.post(
+        "/api/v1/auth/logout",
+        headers={
+            settings.csrf_header_name: "replacement-csrf-token-memory-only"
+        },
+    )
     assert logged_out.status_code == 200
     assert logged_out.json() == {"success": True}
     assert "Max-Age=0" in logged_out.headers["set-cookie"]
-    assert revoke_reasons == ["logout"]
+    assert revoke_calls == [
+        (
+            "replacement-opaque-session",
+            "replacement-csrf-token-memory-only",
+            "logout",
+        )
+    ]
     assert db.commits == 2
+
+
+@pytest.mark.parametrize("csrf_token", (None, "malformed"))
+def test_logout_with_unusable_proof_remains_idempotent_and_clears_cookie(
+    monkeypatch: pytest.MonkeyPatch,
+    csrf_token: str | None,
+) -> None:
+    settings = Settings(environment="test", auth_mode="stub", _env_file=None)
+    revoke_calls: list[tuple[str | None, str | None]] = []
+
+    async def reject_proof(
+        *args,
+        session_token: str | None,
+        csrf_token: str | None,
+        **kwargs,
+    ) -> int:
+        revoke_calls.append((session_token, csrf_token))
+        return 0
+
+    monkeypatch.setattr(
+        auth,
+        "revoke_session_family_for_logout",
+        reject_proof,
+    )
+    client, db = _auth_router_client(monkeypatch, settings=settings)
+    client.cookies.set(
+        session_cookie_name(settings),
+        "malformed-or-stale-session",
+    )
+    headers = (
+        {settings.csrf_header_name: csrf_token}
+        if csrf_token is not None
+        else {}
+    )
+
+    response = client.post("/api/v1/auth/logout", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True}
+    assert "Max-Age=0" in response.headers["set-cookie"]
+    assert revoke_calls == [("malformed-or-stale-session", csrf_token)]
+    assert db.commits == 1
 
 
 def test_concurrent_refresh_failure_is_generic_and_clears_cookie(
@@ -582,7 +648,19 @@ def test_concurrent_refresh_failure_is_generic_and_clears_cookie(
     async def fail_rotation(*args, **kwargs):
         raise AppSessionInvalidError("internal rotation detail")
 
+    async def current_identity(*args, **kwargs):
+        return {
+            "id": str(SUBJECT_ID),
+            "role": "admin",
+            "admin_level": "master",
+        }
+
     monkeypatch.setattr(auth, "rotate_session", fail_rotation)
+    monkeypatch.setattr(
+        auth.auth_service,
+        "get_current_identity",
+        current_identity,
+    )
     client, db = _auth_router_client(
         monkeypatch,
         identity=identity,
@@ -616,6 +694,8 @@ def _cookie_middleware_client(
     settings: Settings | None = None,
     resolved_session: SimpleNamespace | None = None,
     resolve_error: Exception | None = None,
+    touch_result: bool = True,
+    touch_error: Exception | None = None,
 ) -> tuple[TestClient, list[bool], list[str | None]]:
     selected_settings = settings or Settings(
         environment="test",
@@ -637,13 +717,27 @@ def _cookie_middleware_client(
     async def identity_for_session(self, app_session, request):
         return AuthIdentity(role="admin", subject_id=str(SUBJECT_ID), admin_level="master")
 
-    def validate(_session, csrf_token, _settings, **kwargs):
+    async def validate(_db, _session, csrf_token, _settings, **kwargs):
         csrf_values.append(csrf_token)
-        return csrf_token == "valid-csrf-token"
+        return (
+            "valid"
+            if csrf_token == "valid-csrf-token"
+            else "invalid_csrf"
+        )
+
+    async def touch(_db, _settings, _session, **kwargs):
+        touches.append(True)
+        if touch_error is not None:
+            raise touch_error
+        return touch_result
 
     monkeypatch.setattr("app.middleware.auth_stub.AsyncSessionLocal", lambda: _MiddlewareDb())
     monkeypatch.setattr("app.middleware.auth_stub.resolve_session", resolve)
-    monkeypatch.setattr("app.middleware.auth_stub.validate_csrf", validate)
+    monkeypatch.setattr(
+        "app.middleware.auth_stub.validate_session_csrf",
+        validate,
+    )
+    monkeypatch.setattr("app.middleware.auth_stub.touch_session", touch)
     monkeypatch.setattr(AuthStubMiddleware, "_resolve_app_session_identity", identity_for_session)
 
     app = FastAPI()
@@ -655,6 +749,92 @@ def _cookie_middleware_client(
 
     app.add_middleware(AuthStubMiddleware, settings=selected_settings)
     return TestClient(app), touches, csrf_values
+
+
+def test_cookie_logout_bypasses_hydration_and_csrf_but_keeps_outer_guards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _production_settings()
+    db = _RouterDb()
+    resolve_calls: list[str] = []
+    revoke_calls: list[tuple[str | None, str | None]] = []
+
+    async def unexpected_resolve(*args, **kwargs):
+        resolve_calls.append("resolve")
+        raise AssertionError("Logout must not hydrate the presented cookie")
+
+    async def revoke(
+        *args,
+        session_token: str | None,
+        csrf_token: str | None,
+        **kwargs,
+    ) -> int:
+        revoke_calls.append((session_token, csrf_token))
+        return int(csrf_token == "matching-child-csrf")
+
+    async def db_override():
+        yield db
+
+    monkeypatch.setattr("app.middleware.auth_stub.resolve_session", unexpected_resolve)
+    monkeypatch.setattr(auth, "revoke_session_family_for_logout", revoke)
+
+    app = FastAPI()
+    install_error_handlers(app)
+    app.dependency_overrides[auth.get_logout_db_session] = db_override
+    app.dependency_overrides[auth.get_settings] = lambda: settings
+    app.include_router(auth.router, prefix="/api/v1")
+    app.add_middleware(AuthStubMiddleware, settings=settings)
+    client = TestClient(app, base_url="https://mata.example.com")
+    cookie_name = session_cookie_name(settings)
+    approved_origin = {"Origin": "https://mata.example.com"}
+
+    client.cookies.set(cookie_name, "active-child-cookie")
+    stale_proof = client.post(
+        "/api/v1/auth/logout",
+        headers={
+            **approved_origin,
+            settings.csrf_header_name: "stale-parent-csrf",
+        },
+    )
+    client.cookies.set(cookie_name, "active-child-cookie")
+    matching_proof = client.post(
+        "/api/v1/auth/logout",
+        headers={
+            **approved_origin,
+            settings.csrf_header_name: "matching-child-csrf",
+        },
+    )
+    client.cookies.set(cookie_name, "active-child-cookie")
+    bearer = client.post(
+        "/api/v1/auth/logout",
+        headers={
+            **approved_origin,
+            "Authorization": "Bearer browser-token",
+            settings.csrf_header_name: "matching-child-csrf",
+        },
+    )
+    unapproved_origin = client.post(
+        "/api/v1/auth/logout",
+        headers={
+            "Origin": "https://preview-attacker.example.com",
+            "Authorization": "Bearer browser-token",
+        },
+    )
+
+    assert stale_proof.status_code == 200
+    assert stale_proof.json() == {"success": True}
+    assert "Max-Age=0" in stale_proof.headers["set-cookie"]
+    assert matching_proof.status_code == 200
+    assert matching_proof.json() == {"success": True}
+    assert "Max-Age=0" in matching_proof.headers["set-cookie"]
+    assert bearer.status_code == 401
+    assert unapproved_origin.status_code == 403
+    assert resolve_calls == []
+    assert revoke_calls == [
+        ("active-child-cookie", "stale-parent-csrf"),
+        ("active-child-cookie", "matching-child-csrf"),
+    ]
+    assert db.commits == 2
 
 
 def test_safe_get_hydrates_cookie_without_csrf_or_session_touch(
@@ -696,8 +876,42 @@ def test_unsafe_cookie_request_requires_matching_csrf(
     assert missing.status_code == 403
     assert malformed.status_code == 403
     assert accepted.status_code == 200
-    assert touches == [True, True, True]
+    assert touches == [False, False, False, True]
     assert csrf_values == [None, "wrong", "valid-csrf-token"]
+
+
+@pytest.mark.parametrize(
+    ("touch_result", "touch_error"),
+    [
+        (False, None),
+        (True, RuntimeError("post-response touch unavailable")),
+    ],
+    ids=["invalidated", "store-error"],
+)
+def test_failed_post_response_touch_replaces_success_with_unauthorized(
+    monkeypatch: pytest.MonkeyPatch,
+    touch_result: bool,
+    touch_error: Exception | None,
+) -> None:
+    client, touches, csrf_values = _cookie_middleware_client(
+        monkeypatch,
+        resolved_session=_active_session(),
+        touch_result=touch_result,
+        touch_error=touch_error,
+    )
+    client.cookies.set("mata_session_local", "opaque-session-token")
+
+    response = client.post(
+        "/api/v1/protected",
+        headers={"X-CSRF-Token": "valid-csrf-token"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error_code"] == ErrorCode.UNAUTHORIZED.value
+    assert "Max-Age=0" in response.headers["set-cookie"]
+    assert response.json() != {"role": "admin"}
+    assert touches == [False, True]
+    assert csrf_values == ["valid-csrf-token"]
 
 
 def test_unknown_session_and_session_store_failure_are_controlled_and_clear_cookie(

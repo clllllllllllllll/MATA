@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -23,10 +22,15 @@ from app.services.app_sessions import (
     AppSessionInvalidError,
     create_session,
     csrf_for_session_token,
-    revoke_session_family,
+    revoke_session_family_for_logout,
     rotate_session,
+    session_needs_rotation,
 )
-from app.services.session_transport import clear_session_cookie, set_session_cookie
+from app.services.session_transport import (
+    clear_session_cookie,
+    session_cookie_name,
+    set_session_cookie,
+)
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -104,7 +108,6 @@ async def login(
         response,
         settings=settings,
         session_token=created.session_token,
-        absolute_expires_at=created.session.absolute_expires_at,
     )
     return SessionResponse(
         user=authenticated.user,
@@ -138,9 +141,10 @@ async def me(
         # Explicit local/demo and emergency bearer compatibility only.
         return user
     csrf_token = csrf_for_session_token(raw_session_token, settings)
-    refresh_required = (
-        datetime.now(UTC) - app_session.created_at
-    ).total_seconds() >= settings.session_rotation_seconds
+    refresh_required = session_needs_rotation(
+        app_session,
+        settings=settings,
+    )
     return SessionResponse(
         user=user,
         csrf_token=csrf_token,
@@ -165,6 +169,14 @@ async def refresh_session(
             error_code=ErrorCode.UNAUTHORIZED.value,
         )
     try:
+        # Read the response identity while the parent-bound RLS context is
+        # still valid. Rotation revokes the parent, so any later protected
+        # query in this transaction must fail closed.
+        user = await auth_service.get_current_identity(
+            db,
+            role=identity.role,
+            subject_id=_parse_subject(identity.subject_id),
+        )
         rotated = await rotate_session(
             db,
             settings,
@@ -181,17 +193,11 @@ async def refresh_session(
         )
         clear_session_cookie(error_response, settings=settings)
         return error_response
-    user = await auth_service.get_current_identity(
-        db,
-        role=identity.role,
-        subject_id=_parse_subject(identity.subject_id),
-    )
     await db.commit()
     set_session_cookie(
         response,
         settings=settings,
         session_token=rotated.session_token,
-        absolute_expires_at=rotated.session.absolute_expires_at,
     )
     return SessionResponse(
         user=user,
@@ -207,9 +213,15 @@ async def logout(
     db: AsyncSession = Depends(get_logout_db_session),
     settings: Settings = Depends(get_settings),
 ) -> LogoutResponse:
-    app_session = getattr(request.state, "app_session", None)
-    if app_session is not None:
-        await revoke_session_family(db, app_session, reason="logout")
+    raw_session_token = request.cookies.get(session_cookie_name(settings))
+    if raw_session_token is not None:
+        await revoke_session_family_for_logout(
+            db,
+            settings,
+            session_token=raw_session_token,
+            csrf_token=request.headers.get(settings.csrf_header_name),
+            reason="logout",
+        )
         await db.commit()
     clear_session_cookie(response, settings=settings)
     return LogoutResponse(success=True)

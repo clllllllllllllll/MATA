@@ -4,6 +4,23 @@ Status: locally implemented and verified against disposable PostgreSQL on 2026-0
 
 **PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED**
 
+## Later session-lifecycle addendum
+
+This document preserves the H-E point-in-time evidence at revision
+`20260726_000026` and database `mata_phase5b_verify_5bhe`. The focused
+descendant in `docs/5b_h_session_lifecycle_assurance.md` adds revision
+`20260727_000027` on a new disposable database. It preserves the 34-table,
+84-policy, non-owner/NOBYPASSRLS posture while:
+
+- replacing restricted full-row session helper grants with minimal lifecycle
+  wrappers;
+- adding atomic interval-gated touch;
+- keeping stored token/CSRF digests and expiry fields private;
+- denying signed RLS context after the backing session expires or is revoked.
+
+Do not rewrite the H-E revision, counts, commands, incident record, or evidence
+below as session-lifecycle evidence.
+
 This report records the bounded Phase 5B-H-E implementation on
 `CL/5b-h-e-full-rls`. All accepted H-E database evidence used only the named
 local disposable database `mata_phase5b_verify_5bhe`. No live Supabase or
@@ -127,9 +144,15 @@ fresh reinstallation after each new root transaction. A stale SQLAlchemy
 object or pooled connection cannot preserve a prior request's authority.
 
 Normal protected reads take the reviewed shared session-family advisory lock.
-Refresh and logout use an exclusive protected-session dependency and follow
-the subject -> family -> row lock order. This avoids upgrading a shared
-family lock within the same production transaction.
+Refresh uses an exclusive protected-session dependency and follows the
+subject -> family -> row lock order. Revision `20260727_000027` moves logout
+to an auth-only, token/CSRF-digest termination helper instead of hydration or
+signed-context installation. That helper derives the family server-side. An
+active proof must be before both deadlines; a parent revoked specifically as
+`rotated` remains termination-only proof until the immutable family absolute
+deadline even if its superseded idle deadline has passed. The helper takes the
+same lock order, so a refresh that commits first cannot escape a logout already
+holding the original proof.
 
 ## Reviewed helper boundary
 
@@ -170,6 +193,24 @@ table grant:
 No speculative helper was added for a hypothetical future workflow. A future
 operation must first demonstrate a concrete policy or workflow requirement,
 then receive a separately reviewed helper or policy change.
+
+### Revision `20260727_000027` lifecycle ACL delta
+
+The current lifecycle revision owns exactly eight minimal helpers: three
+auth-only issuance wrappers, three shared resolve/touch/CSRF helpers, one
+runtime-only rotation helper, and the auth-only
+`revoke_app_session_family_for_logout(bytea,bytea,text)` helper. The runtime
+capability has no execute grant on the logout helper, which returns only an
+affected-row count and grants no hydration, context, touch, rotation, or
+refresh authority. Cleanup also preserves a `rotated` parent as termination
+proof until the immutable family absolute deadline without deleting a valid
+child.
+
+The exact catalogue table below is retained as historical
+post-`20260726_000026` evidence. Its total function/executable counts are not a
+claim about the later `20260727_000027` catalogue; the lifecycle delta above
+and the dedicated lifecycle assurance evidence supersede only the session
+helper subset.
 
 ## Exact local role, RLS and grant catalogue
 
@@ -446,10 +487,16 @@ Before application traffic is enabled:
 FastAPI startup attestation checks login and capability attributes,
 membership and `ADMIN OPTION`, forbidden cross-capability access, object
 ownership, grant options, exact table/column/sequence/function privileges,
-helper search paths, PUBLIC/browser reachability, schema CREATE, `row_security`
-and the complete 34-table/84-policy catalogue. Startup fails closed on a
-deviation. The focused negative test injected 11 different privilege defects
-transactionally; every injection was rejected and rolled back.
+executable-helper `SECURITY DEFINER` posture, schema ownership and fixed search
+paths, PUBLIC/browser reachability, schema CREATE, `row_security`, and the
+named 34-table/84-policy structural catalogue. Policy attestation also rejects
+the wrong role/permissiveness, command-inappropriate `USING`/`WITH CHECK`
+shape, or a predicate that no longer uses the reviewed `mata_rls` boundary.
+Exact predicate-expression review remains part of migration-source and
+restricted catalogue verification. Startup fails closed on the structural
+deviations above. The focused negative test injects 16 different privilege,
+helper-posture, and policy defects transactionally; every injection must be
+rejected and rolled back.
 
 For local verification, set `SYNC_DATABASE_URL` only to an owner URL whose
 database name is exactly `mata_phase5b_verify_5bhe`, then run from `backend`:
@@ -485,7 +532,7 @@ production change window.
 | Foundation, helper integration, direct policy matrix and PostgreSQL security gate | 45 passed in 56.26s |
 | Direct role matrix | Master, Programme Coordinator, Secretary, native Resident, Non-NHG Resident and no-context isolation passed |
 | Startup attestation baseline | Passed |
-| Startup attestation negative privilege injections | 11/11 rejected as expected |
+| Startup attestation negative catalogue/privilege injections | 16/16 rejected as expected |
 | H-E migration lifecycle | 1 passed, 1 existing Alembic deprecation warning, 20.60s |
 | Named `000026 -> 000025 -> 000026` replay | Both transitions exited 0; current revision `20260726_000026` |
 | External Resident PostgreSQL workflows | 42 passed |

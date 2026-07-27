@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
+import { captureAuthSessionFence } from '../../api/auth'
 import { listProgrammes, type Programme } from '../../api/programmes'
 import { uploadWorkbook } from '../../api/uploads'
 import { IconCalendar, IconFile, IconGrid } from '../../components/icons'
@@ -133,6 +134,10 @@ export const AdminUploadPage = () => {
   const selectedReportingPeriodId = reportingPeriodSelection.reportingPeriodId
 
   const uploadOne = async (uploadType: UploadType, file: File) => {
+    const authSessionFence = captureAuthSessionFence()
+    if (!authSessionFence) {
+      throw new Error('No active authenticated session.')
+    }
     const submitted = await submitAdminUpload({
       uploadType,
       file,
@@ -149,7 +154,8 @@ export const AdminUploadPage = () => {
       )
     }
 
-    addUploadResult({
+    const uploadResult = addUploadResult({
+      authSessionFence,
       uploadType,
       response: submitted.response,
       filename: file.name,
@@ -157,6 +163,9 @@ export const AdminUploadPage = () => {
       reportingPeriodLabel: reportingPeriodSelection.period?.label ?? reportingPeriodLabel,
       programmeCode: uploadType === 'ttf' ? selectedProgrammeCode : undefined,
     })
+    if (!uploadResult) {
+      throw new Error('Authenticated session changed while the upload was in progress.')
+    }
 
     return submitted.response
   }

@@ -1,8 +1,10 @@
 # Auth and Account Contract
 
-Status: Phase 5B-H-E locally implemented and verified, July 27, 2026. Deployment verification remains pending.
+Status: Phase 5B-H-E locally implemented and verified; focused session
+lifecycle assurance implemented locally on July 27, 2026. Deployment
+verification remains pending.
 
-This document defines the current auth/account contract. Phase 5B-H-D replaced normal browser bearer transport with backend-owned opaque PostgreSQL sessions, a host-only cookie, and synchronizer CSRF. Phase 5B-H-E adds the restricted non-owner PostgreSQL runtime, a separate auth-helper boundary, signed transaction-local identity context, complete application-table RLS, and exact grants. Historical implementation entries below are retained as an audit trail; where they describe browser Supabase or resident bearer tokens, the H-D/H-E contract supersedes them.
+This document defines the current auth/account contract. Phase 5B-H-D replaced normal browser bearer transport with backend-owned opaque PostgreSQL sessions, a host-only cookie, and synchronizer CSRF. Phase 5B-H-E adds the restricted non-owner PostgreSQL runtime, a separate auth-helper boundary, signed transaction-local identity context, complete application-table RLS, and exact grants. Revision `20260727_000027` adds absolute-expiry assurance, interval-gated activity, minimal session helpers, and expiry-aware RLS context. Historical implementation entries below are retained as an audit trail; where they describe browser Supabase or resident bearer tokens, the H-D/H-E/current lifecycle contract supersedes them.
 
 References checked:
 - `AGENTS.md`
@@ -22,12 +24,21 @@ References checked:
 - The raw session token exists only in the `HttpOnly`, production `Secure`, `SameSite=Strict`, host-only `__Host-mata_session` cookie. Only keyed token and CSRF digests are stored in `app_sessions`.
 - `POST /auth/login`, `GET /auth/me`, `POST /auth/session/refresh`, and `POST /auth/logout` are the session lifecycle endpoints.
 - Session responses contain `user`, `csrf_token`, and `session_refresh_required`; they do not return a normal-production access token.
+- The effective server-side expiry is the earlier of `idle_expires_at` and the
+  immutable family `absolute_expires_at`; equality is expired. Refresh and
+  repeated rotation extend neither the parent's current idle deadline nor the
+  family absolute deadline, and full login is required after either expiry.
+- Only a successful 2xx protected unsafe request qualifies for interval-gated
+  idle activity after CSRF and business validation. Safe reads, polling,
+  failed requests, refresh, and logout do not slide idle expiry.
 - Protected unsafe methods require the current `X-CSRF-Token`; the frontend holds it only in module memory and sends credentials through the relative same-origin `/api/v1` path. Intentionally unauthenticated login and registration mutations do not require an existing-session CSRF token.
-- Protected requests reload the current subject row and compare `session_generation`. Ordinary role/scope/active-state changes atomically increment generation and revoke sessions. Password reset is deliberately two-stage: the issuance block, generation fence, and revocation commit before the upstream credential call; successful completion clears the block in a second transaction, while failure leaves issuance blocked for authorized retry.
+- Protected requests reload the current subject row and compare `session_generation`. Ordinary role/scope/active-state changes atomically increment generation and revoke sessions. For a permitted self authorization change, the planned final state is audited before mutation while the request-start actor remains valid; subject invalidation is then the final protected statement in that transaction. Self-change audit metadata marks the revoked-session count as non-exact, while non-self changes retain the exact count. Password reset is deliberately two-stage: the issuance block, generation fence, and revocation commit before the upstream credential call; successful completion clears the block in a second transaction, while failure leaves issuance blocked for authorized retry.
 - Rotation locks subject, family, and the database session row in a fixed order. `SELECT ... FOR UPDATE` plus `populate_existing=True` prevents stale SQLAlchemy identity-map state from bypassing the locked row.
+- Logout uses an auth-only termination helper with keyed token and CSRF digests. It derives the family server-side. Active proof must be before both deadlines; a parent revoked specifically as `rotated` remains termination-only proof until the immutable family absolute deadline even after its superseded idle deadline. Refresh-first races therefore still terminate the replacement without granting hydration, signed-context, touch, rotation, or refresh authority.
+- Cleanup retains a `rotated` parent as bounded logout proof until the immutable family absolute deadline, even after its superseded idle deadline or under shorter retention, and never makes a still-valid unrevoked child eligible.
 - `AUTH_TRANSPORT=bearer_compat` is emergency rollback only. Production also requires the explicit rollback flag and a minimum 32-byte resident signing secret.
-- Migration `20260722_000024` revokes public/browser-role object privileges. Migrations `20260726_000025` and `20260726_000026` add the H-E role/context/helper foundation and full policy/grant cutover.
-- Detailed implementation and evidence: `docs/5b_h_d_production_security_implementation.md` and `docs/5b_h_e_full_rls_implementation.md`.
+- Migration `20260722_000024` revokes public/browser-role object privileges. Migrations `20260726_000025` and `20260726_000026` add the H-E role/context/helper foundation and full policy/grant cutover. Migration `20260727_000027` narrows the callable session helpers and makes signed RLS context reject an expired backing session.
+- Detailed implementation and evidence: `docs/5b_h_d_production_security_implementation.md`, `docs/5b_h_e_full_rls_implementation.md`, and `docs/5b_h_session_lifecycle_assurance.md`.
 
 PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
 
@@ -41,9 +52,11 @@ Normal application database execution is separated into three credentials:
 
 The two capability groups are stable `NOLOGIN`, `NOINHERIT`, non-owner, `NOSUPERUSER`, `NOBYPASSRLS`, `NOCREATEDB`, `NOCREATEROLE`, and `NOREPLICATION` roles. The application login members may `INHERIT` exactly their assigned capability, but startup fails closed if either credential is privileged, owns application objects, can assume the other capability, can delegate grants/membership, or reaches a different database.
 
-Before a protected root transaction performs ordinary application queries, PostgreSQL reloads the application session and current subject and installs signed transaction-local context for subject type/id, app role, explicit admin level, normalized programme scope, posting code, application-session id, and authorization fingerprint. The signature is bound to the transaction, backend process, database, and session login. A SQLAlchemy transaction hook reinstalls and revalidates context after an in-request commit or rollback; transaction end clears cached context and expires ORM identity-map state.
+Before a protected root transaction performs ordinary application queries, PostgreSQL reloads the application session and current subject and installs signed transaction-local context for subject type/id, app role, explicit admin level, normalized programme scope, posting code, application-session id, and authorization fingerprint. The signature is bound to the transaction, backend process, database, and session login. Its verification also requires the backing session to remain unrevoked and strictly before both deadlines. A SQLAlchemy transaction hook reinstalls and revalidates context after an in-request commit or rollback; transaction end clears cached context and expires ORM identity-map state.
 
 All 34 application tables have RLS enabled in the local implementation. Eighty-four policies target only `mata_app_runtime`. `app_sessions`, `rate_limit_buckets`, `programme_institution_posting_map`, `surplus_ledger`, `period_snapshots`, and `clawback_records` have no direct runtime table privilege and are reachable only through explicitly reviewed helpers where a helper exists. `mata_auth_internal` has no direct application-table or sequence privileges. `PUBLIC`, browser roles, and `service_role` receive no application-table or H-E helper access.
+
+Revision `20260727_000027` owns exactly eight minimal lifecycle helpers: three auth-only issuance wrappers, three shared resolve/touch/CSRF helpers, one runtime-only rotation helper, and the auth-only `revoke_app_session_family_for_logout(bytea,bytea,text)` helper. Runtime has no execute grant on the logout helper; the helper is termination-only and returns no identity or authorization context. Logout normally requires token and CSRF digests from one active or rotation-revoked row. It may also consume an active-child-token/rotated-ancestor-CSRF pair only when both rows have the same immutable subject, generation, family, and authentication source and remain within the required deadlines. Callers never supply a subject, row, or family identifier.
 
 FastAPI role/scope dependencies remain mandatory. RLS is defense in depth and must not be used to weaken HTTP-layer authorization.
 
@@ -265,7 +278,10 @@ Supabase Auth is the staff credential authority, not the browser application-ses
 
 - Supabase `user_metadata` and arbitrary JWT claims are never MATA authorization sources.
 - Backend maps the authenticated Supabase subject to `users.supabase_user_id`, then reloads role, admin level, programme scope, posting code, active state, issuance block, and session generation.
-- The browser receives only the MATA `HttpOnly` session cookie plus non-secret session-response state.
+- The browser receives only the MATA `HttpOnly` browser-session cookie plus
+  non-secret session-response state. The cookie intentionally has no
+  persistent `Max-Age` or `Expires`; PostgreSQL idle/absolute deadlines remain
+  authoritative.
 - Backend authorization validates role and scope before database work.
 - H-E RLS uses only trusted backend-derived, database-revalidated transaction-local context and grants browser roles no application-table access.
 - Ordinary application SQL uses the restricted runtime credential. The separate auth credential can execute only its exact reviewed helper set, and the migration/ownership credential is not an application credential.
@@ -333,13 +349,21 @@ SUPABASE_URL=<supabase project url>
 SUPABASE_PUBLISHABLE_KEY=<backend publishable key>
 SUPABASE_SERVICE_ROLE_KEY=<server-only key>
 MATA_SESSION_HASH_KEY=<server-only random key of at least 32 characters>
+MATA_STAFF_IDLE_TIMEOUT_SECONDS=<approved staff idle seconds>
+MATA_STAFF_ABSOLUTE_TIMEOUT_SECONDS=<approved staff absolute seconds>
+MATA_RESIDENT_IDLE_TIMEOUT_SECONDS=<approved Resident idle seconds>
+MATA_RESIDENT_ABSOLUTE_TIMEOUT_SECONDS=<approved Resident absolute seconds>
+MATA_SESSION_ROTATION_SECONDS=<approved rotation seconds>
+MATA_SESSION_TOUCH_INTERVAL_SECONDS=<approved touch interval seconds>
+MATA_SESSION_CLEANUP_RETENTION_SECONDS=<approved retention seconds>
+MATA_SESSION_CLEANUP_BATCH_SIZE=<approved bounded batch>
 MATA_ALLOWED_HOSTS=<exact deployment host>
 CORS_ORIGINS=<production frontend origin>
 RATE_LIMIT_STORE=postgres
 RATE_LIMIT_HASH_SECRET=<server-only random key of at least 32 characters>
 ```
 
-The runtime, auth-helper, and migration URLs must use distinct credentialed login roles while naming the same PostgreSQL host, port, and database. The runtime and auth groups are stable capability names, not login credentials. Production configuration fails if RLS is disabled, cookie transport is not selected, an H-E URL is local or malformed, the endpoints differ, or any two database URLs use the same username.
+The runtime, auth-helper, and migration URLs must use distinct credentialed login roles while naming the same PostgreSQL host, port, and database. The runtime and auth groups are stable capability names, not login credentials. Production configuration fails if RLS is disabled, cookie transport is not selected, an H-E URL is local or malformed, the endpoints differ, any two database URLs use the same username, or lifecycle settings violate their ordering/helper bounds. Lifecycle values require organisational approval; repository defaults are examples.
 
 Frontend:
 

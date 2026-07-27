@@ -25,7 +25,7 @@ from app.config import Settings
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
 VERSIONS_DIR = BACKEND_ROOT / "alembic" / "versions"
-H_E_DISPOSABLE_DATABASE_NAME = "mata_phase5b_verify_5bhe"
+H_E_DISPOSABLE_DATABASE_NAME = "mata_phase5b_session_lifecycle_verify"
 _H_E_QUOTED_DATABASE_NAME = f'"{H_E_DISPOSABLE_DATABASE_NAME}"'
 _LOCAL_POSTGRES_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _SYNC_POSTGRES_DRIVERS = frozenset(
@@ -698,7 +698,7 @@ def _assert_cutover_revision_state(
         )
     )
 
-    if revision == "20260726_000026":
+    if revision in {"20260726_000026", "20260727_000027"}:
         assert relation_state["users"][0] is True
         assert relation_state["users"][2] > 0
         assert relation_state["programmes"][0] is True
@@ -712,6 +712,120 @@ def _assert_cutover_revision_state(
     # 000026 downgrade must preserve that earlier hardening.
     assert relation_state["programmes"] == (True, False, 0)
     assert helper_exists is False
+
+
+def _assert_session_lifecycle_helper_state(
+    connection: Connection,
+    *,
+    revision: str,
+) -> None:
+    new_helper_access = {
+        (
+            "issue_staff_app_session_lifecycle("
+            "uuid,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)"
+        ): (False, True),
+        (
+            "issue_resident_app_session_lifecycle("
+            "text,text,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)"
+        ): (False, True),
+        (
+            "issue_external_resident_app_session_lifecycle("
+            "text,text,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)"
+        ): (False, True),
+        "resolve_app_session_lifecycle(bytea,integer)": (True, True),
+        "touch_app_session_lifecycle(bytea,uuid,integer,integer)": (
+            True,
+            True,
+        ),
+        "validate_app_session_csrf(bytea,uuid,bytea)": (True, True),
+        (
+            "rotate_app_session_lifecycle("
+            "bytea,uuid,uuid,bytea,bytea,integer,bytea)"
+        ): (True, False),
+        "revoke_app_session_family_for_logout(bytea,bytea,text)": (
+            False,
+            True,
+        ),
+    }
+    retired_helper_access = {
+        (
+            "issue_staff_app_session("
+            "uuid,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)"
+        ): (False, True),
+        (
+            "issue_resident_app_session("
+            "text,text,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)"
+        ): (False, True),
+        (
+            "issue_external_resident_app_session("
+            "text,text,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)"
+        ): (False, True),
+        "resolve_app_session(bytea,boolean,integer)": (True, True),
+        (
+            "rotate_app_session("
+            "bytea,uuid,uuid,bytea,bytea,integer,bytea)"
+        ): (True, False),
+    }
+
+    all_signatures = list(new_helper_access | retired_helper_access)
+    rows = {
+        str(row["signature"]): row
+        for row in connection.execute(
+            text(
+                """
+                SELECT
+                    requested.signature,
+                    procedure.oid IS NOT NULL AS helper_exists,
+                    COALESCE(
+                        has_function_privilege(
+                            'mata_app_runtime',
+                            procedure.oid,
+                            'EXECUTE'
+                        ),
+                        false
+                    ) AS runtime_execute,
+                    COALESCE(
+                        has_function_privilege(
+                            'mata_auth_internal',
+                            procedure.oid,
+                            'EXECUTE'
+                        ),
+                        false
+                    ) AS auth_execute
+                FROM unnest(CAST(:signatures AS text[]))
+                    AS requested(signature)
+                LEFT JOIN pg_proc AS procedure
+                  ON procedure.oid = to_regprocedure(
+                      'mata_rls.' || requested.signature
+                  )
+                ORDER BY requested.signature
+                """
+            ),
+            {"signatures": all_signatures},
+        ).mappings()
+    }
+
+    assert revision in {"20260726_000026", "20260727_000027"}
+    for signature, expected_access in retired_helper_access.items():
+        row = rows[signature]
+        assert row["helper_exists"] is True
+        assert (row["runtime_execute"], row["auth_execute"]) == (
+            (False, False)
+            if revision == "20260727_000027"
+            else expected_access
+        )
+
+    for signature, expected_access in new_helper_access.items():
+        row = rows[signature]
+        if revision == "20260727_000027":
+            assert row["helper_exists"] is True
+            assert (row["runtime_execute"], row["auth_execute"]) == (
+                expected_access
+            )
+        else:
+            assert row["helper_exists"] is False
+            assert row["runtime_execute"] is False
+            assert row["auth_execute"] is False
 
 
 def _cutover_data_snapshot(
@@ -830,6 +944,137 @@ def test_full_rls_cutover_clean_populated_downgrade_and_reupgrade_lifecycle(
             programme_id=programme_id,
             user_id=user_id,
         ) == populated_snapshot
+        _assert_session_lifecycle_helper_state(
+            connection,
+            revision="20260726_000026",
+        )
+
+    session_id = uuid4()
+    token_digest = uuid4().bytes + uuid4().bytes
+    csrf_digest = uuid4().bytes + uuid4().bytes
+    with harness.engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                WITH observed AS MATERIALIZED (
+                    SELECT clock_timestamp() AS created_at
+                )
+                INSERT INTO app_sessions (
+                    id,
+                    token_digest,
+                    subject_type,
+                    subject_id,
+                    subject_session_generation,
+                    session_family_id,
+                    auth_source,
+                    csrf_token_digest,
+                    created_at,
+                    last_seen_at,
+                    idle_expires_at,
+                    absolute_expires_at
+                )
+                SELECT
+                    :session_id,
+                    :token_digest,
+                    'staff',
+                    :user_id,
+                    0,
+                    :session_id,
+                    'supabase_staff',
+                    :csrf_digest,
+                    observed.created_at,
+                    observed.created_at,
+                    observed.created_at + interval '1 hour',
+                    observed.created_at + interval '8 hours'
+                FROM observed
+                """
+            ),
+            {
+                "session_id": session_id,
+                "token_digest": token_digest,
+                "user_id": user_id,
+                "csrf_digest": csrf_digest,
+            },
+        )
+        session_snapshot = tuple(
+            connection.execute(
+                text(
+                    """
+                    SELECT
+                        id,
+                        token_digest,
+                        subject_type,
+                        subject_id,
+                        subject_session_generation,
+                        session_family_id,
+                        auth_source,
+                        csrf_token_digest,
+                        created_at,
+                        last_seen_at,
+                        idle_expires_at,
+                        absolute_expires_at,
+                        revoked_at,
+                        revoked_reason,
+                        rotated_from_session_id,
+                        user_agent_hash
+                    FROM app_sessions
+                    WHERE id = :session_id
+                    """
+                ),
+                {"session_id": session_id},
+            ).one()
+        )
+
+    _run_success(harness, "upgrade", "20260727_000027")
+    with harness.engine.connect() as connection:
+        _assert_cutover_revision_state(
+            connection,
+            revision="20260727_000027",
+        )
+        _assert_session_lifecycle_helper_state(
+            connection,
+            revision="20260727_000027",
+        )
+        assert tuple(
+            connection.execute(
+                text("SELECT * FROM app_sessions WHERE id = :session_id"),
+                {"session_id": session_id},
+            ).one()
+        ) == session_snapshot
+
+    _run_success(harness, "downgrade", "20260726_000026")
+    with harness.engine.connect() as connection:
+        _assert_cutover_revision_state(
+            connection,
+            revision="20260726_000026",
+        )
+        _assert_session_lifecycle_helper_state(
+            connection,
+            revision="20260726_000026",
+        )
+        assert tuple(
+            connection.execute(
+                text("SELECT * FROM app_sessions WHERE id = :session_id"),
+                {"session_id": session_id},
+            ).one()
+        ) == session_snapshot
+
+    _run_success(harness, "upgrade", "20260727_000027")
+    with harness.engine.connect() as connection:
+        _assert_cutover_revision_state(
+            connection,
+            revision="20260727_000027",
+        )
+        _assert_session_lifecycle_helper_state(
+            connection,
+            revision="20260727_000027",
+        )
+        assert tuple(
+            connection.execute(
+                text("SELECT * FROM app_sessions WHERE id = :session_id"),
+                {"session_id": session_id},
+            ).one()
+        ) == session_snapshot
 
     _run_success(harness, "downgrade", "20260726_000025")
     with harness.engine.connect() as connection:
@@ -854,6 +1099,28 @@ def test_full_rls_cutover_clean_populated_downgrade_and_reupgrade_lifecycle(
             programme_id=programme_id,
             user_id=user_id,
         ) == populated_snapshot
+
+        _assert_session_lifecycle_helper_state(
+            connection,
+            revision="20260726_000026",
+        )
+
+    _run_success(harness, "upgrade", "20260727_000027")
+    with harness.engine.connect() as connection:
+        _assert_cutover_revision_state(
+            connection,
+            revision="20260727_000027",
+        )
+        _assert_session_lifecycle_helper_state(
+            connection,
+            revision="20260727_000027",
+        )
+        assert tuple(
+            connection.execute(
+                text("SELECT * FROM app_sessions WHERE id = :session_id"),
+                {"session_id": session_id},
+            ).one()
+        ) == session_snapshot
 
 
 def test_external_registration_migration_lifecycle_on_clean_postgres(

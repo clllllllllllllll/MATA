@@ -195,7 +195,7 @@ async def _issue_context(
         issue_sql = text(
             """
             SELECT id
-            FROM mata_rls.issue_staff_app_session(
+            FROM mata_rls.issue_staff_app_session_lifecycle(
                 CAST(:subject_id AS uuid),
                 CAST(:supabase_user_id AS uuid),
                 CAST(:session_generation AS bigint),
@@ -220,9 +220,9 @@ async def _issue_context(
         assert subject_type in {"resident", "external_resident"}
         assert normalized_mcr is not None
         function_name = (
-            "issue_resident_app_session"
+            "issue_resident_app_session_lifecycle"
             if subject_type == "resident"
-            else "issue_external_resident_app_session"
+            else "issue_external_resident_app_session_lifecycle"
         )
         issue_sql = text(
             f"""
@@ -260,10 +260,9 @@ async def _issue_context(
                     """
                     SELECT id, subject_type, subject_id,
                            authorization_fingerprint
-                    FROM mata_rls.resolve_app_session(
+                    FROM mata_rls.resolve_app_session_lifecycle(
                         CAST(:token_digest AS bytea),
-                        false,
-                        0
+                        3600
                     )
                     """
                 ),
@@ -291,7 +290,7 @@ async def _issue_context(
 async def policy_harness(
     rls_postgres_harness: RlsPostgresHarness,
 ) -> AsyncIterator[RlsPostgresHarness]:
-    assert rls_postgres_harness.revision == "20260726_000026"
+    assert rls_postgres_harness.revision == "20260727_000027"
     yield rls_postgres_harness
 
 

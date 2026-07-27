@@ -142,7 +142,7 @@ async def get_db_session(request: Request) -> AsyncIterator[AsyncSession]:
 async def get_exclusive_db_session(
     request: Request,
 ) -> AsyncIterator[AsyncSession]:
-    """Use for refresh/logout paths that must lock the family exclusively."""
+    """Use for protected mutations that must lock the family exclusively."""
 
     async with _protected_database_session(
         request,
@@ -154,17 +154,15 @@ async def get_exclusive_db_session(
 async def get_logout_db_session(
     request: Request,
 ) -> AsyncIterator[AsyncSession]:
-    """Keep no/invalid-cookie logout idempotent; lock valid families exclusively."""
+    """Use the narrow auth boundary for idempotent family revocation.
 
-    if getattr(request.state, "app_session", None) is None:
-        async with AuthSessionLocal() as session:
-            yield session
-        return
+    A refresh that commits after middleware authentication revokes the parent
+    session, so installing a parent-bound RLS context here would make logout
+    lose that race before it can revoke the newly created child.
+    """
 
-    async with _protected_database_session(
-        request,
-        lock_mode="exclusive",
-    ) as session:
+    del request
+    async with AuthSessionLocal() as session:
         yield session
 
 

@@ -1,6 +1,11 @@
 ﻿import { useEffect, useRef, useState } from 'react'
 import type { FormEvent, PropsWithChildren } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
+import {
+  captureAuthSessionFence,
+  isAuthSessionFenceCurrent,
+  isAuthSessionUpdateCompletionCurrent,
+} from '../api/authSessionStore'
 import { breadcrumbMap, navItems, roleOptions } from '../config/navigation'
 import { useAuth } from '../context/useAuth'
 import { useAppState } from '../context/useAppState'
@@ -38,6 +43,10 @@ export const AppShell = ({ children }: PropsWithChildren) => {
   const [settingsName, setSettingsName] = useState('')
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsError, setSettingsError] = useState<string | null>(null)
+  const [settingsSessionFence, setSettingsSessionFence] = useState<
+    ReturnType<typeof captureAuthSessionFence>
+  >(null)
+  const settingsOperationRef = useRef(0)
   const roleMenuRef = useRef<HTMLDivElement | null>(null)
   const activeRole = identity?.role ?? role
   const isMobileNavOpen = mobileNavOpenPath === location.pathname
@@ -138,9 +147,23 @@ export const AppShell = ({ children }: PropsWithChildren) => {
     if (!isStaffIdentity) {
       return
     }
+    const sessionFence = captureAuthSessionFence()
+    if (!sessionFence) {
+      return
+    }
+    settingsOperationRef.current += 1
+    setSettingsSessionFence(sessionFence)
     setSettingsName(identity?.currentStaffActorName ?? '')
+    setSettingsSaving(false)
     setSettingsError(null)
     setSettingsOpen(true)
+  }
+
+  const closeSettings = () => {
+    settingsOperationRef.current += 1
+    setSettingsOpen(false)
+    setSettingsSaving(false)
+    setSettingsError(null)
   }
 
   const handleSettingsSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -151,17 +174,40 @@ export const AppShell = ({ children }: PropsWithChildren) => {
       return
     }
 
+    const operationFence = captureAuthSessionFence()
+    if (!operationFence) {
+      setSettingsError('Your session is no longer active.')
+      return
+    }
+    const operationId = settingsOperationRef.current + 1
+    settingsOperationRef.current = operationId
     setSettingsSaving(true)
     setSettingsError(null)
+    let updatedIdentity: Awaited<ReturnType<typeof updateStaffActorName>> | null = null
+    const isCompletionCurrent = () =>
+      settingsOperationRef.current === operationId
+      && (
+        updatedIdentity
+          ? isAuthSessionUpdateCompletionCurrent(operationFence, updatedIdentity)
+          : isAuthSessionFenceCurrent(operationFence)
+      )
     try {
-      await updateStaffActorName(trimmedName)
+      updatedIdentity = await updateStaffActorName(trimmedName)
+      if (!isCompletionCurrent()) {
+        return
+      }
       setSettingsOpen(false)
     } catch (error) {
+      if (!isCompletionCurrent()) {
+        return
+      }
       setSettingsError(formatUserFacingApiError(error, {
         fallbackMessage: 'Unable to save staff name.',
       }))
     } finally {
-      setSettingsSaving(false)
+      if (isCompletionCurrent()) {
+        setSettingsSaving(false)
+      }
     }
   }
 
@@ -234,10 +280,8 @@ export const AppShell = ({ children }: PropsWithChildren) => {
             aria-label="Log out"
             title="Log out"
             onClick={() => {
-              void (async () => {
-                await logout()
-                navigate('/login', { replace: true })
-              })()
+              void logout()
+              navigate('/login', { replace: true })
             }}
           >
             <span className="sidebar-footer-icon" aria-hidden="true">
@@ -281,13 +325,17 @@ export const AppShell = ({ children }: PropsWithChildren) => {
           {children ?? <Outlet />}
         </main>
       </div>
-      {settingsOpen && isStaffIdentity && identity ? (
+      {settingsOpen
+      && settingsSessionFence
+      && isAuthSessionFenceCurrent(settingsSessionFence)
+      && isStaffIdentity
+      && identity ? (
         <>
           <button
             type="button"
             className="scrim staff-settings-backdrop"
             aria-label="Close settings"
-            onClick={() => setSettingsOpen(false)}
+            onClick={closeSettings}
           />
           <section
             className="staff-settings-modal"
@@ -301,7 +349,7 @@ export const AppShell = ({ children }: PropsWithChildren) => {
                 <button
                   type="button"
                   className="button button-ghost"
-                  onClick={() => setSettingsOpen(false)}
+                  onClick={closeSettings}
                   disabled={settingsSaving}
                 >
                   <IconX size={18} />
@@ -331,7 +379,7 @@ export const AppShell = ({ children }: PropsWithChildren) => {
                 <button
                   type="button"
                   className="button button-secondary"
-                  onClick={() => setSettingsOpen(false)}
+                  onClick={closeSettings}
                   disabled={settingsSaving}
                 >
                   Cancel
@@ -347,6 +395,3 @@ export const AppShell = ({ children }: PropsWithChildren) => {
     </div>
   )
 }
-
-
-

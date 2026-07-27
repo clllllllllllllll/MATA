@@ -324,3 +324,26 @@ This appendix is the required deployed H-E contract. Every row remains `MANUAL V
 Passing local H-E suites is a prerequisite, not a substitute for this appendix. Do not claim deployed RLS or production security until the approved target satisfies it.
 
 PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
+
+## Phase 5B-H Session-Lifecycle Deployed Checks
+
+This appendix supersedes only the current lifecycle revision/settings checks;
+it does not rewrite the historical H-C/H-D/H-E results above. Every row
+requires separately authorized, sanitized evidence from the approved target.
+
+| Check | Required deployed result |
+|---|---|
+| Migration | Approved target reports exactly `20260727_000027`; output contains no connection value or secret. |
+| Timeout decision | Staff/Resident idle and absolute values, rotation, touch interval, retention, and batch size are explicitly approved and configured; repository examples are not treated as policy. |
+| Five roles | Master Admin, Programme PC, and Secretary use staff timeouts; NHG and registered Non-NHG Residents use Resident timeouts, selected from trusted subject state. |
+| Exact expiry | Equality at either deadline yields controlled `401`; recent activity cannot pass absolute expiry and full login creates the only new family deadline. |
+| Activity | Safe reads, polling, failed CSRF/business requests, refresh, and logout do not touch; a successful protected mutation touches only when the interval is due and never past absolute expiry. |
+| Rotation/CSRF | Repeated and concurrent rotation extends neither the current idle deadline nor the family absolute deadline, has at most one child per parent, and rejects the old credential/CSRF pair. |
+| Refresh-first logout | The auth-only token/CSRF-digest termination helper derives the family server-side. Active proof must be before both deadlines; a parent revoked specifically as `rotated` remains termination-only proof until the immutable family absolute deadline, even after its superseded idle deadline. The helper revokes the refreshed child when refresh commits first. Runtime cannot execute it, and it grants no hydration/context/refresh authority. |
+| Rotated-proof cleanup | Cleanup retains a `rotated` parent until the immutable family absolute deadline even when the parent's superseded idle deadline or retention interval has passed, while a still-valid unrevoked child remains ineligible for deletion. |
+| Self authorization change | A permitted self role/admin/scope/posting/deactivation change audits its planned final state before mutation and makes subject invalidation the final protected statement in the same transaction; self audit count metadata is explicitly non-exact. |
+| Cookie | Production flags remain exact; the cookie is intentionally non-persistent with no `Max-Age` or `Expires`, and controlled invalidation clears it. |
+| RLS helper boundary | Exactly eight revision-owned minimal lifecycle helpers have the reviewed ACL split; the logout helper is auth-only. Restricted helper results contain no stored token digest, CSRF digest, or expiry field; superseded full-row helpers are denied to runtime/auth/browser/PUBLIC roles. |
+| Expired context | An expired/revoked session cannot install or continue satisfying signed RLS context; commit, rollback, failed transaction, and pool-size-one reuse retain no prior identity. |
+| Frontend termination | A current-session `401` clears identity, CSRF, protected read/upload state, redirects once to login, and does not loop refresh. |
+| Logs | No cookie value, CSRF value, digest, MCR, database URL, SQL parameters, or personal row appears in logs or evidence. |

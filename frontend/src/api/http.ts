@@ -3,19 +3,23 @@ import { frontendConfig } from '../config/frontendConfig'
 import { clearMemoryCache } from '../utils/memoryReadCache'
 import {
   clearAuthSession,
+  readAuthSessionEpoch,
   readAuthSessionRevision,
   readStoredAuthSession,
 } from './authSessionStore'
 import {
   applySessionRequestHeaders,
+  handleUnauthorizedSessionResponse,
   isUnsafeRequestMethod,
-  shouldClearSessionForUnauthorized,
 } from './httpTransport'
 
 declare module 'axios' {
   interface AxiosRequestConfig {
     skipMemoryCacheClear?: boolean
+    authSessionCsrfToken?: string
+    authSessionEpoch?: string | null
     authSessionRevision?: number
+    authSessionWasAuthenticated?: boolean
   }
 }
 
@@ -68,12 +72,20 @@ const headerValue = (headers: unknown, name: string): unknown => {
 
 httpClient.interceptors.request.use((request) => {
   request.headers = request.headers ?? {}
-  request.authSessionRevision = readAuthSessionRevision()
-
   const storedSession = readStoredAuthSession()
+  request.authSessionWasAuthenticated = storedSession !== null
+  if (request.authSessionRevision === undefined) {
+    request.authSessionRevision = readAuthSessionRevision()
+  }
+  if (request.authSessionEpoch === undefined) {
+    request.authSessionEpoch = readAuthSessionEpoch()
+  }
+
+  const csrfToken = request.authSessionCsrfToken ?? storedSession?.csrfToken
+  delete request.authSessionCsrfToken
   applySessionRequestHeaders(request.headers, {
     method: request.method,
-    csrfToken: storedSession?.csrfToken,
+    csrfToken,
     stripLegacyCredentials: frontendConfig.authMode === 'supabase',
   })
 
@@ -92,16 +104,21 @@ httpClient.interceptors.response.use((response) => {
   }
   return response
 }, (error: unknown) => {
-  if (
-    axios.isAxiosError(error) &&
-    shouldClearSessionForUnauthorized(
+  if (axios.isAxiosError(error)) {
+    handleUnauthorizedSessionResponse(
       error.response?.status,
+      error.config?.authSessionWasAuthenticated,
       error.config?.authSessionRevision,
+      readStoredAuthSession() !== null,
       readAuthSessionRevision(),
+      () => {
+        clearAuthSession({
+          broadcast: 'unauthorized',
+          sessionEpoch: error.config?.authSessionEpoch,
+        })
+        clearMemoryCache()
+      },
     )
-  ) {
-    clearAuthSession()
-    clearMemoryCache()
   }
   return Promise.reject(error)
 })

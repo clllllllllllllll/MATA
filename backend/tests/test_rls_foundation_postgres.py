@@ -67,7 +67,10 @@ RUNTIME_ONLY_FUNCTIONS = frozenset(
         "mata_rls.is_native_resident(uuid)",
         "mata_rls.is_external_resident(uuid)",
         "mata_rls.uuid_advisory_key(uuid)",
-        "mata_rls.rotate_app_session(bytea,uuid,uuid,bytea,bytea,integer,bytea)",
+        (
+            "mata_rls.rotate_app_session_lifecycle("
+            "bytea,uuid,uuid,bytea,bytea,integer,bytea)"
+        ),
         "mata_rls.revoke_app_session_family(bytea,uuid,text)",
         "mata_rls.invalidate_subject_app_sessions(text,uuid,text,boolean)",
         "mata_rls.replace_external_resident_schedule(uuid,jsonb)",
@@ -90,6 +93,39 @@ AUTH_ONLY_FUNCTIONS = frozenset(
         "mata_rls.external_registration_options()",
         "mata_rls.register_external_resident(text,text,text,jsonb)",
         (
+            "mata_rls.issue_staff_app_session_lifecycle("
+            "uuid,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)"
+        ),
+        (
+            "mata_rls.issue_resident_app_session_lifecycle("
+            "text,text,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)"
+        ),
+        (
+            "mata_rls.issue_external_resident_app_session_lifecycle("
+            "text,text,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)"
+        ),
+        "mata_rls.revoke_app_session_family_for_logout(bytea,bytea,text)",
+    }
+)
+
+BOTH_GROUP_FUNCTIONS = frozenset(
+    {
+        "mata_rls.cleanup_app_sessions(integer,integer)",
+        "mata_rls.consume_rate_limit(text,text,integer,integer,integer,integer)",
+        "mata_rls.resolve_app_session_lifecycle(bytea,integer)",
+        "mata_rls.touch_app_session_lifecycle(bytea,uuid,integer,integer)",
+        "mata_rls.validate_app_session_csrf(bytea,uuid,bytea)",
+        "mata_rls.revoke_app_session(bytea,uuid,text)",
+    }
+)
+
+RETIRED_SESSION_FUNCTIONS = frozenset(
+    {
+        (
+            "mata_rls.rotate_app_session("
+            "bytea,uuid,uuid,bytea,bytea,integer,bytea)"
+        ),
+        (
             "mata_rls.issue_staff_app_session("
             "uuid,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)"
         ),
@@ -101,15 +137,7 @@ AUTH_ONLY_FUNCTIONS = frozenset(
             "mata_rls.issue_external_resident_app_session("
             "text,text,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)"
         ),
-    }
-)
-
-BOTH_GROUP_FUNCTIONS = frozenset(
-    {
-        "mata_rls.cleanup_app_sessions(integer,integer)",
-        "mata_rls.consume_rate_limit(text,text,integer,integer,integer,integer)",
         "mata_rls.resolve_app_session(bytea,boolean,integer)",
-        "mata_rls.revoke_app_session(bytea,uuid,text)",
     }
 )
 
@@ -175,13 +203,60 @@ _CURRENT_CONTEXT_SQL = text(
 
 _RESOLVE_APP_SESSION_SQL = text(
     """
-    SELECT id, session_family_id, revoked_at, last_seen_at, idle_expires_at
-    FROM mata_rls.resolve_app_session(
+    SELECT *
+    FROM mata_rls.resolve_app_session_lifecycle(
         CAST(:token_digest AS bytea),
-        CAST(:touch AS boolean),
-        CAST(:idle_timeout_seconds AS integer)
+        CAST(:rotation_threshold_seconds AS integer)
     )
     """
+)
+
+_TOUCH_APP_SESSION_SQL = text(
+    """
+    SELECT mata_rls.touch_app_session_lifecycle(
+        CAST(:token_digest AS bytea),
+        CAST(:expected_session_id AS uuid),
+        CAST(:idle_timeout_seconds AS integer),
+        CAST(:touch_interval_seconds AS integer)
+    )
+    """
+)
+
+POLICY_CUTOVER_REVISIONS = frozenset(
+    {"20260726_000026", "20260727_000027"}
+)
+
+ISSUE_LIFECYCLE_RESULT_COLUMNS = frozenset(
+    {
+        "id",
+        "subject_type",
+        "subject_id",
+        "subject_session_generation",
+        "session_family_id",
+        "auth_source",
+    }
+)
+
+RESOLVE_LIFECYCLE_RESULT_COLUMNS = frozenset(
+    {
+        "id",
+        "subject_type",
+        "subject_id",
+        "subject_session_generation",
+        "session_family_id",
+        "auth_source",
+        "authorization_fingerprint",
+        "app_role",
+        "admin_level",
+        "programme_scope",
+        "posting_code",
+        "current_staff_actor_name",
+        "session_refresh_required",
+    }
+)
+
+ROTATE_LIFECYCLE_RESULT_COLUMNS = (
+    ISSUE_LIFECYCLE_RESULT_COLUMNS | {"rotated_from_session_id"}
 )
 
 
@@ -274,6 +349,7 @@ async def seeded_staff_context(
                     programme_scope,
                     admin_level,
                     is_active,
+                    supabase_user_id,
                     session_generation,
                     session_issuance_blocked
                 )
@@ -286,6 +362,7 @@ async def seeded_staff_context(
                     :programme_scope,
                     'master',
                     true,
+                    :subject_id,
                     0,
                     false
                 )
@@ -514,7 +591,7 @@ async def test_rls_roles_are_hardened_and_runtime_login_is_attested(
         forbidden_capability_group=AUTH_GROUP,
         require_context_installer=True,
         require_policy_cutover=(
-            harness.revision == "20260726_000026"
+            harness.revision in POLICY_CUTOVER_REVISIONS
         ),
     )
     assert runtime_attestation.login_role == harness.runtime_role
@@ -526,7 +603,7 @@ async def test_rls_roles_are_hardened_and_runtime_login_is_attested(
         forbidden_capability_group=RUNTIME_GROUP,
         require_context_installer=False,
         require_policy_cutover=(
-            harness.revision == "20260726_000026"
+            harness.revision in POLICY_CUTOVER_REVISIONS
         ),
     )
     assert auth_attestation.login_role == harness.auth_role
@@ -538,7 +615,7 @@ async def test_policy_cutover_denies_public_schema_create_exactly(
     rls_postgres_harness: RlsPostgresHarness,
 ) -> None:
     harness = rls_postgres_harness
-    if harness.revision != "20260726_000026":
+    if harness.revision not in POLICY_CUTOVER_REVISIONS:
         pytest.skip("Schema-public CREATE hardening is installed by revision 000026")
 
     restricted_roles = [
@@ -598,6 +675,7 @@ async def test_policy_cutover_denies_public_schema_create_exactly(
         "table_grant",
         "column_grant",
         "helper_grant",
+        "session_helper_third_role_grant",
         "browser_membership",
         "capability_admin_option",
         "schema_grant_option",
@@ -606,6 +684,10 @@ async def test_policy_cutover_denies_public_schema_create_exactly(
         "column_grant_option",
         "public_schema_create",
         "browser_schema_create",
+        "helper_security_invoker",
+        "helper_search_path",
+        "policy_name",
+        "policy_predicate",
     ],
 )
 async def test_startup_attestation_rejects_transactional_privilege_injection(
@@ -613,7 +695,7 @@ async def test_startup_attestation_rejects_transactional_privilege_injection(
     mutation_kind: str,
 ) -> None:
     harness = rls_postgres_harness
-    require_policy_cutover = harness.revision == "20260726_000026"
+    require_policy_cutover = harness.revision in POLICY_CUTOVER_REVISIONS
 
     # Establish that this mutation starts and ends from the reviewed contract.
     await attest_database_role(
@@ -628,6 +710,9 @@ async def test_startup_attestation_rejects_transactional_privilege_injection(
         "table_grant": "executable_table_privileges",
         "column_grant": "executable_column_privileges",
         "helper_grant": "executable_rls_helpers",
+        "session_helper_third_role_grant": (
+            "session_helper_acls_are_exact"
+        ),
         "browser_membership": "browser_roles_are_denied",
         "capability_admin_option": (
             "capability_membership_is_not_delegable"
@@ -638,6 +723,10 @@ async def test_startup_attestation_rejects_transactional_privilege_injection(
         "column_grant_option": "has_no_delegable_acl_privileges",
         "public_schema_create": "public_schema_create_is_denied",
         "browser_schema_create": "browser_roles_are_denied",
+        "helper_security_invoker": "executable_rls_helpers_are_hardened",
+        "helper_search_path": "executable_rls_helpers_are_hardened",
+        "policy_name": "application_policy_catalogue",
+        "policy_predicate": "unsafe_application_policy_count",
     }[mutation_kind]
 
     async with harness.owner_engine.connect() as connection:
@@ -659,6 +748,19 @@ async def test_startup_attestation_rejects_transactional_privilege_injection(
                     "GRANT EXECUTE ON FUNCTION "
                     "mata_rls.staff_login_candidate(text) "
                     "TO mata_app_runtime"
+                )
+            elif mutation_kind == "session_helper_third_role_grant":
+                third_role = f"mata_test_auth_{uuid4().hex[:16]}"
+                quoted_third_role = _quoted_test_role(third_role)
+                await connection.exec_driver_sql(
+                    f"CREATE ROLE {quoted_third_role} "
+                    "NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS "
+                    "NOCREATEDB NOCREATEROLE NOREPLICATION"
+                )
+                await connection.exec_driver_sql(
+                    "GRANT EXECUTE ON FUNCTION "
+                    "mata_rls.resolve_app_session(bytea,boolean,integer) "
+                    f"TO {quoted_third_role}"
                 )
             elif mutation_kind in {
                 "browser_membership",
@@ -718,6 +820,30 @@ async def test_startup_attestation_rejects_transactional_privilege_injection(
                 await connection.exec_driver_sql(
                     "GRANT CREATE ON SCHEMA public TO PUBLIC"
                 )
+            elif mutation_kind == "helper_security_invoker":
+                await connection.exec_driver_sql(
+                    "ALTER FUNCTION mata_rls.install_request_context("
+                    "bytea,text,text,uuid,uuid,text) SECURITY INVOKER"
+                )
+            elif mutation_kind == "helper_search_path":
+                await connection.exec_driver_sql(
+                    "ALTER FUNCTION mata_rls.install_request_context("
+                    "bytea,text,text,uuid,uuid,text) "
+                    "SET search_path = public"
+                )
+            elif mutation_kind in {"policy_name", "policy_predicate"}:
+                if not require_policy_cutover:
+                    pytest.skip("Policy mutation requires revision 000026 or later")
+                if mutation_kind == "policy_name":
+                    await connection.exec_driver_sql(
+                        "ALTER POLICY mata_rls_users_select ON public.users "
+                        "RENAME TO mata_rls_users_select_drifted"
+                    )
+                else:
+                    await connection.exec_driver_sql(
+                        "ALTER POLICY mata_rls_users_select ON public.users "
+                        "USING (true)"
+                    )
             else:  # pragma: no cover - parameter list is closed above
                 raise AssertionError(
                     f"Unexpected attestation mutation: {mutation_kind}"
@@ -834,6 +960,140 @@ async def test_verified_context_installer_returns_only_database_identity(
             "native_resident": False,
             "external_resident": False,
         }
+
+
+@pytest.mark.asyncio
+async def test_session_lifecycle_helpers_return_only_minimum_results(
+    rls_postgres_harness: RlsPostgresHarness,
+    seeded_staff_context: StaffContextSeed,
+) -> None:
+    harness = rls_postgres_harness
+    if harness.revision != "20260727_000027":
+        pytest.skip("Minimum lifecycle wrappers are installed by revision 000027")
+
+    parent_id = uuid4()
+    child_id = uuid4()
+    parent_digest = secrets.token_bytes(32)
+    child_digest = secrets.token_bytes(32)
+    parent_csrf_digest = secrets.token_bytes(32)
+    child_csrf_digest = secrets.token_bytes(32)
+    try:
+        async with harness.auth_session() as auth_db:
+            issued = (
+                await auth_db.execute(
+                    text(
+                        """
+                        SELECT *
+                        FROM mata_rls.issue_staff_app_session_lifecycle(
+                            CAST(:subject_id AS uuid),
+                            CAST(:subject_id AS uuid),
+                            CAST(0 AS bigint),
+                            CAST(:parent_id AS uuid),
+                            CAST(:parent_digest AS bytea),
+                            CAST(:parent_csrf_digest AS bytea),
+                            CAST(1800 AS integer),
+                            CAST(28800 AS integer),
+                            CAST(NULL AS bytea)
+                        )
+                        """
+                    ),
+                    {
+                        "subject_id": seeded_staff_context.subject_id,
+                        "parent_id": parent_id,
+                        "parent_digest": parent_digest,
+                        "parent_csrf_digest": parent_csrf_digest,
+                    },
+                )
+            ).mappings().one()
+            assert frozenset(issued.keys()) == ISSUE_LIFECYCLE_RESULT_COLUMNS
+            assert issued["id"] == parent_id
+            assert issued["session_family_id"] == parent_id
+
+            resolved = (
+                await auth_db.execute(
+                    _RESOLVE_APP_SESSION_SQL,
+                    {
+                        "token_digest": parent_digest,
+                        "rotation_threshold_seconds": 3600,
+                    },
+                )
+            ).mappings().one()
+            assert frozenset(resolved.keys()) == RESOLVE_LIFECYCLE_RESULT_COLUMNS
+            assert resolved["id"] == parent_id
+            assert resolved["subject_id"] == seeded_staff_context.subject_id
+            assert resolved["session_refresh_required"] is False
+            await auth_db.commit()
+
+        async with harness.runtime_session() as runtime_db:
+            rotated = (
+                await runtime_db.execute(
+                    text(
+                        """
+                        SELECT *
+                        FROM mata_rls.rotate_app_session_lifecycle(
+                            CAST(:parent_digest AS bytea),
+                            CAST(:parent_id AS uuid),
+                            CAST(:child_id AS uuid),
+                            CAST(:child_digest AS bytea),
+                            CAST(:child_csrf_digest AS bytea),
+                            CAST(1800 AS integer),
+                            CAST(NULL AS bytea)
+                        )
+                        """
+                    ),
+                    {
+                        "parent_digest": parent_digest,
+                        "parent_id": parent_id,
+                        "child_id": child_id,
+                        "child_digest": child_digest,
+                        "child_csrf_digest": child_csrf_digest,
+                    },
+                )
+            ).mappings().one()
+            assert frozenset(rotated.keys()) == ROTATE_LIFECYCLE_RESULT_COLUMNS
+            assert rotated["id"] == child_id
+            assert rotated["session_family_id"] == parent_id
+            assert rotated["rotated_from_session_id"] == parent_id
+            await runtime_db.commit()
+
+        async with harness.owner_session() as owner_db:
+            rows = (
+                await owner_db.execute(
+                    text(
+                        """
+                        SELECT
+                            id,
+                            revoked_at,
+                            last_seen_at,
+                            idle_expires_at,
+                            absolute_expires_at
+                        FROM app_sessions
+                        WHERE session_family_id = :family_id
+                        ORDER BY created_at, id
+                        """
+                    ),
+                    {"family_id": parent_id},
+                )
+            ).mappings().all()
+            assert [row["id"] for row in rows] == [parent_id, child_id]
+            assert rows[0]["revoked_at"] is not None
+            assert rows[1]["revoked_at"] is None
+            assert rows[0]["absolute_expires_at"] == rows[1][
+                "absolute_expires_at"
+            ]
+            assert rows[0]["last_seen_at"] == rows[1]["last_seen_at"]
+            assert rows[1]["last_seen_at"] < rows[1]["idle_expires_at"]
+            assert rows[0]["idle_expires_at"] == rows[1]["idle_expires_at"]
+    finally:
+        async with harness.owner_session() as owner_db:
+            await owner_db.execute(
+                text(
+                    "DELETE FROM app_sessions "
+                    "WHERE session_family_id = :family_id"
+                ),
+                {"family_id": parent_id},
+            )
+            await owner_db.commit()
 
 
 @pytest.mark.asyncio
@@ -979,6 +1239,74 @@ async def test_context_clears_after_commit_rollback_and_pool_reuse(
 
 
 @pytest.mark.asyncio
+async def test_expiry_invalidates_context_and_pool_size_one_reuse_is_empty(
+    rls_postgres_harness: RlsPostgresHarness,
+    seeded_staff_context: StaffContextSeed,
+) -> None:
+    harness = rls_postgres_harness
+    backend_pid: int
+    async with harness.runtime_session() as runtime_db:
+        backend_pid = int(
+            await runtime_db.scalar(text("SELECT pg_backend_pid()"))
+        )
+        assert await _install_context(runtime_db, seeded_staff_context) is not None
+        assert (await _current_context(runtime_db))["context_is_valid"] is True
+
+        async with harness.owner_session() as owner_db:
+            await owner_db.execute(
+                text(
+                    """
+                    WITH deadline AS MATERIALIZED (
+                        SELECT clock_timestamp() AS expired_at
+                    )
+                    UPDATE app_sessions AS app_session
+                    SET
+                        last_seen_at = deadline.expired_at,
+                        idle_expires_at = deadline.expired_at,
+                        absolute_expires_at = deadline.expired_at
+                    FROM deadline
+                    WHERE app_session.id = :app_session_id
+                    """
+                ),
+                {"app_session_id": seeded_staff_context.app_session_id},
+            )
+            await owner_db.commit()
+
+        expired_context = await _current_context(runtime_db)
+        assert expired_context["context_is_valid"] is False
+        assert expired_context["subject_type"] is None
+        assert expired_context["subject_id"] is None
+        assert expired_context["app_role"] is None
+        assert expired_context["app_session_id"] is None
+
+        assert await _install_context(runtime_db, seeded_staff_context) is None
+        await runtime_db.execute(
+            text(
+                """
+                SELECT set_config(
+                    'mata.context_signature',
+                    repeat('0', 64),
+                    true
+                )
+                """
+            )
+        )
+        assert (await _current_context(runtime_db))["context_is_valid"] is False
+        await runtime_db.rollback()
+
+    async with harness.runtime_session() as reused_db:
+        assert (
+            int(await reused_db.scalar(text("SELECT pg_backend_pid()")))
+            == backend_pid
+        )
+        assert (await _current_context(reused_db))["context_is_valid"] is False
+        assert all(
+            raw_value == ""
+            for raw_value in (await _raw_context_gucs(reused_db)).values()
+        )
+
+
+@pytest.mark.asyncio
 async def test_context_hook_revalidates_after_every_new_root_transaction(
     rls_postgres_harness: RlsPostgresHarness,
     seeded_staff_context: StaffContextSeed,
@@ -1091,7 +1419,7 @@ async def test_concurrent_session_touches_do_not_lock_upgrade_deadlock(
         pool_pre_ping=True,
     )
 
-    async def resolve_then_touch() -> tuple[int, Mapping[str, Any]]:
+    async def resolve_then_touch() -> tuple[int, bool]:
         async with AsyncSession(
             concurrent_engine,
             expire_on_commit=False,
@@ -1102,8 +1430,7 @@ async def test_concurrent_session_touches_do_not_lock_upgrade_deadlock(
                     _RESOLVE_APP_SESSION_SQL,
                     {
                         "token_digest": seeded_staff_context.token_digest,
-                        "touch": False,
-                        "idle_timeout_seconds": 0,
+                        "rotation_threshold_seconds": 3600,
                     },
                 )
             ).mappings().one()
@@ -1116,16 +1443,19 @@ async def test_concurrent_session_touches_do_not_lock_upgrade_deadlock(
             # before either attempts the row-updating touch. This reproduces
             # the former SHARE -> UPDATE lock-upgrade deadlock deterministically.
             await barrier.wait()
-            touched = (
-                await db.execute(
-                    _RESOLVE_APP_SESSION_SQL,
+            touched = bool(
+                await db.scalar(
+                    _TOUCH_APP_SESSION_SQL,
                     {
                         "token_digest": seeded_staff_context.token_digest,
-                        "touch": True,
+                        "expected_session_id": (
+                            seeded_staff_context.app_session_id
+                        ),
                         "idle_timeout_seconds": 1800,
+                        "touch_interval_seconds": 60,
                     },
                 )
-            ).mappings().one()
+            )
             await db.commit()
             return backend_pid, touched
 
@@ -1139,12 +1469,7 @@ async def test_concurrent_session_touches_do_not_lock_upgrade_deadlock(
 
     backend_pids = {backend_pid for backend_pid, _row in outcomes}
     assert len(backend_pids) == 2
-    for _backend_pid, row in outcomes:
-        assert row["id"] == seeded_staff_context.app_session_id
-        assert row["session_family_id"] == (
-            seeded_staff_context.session_family_id
-        )
-        assert row["revoked_at"] is None
+    assert all(touched is True for _backend_pid, touched in outcomes)
 
     async with harness.owner_session() as db:
         family_state = (
@@ -1199,6 +1524,7 @@ async def test_foundation_function_acls_search_paths_and_table_denials_are_exact
                         n.nspname AS schema_name,
                         p.prosecdef AS security_definer,
                         p.proconfig AS configuration,
+                        p.proowner = n.nspowner AS owned_by_schema_owner,
                         has_function_privilege(
                             :runtime_role, p.oid, 'EXECUTE'
                         ) AS runtime_execute,
@@ -1263,8 +1589,10 @@ async def test_foundation_function_acls_search_paths_and_table_denials_are_exact
             | AUTH_ONLY_FUNCTIONS
             | BOTH_GROUP_FUNCTIONS
         )
-        if harness.revision == "20260726_000026":
+        if harness.revision in POLICY_CUTOVER_REVISIONS:
             expected_public_helpers |= POLICY_HELPER_FUNCTIONS
+        if harness.revision == "20260727_000027":
+            expected_public_helpers |= RETIRED_SESSION_FUNCTIONS
         assert mata_rls_signatures == expected_public_helpers
         assert all(row["public_denied"] is True for row in functions)
         assert all(row["anon_execute"] is False for row in functions)
@@ -1286,29 +1614,28 @@ async def test_foundation_function_acls_search_paths_and_table_denials_are_exact
             assert row["runtime_execute"] is True
             assert row["auth_execute"] is True
 
-        if harness.revision == "20260726_000026":
+        if harness.revision in POLICY_CUTOVER_REVISIONS:
             for signature in POLICY_HELPER_FUNCTIONS:
                 row = by_signature[signature]
                 assert row["runtime_execute"] is True
+                assert row["auth_execute"] is False
+
+        if harness.revision == "20260727_000027":
+            for signature in RETIRED_SESSION_FUNCTIONS:
+                row = by_signature[signature]
+                assert row["runtime_execute"] is False
                 assert row["auth_execute"] is False
 
         for row in functions:
             if row["schema_name"] == "mata_private":
                 assert row["runtime_execute"] is False
                 assert row["auth_execute"] is False
-            if row["security_definer"]:
-                configuration = [
-                    str(value) for value in (row["configuration"] or [])
-                ]
-                search_paths = [
-                    value
-                    for value in configuration
-                    if value.casefold().startswith("search_path=")
-                ]
-                assert len(search_paths) == 1
-                fixed_path = search_paths[0].casefold()
-                assert "$user" not in fixed_path
-                assert fixed_path.startswith("search_path=pg_catalog")
+            assert row["security_definer"] is True
+            assert row["owned_by_schema_owner"] is True
+            configuration = [
+                str(value) for value in (row["configuration"] or [])
+            ]
+            assert configuration == ["search_path=pg_catalog, pg_temp"]
 
         schema_acl = (
             await db.execute(

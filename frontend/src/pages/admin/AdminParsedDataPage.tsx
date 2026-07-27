@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   listParsedDataCorrections,
   listParsedAcademicMonthBoundaries,
@@ -42,11 +42,14 @@ import {
   clearMemoryCache,
   clearMemoryCacheResource,
   getMemoryCache,
+  isMemoryCacheInvalidatedError,
   makeScopedCacheKey,
   readThroughMemoryCache,
-  setMemoryCache,
-  type CacheScope,
 } from '../../utils/memoryReadCache'
+import {
+  captureProtectedAsyncRequestFence,
+  isProtectedAsyncRequestFenceCurrent,
+} from '../../utils/protectedAsyncFence'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 type ParsedDataTabId =
@@ -1500,7 +1503,12 @@ const entityTypeByTab: Record<ParsedDataTabId, string> = {
 }
 
 export const AdminParsedDataPage = () => {
-  const { role, demoAdminId, demoAdminProgrammes, reportingPeriods } = useAppState()
+  const {
+    authCacheScope,
+    demoAdminId,
+    demoAdminProgrammes,
+    reportingPeriods,
+  } = useAppState()
   const [activeTabId, setActiveTabId] = useState<ParsedDataTabId>('residents')
   const [filters, setFilters] = useState<ParsedDataFilters>({ ...initialFilters })
   const [debouncedFilters, setDebouncedFilters] = useState<ParsedDataFilters>({ ...initialFilters })
@@ -1536,6 +1544,68 @@ export const AdminParsedDataPage = () => {
     rowId: string
     entry: ParsedDataCorrectionHistoryRow
   } | null>(null)
+  const authScopeKey = useMemo(
+    () => makeScopedCacheKey(authCacheScope, 'admin.parsed-data.auth-scope', {}),
+    [authCacheScope],
+  )
+  const currentAuthScopeKeyRef = useRef(authScopeKey)
+  const rowsRequestRef = useRef(0)
+  const rawLogRequestRef = useRef(0)
+  const rawDetailRequestRef = useRef(0)
+  const historyRequestRef = useRef(0)
+  const correctionRequestRef = useRef(0)
+  const rowsRequestContextKey = useMemo(
+    () => makeScopedCacheKey(authCacheScope, 'admin.parsed-data.request-context', {
+      activeTabId,
+      filters,
+      offset,
+    }),
+    [activeTabId, authCacheScope, filters, offset],
+  )
+  const currentRowsRequestContextKeyRef = useRef(rowsRequestContextKey)
+  const rawRequestContextKey = useMemo(
+    () => makeScopedCacheKey(authCacheScope, 'admin.parsed-data.raw-request-context', {
+      activeTabId,
+    }),
+    [activeTabId, authCacheScope],
+  )
+  const currentRawRequestContextKeyRef = useRef(rawRequestContextKey)
+  const rawDetailRequestContextKey = useMemo(
+    () => makeScopedCacheKey(authCacheScope, 'admin.parsed-data.raw-detail-request-context', {
+      activeTabId,
+      selectedRdbUploadId,
+    }),
+    [activeTabId, authCacheScope, selectedRdbUploadId],
+  )
+  const currentRawDetailRequestContextKeyRef = useRef(rawDetailRequestContextKey)
+
+  useLayoutEffect(() => {
+    currentAuthScopeKeyRef.current = authScopeKey
+  }, [authScopeKey])
+  useLayoutEffect(() => {
+    currentRowsRequestContextKeyRef.current = rowsRequestContextKey
+    rowsRequestRef.current += 1
+    historyRequestRef.current += 1
+    correctionRequestRef.current += 1
+  }, [rowsRequestContextKey])
+  useLayoutEffect(() => {
+    currentRawRequestContextKeyRef.current = rawRequestContextKey
+    rawLogRequestRef.current += 1
+  }, [rawRequestContextKey])
+  useLayoutEffect(() => {
+    currentRawDetailRequestContextKeyRef.current = rawDetailRequestContextKey
+    rawDetailRequestRef.current += 1
+  }, [rawDetailRequestContextKey])
+  const beginCorrectionRequest = useCallback(() => {
+    const requestId = correctionRequestRef.current + 1
+    correctionRequestRef.current = requestId
+    const requestFence = captureProtectedAsyncRequestFence(authScopeKey, requestId)
+    return () => isProtectedAsyncRequestFenceCurrent(
+      requestFence,
+      currentAuthScopeKeyRef.current,
+      correctionRequestRef.current,
+    )
+  }, [authScopeKey])
 
   const activeTab = useMemo(
     () => tabDefinitions.find((tab) => tab.id === activeTabId) ?? tabDefinitions[0],
@@ -1543,11 +1613,6 @@ export const AdminParsedDataPage = () => {
   )
   const correctionFields = useMemo(() => correctionFieldsByTab[activeTabId] ?? [], [activeTabId])
 
-  const cacheScope = useMemo<CacheScope>(() => ({
-    role,
-    userId: demoAdminId,
-    programmeScope: demoAdminProgrammes,
-  }), [demoAdminId, demoAdminProgrammes, role])
   const adminRequestParams = useMemo(() => ({
     adminId: demoAdminId,
     adminProgrammes: demoAdminProgrammes,
@@ -1558,23 +1623,23 @@ export const AdminParsedDataPage = () => {
     tabId: ParsedDataTabId,
     queryFilters: ParsedDataFilters,
     queryOffset: number,
-  ) => makeScopedCacheKey(cacheScope, 'admin.parsed-data', {
+  ) => makeScopedCacheKey(authCacheScope, 'admin.parsed-data', {
     view: tabId,
     filters: queryFilters,
     limit: pageSize,
     offset: queryOffset,
-  }), [cacheScope])
+  }), [authCacheScope])
 
-  const uploadLogListCacheKey = useCallback(() => makeScopedCacheKey(cacheScope, 'admin.upload-logs.rdb-source-list', {
+  const uploadLogListCacheKey = useCallback(() => makeScopedCacheKey(authCacheScope, 'admin.upload-logs.rdb-source-list', {
     uploadType: 'rdb',
     limit: 50,
-  }), [cacheScope])
+  }), [authCacheScope])
 
   const uploadLogDetailCacheKey = useCallback((uploadLogId: string) => makeScopedCacheKey(
-    cacheScope,
+    authCacheScope,
     'admin.upload-logs.rdb-source-detail',
     { uploadLogId },
-  ), [cacheScope])
+  ), [authCacheScope])
 
   const setFilter = (key: FilterKey, value: string) => {
     setFilters((prev) => ({ ...prev, [key]: value }))
@@ -1613,6 +1678,45 @@ export const AdminParsedDataPage = () => {
       return typeof value === 'string' && value.trim().length > 0
     })
   }, [filters])
+
+  useEffect(() => {
+    let active = true
+    queueMicrotask(() => {
+      if (!active) {
+        return
+      }
+      hasLoadedRowsRef.current = false
+      setRows([])
+      setTotal(0)
+      setError(null)
+      setSelectedRow(null)
+      setRdbUploadLogs([])
+      setSelectedRdbUploadId(null)
+      setSelectedRdbUploadDetail(null)
+      setRawFragmentError(null)
+      setIsRawLogLoading(true)
+      setIsRawDetailLoading(false)
+      setCorrectionMode('none')
+      setCorrectionDraft({})
+      setFragmentDraftGroups([])
+      setIsFragmentCorrection(false)
+      setCorrectionReason('')
+      setCorrectionError(null)
+      setCorrectionSuccess(null)
+      setCorrectionRevalidation(null)
+      setIsCorrectionSubmitting(false)
+      setCorrectionHistory([])
+      setCorrectionHistoryError(null)
+      setIsCorrectionHistoryLoading(false)
+      setLastOptimisticHistory(null)
+      setIsManualRefreshing(false)
+      setIsRefetching(false)
+      setIsInitialLoading(true)
+    })
+    return () => {
+      active = false
+    }
+  }, [authScopeKey])
 
   useEffect(() => {
     let active = true
@@ -1711,22 +1815,41 @@ export const AdminParsedDataPage = () => {
   }, [demoAdminId, demoAdminProgrammes])
 
   const fetchRows = useCallback(async () => {
+    const requestId = rowsRequestRef.current + 1
+    rowsRequestRef.current = requestId
+    historyRequestRef.current += 1
+    correctionRequestRef.current += 1
     setIsManualRefreshing(true)
     setError(null)
     setSelectedRow(null)
+    const key = parsedDataCacheKey(activeTabId, filters, offset)
+    clearMemoryCache((cacheKey) => cacheKey === key)
+    clearMemoryCacheResource('admin.upload-logs.rdb-source-list')
+    clearMemoryCacheResource('admin.upload-logs.rdb-source-detail')
+    const requestFence = captureProtectedAsyncRequestFence(rowsRequestContextKey, requestId)
+    const isCurrentRequest = () => isProtectedAsyncRequestFenceCurrent(
+      requestFence,
+      currentRowsRequestContextKeyRef.current,
+      rowsRequestRef.current,
+    )
 
     try {
-      const key = parsedDataCacheKey(activeTabId, filters, offset)
-      clearMemoryCache((cacheKey) => cacheKey === key)
-      clearMemoryCacheResource('admin.upload-logs.rdb-source-list')
-      clearMemoryCacheResource('admin.upload-logs.rdb-source-detail')
-      const response = await loadRows(activeTabId, filters, offset)
-      setMemoryCache(key, response)
+      const { data: response } = await readThroughMemoryCache(
+        key,
+        () => loadRows(activeTabId, filters, offset),
+        { force: true },
+      )
+      if (!isCurrentRequest()) {
+        return
+      }
       setDebouncedFilters((previous) => (areFiltersEqual(previous, filters) ? previous : filters))
       setRows(sortParsedRowsForDisplay(activeTabId, response.items))
       setTotal(response.total)
       hasLoadedRowsRef.current = true
     } catch (fetchError) {
+      if (isMemoryCacheInvalidatedError(fetchError) || !isCurrentRequest()) {
+        return
+      }
       setRows([])
       setTotal(0)
       hasLoadedRowsRef.current = true
@@ -1734,20 +1857,36 @@ export const AdminParsedDataPage = () => {
         fallbackMessage: 'Unable to load parsed data.',
       }))
     } finally {
-      setIsManualRefreshing(false)
-      setIsInitialLoading(false)
-      setIsRefetching(false)
+      if (isCurrentRequest()) {
+        setIsManualRefreshing(false)
+        setIsInitialLoading(false)
+        setIsRefetching(false)
+      }
     }
-  }, [activeTabId, filters, loadRows, offset, parsedDataCacheKey])
+  }, [activeTabId, filters, loadRows, offset, parsedDataCacheKey, rowsRequestContextKey])
 
   const refreshActiveRowsAfterMutation = useCallback(async (nextSelectedRow?: ParsedDataRow | null) => {
+    const requestId = rowsRequestRef.current + 1
+    rowsRequestRef.current = requestId
     clearMemoryCacheResource('admin.parsed-data')
     clearMemoryCacheResource('admin.upload-logs.rdb-source-detail')
+    const requestFence = captureProtectedAsyncRequestFence(rowsRequestContextKey, requestId)
+    const isCurrentRequest = () => isProtectedAsyncRequestFenceCurrent(
+      requestFence,
+      currentRowsRequestContextKeyRef.current,
+      rowsRequestRef.current,
+    )
     setIsRefetching(true)
     try {
       const key = parsedDataCacheKey(activeTabId, debouncedFilters, offset)
-      const response = await loadRows(activeTabId, debouncedFilters, offset)
-      setMemoryCache(key, response)
+      const { data: response } = await readThroughMemoryCache(
+        key,
+        () => loadRows(activeTabId, debouncedFilters, offset),
+        { force: true },
+      )
+      if (!isCurrentRequest()) {
+        return
+      }
       setRows(sortParsedRowsForDisplay(activeTabId, response.items))
       setTotal(response.total)
       if (nextSelectedRow) {
@@ -1755,6 +1894,9 @@ export const AdminParsedDataPage = () => {
         setSelectedRow(refreshedRow)
       }
     } catch (fetchError) {
+      if (isMemoryCacheInvalidatedError(fetchError) || !isCurrentRequest()) {
+        return
+      }
       setError(formatUserFacingApiError(fetchError, {
         fallbackMessage: 'Unable to refresh live data.',
       }))
@@ -1762,16 +1904,31 @@ export const AdminParsedDataPage = () => {
         setSelectedRow(nextSelectedRow)
       }
     } finally {
-      setIsRefetching(false)
+      if (isCurrentRequest()) {
+        setIsRefetching(false)
+      }
     }
-  }, [activeTabId, debouncedFilters, loadRows, offset, parsedDataCacheKey])
+  }, [activeTabId, debouncedFilters, loadRows, offset, parsedDataCacheKey, rowsRequestContextKey])
 
   useEffect(() => {
     let active = true
     ;(async () => {
+      if (!areFiltersEqual(debouncedFilters, filters)) {
+        return
+      }
+      const requestId = rowsRequestRef.current + 1
+      rowsRequestRef.current = requestId
+      historyRequestRef.current += 1
+      correctionRequestRef.current += 1
+      const requestFence = captureProtectedAsyncRequestFence(rowsRequestContextKey, requestId)
+      const isCurrentRequest = () => active && isProtectedAsyncRequestFenceCurrent(
+        requestFence,
+        currentRowsRequestContextKeyRef.current,
+        rowsRequestRef.current,
+      )
       const key = parsedDataCacheKey(activeTabId, debouncedFilters, offset)
       const cached = getMemoryCache<ParsedDataListResponse<ParsedDataRow>>(key)
-      if (cached) {
+      if (cached && isCurrentRequest()) {
         setRows(sortParsedRowsForDisplay(activeTabId, cached.data.items))
         setTotal(cached.data.total)
         hasLoadedRowsRef.current = true
@@ -1792,13 +1949,13 @@ export const AdminParsedDataPage = () => {
           () => loadRows(activeTabId, debouncedFilters, offset),
           { force: Boolean(cached) },
         )
-        if (active) {
+        if (isCurrentRequest()) {
           setRows(sortParsedRowsForDisplay(activeTabId, response.items))
           setTotal(response.total)
           hasLoadedRowsRef.current = true
         }
       } catch (fetchError) {
-        if (active) {
+        if (!isMemoryCacheInvalidatedError(fetchError) && isCurrentRequest()) {
           if (!isBackgroundRefetch) {
             setRows([])
             setTotal(0)
@@ -1809,7 +1966,7 @@ export const AdminParsedDataPage = () => {
           }))
         }
       } finally {
-        if (active) {
+        if (isCurrentRequest()) {
           setIsInitialLoading(false)
           setIsRefetching(false)
         }
@@ -1818,12 +1975,28 @@ export const AdminParsedDataPage = () => {
     return () => {
       active = false
     }
-  }, [activeTabId, debouncedFilters, loadRows, offset, parsedDataCacheKey])
+  }, [
+    activeTabId,
+    debouncedFilters,
+    filters,
+    loadRows,
+    offset,
+    parsedDataCacheKey,
+    rowsRequestContextKey,
+  ])
 
   const loadRdbUploadLogs = useCallback(async () => {
     if (activeTabId !== 'resident-postings') {
       return
     }
+    const requestId = rawLogRequestRef.current + 1
+    rawLogRequestRef.current = requestId
+    const requestFence = captureProtectedAsyncRequestFence(rawRequestContextKey, requestId)
+    const isCurrentRequest = () => isProtectedAsyncRequestFenceCurrent(
+      requestFence,
+      currentRawRequestContextKeyRef.current,
+      rawLogRequestRef.current,
+    )
     setIsRawLogLoading(true)
     setRawFragmentError(null)
     try {
@@ -1837,6 +2010,9 @@ export const AdminParsedDataPage = () => {
           limit: 50,
         }),
       )
+      if (!isCurrentRequest()) {
+        return
+      }
       setRdbUploadLogs(response.items)
       setSelectedRdbUploadId((current) => {
         if (current && response.items.some((item) => item.id === current)) {
@@ -1848,6 +2024,9 @@ export const AdminParsedDataPage = () => {
         setSelectedRdbUploadDetail(null)
       }
     } catch (fetchError) {
+      if (isMemoryCacheInvalidatedError(fetchError) || !isCurrentRequest()) {
+        return
+      }
       setRdbUploadLogs([])
       setSelectedRdbUploadId(null)
       setSelectedRdbUploadDetail(null)
@@ -1855,9 +2034,17 @@ export const AdminParsedDataPage = () => {
         fallbackMessage: 'Unable to load RDB upload logs.',
       }))
     } finally {
-      setIsRawLogLoading(false)
+      if (isCurrentRequest()) {
+        setIsRawLogLoading(false)
+      }
     }
-  }, [activeTabId, demoAdminId, demoAdminProgrammes, uploadLogListCacheKey])
+  }, [
+    activeTabId,
+    demoAdminId,
+    demoAdminProgrammes,
+    rawRequestContextKey,
+    uploadLogListCacheKey,
+  ])
 
   useEffect(() => {
     if (activeTabId === 'resident-postings') {
@@ -1888,6 +2075,14 @@ export const AdminParsedDataPage = () => {
     }
 
     ;(async () => {
+      const requestId = rawDetailRequestRef.current + 1
+      rawDetailRequestRef.current = requestId
+      const requestFence = captureProtectedAsyncRequestFence(rawDetailRequestContextKey, requestId)
+      const isCurrentRequest = () => active && isProtectedAsyncRequestFenceCurrent(
+        requestFence,
+        currentRawDetailRequestContextKeyRef.current,
+        rawDetailRequestRef.current,
+      )
       setIsRawDetailLoading(true)
       setRawFragmentError(null)
       try {
@@ -1900,18 +2095,18 @@ export const AdminParsedDataPage = () => {
             uploadLogId: selectedRdbUploadId,
           }),
         )
-        if (active) {
+        if (isCurrentRequest()) {
           setSelectedRdbUploadDetail(detail)
         }
       } catch (fetchError) {
-        if (active) {
+        if (!isMemoryCacheInvalidatedError(fetchError) && isCurrentRequest()) {
           setSelectedRdbUploadDetail(null)
           setRawFragmentError(formatUserFacingApiError(fetchError, {
             fallbackMessage: 'Unable to load RDB upload detail.',
           }))
         }
       } finally {
-        if (active) {
+        if (isCurrentRequest()) {
           setIsRawDetailLoading(false)
         }
       }
@@ -1920,7 +2115,14 @@ export const AdminParsedDataPage = () => {
     return () => {
       active = false
     }
-  }, [activeTabId, demoAdminId, demoAdminProgrammes, selectedRdbUploadId, uploadLogDetailCacheKey])
+  }, [
+    activeTabId,
+    demoAdminId,
+    demoAdminProgrammes,
+    rawDetailRequestContextKey,
+    selectedRdbUploadId,
+    uploadLogDetailCacheKey,
+  ])
 
   const firstItem = total === 0 ? 0 : offset + 1
   const lastItem = Math.min(offset + rows.length, total)
@@ -2017,9 +2219,17 @@ export const AdminParsedDataPage = () => {
   }, [activeTabId, adminRequestParams, selectedRdbUploadId])
   useEffect(() => {
     let active = true
+    const requestId = historyRequestRef.current + 1
+    historyRequestRef.current = requestId
+    const requestFence = captureProtectedAsyncRequestFence(authScopeKey, requestId)
+    const isCurrentRequest = () => active && isProtectedAsyncRequestFenceCurrent(
+      requestFence,
+      currentAuthScopeKeyRef.current,
+      historyRequestRef.current,
+    )
     if (!selectedRow) {
       queueMicrotask(() => {
-        if (active) {
+        if (isCurrentRequest()) {
           setLastOptimisticHistory(null)
           setCorrectionHistory([])
           setCorrectionHistoryError(null)
@@ -2036,7 +2246,7 @@ export const AdminParsedDataPage = () => {
       setCorrectionHistoryError(null)
       try {
         const items = await loadCorrectionHistoryForRow(selectedRow, selectedSourceFragment)
-        if (active) {
+        if (isCurrentRequest()) {
           setCorrectionHistory(
             lastOptimisticHistory?.rowId === selectedRow.id
               ? mergeCorrectionHistoryRows([items, [lastOptimisticHistory.entry]])
@@ -2044,14 +2254,14 @@ export const AdminParsedDataPage = () => {
           )
         }
       } catch (fetchError) {
-        if (active) {
+        if (isCurrentRequest()) {
           setCorrectionHistory([])
           setCorrectionHistoryError(formatUserFacingApiError(fetchError, {
             fallbackMessage: 'Unable to load correction history.',
           }))
         }
       } finally {
-        if (active) {
+        if (isCurrentRequest()) {
           setIsCorrectionHistoryLoading(false)
         }
       }
@@ -2060,7 +2270,13 @@ export const AdminParsedDataPage = () => {
     return () => {
       active = false
     }
-  }, [lastOptimisticHistory, loadCorrectionHistoryForRow, selectedRow, selectedSourceFragment])
+  }, [
+    authScopeKey,
+    lastOptimisticHistory,
+    loadCorrectionHistoryForRow,
+    selectedRow,
+    selectedSourceFragment,
+  ])
   useEffect(() => {
     let active = true
     queueMicrotask(() => {
@@ -2164,6 +2380,7 @@ export const AdminParsedDataPage = () => {
       correction_reason: correctionReason.trim(),
       last_seen_updated_at: optionalString(rowValue(selectedRow, 'updated_at')),
     }
+    const isCurrentRequest = beginCorrectionRequest()
 
     setIsCorrectionSubmitting(true)
     setCorrectionError(null)
@@ -2233,6 +2450,9 @@ export const AdminParsedDataPage = () => {
           }
           break
       }
+      if (!isCurrentRequest()) {
+        return
+      }
       const optimisticEntry = optimisticCorrectionHistoryEntry({
         auditLogId,
         action: optimisticActionByTab[activeTabId],
@@ -2253,12 +2473,20 @@ export const AdminParsedDataPage = () => {
       setCorrectionRevalidation(dataRevalidation ?? null)
       setRows((currentRows) => currentRows.map((row) => (row.id === updatedRow.id ? updatedRow : row)))
       const history = await loadCorrectionHistoryForRow(updatedRow, selectedSourceFragment)
+      if (!isCurrentRequest()) {
+        return
+      }
       setCorrectionHistory(mergeCorrectionHistoryRows([history, [optimisticEntry]]))
       await refreshActiveRowsAfterMutation(updatedRow)
     } catch (submitError) {
+      if (!isCurrentRequest()) {
+        return
+      }
       setCorrectionError(correctionErrorMessage(submitError))
     } finally {
-      setIsCorrectionSubmitting(false)
+      if (isCurrentRequest()) {
+        setIsCorrectionSubmitting(false)
+      }
     }
   }
 
@@ -2427,6 +2655,7 @@ export const AdminParsedDataPage = () => {
     if (!request) {
       return
     }
+    const isCurrentRequest = beginCorrectionRequest()
 
     setIsCorrectionSubmitting(true)
     setCorrectionError(null)
@@ -2434,6 +2663,9 @@ export const AdminParsedDataPage = () => {
     setCorrectionRevalidation(null)
     try {
       const response = await replaceParsedResidentPostingSourceCell(adminRequestParams, request)
+      if (!isCurrentRequest()) {
+        return
+      }
       const affectedIds = new Set(request.affected_resident_posting_ids)
       setRows((currentRows) => sortParsedRowsForDisplay(
         activeTabId,
@@ -2466,16 +2698,27 @@ export const AdminParsedDataPage = () => {
       setLastOptimisticHistory({ rowId: selectedRow.id, entry: optimisticEntry })
       try {
         const history = await loadCorrectionHistoryForRow(selectedRow, selectedSourceFragment)
+        if (!isCurrentRequest()) {
+          return
+        }
         setCorrectionHistory(mergeCorrectionHistoryRows([history, [optimisticEntry]]))
       } catch {
+        if (!isCurrentRequest()) {
+          return
+        }
         setCorrectionHistory((current) => mergeCorrectionHistoryRows([[optimisticEntry], current]))
         setCorrectionHistoryError('Correction was saved, but the refreshed audit history could not be loaded.')
       }
       await refreshActiveRowsAfterMutation(null)
     } catch (submitError) {
+      if (!isCurrentRequest()) {
+        return
+      }
       setCorrectionError(correctionErrorMessage(submitError))
     } finally {
-      setIsCorrectionSubmitting(false)
+      if (isCurrentRequest()) {
+        setIsCorrectionSubmitting(false)
+      }
     }
   }
 
@@ -2848,13 +3091,7 @@ export const AdminParsedDataPage = () => {
           <button
             type="button"
             className="button button-primary"
-            onClick={() => {
-              if (fragmentCorrectionActive) {
-                void submitSourceCellCorrection()
-              } else {
-                void submitRowCorrection()
-              }
-            }}
+            onClick={fragmentCorrectionActive ? submitSourceCellCorrection : submitRowCorrection}
             disabled={
               isCorrectionSubmitting ||
               !correctionReason.trim() ||
@@ -2911,6 +3148,18 @@ export const AdminParsedDataPage = () => {
     }
 
     return <span className="parsed-data-mobile-compact-line safe-wrap">{values.join(' · ')}</span>
+  }
+
+  const selectRowForDetail = (row: ParsedDataRow) => {
+    historyRequestRef.current += 1
+    correctionRequestRef.current += 1
+    setSelectedRow(row)
+  }
+
+  const closeRowDetail = () => {
+    historyRequestRef.current += 1
+    correctionRequestRef.current += 1
+    setSelectedRow(null)
   }
 
   const renderMobileCardBody = (row: ParsedDataRow) => {
@@ -3013,7 +3262,7 @@ export const AdminParsedDataPage = () => {
         key={`${activeTab.id}-${row.id}-mobile`}
         type="button"
         className="mobile-record-card admin-mobile-record-card parsed-data-mobile-card"
-        onClick={() => setSelectedRow(row)}
+        onClick={() => selectRowForDetail(row)}
         aria-label={`Open ${activeTab.label} row detail`}
       >
         <span className="admin-mobile-card-header parsed-data-mobile-card-header">
@@ -3292,7 +3541,7 @@ export const AdminParsedDataPage = () => {
                       <tr
                         key={row.id}
                         className="table-clickable-row"
-                        onClick={() => setSelectedRow(row)}
+                        onClick={() => selectRowForDetail(row)}
                       >
                         {activeTab.columns.map((column) => (
                           <Fragment key={column.label}>
@@ -3350,7 +3599,7 @@ export const AdminParsedDataPage = () => {
       <DetailDrawer
         title={selectedRow ? `${activeTab.label} row` : 'Live data row'}
         open={Boolean(selectedRow)}
-        onClose={() => setSelectedRow(null)}
+        onClose={closeRowDetail}
       >
         {selectedRow ? (
           <div className="warning-detail parsed-data-detail">

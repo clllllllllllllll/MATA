@@ -17,15 +17,10 @@ from app.config import Settings
 from app.services.database_context import MataSyncSession
 
 
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_verify_5bhe"
+DISPOSABLE_DATABASE_NAME = "mata_phase5b_session_lifecycle_verify"
 RUNTIME_GROUP = "mata_app_runtime"
 AUTH_GROUP = "mata_auth_internal"
-FOUNDATION_REVISIONS = frozenset(
-    {
-        "20260726_000025",
-        "20260726_000026",
-    }
-)
+REQUIRED_REVISION = "20260727_000027"
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _TEST_ROLE_RE = re.compile(r"mata_test_(?:runtime|auth)_[0-9a-f]{16}")
 _TEST_PASSWORD_RE = re.compile(r"[0-9a-f]{64}")
@@ -42,6 +37,7 @@ def _assert_named_local_disposable(url: URL, *, async_url: bool) -> None:
         or url.host not in _LOCAL_HOSTS
         or url.database != DISPOSABLE_DATABASE_NAME
         or not url.username
+        or bool(url.query)
     ):
         pytest.fail(
             "RLS PostgreSQL tests require the explicitly named local disposable "
@@ -223,7 +219,7 @@ async def rls_postgres_harness() -> AsyncIterator[RlsPostgresHarness]:
             revision = connection.scalar(
                 text("SELECT version_num FROM alembic_version")
             )
-            assert revision in FOUNDATION_REVISIONS
+            assert revision == REQUIRED_REVISION
 
         _create_login_member(
             admin_engine,

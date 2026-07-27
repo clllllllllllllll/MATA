@@ -77,9 +77,34 @@ export const applySessionRequestHeaders = (
 
 export const shouldClearSessionForUnauthorized = (
   status: number | undefined,
+  requestWasAuthenticated: boolean | undefined,
   requestRevision: number | undefined,
+  currentIsAuthenticated: boolean,
   currentRevision: number,
 ): boolean =>
   status === 401 &&
+  requestWasAuthenticated === true &&
   typeof requestRevision === 'number' &&
+  currentIsAuthenticated &&
   requestRevision === currentRevision
+
+export const handleUnauthorizedSessionResponse = (
+  status: number | undefined,
+  requestWasAuthenticated: boolean | undefined,
+  requestRevision: number | undefined,
+  currentIsAuthenticated: boolean,
+  currentRevision: number,
+  terminateSession: () => void,
+): boolean => {
+  if (!shouldClearSessionForUnauthorized(
+    status,
+    requestWasAuthenticated,
+    requestRevision,
+    currentIsAuthenticated,
+    currentRevision,
+  )) {
+    return false
+  }
+  terminateSession()
+  return true
+}

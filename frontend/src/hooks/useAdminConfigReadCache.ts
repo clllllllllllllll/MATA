@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useAppState } from '../context/useAppState'
 import {
   clearMemoryCache,
   getMemoryCache,
+  isMemoryCacheInvalidatedError,
   makeScopedCacheKey,
   readThroughMemoryCache,
-  type CacheScope,
 } from '../utils/memoryReadCache'
+import {
+  captureProtectedAsyncRequestFence,
+  isProtectedAsyncRequestFenceCurrent,
+} from '../utils/protectedAsyncFence'
 
 type ConfigCacheParams = Record<string, string | number | boolean | null | undefined>
 
@@ -33,24 +37,26 @@ export const useAdminConfigReadCache = <T,>({
   fetcher,
   errorMessage,
 }: UseAdminConfigReadCacheOptions<T>): AdminConfigReadCacheResult<T> => {
-  const { role, demoAdminId, demoAdminProgrammes } = useAppState()
-  const cacheScope = useMemo<CacheScope>(() => ({
-    role,
-    userId: demoAdminId,
-    programmeScope: demoAdminProgrammes,
-  }), [demoAdminId, demoAdminProgrammes, role])
-  const cacheKey = makeScopedCacheKey(cacheScope, 'admin.config', {
+  const { authCacheScope } = useAppState()
+  const cacheKey = makeScopedCacheKey(authCacheScope, 'admin.config', {
     section,
     ...(params ?? {}),
   })
   const initialDataRef = useRef(initialData)
   const currentKeyRef = useRef(cacheKey)
+  const loadedKeyRef = useRef(cacheKey)
+  const requestIdRef = useRef(0)
   const hasLoadedRef = useRef(Boolean(getMemoryCache<T>(cacheKey)))
   const mountedRef = useRef(true)
   const [data, setData] = useState<T>(() => getMemoryCache<T>(cacheKey)?.data ?? initialData)
   const [loading, setLoading] = useState(() => !getMemoryCache<T>(cacheKey))
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  useLayoutEffect(() => {
+    currentKeyRef.current = cacheKey
+    requestIdRef.current += 1
+  }, [cacheKey])
 
   useEffect(() => {
     initialDataRef.current = initialData
@@ -63,10 +69,17 @@ export const useAdminConfigReadCache = <T,>({
   }, [])
 
   const reload = useCallback(async (options?: { force?: boolean }) => {
-    const keyChanged = currentKeyRef.current !== cacheKey
-    if (keyChanged) {
-      currentKeyRef.current = cacheKey
-    }
+    const requestId = requestIdRef.current + 1
+    requestIdRef.current = requestId
+    const requestFence = captureProtectedAsyncRequestFence(cacheKey, requestId)
+    const isCurrentRequest = () => mountedRef.current
+      && isProtectedAsyncRequestFenceCurrent(
+        requestFence,
+        currentKeyRef.current,
+        requestIdRef.current,
+      )
+    const keyChanged = loadedKeyRef.current !== cacheKey
+    loadedKeyRef.current = cacheKey
 
     const cached = options?.force ? undefined : getMemoryCache<T>(cacheKey)
     if (cached) {
@@ -96,13 +109,13 @@ export const useAdminConfigReadCache = <T,>({
         fetcher,
         { force: Boolean(cached) || options?.force === true },
       )
-      if (!mountedRef.current) {
+      if (!isCurrentRequest()) {
         return
       }
       setData(nextData)
       hasLoadedRef.current = true
     } catch (loadError) {
-      if (!mountedRef.current) {
+      if (isMemoryCacheInvalidatedError(loadError) || !isCurrentRequest()) {
         return
       }
       if (!backgroundRefetch) {
@@ -111,7 +124,7 @@ export const useAdminConfigReadCache = <T,>({
       hasLoadedRef.current = true
       setError(loadError instanceof Error ? loadError.message : errorMessage)
     } finally {
-      if (mountedRef.current) {
+      if (isCurrentRequest()) {
         setLoading(false)
         setIsRefreshing(false)
       }

@@ -15,7 +15,10 @@ from app.config import Settings, get_settings
 from app.middleware.auth_stub import AuthStubMiddleware
 from app.routers import auth, external_residents
 from app.services import app_sessions
-from app.services.database_context import AUTH_BOUNDARY_INFO_KEY
+from app.services.database_context import (
+    AUTH_BOUNDARY_INFO_KEY,
+    RLS_ENABLED_INFO_KEY,
+)
 
 
 SESSION_KEY = "unit-test-session-hash-key-at-least-32-characters"
@@ -32,6 +35,7 @@ def _session_settings() -> SimpleNamespace:
         resident_session_idle_timeout_seconds=60 * 60,
         resident_session_absolute_timeout_seconds=12 * 60 * 60,
         session_rotation_seconds=15 * 60,
+        session_touch_interval_seconds=60,
         session_cleanup_retention_seconds=7 * 24 * 60 * 60,
         session_cleanup_batch_size=500,
     )
@@ -117,6 +121,9 @@ class _Result:
     def scalar_one(self) -> Any:
         return self._scalar
 
+    def scalar_one_or_none(self) -> Any:
+        return self._scalar
+
 
 class _HelperDb:
     def __init__(self, execute_handler) -> None:
@@ -145,13 +152,16 @@ async def test_helper_backed_session_lifecycle_uses_only_reviewed_functions() ->
     def issue_handler(sql: str, parameters: dict[str, Any]) -> _Result:
         if "issue_resident_app_session" in sql:
             return _Result(
-                mapping=_session_row(
-                    session_id=parameters["session_id"],
-                    token_digest=parameters["token_digest"],
-                    subject_id=parameters["subject_id"],
-                    generation=parameters["expected_generation"],
-                    csrf_token_digest=parameters["csrf_token_digest"],
-                )
+                mapping={
+                    "id": parameters["session_id"],
+                    "subject_type": "resident",
+                    "subject_id": parameters["subject_id"],
+                    "subject_session_generation": parameters[
+                        "expected_generation"
+                    ],
+                    "session_family_id": parameters["session_id"],
+                    "auth_source": "mata_resident",
+                }
             )
         if "cleanup_app_sessions" in sql:
             return _Result(scalar=0)
@@ -170,41 +180,43 @@ async def test_helper_backed_session_lifecycle_uses_only_reviewed_functions() ->
 
     _, issue_parameters = _assert_call(
         issue_db,
-        "mata_rls.issue_resident_app_session",
+        "mata_rls.issue_resident_app_session_lifecycle",
     )
     assert issue_parameters["normalized_mcr"] == "M12345A"
     assert issue_parameters["expected_subject_type"] == "resident"
     assert created.session.id == issue_parameters["session_id"]
     assert app_sessions.parse_session_token(created.session_token) is not None
-    assert app_sessions.validate_csrf(
-        created.session,
-        created.csrf_token,
-        settings,
-        now=created.session.created_at,
+    assert (
+        app_sessions.csrf_for_session_token(
+            created.session_token,
+            settings,
+        )
+        == created.csrf_token
     )
     _assert_call(issue_db, "mata_rls.cleanup_app_sessions")
 
     def resolve_handler(sql: str, parameters: dict[str, Any]) -> _Result:
-        if "resolve_app_session" not in sql:
-            raise AssertionError(f"Unexpected helper call: {sql}")
-        return _Result(
-            mapping=_session_row(
-                session_id=created.session.id,
-                token_digest=created.session.token_digest,
-                subject_id=SUBJECT_ID,
-                generation=3,
-                session_family_id=created.session.session_family_id,
-                csrf_token_digest=created.session.csrf_token_digest,
-                created_at=created.session.created_at,
-                absolute_expires_at=created.session.absolute_expires_at,
-                authorization_fingerprint=FINGERPRINT,
-                app_role="resident",
-                admin_level=None,
-                programme_scope=[" im ", "IM", ""],
-                posting_code=None,
-                current_staff_actor_name=None,
+        if "resolve_app_session_lifecycle" in sql:
+            return _Result(
+                mapping={
+                    "id": created.session.id,
+                    "subject_type": "resident",
+                    "subject_id": SUBJECT_ID,
+                    "subject_session_generation": 3,
+                    "session_family_id": created.session.session_family_id,
+                    "auth_source": "mata_resident",
+                    "session_refresh_required": False,
+                    "authorization_fingerprint": FINGERPRINT,
+                    "app_role": "resident",
+                    "admin_level": None,
+                    "programme_scope": [" im ", "IM", ""],
+                    "posting_code": None,
+                    "current_staff_actor_name": None,
+                }
             )
-        )
+        if "touch_app_session_lifecycle" in sql:
+            return _Result(scalar=True)
+        raise AssertionError(f"Unexpected helper call: {sql}")
 
     resolve_db = _HelperDb(resolve_handler)
     resolved = await app_sessions.resolve_session(
@@ -215,7 +227,8 @@ async def test_helper_backed_session_lifecycle_uses_only_reviewed_functions() ->
     )
 
     assert resolved is not None
-    assert [params["touch"] for _, params in resolve_db.calls] == [False, True]
+    _assert_call(resolve_db, "mata_rls.resolve_app_session_lifecycle")
+    _assert_call(resolve_db, "mata_rls.touch_app_session_lifecycle")
     assert app_sessions.authorization_fingerprint_for_session(resolved) == FINGERPRINT
     assert app_sessions.identity_context_for_session(resolved) == {
         "app_role": "resident",
@@ -228,17 +241,15 @@ async def test_helper_backed_session_lifecycle_uses_only_reviewed_functions() ->
     def rotate_handler(sql: str, parameters: dict[str, Any]) -> _Result:
         if "rotate_app_session" in sql:
             return _Result(
-                mapping=_session_row(
-                    session_id=parameters["new_session_id"],
-                    token_digest=parameters["new_token_digest"],
-                    subject_id=SUBJECT_ID,
-                    generation=3,
-                    session_family_id=created.session.session_family_id,
-                    csrf_token_digest=parameters["new_csrf_token_digest"],
-                    created_at=created.session.created_at + timedelta(minutes=30),
-                    absolute_expires_at=created.session.absolute_expires_at,
-                    rotated_from_session_id=created.session.id,
-                )
+                mapping={
+                    "id": parameters["new_session_id"],
+                    "subject_type": "resident",
+                    "subject_id": SUBJECT_ID,
+                    "subject_session_generation": 3,
+                    "session_family_id": created.session.session_family_id,
+                    "auth_source": "mata_resident",
+                    "rotated_from_session_id": created.session.id,
+                }
             )
         if "cleanup_app_sessions" in sql:
             return _Result(scalar=0)
@@ -254,7 +265,7 @@ async def test_helper_backed_session_lifecycle_uses_only_reviewed_functions() ->
 
     _, rotate_parameters = _assert_call(
         rotate_db,
-        "mata_rls.rotate_app_session",
+        "mata_rls.rotate_app_session_lifecycle",
     )
     assert rotate_parameters["expected_parent_id"] == created.session.id
     assert rotated.session.rotated_from_session_id == created.session.id
@@ -286,6 +297,83 @@ async def test_helper_backed_session_lifecycle_uses_only_reviewed_functions() ->
         "reason": "test_logout",
     }
     assert rotated.session.revoked_reason == "test_logout"
+
+
+@pytest.mark.asyncio
+async def test_logout_family_helper_is_auth_only_and_requires_both_digests() -> None:
+    settings = _session_settings()
+    session_bytes = b"s" * 32
+    csrf_bytes = b"c" * 32
+    session_token = app_sessions._encode_raw_token(session_bytes)
+    csrf_token = app_sessions._encode_raw_token(csrf_bytes)
+    auth_db = _HelperDb(
+        lambda sql, _parameters: (
+            _Result(scalar=2)
+            if "revoke_app_session_family_for_logout" in sql
+            else pytest.fail(f"Unexpected helper call: {sql}")
+        )
+    )
+
+    assert (
+        await app_sessions.revoke_session_family_for_logout(
+            auth_db,
+            settings,
+            session_token=session_token,
+            csrf_token=csrf_token,
+            reason=" logout ",
+        )
+        == 2
+    )
+    _, parameters = _assert_call(
+        auth_db,
+        "mata_rls.revoke_app_session_family_for_logout",
+    )
+    key = app_sessions._session_hash_key(settings)
+    assert parameters == {
+        "token_digest": app_sessions._session_digest(
+            session_bytes,
+            key=key,
+        ),
+        "csrf_token_digest": app_sessions._csrf_digest(
+            csrf_bytes,
+            key=key,
+        ),
+        "reason": "logout",
+    }
+
+    runtime_db = _HelperDb(
+        lambda sql, _parameters: pytest.fail(
+            f"Runtime boundary reached auth-only helper: {sql}"
+        )
+    )
+    runtime_db.info = {RLS_ENABLED_INFO_KEY: True}
+    with pytest.raises(
+        app_sessions.AppSessionConfigurationError,
+        match="auth database boundary",
+    ):
+        await app_sessions.revoke_session_family_for_logout(
+            runtime_db,
+            settings,
+            session_token=session_token,
+            csrf_token=csrf_token,
+        )
+    assert runtime_db.calls == []
+
+    malformed_db = _HelperDb(
+        lambda sql, _parameters: pytest.fail(
+            f"Malformed logout proof reached database helper: {sql}"
+        )
+    )
+    assert (
+        await app_sessions.revoke_session_family_for_logout(
+            malformed_db,
+            settings,
+            session_token=session_token,
+            csrf_token=None,
+        )
+        == 0
+    )
+    assert malformed_db.calls == []
 
 
 @pytest.mark.asyncio

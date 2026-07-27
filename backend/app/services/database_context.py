@@ -41,7 +41,10 @@ _RUNTIME_ONLY_HELPERS = frozenset(
         "is_secretary_for_posting(text)",
         "is_native_resident(uuid)",
         "is_external_resident(uuid)",
-        "rotate_app_session(bytea,uuid,uuid,bytea,bytea,integer,bytea)",
+        (
+            "rotate_app_session_lifecycle("
+            "bytea,uuid,uuid,bytea,bytea,integer,bytea)"
+        ),
         "revoke_app_session_family(bytea,uuid,text)",
         "invalidate_subject_app_sessions(text,uuid,text,boolean)",
         "replace_external_resident_schedule(uuid,jsonb)",
@@ -61,24 +64,27 @@ _AUTH_ONLY_HELPERS = frozenset(
         "staff_login_identity(uuid,uuid,bigint)",
         "resident_login_candidate(text)",
         (
-            "issue_staff_app_session("
+            "issue_staff_app_session_lifecycle("
             "uuid,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)"
         ),
         (
-            "issue_resident_app_session("
+            "issue_resident_app_session_lifecycle("
             "text,text,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)"
         ),
         (
-            "issue_external_resident_app_session("
+            "issue_external_resident_app_session_lifecycle("
             "text,text,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)"
         ),
+        "revoke_app_session_family_for_logout(bytea,bytea,text)",
         "external_registration_options()",
         "register_external_resident(text,text,text,jsonb)",
     }
 )
 _SHARED_HELPERS = frozenset(
     {
-        "resolve_app_session(bytea,boolean,integer)",
+        "resolve_app_session_lifecycle(bytea,integer)",
+        "touch_app_session_lifecycle(bytea,uuid,integer,integer)",
+        "validate_app_session_csrf(bytea,uuid,bytea)",
         "revoke_app_session(bytea,uuid,text)",
         "cleanup_app_sessions(integer,integer)",
         "consume_rate_limit(text,text,integer,integer,integer,integer)",
@@ -195,6 +201,16 @@ _RUNTIME_POLICY_ACTIONS = {
     for table_name, privileges in _RUNTIME_TABLE_PRIVILEGES.items()
     for privilege in privileges
 } | {"users:SELECT"}
+_RUNTIME_POLICY_CATALOGUE = {
+    (
+        f"{table_name}:mata_rls_{table_name}_{action.casefold()}:"
+        f"{action}"
+    )
+    for table_name, action in (
+        policy_action.split(":", maxsplit=1)
+        for policy_action in _RUNTIME_POLICY_ACTIONS
+    )
+}
 
 
 class RlsContextError(RuntimeError):
@@ -604,6 +620,24 @@ _ROLE_ATTESTATION_SQL = text(
             ),
             ARRAY[]::text[]
         ) AS executable_rls_helpers,
+        NOT EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_proc AS procedure
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = procedure.pronamespace
+            WHERE namespace.nspname = 'mata_rls'
+              AND has_function_privilege(
+                  login.oid,
+                  procedure.oid,
+                  'EXECUTE'
+              )
+              AND (
+                  NOT procedure.prosecdef
+                  OR procedure.proconfig IS DISTINCT FROM
+                      ARRAY['search_path=pg_catalog, pg_temp']::text[]
+                  OR procedure.proowner <> namespace.nspowner
+              )
+        ) AS executable_rls_helpers_are_hardened,
         COALESCE(
             (
                 SELECT array_agg(
@@ -835,7 +869,7 @@ _ROLE_ATTESTATION_SQL = text(
         COALESCE(
             (
                 SELECT array_agg(
-                    relation.relname || ':' ||
+                    relation.relname || ':' || policy.polname || ':' ||
                     CASE policy.polcmd
                         WHEN 'r' THEN 'SELECT'
                         WHEN 'a' THEN 'INSERT'
@@ -891,7 +925,7 @@ _ROLE_ATTESTATION_SQL = text(
                   )
             ),
             ARRAY[]::text[]
-        ) AS application_policy_actions,
+        ) AS application_policy_catalogue,
         (
             SELECT pg_catalog.count(*)
             FROM pg_catalog.pg_policy AS policy
@@ -939,14 +973,62 @@ _ROLE_ATTESTATION_SQL = text(
                   ]::text[]
               )
               AND (
-                  NOT policy.polpermissive
-                  OR policy.polroles <> ARRAY[
+                   NOT policy.polpermissive
+                   OR policy.polroles <> ARRAY[
                       (
                           SELECT role.oid
                           FROM pg_catalog.pg_roles AS role
-                          WHERE role.rolname = 'mata_app_runtime'
-                      )
-                  ]::oid[]
+                           WHERE role.rolname = 'mata_app_runtime'
+                       )
+                   ]::oid[]
+                   OR (
+                       policy.polcmd = 'r'
+                       AND (
+                           policy.polqual IS NULL
+                           OR policy.polwithcheck IS NOT NULL
+                       )
+                   )
+                   OR (
+                       policy.polcmd = 'a'
+                       AND (
+                           policy.polqual IS NOT NULL
+                           OR policy.polwithcheck IS NULL
+                       )
+                   )
+                   OR (
+                       policy.polcmd = 'w'
+                       AND (
+                           policy.polqual IS NULL
+                           OR policy.polwithcheck IS NULL
+                       )
+                   )
+                   OR (
+                       policy.polcmd = 'd'
+                       AND (
+                           policy.polqual IS NULL
+                           OR policy.polwithcheck IS NOT NULL
+                       )
+                   )
+                   OR (
+                       policy.polqual IS NOT NULL
+                       AND pg_catalog.strpos(
+                           pg_catalog.pg_get_expr(
+                               policy.polqual,
+                               policy.polrelid
+                           ),
+                           'mata_rls.'
+                       ) = 0
+                   )
+                   OR (
+                       policy.polwithcheck IS NOT NULL
+                       AND pg_catalog.strpos(
+                           pg_catalog.pg_get_expr(
+                               policy.polwithcheck,
+                               policy.polrelid
+                           ),
+                           'mata_rls.'
+                       ) = 0
+                   )
               )
         ) AS unsafe_application_policy_count
     FROM pg_roles AS login
@@ -955,6 +1037,125 @@ _ROLE_ATTESTATION_SQL = text(
     LEFT JOIN pg_roles AS forbidden_capability
       ON forbidden_capability.rolname = :forbidden_capability_group
     WHERE login.rolname = session_user
+    """
+)
+
+_SESSION_HELPER_ACL_ATTESTATION_SQL = text(
+    """
+    WITH expected(signature, allowed_grantees) AS (
+        VALUES
+            (
+                'issue_staff_app_session_lifecycle(uuid,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)',
+                ARRAY['mata_auth_internal']::text[]
+            ),
+            (
+                'issue_resident_app_session_lifecycle(text,text,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)',
+                ARRAY['mata_auth_internal']::text[]
+            ),
+            (
+                'issue_external_resident_app_session_lifecycle(text,text,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)',
+                ARRAY['mata_auth_internal']::text[]
+            ),
+            (
+                'resolve_app_session_lifecycle(bytea,integer)',
+                ARRAY['mata_app_runtime', 'mata_auth_internal']::text[]
+            ),
+            (
+                'touch_app_session_lifecycle(bytea,uuid,integer,integer)',
+                ARRAY['mata_app_runtime', 'mata_auth_internal']::text[]
+            ),
+            (
+                'validate_app_session_csrf(bytea,uuid,bytea)',
+                ARRAY['mata_app_runtime', 'mata_auth_internal']::text[]
+            ),
+            (
+                'rotate_app_session_lifecycle(bytea,uuid,uuid,bytea,bytea,integer,bytea)',
+                ARRAY['mata_app_runtime']::text[]
+            ),
+            (
+                'revoke_app_session_family_for_logout(bytea,bytea,text)',
+                ARRAY['mata_auth_internal']::text[]
+            ),
+            (
+                'issue_staff_app_session(uuid,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)',
+                ARRAY[]::text[]
+            ),
+            (
+                'issue_resident_app_session(text,text,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)',
+                ARRAY[]::text[]
+            ),
+            (
+                'issue_external_resident_app_session(text,text,uuid,bigint,uuid,bytea,bytea,integer,integer,bytea)',
+                ARRAY[]::text[]
+            ),
+            (
+                'resolve_app_session(bytea,boolean,integer)',
+                ARRAY[]::text[]
+            ),
+            (
+                'rotate_app_session(bytea,uuid,uuid,bytea,bytea,integer,bytea)',
+                ARRAY[]::text[]
+            )
+    )
+    SELECT NOT EXISTS (
+        SELECT 1
+        FROM expected
+        LEFT JOIN pg_catalog.pg_proc AS procedure
+          ON procedure.oid = pg_catalog.to_regprocedure(
+              'mata_rls.' || expected.signature
+          )
+        LEFT JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE procedure.oid IS NULL
+           OR NOT procedure.prosecdef
+           OR procedure.proconfig IS DISTINCT FROM
+              ARRAY['search_path=pg_catalog, pg_temp']::text[]
+           OR procedure.proowner <> namespace.nspowner
+           OR EXISTS (
+                SELECT 1
+                FROM pg_catalog.aclexplode(
+                    COALESCE(
+                        procedure.proacl,
+                        pg_catalog.acldefault('f', procedure.proowner)
+                    )
+                ) AS acl
+                LEFT JOIN pg_catalog.pg_roles AS grantee_role
+                  ON grantee_role.oid = acl.grantee
+                WHERE acl.privilege_type = 'EXECUTE'
+                  AND acl.grantee <> procedure.proowner
+                  AND (
+                      grantee_role.rolname IS NULL
+                      OR NOT (
+                          grantee_role.rolname
+                          = ANY(expected.allowed_grantees)
+                      )
+                      OR acl.is_grantable
+                  )
+           )
+           OR EXISTS (
+                SELECT 1
+                FROM pg_catalog.unnest(expected.allowed_grantees)
+                    AS allowed_grantee(role_name)
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.aclexplode(
+                        COALESCE(
+                            procedure.proacl,
+                            pg_catalog.acldefault(
+                                'f',
+                                procedure.proowner
+                            )
+                        )
+                    ) AS acl
+                    JOIN pg_catalog.pg_roles AS grantee_role
+                      ON grantee_role.oid = acl.grantee
+                    WHERE grantee_role.rolname
+                            = allowed_grantee.role_name
+                      AND acl.privilege_type = 'EXECUTE'
+                      AND NOT acl.is_grantable
+                )
+           )
+    ) AS session_helper_acls_are_exact
     """
 )
 
@@ -1280,6 +1481,9 @@ async def attest_database_role(
                 },
             )
         ).mappings().one_or_none()
+        session_helper_acls_are_exact = bool(
+            await connection.scalar(_SESSION_HELPER_ACL_ATTESTATION_SQL)
+        )
 
     if row is None:
         raise RlsRuntimeRoleError(
@@ -1287,6 +1491,8 @@ async def attest_database_role(
         )
 
     failed_checks: list[str] = []
+    if not session_helper_acls_are_exact:
+        failed_checks.append("session_helper_acls_are_exact")
     boolean_requirements = {
         "login_can_login": True,
         "login_inherits": True,
@@ -1309,6 +1515,7 @@ async def attest_database_role(
         "has_no_privileged_membership": True,
         "has_no_delegable_acl_privileges": True,
         "has_no_owner_membership": True,
+        "executable_rls_helpers_are_hardened": True,
         "browser_roles_are_denied": True,
         "public_schema_create_is_denied": True,
     }
@@ -1393,15 +1600,15 @@ async def attest_database_role(
             failed_checks.append("rls_application_tables")
         if list(row.get("forced_rls_application_tables") or []):
             failed_checks.append("forced_rls_application_tables")
-        actual_policy_actions = [
-            str(action)
-            for action in (row.get("application_policy_actions") or [])
+        actual_policy_catalogue = [
+            str(policy)
+            for policy in (row.get("application_policy_catalogue") or [])
         ]
         if (
-            len(actual_policy_actions) != len(_RUNTIME_POLICY_ACTIONS)
-            or set(actual_policy_actions) != _RUNTIME_POLICY_ACTIONS
+            len(actual_policy_catalogue) != len(_RUNTIME_POLICY_CATALOGUE)
+            or set(actual_policy_catalogue) != _RUNTIME_POLICY_CATALOGUE
         ):
-            failed_checks.append("application_policy_actions")
+            failed_checks.append("application_policy_catalogue")
         if int(row.get("unsafe_application_policy_count") or 0) != 0:
             failed_checks.append("unsafe_application_policy_count")
 

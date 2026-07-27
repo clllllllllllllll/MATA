@@ -119,15 +119,22 @@ The backend runs on `http://localhost:8000` and the frontend on `http://localhos
 | `SUPABASE_SERVICE_ROLE_KEY` | Backend-only Supabase Admin/service-role key | `<server-only-service-role-key>` |
 | `MATA_SESSION_HASH_KEY` | Backend-only keyed-digest secret; minimum 32 characters | `<backend-only-random-value>` |
 | `MATA_ALLOWED_HOSTS` | Explicit accepted Host values | `localhost,127.0.0.1,testserver` |
-| `MATA_STAFF_IDLE_TIMEOUT_SECONDS` | Staff idle timeout | `1800` |
-| `MATA_STAFF_ABSOLUTE_TIMEOUT_SECONDS` | Staff absolute timeout | `28800` |
-| `MATA_RESIDENT_IDLE_TIMEOUT_SECONDS` | Resident idle timeout | `3600` |
-| `MATA_RESIDENT_ABSOLUTE_TIMEOUT_SECONDS` | Resident absolute timeout | `43200` |
-| `MATA_SESSION_ROTATION_SECONDS` | Refresh hint/rotation interval | `900` |
+| `MATA_STAFF_IDLE_TIMEOUT_SECONDS` | Master Admin, Programme Coordinator, and Secretary idle timeout | `1800` |
+| `MATA_STAFF_ABSOLUTE_TIMEOUT_SECONDS` | Master Admin, Programme Coordinator, and Secretary absolute timeout | `28800` |
+| `MATA_RESIDENT_IDLE_TIMEOUT_SECONDS` | NHG and registered Non-NHG Resident idle timeout | `3600` |
+| `MATA_RESIDENT_ABSOLUTE_TIMEOUT_SECONDS` | NHG and registered Non-NHG Resident absolute timeout | `43200` |
+| `MATA_SESSION_ROTATION_SECONDS` | Refresh hint/rotation interval; rotation extends neither the current idle deadline nor absolute expiry | `900` |
+| `MATA_SESSION_TOUCH_INTERVAL_SECONDS` | Minimum interval between qualifying-activity idle-expiry writes | `60` |
+| `MATA_SESSION_CLEANUP_RETENTION_SECONDS` | Retention after revocation/effective expiry before cleanup eligibility | `604800` |
+| `MATA_SESSION_CLEANUP_BATCH_SIZE` | Maximum rows deleted by one cleanup call | `500` |
 | `MATA_CSRF_HEADER_NAME` | Synchronizer-token request header | `X-CSRF-Token` |
 | `RATE_LIMIT_STORE` | `postgres` is required in production | `memory` |
 | `RATE_LIMIT_HASH_SECRET` | Backend-only HMAC secret; minimum 32 characters | `<backend-only-random-value>` |
 | `MATA_RESIDENT_SESSION_SECRET` | Rollback-only bearer compatibility secret; minimum 32 UTF-8 bytes | `<rollback-only-placeholder>` |
+
+The opaque application credential is intentionally issued as a
+non-persistent browser-session cookie with no `Max-Age` or `Expires`.
+PostgreSQL idle and absolute deadlines are the sole expiry authority.
 
 ### Frontend (`.env`)
 
@@ -202,6 +209,15 @@ Normal Supabase/production operation uses `AUTH_TRANSPORT=cookie`. Staff credent
 
 Unsafe cookie-authenticated requests require the session-bound `X-CSRF-Token`. Logout, rotation, password reset, account changes, expiry, and revocation invalidate server-side session state. Production bearer compatibility is disabled unless the narrowly scoped rollback flag is explicitly enabled.
 
+The effective session deadline is the earlier of its sliding inactivity
+deadline and its fixed family absolute deadline; equality is expired. Only a
+successful protected user mutation can qualify for interval-gated activity.
+Refresh rotates the opaque credential and CSRF value but extends neither the
+current idle deadline nor the family absolute deadline. Continuing after
+either expiry requires a full login. The example durations above are not
+approved production policy; the organisation and operations owner must
+approve explicit deployed values.
+
 With H-E RLS enabled, protected application SQL uses a credentialed login that inherits only the `mata_app_runtime` capability. Public authentication and registration helpers use a different login that inherits only `mata_auth_internal`; Alembic uses the separate table-owning migration credential. All three URLs must reach the same database, and startup fails closed unless the exact role, ownership, helper, policy, grant, sequence, default-ACL, `PUBLIC`, and browser-role catalogue is present.
 
 Staff login, Resident login, registration options, and Non-NHG registration are intentionally public entry points. Application authentication, authorization, rate limiting, CSRF, and session controls protect them; a Vercel outer gate is not required by the H-D design.
@@ -235,7 +251,7 @@ alembic downgrade -1
 
 ## Project Status
 
-MATA remains in active phased development. Phase 5B-H-D session transport hardening and Phase 5B-H-E full PostgreSQL RLS are implemented and locally verified; see `docs/5b_h_d_production_security_implementation.md` and `docs/5b_h_e_full_rls_implementation.md`. Phase 6 compliance remains separate. Local code completion is not proof that migrations, roles, policies, grants, or configuration are deployed to Vercel/Supabase.
+MATA remains in active phased development. Phase 5B-H-D session transport hardening, Phase 5B-H-E full PostgreSQL RLS, and the focused session-lifecycle assurance work are implemented locally; see `docs/5b_h_d_production_security_implementation.md`, `docs/5b_h_e_full_rls_implementation.md`, and `docs/5b_h_session_lifecycle_assurance.md`. Phase 6 compliance remains separate. Local code completion is not proof that migrations, roles, policies, grants, lifecycle settings, or configuration are deployed to Vercel/Supabase.
 
 ---
 

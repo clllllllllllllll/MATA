@@ -83,6 +83,19 @@ python -B -m tests.run_rls_restricted_pytest -q --tb=short -p no:cacheprovider t
 
 The harness creates distinct ephemeral `LOGIN`, non-owner, `NOBYPASSRLS` runtime and auth credentials, grants each only its stable capability group, runs pytest with RLS active, and removes the ephemeral roles afterward. Never point this harness or lifecycle tests at live Supabase.
 
+For focused session-lifecycle assurance, use a fresh child process and exactly
+`mata_phase5b_session_lifecycle_verify` at head `20260727_000027`. Verify
+`current_database()` before every migration, downgrade, reset, or test command:
+
+```powershell
+Set-Item -Path Env:SYNC_DATABASE_URL -Value "postgresql://<local-owner>:<local-password>@<local-host>:<local-port>/mata_phase5b_session_lifecycle_verify"
+cd backend
+python -B -m alembic current
+python -B -m tests.run_rls_restricted_pytest -q --tb=short -p no:cacheprovider tests
+```
+
+Never substitute `mata_db`, the earlier H-D/H-E database, or a remote target.
+
 Registry-backed dependency audits are:
 
 ```bash
@@ -98,6 +111,6 @@ Use `.github/scripts/sanitize_dependency_audit.py` and the workflow contract in 
 
 Production configuration validation requires cookie transport, RLS enabled, three distinct credentialed database logins targeting the same PostgreSQL endpoint, non-local PostgreSQL URLs, explicit HTTPS CORS origins, explicit allowed hosts, `RATE_LIMIT_STORE=postgres`, and backend-only session/rate-limit secrets of at least 32 characters. The runtime and auth logins inherit only `mata_app_runtime` and `mata_auth_internal`, respectively; the migration login owns application objects. Startup attestation rejects role, ownership, helper, policy, grant, sequence, default-ACL, `PUBLIC`, or browser-role drift. The production browser uses relative `/api/v1` and has no Supabase client configuration.
 
-The session-transport and dependency evidence is in `docs/5b_h_d_production_security_implementation.md`. The restricted-role architecture, RLS catalogue, migration lifecycle, local verification, rollback, and deployment prerequisites are in `docs/5b_h_e_full_rls_implementation.md`. Local completion does not prove deployed behavior.
+The session-transport and dependency evidence is in `docs/5b_h_d_production_security_implementation.md`. The restricted-role architecture, RLS catalogue, migration lifecycle, local verification, rollback, and deployment prerequisites are in `docs/5b_h_e_full_rls_implementation.md`. Current absolute/idle expiry, activity, helper, cookie, and RLS-context assurance is in `docs/5b_h_session_lifecycle_assurance.md`. Local completion does not prove deployed behavior.
 
 PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED

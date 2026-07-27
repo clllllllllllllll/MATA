@@ -132,6 +132,24 @@ The local direct policy matrix and existing application suite exercise these inv
 - Non-NHG Resident sees and mutates only its own external identity/schedule/event/attendance surface and sees no native resident or attendance rows.
 - Native and external attendance remain separate; external rows never enter native compliance.
 - Uploads, warnings, audit logging, reports, event guards, registration, session lifecycle, rate limits, and other existing workflows run through either scoped runtime policies or a reviewed helper boundary.
+- Revision `20260727_000027` replaces restricted execution of the original
+  full-row session resolve/issue/rotate functions with minimal lifecycle
+  wrappers. Runtime/auth capabilities receive only identity/binding results,
+  a refresh boolean, and CSRF/touch booleans; stored token/CSRF digests, expiry
+  fields, and derived client lifetimes are not returned.
+- The revision-owned lifecycle subset contains exactly eight helpers: three
+  auth-only issuance wrappers, three shared resolve/touch/CSRF helpers, one
+  runtime-only rotation helper, and
+  `revoke_app_session_family_for_logout(bytea,bytea,text)`, which is auth-only.
+  Runtime, PUBLIC, browser roles, and `service_role` have no execute authority
+  on the logout helper. It accepts only keyed token/CSRF digests, derives the
+  subject and family server-side, and exposes no hydration, signed-context,
+  touch, rotation, or refresh capability.
+- Bounded cleanup retains a `rotated` parent as logout proof until the
+  immutable family absolute deadline, even if the parent's superseded idle
+  deadline or the configured retention interval has already passed. A shorter
+  retention value cannot remove that proof early or make a valid child
+  eligible.
 - No-context queries fail closed, helper-only table queries are permission denied, and public/browser roles remain denied.
 
 ## Open Readiness Items

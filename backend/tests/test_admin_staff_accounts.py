@@ -92,6 +92,8 @@ class _FakeStaffAccountSession:
         self.audit_logs: list[dict] = []
         self.commits = 0
         self.session_revocations = 0
+        self.mutation_order: list[str] = []
+        self.staff_update_query_order: list[str] = []
 
     @staticmethod
     def _user(
@@ -132,7 +134,13 @@ class _FakeStaffAccountSession:
         sql = str(statement)
         payload = dict(params or {})
 
+        if "pg_advisory_xact_lock" in sql:
+            assert payload["lock_name"] == "mata.staff_account_update_invariant"
+            self.staff_update_query_order.append("invariant_lock")
+            return _FakeResult()
+
         if "INSERT INTO audit_logs" in sql:
+            self.mutation_order.append("audit")
             self.audit_logs.append(payload)
             return _FakeResult([{"id": payload["id"], **payload}])
 
@@ -159,6 +167,9 @@ class _FakeStaffAccountSession:
             return _FakeResult(scalar=1 if exists else None)
 
         if "FROM users" in sql and "WHERE id = :user_id" in sql:
+            self.staff_update_query_order.append(
+                "target_lock" if "FOR UPDATE" in sql else "target_read"
+            )
             rows = [row for row in self.users if row["id"] == str(payload["user_id"])]
             return _FakeResult(rows)
 
@@ -187,6 +198,7 @@ class _FakeStaffAccountSession:
             and "session_generation = session_generation + 1" in sql
             and "password_hash = :password_hash" not in sql
         ):
+            self.mutation_order.append("revoke_generation")
             for row in self.users:
                 if row["id"] == str(payload["subject_id"]):
                     row["session_generation"] += 1
@@ -213,6 +225,8 @@ class _FakeStaffAccountSession:
             return _FakeResult(rows)
 
         if "UPDATE users" in sql:
+            self.mutation_order.append("staff_update")
+            self.staff_update_query_order.append("staff_update")
             rows = []
             for row in self.users:
                 if row["id"] == str(payload["user_id"]):
@@ -226,6 +240,7 @@ class _FakeStaffAccountSession:
             return _FakeResult(rows)
 
         if "UPDATE app_sessions" in sql:
+            self.mutation_order.append("revoke_sessions")
             self.session_revocations += 1
             return _FakeResult(rowcount=2)
 
@@ -534,6 +549,26 @@ def test_cannot_deactivate_or_demote_last_active_master_admin() -> None:
     assert session.users[0]["is_active"] is True
 
 
+def test_staff_patch_locks_cross_account_invariant_before_current_target_row() -> None:
+    session = _FakeStaffAccountSession()
+
+    response = _client(identity=_master_identity(session), session=session).patch(
+        f"/api/v1/admin/staff-accounts/{session.pc_id}",
+        json={"account_display_name": "Renamed Programme PC"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["account_display_name"] == "Renamed Programme PC"
+    assert session.staff_update_query_order == [
+        "invariant_lock",
+        "target_lock",
+        "staff_update",
+    ]
+    assert session.users[1]["role"] == "admin"
+    assert session.users[1]["admin_level"] == "programme"
+    assert session.users[1]["programme_scope"] == ["DR"]
+
+
 def test_reset_password_updates_supabase_and_clears_saved_actor_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -728,3 +763,116 @@ def test_staff_scope_or_active_state_change_revokes_existing_sessions() -> None:
     audit_metadata = json.loads(session.audit_logs[-1]["metadata_json"])
     assert audit_metadata["authorization_changed"] is True
     assert audit_metadata["revoked_session_count"] == 2
+    assert session.mutation_order == [
+        "staff_update",
+        "revoke_generation",
+        "revoke_sessions",
+        "audit",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            {
+                "account_display_name": "Programme PC - DR",
+                "account_type": "programme_pc",
+                "is_active": True,
+                "programme_scope": ["DR"],
+            },
+            {
+                "account_type": "programme_pc",
+                "role": "admin",
+                "admin_level": "programme",
+                "programme_scope": ["DR"],
+                "posting_code": None,
+                "is_active": True,
+            },
+        ),
+        (
+            {
+                "account_display_name": "Secretary - TTSHCardio",
+                "account_type": "secretary",
+                "is_active": True,
+                "posting_code": "TTSHCardio",
+            },
+            {
+                "account_type": "secretary",
+                "role": "secretary",
+                "admin_level": "programme",
+                "programme_scope": [],
+                "posting_code": "TTSHCardio",
+                "is_active": True,
+            },
+        ),
+        (
+            {
+                "account_display_name": "Inactive Master Admin",
+                "account_type": "master_admin",
+                "is_active": False,
+            },
+            {
+                "account_type": "master_admin",
+                "role": "admin",
+                "admin_level": "master",
+                "programme_scope": [],
+                "posting_code": None,
+                "is_active": False,
+            },
+        ),
+    ],
+)
+def test_self_authorization_change_audits_before_update_and_final_revocation(
+    payload: dict[str, object],
+    expected: dict[str, object],
+) -> None:
+    session = _FakeStaffAccountSession()
+    session.users.append(
+        session._user(
+            user_id=str(uuid4()),
+            email="backup-master@nhg.com.sg",
+            name="Backup Master Admin",
+            role="admin",
+            admin_level="master",
+            programme_scope=None,
+            posting_code=None,
+            is_active=True,
+            current_staff_actor_name="Dr Backup",
+        )
+    )
+
+    response = _client(identity=_master_identity(session), session=session).patch(
+        f"/api/v1/admin/staff-accounts/{session.master_id}",
+        json=payload,
+    )
+
+    assert response.status_code == 200
+    for field_name, expected_value in expected.items():
+        assert response.json()[field_name] == expected_value
+    assert session.mutation_order == [
+        "audit",
+        "staff_update",
+        "revoke_generation",
+        "revoke_sessions",
+    ]
+    assert session.session_revocations == 1
+    assert session.users[0]["session_generation"] == 1
+    audit_log = session.audit_logs[-1]
+    audit_after = json.loads(audit_log["after_json"])
+    audit_metadata = json.loads(audit_log["metadata_json"])
+    assert audit_after["role"] == expected["role"]
+    assert audit_after["admin_level"] == expected["admin_level"]
+    assert audit_after["programme_scope"] == expected["programme_scope"]
+    assert audit_after["posting_code"] == expected["posting_code"]
+    assert audit_after["is_active"] == expected["is_active"]
+    assert audit_metadata["account_type"] == expected["account_type"]
+    assert audit_metadata["authorization_changed"] is True
+    assert audit_metadata["self_authorization_change"] is True
+    assert audit_metadata["revoked_session_count"] is None
+    assert audit_metadata["revoked_session_count_is_exact"] is False
+    assert audit_metadata["session_revocation_scope"] == "all_subject_sessions"
+    assert (
+        audit_metadata["session_revocation_timing"]
+        == "final_protected_action_same_transaction"
+    )

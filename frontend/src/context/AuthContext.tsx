@@ -7,16 +7,27 @@ import {
   type PropsWithChildren,
 } from 'react'
 import {
+  announceAuthSessionEstablished,
   authSessionChangedEvent,
-  clearAuthSession,
+  authSessionRevalidationEvent,
+  captureAuthSessionFence,
   hydrateAuthSession,
+  isAuthSessionFenceCurrent,
   logoutAuthSession,
+  readAuthSessionEpoch,
   readAuthSessionRevision,
   readStoredAuthSession,
   refreshAuthSession,
   saveAuthSession,
+  saveHydratedAuthSession,
   updateStaffActorName as updateStaffActorNameApi,
 } from '../api/auth'
+import {
+  announceAuthSessionRotated,
+  clearAuthSessionIfPresent,
+  createAuthSessionRevalidationCoordinator,
+  type ClearAuthSessionOptions,
+} from '../api/authSessionStore'
 import { frontendConfig } from '../config/frontendConfig'
 import type { AuthIdentity, AuthSessionState, StoredAuthSession } from '../types/auth'
 import { clearMemoryCache } from '../utils/memoryReadCache'
@@ -39,8 +50,10 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     [],
   )
 
-  const clearLocalAuthState = useCallback(() => {
-    clearAuthSession()
+  const clearLocalAuthState = useCallback((
+    options?: ClearAuthSessionOptions,
+  ) => {
+    clearAuthSessionIfPresent(options)
     setSession(null)
     setRole(frontendConfig.defaultRole)
     setIsLoading(false)
@@ -53,6 +66,17 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     setRole(nextSession.identity.role)
     setIsLoading(false)
     clearMemoryCache()
+  }, [setRole])
+
+  const commitHydratedSession = useCallback((nextSession: StoredAuthSession) => {
+    if (saveHydratedAuthSession(nextSession)) {
+      setSession(nextSession)
+      setRole(nextSession.identity.role)
+      clearMemoryCache()
+    }
+    if (readAuthSessionEpoch() === null) {
+      announceAuthSessionEstablished()
+    }
   }, [setRole])
 
   const beginLoginAttempt = useCallback(() => {
@@ -84,18 +108,21 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
       return null
     }
     if (!hydratedSession.sessionRefreshRequired) {
-      return hydratedSession
+      return { session: hydratedSession, rotated: false }
     }
 
     // Stage the synchronizer token only after this hydration request wins.
     saveAuthSession(hydratedSession)
     const stagedSessionRevision = readAuthSessionRevision()
     const refreshedSession = await refreshAuthSession()
-    return (
+    const refreshedResult = (
       isCurrentAuthRequest(generation) &&
       readAuthSessionRevision() === stagedSessionRevision
     )
       ? refreshedSession
+      : null
+    return refreshedResult
+      ? { session: refreshedResult, rotated: true }
       : null
   }, [isCurrentAuthRequest])
 
@@ -104,9 +131,12 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     const sessionRevision = readAuthSessionRevision()
     setIsLoading(true)
     try {
-      const hydratedSession = await loadHydratedSession(generation, sessionRevision)
-      if (hydratedSession && isCurrentAuthRequest(generation)) {
-        commitSession(hydratedSession)
+      const hydratedResult = await loadHydratedSession(generation, sessionRevision)
+      if (hydratedResult && isCurrentAuthRequest(generation)) {
+        commitHydratedSession(hydratedResult.session)
+        if (hydratedResult.rotated) {
+          announceAuthSessionRotated()
+        }
       }
     } catch {
       if (isCurrentAuthRequest(generation)) {
@@ -119,7 +149,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     }
   }, [
     clearLocalAuthState,
-    commitSession,
+    commitHydratedSession,
     isCurrentAuthRequest,
     loadHydratedSession,
     nextAuthRequestGeneration,
@@ -131,9 +161,12 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     const sessionRevision = readAuthSessionRevision()
     ;(async () => {
       try {
-        const hydratedSession = await loadHydratedSession(generation, sessionRevision)
-        if (hydratedSession && active && isCurrentAuthRequest(generation)) {
-          commitSession(hydratedSession)
+        const hydratedResult = await loadHydratedSession(generation, sessionRevision)
+        if (hydratedResult && active && isCurrentAuthRequest(generation)) {
+          commitHydratedSession(hydratedResult.session)
+          if (hydratedResult.rotated) {
+            announceAuthSessionRotated()
+          }
         }
       } catch {
         if (active && isCurrentAuthRequest(generation)) {
@@ -151,7 +184,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     }
   }, [
     clearLocalAuthState,
-    commitSession,
+    commitHydratedSession,
     isCurrentAuthRequest,
     loadHydratedSession,
     nextAuthRequestGeneration,
@@ -162,44 +195,88 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
       const nextSession = readStoredAuthSession()
       setSession(nextSession)
       setRole(nextSession?.identity.role ?? frontendConfig.defaultRole)
+      if (!nextSession) {
+        clearMemoryCache()
+      }
     }
     window.addEventListener(authSessionChangedEvent, onSessionChanged)
     return () => window.removeEventListener(authSessionChangedEvent, onSessionChanged)
   }, [setRole])
 
+  useEffect(() => {
+    const revalidation = createAuthSessionRevalidationCoordinator(
+      hydrateSession,
+      () => Boolean(readStoredAuthSession()),
+    )
+    const onFocus = () => revalidation.request(true)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        revalidation.request(true)
+      }
+    }
+    const onCrossTabRevalidation = () => revalidation.request(true)
+
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener(authSessionRevalidationEvent, onCrossTabRevalidation)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener(authSessionRevalidationEvent, onCrossTabRevalidation)
+      revalidation.dispose()
+    }
+  }, [hydrateSession])
+
   const loginWithSession = useCallback(
     (nextSession: StoredAuthSession) => {
       nextAuthRequestGeneration()
+      announceAuthSessionEstablished()
       commitSession(nextSession)
     },
     [commitSession, nextAuthRequestGeneration],
   )
 
   const logout = useCallback(async () => {
+    const currentSession = readStoredAuthSession()
+    const sessionFence = captureAuthSessionFence()
     nextAuthRequestGeneration()
+    const logoutRequest = currentSession && sessionFence
+      ? logoutAuthSession(currentSession, sessionFence)
+      : Promise.resolve()
+    clearLocalAuthState({
+      broadcast: 'logout',
+      sessionEpoch: sessionFence?.sessionEpoch,
+    })
     try {
-      await logoutAuthSession()
+      await logoutRequest
     } catch {
-      // Server expiry or a network failure must not leave protected UI mounted locally.
-    } finally {
-      clearLocalAuthState()
+      // Local termination is immediate; server logout remains best effort.
     }
   }, [clearLocalAuthState, nextAuthRequestGeneration])
 
   const updateStaffActorName = useCallback(
     async (fullName: string) => {
-      if (!session) {
+      const operationSession = readStoredAuthSession()
+      const operationFence = captureAuthSessionFence()
+      const operationGeneration = authRequestGenerationRef.current
+      if (!operationSession || !operationFence) {
         throw new Error('No active staff session.')
       }
       const updatedIdentity = await updateStaffActorNameApi(fullName)
+      if (
+        !isCurrentAuthRequest(operationGeneration)
+        || !isAuthSessionFenceCurrent(operationFence)
+      ) {
+        return updatedIdentity
+      }
       const updatedSession: StoredAuthSession = {
-        ...session,
+        ...operationSession,
         identity: updatedIdentity,
       }
       commitSession(updatedSession)
       return updatedIdentity
     },
-    [commitSession, session],
+    [commitSession, isCurrentAuthRequest],
   )
 
   const effectiveIdentity = useMemo<AuthIdentity | null>(

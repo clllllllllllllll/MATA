@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 from starlette.responses import Response
 
 from app.config import Settings
@@ -18,22 +16,24 @@ def set_session_cookie(
     *,
     settings: Settings,
     session_token: str,
-    absolute_expires_at: datetime,
-    now: datetime | None = None,
 ) -> None:
-    current_time = now or datetime.now(UTC)
-    if current_time.tzinfo is None:
-        current_time = current_time.replace(tzinfo=UTC)
-    max_age = max(1, int((absolute_expires_at - current_time).total_seconds()))
+    """Issue an intentionally non-persistent browser-session cookie.
+
+    A relative Max-Age calculated before transaction commit or response
+    delivery cannot be proven to end by the PostgreSQL absolute deadline.
+    Server-side idle/absolute checks therefore remain the sole expiry
+    authority and the browser receives no persistent lifetime directive.
+    """
+
     response.set_cookie(
         key=session_cookie_name(settings),
         value=session_token,
-        max_age=max_age,
         path="/",
         secure=settings.environment == "production",
         httponly=True,
         samesite="strict",
     )
+
 
 def clear_session_cookie(response: Response, *, settings: Settings) -> None:
     response.delete_cookie(

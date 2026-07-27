@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import {
   getAdminLogDetail,
@@ -20,11 +20,14 @@ import type {
 import {
   clearMemoryCache,
   getMemoryCache,
+  isMemoryCacheInvalidatedError,
   makeScopedCacheKey,
   readThroughMemoryCache,
-  setMemoryCache,
-  type CacheScope,
 } from '../../utils/memoryReadCache'
+import {
+  captureProtectedAsyncRequestFence,
+  isProtectedAsyncRequestFenceCurrent,
+} from '../../utils/protectedAsyncFence'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 type BadgeTone = 'success' | 'warning' | 'critical' | 'info' | 'neutral'
@@ -407,6 +410,7 @@ export const AdminLogsPage = () => {
     role,
     demoAdminId,
     demoAdminProgrammes,
+    authCacheScope,
     reportingPeriods,
   } = useAppState()
   const [logs, setLogs] = useState<AdminLogListItem[]>([])
@@ -424,15 +428,20 @@ export const AdminLogsPage = () => {
   const [detailError, setDetailError] = useState<string | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const hasLoadedLogsRef = useRef(false)
+  const listRequestRef = useRef(0)
   const detailRequestRef = useRef(0)
+  const authScopeKey = useMemo(
+    () => makeScopedCacheKey(authCacheScope, 'admin.logs.auth-scope', {}),
+    [authCacheScope],
+  )
+  const currentAuthScopeKeyRef = useRef(authScopeKey)
+
+  useLayoutEffect(() => {
+    currentAuthScopeKeyRef.current = authScopeKey
+    detailRequestRef.current += 1
+  }, [authScopeKey])
 
   const adminLevel = role === 'programme_pc' ? 'programme' : 'master'
-
-  const cacheScope = useMemo<CacheScope>(() => ({
-    role,
-    userId: demoAdminId,
-    programmeScope: demoAdminProgrammes,
-  }), [demoAdminId, demoAdminProgrammes, role])
 
   const updateFilter = <Key extends keyof AdminLogFilterState>(
     key: Key,
@@ -451,6 +460,29 @@ export const AdminLogsPage = () => {
     }, searchDebounceMs)
     return () => window.clearTimeout(timer)
   }, [searchTerm])
+
+  useEffect(() => {
+    let active = true
+    queueMicrotask(() => {
+      if (!active) {
+        return
+      }
+      hasLoadedLogsRef.current = false
+      setLogs([])
+      setTotal(0)
+      setError(null)
+      setSelectedLog(null)
+      setSelectedDetail(null)
+      setDetailError(null)
+      setDetailLoading(false)
+      setIsManualRefreshing(false)
+      setIsRefetching(false)
+      setIsInitialLoading(true)
+    })
+    return () => {
+      active = false
+    }
+  }, [authScopeKey])
 
   useEffect(() => {
     const nextParams = buildSearchParams(filters, searchTerm, offset)
@@ -484,10 +516,17 @@ export const AdminLogsPage = () => {
   }), [filters, offset])
 
   const adminLogsCacheKey = useCallback((querySearch: string) => makeScopedCacheKey(
-    cacheScope,
+    authCacheScope,
     'admin.logs.list',
     requestFilters(querySearch),
-  ), [cacheScope, requestFilters])
+  ), [authCacheScope, requestFilters])
+  const listRequestContextKey = adminLogsCacheKey(searchTerm)
+  const currentListRequestContextKeyRef = useRef(listRequestContextKey)
+
+  useLayoutEffect(() => {
+    currentListRequestContextKeyRef.current = listRequestContextKey
+    listRequestRef.current += 1
+  }, [listRequestContextKey])
 
   const loadLogs = useCallback(async (querySearch: string) => {
     return listAdminLogs({
@@ -499,18 +538,35 @@ export const AdminLogsPage = () => {
   }, [adminLevel, demoAdminId, demoAdminProgrammes, requestFilters])
 
   const fetchLogs = useCallback(async () => {
+    const requestId = listRequestRef.current + 1
+    listRequestRef.current = requestId
+    const requestFence = captureProtectedAsyncRequestFence(listRequestContextKey, requestId)
+    const isCurrentRequest = () => isProtectedAsyncRequestFenceCurrent(
+      requestFence,
+      currentListRequestContextKeyRef.current,
+      listRequestRef.current,
+    )
     setIsManualRefreshing(true)
     setError(null)
     try {
       const key = adminLogsCacheKey(searchTerm)
       clearMemoryCache((cacheKey) => cacheKey === key)
-      const response = await loadLogs(searchTerm)
-      setMemoryCache(key, response)
+      const { data: response } = await readThroughMemoryCache(
+        key,
+        () => loadLogs(searchTerm),
+        { force: true },
+      )
+      if (!isCurrentRequest()) {
+        return
+      }
       setDebouncedSearchTerm((previous) => (previous === searchTerm ? previous : searchTerm))
       setLogs(response.items)
       setTotal(response.total)
       hasLoadedLogsRef.current = true
     } catch (fetchError) {
+      if (isMemoryCacheInvalidatedError(fetchError) || !isCurrentRequest()) {
+        return
+      }
       setLogs([])
       setTotal(0)
       hasLoadedLogsRef.current = true
@@ -518,18 +574,31 @@ export const AdminLogsPage = () => {
         fallbackMessage: 'Unable to load admin logs.',
       }))
     } finally {
-      setIsManualRefreshing(false)
-      setIsInitialLoading(false)
-      setIsRefetching(false)
+      if (isCurrentRequest()) {
+        setIsManualRefreshing(false)
+        setIsInitialLoading(false)
+        setIsRefetching(false)
+      }
     }
-  }, [adminLogsCacheKey, loadLogs, searchTerm])
+  }, [adminLogsCacheKey, listRequestContextKey, loadLogs, searchTerm])
 
   useEffect(() => {
     let active = true
     ;(async () => {
+      if (adminLogsCacheKey(debouncedSearchTerm) !== listRequestContextKey) {
+        return
+      }
+      const requestId = listRequestRef.current + 1
+      listRequestRef.current = requestId
+      const requestFence = captureProtectedAsyncRequestFence(listRequestContextKey, requestId)
+      const isCurrentRequest = () => active && isProtectedAsyncRequestFenceCurrent(
+        requestFence,
+        currentListRequestContextKeyRef.current,
+        listRequestRef.current,
+      )
       const key = adminLogsCacheKey(debouncedSearchTerm)
       const cached = getMemoryCache<Awaited<ReturnType<typeof listAdminLogs>>>(key)
-      if (cached) {
+      if (cached && isCurrentRequest()) {
         setLogs(cached.data.items)
         setTotal(cached.data.total)
         hasLoadedLogsRef.current = true
@@ -550,13 +619,13 @@ export const AdminLogsPage = () => {
           () => loadLogs(debouncedSearchTerm),
           { force: Boolean(cached) },
         )
-        if (active) {
+        if (isCurrentRequest()) {
           setLogs(response.items)
           setTotal(response.total)
           hasLoadedLogsRef.current = true
         }
       } catch (fetchError) {
-        if (active) {
+        if (!isMemoryCacheInvalidatedError(fetchError) && isCurrentRequest()) {
           if (!isBackgroundRefetch) {
             setLogs([])
             setTotal(0)
@@ -567,7 +636,7 @@ export const AdminLogsPage = () => {
           }))
         }
       } finally {
-        if (active) {
+        if (isCurrentRequest()) {
           setIsInitialLoading(false)
           setIsRefetching(false)
         }
@@ -577,7 +646,7 @@ export const AdminLogsPage = () => {
     return () => {
       active = false
     }
-  }, [adminLogsCacheKey, debouncedSearchTerm, loadLogs])
+  }, [adminLogsCacheKey, debouncedSearchTerm, listRequestContextKey, loadLogs])
 
   const programmeOptions = useMemo(() => {
     return Array.from(
@@ -638,6 +707,12 @@ export const AdminLogsPage = () => {
   const openDetail = (log: AdminLogListItem) => {
     const requestId = detailRequestRef.current + 1
     detailRequestRef.current = requestId
+    const requestFence = captureProtectedAsyncRequestFence(authScopeKey, requestId)
+    const isCurrentRequest = () => isProtectedAsyncRequestFenceCurrent(
+      requestFence,
+      currentAuthScopeKeyRef.current,
+      detailRequestRef.current,
+    )
     setSelectedLog(log)
     setSelectedDetail(null)
     setDetailError(null)
@@ -651,11 +726,11 @@ export const AdminLogsPage = () => {
           adminLevel,
           logId: log.id,
         })
-        if (detailRequestRef.current === requestId) {
+        if (isCurrentRequest()) {
           setSelectedDetail(detail)
         }
       } catch (detailFetchError) {
-        if (detailRequestRef.current === requestId) {
+        if (isCurrentRequest()) {
           setDetailError(
             formatUserFacingApiError(detailFetchError, {
               fallbackMessage: 'Unable to load admin log detail.',
@@ -663,7 +738,7 @@ export const AdminLogsPage = () => {
           )
         }
       } finally {
-        if (detailRequestRef.current === requestId) {
+        if (isCurrentRequest()) {
           setDetailLoading(false)
         }
       }

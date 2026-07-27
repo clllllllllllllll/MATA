@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router'
+import { captureAuthSessionFence } from '../../api/auth'
 import { uploadWorkbook } from '../../api/uploads'
 import { IconGrid } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
@@ -70,6 +71,10 @@ export const PcUploadTtfPage = () => {
   }
 
   const uploadTtf = async (file: File) => {
+    const authSessionFence = captureAuthSessionFence()
+    if (!authSessionFence) {
+      throw new Error('No active authenticated session.')
+    }
     const response = await uploadWorkbook({
       uploadType: 'ttf',
       file,
@@ -80,7 +85,8 @@ export const PcUploadTtfPage = () => {
       adminLevel: 'programme',
     })
 
-    addUploadResult({
+    const uploadResult = addUploadResult({
+      authSessionFence,
       uploadType: 'ttf',
       response,
       filename: file.name,
@@ -88,6 +94,9 @@ export const PcUploadTtfPage = () => {
       reportingPeriodLabel: selectedPeriod?.label ?? reportingPeriodLabel,
       programmeCode: selectedPcProgrammeCode,
     })
+    if (!uploadResult) {
+      throw new Error('Authenticated session changed while the upload was in progress.')
+    }
     return response
   }
 

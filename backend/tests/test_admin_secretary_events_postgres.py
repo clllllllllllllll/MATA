@@ -42,7 +42,7 @@ class PostgresAdminEventHarness:
     suffix: str
 
 
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_verify_5bhe"
+DISPOSABLE_DATABASE_NAME = "mata_phase5b_session_lifecycle_verify"
 _TEST_SESSION_HASH_KEY = "rls-admin-events-test-session-key-32-bytes"
 
 
@@ -55,9 +55,10 @@ def _assert_local_postgres(database_url: str, *, async_url: bool) -> None:
     )
     if (
         url.drivername not in allowed_drivers
-        or url.host not in {"localhost", "127.0.0.1"}
+        or url.host not in {"localhost", "127.0.0.1", "::1"}
         or url.database != DISPOSABLE_DATABASE_NAME
         or not url.username
+        or bool(url.query)
     ):
         pytest.fail(
             "PostgreSQL admin-event integration tests require the exact named "

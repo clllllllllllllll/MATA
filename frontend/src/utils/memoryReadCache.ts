@@ -11,7 +11,40 @@ export type CacheScope = {
   residentId?: string
 }
 
+export class MemoryCacheInvalidatedError extends Error {
+  constructor() {
+    super('The protected cache was invalidated while the request was in flight.')
+    this.name = 'MemoryCacheInvalidatedError'
+  }
+}
+
+export const isMemoryCacheInvalidatedError = (
+  error: unknown,
+): error is MemoryCacheInvalidatedError => error instanceof MemoryCacheInvalidatedError
+
 const memoryCache = new Map<string, MemoryCacheEntry<unknown>>()
+let memoryCacheGeneration = 0
+const memoryCacheKeyGenerations = new Map<string, number>()
+const inFlightMemoryCacheReads = new Map<string, number>()
+
+const memoryCacheKeyGeneration = (key: string): number =>
+  memoryCacheKeyGenerations.get(key) ?? 0
+
+const beginMemoryCacheRead = (key: string): void => {
+  inFlightMemoryCacheReads.set(
+    key,
+    (inFlightMemoryCacheReads.get(key) ?? 0) + 1,
+  )
+}
+
+const finishMemoryCacheRead = (key: string): void => {
+  const remaining = (inFlightMemoryCacheReads.get(key) ?? 1) - 1
+  if (remaining > 0) {
+    inFlightMemoryCacheReads.set(key, remaining)
+  } else {
+    inFlightMemoryCacheReads.delete(key)
+  }
+}
 
 const stableValue = (value: unknown): unknown => {
   if (Array.isArray(value)) {
@@ -58,13 +91,23 @@ export const setMemoryCache = <T,>(key: string, data: T): void => {
 
 export const clearMemoryCache = (predicate?: (key: string) => boolean): void => {
   if (!predicate) {
+    memoryCacheGeneration += 1
     memoryCache.clear()
+    memoryCacheKeyGenerations.clear()
     return
   }
 
-  Array.from(memoryCache.keys()).forEach((key) => {
+  const candidateKeys = new Set([
+    ...memoryCache.keys(),
+    ...inFlightMemoryCacheReads.keys(),
+  ])
+  candidateKeys.forEach((key) => {
     if (predicate(key)) {
       memoryCache.delete(key)
+      memoryCacheKeyGenerations.set(
+        key,
+        memoryCacheKeyGeneration(key) + 1,
+      )
     }
   })
 }
@@ -85,7 +128,28 @@ export const readThroughMemoryCache = async <T,>(
     }
   }
 
-  const data = await fetcher()
-  setMemoryCache(key, data)
-  return { data, fromCache: false }
+  const requestGeneration = memoryCacheGeneration
+  const requestKeyGeneration = memoryCacheKeyGeneration(key)
+  const requestWasInvalidated = () =>
+    requestGeneration !== memoryCacheGeneration
+    || requestKeyGeneration !== memoryCacheKeyGeneration(key)
+  beginMemoryCacheRead(key)
+  try {
+    const data = await fetcher()
+    if (requestWasInvalidated()) {
+      throw new MemoryCacheInvalidatedError()
+    }
+    setMemoryCache(key, data)
+    return { data, fromCache: false }
+  } catch (error) {
+    if (
+      !(error instanceof MemoryCacheInvalidatedError)
+      && requestWasInvalidated()
+    ) {
+      throw new MemoryCacheInvalidatedError()
+    }
+    throw error
+  } finally {
+    finishMemoryCacheRead(key)
+  }
 }

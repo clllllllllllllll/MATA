@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router'
 import {
   applyWarningSourceCellReplacement,
@@ -24,11 +24,14 @@ import type {
 import {
   clearMemoryCache,
   getMemoryCache,
+  isMemoryCacheInvalidatedError,
   makeScopedCacheKey,
   readThroughMemoryCache,
-  setMemoryCache,
-  type CacheScope,
 } from '../../utils/memoryReadCache'
+import {
+  captureProtectedAsyncRequestFence,
+  isProtectedAsyncRequestFenceCurrent,
+} from '../../utils/protectedAsyncFence'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 type WarningReviewMode = 'active' | 'history'
@@ -127,7 +130,7 @@ export const AdminWarningsPage = () => {
   const navigate = useNavigate()
   const location = useLocation()
   const [searchParams] = useSearchParams()
-  const { demoAdminId, demoAdminProgrammes, role } = useAppState()
+  const { authCacheScope, demoAdminId, demoAdminProgrammes, role } = useAppState()
   const adminLevel = role === 'master_admin' ? 'master' : 'programme'
   const isProgrammePc = location.pathname.startsWith('/pc') || role === 'programme_pc'
   const [warnings, setWarnings] = useState<UploadWarning[]>([])
@@ -169,12 +172,22 @@ export const AdminWarningsPage = () => {
     toWarningMode(searchParams.get('mode')),
   )
   const [offset, setOffset] = useState(0)
+  const authScopeKey = useMemo(
+    () => makeScopedCacheKey(authCacheScope, 'admin.upload-warnings.auth-scope', {}),
+    [authCacheScope],
+  )
+  const currentAuthScopeKeyRef = useRef(authScopeKey)
+  const listRequestRef = useRef(0)
+  const detailRequestRef = useRef(0)
+  const actionRequestRef = useRef(0)
+  const sourceCellRequestRef = useRef(0)
 
-  const cacheScope = useMemo<CacheScope>(() => ({
-    role,
-    userId: demoAdminId,
-    programmeScope: demoAdminProgrammes,
-  }), [demoAdminId, demoAdminProgrammes, role])
+  useLayoutEffect(() => {
+    currentAuthScopeKeyRef.current = authScopeKey
+    detailRequestRef.current += 1
+    actionRequestRef.current += 1
+    sourceCellRequestRef.current += 1
+  }, [authScopeKey])
 
   const warningCacheKey = useCallback((
     mode: WarningReviewMode,
@@ -185,7 +198,7 @@ export const AdminWarningsPage = () => {
     reportingPeriodId: string,
     search: string,
     pageOffset: number,
-  ) => makeScopedCacheKey(cacheScope, 'admin.upload-warnings.list', {
+  ) => makeScopedCacheKey(authCacheScope, 'admin.upload-warnings.list', {
     adminLevel,
     mode,
     uploadType,
@@ -197,7 +210,23 @@ export const AdminWarningsPage = () => {
     search: search.trim(),
     limit: pageSize,
     offset: pageOffset,
-  }), [adminLevel, cacheScope, uploadLogFilter])
+  }), [adminLevel, authCacheScope, uploadLogFilter])
+  const listRequestContextKey = warningCacheKey(
+    warningMode,
+    uploadTypeFilter,
+    severityFilter,
+    programmeFilter,
+    warningTypeFilter,
+    reportingPeriodFilter,
+    searchTerm,
+    offset,
+  )
+  const currentListRequestContextKeyRef = useRef(listRequestContextKey)
+
+  useLayoutEffect(() => {
+    currentListRequestContextKeyRef.current = listRequestContextKey
+    listRequestRef.current += 1
+  }, [listRequestContextKey])
 
   const loadWarnings = useCallback(() => listUploadWarnings({
     adminId: demoAdminId,
@@ -237,7 +266,41 @@ export const AdminWarningsPage = () => {
     setSourceCellState('idle')
   }, [])
 
+  useEffect(() => {
+    let active = true
+    queueMicrotask(() => {
+      if (!active) {
+        return
+      }
+      hasLoadedWarningsRef.current = false
+      setWarnings([])
+      setError(null)
+      setSelectedWarning(null)
+      setWarningDetail(null)
+      setDetailError(null)
+      setIsDetailLoading(false)
+      setActionNote('')
+      setActionBusy(null)
+      setActionResult(null)
+      resetSourceCellState()
+      setIsManualRefreshing(false)
+      setIsRefetching(false)
+      setIsInitialLoading(true)
+    })
+    return () => {
+      active = false
+    }
+  }, [authScopeKey, resetSourceCellState])
+
   const loadDetail = useCallback(async (warningIssueId: string) => {
+    const requestId = detailRequestRef.current + 1
+    detailRequestRef.current = requestId
+    const requestFence = captureProtectedAsyncRequestFence(authScopeKey, requestId)
+    const isCurrentRequest = () => isProtectedAsyncRequestFenceCurrent(
+      requestFence,
+      currentAuthScopeKeyRef.current,
+      detailRequestRef.current,
+    )
     setIsDetailLoading(true)
     setDetailError(null)
     setActionResult(null)
@@ -248,18 +311,34 @@ export const AdminWarningsPage = () => {
         adminLevel,
         warningIssueId,
       })
+      if (!isCurrentRequest()) {
+        return
+      }
       setWarningDetail(detail)
     } catch (fetchError) {
+      if (!isCurrentRequest()) {
+        return
+      }
       setWarningDetail(null)
       setDetailError(formatUserFacingApiError(fetchError, {
         fallbackMessage: 'Unable to load warning detail.',
       }))
     } finally {
-      setIsDetailLoading(false)
+      if (isCurrentRequest()) {
+        setIsDetailLoading(false)
+      }
     }
-  }, [adminLevel, demoAdminId, demoAdminProgrammes])
+  }, [adminLevel, authScopeKey, demoAdminId, demoAdminProgrammes])
 
   const fetchWarnings = useCallback(async () => {
+    const requestId = listRequestRef.current + 1
+    listRequestRef.current = requestId
+    const requestFence = captureProtectedAsyncRequestFence(listRequestContextKey, requestId)
+    const isCurrentRequest = () => isProtectedAsyncRequestFenceCurrent(
+      requestFence,
+      currentListRequestContextKeyRef.current,
+      listRequestRef.current,
+    )
     setIsManualRefreshing(true)
     setIsRefetching(warnings.length > 0)
     setError(null)
@@ -275,11 +354,20 @@ export const AdminWarningsPage = () => {
     )
     try {
       clearMemoryCache((cacheKey) => cacheKey === key)
-      const rows = await loadWarnings()
-      setMemoryCache(key, rows)
+      const { data: rows } = await readThroughMemoryCache(
+        key,
+        loadWarnings,
+        { force: true },
+      )
+      if (!isCurrentRequest()) {
+        return
+      }
       setWarnings(rows)
       hasLoadedWarningsRef.current = true
     } catch (fetchError) {
+      if (isMemoryCacheInvalidatedError(fetchError) || !isCurrentRequest()) {
+        return
+      }
       if (!hasLoadedWarningsRef.current) {
         setWarnings([])
       }
@@ -288,11 +376,14 @@ export const AdminWarningsPage = () => {
         fallbackMessage: 'Unable to load upload warnings.',
       }))
     } finally {
-      setIsManualRefreshing(false)
-      setIsInitialLoading(false)
-      setIsRefetching(false)
+      if (isCurrentRequest()) {
+        setIsManualRefreshing(false)
+        setIsInitialLoading(false)
+        setIsRefetching(false)
+      }
     }
   }, [
+    listRequestContextKey,
     loadWarnings,
     offset,
     programmeFilter,
@@ -309,6 +400,14 @@ export const AdminWarningsPage = () => {
   useEffect(() => {
     let active = true
     ;(async () => {
+      const requestId = listRequestRef.current + 1
+      listRequestRef.current = requestId
+      const requestFence = captureProtectedAsyncRequestFence(listRequestContextKey, requestId)
+      const isCurrentRequest = () => active && isProtectedAsyncRequestFenceCurrent(
+        requestFence,
+        currentListRequestContextKeyRef.current,
+        listRequestRef.current,
+      )
       const key = warningCacheKey(
         warningMode,
         uploadTypeFilter,
@@ -320,7 +419,7 @@ export const AdminWarningsPage = () => {
         offset,
       )
       const cached = getMemoryCache<UploadWarning[]>(key)
-      if (cached) {
+      if (cached && isCurrentRequest()) {
         setWarnings(cached.data)
         hasLoadedWarningsRef.current = true
         setIsInitialLoading(false)
@@ -339,12 +438,12 @@ export const AdminWarningsPage = () => {
           loadWarnings,
           { force: Boolean(cached) },
         )
-        if (active) {
+        if (isCurrentRequest()) {
           setWarnings(rows)
           hasLoadedWarningsRef.current = true
         }
       } catch (fetchError) {
-        if (active) {
+        if (!isMemoryCacheInvalidatedError(fetchError) && isCurrentRequest()) {
           if (!isBackgroundRefetch) {
             setWarnings([])
           }
@@ -354,7 +453,7 @@ export const AdminWarningsPage = () => {
           }))
         }
       } finally {
-        if (active) {
+        if (isCurrentRequest()) {
           setIsInitialLoading(false)
           setIsRefetching(false)
         }
@@ -364,6 +463,7 @@ export const AdminWarningsPage = () => {
       active = false
     }
   }, [
+    listRequestContextKey,
     loadWarnings,
     offset,
     programmeFilter,
@@ -376,9 +476,15 @@ export const AdminWarningsPage = () => {
     warningTypeFilter,
   ])
 
-  const refreshAfterMutation = async () => {
+  const refreshAfterMutation = async (isCurrentRequest: () => boolean) => {
+    if (!isCurrentRequest()) {
+      return
+    }
     clearMemoryCache((key) => key.includes('admin.upload-warnings'))
     await fetchWarnings()
+    if (!isCurrentRequest()) {
+      return
+    }
     const warningIssueId = selectedWarning ? warningIssueIdForRow(selectedWarning) : ''
     if (warningIssueId) {
       await loadDetail(warningIssueId)
@@ -431,6 +537,9 @@ export const AdminWarningsPage = () => {
   }
 
   const openWarningDetail = (warning: UploadWarning) => {
+    detailRequestRef.current += 1
+    actionRequestRef.current += 1
+    sourceCellRequestRef.current += 1
     resetSourceCellState()
     setWarningDetail(null)
     setDetailError(null)
@@ -446,6 +555,9 @@ export const AdminWarningsPage = () => {
   }
 
   const closeWarningDetail = () => {
+    detailRequestRef.current += 1
+    actionRequestRef.current += 1
+    sourceCellRequestRef.current += 1
     setSelectedWarning(null)
     setWarningDetail(null)
     setDetailError(null)
@@ -473,6 +585,14 @@ export const AdminWarningsPage = () => {
     if (!warningDetail) {
       return
     }
+    const requestId = actionRequestRef.current + 1
+    actionRequestRef.current = requestId
+    const requestFence = captureProtectedAsyncRequestFence(authScopeKey, requestId)
+    const isCurrentRequest = () => isProtectedAsyncRequestFenceCurrent(
+      requestFence,
+      currentAuthScopeKeyRef.current,
+      actionRequestRef.current,
+    )
     setActionBusy(action)
     setActionResult(null)
     setDetailError(null)
@@ -485,15 +605,23 @@ export const AdminWarningsPage = () => {
         action,
         note: actionNote,
       })
+      if (!isCurrentRequest()) {
+        return
+      }
       setActionNote('')
       setActionResult(`${statusText(response.previousStatus)} -> ${statusText(response.newStatus)}`)
-      await refreshAfterMutation()
+      await refreshAfterMutation(isCurrentRequest)
     } catch (actionError) {
+      if (!isCurrentRequest()) {
+        return
+      }
       setDetailError(formatUserFacingApiError(actionError, {
         fallbackMessage: 'Unable to update warning status.',
       }))
     } finally {
-      setActionBusy(null)
+      if (isCurrentRequest()) {
+        setActionBusy(null)
+      }
     }
   }
 
@@ -501,6 +629,14 @@ export const AdminWarningsPage = () => {
     if (!warningDetail) {
       return
     }
+    const requestId = sourceCellRequestRef.current + 1
+    sourceCellRequestRef.current = requestId
+    const requestFence = captureProtectedAsyncRequestFence(authScopeKey, requestId)
+    const isCurrentRequest = () => isProtectedAsyncRequestFenceCurrent(
+      requestFence,
+      currentAuthScopeKeyRef.current,
+      sourceCellRequestRef.current,
+    )
     setSourceCellState('previewing')
     setSourceCellError(null)
     setSourceCellPreview(null)
@@ -518,13 +654,21 @@ export const AdminWarningsPage = () => {
           expected_fingerprint: warningDetail.fingerprint,
         },
       })
+      if (!isCurrentRequest()) {
+        return
+      }
       setSourceCellPreview(preview)
     } catch (previewError) {
+      if (!isCurrentRequest()) {
+        return
+      }
       setSourceCellError(formatUserFacingApiError(previewError, {
         fallbackMessage: 'Unable to preview replacement.',
       }))
     } finally {
-      setSourceCellState('idle')
+      if (isCurrentRequest()) {
+        setSourceCellState('idle')
+      }
     }
   }
 
@@ -532,6 +676,14 @@ export const AdminWarningsPage = () => {
     if (!warningDetail || !sourceCellPreview?.applyAllowed || !correctionReason.trim()) {
       return
     }
+    const requestId = sourceCellRequestRef.current + 1
+    sourceCellRequestRef.current = requestId
+    const requestFence = captureProtectedAsyncRequestFence(authScopeKey, requestId)
+    const isCurrentRequest = () => isProtectedAsyncRequestFenceCurrent(
+      requestFence,
+      currentAuthScopeKeyRef.current,
+      sourceCellRequestRef.current,
+    )
     setSourceCellState('applying')
     setSourceCellError(null)
     setSourceCellApplyResult(null)
@@ -549,14 +701,22 @@ export const AdminWarningsPage = () => {
           correction_reason: correctionReason.trim(),
         },
       })
+      if (!isCurrentRequest()) {
+        return
+      }
       setSourceCellApplyResult(result)
-      await refreshAfterMutation()
+      await refreshAfterMutation(isCurrentRequest)
     } catch (applyError) {
+      if (!isCurrentRequest()) {
+        return
+      }
       setSourceCellError(formatUserFacingApiError(applyError, {
         fallbackMessage: 'Unable to apply replacement.',
       }))
     } finally {
-      setSourceCellState('idle')
+      if (isCurrentRequest()) {
+        setSourceCellState('idle')
+      }
     }
   }
 

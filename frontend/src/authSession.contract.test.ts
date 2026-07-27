@@ -10,14 +10,27 @@ import {
   type BackendAuthSessionResponse,
 } from './api/authSessionResponse.ts'
 import {
+  announceAuthSessionEstablished,
+  announceAuthSessionRotated,
+  captureAuthSessionFence,
   clearAuthSession,
+  clearAuthSessionIfPresent,
+  createAuthSessionRevalidationCoordinator,
+  isAuthSessionFenceCurrent,
+  isAuthSessionUpdateCompletionCurrent,
+  readAuthSessionEpoch,
   readAuthSessionRevision,
   readStoredAuthSession,
   saveAuthSession,
+  saveHydratedAuthSession,
+  shouldAcceptCrossTabSessionEstablished,
+  shouldAcceptCrossTabSessionLoss,
+  shouldAcceptCrossTabSessionRotation,
 } from './api/authSessionStore.ts'
 import {
   CSRF_HEADER_NAME,
   csrfHeadersForRequest,
+  handleUnauthorizedSessionResponse,
   isUnsafeRequestMethod,
 } from './api/httpTransport.ts'
 import {
@@ -27,6 +40,11 @@ import {
 } from './routeGuards.ts'
 import type { AppRole } from './types/app.ts'
 import type { StoredAuthSession } from './types/auth.ts'
+import {
+  clearMemoryCache,
+  getMemoryCache,
+  setMemoryCache,
+} from './utils/memoryReadCache.ts'
 
 const frontendRoot = fileURLToPath(new URL('../', import.meta.url))
 const srcRoot = fileURLToPath(new URL('./', import.meta.url))
@@ -145,6 +163,17 @@ test('auth session state is module memory only and clears identity with CSRF sta
   assert.equal(readAuthSessionRevision(), startingRevision + 3)
 })
 
+test('conditional session clearing emits no second revision after transport termination', () => {
+  clearAuthSession()
+  saveAuthSession(parseAuthSessionResponse(sessionResponse(roleUsers.resident)))
+  const authenticatedRevision = readAuthSessionRevision()
+
+  assert.equal(clearAuthSessionIfPresent({ broadcast: 'unauthorized' }), true)
+  assert.equal(readAuthSessionRevision(), authenticatedRevision + 1)
+  assert.equal(clearAuthSessionIfPresent({ broadcast: 'unauthorized' }), false)
+  assert.equal(readAuthSessionRevision(), authenticatedRevision + 1)
+})
+
 test('the synchronizer header is emitted for exactly the four unsafe methods', () => {
   for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
     assert.equal(isUnsafeRequestMethod(method), true)
@@ -226,26 +255,37 @@ test('frontend source has no direct Supabase data calls or backend-only Vite sec
 
 test('the Axios transport sends cookies, attaches CSRF centrally, and ignores stale 401 responses', () => {
   const httpSource = read('src/api/http.ts')
+  const responseInterceptor = httpSource.slice(
+    httpSource.indexOf('httpClient.interceptors.response.use'),
+  )
   assert.match(httpSource, /withCredentials:\s*true/)
   assert.match(
     httpSource,
-    /applySessionRequestHeaders\(request\.headers,[\s\S]*csrfToken: storedSession\?\.csrfToken/,
+    /csrfToken = request\.authSessionCsrfToken \?\? storedSession\?\.csrfToken[\s\S]*applySessionRequestHeaders\(request\.headers,[\s\S]*csrfToken,/,
   )
   assert.match(
     httpSource,
-    /shouldClearSessionForUnauthorized\([\s\S]*authSessionRevision,[\s\S]*readAuthSessionRevision\(\)[\s\S]*clearAuthSession\(\)/,
+    /authSessionWasAuthenticated = storedSession !== null[\s\S]*handleUnauthorizedSessionResponse\([\s\S]*authSessionWasAuthenticated,[\s\S]*authSessionRevision,[\s\S]*readStoredAuthSession\(\) !== null,[\s\S]*readAuthSessionRevision\(\)[\s\S]*clearAuthSession\(\{[\s\S]*broadcast: 'unauthorized'[\s\S]*clearMemoryCache\(\)/,
   )
+  assert.equal(
+    responseInterceptor.match(/handleUnauthorizedSessionResponse\(/g)?.length,
+    1,
+  )
+  assert.match(responseInterceptor, /return Promise\.reject\(error\)/)
+  assert.doesNotMatch(responseInterceptor, /return\s+httpClient\s*\(/)
+  assert.doesNotMatch(responseInterceptor, /refreshAuthSession\(/)
   assert.doesNotMatch(httpSource, /setHeaderValue\([^\n]+Bearer/)
 })
 
-test('login, hydration, rotation, logout, and staff actor updates use backend session APIs', () => {
+test('login, hydration, rotation, logout, and staff actor updates use fenced backend session APIs', () => {
   const authSource = read('src/api/authCookie.ts')
   const contextSource = read('src/context/AuthContext.tsx')
+  const appShellSource = read('src/components/AppShell.tsx')
 
   assert.match(authSource, /post<unknown>\('\/auth\/login', payload\)/)
   assert.match(authSource, /get<unknown>\('\/auth\/me'/)
   assert.match(authSource, /post<unknown>\('\/auth\/session\/refresh'\)/)
-  assert.match(authSource, /post\('\/auth\/logout'\)/)
+  assert.match(authSource, /post\('\/auth\/logout', undefined,[\s\S]*authSessionCsrfToken/)
   assert.match(authSource, /parseAuthSessionResponse\(response\.data\)/)
   assert.match(authSource, /parseLoginOrHydrationResponse\(response\.data\)/)
   assert.match(authSource, /'\/auth\/staff-actor-name'/)
@@ -261,15 +301,31 @@ test('login, hydration, rotation, logout, and staff actor updates use backend se
     contextSource,
     /stagedSessionRevision = readAuthSessionRevision\(\)[\s\S]*readAuthSessionRevision\(\) === stagedSessionRevision/,
   )
+  const hydrationBody = contextSource.slice(
+    contextSource.indexOf('const loadHydratedSession'),
+    contextSource.indexOf('const hydrateSession'),
+  )
+  assert.equal(hydrationBody.match(/refreshAuthSession\(\)/g)?.length, 1)
+  assert.doesNotMatch(hydrationBody, /setInterval|setTimeout|while\s*\(|for\s*\(/)
 
   const logoutBody = contextSource.slice(
     contextSource.indexOf('const logout = useCallback'),
     contextSource.indexOf('const updateStaffActorName'),
   )
-  assert.ok(logoutBody.indexOf('await logoutAuthSession()') < logoutBody.indexOf('clearLocalAuthState()'))
-  assert.match(logoutBody, /finally\s*{[\s\S]*clearLocalAuthState\(\)/)
+  assert.ok(logoutBody.indexOf('logoutAuthSession(currentSession, sessionFence)')
+    < logoutBody.indexOf('clearLocalAuthState({'))
+  assert.ok(logoutBody.indexOf('clearLocalAuthState({') < logoutBody.indexOf('await logoutRequest'))
+  assert.match(logoutBody, /broadcast: 'logout'/)
+  assert.doesNotMatch(logoutBody, /finally\s*{/)
+  assert.match(
+    appShellSource,
+    /void logout\(\)[\s\S]*navigate\('\/login', \{ replace: true \}\)/,
+  )
   assert.match(contextSource, /const hydratedSession = await hydrateAuthSession\(\)/)
-  assert.match(contextSource, /identity: updatedIdentity/)
+  assert.match(
+    contextSource,
+    /operationFence = captureAuthSessionFence\(\)[\s\S]*isAuthSessionFenceCurrent\(operationFence\)[\s\S]*identity: updatedIdentity/,
+  )
 })
 
 test('production API requests are forced through the relative same-origin proxy', () => {
@@ -394,6 +450,300 @@ test('AppContext continues to react to memory-session identity changes safely', 
   assert.match(appContextSource, /authSessionChangedEvent/)
   assert.match(appContextSource, /readStoredAuthSession\(\)\?\.identity \?\? null/)
   assert.match(appContextSource, /transitionReportingPeriodAuthenticationContext/)
+  assert.match(
+    appContextSource,
+    /if \(!nextIdentity \|\| nextContext !== previousContext\) \{[\s\S]*clearUploadState\(\)/,
+  )
+  assert.match(
+    appContextSource,
+    /const clearUploadState = useCallback\(\(\) => \{[\s\S]*clearUploadHistory\(\)[\s\S]*setUploadHistory\(\[\]\)/,
+  )
+  assert.match(
+    appContextSource,
+    /if \(!isAuthSessionFenceCurrent\(input\.authSessionFence\)\) \{[\s\S]*return null/,
+  )
+  assert.match(
+    appContextSource,
+    /userId: sessionIdentity\?\.subjectId[\s\S]*authCacheScope: adminCacheScope/,
+  )
+})
+
+test('auth-operation fences become stale after logout, rotation, or identity replacement', () => {
+  clearAuthSession()
+  announceAuthSessionEstablished()
+  saveAuthSession(parseAuthSessionResponse(sessionResponse(roleUsers.programme_pc)))
+  const fence = captureAuthSessionFence()
+  assert.ok(fence)
+  assert.equal(isAuthSessionFenceCurrent(fence), true)
+
+  saveAuthSession(parseAuthSessionResponse(sessionResponse(roleUsers.programme_pc, 'rotated-csrf')))
+  assert.equal(isAuthSessionFenceCurrent(fence), false)
+
+  const rotatedFence = captureAuthSessionFence()
+  assert.ok(rotatedFence)
+  clearAuthSession()
+  assert.equal(isAuthSessionFenceCurrent(rotatedFence), false)
+
+  saveAuthSession(parseAuthSessionResponse(sessionResponse(roleUsers.master_admin)))
+  assert.equal(isAuthSessionFenceCurrent(rotatedFence), false)
+  clearAuthSession()
+})
+
+test('staff update completion accepts only the exact single-revision identity commit', () => {
+  clearAuthSession()
+  announceAuthSessionEstablished()
+  const currentSession = parseAuthSessionResponse(sessionResponse(roleUsers.programme_pc))
+  saveAuthSession(currentSession)
+  const operationFence = captureAuthSessionFence()
+  assert.ok(operationFence)
+
+  const updatedIdentity = {
+    ...currentSession.identity,
+    currentStaffActorName: 'Updated Actor',
+  }
+  saveAuthSession({
+    ...currentSession,
+    identity: updatedIdentity,
+  })
+  assert.equal(
+    isAuthSessionUpdateCompletionCurrent(operationFence, updatedIdentity),
+    true,
+  )
+  assert.equal(
+    isAuthSessionUpdateCompletionCurrent(operationFence, { ...updatedIdentity }),
+    false,
+  )
+
+  saveAuthSession({
+    ...currentSession,
+    identity: updatedIdentity,
+    csrfToken: 'later-csrf',
+  })
+  assert.equal(
+    isAuthSessionUpdateCompletionCurrent(operationFence, updatedIdentity),
+    false,
+  )
+  clearAuthSession()
+})
+
+test('unchanged hydration preserves upload fences while credential or identity changes invalidate them', () => {
+  clearAuthSession()
+  announceAuthSessionEstablished()
+  const currentSession = parseAuthSessionResponse(
+    sessionResponse({
+      ...roleUsers.programme_pc,
+      programme_scope: ['GRM', 'DR'],
+    }, 'current-csrf'),
+  )
+  saveAuthSession(currentSession)
+  const currentRevision = readAuthSessionRevision()
+  const currentFence = captureAuthSessionFence()
+  assert.ok(currentFence)
+
+  const equivalentHydration = parseAuthSessionResponse(
+    sessionResponse({
+      ...roleUsers.programme_pc,
+      programme_scope: ['DR', 'GRM'],
+    }, 'current-csrf'),
+  )
+  assert.equal(saveHydratedAuthSession(equivalentHydration), false)
+  assert.equal(readAuthSessionRevision(), currentRevision)
+  assert.equal(isAuthSessionFenceCurrent(currentFence), true)
+
+  const rotatedHydration = parseAuthSessionResponse(
+    sessionResponse({
+      ...roleUsers.programme_pc,
+      programme_scope: ['DR', 'GRM'],
+    }, 'rotated-csrf'),
+  )
+  assert.equal(saveHydratedAuthSession(rotatedHydration), true)
+  assert.equal(readAuthSessionRevision(), currentRevision + 1)
+  assert.equal(isAuthSessionFenceCurrent(currentFence), false)
+
+  const rotatedFence = captureAuthSessionFence()
+  assert.ok(rotatedFence)
+  const authorityChangedHydration = parseAuthSessionResponse(
+    sessionResponse({
+      ...roleUsers.programme_pc,
+      programme_scope: ['GRM'],
+    }, 'rotated-csrf'),
+  )
+  assert.equal(saveHydratedAuthSession(authorityChangedHydration), true)
+  assert.equal(isAuthSessionFenceCurrent(rotatedFence), false)
+  clearAuthSession()
+})
+
+test('cross-tab loss accepts the current family and rejects stale family messages', () => {
+  assert.equal(shouldAcceptCrossTabSessionLoss(null, null), true)
+  assert.equal(shouldAcceptCrossTabSessionLoss(null, 'family-a'), true)
+  assert.equal(shouldAcceptCrossTabSessionLoss('family-a', 'family-a'), true)
+  assert.equal(shouldAcceptCrossTabSessionLoss('family-a', null), false)
+  assert.equal(shouldAcceptCrossTabSessionLoss('family-a', 'family-b'), false)
+})
+
+test('cross-tab establishment converges concurrent tabs on the newest epoch', () => {
+  assert.equal(shouldAcceptCrossTabSessionEstablished(null, '100-family-a'), true)
+  assert.equal(shouldAcceptCrossTabSessionEstablished('100-family-a', '100-family-a'), false)
+  assert.equal(shouldAcceptCrossTabSessionEstablished('100-family-a', '100-family-b'), true)
+  assert.equal(shouldAcceptCrossTabSessionEstablished('100-family-b', '100-family-a'), false)
+  assert.equal(shouldAcceptCrossTabSessionEstablished('100-family-b', '101-family-a'), true)
+  assert.equal(shouldAcceptCrossTabSessionEstablished('101-family-a', '100-family-b'), false)
+  assert.equal(shouldAcceptCrossTabSessionEstablished('9-family-a', '10-family-a'), true)
+})
+
+test('cross-tab rotation is accepted only inside the current family epoch', () => {
+  assert.equal(shouldAcceptCrossTabSessionRotation(null, 'family-a'), false)
+  assert.equal(shouldAcceptCrossTabSessionRotation('family-a', 'family-a'), true)
+  assert.equal(shouldAcceptCrossTabSessionRotation('family-a', 'family-b'), false)
+
+  clearAuthSession()
+  const establishedEpoch = announceAuthSessionEstablished()
+  assert.equal(announceAuthSessionRotated(), true)
+  assert.equal(readAuthSessionEpoch(), establishedEpoch)
+})
+
+test('cross-tab and focus revalidation reuse hydration without refresh loops', () => {
+  const storeSource = read('src/api/authSessionStore.ts')
+  const contextSource = read('src/context/AuthContext.tsx')
+  assert.match(storeSource, /new BroadcastChannel\(AUTH_SESSION_CHANNEL_NAME\)/)
+  assert.match(storeSource, /session-established[\s\S]*notifySessionRevalidationRequired\(\)/)
+  assert.match(
+    storeSource,
+    /message\.type === 'session-rotated'[\s\S]*writeAuthSession\(null\)[\s\S]*notifySessionRevalidationRequired\(\)/,
+  )
+  assert.match(contextSource, /announceAuthSessionRotated\(\)/)
+  assert.match(contextSource, /window\.addEventListener\('focus', onFocus\)/)
+  assert.match(contextSource, /document\.addEventListener\('visibilitychange', onVisibilityChange\)/)
+  assert.match(contextSource, /createAuthSessionRevalidationCoordinator\(/)
+  assert.match(contextSource, /onFocus = \(\) => revalidation\.request\(true\)/)
+  assert.match(
+    contextSource,
+    /document\.visibilityState === 'visible'[\s\S]*revalidation\.request\(true\)/,
+  )
+  assert.match(contextSource, /onCrossTabRevalidation = \(\) => revalidation\.request\(true\)/)
+  assert.doesNotMatch(contextSource, /setInterval/)
+})
+
+test('cross-tab establishment queues one forced retry during hydration', async () => {
+  const pending: Array<{
+    promise: Promise<void>
+    resolve: () => void
+  }> = []
+  let hydrationCalls = 0
+  const revalidation = createAuthSessionRevalidationCoordinator(
+    () => {
+      hydrationCalls += 1
+      let resolve: () => void = () => undefined
+      const promise = new Promise<void>((resolvePromise) => {
+        resolve = resolvePromise
+      })
+      pending.push({ promise, resolve })
+      return promise
+    },
+    () => false,
+  )
+
+  revalidation.request(true)
+  revalidation.request(true)
+  revalidation.request(true)
+  assert.equal(hydrationCalls, 1)
+
+  pending[0].resolve()
+  await pending[0].promise
+  assert.equal(hydrationCalls, 2)
+
+  pending[1].resolve()
+  await pending[1].promise
+  revalidation.dispose()
+})
+
+test('production cache writers use the generation-fenced read-through path', () => {
+  const directCacheWriter = /\bsetMemoryCache\s*\(/
+  for (const { path, source } of productionSources) {
+    if (path.endsWith('memoryReadCache.ts')) {
+      continue
+    }
+    assert.equal(directCacheWriter.test(source), false, `unfenced cache write found in ${path}`)
+  }
+})
+
+test('upload completions are rejected before page-local success state after an auth change', () => {
+  for (const pagePath of [
+    'src/pages/admin/AdminUploadPage.tsx',
+    'src/pages/pc/PcUploadTtfPage.tsx',
+  ]) {
+    const pageSource = read(pagePath)
+    const uploadResultCommit = pageSource.indexOf('const uploadResult = addUploadResult({')
+    const staleResultGuard = pageSource.indexOf('if (!uploadResult)', uploadResultCommit)
+    const responseReturn = pageSource.indexOf('return ', staleResultGuard)
+    assert.ok(uploadResultCommit >= 0, `${pagePath} must fence the upload history commit`)
+    assert.ok(staleResultGuard > uploadResultCommit, `${pagePath} must reject a stale auth fence`)
+    assert.ok(responseReturn > staleResultGuard, `${pagePath} must not expose a stale success response`)
+  }
+})
+
+test('a current-session 401 clears protected memory and sends the next route decision to login', () => {
+  clearAuthSession()
+  clearMemoryCache()
+  saveAuthSession(parseAuthSessionResponse(sessionResponse(roleUsers.resident)))
+  const requestRevision = readAuthSessionRevision()
+  setMemoryCache('resident-private-dashboard', { residentName: 'Private Resident' })
+
+  let terminationCount = 0
+  assert.equal(
+    handleUnauthorizedSessionResponse(
+      401,
+      true,
+      requestRevision,
+      readStoredAuthSession() !== null,
+      readAuthSessionRevision(),
+      () => {
+        terminationCount += 1
+        clearAuthSession()
+        clearMemoryCache()
+      },
+    ),
+    true,
+  )
+
+  assert.equal(terminationCount, 1)
+  assert.equal(readStoredAuthSession(), null)
+  assert.equal(getMemoryCache('resident-private-dashboard'), undefined)
+  assert.deepEqual(getRouteAccessDecision({
+    pathname: '/resident/submissions',
+    routeKind: 'protected',
+    isLoading: false,
+    hasExplicitSession: false,
+    role: null,
+  }), { kind: 'redirect_to_login', to: '/login' })
+
+  clearAuthSession()
+  clearMemoryCache()
+})
+
+test('hydration failures synchronize UI state without a duplicate store clear', () => {
+  const contextSource = read('src/context/AuthContext.tsx')
+  const clearLocalBody = contextSource.slice(
+    contextSource.indexOf('const clearLocalAuthState'),
+    contextSource.indexOf('const commitSession'),
+  )
+  assert.match(clearLocalBody, /clearAuthSessionIfPresent\(options\)/)
+  assert.doesNotMatch(clearLocalBody, /\bclearAuthSession\(/)
+})
+
+test('staff settings success, error, and finalization are fenced from replacement sessions', () => {
+  const appShellSource = read('src/components/AppShell.tsx')
+  const submissionStart = appShellSource.indexOf('const handleSettingsSubmit')
+  const submissionBody = appShellSource.slice(
+    submissionStart,
+    appShellSource.indexOf('\n  return (', submissionStart),
+  )
+  assert.match(submissionBody, /operationFence = captureAuthSessionFence\(\)/)
+  assert.match(submissionBody, /settingsOperationRef\.current === operationId/)
+  assert.match(submissionBody, /isAuthSessionUpdateCompletionCurrent\(operationFence, updatedIdentity\)/)
+  assert.match(submissionBody, /isAuthSessionFenceCurrent\(operationFence\)/)
+  assert.equal(submissionBody.match(/if \(!isCompletionCurrent\(\)\)/g)?.length, 2)
+  assert.match(submissionBody, /finally \{[\s\S]*if \(isCompletionCurrent\(\)\)/)
 })
 
 test('a session value contains only identity, CSRF, and optional refresh state', () => {

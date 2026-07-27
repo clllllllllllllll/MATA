@@ -20,6 +20,7 @@ from app.services.auth import local_demo_password_hash
 from app.services.supabase_admin import SupabaseAdminClient
 
 SUPABASE_MANAGED_PASSWORD_HASH_PREFIX = "supabase-managed:"
+_STAFF_ACCOUNT_UPDATE_INVARIANT_LOCK = "mata.staff_account_update_invariant"
 
 
 def _validation_error(detail: str) -> ApiError:
@@ -186,32 +187,56 @@ async def _email_exists(
     return result.scalar_one_or_none() is not None
 
 
-async def _get_staff_account_row(db: AsyncSession, *, user_id: UUID) -> dict[str, Any]:
-    result = await db.execute(
+async def _lock_staff_account_update_invariant(db: AsyncSession) -> None:
+    """Serialize PATCH invariants that span more than one staff account."""
+
+    await db.execute(
         text(
             """
-            SELECT
-                id,
-                email,
-                supabase_user_id,
-                role,
-                name,
-                posting_code,
-                programme_scope,
-                admin_level,
-                is_active,
-                session_generation,
-                session_issuance_blocked,
-                current_staff_actor_name,
-                staff_actor_name_updated_at,
-                staff_actor_name_updated_by_user_id,
-                created_at,
-                updated_at
-            FROM users
-            WHERE id = :user_id
-              AND role IN ('admin', 'secretary')
+            SELECT pg_catalog.pg_advisory_xact_lock(
+                pg_catalog.hashtext(
+                    CAST(pg_catalog.current_database() AS text)
+                ),
+                pg_catalog.hashtext(:lock_name)
+            )
             """
         ),
+        {"lock_name": _STAFF_ACCOUNT_UPDATE_INVARIANT_LOCK},
+    )
+
+
+async def _get_staff_account_row(
+    db: AsyncSession,
+    *,
+    user_id: UUID,
+    for_update: bool = False,
+) -> dict[str, Any]:
+    statement = """
+        SELECT
+            id,
+            email,
+            supabase_user_id,
+            role,
+            name,
+            posting_code,
+            programme_scope,
+            admin_level,
+            is_active,
+            session_generation,
+            session_issuance_blocked,
+            current_staff_actor_name,
+            staff_actor_name_updated_at,
+            staff_actor_name_updated_by_user_id,
+            created_at,
+            updated_at
+        FROM users
+        WHERE id = :user_id
+          AND role IN ('admin', 'secretary')
+    """
+    if for_update:
+        statement += "\nFOR UPDATE"
+    result = await db.execute(
+        text(statement),
         {"user_id": str(user_id)},
     )
     row = result.mappings().one_or_none()
@@ -406,7 +431,12 @@ async def update_staff_account(
     payload: StaffAccountUpdateRequest,
     actor: StaffActorContext,
 ) -> dict[str, Any]:
-    before = await _get_staff_account_row(db, user_id=user_id)
+    await _lock_staff_account_update_invariant(db)
+    before = await _get_staff_account_row(
+        db,
+        user_id=user_id,
+        for_update=True,
+    )
 
     if payload.email and payload.email.lower() != before["email"].lower():
         raise _validation_error("Email changes are not supported for staff accounts")
@@ -437,6 +467,67 @@ async def update_staff_account(
         next_admin_level=account_fields["admin_level"],
         next_is_active=next_is_active,
     )
+    authorization_after = {
+        **account_fields,
+        "is_active": next_is_active,
+    }
+    authorization_changed = any(
+        before.get(field_name) != authorization_after[field_name]
+        for field_name in authorization_after
+    )
+    self_authorization_change = (
+        authorization_changed and actor.actor_user_id == user_id
+    )
+    if self_authorization_change:
+        planned_after = {
+            field_name: before.get(field_name)
+            for field_name in (
+                "id",
+                "email",
+                "supabase_user_id",
+                "role",
+                "name",
+                "posting_code",
+                "programme_scope",
+                "admin_level",
+                "is_active",
+                "current_staff_actor_name",
+                "staff_actor_name_updated_at",
+                "staff_actor_name_updated_by_user_id",
+                "created_at",
+            )
+        }
+        planned_after.update(
+            {
+                "name": display_name,
+                **authorization_after,
+            }
+        )
+        planned_after_snapshot = _safe_audit_snapshot(planned_after)
+        planned_after_snapshot.pop("updated_at", None)
+        # Audit while the request-start staff identity is still available to
+        # the restricted audit helper. A role change or deactivation can make
+        # that identity unavailable even before its session is revoked.
+        await write_audit_log(
+            db,
+            actor=actor,
+            action="admin.staff_account.update",
+            entity_type="staff_account",
+            entity_id=user_id,
+            before=_safe_audit_snapshot(before),
+            after=planned_after_snapshot,
+            metadata={
+                "account_type": account_type,
+                "authorization_changed": True,
+                "self_authorization_change": True,
+                "revoked_session_count": None,
+                "revoked_session_count_is_exact": False,
+                "session_revocation_scope": "all_subject_sessions",
+                "session_revocation_timing": (
+                    "final_protected_action_same_transaction"
+                ),
+            },
+        )
 
     result = await db.execute(
         text(
@@ -481,39 +572,38 @@ async def update_staff_account(
         raise _not_found()
     after = dict(row)
     response = _staff_account_response(after)
-    authorization_fields = (
-        "role",
-        "admin_level",
-        "programme_scope",
-        "posting_code",
-        "is_active",
-    )
-    authorization_changed = any(
-        before.get(field_name) != after.get(field_name)
-        for field_name in authorization_fields
-    )
-    revoked_session_count = 0
-    if authorization_changed:
-        revoked_session_count = await revoke_subject_sessions(
+    if self_authorization_change:
+        # This must remain the final protected statement before commit: it
+        # invalidates the signed context used by every subsequent statement.
+        await revoke_subject_sessions(
             db,
             subject_type="staff",
             subject_id=user_id,
             reason="staff_authorization_changed",
         )
-    await write_audit_log(
-        db,
-        actor=actor,
-        action="admin.staff_account.update",
-        entity_type="staff_account",
-        entity_id=user_id,
-        before=_safe_audit_snapshot(before),
-        after=_safe_audit_snapshot(after),
-        metadata={
-            "account_type": response["account_type"],
-            "authorization_changed": authorization_changed,
-            "revoked_session_count": revoked_session_count,
-        },
-    )
+    else:
+        revoked_session_count = 0
+        if authorization_changed:
+            revoked_session_count = await revoke_subject_sessions(
+                db,
+                subject_type="staff",
+                subject_id=user_id,
+                reason="staff_authorization_changed",
+            )
+        await write_audit_log(
+            db,
+            actor=actor,
+            action="admin.staff_account.update",
+            entity_type="staff_account",
+            entity_id=user_id,
+            before=_safe_audit_snapshot(before),
+            after=_safe_audit_snapshot(after),
+            metadata={
+                "account_type": response["account_type"],
+                "authorization_changed": authorization_changed,
+                "revoked_session_count": revoked_session_count,
+            },
+        )
     await db.commit()
     return response
 

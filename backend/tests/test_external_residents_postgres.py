@@ -52,8 +52,8 @@ APPROVED_TTSH_MAPPINGS = (
     ("MICROB", "TTSHLabMed"),
 )
 INACTIVE_TTSH_PROGRAMMES = ("FM", "PATH", "SPORTSMED", "PALLMED")
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_verify_5bhe"
-EXPECTED_ALEMBIC_REVISION = "20260726_000026"
+DISPOSABLE_DATABASE_NAME = "mata_phase5b_session_lifecycle_verify"
+EXPECTED_ALEMBIC_REVISION = "20260727_000027"
 
 
 class RollbackOnlyAsyncSession(AsyncSession):
@@ -73,8 +73,9 @@ def _assert_local_postgres(database_url: str) -> None:
     url = make_url(database_url)
     if (
         url.drivername != "postgresql+asyncpg"
-        or url.host not in {"localhost", "127.0.0.1"}
+        or url.host not in {"localhost", "127.0.0.1", "::1"}
         or url.database != DISPOSABLE_DATABASE_NAME
+        or bool(url.query)
     ):
         pytest.fail(
             "PostgreSQL external-registration tests require the explicitly "

@@ -137,6 +137,13 @@ class Settings(BaseSettings):
             "SESSION_ROTATION_SECONDS",
         ),
     )
+    session_touch_interval_seconds: int = Field(
+        default=60,
+        validation_alias=AliasChoices(
+            "MATA_SESSION_TOUCH_INTERVAL_SECONDS",
+            "SESSION_TOUCH_INTERVAL_SECONDS",
+        ),
+    )
     session_cleanup_retention_seconds: int = Field(
         default=604800,
         validation_alias=AliasChoices(
@@ -205,6 +212,7 @@ class Settings(BaseSettings):
             "resident session idle timeout": self.resident_session_idle_timeout_seconds,
             "resident session absolute timeout": self.resident_session_absolute_timeout_seconds,
             "session rotation threshold": self.session_rotation_seconds,
+            "session touch interval": self.session_touch_interval_seconds,
             "session cleanup retention": self.session_cleanup_retention_seconds,
             "session cleanup batch size": self.session_cleanup_batch_size,
             "upload archive total size": self.upload_archive_max_uncompressed_bytes,
@@ -222,6 +230,56 @@ class Settings(BaseSettings):
             raise ValueError("Staff idle timeout cannot exceed the absolute timeout")
         if self.resident_session_idle_timeout_seconds > self.resident_session_absolute_timeout_seconds:
             raise ValueError("Resident idle timeout cannot exceed the absolute timeout")
+        if self.session_touch_interval_seconds >= min(
+            self.staff_session_idle_timeout_seconds,
+            self.resident_session_idle_timeout_seconds,
+        ):
+            raise ValueError(
+                "Session touch interval must be shorter than every idle timeout"
+            )
+        if self.session_rotation_seconds >= min(
+            self.staff_session_absolute_timeout_seconds,
+            self.resident_session_absolute_timeout_seconds,
+        ):
+            raise ValueError(
+                "Session rotation threshold must be shorter than every absolute timeout"
+            )
+        helper_upper_bounds = {
+            "staff session idle timeout": (
+                self.staff_session_idle_timeout_seconds,
+                86400,
+            ),
+            "resident session idle timeout": (
+                self.resident_session_idle_timeout_seconds,
+                86400,
+            ),
+            "staff session absolute timeout": (
+                self.staff_session_absolute_timeout_seconds,
+                604800,
+            ),
+            "resident session absolute timeout": (
+                self.resident_session_absolute_timeout_seconds,
+                604800,
+            ),
+            "session cleanup retention": (
+                self.session_cleanup_retention_seconds,
+                31536000,
+            ),
+            "session cleanup batch size": (
+                self.session_cleanup_batch_size,
+                1000,
+            ),
+        }
+        oversized = [
+            name
+            for name, (value, maximum) in helper_upper_bounds.items()
+            if value > maximum
+        ]
+        if oversized:
+            raise ValueError(
+                "Security settings exceed PostgreSQL helper bounds: "
+                + ", ".join(oversized)
+            )
         if not self.csrf_header_name.strip():
             raise ValueError("CSRF header name cannot be blank")
 
