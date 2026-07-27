@@ -447,7 +447,7 @@ One row per Non-NHG/cross-cluster resident who self-registers to submit attendan
 | status | VARCHAR(20) | DEFAULT 'active' | `active`, `inactive` |
 | session_generation | BIGINT | NOT NULL, DEFAULT 0, CHECK >= 0 | Subject-wide application-session invalidation generation |
 
-**Global MCR uniqueness:** MCR is a unique identifier for every doctor. Because native and external identities live in separate tables, enforce cross-table uniqueness in the service layer: registration must reject if the MCR exists in either `residents.mcr` or `external_residents.mcr`.
+**Global MCR uniqueness:** MCR is a unique identifier for every doctor. Migration `20260726_000025` normalizes existing native and external MCR values, rejects blank or cross-table duplicate values before cutover, and installs `BEFORE INSERT OR UPDATE OF mcr` triggers on both identity tables. The triggers serialize equal normalized MCR writes with a transaction-scoped advisory lock and reject a value already present in the other identity table. Global-identity writes require `READ COMMITTED` and fail closed at stronger snapshot isolation. Service checks remain for controlled API errors, but they are not the race boundary.
 
 **Compliance exclusion:** Non-NHG Residents are excluded from NHG compliance, NHG numerator/denominator, surplus, period snapshots, and clawback. Do not join this table into native compliance queries.
 
@@ -762,7 +762,7 @@ Backend-owned opaque browser-session state added by migration `20260722_000023`.
 | rotated_from_session_id | UUID | nullable, UNIQUE | At most one child per parent |
 | user_agent_hash | BYTEA(32) | nullable, exact 32-byte check | Optional keyed digest; no raw user agent |
 
-Root rows satisfy `session_family_id = id`; child rows have `rotated_from_session_id`. Rotation locks in global order: subject row, transaction-scoped family advisory lock, then fresh `SELECT ... FOR UPDATE` session reload. `populate_existing=True` prevents SQLAlchemy identity-map state from bypassing the locked database row. Transaction-scoped advisory locks disappear on commit, rollback, cancellation, or connection loss, so pooled connections cannot retain them.
+Root rows satisfy `session_family_id = id`; child rows have `rotated_from_session_id`. Rotation locks in global order: subject row, transaction-scoped family advisory lock, then fresh `SELECT ... FOR UPDATE` session reload. Under the H-E restricted-role path, `app_sessions` has no direct runtime table privilege and reviewed `mata_rls` helpers perform the authoritative fresh database lookup. The non-RLS ORM fallback retains `populate_existing=True`, so an existing SQLAlchemy identity-map object cannot bypass the locked row. Transaction-scoped advisory locks disappear on commit, rollback, cancellation, or connection loss, so pooled connections cannot retain them.
 
 ---
 
@@ -782,7 +782,32 @@ Persistent atomic fixed-window counters added by migration `20260709_000016`.
 | created_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | |
 | updated_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | |
 
-The unique constraint is `(scope, key_hash, window_start, window_seconds)`. Atomic `INSERT ... ON CONFLICT DO UPDATE` prevents concurrent lost updates. This table has RLS enabled from its original migration; the current backend owner/runtime path remains usable pending the dedicated restricted-role and full-policy work in Phase 5B-H-E.
+The unique constraint is `(scope, key_hash, window_start, window_seconds)`. Atomic `INSERT ... ON CONFLICT DO UPDATE` prevents concurrent lost updates. This table is helper-only under H-E: `mata_app_runtime` and `mata_auth_internal` have no direct table privilege, and the reviewed `mata_rls.consume_rate_limit` function is the only application access path.
+
+---
+
+## Table: `audit_logs`
+
+Append-only application audit events for staff and administrative workflows.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| id | UUID | PK, DEFAULT `gen_random_uuid()` | |
+| actor_user_id | UUID | FK → users.id, nullable | Current database-owned staff subject where available |
+| actor_role | VARCHAR(30) | NOT NULL | |
+| actor_name | VARCHAR(120) | NOT NULL | Audit/display value, never an authorization source |
+| actor_site | VARCHAR(50) | nullable | |
+| actor_programme | VARCHAR(50) | nullable | |
+| actor_admin_level | VARCHAR(30) | nullable | |
+| action | VARCHAR(80) | NOT NULL | Stable action identifier |
+| entity_type | VARCHAR(80) | NOT NULL | Stable entity family |
+| entity_id | TEXT | nullable | UUID text or another stable application identifier, such as a programme code |
+| before_json | JSONB | nullable | Sanitized pre-mutation snapshot |
+| after_json | JSONB | nullable | Sanitized post-mutation snapshot |
+| metadata_json | JSONB | nullable | Sanitized action metadata |
+| created_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | |
+
+Migration `20260726_000025` changes `entity_id` from UUID to text so audited configuration entities with non-UUID stable keys can use the same append path. Its downgrade checks every populated value before removing H-E helpers and fails without partial downgrade if any value cannot be losslessly restored to UUID. Under H-E, normal runtime reads are RLS-scoped and writes use the reviewed `mata_rls.append_audit_log` helper.
 
 ---
 
@@ -1029,7 +1054,13 @@ Visibility follows the same rule as all other events. A global session type does
 
 Migration `20260722_000024` revokes all existing table, sequence, and function privileges in `public` from `PUBLIC` and, when present, Supabase browser roles `anon` and `authenticated`. It also revokes corresponding default privileges for future objects created by the migration owner. Its downgrade intentionally does not recreate unknowable broad grants.
 
-This is grant hardening, not full RLS. `app_sessions` currently has neither RLS nor forced RLS, and the existing backend owner/runtime remains usable. Phase 5B-H-E must separately introduce a non-owner `NOBYPASSRLS` runtime role, trusted transaction-local identity context, helpers, policies, and full-table verification.
+Migrations `20260726_000025` and `20260726_000026` add the separate full-RLS layer. The capability groups `mata_app_runtime` and `mata_auth_internal` are `NOLOGIN`, `NOINHERIT`, non-owner, `NOSUPERUSER`, and `NOBYPASSRLS`; credentialed runtime, auth-helper, and migration/ownership logins must be distinct. H-E enables RLS on all 34 application tables, installs 84 policies targeted only to `mata_app_runtime`, and keeps all application tables without `FORCE ROW LEVEL SECURITY` because normal application traffic is required to use a non-owner role.
+
+Normal runtime access is explicit: 27 tables receive reviewed table actions, `users` additionally receives `INSERT`/`UPDATE` and column-limited `SELECT` that excludes `password_hash`, and six tables remain helper-only with no direct runtime table privilege: `app_sessions`, `clawback_records`, `period_snapshots`, `programme_institution_posting_map`, `rate_limit_buckets`, and `surplus_ledger`. `mata_auth_internal` has no direct application-table or sequence privileges.
+
+`PUBLIC` and optional `anon`, `authenticated`, and `service_role` roles receive no application relation, H-E helper, or schema-creation authority. Default privileges do not grant future tables, sequences, or functions to runtime, auth, browser, or PUBLIC roles. A future application table is therefore inaccessible by default and still requires explicit RLS, policy, grant, helper, ownership, and test review.
+
+These statements describe the local source and disposable-PostgreSQL implementation. They do not establish the revision, role catalogue, grants, policies, or behavior of a deployed Supabase project.
 
 PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
 

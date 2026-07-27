@@ -45,9 +45,13 @@ def _production_settings(**overrides) -> Settings:
         "database_url": (
             "postgresql+asyncpg://runtime@db.example.invalid:5432/mata"
         ),
+        "auth_database_url": (
+            "postgresql+asyncpg://auth@db.example.invalid:5432/mata"
+        ),
         "sync_database_url": (
             "postgresql+psycopg2://migration@db.example.invalid:5432/mata"
         ),
+        "database_rls_enabled": True,
         "mata_session_hash_key": SESSION_KEY,
         "rate_limit_store": "postgres",
         "rate_limit_hash_secret": RATE_KEY,
@@ -122,7 +126,7 @@ def test_local_cookie_has_separate_name_and_secure_is_off() -> None:
 
 
 def test_production_configuration_rejects_insecure_transport_and_origin_shortcuts() -> None:
-    with pytest.raises(ValueError, match="bearer_compat"):
+    with pytest.raises(ValueError, match="cookie session transport"):
         _production_settings(auth_transport="bearer_compat")
     with pytest.raises(ValueError, match="origins"):
         _production_settings(cors_origins=["*"])
@@ -134,7 +138,19 @@ def test_production_configuration_rejects_insecure_transport_and_origin_shortcut
         _production_settings(
             database_url="postgresql+asyncpg://postgres@localhost:5432/mata"
         )
-    with pytest.raises(ValueError, match="MATA_RESIDENT_SESSION_SECRET"):
+    with pytest.raises(ValueError, match="SYNC_DATABASE_URL"):
+        _production_settings(
+            sync_database_url=(
+                "postgresql+psycopg2://migration@other.example.invalid:5432/mata"
+            )
+        )
+    with pytest.raises(ValueError, match="distinct credentialed roles"):
+        _production_settings(
+            sync_database_url=(
+                "postgresql+psycopg2://runtime@db.example.invalid:5432/mata"
+            )
+        )
+    with pytest.raises(ValueError, match="cookie session transport"):
         _production_settings(
             auth_transport="bearer_compat",
             enable_production_bearer_rollback=True,
@@ -184,7 +200,13 @@ def _auth_router_client(
     async def no_rate_limit() -> None:
         return None
 
-    app.dependency_overrides[auth.get_db_session] = db_override
+    for dependency in (
+        auth.get_db_session,
+        auth.get_auth_db_session,
+        auth.get_exclusive_db_session,
+        auth.get_logout_db_session,
+    ):
+        app.dependency_overrides[dependency] = db_override
     app.dependency_overrides[auth.get_settings] = lambda: selected_settings
     app.dependency_overrides[auth._persistent_login_rate_limit] = no_rate_limit
     app.include_router(auth.router, prefix="/api/v1")
@@ -329,12 +351,16 @@ class _StaffLoginDb:
         self.row = row
         self.subsequent_row = subsequent_row
         self.execute_count = 0
+        self.rollbacks = 0
 
     async def execute(self, statement, params=None):
         self.execute_count += 1
         if self.execute_count > 1 and self.subsequent_row is not None:
             return _MappingResult(self.subsequent_row)
         return _MappingResult(self.row)
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
 
 
 @pytest.mark.asyncio
@@ -595,6 +621,7 @@ def _cookie_middleware_client(
         environment="test",
         auth_mode="supabase",
         auth_transport="cookie",
+        database_rls_enabled=False,
         mata_session_hash_key=SESSION_KEY,
         _env_file=None,
     )
@@ -811,8 +838,8 @@ def test_security_headers_no_store_and_trusted_host_contract() -> None:
         "Cookie",
     }
     assert rejected_host.status_code == 400
-    assert poisoned_host.status_code == 200
-    assert poisoned_host.json()["request_path"] == "/identity"
+    assert poisoned_host.status_code == 400
+    assert poisoned_host.text == "Invalid host header"
 
 
 def test_outer_security_middleware_contains_unexpected_errors_with_safe_headers(
@@ -853,6 +880,7 @@ def test_application_middleware_order_rejects_host_before_auth_and_wraps_all_err
 
     assert [middleware.cls.__name__ for middleware in app.user_middleware] == [
         "SecurityHeadersMiddleware",
+        "StrictHostSyntaxMiddleware",
         "TrustedHostMiddleware",
         "CORSMiddleware",
         "AuthStubMiddleware",

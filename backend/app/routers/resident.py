@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import date
 from typing import Annotated
@@ -9,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import get_db_session
 from app.dependencies.auth import require_resident_or_external
 from app.errors import ApiError, ErrorCode
 from app.middleware.auth_stub import AuthIdentity
@@ -17,14 +17,6 @@ from app.services import resident_submission
 
 
 router = APIRouter(prefix="/resident", tags=["resident"])
-
-
-try:
-    from app.database import get_db_session
-except Exception:
-
-    async def get_db_session() -> AsyncIterator[AsyncSession | None]:
-        yield None
 
 
 @dataclass(slots=True)

@@ -74,6 +74,8 @@ def test_demo_staff_reset_refuses_non_local_modes() -> None:
             Settings(
                 environment="development",
                 auth_mode="stub",
+                database_rls_enabled=False,
                 sync_database_url="postgresql://postgres:postgres@prod-db.example.com:5432/mata_db",
+                _env_file=None,
             ),
         )

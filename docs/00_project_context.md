@@ -48,7 +48,11 @@ Residents log in via React frontend (MCR-only auth in Phase 1)
 
 Staff password authentication is backend-mediated through Supabase, and no Supabase access/refresh token is returned to or persisted by the browser. Login, Non-NHG registration, and registration-options routes are intentionally public application entry points; a Vercel outer gate is not an application-auth requirement.
 
-Session rotation is serialized by subject, transaction-scoped family advisory lock, and locked/refreshed database row. Subject generation fencing invalidates sessions after authorization change, password reset, or deactivation. Revision `20260722_000024` revokes browser-role object privileges but is not full RLS; full RLS is Phase 5B-H-E. Local code verification is not proof of deployed behavior.
+Session rotation is serialized by subject, transaction-scoped family advisory lock, and locked/refreshed database row. Subject generation fencing invalidates sessions after authorization change, password reset, or deactivation. Revision `20260722_000024` revokes browser-role object privileges.
+
+**5B-H-E current local state (2026-07-27):** Revisions `20260726_000025` and `20260726_000026` add separate non-owner runtime and auth-helper capabilities, database-revalidated signed transaction context, reviewed service helpers, database-enforced global MCR uniqueness, and the full policy/grant cutover. All 34 application tables have RLS enabled locally; 84 policies target only `mata_app_runtime`. The runtime, auth-helper, and migration/ownership credentials must be distinct, and startup attestation fails closed on unsafe roles, ownership, grants, helpers, policies, schema access, sequences, PUBLIC, or browser-role state. FastAPI authorization remains mandatory.
+
+Local code and disposable-database verification are not proof of deployed Supabase behavior.
 
 PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
 
@@ -109,7 +113,7 @@ Before coding, always read `00_project_context.md` and `AGENTS.md`. Then read th
 
 ### Implementation Status of Source-of-Truth Files
 
-The source-of-truth files began as build specifications, but substantial pre-compliance code is now implemented. Schema/auth/session/upload/event/attendance surfaces must be verified against current models, migrations, services, and tests. Phase 6 compliance, Phase 5B-H-E full RLS, final close, snapshots, and clawback remain separately bounded work.
+The source-of-truth files began as build specifications, but substantial pre-compliance code is now implemented. Schema/auth/session/upload/event/attendance surfaces must be verified against current models, migrations, services, and tests. Phase 5B-H-E full RLS is locally implemented; deployed verification remains separate. Phase 6 compliance, final close, snapshots, and clawback remain separately bounded work.
 
 ### Domain-Specific Authority Mapping
 
@@ -154,7 +158,7 @@ The source-of-truth files began as build specifications, but substantial pre-com
 | Component | Status | Notes |
 |-----------|--------|-------|
 | **Database schema design** (`schema.md`) | ✅ Implemented pre-compliance schema | `clawback_records` remains a deferred placeholder pending its final contract |
-| **Alembic migrations** | ✅ Implemented | Linear history through `20260722_000024` |
+| **Alembic migrations** | ✅ Implemented | Linear history through `20260726_000026` |
 | **FastAPI backend structure** | ✅ Implemented pre-compliance surfaces | Routers, services, middleware, models, schemas, and tests are present |
 | **RDB parser** (`rdb_parser.py`) | ✅ Implemented | Contract and edge cases remain governed by `parsing.md` |
 | **TTF parser** (`ttf_parser.py`) | ✅ Implemented | Contract and edge cases remain governed by `parsing.md` |
@@ -166,7 +170,7 @@ The source-of-truth files began as build specifications, but substantial pre-com
 | **Frontend (React/Vite/TypeScript)** | ✅ Implemented pre-compliance surfaces | Cookie/CSRF transport and all current role workflows |
 | **Auth: stub middleware** | ✅ Implemented local/demo only | Synthetic headers are rejected in production-like modes |
 | **Auth: Supabase staff authentication** | ✅ Implemented | Backend-mediated password flow wrapped in MATA app sessions |
-| **Security** | 🔧 H-D locally complete | Full H-E RLS and deployed verification remain |
+| **Security** | 🔧 H-E locally complete | Deployed role, policy, grant, migration, and workflow verification remains |
 
 ### Pre-Compliance Roadmap Orientation
 
@@ -181,7 +185,7 @@ This file is navigation only. Detailed contracts live in `99_decision_log_and_ga
 - `5B-G` Supabase readiness is complete as documentation/audit work: staff bootstrap runbook, RLS/grants/Data API planning matrix, Supabase migration smoke plan, service-role access review, and readiness audit. It did not enable RLS, write policy SQL, implement cookie/BFF/CSRF, or implement compliance.
 - `5B-H-A`, `5B-H-B`, and `5B-H-C` are retained as historical deployment-security/UAT phases.
 - `5B-H-D` is implemented and locally verified; see `docs/5b_h_d_production_security_implementation.md`. Deployment smoke remains separate.
-- `5B-H-E` is the explicit next full-RLS phase and uses `docs/5b_g_rls_grants_matrix.md` as input.
+- `5B-H-E` is locally implemented and verified against the named disposable PostgreSQL database; see `docs/5b_h_e_full_rls_implementation.md`. It reconciles `docs/5b_g_rls_grants_matrix.md`; deployed verification remains separate.
 - Programme PC NHG Resident Attendance is implemented as a pre-compliance, read-only overview plus a dedicated resident history page. Backend scope is `residents.programme_code IN users.programme_scope`; reads use native `attendance_records` only. Non-NHG Attendance remains separate, and no attendance mutation or compliance/target-progress UI is part of this feature.
 - Phase 6 compliance remains the next major feature phase after the protected deployment/security baseline is acceptable. Phase 6 compliance must read native `attendance_records` only and never join `external_attendance_records`.
 
@@ -301,7 +305,7 @@ Reporting period deactivate (PUT /admin/reporting-periods/{id}/deactivate)
 
 **Local/demo:** Middleware may read the documented synthetic headers. They are never trusted in production-like modes.
 
-**Production/Supabase:** The browser submits staff credentials to the backend, which performs the bounded Supabase password exchange and discards the upstream tokens after verification. Resident MCR login is backend-owned. All identities receive an opaque MATA application session through `__Host-mata_session`; unsafe requests also require the session-bound CSRF value and approved Origin. The cookie contains no role or scope. The backend resolves `app_sessions`, reloads the current subject row, and checks `session_generation` on every protected request. Full table RLS remains Phase 5B-H-E.
+**Production/Supabase:** The browser submits staff credentials to the backend, which performs the bounded Supabase password exchange and discards the upstream tokens after verification. Resident MCR login is backend-owned. All identities receive an opaque MATA application session through `__Host-mata_session`; unsafe requests also require the session-bound CSRF value and approved Origin. The cookie contains no role or scope. The backend resolves `app_sessions`, reloads the current subject row, and checks `session_generation` on every protected request. H-E then installs database-revalidated, signed transaction-local identity before protected SQL executes. Ordinary queries use the non-owner `mata_app_runtime` capability; public authentication/session helpers use the separate `mata_auth_internal` capability; migrations and ownership use neither application credential.
 
 ### Error Handling
 
@@ -909,7 +913,12 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 
 | Name | Layer | Purpose | Example | Required |
 |------|-------|---------|---------|----------|
-| `DATABASE_URL` | Backend (server-only) | PostgreSQL connection string | `postgresql+asyncpg://user:pass@localhost:5432/mata` | Yes |
+| `DATABASE_URL` | Backend (server-only) | Restricted runtime async PostgreSQL connection when H-E is enabled | `postgresql+asyncpg://runtime-user:placeholder@localhost:5432/mata` | Yes |
+| `MATA_AUTH_DATABASE_URL` | Backend (server-only) | Distinct restricted auth-helper async PostgreSQL connection | `postgresql+asyncpg://auth-user:placeholder@localhost:5432/mata` | H-E / production |
+| `SYNC_DATABASE_URL` | Backend (server-only) | Distinct migration/ownership sync PostgreSQL connection | `postgresql://migration-user:placeholder@localhost:5432/mata` | Migrations |
+| `MATA_DATABASE_RLS_ENABLED` | Backend | Enables the H-E database boundary; production requires `true` | `false` locally / `true` in production | Production |
+| `MATA_DATABASE_RUNTIME_ROLE` | Backend | Stable runtime capability group | `mata_app_runtime` | H-E |
+| `MATA_DATABASE_AUTH_ROLE` | Backend | Stable auth-helper capability group | `mata_auth_internal` | H-E |
 | `SUPABASE_SERVICE_ROLE_KEY` | Backend (server-only) | Bounded Supabase admin operations | placeholder only | Only where required |
 | `SUPABASE_PUBLISHABLE_KEY` | Backend (server-only in H-D) | Backend-mediated staff password authentication | placeholder only | Supabase mode |
 | `MATA_SESSION_HASH_KEY` | Backend (server-only) | Keyed session/CSRF/user-agent digests | placeholder only | Production cookie mode |
@@ -970,7 +979,7 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
 - **Security headers:** HSTS, X-Frame-Options: DENY, X-Content-Type-Options: nosniff, Referrer-Policy, CSP
 - **Supabase service role key:** Server-only. Never exposed to frontend or client-side env vars.
 - **Browser/Data API grants:** `PUBLIC`, optional `anon`, and optional `authenticated` application-object privileges are revoked by `20260722_000024`.
-- **RLS:** Full policies and restricted non-owner runtime architecture are Phase 5B-H-E; grant revocation is not RLS.
+- **RLS:** H-E locally implements 34 RLS-enabled application tables, 84 runtime-targeted policies, exact helper/table/column grants, and a restricted non-owner runtime. Grant revocation alone was not RLS, and local implementation is not deployed proof.
 - **Session management:** Opaque 256-bit session and CSRF credentials; only keyed digests persist. Strict host-only cookie, synchronized CSRF, one-winner rotation, family logout, and generation fencing are implemented.
 
 > **⚠️ Most likely LLM mistake:** Storing JWT tokens in `localStorage`. The confirmed approach is `HttpOnly` cookies. The silent consequence is XSS vulnerability — any script injection can steal the token.
@@ -994,7 +1003,7 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
 | FM Saturday exception | Removed from confirmed list | No FM row in `weekend_exceptions` seed data |
 | Resident second factor not approved | MCR-only production assurance remains unresolved | Do not invent a factor; retain the explicit blocker pending stakeholder approval |
 | Local verification versus deployment | Passing code/tests do not prove deployed environment, migrations, grants, or cookie behavior | Run the documented post-deployment smoke against the approved target |
-| Grant revocation versus RLS | Browser-role revocation can be mistaken for row-level policy coverage | Treat full RLS as Phase 5B-H-E |
+| Local H-E versus deployed RLS | A locally verified role/policy catalogue can be mistaken for deployed Supabase protection | Independently verify revision `20260726_000026`, credentials, ownership, policies, grants, helpers, PUBLIC/browser roles, and five-role workflows on the approved target |
 | Emergency bearer compatibility | Routine enablement would reintroduce browser-token risk | Keep double opt-in, time-bounded, and rollback-only |
 
 See `99_decision_log_and_gap_audit.md` for the full risk register.

@@ -272,6 +272,7 @@ def _client(
         yield session
 
     app.dependency_overrides[admin.get_db_session] = _db_override
+    app.dependency_overrides[admin.get_exclusive_db_session] = _db_override
     if settings is not None:
         app.dependency_overrides[admin.get_settings] = lambda: settings
     app.include_router(admin.router, prefix="/api/v1")
@@ -582,6 +583,30 @@ def test_reset_password_updates_supabase_and_clears_saved_actor_name(
     audit_log = session.audit_logs[0]
     for field in ("before_json", "after_json", "metadata_json"):
         assert "password" not in str(audit_log[field]).lower()
+
+
+def test_master_admin_cannot_reset_own_password() -> None:
+    session = _FakeStaffAccountSession()
+    original_hash = session.users[0]["password_hash"]
+    original_actor_name = session.users[0]["current_staff_actor_name"]
+
+    response = _client(identity=_master_identity(session), session=session).post(
+        f"/api/v1/admin/staff-accounts/{session.master_id}/reset-password",
+        json={"password": "self-reset-password-must-not-be-used"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Master Admins cannot reset their own password through staff "
+        "account management"
+    )
+    assert session.users[0]["password_hash"] == original_hash
+    assert session.users[0]["current_staff_actor_name"] == original_actor_name
+    assert session.users[0]["session_generation"] == 0
+    assert session.users[0]["session_issuance_blocked"] is False
+    assert session.session_revocations == 0
+    assert session.commits == 0
+    assert session.audit_logs == []
 
 
 def test_reset_password_rejects_blank_without_side_effects(

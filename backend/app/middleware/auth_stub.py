@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import re
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -13,7 +15,14 @@ from app.config import Settings, get_settings
 from app.database import AsyncSessionLocal
 from app.errors import ErrorCode, build_error_response
 from app.models import ExternalResident, Resident, User
-from app.services.app_sessions import resolve_session, revoke_session, validate_csrf
+from app.services.app_sessions import (
+    AppSessionInvalidError,
+    authorization_fingerprint_for_session,
+    identity_context_for_session,
+    resolve_session,
+    revoke_session,
+    validate_csrf,
+)
 from app.services.mata_resident_token import (
     MataResidentTokenError,
     extract_bearer_token,
@@ -23,6 +32,10 @@ from app.services.mata_resident_token import (
 from app.services.supabase_jwt import SupabaseJwtError, SupabaseJwtVerifier
 from app.services.session_transport import clear_session_cookie, session_cookie_name
 from app.middleware.security import is_approved_origin, is_unsafe_method
+
+
+logger = logging.getLogger(__name__)
+_AUTHORIZATION_FINGERPRINT_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass
@@ -160,6 +173,10 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
                     touch=is_unsafe_method(request.method),
                 )
                 await session_db.commit()
+        except AppSessionInvalidError:
+            response = self._unauthorized_response()
+            clear_session_cookie(response, settings=self._settings)
+            return response
         except Exception:
             response = build_error_response(
                 status_code=503,
@@ -177,7 +194,32 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             clear_session_cookie(response, settings=self._settings)
             return response
 
-        identity_or_error = await self._resolve_app_session_identity(app_session, request)
+        if self._settings.database_rls_enabled:
+            try:
+                identity_or_error = self._identity_from_rls_session(app_session)
+                authorization_fingerprint = (
+                    authorization_fingerprint_for_session(app_session)
+                )
+                if (
+                    authorization_fingerprint is None
+                    or _AUTHORIZATION_FINGERPRINT_PATTERN.fullmatch(
+                        authorization_fingerprint
+                    )
+                    is None
+                ):
+                    raise AppSessionInvalidError(
+                        "Application authorization binding is missing"
+                    )
+            except AppSessionInvalidError:
+                identity_or_error = self._unauthorized_response()
+                authorization_fingerprint = None
+        else:
+            identity_or_error = await self._resolve_app_session_identity(
+                app_session,
+                request,
+            )
+            authorization_fingerprint = None
+
         if isinstance(identity_or_error, Response):
             try:
                 async with AsyncSessionLocal() as session_db:
@@ -188,13 +230,17 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
                     )
                     await session_db.commit()
             except Exception:
-                pass
+                logger.exception(
+                    "Failed to revoke an invalid application session"
+                )
             clear_session_cookie(identity_or_error, settings=self._settings)
             return identity_or_error
 
         request.state.identity = identity_or_error
         request.state.app_session = app_session
         request.state.session_token = raw_session_token
+        if authorization_fingerprint is not None:
+            request.state.authorization_fingerprint = authorization_fingerprint
 
         if is_unsafe_method(request.method):
             csrf_token = request.headers.get(self._settings.csrf_header_name)
@@ -205,6 +251,79 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         if response.status_code == 401:
             clear_session_cookie(response, settings=self._settings)
         return response
+
+    def _identity_from_rls_session(
+        self,
+        app_session,
+    ) -> AuthIdentity:
+        context = identity_context_for_session(app_session)
+        if context is None:
+            raise AppSessionInvalidError(
+                "Application identity binding is missing"
+            )
+        role = str(context.get("app_role") or "").strip().lower()
+        scope = self._normalise_programme_scope(
+            context.get("programme_scope")
+        )
+        posting_code = str(context.get("posting_code") or "").strip() or None
+        admin_level = str(context.get("admin_level") or "").strip() or None
+        current_staff_actor_name = context.get("current_staff_actor_name")
+        if not isinstance(current_staff_actor_name, str):
+            current_staff_actor_name = None
+
+        if app_session.subject_type == "staff" and role == "admin":
+            if (
+                posting_code is not None
+                or admin_level not in {"programme", "master"}
+            ):
+                raise AppSessionInvalidError(
+                    "Application staff scope changed"
+                )
+            return AuthIdentity(
+                role=role,
+                subject_id=str(app_session.subject_id),
+                programme_scope=scope,
+                admin_level=self._resolve_admin_level(
+                    persisted_admin_level=admin_level,
+                ),
+                current_staff_actor_name=current_staff_actor_name,
+            )
+        if app_session.subject_type == "staff" and role == "secretary":
+            if not posting_code or scope or admin_level is not None:
+                raise AppSessionInvalidError(
+                    "Application staff scope changed"
+                )
+            return AuthIdentity(
+                role=role,
+                subject_id=str(app_session.subject_id),
+                posting_code=posting_code,
+                current_staff_actor_name=current_staff_actor_name,
+            )
+        if app_session.subject_type == "resident" and role == "resident":
+            if len(scope) != 1 or posting_code is not None or admin_level is not None:
+                raise AppSessionInvalidError(
+                    "Application Resident scope changed"
+                )
+            return AuthIdentity(
+                role=role,
+                subject_id=str(app_session.subject_id),
+                programme_code=scope[0],
+            )
+        if (
+            app_session.subject_type == "external_resident"
+            and role == "external_resident"
+        ):
+            if scope or posting_code is not None or admin_level is not None:
+                raise AppSessionInvalidError(
+                    "Application Non-NHG Resident scope changed"
+                )
+            return AuthIdentity(
+                role=role,
+                subject_id=str(app_session.subject_id),
+            )
+        raise AppSessionInvalidError(
+            "Application session subject changed"
+        )
 
     async def _resolve_app_session_identity(
         self,

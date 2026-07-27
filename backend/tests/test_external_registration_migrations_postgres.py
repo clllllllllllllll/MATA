@@ -11,6 +11,8 @@ import sys
 from typing import Any
 from uuid import UUID, uuid4
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine, URL, make_url
@@ -23,6 +25,12 @@ from app.config import Settings
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
 VERSIONS_DIR = BACKEND_ROOT / "alembic" / "versions"
+H_E_DISPOSABLE_DATABASE_NAME = "mata_phase5b_verify_5bhe"
+_H_E_QUOTED_DATABASE_NAME = f'"{H_E_DISPOSABLE_DATABASE_NAME}"'
+_LOCAL_POSTGRES_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_SYNC_POSTGRES_DRIVERS = frozenset(
+    {"postgresql", "postgresql+psycopg", "postgresql+psycopg2"}
+)
 
 EXPECTED_POSTING_CODE_ROWS = (
     ("752081a5-51ce-5d5a-8049-b77f1a98a160", "NSCDermat"),
@@ -120,8 +128,27 @@ def test_external_registration_migration_chain_and_constants() -> None:
     assert "LIMIT 1" not in provenance_source.upper()
 
 
-def _assert_local_postgres_source(url: URL) -> None:
+def _assert_local_postgres_source(
+    url: URL,
+    *,
+    h_e_restricted: bool,
+) -> None:
     database = url.database or ""
+    if h_e_restricted:
+        if (
+            url.drivername not in _SYNC_POSTGRES_DRIVERS
+            or (url.host or "").casefold() not in _LOCAL_POSTGRES_HOSTS
+            or database != H_E_DISPOSABLE_DATABASE_NAME
+            or not url.username
+            or bool(url.query)
+        ):
+            pytest.fail(
+                "H-E migration lifecycle tests require the exact named local "
+                f"disposable database {H_E_DISPOSABLE_DATABASE_NAME}",
+                pytrace=False,
+            )
+        return
+
     if (
         url.get_backend_name() != "postgresql"
         or url.host not in {"localhost", "127.0.0.1"}
@@ -134,6 +161,199 @@ def _assert_local_postgres_source(url: URL) -> None:
             "Migration lifecycle tests require an approved local MATA database",
             pytrace=False,
         )
+
+
+def _repository_head_revision() -> str:
+    config = Config(str(ALEMBIC_INI))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    heads = ScriptDirectory.from_config(config).get_heads()
+    if len(heads) != 1:
+        pytest.fail(
+            "Migration lifecycle tests require exactly one Alembic repository head",
+            pytrace=False,
+        )
+    return str(heads[0])
+
+
+def _h_e_database_identity(connection: Connection) -> dict[str, Any]:
+    return dict(
+        connection.execute(
+            text(
+                """
+                SELECT db.datname AS database_name,
+                       current_user::text AS current_role,
+                       session_user::text AS session_role,
+                       owner_role.rolname AS database_owner,
+                       login_role.rolcreatedb AS login_can_create_database,
+                       login_role.rolsuper AS login_is_superuser
+                FROM pg_catalog.pg_database AS db
+                JOIN pg_catalog.pg_roles AS owner_role
+                  ON owner_role.oid = db.datdba
+                JOIN pg_catalog.pg_roles AS login_role
+                  ON login_role.rolname = session_user
+                WHERE db.datname = current_database()
+                """
+            )
+        )
+        .mappings()
+        .one()
+    )
+
+
+def _assert_h_e_target_ready(
+    target_engine: Engine,
+    *,
+    repository_head: str,
+) -> None:
+    with target_engine.connect() as connection:
+        identity = _h_e_database_identity(connection)
+        if (
+            identity["database_name"] != H_E_DISPOSABLE_DATABASE_NAME
+            or identity["current_role"] != identity["session_role"]
+            or identity["session_role"] != identity["database_owner"]
+            or not (
+                identity["login_can_create_database"]
+                or identity["login_is_superuser"]
+            )
+        ):
+            pytest.fail(
+                "H-E lifecycle owner credentials must directly own and be able "
+                "to recreate the exact named disposable database",
+                pytrace=False,
+            )
+
+        revisions = list(
+            connection.scalars(
+                text(
+                    """
+                    SELECT version_num
+                    FROM public.alembic_version
+                    ORDER BY version_num
+                    """
+                )
+            )
+        )
+        if revisions != [repository_head]:
+            pytest.fail(
+                "H-E lifecycle tests require the exact named disposable database "
+                "to start at the single Alembic repository head",
+                pytrace=False,
+            )
+
+
+def _assert_h_e_admin_rebuild_boundary(
+    connection: Connection,
+    *,
+    require_target: bool,
+) -> bool:
+    admin_identity = connection.execute(
+        text(
+            """
+            SELECT current_database() AS database_name,
+                   current_user::text AS current_role,
+                   session_user::text AS session_role,
+                   login_role.rolcreatedb AS login_can_create_database,
+                   login_role.rolsuper AS login_is_superuser
+            FROM pg_catalog.pg_roles AS login_role
+            WHERE login_role.rolname = session_user
+            """
+        )
+    ).mappings().one()
+    if (
+        admin_identity["database_name"] != "postgres"
+        or admin_identity["current_role"] != admin_identity["session_role"]
+        or not (
+            admin_identity["login_can_create_database"]
+            or admin_identity["login_is_superuser"]
+        )
+    ):
+        pytest.fail(
+            "H-E lifecycle rebuild requires a direct local administrative "
+            "connection that can recreate the disposable database",
+            pytrace=False,
+        )
+
+    target = connection.execute(
+        text(
+            """
+            SELECT owner_role.rolname AS database_owner
+            FROM pg_catalog.pg_database AS db
+            JOIN pg_catalog.pg_roles AS owner_role
+              ON owner_role.oid = db.datdba
+            WHERE db.datname = :database_name
+            """
+        ),
+        {"database_name": H_E_DISPOSABLE_DATABASE_NAME},
+    ).mappings().one_or_none()
+    if target is None:
+        if require_target:
+            pytest.fail(
+                "The exact named H-E disposable database does not exist",
+                pytrace=False,
+            )
+        return False
+    if target["database_owner"] != admin_identity["session_role"]:
+        pytest.fail(
+            "Refusing to rebuild an H-E disposable database not owned by the "
+            "direct migration login",
+            pytrace=False,
+        )
+    return True
+
+
+def _rebuild_h_e_database(
+    admin_engine: Engine,
+    *,
+    require_existing: bool,
+) -> None:
+    with admin_engine.connect() as connection:
+        target_exists = _assert_h_e_admin_rebuild_boundary(
+            connection,
+            require_target=require_existing,
+        )
+        if target_exists:
+            connection.execute(
+                text(
+                    """
+                    SELECT pg_catalog.pg_terminate_backend(pid)
+                    FROM pg_catalog.pg_stat_activity
+                    WHERE datname = :database_name
+                      AND pid <> pg_catalog.pg_backend_pid()
+                    """
+                ),
+                {"database_name": H_E_DISPOSABLE_DATABASE_NAME},
+            )
+            connection.exec_driver_sql(
+                f"DROP DATABASE {_H_E_QUOTED_DATABASE_NAME}"
+            )
+            remaining = connection.scalar(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM pg_catalog.pg_database
+                    WHERE datname = :database_name
+                    """
+                ),
+                {"database_name": H_E_DISPOSABLE_DATABASE_NAME},
+            )
+            assert remaining == 0
+
+        connection.exec_driver_sql(
+            f"CREATE DATABASE {_H_E_QUOTED_DATABASE_NAME}"
+        )
+        recreated_owner = connection.scalar(
+            text(
+                """
+                SELECT owner_role.rolname
+                FROM pg_catalog.pg_database AS db
+                JOIN pg_catalog.pg_roles AS owner_role
+                  ON owner_role.oid = db.datdba
+                WHERE db.datname = :database_name
+                """
+            ),
+            {"database_name": H_E_DISPOSABLE_DATABASE_NAME},
+        )
+        assert recreated_owner == connection.scalar(text("SELECT session_user"))
 
 
 @dataclass
@@ -166,10 +386,21 @@ class MigrationHarness:
 def clean_migration_database() -> MigrationHarness:
     settings = Settings(_env_file=None)
     source_url = make_url(settings.sync_database_url)
-    _assert_local_postgres_source(source_url)
-    database_name = f"mata_phase5b_verify_mig_{uuid4().hex[:20]}"
-    assert re.fullmatch(r"mata_phase5b_verify_[a-z0-9_]+", database_name)
-    assert len(database_name) < 64
+    h_e_restricted = settings.database_rls_enabled
+    _assert_local_postgres_source(
+        source_url,
+        h_e_restricted=h_e_restricted,
+    )
+    repository_head = (
+        _repository_head_revision() if h_e_restricted else None
+    )
+    if h_e_restricted:
+        database_name = H_E_DISPOSABLE_DATABASE_NAME
+        assert repository_head is not None
+    else:
+        database_name = f"mata_phase5b_verify_mig_{uuid4().hex[:20]}"
+        assert re.fullmatch(r"mata_phase5b_verify_[a-z0-9_]+", database_name)
+        assert len(database_name) < 64
 
     admin_url = source_url.set(database="postgres")
     target_url = source_url.set(database=database_name)
@@ -180,22 +411,48 @@ def clean_migration_database() -> MigrationHarness:
     )
     target_engine: Engine | None = None
     created = False
-    quoted_name = f'"{database_name}"'
-    try:
-        with admin_engine.connect() as connection:
-            connection.exec_driver_sql(f"CREATE DATABASE {quoted_name}")
-        created = True
-
-        target_engine = create_engine(target_url, poolclass=NullPool)
-        environment = os.environ.copy()
-        environment["SYNC_DATABASE_URL"] = target_url.render_as_string(
-            hide_password=False
-        )
+    h_e_rebuild_authorized = False
+    quoted_name = (
+        _H_E_QUOTED_DATABASE_NAME
+        if h_e_restricted
+        else f'"{database_name}"'
+    )
+    environment = os.environ.copy()
+    environment["SYNC_DATABASE_URL"] = target_url.render_as_string(
+        hide_password=False
+    )
+    if not h_e_restricted:
         environment["DATABASE_URL"] = target_url.set(
             drivername="postgresql+asyncpg"
         ).render_as_string(hide_password=False)
-        environment["ENVIRONMENT"] = "test"
-        environment["AUTH_MODE"] = "stub"
+    environment["ENVIRONMENT"] = "test"
+    environment["AUTH_MODE"] = "stub"
+    try:
+        if h_e_restricted:
+            probe_engine = create_engine(target_url, poolclass=NullPool)
+            try:
+                _assert_h_e_target_ready(
+                    probe_engine,
+                    repository_head=repository_head,
+                )
+            finally:
+                probe_engine.dispose()
+            with admin_engine.connect() as connection:
+                _assert_h_e_admin_rebuild_boundary(
+                    connection,
+                    require_target=True,
+                )
+            h_e_rebuild_authorized = True
+            _rebuild_h_e_database(
+                admin_engine,
+                require_existing=True,
+            )
+        else:
+            with admin_engine.connect() as connection:
+                connection.exec_driver_sql(f"CREATE DATABASE {quoted_name}")
+            created = True
+
+        target_engine = create_engine(target_url, poolclass=NullPool)
         yield MigrationHarness(
             database_name=database_name,
             engine=target_engine,
@@ -204,28 +461,54 @@ def clean_migration_database() -> MigrationHarness:
     finally:
         if target_engine is not None:
             target_engine.dispose()
-        if created:
-            with admin_engine.connect() as connection:
-                connection.execute(
-                    text(
-                        """
-                        SELECT pg_terminate_backend(pid)
-                        FROM pg_stat_activity
-                        WHERE datname = :database_name
-                          AND pid <> pg_backend_pid()
-                        """
-                    ),
-                    {"database_name": database_name},
+        try:
+            if h_e_restricted and h_e_rebuild_authorized:
+                assert repository_head is not None
+                _rebuild_h_e_database(
+                    admin_engine,
+                    require_existing=False,
                 )
-                connection.exec_driver_sql(f"DROP DATABASE {quoted_name}")
-                remaining = connection.scalar(
-                    text(
-                        "SELECT count(*) FROM pg_database WHERE datname = :database_name"
-                    ),
-                    {"database_name": database_name},
-                )
-                assert remaining == 0
-        admin_engine.dispose()
+                restored_engine = create_engine(target_url, poolclass=NullPool)
+                try:
+                    restored_harness = MigrationHarness(
+                        database_name=database_name,
+                        engine=restored_engine,
+                        environment=environment,
+                    )
+                    restore_result = restored_harness.alembic("upgrade", "head")
+                    assert restore_result.returncode == 0, (
+                        restore_result.stdout + restore_result.stderr
+                    )
+                    _assert_h_e_target_ready(
+                        restored_engine,
+                        repository_head=repository_head,
+                    )
+                finally:
+                    restored_engine.dispose()
+            elif created:
+                with admin_engine.connect() as connection:
+                    connection.execute(
+                        text(
+                            """
+                            SELECT pg_terminate_backend(pid)
+                            FROM pg_stat_activity
+                            WHERE datname = :database_name
+                              AND pid <> pg_backend_pid()
+                            """
+                        ),
+                        {"database_name": database_name},
+                    )
+                    connection.exec_driver_sql(f"DROP DATABASE {quoted_name}")
+                    remaining = connection.scalar(
+                        text(
+                            "SELECT count(*) FROM pg_database "
+                            "WHERE datname = :database_name"
+                        ),
+                        {"database_name": database_name},
+                    )
+                    assert remaining == 0
+        finally:
+            admin_engine.dispose()
 
 
 POSTING_ROW_SQL = """
@@ -361,6 +644,216 @@ def _run_success(
 ) -> None:
     result = harness.alembic(action, revision)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _cutover_relation_state(
+    connection: Connection,
+) -> dict[str, tuple[bool, bool, int]]:
+    return {
+        str(row["relation_name"]): (
+            bool(row["rls_enabled"]),
+            bool(row["rls_forced"]),
+            int(row["policy_count"]),
+        )
+        for row in connection.execute(
+            text(
+                """
+                SELECT relation.relname AS relation_name,
+                       relation.relrowsecurity AS rls_enabled,
+                       relation.relforcerowsecurity AS rls_forced,
+                       count(policy.oid) AS policy_count
+                FROM pg_catalog.pg_class AS relation
+                JOIN pg_catalog.pg_namespace AS namespace
+                  ON namespace.oid = relation.relnamespace
+                LEFT JOIN pg_catalog.pg_policy AS policy
+                  ON policy.polrelid = relation.oid
+                WHERE namespace.nspname = 'public'
+                  AND relation.relname IN ('users', 'programmes')
+                GROUP BY relation.relname,
+                         relation.relrowsecurity,
+                         relation.relforcerowsecurity
+                ORDER BY relation.relname
+                """
+            )
+        ).mappings()
+    }
+
+
+def _assert_cutover_revision_state(
+    connection: Connection,
+    *,
+    revision: str,
+) -> None:
+    assert _revision(connection) == revision
+    relation_state = _cutover_relation_state(connection)
+    assert set(relation_state) == {"programmes", "users"}
+    assert all(not state[1] for state in relation_state.values())
+    helper_exists = connection.scalar(
+        text(
+            """
+            SELECT pg_catalog.to_regprocedure(
+                'mata_rls.can_access_resident(uuid)'
+            ) IS NOT NULL
+            """
+        )
+    )
+
+    if revision == "20260726_000026":
+        assert relation_state["users"][0] is True
+        assert relation_state["users"][2] > 0
+        assert relation_state["programmes"][0] is True
+        assert relation_state["programmes"][2] > 0
+        assert helper_exists is True
+        return
+
+    assert revision == "20260726_000025"
+    assert relation_state["users"] == (False, False, 0)
+    # programmes had deny-by-default RLS before the H-E policy cutover and a
+    # 000026 downgrade must preserve that earlier hardening.
+    assert relation_state["programmes"] == (True, False, 0)
+    assert helper_exists is False
+
+
+def _cutover_data_snapshot(
+    connection: Connection,
+    *,
+    programme_id: UUID,
+    user_id: UUID,
+) -> dict[str, tuple[Any, ...]]:
+    programme = connection.execute(
+        text(
+            """
+            SELECT id, code, name, ay_date_category,
+                   r_year_required, is_subspecialty
+            FROM programmes
+            WHERE id = :programme_id
+            """
+        ),
+        {"programme_id": programme_id},
+    ).one()
+    user = connection.execute(
+        text(
+            """
+            SELECT id, email, role, name, admin_level, is_active,
+                   session_generation, session_issuance_blocked
+            FROM users
+            WHERE id = :user_id
+            """
+        ),
+        {"user_id": user_id},
+    ).one()
+    return {
+        "programme": tuple(programme),
+        "user": tuple(user),
+    }
+
+
+def test_full_rls_cutover_clean_populated_downgrade_and_reupgrade_lifecycle(
+    clean_migration_database: MigrationHarness,
+) -> None:
+    harness = clean_migration_database
+
+    # A single clean upgrade exercises the full chain, including 000025, before
+    # checking the 000026 catalogue installed on an empty database.
+    _run_success(harness, "upgrade", "20260726_000026")
+    with harness.engine.connect() as connection:
+        _assert_cutover_revision_state(
+            connection,
+            revision="20260726_000026",
+        )
+
+    _run_success(harness, "downgrade", "20260726_000025")
+    with harness.engine.connect() as connection:
+        _assert_cutover_revision_state(
+            connection,
+            revision="20260726_000025",
+        )
+
+    programme_id = uuid4()
+    programme_code = f"LC{uuid4().hex[:12].upper()}"
+    user_id = uuid4()
+    with harness.engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO programmes (
+                    id, code, name, ay_date_category
+                )
+                VALUES (
+                    :programme_id,
+                    :programme_code,
+                    'H-E lifecycle programme',
+                    'non_im_subspec'
+                )
+                """
+            ),
+            {
+                "programme_id": programme_id,
+                "programme_code": programme_code,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, email, password_hash, role, name, admin_level
+                )
+                VALUES (
+                    :user_id,
+                    :email,
+                    'migration-lifecycle-only',
+                    'admin',
+                    'H-E lifecycle Master Admin',
+                    'master'
+                )
+                """
+            ),
+            {
+                "user_id": user_id,
+                "email": f"{user_id.hex}@example.invalid",
+            },
+        )
+        populated_snapshot = _cutover_data_snapshot(
+            connection,
+            programme_id=programme_id,
+            user_id=user_id,
+        )
+
+    _run_success(harness, "upgrade", "20260726_000026")
+    with harness.engine.connect() as connection:
+        _assert_cutover_revision_state(
+            connection,
+            revision="20260726_000026",
+        )
+        assert _cutover_data_snapshot(
+            connection,
+            programme_id=programme_id,
+            user_id=user_id,
+        ) == populated_snapshot
+
+    _run_success(harness, "downgrade", "20260726_000025")
+    with harness.engine.connect() as connection:
+        _assert_cutover_revision_state(
+            connection,
+            revision="20260726_000025",
+        )
+        assert _cutover_data_snapshot(
+            connection,
+            programme_id=programme_id,
+            user_id=user_id,
+        ) == populated_snapshot
+
+    _run_success(harness, "upgrade", "20260726_000026")
+    with harness.engine.connect() as connection:
+        _assert_cutover_revision_state(
+            connection,
+            revision="20260726_000026",
+        )
+        assert _cutover_data_snapshot(
+            connection,
+            programme_id=programme_id,
+            user_id=user_id,
+        ) == populated_snapshot
 
 
 def test_external_registration_migration_lifecycle_on_clean_postgres(

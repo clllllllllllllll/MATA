@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import date
 from typing import Annotated, Any, Literal
@@ -10,6 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import get_db_session
 from app.dependencies.auth import require_secretary
 from app.dependencies.staff_actor import StaffActorContext, require_staff_actor
 from app.errors import ApiError, ErrorCode
@@ -25,14 +25,6 @@ from app.services import secretary_events
 
 
 router = APIRouter(prefix="/secretary", tags=["secretary"])
-
-
-try:
-    from app.database import get_db_session
-except Exception:
-
-    async def get_db_session() -> AsyncIterator[AsyncSession | None]:
-        yield None
 
 
 @dataclass(slots=True)

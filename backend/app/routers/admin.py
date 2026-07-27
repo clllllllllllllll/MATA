@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Annotated, Any, AsyncIterator, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, Header, Query, Request, UploadFile
@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.database import get_db_session, get_exclusive_db_session
 from app.dependencies.auth import is_master_admin
 from app.dependencies.persistent_rate_limit import enforce_upload_persistent_rate_limit
 from app.dependencies.staff_actor import (
@@ -158,14 +159,6 @@ from app.services.ttf_parser import TTFUploadLockError, parse_ttf_upload
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 RDB_RAW_MULTI_POSTING_FRAGMENT_RESPONSE_LIMIT = 50
-
-
-try:
-    from app.database import get_db_session
-except Exception:
-
-    async def get_db_session() -> AsyncIterator[AsyncSession | None]:
-        yield None
 
 
 @dataclass(slots=True)
@@ -1047,7 +1040,7 @@ async def create_staff_account(
 async def update_staff_account(
     user_id: UUID,
     payload: StaffAccountUpdateRequest,
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_exclusive_db_session),
     admin_context: AdminContext = Depends(require_admin_context),
     actor: StaffActorContext = Depends(require_staff_actor),
 ) -> dict:
@@ -1064,7 +1057,7 @@ async def update_staff_account(
 async def reset_staff_account_password(
     user_id: UUID,
     payload: StaffAccountResetPasswordRequest,
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_exclusive_db_session),
     admin_context: AdminContext = Depends(require_admin_context),
     actor: StaffActorContext = Depends(require_staff_actor),
     settings: Settings = Depends(get_settings),

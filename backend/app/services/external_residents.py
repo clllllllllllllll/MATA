@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
 from app.services import programme_institution_posting
+from app.services.database_context import (
+    session_uses_auth_boundary,
+    session_uses_rls,
+)
 
 
 ALLOWED_HOME_CLUSTERS = {"NUH", "SingHealth"}
@@ -26,7 +32,116 @@ def normalise_mcr(raw_mcr: str) -> str:
 
 
 async def list_registration_options(db: AsyncSession) -> dict[str, Any]:
+    if session_uses_auth_boundary(db):
+        result = await db.execute(
+            text("SELECT * FROM mata_rls.external_registration_options()")
+        )
+        institution_codes: set[str] = set()
+        programmes: dict[str, dict[str, Any]] = {}
+        for row in result.mappings().all():
+            institution_code = str(row["institution_code"])
+            institution_codes.add(institution_code)
+            programme_code = str(row["programme_code"])
+            programme = programmes.setdefault(
+                programme_code,
+                {
+                    "programme_code": programme_code,
+                    "programme_name": str(row["programme_name"]),
+                    "institutions": [],
+                },
+            )
+            programme["institutions"].append(
+                {
+                    "institution_code": institution_code,
+                    "available": bool(row["available"]),
+                    "status": str(row["status"]),
+                }
+            )
+        return {
+            "institutions": [
+                {"code": code, "name": code}
+                for code in sorted(institution_codes)
+            ],
+            "programmes": list(programmes.values()),
+        }
     return await programme_institution_posting.list_registration_options(db)
+
+
+def _schedule_helper_payload(posting_schedule: list[Any]) -> str:
+    payload: list[dict[str, Any]] = []
+    for row in posting_schedule:
+        payload.append(
+            {
+                "programme_code": (
+                    row.programme_code
+                    if hasattr(row, "programme_code")
+                    else row["programme_code"]
+                ),
+                "institution": (
+                    row.institution
+                    if hasattr(row, "institution")
+                    else row["institution"]
+                ),
+                "start_date": str(
+                    row.start_date
+                    if hasattr(row, "start_date")
+                    else row["start_date"]
+                ),
+                "end_date": str(
+                    row.end_date
+                    if hasattr(row, "end_date")
+                    else row["end_date"]
+                ),
+            }
+        )
+    return json.dumps(payload)
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        decoded = json.loads(value)
+        if isinstance(decoded, dict):
+            return decoded
+    raise RuntimeError("Database helper returned an invalid JSON object")
+
+
+def _database_sqlstate(exc: DBAPIError) -> str | None:
+    original = getattr(exc, "orig", None)
+    return (
+        getattr(original, "sqlstate", None)
+        or getattr(original, "pgcode", None)
+    )
+
+
+async def _raise_registration_helper_error(
+    db: AsyncSession,
+    exc: DBAPIError,
+    *,
+    registration: bool,
+) -> None:
+    sqlstate = _database_sqlstate(exc)
+    await db.rollback()
+    if sqlstate == "23505":
+        raise ApiError(
+            status_code=409,
+            detail="Registration could not be completed",
+            error_code=ErrorCode.CONFLICT.value,
+        ) from exc
+    if sqlstate == "22023":
+        raise _schedule_validation_error(
+            "Registration details are invalid"
+            if registration
+            else "posting_schedule is invalid"
+        ) from exc
+    if sqlstate == "MTR01":
+        raise ApiError(
+            status_code=401,
+            detail="Unauthorized",
+            error_code=ErrorCode.UNAUTHORIZED.value,
+        ) from exc
+    raise exc
 
 
 async def _mcr_exists_in_native_residents(db: AsyncSession, mcr: str) -> bool:
@@ -267,6 +382,7 @@ async def register_external_resident(
     posting_schedule: list[Any],
     today: date | None = None,
 ) -> dict[str, Any]:
+    requested_today = today
     today = today or date.today()
     clean_name = name.strip()
     if not clean_name:
@@ -283,6 +399,43 @@ async def register_external_resident(
             detail="home_cluster must be NUH or SingHealth",
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
+
+    if session_uses_auth_boundary(db):
+        if requested_today is not None:
+            raise ValueError(
+                "Database-backed registration uses PostgreSQL current_date"
+            )
+        try:
+            result = await db.execute(
+                text(
+                    """
+                    SELECT mata_rls.register_external_resident(
+                        CAST(:name AS text),
+                        CAST(:mcr AS text),
+                        CAST(:home_cluster AS text),
+                        CAST(:posting_schedule AS jsonb)
+                    )
+                    """
+                ),
+                {
+                    "name": clean_name,
+                    "mcr": normalised_mcr,
+                    "home_cluster": home_cluster,
+                    "posting_schedule": _schedule_helper_payload(
+                        posting_schedule
+                    ),
+                },
+            )
+            response = _json_object(result.scalar_one())
+            await db.commit()
+            return response
+        except DBAPIError as exc:
+            await _raise_registration_helper_error(
+                db,
+                exc,
+                registration=True,
+            )
+            raise AssertionError("unreachable")
 
     if await _mcr_exists_in_native_residents(db, normalised_mcr):
         raise ApiError(
@@ -358,7 +511,56 @@ async def update_my_posting(
     institution: str,
     today: date | None = None,
 ) -> dict[str, Any]:
+    requested_today = today
     today = today or date.today()
+    if session_uses_rls(db):
+        if requested_today is not None:
+            raise ValueError(
+                "Database-backed schedule changes use PostgreSQL current_date"
+            )
+        try:
+            normalised_programme_code = (
+                programme_institution_posting.normalise_mapping_code(
+                    programme_code,
+                    field_name="programme_code",
+                )
+            )
+            normalised_institution = (
+                programme_institution_posting.normalise_mapping_code(
+                    institution,
+                    field_name="institution_code",
+                )
+            )
+        except programme_institution_posting.PostingMappingUnavailableError as exc:
+            raise _schedule_validation_error(exc.detail) from exc
+        try:
+            result = await db.execute(
+                text(
+                    """
+                    SELECT mata_rls.set_external_resident_current_posting(
+                        CAST(:external_resident_id AS uuid),
+                        CAST(:programme_code AS text),
+                        CAST(:institution_code AS text)
+                    )
+                    """
+                ),
+                {
+                    "external_resident_id": external_resident_id,
+                    "programme_code": normalised_programme_code,
+                    "institution_code": normalised_institution,
+                },
+            )
+            response = _json_object(result.scalar_one())
+            await db.commit()
+            return response
+        except DBAPIError as exc:
+            await _raise_registration_helper_error(
+                db,
+                exc,
+                registration=False,
+            )
+            raise AssertionError("unreachable")
+
     resident = await _external_resident_or_unauthorized(db, external_resident_id)
 
     try:
@@ -527,7 +729,41 @@ async def replace_my_posting_schedule(
     posting_schedule: list[Any],
     today: date | None = None,
 ) -> dict[str, Any]:
+    requested_today = today
     today = today or date.today()
+    if session_uses_rls(db):
+        if requested_today is not None:
+            raise ValueError(
+                "Database-backed schedule changes use PostgreSQL current_date"
+            )
+        try:
+            result = await db.execute(
+                text(
+                    """
+                    SELECT mata_rls.replace_external_resident_schedule(
+                        CAST(:external_resident_id AS uuid),
+                        CAST(:posting_schedule AS jsonb)
+                    )
+                    """
+                ),
+                {
+                    "external_resident_id": external_resident_id,
+                    "posting_schedule": _schedule_helper_payload(
+                        posting_schedule
+                    ),
+                },
+            )
+            response = _json_object(result.scalar_one())
+            await db.commit()
+            return response
+        except DBAPIError as exc:
+            await _raise_registration_helper_error(
+                db,
+                exc,
+                registration=False,
+            )
+            raise AssertionError("unreachable")
+
     await _external_resident_or_unauthorized(db, external_resident_id)
     normalised_schedule = await _validate_posting_schedule(db, posting_schedule)
     current_schedule_index = _current_schedule_index(normalised_schedule, today)

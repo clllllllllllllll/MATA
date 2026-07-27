@@ -12,26 +12,112 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.config import Settings
 from app.errors import ApiError
+from app.services import app_sessions
 from app.services import resident_submission
+from app.services.database_context import (
+    AUTH_BOUNDARY_INFO_KEY,
+    MataSyncSession,
+    configure_request_context,
+)
 
 
-def _assert_disposable_local_postgres(database_url: str) -> None:
+DISPOSABLE_DATABASE_NAME = "mata_phase5b_verify_5bhe"
+_TEST_SESSION_HASH_KEY = "rls-resident-attendance-test-session-key-32-bytes"
+
+
+def _assert_disposable_local_postgres(
+    database_url: str,
+    *,
+    async_url: bool,
+) -> None:
     url = make_url(database_url)
+    allowed_drivers = (
+        {"postgresql+asyncpg"}
+        if async_url
+        else {"postgresql", "postgresql+psycopg", "postgresql+psycopg2"}
+    )
     if (
-        url.drivername != "postgresql+asyncpg"
+        url.drivername not in allowed_drivers
         or url.host not in {"localhost", "127.0.0.1"}
-        or not (url.database or "").startswith("mata_phase5b_verify_")
+        or url.database != DISPOSABLE_DATABASE_NAME
+        or not url.username
     ):
         pytest.fail(
-            "PostgreSQL attendance concurrency tests require a disposable local "
-            "mata_phase5b_verify_ database",
+            "PostgreSQL attendance concurrency tests require the exact named local "
+            f"disposable database {DISPOSABLE_DATABASE_NAME}",
             pytrace=False,
         )
+
+
+async def _issue_resident_session(
+    auth_engine: AsyncEngine,
+    settings: Settings,
+    *,
+    resident_id: UUID,
+    mcr: str,
+) -> app_sessions.CreatedSession:
+    session_settings = settings.model_copy(
+        update={"mata_session_hash_key": _TEST_SESSION_HASH_KEY}
+    )
+    async with AsyncSession(auth_engine, expire_on_commit=False) as auth_db:
+        auth_db.info[AUTH_BOUNDARY_INFO_KEY] = True
+        created = await app_sessions.create_session(
+            auth_db,
+            session_settings,
+            "resident",
+            resident_id,
+            "mata_resident",
+            expected_subject_session_generation=0,
+            normalized_mcr=mcr,
+        )
+        await auth_db.commit()
+        resolved = await app_sessions.resolve_session(
+            auth_db,
+            session_settings,
+            created.session_token,
+            touch=False,
+        )
+        assert resolved is not None
+        assert (
+            app_sessions.authorization_fingerprint_for_session(resolved)
+            is not None
+        )
+        return app_sessions.CreatedSession(
+            session=resolved,
+            session_token=created.session_token,
+            csrf_token=created.csrf_token,
+        )
+
+
+def _runtime_session(
+    runtime_engine: AsyncEngine,
+    *,
+    resident_id: UUID,
+    created: app_sessions.CreatedSession,
+) -> AsyncSession:
+    db = AsyncSession(
+        runtime_engine,
+        expire_on_commit=False,
+        sync_session_class=MataSyncSession,
+    )
+    fingerprint = app_sessions.authorization_fingerprint_for_session(
+        created.session
+    )
+    assert fingerprint is not None
+    configure_request_context(
+        db,
+        token_digest=bytes(created.session.token_digest),
+        expected_subject_type="resident",
+        expected_subject_id=resident_id,
+        expected_app_session_id=created.session.id,
+        expected_authorization_fingerprint=fingerprint,
+    )
+    return db
 
 
 def _current_repository_alembic_head() -> str:
@@ -49,8 +135,33 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = Settings(_env_file=None)
-    _assert_disposable_local_postgres(settings.database_url)
-    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    assert settings.auth_database_url is not None
+    _assert_disposable_local_postgres(settings.database_url, async_url=True)
+    _assert_disposable_local_postgres(
+        settings.auth_database_url,
+        async_url=True,
+    )
+    _assert_disposable_local_postgres(
+        settings.sync_database_url,
+        async_url=False,
+    )
+    configured_users = {
+        make_url(settings.database_url).username,
+        make_url(settings.auth_database_url).username,
+        make_url(settings.sync_database_url).username,
+    }
+    if not settings.database_rls_enabled or len(configured_users) != 3:
+        pytest.fail(
+            "Attendance RLS verification requires distinct restricted runtime, "
+            "auth, and owner database logins",
+            pytrace=False,
+        )
+    owner_url = make_url(settings.sync_database_url).set(
+        drivername="postgresql+asyncpg"
+    )
+    owner_engine = create_async_engine(owner_url, poolclass=NullPool)
+    runtime_engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    auth_engine = create_async_engine(settings.auth_database_url, poolclass=NullPool)
 
     suffix = uuid4().hex[:10]
     programme_code = f"NC{suffix}"[:20]
@@ -62,6 +173,7 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
     first_event_id = uuid4()
     second_event_id = uuid4()
     period_id = uuid4()
+    session_type_id = uuid4()
     event_date = date(2090, 1, 3)
 
     events: dict[UUID, dict[str, Any]] = {
@@ -188,18 +300,20 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
 
     tasks: list[asyncio.Task[dict[str, Any] | ApiError]] = []
     try:
-        async with engine.connect() as connection:
+        async with owner_engine.connect() as connection:
             database_head = await connection.scalar(
                 text("SELECT version_num FROM alembic_version")
             )
         assert database_head == _current_repository_alembic_head()
 
-        async with engine.begin() as connection:
+        async with owner_engine.begin() as connection:
             await connection.execute(
                 text(
                     """
-                    INSERT INTO posting_codes (id, code, display_name)
-                    VALUES (:id, :code, :display_name)
+                    INSERT INTO posting_codes (
+                        id, code, display_name, supports_secretary_events
+                    )
+                    VALUES (:id, :code, :display_name, true)
                     """
                 ),
                 {"id": posting_id, "code": posting_code, "display_name": posting_code},
@@ -224,6 +338,23 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
             await connection.execute(
                 text(
                     """
+                    INSERT INTO reporting_periods (
+                        id, label, start_date, end_date, status
+                    )
+                    VALUES (
+                        :id, :label, DATE '2090-01-01',
+                        DATE '2090-12-31', 'active'
+                    )
+                    """
+                ),
+                {
+                    "id": period_id,
+                    "label": f"Concurrency {suffix}",
+                },
+            )
+            await connection.execute(
+                text(
+                    """
                     INSERT INTO residents (id, name, mcr, programme_code, status)
                     VALUES (:id, :name, :mcr, :programme_code, 'active')
                     """
@@ -233,6 +364,73 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
                     "name": "Synthetic Concurrency Resident",
                     "mcr": mcr,
                     "programme_code": programme_code,
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO resident_postings (
+                        id, resident_id, posting_code, reporting_period_id,
+                        start_date, end_date, r_year, status
+                    )
+                    VALUES (
+                        :id, :resident_id, :posting_code, :period_id,
+                        :event_date, :event_date, 'ALL', 'active'
+                    )
+                    """
+                ),
+                {
+                    "id": uuid4(),
+                    "resident_id": resident_id,
+                    "posting_code": posting_code,
+                    "period_id": period_id,
+                    "event_date": event_date,
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO session_types (
+                        id, name, duration_hours, duration_label
+                    )
+                    VALUES (:id, :name, 1.0, '1h')
+                    """
+                ),
+                {
+                    "id": session_type_id,
+                    "name": f"Synthetic concurrency {suffix} [1h]",
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_catalogue (
+                        id, keyword, session_type_id, posting_code,
+                        programme_code, r_year, reporting_period_id,
+                        duration_hours, is_tracked
+                    )
+                    VALUES
+                        (
+                            :first_id, :first_keyword, :session_type_id,
+                            :posting_code, :programme_code, 'ALL',
+                            :period_id, 1.0, true
+                        ),
+                        (
+                            :second_id, :second_keyword, :session_type_id,
+                            :posting_code, :programme_code, 'ALL',
+                            :period_id, 1.0, true
+                        )
+                    """
+                ),
+                {
+                    "first_id": uuid4(),
+                    "first_keyword": events[first_event_id]["teaching_name"],
+                    "second_id": uuid4(),
+                    "second_keyword": events[second_event_id]["teaching_name"],
+                    "session_type_id": session_type_id,
+                    "posting_code": posting_code,
+                    "programme_code": programme_code,
+                    "period_id": period_id,
                 },
             )
             for event in events.values():
@@ -266,8 +464,19 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
                     event,
                 )
 
+        created = await _issue_resident_session(
+            auth_engine,
+            settings,
+            resident_id=resident_id,
+            mcr=mcr,
+        )
+
         async def _submit(event_id: UUID) -> dict[str, Any] | ApiError:
-            async with AsyncSession(bind=engine, expire_on_commit=False) as db:
+            async with _runtime_session(
+                runtime_engine,
+                resident_id=resident_id,
+                created=created,
+            ) as db:
                 try:
                     return await resident_submission.submit_attendance(
                         db,
@@ -283,7 +492,7 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
             resident_id=resident_id,
             event_date=event_date,
         )
-        async with AsyncSession(bind=engine, expire_on_commit=False) as blocker:
+        async with AsyncSession(owner_engine, expire_on_commit=False) as blocker:
             await blocker.execute(
                 text("SELECT pg_advisory_xact_lock(:key1, :key2)"),
                 {"key1": key1, "key2": key2},
@@ -305,7 +514,7 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
         assert conflicts[0].status_code == 409
         assert conflicts[0].detail == "Attendance overlaps an earlier accepted event"
 
-        async with engine.connect() as connection:
+        async with owner_engine.connect() as connection:
             submitted_count = await connection.scalar(
                 text(
                     """
@@ -330,9 +539,13 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-        async with engine.begin() as connection:
+        async with owner_engine.begin() as connection:
             await connection.execute(
                 text("DELETE FROM attendance_records WHERE resident_id = :resident_id"),
+                {"resident_id": resident_id},
+            )
+            await connection.execute(
+                text("DELETE FROM app_sessions WHERE subject_id = :resident_id"),
                 {"resident_id": resident_id},
             )
             await connection.execute(
@@ -348,8 +561,27 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
                 },
             )
             await connection.execute(
+                text(
+                    "DELETE FROM teaching_name_catalogue "
+                    "WHERE reporting_period_id = :period_id"
+                ),
+                {"period_id": period_id},
+            )
+            await connection.execute(
+                text("DELETE FROM resident_postings WHERE resident_id = :resident_id"),
+                {"resident_id": resident_id},
+            )
+            await connection.execute(
                 text("DELETE FROM residents WHERE id = :resident_id"),
                 {"resident_id": resident_id},
+            )
+            await connection.execute(
+                text("DELETE FROM session_types WHERE id = :session_type_id"),
+                {"session_type_id": session_type_id},
+            )
+            await connection.execute(
+                text("DELETE FROM reporting_periods WHERE id = :period_id"),
+                {"period_id": period_id},
             )
             await connection.execute(
                 text("DELETE FROM programmes WHERE id = :programme_id"),
@@ -359,4 +591,6 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
                 text("DELETE FROM posting_codes WHERE id = :posting_id"),
                 {"posting_id": posting_id},
             )
-        await engine.dispose()
+        await auth_engine.dispose()
+        await runtime_engine.dispose()
+        await owner_engine.dispose()

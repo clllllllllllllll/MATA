@@ -18,6 +18,22 @@ Normal production responses use the same-origin relative `/api/v1` path and cred
 
 PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
 
+## Phase 5B-H-E Database Authorization Boundary
+
+H-E adds a second, database-enforced authorization layer without replacing FastAPI authorization:
+
+- protected application queries use a credentialed login that is a member only of the non-owner, `NOBYPASSRLS` `mata_app_runtime` capability group;
+- intentionally unauthenticated login, registration-options, Non-NHG registration, session issuance, and shared session/rate-limit infrastructure use a distinct `mata_auth_internal` helper credential with no direct application-table privileges;
+- migrations and ownership use a third credential that is never an application runtime credential;
+- the runtime installs database-owned identity as transaction-local context before protected queries and revalidates it after every root transaction boundary;
+- subject type/id, application role, explicit admin level, normalized programme scope, posting code, application-session id, and the authorization fingerprint are derived from the current database session/subject state;
+- browser claims, raw `X-User-*` headers, request JSON, frontend state, and Supabase `user_metadata` cannot seed PostgreSQL authorization context;
+- invalid or stale context produces the normal generic `401 Unauthorized` application response; unexpected SQLAlchemy, PostgreSQL, transaction, connection, or pool errors remain failures and are not reclassified as ordinary authorization denials.
+
+All 34 application tables have RLS enabled locally by `20260726_000026`. The 84 policies target only `mata_app_runtime`; browser roles retain no application-table access. Six infrastructure/future-state tables have neither direct runtime table privileges nor table policies: implemented operations use reviewed functions, while unimplemented future workflows remain denied.
+
+This is local implementation evidence only. A deployed Supabase project must independently prove its revision, roles, ownership, grants, policies, default ACLs, startup attestation, and five-role workflow behavior.
+
 ## Identity Sources
 
 There are separate identity paths, but they share the opaque application-session envelope. The login UI exposes one shared Resident MCR field: it sends exactly one `{ "role": "resident", "mcr": "<NORMALIZED_MCR>" }` request, and the backend resolves the unique active row from `residents` or `external_residents`. Global cross-table MCR uniqueness makes that resolution deterministic.
@@ -1875,6 +1891,8 @@ Changes to role, admin level, programme scope, posting, or active state incremen
 
 Before the upstream password reset, the backend serializes the subject, commits `session_issuance_blocked = true`, and revokes active application sessions. Concurrent reset attempts serialize. On success it updates the credential, increments `session_generation` again, clears the issuance block and staff actor name, and commits. A failed upstream reset leaves issuance blocked and sessions revoked so an authorized retry cannot race with new login or rotation. The password is not returned or logged.
 
+A Master Admin cannot reset the password of the same staff account through this endpoint. Self-reset returns controlled `422` before any subject lookup side effect, issuance block, session revocation, commit, audit write, or upstream Supabase call.
+
 ### PUT `/auth/settings`
 
 Update password. Admin/secretary only.
@@ -1947,8 +1965,8 @@ Self-register a Non-NHG/cross-cluster resident.
 ```
 - **Validation:**
   1. `home_cluster` must be `NUH` or `SingHealth`.
-  2. `mcr` must not exist in native `residents`.
-  3. `mcr` must not exist in `external_residents`.
+  2. The normalized `mcr` must not exist in native `residents`.
+  3. The normalized `mcr` must not exist in `external_residents`. Migration `20260726_000025` also enforces the cross-table invariant with serialized database triggers, so the service preflight is not the only concurrency boundary.
   4. Each schedule row must have `start_date <= end_date`; schedule rows must not overlap.
   5. Each schedule row resolves exactly one `active`, non-null canonical posting code from `programme_institution_posting_map`. The client must not send or choose `posting_code`.
   6. Pending, inactive, missing, malformed, or referentially invalid mapping rows return controlled `422` errors. Pending uses `Posting configuration for this programme is pending.` so the UI can distinguish configuration readiness from invalid user input.

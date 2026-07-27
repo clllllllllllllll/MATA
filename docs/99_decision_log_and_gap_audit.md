@@ -83,6 +83,19 @@ PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
 
 ---
 
+#### Decision: 5B-H-E full PostgreSQL RLS and restricted database roles
+- **Status:** Implemented in code and verified against the named local disposable PostgreSQL database; deployment evidence pending
+- **Decision:** Normal application SQL runs through a distinct credentialed login that inherits only the non-owner, `NOBYPASSRLS` `mata_app_runtime` capability. Intentionally unauthenticated auth/registration/session infrastructure uses a second login that inherits only `mata_auth_internal`. Alembic and ownership use a third credential that is never an application credential.
+- **Trusted context:** PostgreSQL reloads the current application session and subject and installs signed transaction-local subject type/id, app role, explicit admin level, normalized programme scope, posting code, application-session id, and authorization fingerprint. Browser claims, request JSON, raw identity headers, frontend state, and Supabase `user_metadata` cannot seed it. Every new root transaction revalidates context, including after mid-request commit or rollback.
+- **Policy and grant boundary:** Revision `20260726_000026` enables RLS on all 34 application tables and creates 84 policies targeted only to `mata_app_runtime`. Six tables remain helper-only with no direct runtime table privilege. `mata_auth_internal` has no direct application-table or sequence privilege. PUBLIC and optional `anon`, `authenticated`, and `service_role` roles have no application-object, H-E helper, or schema-creation authority.
+- **Application boundary:** FastAPI authorization remains mandatory. RLS is defense in depth and must not broaden or replace current route/service role, programme, posting, resident, external-resident, period, or workflow checks.
+- **Identity separation:** Native and Non-NHG Resident rows, schedules, attendance, and compliance eligibility remain separate. Migration `20260726_000025` adds serialized database-level normalized MCR uniqueness across the two identity tables.
+- **Evidence boundary:** Local tests and catalogue inspection do not prove deployed Supabase revision, roles, ownership, policies, grants, environment, or runtime behavior.
+- **Reference files:** `docs/5b_h_e_full_rls_implementation.md`; `docs/5b_g_rls_grants_matrix.md`; `docs/schema.md`
+- **Do not change without PM/security-owner approval:** Yes
+
+---
+
 #### Decision: Admin accounts are programme-scoped
 - **Status:** ✅ Confirmed
 - **Decision:** Admin/PC accounts use `users.programme_scope TEXT[]` to restrict access to specific programmes. `NULL` = no access (not all-access).
@@ -671,7 +684,7 @@ PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
 - **Decision:** PostgreSQL for local dev; Supabase-hosted PostgreSQL for production.
 - **Reasoning:** [Not explicitly documented — likely organisation infrastructure preference.]
 - **Alternatives considered:** [Not documented.]
-- **Consequences for codebase:** Supabase staff password authentication is backend-mediated and wrapped in opaque MATA application sessions. Full RLS and the restricted runtime-role architecture remain Phase 5B-H-E. Service-role credentials remain server-only and are not the normal application runtime.
+- **Consequences for codebase:** Supabase staff password authentication is backend-mediated and wrapped in opaque MATA application sessions. H-E locally implements the restricted runtime/auth-helper role architecture and full application-table RLS. Service-role credentials remain server-only and are not the normal application runtime.
 - **Reference file and section:** `AGENTS.md` § Tech Stack
 - **Do not change without PM/stakeholder approval:** No (infra choice, not business rule)
 
@@ -778,11 +791,11 @@ PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
 ---
 
 #### Decision: Security — server-side enforcement and Phase 5B-H-E full RLS
-- **Status:** Confirmed; H-D transport/grant hardening implemented, H-E RLS pending
-- **Decision:** All security checks are enforced server-side. Frontend checks are UX only. Protected requests use opaque application sessions and current subject-row reloads. Full RLS is specifically Phase 5B-H-E.
+- **Status:** Confirmed; H-D transport/grant hardening and H-E RLS are locally implemented, deployed verification pending
+- **Decision:** All security checks are enforced server-side. Frontend checks are UX only. Protected requests use opaque application sessions, current subject-row reloads, and H-E database-revalidated transaction-local identity.
 - **Reasoning:** Frontend code is client-controlled and cannot be trusted for security.
 - **Alternatives considered:** None — standard security practice.
-- **Consequences for codebase:** Every endpoint validates the app session and checks current role/scope before DB operations. Migration `20260722_000024` revokes browser-role grants but is not RLS. H-E must introduce a non-owner `NOBYPASSRLS` runtime role and transaction-local trusted context; ordinary application queries must not rely on `service_role`.
+- **Consequences for codebase:** Every endpoint validates the app session and checks current role/scope before DB operations. Migration `20260722_000024` revokes browser-role grants but is not RLS. Revisions `20260726_000025` and `20260726_000026` implement the non-owner `NOBYPASSRLS` runtime, separate auth-helper capability, transaction-local trusted context, exact policies/grants, and startup attestation. Ordinary application queries do not use `service_role`, ownership, or `BYPASSRLS`.
 - **Reference file and section:** `AGENTS.md` § Security Rules
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -1078,6 +1091,7 @@ Status: ✅ Resolved
 | 10 | What is the Vercel deployment configuration for the frontend? | Required for production deployment | DevOps | Yes — not needed until deployment |
 | 10A | What approved resident second factor, if any, will satisfy production assurance? | MCR-only remains the implemented path but assurance approval is unresolved | PM / Security owner / Programme leadership | H-D may complete; do not invent a factor |
 | 10B | Has deployed cookie, Origin, migration, grant, and session behavior passed the H-D smoke contract? | Local verification does not prove deployed controls | DevOps / Security owner | Deployment approval remains separate |
+| 10C | Has the approved database passed the H-E revision, three-credential, ownership, role, policy, helper, grant, default-ACL, PUBLIC/browser, startup-attestation, and five-role workflow checks? | Local disposable-PostgreSQL evidence does not establish the deployed RLS boundary | DevOps / Security owner | Deployment approval remains separate |
 
 ### Testing
 
@@ -1130,7 +1144,7 @@ Status: ✅ Resolved
 | 2 | TBD-MIGRATION option selection | Determines historical data availability | No code exists — placeholder TODO only | New migration script(s) when option confirmed |
 | 3 | Complete clawback financial/final-close contract | Required only for deferred clawback | No implementation-ready placeholder; legacy evidence is non-authoritative | Source-of-truth documents after stakeholder confirmation |
 | 7 | Approved resident second factor | Required to close the explicit production-auth assurance blocker | No factor is invented or implemented by H-D | Auth contract and deployment approval records after stakeholder decision |
-| 8 | Deployed H-D verification | Required to distinguish local code evidence from live behavior | H-D implementation report contains local evidence only | Deployment smoke/evidence document |
+| 8 | Deployed H-D/H-E verification | Required to distinguish local code evidence from live cookie/session and RLS behavior | H-D and H-E implementation reports contain local evidence only | Deployment smoke/evidence document |
 
 > **⚠️ Most likely LLM mistake:** Treating legacy clawback evidence as an implementation-ready formula. The entire financial/final-close contract is deferred; ordinary compliance remains independently specified.
 
@@ -1144,9 +1158,17 @@ These are implementation errors that would fail silently — no exception thrown
 
 #### Security blind spots added by 5B-H-D
 
-- Mistaking `20260722_000024` browser-role privilege revocation for full RLS. Full RLS remains Phase 5B-H-E.
+- Mistaking `20260722_000024` browser-role privilege revocation alone for the H-E role/context/policy implementation.
 - Treating passing local tests and audits as proof of deployed Vercel/Supabase security.
 - Enabling `bearer_compat` as routine production transport instead of a time-bounded emergency rollback.
+
+#### Security blind spots added by 5B-H-E
+
+- Using the migration/ownership credential, `service_role`, a superuser, or any `BYPASSRLS` role for ordinary application queries.
+- Installing transaction context from browser claims or request fields instead of the current database-owned application session and subject.
+- Losing transaction-local context after an in-request commit/rollback or retaining stale identity-map authority across a pooled connection.
+- Broadening an exact helper grant or adding direct privileges to helper-only tables to fix a workflow.
+- Treating the local 34-table/84-policy catalogue as proof that the approved Supabase target has revision `20260726_000026` or the same roles, owners, grants, policies, and default ACLs.
 
 #### ⚠️ Blind Spot 1: Using `residents.r_year` instead of `resident_postings.r_year`
 - **Where:** `compliance.py` — any join to `teaching_targets`

@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
+from app.services.database_context import session_uses_rls_helpers
 
 
 LOCAL_DEV_HASH_SECRET = "mata-local-dev-rate-limit-hash-secret"
@@ -126,6 +127,45 @@ async def check_rate_limit(
         scope=policy.scope,
         identifier=identifier,
     )
+
+    if session_uses_rls_helpers(db):
+        result = await db.execute(
+            text(
+                """
+                SELECT
+                    allowed,
+                    request_count,
+                    retry_after_seconds,
+                    cleaned_count
+                FROM mata_rls.consume_rate_limit(
+                    CAST(:scope AS text),
+                    CAST(:key_hash AS text),
+                    CAST(:request_limit AS integer),
+                    CAST(:window_seconds AS integer),
+                    CAST(:cleanup_retention_seconds AS integer),
+                    CAST(:cleanup_batch_size AS integer)
+                )
+                """
+            ),
+            {
+                "scope": policy.scope,
+                "key_hash": key_hash,
+                "request_limit": policy.limit,
+                "window_seconds": policy.window_seconds,
+                "cleanup_retention_seconds": (
+                    settings.rate_limit_cleanup_retention_seconds
+                ),
+                "cleanup_batch_size": settings.rate_limit_cleanup_batch_size,
+            },
+        )
+        row = result.mappings().one()
+        await db.commit()
+        return RateLimitResult(
+            allowed=bool(row["allowed"]),
+            request_count=int(row["request_count"]),
+            limit=policy.limit,
+            retry_after_seconds=int(row["retry_after_seconds"]),
+        )
 
     result = await db.execute(
         text(

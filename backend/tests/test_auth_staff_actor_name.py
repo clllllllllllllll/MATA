@@ -115,6 +115,7 @@ def _client(identity: AuthIdentity, session: _FakeAuthSession) -> TestClient:
         yield session
 
     app.dependency_overrides[auth.get_db_session] = _db_override
+    app.dependency_overrides[auth.get_exclusive_db_session] = _db_override
     app.include_router(auth.router, prefix="/api/v1")
     return TestClient(app)
 

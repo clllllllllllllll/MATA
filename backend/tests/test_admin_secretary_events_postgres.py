@@ -14,18 +14,25 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.config import Settings
 from app.dependencies.staff_actor import StaffActorContext
 from app.errors import ApiError
 from app.services import admin_secretary_events
+from app.services import app_sessions
+from app.services.database_context import (
+    AUTH_BOUNDARY_INFO_KEY,
+    MataSyncSession,
+    configure_request_context,
+)
 
 
 @dataclass
 class PostgresAdminEventHarness:
     db: AsyncSession
+    owner_db: AsyncSession
     actor: StaffActorContext
     posting_code: str
     programme_code: str
@@ -35,17 +42,26 @@ class PostgresAdminEventHarness:
     suffix: str
 
 
-def _assert_local_postgres(database_url: str) -> None:
+DISPOSABLE_DATABASE_NAME = "mata_phase5b_verify_5bhe"
+_TEST_SESSION_HASH_KEY = "rls-admin-events-test-session-key-32-bytes"
+
+
+def _assert_local_postgres(database_url: str, *, async_url: bool) -> None:
     url = make_url(database_url)
+    allowed_drivers = (
+        {"postgresql+asyncpg"}
+        if async_url
+        else {"postgresql", "postgresql+psycopg", "postgresql+psycopg2"}
+    )
     if (
-        url.drivername != "postgresql+asyncpg"
+        url.drivername not in allowed_drivers
         or url.host not in {"localhost", "127.0.0.1"}
-        or not (url.database or "").startswith(
-            ("mata_phase5b_verify_", "mata_admin_events_verify_")
-        )
+        or url.database != DISPOSABLE_DATABASE_NAME
+        or not url.username
     ):
         pytest.fail(
-            "PostgreSQL admin-event integration tests require a local MATA test database",
+            "PostgreSQL admin-event integration tests require the exact named "
+            f"local disposable database {DISPOSABLE_DATABASE_NAME}",
             pytrace=False,
         )
 
@@ -60,24 +76,86 @@ def _current_repository_alembic_head() -> str:
     return head
 
 
+async def _issue_master_session(
+    auth_engine: AsyncEngine,
+    settings: Settings,
+    *,
+    user_id: UUID,
+    supabase_user_id: UUID,
+) -> app_sessions.CreatedSession:
+    session_settings = settings.model_copy(
+        update={"mata_session_hash_key": _TEST_SESSION_HASH_KEY}
+    )
+    async with AsyncSession(auth_engine, expire_on_commit=False) as auth_db:
+        auth_db.info[AUTH_BOUNDARY_INFO_KEY] = True
+        created = await app_sessions.create_session(
+            auth_db,
+            session_settings,
+            "staff",
+            user_id,
+            "supabase_staff",
+            expected_subject_session_generation=0,
+            upstream_subject_id=supabase_user_id,
+        )
+        await auth_db.commit()
+        resolved = await app_sessions.resolve_session(
+            auth_db,
+            session_settings,
+            created.session_token,
+            touch=False,
+        )
+        assert resolved is not None
+        assert (
+            app_sessions.authorization_fingerprint_for_session(resolved)
+            is not None
+        )
+        return app_sessions.CreatedSession(
+            session=resolved,
+            session_token=created.session_token,
+            csrf_token=created.csrf_token,
+        )
+
+
 @pytest_asyncio.fixture
 async def postgres_admin_event_harness() -> AsyncIterator[PostgresAdminEventHarness]:
     settings = Settings(_env_file=None)
-    _assert_local_postgres(settings.database_url)
-    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    assert settings.auth_database_url is not None
+    _assert_local_postgres(settings.database_url, async_url=True)
+    _assert_local_postgres(settings.auth_database_url, async_url=True)
+    _assert_local_postgres(settings.sync_database_url, async_url=False)
+    configured_users = {
+        make_url(settings.database_url).username,
+        make_url(settings.auth_database_url).username,
+        make_url(settings.sync_database_url).username,
+    }
+    if not settings.database_rls_enabled or len(configured_users) != 3:
+        pytest.fail(
+            "Admin-event RLS verification requires distinct restricted runtime, "
+            "auth, and owner database logins",
+            pytrace=False,
+        )
+    owner_url = make_url(settings.sync_database_url).set(
+        drivername="postgresql+asyncpg"
+    )
+    owner_engine = create_async_engine(owner_url, poolclass=NullPool)
+    runtime_engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    auth_engine = create_async_engine(settings.auth_database_url, poolclass=NullPool)
 
     suffix = uuid4().hex[:10]
     posting_code = f"FDPosting{suffix}"
     programme_code = f"FD{suffix}"[:20]
     actor_user_id = uuid4()
+    actor_supabase_user_id = uuid4()
     resident_id = uuid4()
     external_resident_id = uuid4()
     series_id = uuid4()
+    posting_id = uuid4()
+    programme_id = uuid4()
+    runtime_db: AsyncSession | None = None
 
     try:
-        async with engine.connect() as connection:
-            outer_transaction = await connection.begin()
-            database_head = await connection.scalar(
+        async with AsyncSession(owner_engine, expire_on_commit=False) as owner_db:
+            database_head = await owner_db.scalar(
                 text("SELECT version_num FROM alembic_version")
             )
             if database_head != _current_repository_alembic_head():
@@ -85,13 +163,7 @@ async def postgres_admin_event_harness() -> AsyncIterator[PostgresAdminEventHarn
                     "PostgreSQL admin-event integration database is not at current Alembic head",
                     pytrace=False,
                 )
-            db = AsyncSession(
-                bind=connection,
-                expire_on_commit=False,
-                join_transaction_mode="create_savepoint",
-            )
-            try:
-                await db.execute(
+            await owner_db.execute(
                     text(
                         """
                         INSERT INTO posting_codes (
@@ -104,12 +176,12 @@ async def postgres_admin_event_harness() -> AsyncIterator[PostgresAdminEventHarn
                         """
                     ),
                     {
-                        "id": uuid4(),
+                        "id": posting_id,
                         "code": posting_code,
                         "display_name": f"Force delete posting {suffix}",
                     },
                 )
-                await db.execute(
+            await owner_db.execute(
                     text(
                         """
                         INSERT INTO programmes (
@@ -121,33 +193,37 @@ async def postgres_admin_event_harness() -> AsyncIterator[PostgresAdminEventHarn
                         """
                     ),
                     {
-                        "id": uuid4(),
+                        "id": programme_id,
                         "code": programme_code,
                         "name": f"Force delete programme {suffix}",
                     },
                 )
-                await db.execute(
+            await owner_db.execute(
                     text(
                         """
                         INSERT INTO users (
-                            id, email, password_hash, role, name,
+                            id, email, supabase_user_id,
+                            password_hash, role, name,
                             programme_scope, admin_level, is_active,
-                            current_staff_actor_name
+                            current_staff_actor_name, session_generation,
+                            session_issuance_blocked
                         )
                         VALUES (
-                            :id, :email, 'not-used', 'admin', :name,
-                            ARRAY[]::text[], 'master', true, :actor_name
+                            :id, :email, :supabase_user_id, 'not-used',
+                            'admin', :name, ARRAY[]::text[], 'master',
+                            true, :actor_name, 0, false
                         )
                         """
                     ),
                     {
                         "id": actor_user_id,
                         "email": f"force-delete-{suffix}@example.test",
+                        "supabase_user_id": actor_supabase_user_id,
                         "name": "PostgreSQL Master Admin",
                         "actor_name": "PostgreSQL Master Admin",
                     },
                 )
-                await db.execute(
+            await owner_db.execute(
                     text(
                         """
                         INSERT INTO residents (
@@ -165,7 +241,7 @@ async def postgres_admin_event_harness() -> AsyncIterator[PostgresAdminEventHarn
                         "programme_code": programme_code,
                     },
                 )
-                await db.execute(
+            await owner_db.execute(
                     text(
                         """
                         INSERT INTO external_residents (
@@ -184,7 +260,7 @@ async def postgres_admin_event_harness() -> AsyncIterator[PostgresAdminEventHarn
                         "posting_code": posting_code,
                     },
                 )
-                await db.execute(
+            await owner_db.execute(
                     text(
                         """
                         INSERT INTO event_series (
@@ -199,29 +275,117 @@ async def postgres_admin_event_harness() -> AsyncIterator[PostgresAdminEventHarn
                     ),
                     {"id": series_id, "posting_code": posting_code},
                 )
-                await db.commit()
+            await owner_db.commit()
 
-                yield PostgresAdminEventHarness(
-                    db=db,
-                    actor=StaffActorContext(
-                        actor_user_id=actor_user_id,
-                        actor_role="admin",
-                        actor_name="PostgreSQL Master Admin",
-                        actor_admin_level="master",
-                    ),
-                    posting_code=posting_code,
-                    programme_code=programme_code,
-                    resident_id=resident_id,
-                    external_resident_id=external_resident_id,
-                    series_id=series_id,
-                    suffix=suffix,
-                )
-            finally:
-                await db.close()
-                if outer_transaction.is_active:
-                    await outer_transaction.rollback()
+            created = await _issue_master_session(
+                auth_engine,
+                settings,
+                user_id=actor_user_id,
+                supabase_user_id=actor_supabase_user_id,
+            )
+            fingerprint = app_sessions.authorization_fingerprint_for_session(
+                created.session
+            )
+            assert fingerprint is not None
+            runtime_db = AsyncSession(
+                runtime_engine,
+                expire_on_commit=False,
+                sync_session_class=MataSyncSession,
+            )
+            configure_request_context(
+                runtime_db,
+                token_digest=bytes(created.session.token_digest),
+                expected_subject_type="staff",
+                expected_subject_id=actor_user_id,
+                expected_app_session_id=created.session.id,
+                expected_authorization_fingerprint=fingerprint,
+                lock_mode="exclusive",
+            )
+
+            yield PostgresAdminEventHarness(
+                db=runtime_db,
+                owner_db=owner_db,
+                actor=StaffActorContext(
+                    actor_user_id=actor_user_id,
+                    actor_role="admin",
+                    actor_name="PostgreSQL Master Admin",
+                    actor_admin_level="master",
+                ),
+                posting_code=posting_code,
+                programme_code=programme_code,
+                resident_id=resident_id,
+                external_resident_id=external_resident_id,
+                series_id=series_id,
+                suffix=suffix,
+            )
     finally:
-        await engine.dispose()
+        if runtime_db is not None:
+            await runtime_db.rollback()
+            await runtime_db.close()
+        async with AsyncSession(owner_engine, expire_on_commit=False) as cleanup_db:
+            await cleanup_db.execute(
+                text(
+                    "DELETE FROM audit_logs WHERE actor_user_id = :actor_user_id"
+                ),
+                {"actor_user_id": actor_user_id},
+            )
+            await cleanup_db.execute(
+                text(
+                    """
+                    DELETE FROM attendance_records
+                    WHERE resident_id = :resident_id
+                    """
+                ),
+                {"resident_id": resident_id},
+            )
+            await cleanup_db.execute(
+                text(
+                    """
+                    DELETE FROM external_attendance_records
+                    WHERE external_resident_id = :external_resident_id
+                    """
+                ),
+                {"external_resident_id": external_resident_id},
+            )
+            await cleanup_db.execute(
+                text("DELETE FROM teaching_events WHERE posting_code = :posting_code"),
+                {"posting_code": posting_code},
+            )
+            await cleanup_db.execute(
+                text("DELETE FROM event_series WHERE id = :series_id"),
+                {"series_id": series_id},
+            )
+            await cleanup_db.execute(
+                text("DELETE FROM app_sessions WHERE subject_id = :actor_user_id"),
+                {"actor_user_id": actor_user_id},
+            )
+            await cleanup_db.execute(
+                text("DELETE FROM residents WHERE id = :resident_id"),
+                {"resident_id": resident_id},
+            )
+            await cleanup_db.execute(
+                text(
+                    "DELETE FROM external_residents "
+                    "WHERE id = :external_resident_id"
+                ),
+                {"external_resident_id": external_resident_id},
+            )
+            await cleanup_db.execute(
+                text("DELETE FROM users WHERE id = :actor_user_id"),
+                {"actor_user_id": actor_user_id},
+            )
+            await cleanup_db.execute(
+                text("DELETE FROM programmes WHERE id = :programme_id"),
+                {"programme_id": programme_id},
+            )
+            await cleanup_db.execute(
+                text("DELETE FROM posting_codes WHERE id = :posting_id"),
+                {"posting_id": posting_id},
+            )
+            await cleanup_db.commit()
+        await auth_engine.dispose()
+        await runtime_engine.dispose()
+        await owner_engine.dispose()
 
 
 async def _insert_event(
@@ -232,7 +396,7 @@ async def _insert_event(
     event_date: date,
     series_id: UUID | None = None,
 ) -> None:
-    await harness.db.execute(
+    await harness.owner_db.execute(
         text(
             """
             INSERT INTO teaching_events (
@@ -269,7 +433,7 @@ async def _insert_native_attendance(
     event_id: UUID,
 ) -> UUID:
     attendance_id = uuid4()
-    await harness.db.execute(
+    await harness.owner_db.execute(
         text(
             """
             INSERT INTO attendance_records (
@@ -296,7 +460,7 @@ async def _insert_external_attendance(
     event_id: UUID,
 ) -> UUID:
     attendance_id = uuid4()
-    await harness.db.execute(
+    await harness.owner_db.execute(
         text(
             """
             INSERT INTO external_attendance_records (
@@ -321,7 +485,7 @@ async def _insert_external_attendance(
 
 async def _event_count(harness: PostgresAdminEventHarness, event_id: UUID) -> int:
     return int(
-        await harness.db.scalar(
+        await harness.owner_db.scalar(
             text("SELECT count(*) FROM teaching_events WHERE id = :event_id"),
             {"event_id": event_id},
         )
@@ -347,13 +511,15 @@ async def _attendance_count(
             """
         ),
     }[table_name]
-    return int(await harness.db.scalar(statement, {"event_id": event_id}) or 0)
+    return int(
+        await harness.owner_db.scalar(statement, {"event_id": event_id}) or 0
+    )
 
 
 async def _assert_no_action_attendance_foreign_keys(
     harness: PostgresAdminEventHarness,
 ) -> None:
-    result = await harness.db.execute(
+    result = await harness.owner_db.execute(
         text(
             """
             SELECT tc.table_name, rc.delete_rule
@@ -439,13 +605,13 @@ async def test_force_delete_explicitly_removes_attendance_and_persists_audit_on_
         )
         await _insert_external_attendance(harness, event_id=unrelated_event_id)
 
-    await harness.db.commit()
+    await harness.owner_db.commit()
 
     if case_name == "mixed":
         await _assert_no_action_attendance_foreign_keys(harness)
         with pytest.raises(IntegrityError):
-            async with harness.db.begin_nested():
-                await harness.db.execute(
+            async with harness.owner_db.begin_nested():
+                await harness.owner_db.execute(
                     text("DELETE FROM teaching_events WHERE id = :event_id"),
                     {"event_id": event_id},
                 )
@@ -483,7 +649,7 @@ async def test_force_delete_explicitly_removes_attendance_and_persists_audit_on_
         event_id=event_id,
     ) == 0
 
-    audit_result = await harness.db.execute(
+    audit_result = await harness.owner_db.execute(
         text(
             """
             SELECT
@@ -495,7 +661,7 @@ async def test_force_delete_explicitly_removes_attendance_and_persists_audit_on_
               AND entity_id = :event_id
             """
         ),
-        {"event_id": event_id},
+        {"event_id": str(event_id)},
     )
     audit = dict(audit_result.mappings().one())
     assert audit["actor_user_id"] == harness.actor.actor_user_id
@@ -503,7 +669,7 @@ async def test_force_delete_explicitly_removes_attendance_and_persists_audit_on_
     assert audit["actor_name"] == "PostgreSQL Master Admin"
     assert audit["actor_admin_level"] == "master"
     assert audit["entity_type"] == "teaching_event"
-    assert audit["entity_id"] == event_id
+    assert audit["entity_id"] == str(event_id)
     assert audit["before_json"]["id"] == str(event_id)
     assert audit["before_json"]["posting_code"] == harness.posting_code
     assert audit["before_json"]["created_for_programme_code"] == (
@@ -538,7 +704,7 @@ async def test_force_delete_explicitly_removes_attendance_and_persists_audit_on_
             event_id=unrelated_event_id,
         ) == 1
         assert int(
-            await harness.db.scalar(
+            await harness.owner_db.scalar(
                 text("SELECT count(*) FROM event_series WHERE id = :series_id"),
                 {"series_id": harness.series_id},
             )
@@ -560,7 +726,7 @@ async def test_force_delete_stale_impact_rolls_back_before_deletion_on_postgres(
     )
     await _insert_native_attendance(harness, event_id=event_id)
     await _insert_external_attendance(harness, event_id=event_id)
-    await harness.db.commit()
+    await harness.owner_db.commit()
 
     with pytest.raises(ApiError) as exc_info:
         await admin_secretary_events.force_delete_event(
@@ -585,7 +751,7 @@ async def test_force_delete_stale_impact_rolls_back_before_deletion_on_postgres(
         event_id=event_id,
     ) == 1
     assert int(
-        await harness.db.scalar(
+        await harness.owner_db.scalar(
             text(
                 """
                 SELECT count(*)
@@ -594,7 +760,7 @@ async def test_force_delete_stale_impact_rolls_back_before_deletion_on_postgres(
                   AND entity_id = :event_id
                 """
             ),
-            {"event_id": event_id},
+            {"event_id": str(event_id)},
         )
         or 0
     ) == 0
@@ -616,7 +782,7 @@ async def test_force_delete_failure_rolls_back_event_attendance_and_audit_on_pos
     )
     await _insert_native_attendance(harness, event_id=event_id)
     await _insert_external_attendance(harness, event_id=event_id)
-    await harness.db.commit()
+    await harness.owner_db.commit()
 
     original_write_audit_log = admin_secretary_events.write_audit_log
 
@@ -652,7 +818,7 @@ async def test_force_delete_failure_rolls_back_event_attendance_and_audit_on_pos
         event_id=event_id,
     ) == 1
     assert int(
-        await harness.db.scalar(
+        await harness.owner_db.scalar(
             text(
                 """
                 SELECT count(*)
@@ -661,7 +827,7 @@ async def test_force_delete_failure_rolls_back_event_attendance_and_audit_on_pos
                   AND entity_id = :event_id
                 """
             ),
-            {"event_id": event_id},
+            {"event_id": str(event_id)},
         )
         or 0
     ) == 0

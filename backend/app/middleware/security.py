@@ -1,13 +1,36 @@
 from __future__ import annotations
 
+import re
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.responses import PlainTextResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import Settings
 from app.middleware.errors import safe_unexpected_error_response
+
+
+_HOST_HEADER_PATTERN = re.compile(
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?"
+    r"|\[[0-9A-Fa-f:.]+\])(?::([0-9]{1,5}))?"
+)
+
+
+class StrictHostSyntaxMiddleware(BaseHTTPMiddleware):
+    """Reject malformed Host values before framework URL reconstruction."""
+
+    async def dispatch(self, request: Request, call_next):
+        raw_host = request.headers.get("host", "")
+        match = _HOST_HEADER_PATTERN.fullmatch(raw_host)
+        if match is None:
+            return PlainTextResponse("Invalid host header", status_code=400)
+        raw_port = match.group(1)
+        if raw_port is not None and int(raw_port) > 65535:
+            return PlainTextResponse("Invalid host header", status_code=400)
+        return await call_next(request)
 
 
 def configure_cors(app: FastAPI, settings: Settings) -> None:
@@ -44,6 +67,7 @@ def configure_cors(app: FastAPI, settings: Settings) -> None:
 
 def configure_trusted_hosts(app: FastAPI, settings: Settings) -> None:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+    app.add_middleware(StrictHostSyntaxMiddleware)
 
 
 def is_unsafe_method(method: str) -> bool:

@@ -7,7 +7,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from typing import Literal
+from typing import Any, Literal, Mapping
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, text, update
@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.models.session import AppSession
+from app.services.database_context import session_uses_rls_helpers
 
 
 SESSION_TOKEN_BYTES = 32
@@ -145,6 +146,109 @@ class CreatedSession:
     session: AppSession
     session_token: str
     csrf_token: str
+
+
+_APP_SESSION_COLUMNS = (
+    "id",
+    "token_digest",
+    "subject_type",
+    "subject_id",
+    "subject_session_generation",
+    "session_family_id",
+    "auth_source",
+    "csrf_token_digest",
+    "created_at",
+    "last_seen_at",
+    "idle_expires_at",
+    "absolute_expires_at",
+    "revoked_at",
+    "revoked_reason",
+    "rotated_from_session_id",
+    "user_agent_hash",
+)
+_AUTHORIZATION_FINGERPRINT_ATTRIBUTE = "_mata_authorization_fingerprint"
+_IDENTITY_CONTEXT_ATTRIBUTE = "_mata_identity_context"
+
+
+def _app_session_from_mapping(row: Mapping[str, Any]) -> AppSession:
+    values = {column: row[column] for column in _APP_SESSION_COLUMNS}
+    values["token_digest"] = bytes(values["token_digest"])
+    values["csrf_token_digest"] = bytes(values["csrf_token_digest"])
+    if values["user_agent_hash"] is not None:
+        values["user_agent_hash"] = bytes(values["user_agent_hash"])
+    session = AppSession(**values)
+    fingerprint = row.get("authorization_fingerprint")
+    if fingerprint is not None:
+        setattr(
+            session,
+            _AUTHORIZATION_FINGERPRINT_ATTRIBUTE,
+            str(fingerprint),
+        )
+    if "app_role" in row:
+        raw_scope = row.get("programme_scope")
+        scope = (
+            [
+                str(value).strip().upper()
+                for value in raw_scope
+                if str(value).strip()
+            ]
+            if isinstance(raw_scope, (list, tuple))
+            else []
+        )
+        setattr(
+            session,
+            _IDENTITY_CONTEXT_ATTRIBUTE,
+            {
+                "app_role": str(row.get("app_role") or "").strip().lower(),
+                "admin_level": row.get("admin_level"),
+                "programme_scope": sorted(set(scope)),
+                "posting_code": row.get("posting_code"),
+                "current_staff_actor_name": row.get(
+                    "current_staff_actor_name"
+                ),
+            },
+        )
+    return session
+
+
+def authorization_fingerprint_for_session(session: AppSession) -> str | None:
+    fingerprint = getattr(
+        session,
+        _AUTHORIZATION_FINGERPRINT_ATTRIBUTE,
+        None,
+    )
+    return fingerprint if isinstance(fingerprint, str) else None
+
+
+def identity_context_for_session(
+    session: AppSession,
+) -> dict[str, Any] | None:
+    context = getattr(session, _IDENTITY_CONTEXT_ATTRIBUTE, None)
+    return dict(context) if isinstance(context, dict) else None
+
+
+async def _cleanup_sessions_with_helper(
+    db: AsyncSession,
+    settings: Settings,
+) -> int:
+    result = await db.execute(
+        text(
+            """
+            SELECT mata_rls.cleanup_app_sessions(
+                CAST(:retention_seconds AS integer),
+                CAST(:batch_size AS integer)
+            )
+            """
+        ),
+        {
+            "retention_seconds": max(
+                0,
+                int(settings.session_cleanup_retention_seconds),
+            ),
+            "batch_size": max(1, int(settings.session_cleanup_batch_size)),
+        },
+    )
+    return int(result.scalar_one())
 
 
 def _utc(value: datetime) -> datetime:
@@ -358,10 +462,146 @@ async def create_session(
     auth_source: SessionAuthSource,
     *,
     expected_subject_session_generation: int,
+    normalized_mcr: str | None = None,
+    upstream_subject_id: UUID | None = None,
     user_agent: str | None = None,
     now: datetime | None = None,
 ) -> CreatedSession:
     _validate_subject_auth_source(subject_type, auth_source)
+    if session_uses_rls_helpers(db):
+        if now is not None:
+            raise ValueError(
+                "Database-backed application sessions use PostgreSQL time"
+            )
+        current_generation = int(expected_subject_session_generation)
+        if current_generation < 0:
+            raise AppSessionInvalidError("Application-session subject changed")
+        idle_seconds, absolute_seconds = _timeouts_for_subject(
+            settings,
+            subject_type,
+        )
+        (
+            session_token,
+            token_digest,
+            csrf_token,
+            csrf_token_digest,
+        ) = _new_session_material(settings=settings)
+        key = _session_hash_key(settings)
+        session_id = uuid4()
+        user_agent_hash = _user_agent_digest(user_agent, key=key)
+
+        if subject_type == "staff":
+            if upstream_subject_id is None:
+                raise AppSessionInvalidError(
+                    "Verified staff authentication binding is missing"
+                )
+            statement = text(
+                """
+                SELECT *
+                FROM mata_rls.issue_staff_app_session(
+                    CAST(:subject_id AS uuid),
+                    CAST(:upstream_subject_id AS uuid),
+                    CAST(:expected_generation AS bigint),
+                    CAST(:session_id AS uuid),
+                    CAST(:token_digest AS bytea),
+                    CAST(:csrf_token_digest AS bytea),
+                    CAST(:idle_timeout_seconds AS integer),
+                    CAST(:absolute_timeout_seconds AS integer),
+                    CAST(:user_agent_hash AS bytea)
+                )
+                """
+            )
+            parameters: dict[str, Any] = {
+                "subject_id": subject_id,
+                "upstream_subject_id": upstream_subject_id,
+            }
+        else:
+            credential = (normalized_mcr or "").strip().upper()
+            if not credential:
+                raise AppSessionInvalidError(
+                    "Verified Resident authentication binding is missing"
+                )
+            if subject_type == "resident":
+                statement = text(
+                    """
+                    SELECT *
+                    FROM mata_rls.issue_resident_app_session(
+                        CAST(:normalized_mcr AS text),
+                        CAST(:expected_subject_type AS text),
+                        CAST(:subject_id AS uuid),
+                        CAST(:expected_generation AS bigint),
+                        CAST(:session_id AS uuid),
+                        CAST(:token_digest AS bytea),
+                        CAST(:csrf_token_digest AS bytea),
+                        CAST(:idle_timeout_seconds AS integer),
+                        CAST(:absolute_timeout_seconds AS integer),
+                        CAST(:user_agent_hash AS bytea)
+                    )
+                    """
+                )
+            else:
+                statement = text(
+                    """
+                    SELECT *
+                    FROM mata_rls.issue_external_resident_app_session(
+                        CAST(:normalized_mcr AS text),
+                        CAST(:expected_subject_type AS text),
+                        CAST(:subject_id AS uuid),
+                        CAST(:expected_generation AS bigint),
+                        CAST(:session_id AS uuid),
+                        CAST(:token_digest AS bytea),
+                        CAST(:csrf_token_digest AS bytea),
+                        CAST(:idle_timeout_seconds AS integer),
+                        CAST(:absolute_timeout_seconds AS integer),
+                        CAST(:user_agent_hash AS bytea)
+                    )
+                    """
+                )
+            parameters = {
+                "normalized_mcr": credential,
+                "expected_subject_type": subject_type,
+                "subject_id": subject_id,
+            }
+
+        parameters.update(
+            {
+                "expected_generation": current_generation,
+                "session_id": session_id,
+                "token_digest": token_digest,
+                "csrf_token_digest": csrf_token_digest,
+                "idle_timeout_seconds": idle_seconds,
+                "absolute_timeout_seconds": absolute_seconds,
+                "user_agent_hash": user_agent_hash,
+            }
+        )
+        result = await db.execute(statement, parameters)
+        row = result.mappings().one_or_none()
+        if row is None:
+            raise AppSessionInvalidError(
+                "Application-session subject is unavailable"
+            )
+        session = _app_session_from_mapping(row)
+        if (
+            session.id != session_id
+            or session.subject_type != subject_type
+            or session.subject_id != subject_id
+            or session.subject_session_generation != current_generation
+            or not hmac.compare_digest(session.token_digest, token_digest)
+            or not hmac.compare_digest(
+                session.csrf_token_digest,
+                csrf_token_digest,
+            )
+        ):
+            raise AppSessionInvalidError(
+                "Application-session issuance binding changed"
+            )
+        await _cleanup_sessions_with_helper(db, settings)
+        return CreatedSession(
+            session=session,
+            session_token=session_token,
+            csrf_token=csrf_token,
+        )
+
     subject_session_generation = await _lock_subject_for_session(
         db,
         subject_type=subject_type,
@@ -422,6 +662,66 @@ async def resolve_session(
 
     key = _session_hash_key(settings)
     expected_digest = _session_digest(session_bytes, key=key)
+    if session_uses_rls_helpers(db):
+        if now is not None:
+            raise ValueError(
+                "Database-backed application sessions use PostgreSQL time"
+            )
+
+        async def resolve_with_helper(
+            *,
+            should_touch: bool,
+            idle_timeout_seconds: int,
+        ) -> AppSession | None:
+            result = await db.execute(
+                text(
+                    """
+                    SELECT *
+                    FROM mata_rls.resolve_app_session(
+                        CAST(:token_digest AS bytea),
+                        CAST(:touch AS boolean),
+                        CAST(:idle_timeout_seconds AS integer)
+                    )
+                    """
+                ),
+                {
+                    "token_digest": expected_digest,
+                    "touch": should_touch,
+                    "idle_timeout_seconds": idle_timeout_seconds,
+                },
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                return None
+            resolved = _app_session_from_mapping(row)
+            if not hmac.compare_digest(
+                resolved.token_digest,
+                expected_digest,
+            ):
+                raise AppSessionInvalidError(
+                    "Application session binding changed"
+                )
+            _validate_subject_auth_source(
+                resolved.subject_type,
+                resolved.auth_source,
+            )
+            return resolved
+
+        session = await resolve_with_helper(
+            should_touch=False,
+            idle_timeout_seconds=0,
+        )
+        if session is None or not touch:
+            return session
+        idle_seconds, _ = _timeouts_for_subject(
+            settings,
+            session.subject_type,
+        )
+        return await resolve_with_helper(
+            should_touch=True,
+            idle_timeout_seconds=idle_seconds,
+        )
+
     statement = select(AppSession).where(AppSession.token_digest == expected_digest)
     if touch:
         statement = statement.with_for_update().execution_options(
@@ -511,6 +811,109 @@ async def rotate_session(
         raise AppSessionInvalidError(
             "Application session has invalid subject state"
         ) from exc
+    if session_uses_rls_helpers(db):
+        if now is not None:
+            raise ValueError(
+                "Database-backed application sessions use PostgreSQL time"
+            )
+        if session_token is None:
+            old_digest = bytes(session.token_digest)
+        else:
+            session_bytes = parse_session_token(session_token)
+            if session_bytes is None:
+                raise AppSessionInvalidError(
+                    "Application session is no longer active"
+                )
+            old_digest = _session_digest(
+                session_bytes,
+                key=_session_hash_key(settings),
+            )
+            if not hmac.compare_digest(
+                bytes(session.token_digest),
+                old_digest,
+            ):
+                raise AppSessionInvalidError(
+                    "Application session is no longer active"
+                )
+
+        (
+            new_session_token,
+            new_token_digest,
+            new_csrf_token,
+            new_csrf_token_digest,
+        ) = _new_session_material(settings=settings)
+        replacement_id = uuid4()
+        idle_seconds, _ = _timeouts_for_subject(
+            settings,
+            session.subject_type,
+        )
+        new_user_agent_hash = (
+            _user_agent_digest(
+                user_agent,
+                key=_session_hash_key(settings),
+            )
+            if user_agent is not None
+            else None
+        )
+        result = await db.execute(
+            text(
+                """
+                SELECT *
+                FROM mata_rls.rotate_app_session(
+                    CAST(:old_token_digest AS bytea),
+                    CAST(:expected_parent_id AS uuid),
+                    CAST(:new_session_id AS uuid),
+                    CAST(:new_token_digest AS bytea),
+                    CAST(:new_csrf_token_digest AS bytea),
+                    CAST(:idle_timeout_seconds AS integer),
+                    CAST(:new_user_agent_hash AS bytea)
+                )
+                """
+            ),
+            {
+                "old_token_digest": old_digest,
+                "expected_parent_id": session.id,
+                "new_session_id": replacement_id,
+                "new_token_digest": new_token_digest,
+                "new_csrf_token_digest": new_csrf_token_digest,
+                "idle_timeout_seconds": idle_seconds,
+                "new_user_agent_hash": new_user_agent_hash,
+            },
+        )
+        row = result.mappings().one_or_none()
+        if row is None:
+            raise AppSessionInvalidError(
+                "Application session is no longer active"
+            )
+        rotated = _app_session_from_mapping(row)
+        if (
+            rotated.id != replacement_id
+            or rotated.rotated_from_session_id != session.id
+            or rotated.session_family_id != session_family_id
+            or rotated.subject_type != session.subject_type
+            or rotated.subject_id != session.subject_id
+            or rotated.subject_session_generation != expected_generation
+            or not hmac.compare_digest(
+                rotated.token_digest,
+                new_token_digest,
+            )
+            or not hmac.compare_digest(
+                rotated.csrf_token_digest,
+                new_csrf_token_digest,
+            )
+        ):
+            raise AppSessionInvalidError(
+                "Application-session rotation binding changed"
+            )
+        session.revoked_at = rotated.created_at
+        session.revoked_reason = "rotated"
+        await _cleanup_sessions_with_helper(db, settings)
+        return CreatedSession(
+            session=rotated,
+            session_token=new_session_token,
+            csrf_token=new_csrf_token,
+        )
+
     await _lock_subject_for_session(
         db,
         subject_type=session.subject_type,
@@ -598,6 +1001,33 @@ async def revoke_session(
     reason: str,
     now: datetime | None = None,
 ) -> bool:
+    if session_uses_rls_helpers(db):
+        if now is not None:
+            raise ValueError(
+                "Database-backed application sessions use PostgreSQL time"
+            )
+        result = await db.execute(
+            text(
+                """
+                SELECT mata_rls.revoke_app_session(
+                    CAST(:token_digest AS bytea),
+                    CAST(:session_id AS uuid),
+                    CAST(:reason AS text)
+                )
+                """
+            ),
+            {
+                "token_digest": bytes(session.token_digest),
+                "session_id": session.id,
+                "reason": reason.strip() or "revoked",
+            },
+        )
+        revoked = bool(result.scalar_one())
+        if revoked:
+            session.revoked_at = datetime.now(UTC)
+            session.revoked_reason = reason.strip() or "revoked"
+        return revoked
+
     locked = await _locked_session_by_id(db, session.id)
     if locked is None or locked.revoked_at is not None:
         return False
@@ -625,6 +1055,33 @@ async def revoke_session_family(
         ) from exc
     if subject_type not in _SUBJECT_REVOCATION_LOCK_STATEMENTS:
         raise AppSessionInvalidError("Application session has invalid family state")
+
+    if session_uses_rls_helpers(db):
+        if now is not None:
+            raise ValueError(
+                "Database-backed application sessions use PostgreSQL time"
+            )
+        result = await db.execute(
+            text(
+                """
+                SELECT mata_rls.revoke_app_session_family(
+                    CAST(:token_digest AS bytea),
+                    CAST(:expected_session_id AS uuid),
+                    CAST(:reason AS text)
+                )
+                """
+            ),
+            {
+                "token_digest": bytes(session.token_digest),
+                "expected_session_id": session.id,
+                "reason": reason.strip() or "family_revoked",
+            },
+        )
+        revoked_count = int(result.scalar_one())
+        if revoked_count:
+            session.revoked_at = datetime.now(UTC)
+            session.revoked_reason = reason.strip() or "family_revoked"
+        return revoked_count
 
     # Keep the global order subject -> family -> session rows. This serializes
     # logout with refresh and subject-wide invalidation without deadlocks.
@@ -665,6 +1122,36 @@ async def revoke_subject_sessions(
         raise ValueError("Invalid application-session subject type")
     if block_session_issuance and subject_type != "staff":
         raise ValueError("Only staff session issuance can be blocked")
+    if session_uses_rls_helpers(db):
+        if now is not None:
+            raise ValueError(
+                "Database-backed application sessions use PostgreSQL time"
+            )
+        result = await db.execute(
+            text(
+                """
+                SELECT mata_rls.invalidate_subject_app_sessions(
+                    CAST(:subject_type AS text),
+                    CAST(:subject_id AS uuid),
+                    CAST(:reason AS text),
+                    CAST(:block_session_issuance AS boolean)
+                )
+                """
+            ),
+            {
+                "subject_type": subject_type,
+                "subject_id": subject_id,
+                "reason": reason.strip() or "subject_revoked",
+                "block_session_issuance": block_session_issuance,
+            },
+        )
+        value = result.scalar_one_or_none()
+        if value is None:
+            raise AppSessionInvalidError(
+                "Application-session subject is unavailable"
+            )
+        return int(value)
+
     generation_result = await db.execute(
         invalidation_statement,
         {
@@ -697,6 +1184,13 @@ async def cleanup_sessions(
     now: datetime | None = None,
 ) -> int:
     """Delete at most one configured batch of long-expired session rows."""
+
+    if session_uses_rls_helpers(db):
+        if now is not None:
+            raise ValueError(
+                "Database-backed application sessions use PostgreSQL time"
+            )
+        return await _cleanup_sessions_with_helper(db, settings)
 
     current_time = _utc(now or datetime.now(UTC))
     retention_seconds = max(0, int(settings.session_cleanup_retention_seconds))

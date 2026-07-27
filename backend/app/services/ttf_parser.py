@@ -351,6 +351,10 @@ def _duration_label_from_session_type(session_type_name: str) -> str | None:
     return f"{match.group(1)}h"
 
 
+def _mata_rls_enabled(db_session: AsyncSession) -> bool:
+    return bool(getattr(db_session, "info", {}).get("mata_rls_enabled", False))
+
+
 def _advisory_lock_keys(reporting_period_id: UUID, programme_code: str) -> tuple[int, int]:
     scope_key = f"{reporting_period_id}:{programme_code}".encode("utf-8")
     digest = blake2b(scope_key, digest_size=8).digest()
@@ -395,48 +399,92 @@ async def _persist_ttf_rows(
         for row in teaching_targets
     }
 
-    for payload in session_type_rows.values():
-        await db_session.execute(
-            text(
-                """
-                INSERT INTO session_types (name, duration_hours, duration_label)
-                VALUES (:name, :duration_hours, :duration_label)
-                ON CONFLICT (name) DO UPDATE
-                SET duration_hours = EXCLUDED.duration_hours,
-                    duration_label = EXCLUDED.duration_label
-                """
-            ),
-            payload,
-        )
+    rls_enabled = _mata_rls_enabled(db_session)
+    if rls_enabled:
+        session_type_id_by_name: dict[str, Any] = {}
+        for payload in session_type_rows.values():
+            session_type_result = await db_session.execute(
+                text(
+                    """
+                    SELECT mata_rls.resolve_ttf_session_type(
+                        :name,
+                        :duration_hours,
+                        :duration_label,
+                        :programme_code
+                    ) AS id
+                    """
+                ),
+                {**payload, "programme_code": programme_code},
+            )
+            session_type_id_by_name[payload["name"]] = (
+                session_type_result.scalar_one()
+            )
+    else:
+        for payload in session_type_rows.values():
+            await db_session.execute(
+                text(
+                    """
+                    INSERT INTO session_types (name, duration_hours, duration_label)
+                    VALUES (:name, :duration_hours, :duration_label)
+                    ON CONFLICT (name) DO UPDATE
+                    SET duration_hours = EXCLUDED.duration_hours,
+                        duration_label = EXCLUDED.duration_label
+                    """
+                ),
+                payload,
+            )
 
-    session_type_names = sorted(session_type_rows.keys())
-    session_type_lookup_result = await db_session.execute(
-        text("SELECT id, name FROM session_types WHERE name = ANY(:names)"),
-        {"names": session_type_names},
-    )
-    session_type_id_by_name = {
-        row["name"]: row["id"] for row in session_type_lookup_result.mappings().all()
-    }
+        session_type_names = sorted(session_type_rows.keys())
+        session_type_lookup_result = await db_session.execute(
+            text("SELECT id, name FROM session_types WHERE name = ANY(:names)"),
+            {"names": session_type_names},
+        )
+        session_type_id_by_name = {
+            row["name"]: row["id"]
+            for row in session_type_lookup_result.mappings().all()
+        }
 
     posting_codes = sorted({row.posting_code for row in teaching_targets})
-    existing_codes_result = await db_session.execute(
-        text("SELECT code FROM posting_codes WHERE code = ANY(:codes)"),
-        {"codes": posting_codes},
-    )
-    existing_codes = {row["code"] for row in existing_codes_result.mappings().all()}
-
-    for posting_code in posting_codes:
-        await db_session.execute(
-            text(
-                """
-                INSERT INTO posting_codes (code, display_name)
-                VALUES (:code, NULL)
-                ON CONFLICT (code) DO NOTHING
-                """
-            ),
-            {"code": posting_code},
+    if rls_enabled:
+        posting_codes_added = []
+        for posting_code in posting_codes:
+            posting_code_result = await db_session.execute(
+                text(
+                    """
+                    SELECT mata_rls.ensure_ttf_posting_code(
+                        :code,
+                        :programme_code
+                    ) AS inserted
+                    """
+                ),
+                {
+                    "code": posting_code,
+                    "programme_code": programme_code,
+                },
+            )
+            if bool(posting_code_result.scalar_one()):
+                posting_codes_added.append(posting_code)
+    else:
+        existing_codes_result = await db_session.execute(
+            text("SELECT code FROM posting_codes WHERE code = ANY(:codes)"),
+            {"codes": posting_codes},
         )
-    posting_codes_added = sorted(set(posting_codes) - existing_codes)
+        existing_codes = {
+            row["code"] for row in existing_codes_result.mappings().all()
+        }
+
+        for posting_code in posting_codes:
+            await db_session.execute(
+                text(
+                    """
+                    INSERT INTO posting_codes (code, display_name)
+                    VALUES (:code, NULL)
+                    ON CONFLICT (code) DO NOTHING
+                    """
+                ),
+                {"code": posting_code},
+            )
+        posting_codes_added = sorted(set(posting_codes) - existing_codes)
 
     await db_session.execute(
         text(
@@ -569,6 +617,7 @@ async def _persist_ttf_rows(
             """
             SELECT COUNT(*) AS orphan_count
             FROM attendance_records ar
+            JOIN residents r ON r.id = ar.resident_id
             JOIN teaching_events te ON te.id = ar.teaching_event_id
             LEFT JOIN teaching_name_catalogue tnc
               ON tnc.keyword = te.teaching_name
@@ -576,6 +625,7 @@ async def _persist_ttf_rows(
              AND tnc.programme_code = :programme_code
              AND tnc.reporting_period_id = :reporting_period_id
             WHERE tnc.id IS NULL
+              AND r.programme_code = :programme_code
               AND ar.status = 'submitted'
             """
         ),

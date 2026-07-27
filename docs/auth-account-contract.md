@@ -1,8 +1,8 @@
 # Auth and Account Contract
 
-Status: Phase 5B-H-D locally implemented and verified, July 26, 2026. Deployment verification remains pending.
+Status: Phase 5B-H-E locally implemented and verified, July 27, 2026. Deployment verification remains pending.
 
-This document defines the current auth/account contract. Phase 5B-H-D replaced normal browser bearer transport with backend-owned opaque PostgreSQL sessions, a host-only cookie, and synchronizer CSRF. Historical implementation entries below are retained as an audit trail; where they describe browser Supabase or resident bearer tokens, this H-D contract supersedes them.
+This document defines the current auth/account contract. Phase 5B-H-D replaced normal browser bearer transport with backend-owned opaque PostgreSQL sessions, a host-only cookie, and synchronizer CSRF. Phase 5B-H-E adds the restricted non-owner PostgreSQL runtime, a separate auth-helper boundary, signed transaction-local identity context, complete application-table RLS, and exact grants. Historical implementation entries below are retained as an audit trail; where they describe browser Supabase or resident bearer tokens, the H-D/H-E contract supersedes them.
 
 References checked:
 - `AGENTS.md`
@@ -26,10 +26,26 @@ References checked:
 - Protected requests reload the current subject row and compare `session_generation`. Ordinary role/scope/active-state changes atomically increment generation and revoke sessions. Password reset is deliberately two-stage: the issuance block, generation fence, and revocation commit before the upstream credential call; successful completion clears the block in a second transaction, while failure leaves issuance blocked for authorized retry.
 - Rotation locks subject, family, and the database session row in a fixed order. `SELECT ... FOR UPDATE` plus `populate_existing=True` prevents stale SQLAlchemy identity-map state from bypassing the locked row.
 - `AUTH_TRANSPORT=bearer_compat` is emergency rollback only. Production also requires the explicit rollback flag and a minimum 32-byte resident signing secret.
-- Migration `20260722_000024` revokes public/browser-role object privileges. It is not full RLS; the complete runtime-role, trusted-context, and policy implementation is Phase 5B-H-E.
-- Detailed implementation and evidence: `docs/5b_h_d_production_security_implementation.md`.
+- Migration `20260722_000024` revokes public/browser-role object privileges. Migrations `20260726_000025` and `20260726_000026` add the H-E role/context/helper foundation and full policy/grant cutover.
+- Detailed implementation and evidence: `docs/5b_h_d_production_security_implementation.md` and `docs/5b_h_e_full_rls_implementation.md`.
 
 PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
+
+## Phase 5B-H-E Current Database Contract
+
+Normal application database execution is separated into three credentials:
+
+- the protected runtime login is a member of `mata_app_runtime`;
+- the intentionally unauthenticated/session-helper login is a member of `mata_auth_internal`;
+- Alembic and object ownership use a distinct migration/ownership login.
+
+The two capability groups are stable `NOLOGIN`, `NOINHERIT`, non-owner, `NOSUPERUSER`, `NOBYPASSRLS`, `NOCREATEDB`, `NOCREATEROLE`, and `NOREPLICATION` roles. The application login members may `INHERIT` exactly their assigned capability, but startup fails closed if either credential is privileged, owns application objects, can assume the other capability, can delegate grants/membership, or reaches a different database.
+
+Before a protected root transaction performs ordinary application queries, PostgreSQL reloads the application session and current subject and installs signed transaction-local context for subject type/id, app role, explicit admin level, normalized programme scope, posting code, application-session id, and authorization fingerprint. The signature is bound to the transaction, backend process, database, and session login. A SQLAlchemy transaction hook reinstalls and revalidates context after an in-request commit or rollback; transaction end clears cached context and expires ORM identity-map state.
+
+All 34 application tables have RLS enabled in the local implementation. Eighty-four policies target only `mata_app_runtime`. `app_sessions`, `rate_limit_buckets`, `programme_institution_posting_map`, `surplus_ledger`, `period_snapshots`, and `clawback_records` have no direct runtime table privilege and are reachable only through explicitly reviewed helpers where a helper exists. `mata_auth_internal` has no direct application-table or sequence privileges. `PUBLIC`, browser roles, and `service_role` receive no application-table or H-E helper access.
+
+FastAPI role/scope dependencies remain mandatory. RLS is defense in depth and must not be used to weaken HTTP-layer authorization.
 
 ## Principles
 
@@ -66,6 +82,8 @@ Backend:
 - Supabase `user_metadata` is ignored for MATA authorization. `role`, `admin_level`, `programme_scope`, and `posting_code` remain server-owned in the database.
 - `backend/app/routers/auth.py` implements login, hydration, rotation, logout, and staff actor-name endpoints.
 - Stub/demo retains local compatibility identity. Supabase cookie mode converges all roles into backend-owned `app_sessions`; bearer tokens are not the normal browser transport.
+- `backend/app/database.py` separates protected runtime sessions from the auth/helper session factory when H-E is enabled. Protected request dependencies seed shared or exclusive database context from the already validated application session; login/registration/session infrastructure uses the helper boundary.
+- `backend/app/services/database_context.py` installs signed transaction-local context on every root transaction and performs fail-closed startup attestation of credentials, roles, grants, helpers, ownership, policies, schemas, sequences, PUBLIC, and browser-role state.
 - `backend/app/routers/external_residents.py` and `backend/app/services/external_residents.py` already implement partial Non-NHG self-enrolment and posting update.
 - Phase 5B mapping infrastructure adds `programme_institution_posting_map` and one trusted resolver shared by registration options, registration, current-posting compatibility update, and schedule replacement. The approved TTSH configuration contains 24 active mappings, four inactive/null mappings (`FM`, `PATH`, `SPORTSMED`, and `PALLMED`), and zero pending mappings. The inactive status applies only to Non-NHG registration and posting-schedule selection; it is not a global programme status.
 - The current Non-NHG service writes `external_residents` and `external_resident_postings`. Phase 5B posting schedule requirements supersede the older single-current-posting contract: each schedule row persists the validated programme and resolved posting, authorization-sensitive event/ad-hoc derivation uses that row by selected date, and `external_residents.current_nhg_posting_code` remains only a current/cache/backward-compatibility pointer.
@@ -85,7 +103,7 @@ Frontend:
 - `frontend/src/types/auth.ts` defines the implemented typed frontend auth/session identity contract.
 - As of 5B-C, the frontend has a universal `/login`, frontend auth/session provider, role-aware route guards, logout/session clearing, and Non-NHG Resident registration plus confirmation UI.
 - In `VITE_AUTH_MODE=supabase`, the frontend uses backend cookie-session APIs only. It has no Supabase browser client, bearer persistence, or routine bearer injection.
-- The shared NHG/registered Non-NHG Resident MCR login checks both identity tables in one request, relies on global MCR uniqueness, creates an opaque application session, and reloads the resolved active row on protected requests.
+- The shared NHG/registered Non-NHG Resident MCR login checks both identity tables in one request, relies on PostgreSQL-enforced normalized global MCR uniqueness as well as the service preflight, creates an opaque application session, and reloads the resolved active row on protected requests.
 - As of 5B-E, staff accounts are generic pass-down role accounts. Master Admin can manage staff accounts at `/admin/staff-accounts`; Supabase-mode create/reset calls are backend-only service-role operations and are mocked in tests.
 - As of 5B-E, staff users save `current_staff_actor_name` once after login and can change it from Settings. This is self-declared audit/display metadata only and never an authorization source. Resetting a staff account password clears the saved actor name for handover.
 
@@ -249,7 +267,8 @@ Supabase Auth is the staff credential authority, not the browser application-ses
 - Backend maps the authenticated Supabase subject to `users.supabase_user_id`, then reloads role, admin level, programme scope, posting code, active state, issuance block, and session generation.
 - The browser receives only the MATA `HttpOnly` session cookie plus non-secret session-response state.
 - Backend authorization validates role and scope before database work.
-- H-E RLS must use only trusted backend-derived transaction-local context and must not grant browser roles table access.
+- H-E RLS uses only trusted backend-derived, database-revalidated transaction-local context and grants browser roles no application-table access.
+- Ordinary application SQL uses the restricted runtime credential. The separate auth credential can execute only its exact reviewed helper set, and the migration/ownership credential is not an application credential.
 - Server-only Supabase credentials must never appear in frontend code or any `VITE_` variable.
 
 ## Auth Modes and Environments
@@ -304,8 +323,12 @@ Backend:
 ENV=production
 AUTH_MODE=supabase
 AUTH_TRANSPORT=cookie
-DATABASE_URL=<supabase production database url>
-SYNC_DATABASE_URL=<supabase production sync database url>
+MATA_DATABASE_RLS_ENABLED=true
+MATA_DATABASE_RUNTIME_ROLE=mata_app_runtime
+MATA_DATABASE_AUTH_ROLE=mata_auth_internal
+DATABASE_URL=<restricted runtime async database url>
+MATA_AUTH_DATABASE_URL=<restricted auth-helper async database url>
+SYNC_DATABASE_URL=<migration-owner sync database url>
 SUPABASE_URL=<supabase project url>
 SUPABASE_PUBLISHABLE_KEY=<backend publishable key>
 SUPABASE_SERVICE_ROLE_KEY=<server-only key>
@@ -315,6 +338,8 @@ CORS_ORIGINS=<production frontend origin>
 RATE_LIMIT_STORE=postgres
 RATE_LIMIT_HASH_SECRET=<server-only random key of at least 32 characters>
 ```
+
+The runtime, auth-helper, and migration URLs must use distinct credentialed login roles while naming the same PostgreSQL host, port, and database. The runtime and auth groups are stable capability names, not login credentials. Production configuration fails if RLS is disabled, cookie transport is not selected, an H-E URL is local or malformed, the endpoints differ, or any two database URLs use the same username.
 
 Frontend:
 
@@ -476,6 +501,13 @@ Phase 5B programme/institution mapping rollout:
 - Verified migrations through `20260722_000024`, dependency audits, backend/frontend suites, PostgreSQL races, and source scans locally.
 - Deployment remains unverified. See `docs/5b_h_d_production_security_implementation.md`.
 
+5B-H-E locally implemented:
+
+- Added the `mata_app_runtime` and `mata_auth_internal` capability groups, distinct runtime/auth database session factories, signed transaction-local identity context, startup catalogue attestation, and database-enforced global MCR uniqueness.
+- Enabled RLS on all 34 application tables and installed 84 policies plus exact table, column, helper, schema, sequence, PUBLIC, browser-role, ownership, and default-ACL boundaries.
+- Preserved FastAPI authorization and native/Non-NHG identity separation. Privileged infrastructure tables remain helper-only rather than receiving broad direct runtime grants.
+- Verified the policy matrix and migration lifecycle only against the named local disposable PostgreSQL database. Deployment remains unverified. See `docs/5b_h_e_full_rls_implementation.md`.
+
 5B-H historical sequencing:
 - `5B-H-A`: Vercel UAT security audit and minimal deployment hardening plan.
 - `5B-H-B`: Minimal UAT security fixes.
@@ -485,11 +517,11 @@ Phase 5B programme/institution mapping rollout:
 5B-H sequencing:
 - `5B-H-A`, `5B-H-B`, and `5B-H-C` are required before stakeholder UAT.
 - Browser-visible bearer transport is removed from the normal production path.
-- Full RLS enablement, runtime-role separation, trusted transaction context, and policy SQL are specifically Phase 5B-H-E.
+- Full RLS enablement, runtime-role separation, trusted transaction context, and policy SQL are locally implemented in Phase 5B-H-E; deployed catalogue and workflow verification remain separate.
 - Phase 6 compliance starts only after the protected deployment/security baseline is acceptable.
 
 Still deferred beyond this auth/account roadmap alignment:
-- Resident second factor, full RLS policy implementation, production staff bootstrap execution, email delivery, bulk upload, NHG compliance/surplus/snapshots/clawback for Non-NHG Residents, STP upload/parser, long-term SSO/corporate identity replacement for self-declared staff actor names, and any production/public launch beyond a controlled UAT security baseline.
+- Resident second factor, deployed H-E verification, production staff bootstrap execution, email delivery, bulk upload, NHG compliance/surplus/snapshots/clawback for Non-NHG Residents, STP upload/parser, long-term SSO/corporate identity replacement for self-declared staff actor names, and any production/public launch beyond a controlled UAT security baseline.
 
 ## 5A Guardrails Preserved
 

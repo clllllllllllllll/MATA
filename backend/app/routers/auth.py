@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -8,6 +7,12 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.database import (
+    get_auth_db_session,
+    get_db_session,
+    get_exclusive_db_session,
+    get_logout_db_session,
+)
 from app.dependencies.auth import require_authenticated
 from app.dependencies.persistent_rate_limit import enforce_auth_login_persistent_rate_limit
 from app.errors import ApiError, ErrorCode, build_error_response
@@ -27,17 +32,9 @@ from app.services.session_transport import clear_session_cookie, set_session_coo
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-try:
-    from app.database import get_db_session
-except Exception:
-
-    async def get_db_session() -> AsyncIterator[AsyncSession | None]:
-        yield None
-
-
 async def _persistent_login_rate_limit(
     request: Request,
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_auth_db_session),
     settings: Settings = Depends(get_settings),
 ) -> None:
     await enforce_auth_login_persistent_rate_limit(
@@ -69,7 +66,7 @@ async def login(
     payload: LoginRequest,
     request: Request,
     response: Response,
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_auth_db_session),
     settings: Settings = Depends(get_settings),
 ) -> dict:
     if settings.auth_transport == "bearer_compat":
@@ -98,6 +95,8 @@ async def login(
         subject_id=authenticated.subject_id,
         auth_source=authenticated.auth_source,
         expected_subject_session_generation=authenticated.session_generation,
+        normalized_mcr=authenticated.normalized_mcr,
+        upstream_subject_id=authenticated.upstream_subject_id,
         user_agent=request.headers.get("User-Agent"),
     )
     await db.commit()
@@ -154,7 +153,7 @@ async def refresh_session(
     request: Request,
     response: Response,
     identity: AuthIdentity = Depends(require_authenticated),
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_exclusive_db_session),
     settings: Settings = Depends(get_settings),
 ) -> SessionResponse | Response:
     app_session = getattr(request.state, "app_session", None)
@@ -205,7 +204,7 @@ async def refresh_session(
 async def logout(
     request: Request,
     response: Response,
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_logout_db_session),
     settings: Settings = Depends(get_settings),
 ) -> LogoutResponse:
     app_session = getattr(request.state, "app_session", None)
@@ -220,7 +219,7 @@ async def logout(
 async def update_staff_actor_name(
     request: StaffActorNameRequest,
     identity: AuthIdentity = Depends(require_authenticated),
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_exclusive_db_session),
 ) -> dict:
     if identity.role not in {"admin", "secretary"}:
         raise ApiError(

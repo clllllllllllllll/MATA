@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, desc, text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, desc, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -38,7 +38,7 @@ class AuditLog(Base):
     actor_admin_level: Mapped[str | None] = mapped_column(String(30), nullable=True)
     action: Mapped[str] = mapped_column(String(80), nullable=False)
     entity_type: Mapped[str] = mapped_column(String(80), nullable=False)
-    entity_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    entity_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     before_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     after_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

@@ -45,6 +45,10 @@ def _client(
         return None
 
     app.dependency_overrides[external_residents.get_db_session] = _db_override
+    app.dependency_overrides[external_residents.get_auth_db_session] = _db_override
+    app.dependency_overrides[
+        external_residents.get_exclusive_db_session
+    ] = _db_override
     app.dependency_overrides[
         external_residents._persistent_registration_rate_limit
     ] = _rate_limit_override
@@ -67,6 +71,10 @@ def _middleware_client(fake_db: FakeResidentSession) -> TestClient:
         return None
 
     app.dependency_overrides[external_residents.get_db_session] = _db_override
+    app.dependency_overrides[external_residents.get_auth_db_session] = _db_override
+    app.dependency_overrides[
+        external_residents.get_exclusive_db_session
+    ] = _db_override
     app.dependency_overrides[
         external_residents._persistent_registration_rate_limit
     ] = _rate_limit_override

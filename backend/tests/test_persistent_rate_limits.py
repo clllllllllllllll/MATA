@@ -135,6 +135,7 @@ def _auth_client(session: _RateLimitResidentSession) -> TestClient:
         yield session
 
     app.dependency_overrides[auth.get_db_session] = _db_override
+    app.dependency_overrides[auth.get_auth_db_session] = _db_override
     app.dependency_overrides[auth.get_settings] = _settings
     app.include_router(auth.router)
     return TestClient(app)
@@ -148,6 +149,7 @@ def _external_client(session: _RateLimitResidentSession) -> TestClient:
         yield session
 
     app.dependency_overrides[external_residents.get_db_session] = _db_override
+    app.dependency_overrides[external_residents.get_auth_db_session] = _db_override
     app.dependency_overrides[external_residents.get_settings] = _settings
     app.include_router(external_residents.router)
     return TestClient(app)

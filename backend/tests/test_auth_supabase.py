@@ -145,6 +145,7 @@ def _settings() -> Settings:
     return Settings(
         auth_mode="supabase",
         auth_transport="bearer_compat",
+        database_rls_enabled=False,
         supabase_url="https://mata-test.supabase.co",
         mata_resident_session_secret=RESIDENT_SECRET,
     )

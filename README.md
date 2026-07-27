@@ -108,8 +108,12 @@ The backend runs on `http://localhost:8000` and the frontend on `http://localhos
 | `ENV` | `development`, `test`, or `production` | `development` |
 | `AUTH_MODE` | `stub`, `demo`, or `supabase` | `stub` |
 | `AUTH_TRANSPORT` | Normal app transport; `cookie` is required for production | `cookie` |
-| `DATABASE_URL` | Backend-only async PostgreSQL connection string | `postgresql+asyncpg://user:pass@localhost/mata` |
-| `SYNC_DATABASE_URL` | Backend-only sync PostgreSQL URL for Alembic | `postgresql://user:pass@localhost/mata` |
+| `MATA_DATABASE_RLS_ENABLED` | Enables the complete restricted-role/RLS contract; required in production | `false` |
+| `MATA_DATABASE_RUNTIME_ROLE` | Stable protected-query capability group; must remain `mata_app_runtime` | `mata_app_runtime` |
+| `MATA_DATABASE_AUTH_ROLE` | Stable narrow auth-helper capability group; must remain `mata_auth_internal` | `mata_auth_internal` |
+| `DATABASE_URL` | Async PostgreSQL URL using the restricted runtime login when RLS is enabled | `postgresql+asyncpg://<runtime-login>:<runtime-password>@<database-host>/<database-name>` |
+| `MATA_AUTH_DATABASE_URL` | Async PostgreSQL URL using the distinct auth-helper login when RLS is enabled | `postgresql+asyncpg://<auth-login>:<auth-password>@<database-host>/<database-name>` |
+| `SYNC_DATABASE_URL` | Sync PostgreSQL URL using the distinct migration/ownership login | `postgresql://<owner-login>:<owner-password>@<database-host>/<database-name>` |
 | `SUPABASE_URL` | Backend Supabase project URL for Supabase mode | `https://<project-ref>.supabase.co` |
 | `SUPABASE_PUBLISHABLE_KEY` | Backend-used key for mediated staff authentication and legacy verification | `<placeholder>` |
 | `SUPABASE_SERVICE_ROLE_KEY` | Backend-only Supabase Admin/service-role key | `<server-only-service-role-key>` |
@@ -198,6 +202,8 @@ Normal Supabase/production operation uses `AUTH_TRANSPORT=cookie`. Staff credent
 
 Unsafe cookie-authenticated requests require the session-bound `X-CSRF-Token`. Logout, rotation, password reset, account changes, expiry, and revocation invalidate server-side session state. Production bearer compatibility is disabled unless the narrowly scoped rollback flag is explicitly enabled.
 
+With H-E RLS enabled, protected application SQL uses a credentialed login that inherits only the `mata_app_runtime` capability. Public authentication and registration helpers use a different login that inherits only `mata_auth_internal`; Alembic uses the separate table-owning migration credential. All three URLs must reach the same database, and startup fails closed unless the exact role, ownership, helper, policy, grant, sequence, default-ACL, `PUBLIC`, and browser-role catalogue is present.
+
 Staff login, Resident login, registration options, and Non-NHG registration are intentionally public entry points. Application authentication, authorization, rate limiting, CSRF, and session controls protect them; a Vercel outer gate is not required by the H-D design.
 
 PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
@@ -229,7 +235,7 @@ alembic downgrade -1
 
 ## Project Status
 
-MATA remains in active phased development. Phase 5B-H-D session transport and production-security hardening is implemented and locally verified; see `docs/5b_h_d_production_security_implementation.md`. Full PostgreSQL RLS is Phase 5B-H-E, and Phase 6 compliance remains separate. Local code completion is not proof of deployed Vercel/Supabase controls.
+MATA remains in active phased development. Phase 5B-H-D session transport hardening and Phase 5B-H-E full PostgreSQL RLS are implemented and locally verified; see `docs/5b_h_d_production_security_implementation.md` and `docs/5b_h_e_full_rls_implementation.md`. Phase 6 compliance remains separate. Local code completion is not proof that migrations, roles, policies, grants, or configuration are deployed to Vercel/Supabase.
 
 ---
 

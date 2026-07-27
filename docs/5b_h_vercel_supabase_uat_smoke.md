@@ -1,9 +1,9 @@
 # 5B-H-C Supabase/Vercel UAT Smoke Checklist
 
-> **Historical evidence boundary:** Sections and result rows dated 2026-07-22 preserve the Phase 5B-H-C point-in-time record. Do not rewrite their commit identifiers, migration head, test counts, deployment observations, or blocked/manual classifications. Phase 5B-H-D supersedes the earlier browser-bearer and mandatory outer-gate design assumptions; current local evidence is recorded separately in `docs/5b_h_d_production_security_implementation.md` and is not proof of deployed behavior.
+> **Historical evidence boundary:** Sections and result rows dated 2026-07-22 preserve the Phase 5B-H-C point-in-time record. Do not rewrite their commit identifiers, migration head, test counts, deployment observations, or blocked/manual classifications. Phase 5B-H-D supersedes the earlier browser-bearer and mandatory outer-gate design assumptions; Phase 5B-H-E subsequently adds the local restricted-role/RLS boundary. Current local evidence is recorded separately in `docs/5b_h_d_production_security_implementation.md` and `docs/5b_h_e_full_rls_implementation.md` and is not proof of deployed behavior.
 
-Status: The two High local application-code findings are resolved in merged code and local disposable PostgreSQL verification passed; stakeholder UAT and Phase 6 remain NO-GO pending deployment, Supabase, environment, account, and Data API evidence
-Last updated: 2026-07-22
+Status: Historical H-C results preserved; H-D/H-E local implementation does not change the NO-GO pending deployed Vercel/Supabase, environment, account, RLS, grant, and workflow evidence
+Last updated: 2026-07-27
 
 ## 1. Purpose
 
@@ -287,7 +287,40 @@ This appendix is the current H-D post-deployment contract. It does not change th
 | Lifecycle | Idle/absolute expiry, rotation, logout, password-reset revocation, account generation fencing, and session-family races fail closed. |
 | Same-origin API | Production browser traffic uses relative `/api/v1`; credentials are included and the CSRF header is added only to unsafe requests. |
 | Rate limiting | Production uses PostgreSQL-backed buckets with a keyed identity digest. |
-| Browser database access | `PUBLIC`, `anon`, and `authenticated` retain no application-object privileges. Full RLS remains Phase 5B-H-E work. |
+| Browser database access | H-D revoked `PUBLIC`, `anon`, and `authenticated` application-object privileges. H-E subsequently implemented the local restricted runtime and full table-policy cutover; deployed verification remains required. |
 | Deployed verification | Local implementation evidence does not establish deployed Vercel, Supabase, environment, migration, grant, or runtime behavior. |
+
+## Phase 5B-H-E Deployed RLS Checks
+
+This appendix is the required deployed H-E contract. Every row remains `MANUAL VERIFICATION REQUIRED` or `BLOCKED` until an authorized operator records sanitized evidence from the approved target. Local disposable PostgreSQL results must not be copied into the deployed-result column.
+
+| Check | Required deployed result |
+|---|---|
+| Migration revision | Approved target reports exactly `20260726_000026`; migration output contains no secret or connection value. |
+| Credential separation | Runtime, auth-helper, and migration/ownership URLs use three distinct login roles and reach the same approved host, port, and database. |
+| Production flags | `MATA_DATABASE_RLS_ENABLED=true`, cookie transport is active, and the stable capability names are `mata_app_runtime` and `mata_auth_internal`. |
+| Capability roles | Both groups are `NOLOGIN`, `NOINHERIT`, `NOSUPERUSER`, `NOBYPASSRLS`, `NOCREATEDB`, `NOCREATEROLE`, and `NOREPLICATION`. |
+| Login roles | Runtime/auth logins are `LOGIN`, non-owner, non-privileged, members only of their assigned capability, and cannot delegate membership or object privileges. |
+| Ownership | Application tables, helper schemas/functions, and other protected objects are owned only by the approved migration/ownership role, never runtime, auth, browser, or service roles. |
+| RLS state | All 34 application tables have RLS enabled; none has `FORCE ROW LEVEL SECURITY`. |
+| Policies | Exactly 84 application policies exist, every policy targets only `mata_app_runtime`, and no unsafe/broad role target exists. |
+| Direct grants | Runtime table and `users` column actions exactly match the reviewed H-E catalogue; `users.password_hash` is not selectable. |
+| Helper-only tables | `app_sessions`, `clawback_records`, `period_snapshots`, `programme_institution_posting_map`, `rate_limit_buckets`, and `surplus_ledger` have no direct runtime table privilege. |
+| Auth-helper boundary | `mata_auth_internal` has no direct application-table or sequence privilege and can execute only the exact reviewed auth/shared helper set. |
+| Helper catalogue | Runtime/auth executable `mata_rls` functions match the reviewed signatures; neither credential nor PUBLIC/browser roles can use `mata_private`. |
+| Sequences/default ACL | Runtime, auth, PUBLIC, and browser/service roles retain no unexpected sequence privilege or future-object default grant. |
+| Schema/PUBLIC/browser boundary | PUBLIC and optional `anon`, `authenticated`, and `service_role` cannot access application relations/H-E helpers or create in `public`; the browser performs no direct Data API application query. |
+| Startup attestation | The production process starts successfully with the exact catalogue and fails closed in an authorized negative/misconfiguration exercise or equivalent reviewed evidence. |
+| No-context behavior | A restricted runtime transaction without installed trusted context sees no policy-protected rows and cannot query helper-only tables. |
+| Master Admin | Intended global/scoped workflows pass while helper-only direct table access remains denied. |
+| Programme PC | Only normalized in-scope programme rows/actions succeed; null, empty, blank, and out-of-scope access fail closed. |
+| Secretary | Events, series, roster, attendance, and catalogue remain bounded to the exact posting/programme-pool relationships. |
+| NHG Resident | Only own native identity, posting, event, catalogue, and attendance rows are visible/mutable; external rows remain invisible. |
+| Non-NHG Resident | Only own external identity, schedule, event, and attendance rows are visible/mutable; native rows and NHG compliance remain inaccessible. |
+| Transaction/pool safety | A commit, rollback, failed transaction, and pooled connection reuse each require freshly validated transaction context and cannot retain prior authority. |
+| Session rotation | Concurrent refresh has one winner and one controlled invalid loser, one usable child, revoked parent, rejected old cookie/CSRF, and accepted rotated CSRF. |
+| Logs/evidence | Evidence contains no credential, cookie, token, CSRF value, session id, database URL, service-role key, SQL payload, MCR, or real personal/application data. |
+
+Passing local H-E suites is a prerequisite, not a substitute for this appendix. Do not claim deployed RLS or production security until the approved target satisfies it.
 
 PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED

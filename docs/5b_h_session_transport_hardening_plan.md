@@ -1,6 +1,6 @@
 # 5B-H-D Session Transport Hardening Plan
 
-Status: Implemented in code and locally verified; deployment smoke pending; Phase 5B-H-E RLS excluded
+Status: H-D implemented and locally verified; deployment smoke pending; H-E was excluded from H-D scope and is reconciled in the post-H-D appendix
 Last updated: 2026-07-26
 
 ## 1. Purpose
@@ -229,5 +229,20 @@ The code and local-verification criteria below are satisfied. Deployed Vercel/Su
 - 5B-H-C smoke is updated to include cookie/session checks before production/public launch.
 
 Full RLS is specifically Phase 5B-H-E and was not implemented by H-D privilege revocation.
+
+## 12. Post-H-D H-E Session Integration
+
+H-E subsequently integrates the H-D session envelope with the restricted PostgreSQL boundary:
+
+- intentionally unauthenticated login/registration, initial session issuance, and shared session/rate-limit infrastructure use the distinct `mata_auth_internal` helper credential, which has no direct application-table or sequence privilege;
+- protected handlers use the non-owner, `NOBYPASSRLS` `mata_app_runtime` capability;
+- middleware-resolved session identity and authorization fingerprint are mandatory expected bindings, but PostgreSQL independently reloads the session and current subject before installing signed transaction-local context;
+- ordinary protected requests take the shared session-family context lock; refresh and valid-session logout use the exclusive path so they do not attempt an in-transaction shared-to-exclusive lock upgrade;
+- every new root SQLAlchemy transaction reinstalls and revalidates context after commit or rollback; transaction end clears context and expires ORM identity-map state;
+- `app_sessions` is helper-only under H-E. The RLS path performs fresh locked SQL inside reviewed functions, while the non-RLS ORM fallback retains `populate_existing=True`;
+- invalid/stale session context is a controlled unauthorized outcome, while SQLAlchemy, PostgreSQL, transaction, connection, and pool errors remain unexpected failures;
+- transaction-local advisory locks and signed GUCs cannot survive commit/rollback as valid pooled-connection authority.
+
+The H-E policy and lifecycle evidence belongs in `docs/5b_h_e_full_rls_implementation.md`. It does not change the historical H-D test counts in this document and is not evidence of deployed Supabase behavior.
 
 PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED

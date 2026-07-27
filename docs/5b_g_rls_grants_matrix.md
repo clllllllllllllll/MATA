@@ -1,11 +1,11 @@
 # 5B-G-E Supabase RLS, Grants, And Data API Readiness Matrix
 
-Status: planning matrix only. RLS is not enabled here.
-Last updated: 2026-07-06
+Status: historical 5B-G planning matrix reconciled with the locally implemented 5B-H-E catalogue; deployed verification pending.
+Last updated: 2026-07-27
 
 ## Purpose And Scope
 
-This matrix plans future Supabase Row Level Security, grants, exposed-schema, and Data API posture for MATA. It is intentionally not an implementation. It does not modify migrations, does not enable RLS, and does not add policies.
+This matrix originally planned future Supabase Row Level Security, grants, exposed-schema, and Data API posture for MATA. The original risk/dimension matrix remains below as historical design input. Phase 5B-H-E subsequently implements the local role, context, policy, and grant cutover in migrations `20260726_000025` and `20260726_000026`; this document now reconciles the design with that implementation. It still does not establish deployed Supabase state.
 
 Current Supabase posture to account for:
 
@@ -23,7 +23,7 @@ Current Supabase posture to account for:
 - NHG Resident and Non-NHG Resident MATA tokens are backend-verified artifacts, not Supabase Auth identities.
 - Non-NHG tables are separate and must not feed NHG compliance, numerator, denominator, surplus, snapshots, clawback, or native reports.
 - Service-role or privileged backend access must never be used to skip MATA authorization.
-- Enabling RLS prematurely can break uploads, admin reports, staff provisioning, exports, future snapshots/clawback, and data revalidation.
+- An incomplete RLS/policy/helper cutover can break uploads, admin reports, staff provisioning, exports, future snapshots/clawback, and data revalidation.
 
 ## Policy Dimension Legend
 
@@ -36,7 +36,56 @@ Current Supabase posture to account for:
 - `immutable_audit`: append-only or restricted mutation semantics for audit/history.
 - `backend_only`: no direct browser/Data API access expected.
 
-## Table Matrix
+## H-E Implemented Role And Object Boundary
+
+- `mata_app_runtime` and `mata_auth_internal` are stable `NOLOGIN`, `NOINHERIT`, non-owner, `NOSUPERUSER`, `NOBYPASSRLS`, `NOCREATEDB`, `NOCREATEROLE`, and `NOREPLICATION` capability groups.
+- Runtime, auth-helper, and migration/ownership login credentials are distinct. Startup attestation rejects ownership, privileged or cross-capability membership, delegable membership/grants, unexpected helpers or table/column actions, sequences, unsafe policies, schema creation, or browser/PUBLIC access.
+- Protected queries receive database-revalidated, signed transaction-local identity. FastAPI authorization remains mandatory.
+- All 34 application tables have RLS enabled; none has `FORCE ROW LEVEL SECURITY`. The 84 policies target only `mata_app_runtime`.
+- Current direct browser/Data API application access is **none**, including for rows the historical matrix labeled as possible future read-only candidates.
+- `mata_auth_internal` has no direct application-table or sequence privilege. `PUBLIC` and optional `anon`, `authenticated`, and `service_role` roles have no application-relation, H-E helper, or `CREATE` authority in `public`.
+- Default privileges grant no future application tables, sequences, or functions to runtime, auth, browser, or PUBLIC roles. Future objects require explicit review.
+
+| Application table | Implemented runtime actions |
+|---|---|
+| `academic_month_boundaries` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| `app_sessions` | helper-only; no direct table privilege or table policy |
+| `attendance_records` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| `audit_logs` | `SELECT`; append through reviewed helper |
+| `clawback_records` | helper-only; no direct table privilege or table policy |
+| `event_series` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| `external_attendance_records` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| `external_resident_postings` | `SELECT`; own schedule mutations use reviewed helpers |
+| `external_residents` | `SELECT`; registration/current-posting writes use reviewed helpers |
+| `form_f1_records` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| `global_session_types` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| `loa_types` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| `multi_posting_rules` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| `period_snapshots` | helper-only; no direct table privilege or table policy |
+| `posting_codes` | `SELECT` |
+| `posting_groups` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| `programme_institution_posting_map` | helper-only; no direct table privilege or table policy |
+| `programmes` | `SELECT`, `UPDATE` |
+| `public_holidays` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| `rate_limit_buckets` | helper-only; no direct table privilege or table policy |
+| `reporting_periods` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| `resident_postings` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| `residents` | `SELECT`, `INSERT`, `UPDATE` |
+| `secretary_programme_pools` | `SELECT` |
+| `session_types` | `SELECT` |
+| `surplus_ledger` | helper-only; no direct table privilege or table policy |
+| `teaching_events` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| `teaching_name_catalogue` | `SELECT`, `INSERT`, `DELETE` |
+| `teaching_targets` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| `upload_logs` | `SELECT`, `INSERT` |
+| `upload_warnings` | `SELECT`, `INSERT` |
+| `users` | `INSERT`, `UPDATE`; column-limited `SELECT` on 16 non-password columns |
+| `warning_issues` | `SELECT`, `INSERT`, `UPDATE` |
+| `weekend_exceptions` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+
+The action list describes grants and policy command coverage, not unconditional row access. `USING` and `WITH CHECK` predicates still enforce Master Admin, Programme PC scope, secretary posting/pool, native resident, Non-NHG Resident, period, catalogue, event, and attendance relationships.
+
+## Historical 5B-G Design Matrix
 
 | Table | Data category | Direct browser access | Backend access mode | RLS posture | Policy dimensions | Grant/Data API posture | Required tests before enablement | Notes/risks |
 |---|---|---|---|---|---|---|---|---|
@@ -71,23 +120,23 @@ Current Supabase posture to account for:
 | `weekend_exceptions` | config | possible future read-only direct access | backend normal | staff scoped/admin-only candidate | master, pc_scope | backend only or future read-only | weekend warning/exclusion; ORTHO read-time mutation; no FM seed | mutations must not alter raw attendance |
 | `loa_types` | reference/config | possible future read-only direct access | backend normal | read-only reference candidate; admin write scoped | master for writes | future read-only possible; writes backend only | parser warning on unknown LOA; CRUD/admin only | not denominator authority |
 
-## Cross-Table Test Requirements Before RLS Enablement
+## Cross-Table H-E Verification Contract
 
-- Supabase staff JWT `sub` maps only through `users.supabase_user_id`.
-- Supabase `user_metadata` and raw `X-User-*` headers cannot grant role, scope, posting, or admin level.
-- Explicit Master Admin can access intended global/admin surfaces; null or empty programme scope never grants master.
-- Programme PC can access only assigned `programme_scope`; blank-only scope is denied.
-- Secretary can create/edit only assigned `posting_code` events.
-- NHG Resident can see and mutate only own resident surfaces, with current posting derived from `resident_postings`.
-- Non-NHG Resident can see and mutate only own external surfaces, with posting derived from `external_resident_postings`.
-- Native compliance/reporting reads never join `external_attendance_records`.
-- Uploads, warning actions, audit logging, and future data revalidation continue to work under any scoped policy model.
-- Admin reports, exports, final close/freeze, snapshots, surplus hibernation, and clawback jobs have documented privileged backend paths before RLS is enabled.
-- Data API grants are reviewed explicitly; tables not intended for browser access are not exposed through browser-facing schemas.
+The local direct policy matrix and existing application suite exercise these invariants under restricted credentials:
+
+- Supabase staff identity maps only through the current database-owned `users.supabase_user_id`; `user_metadata` and raw `X-User-*` headers cannot grant role, scope, posting, or admin level.
+- Explicit Master Admin sees intended global/scoped rows but still cannot query helper-only tables directly.
+- Programme PC sees and mutates only rows in normalized `programme_scope`; null, empty, and blank-only scopes fail closed.
+- Secretary event, roster, attendance, series, and catalogue access remains bound to its exact posting and approved programme pool.
+- NHG Resident sees and mutates only its native resident/posting/event/attendance surface and sees no external identity or attendance rows.
+- Non-NHG Resident sees and mutates only its own external identity/schedule/event/attendance surface and sees no native resident or attendance rows.
+- Native and external attendance remain separate; external rows never enter native compliance.
+- Uploads, warnings, audit logging, reports, event guards, registration, session lifecycle, rate limits, and other existing workflows run through either scoped runtime policies or a reviewed helper boundary.
+- No-context queries fail closed, helper-only table queries are permission denied, and public/browser roles remain denied.
 
 ## Open Readiness Items
 
-- Decide whether MATA should disable or avoid browser-facing Supabase Data API access entirely for app data.
-- Decide whether to keep all MATA application tables in `public` with explicit grants/revokes or move future exposed objects to a dedicated API schema.
-- Write a formal RLS policy test harness after final access surfaces are stable.
+- Independently verify the same revision, role/ownership catalogue, grants, policies, helper ACLs, default ACLs, and five-role workflows on the approved deployed target.
+- Keep browser-facing Supabase Data API access disabled for MATA application data unless a separately approved future design adds a narrowly reviewed interface.
+- Revisit the policy/action catalogue when a future table or workflow is implemented; default denial is not permission to omit explicit RLS review.
 - Revisit this matrix after Phase 6 compliance SQL and future final close/freeze jobs exist.

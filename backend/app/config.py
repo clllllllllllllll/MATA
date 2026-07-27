@@ -42,6 +42,34 @@ class Settings(BaseSettings):
     sync_database_url: str = Field(
         default="postgresql://postgres:postgres@localhost:5432/mata_db",
     )
+    database_rls_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "MATA_DATABASE_RLS_ENABLED",
+            "DATABASE_RLS_ENABLED",
+        ),
+    )
+    database_runtime_role: str = Field(
+        default="mata_app_runtime",
+        validation_alias=AliasChoices(
+            "MATA_DATABASE_RUNTIME_ROLE",
+            "DATABASE_RUNTIME_ROLE",
+        ),
+    )
+    database_auth_role: str = Field(
+        default="mata_auth_internal",
+        validation_alias=AliasChoices(
+            "MATA_DATABASE_AUTH_ROLE",
+            "DATABASE_AUTH_ROLE",
+        ),
+    )
+    auth_database_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "MATA_AUTH_DATABASE_URL",
+            "AUTH_DATABASE_URL",
+        ),
+    )
 
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
@@ -197,11 +225,116 @@ class Settings(BaseSettings):
         if not self.csrf_header_name.strip():
             raise ValueError("CSRF header name cannot be blank")
 
+        if self.database_rls_enabled:
+            runtime_role = self.database_runtime_role.strip()
+            auth_role = self.database_auth_role.strip()
+            if runtime_role != "mata_app_runtime":
+                raise ValueError(
+                    "DATABASE_RUNTIME_ROLE must be the stable mata_app_runtime group"
+                )
+            if auth_role != "mata_auth_internal":
+                raise ValueError(
+                    "DATABASE_AUTH_ROLE must be the stable mata_auth_internal group"
+                )
+            if runtime_role == auth_role:
+                raise ValueError("Runtime and auth database groups must be distinct")
+            if self.auth_transport != "cookie":
+                raise ValueError(
+                    "RLS enforcement requires cookie session transport"
+                )
+            if not self.auth_database_url:
+                raise ValueError(
+                    "AUTH_DATABASE_URL is required when RLS enforcement is enabled"
+                )
+            parsed_runtime_database_url = urlsplit(self.database_url)
+            parsed_auth_database_url = urlsplit(self.auth_database_url)
+            parsed_migration_database_url = urlsplit(self.sync_database_url)
+            rls_database_urls = (
+                ("DATABASE_URL", parsed_runtime_database_url),
+                ("AUTH_DATABASE_URL", parsed_auth_database_url),
+            )
+            for label, parsed_url in rls_database_urls:
+                try:
+                    port = parsed_url.port or 5432
+                except ValueError as exc:
+                    raise ValueError(f"{label} contains an invalid port") from exc
+                if (
+                    parsed_url.scheme != "postgresql+asyncpg"
+                    or not parsed_url.username
+                    or not parsed_url.hostname
+                    or not parsed_url.path.lstrip("/")
+                    or port <= 0
+                ):
+                    raise ValueError(
+                        f"{label} must be an explicit PostgreSQL asyncpg URL"
+                    )
+            try:
+                migration_port = parsed_migration_database_url.port or 5432
+            except ValueError as exc:
+                raise ValueError(
+                    "SYNC_DATABASE_URL contains an invalid port"
+                ) from exc
+            if (
+                parsed_migration_database_url.scheme
+                not in {"postgresql", "postgresql+psycopg", "postgresql+psycopg2"}
+                or not parsed_migration_database_url.username
+                or not parsed_migration_database_url.hostname
+                or not parsed_migration_database_url.path.lstrip("/")
+                or migration_port <= 0
+            ):
+                raise ValueError(
+                    "SYNC_DATABASE_URL must be an explicit PostgreSQL URL"
+                )
+
+            runtime_endpoint = (
+                (parsed_runtime_database_url.hostname or "").casefold(),
+                parsed_runtime_database_url.port or 5432,
+                parsed_runtime_database_url.path.lstrip("/"),
+            )
+            auth_endpoint = (
+                (parsed_auth_database_url.hostname or "").casefold(),
+                parsed_auth_database_url.port or 5432,
+                parsed_auth_database_url.path.lstrip("/"),
+            )
+            migration_endpoint = (
+                (parsed_migration_database_url.hostname or "").casefold(),
+                migration_port,
+                parsed_migration_database_url.path.lstrip("/"),
+            )
+            if runtime_endpoint != auth_endpoint:
+                raise ValueError(
+                    "DATABASE_URL and AUTH_DATABASE_URL must target the same "
+                    "PostgreSQL host, port, and database"
+                )
+            if runtime_endpoint != migration_endpoint:
+                raise ValueError(
+                    "DATABASE_URL and SYNC_DATABASE_URL must target the same "
+                    "PostgreSQL host, port, and database"
+                )
+            if (
+                parsed_runtime_database_url.username
+                == parsed_auth_database_url.username
+            ):
+                raise ValueError(
+                    "Runtime and auth database URLs must use distinct credentialed "
+                    "login roles"
+                )
+            if parsed_migration_database_url.username in {
+                parsed_runtime_database_url.username,
+                parsed_auth_database_url.username,
+            }:
+                raise ValueError(
+                    "Migration, runtime, and auth database URLs must use "
+                    "distinct credentialed roles"
+                )
+
         if self.environment != "production":
             return self
 
         if self.auth_mode != "supabase":
             raise ValueError("Production AUTH_MODE must be supabase")
+        if not self.database_rls_enabled:
+            raise ValueError("Production DATABASE_RLS_ENABLED must be true")
         database_contracts = (
             ("DATABASE_URL", self.database_url, {"postgresql+asyncpg"}),
             (
@@ -225,6 +358,16 @@ class Settings(BaseSettings):
                 raise ValueError(
                     f"Production {label} must be an explicit non-local PostgreSQL URL"
                 )
+        parsed_auth_database_url = urlsplit(self.auth_database_url)
+        auth_hostname = (parsed_auth_database_url.hostname or "").casefold()
+        if (
+            auth_hostname in {"localhost", "127.0.0.1", "::1"}
+            or auth_hostname.endswith(".localhost")
+        ):
+            raise ValueError(
+                "Production AUTH_DATABASE_URL must be an explicit non-local "
+                "PostgreSQL URL"
+            )
         if not self.supabase_url:
             raise ValueError("Production SUPABASE_URL is required")
         if not (self.supabase_publishable_key or self.supabase_anon_key):

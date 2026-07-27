@@ -194,7 +194,6 @@ async def _get_staff_account_row(db: AsyncSession, *, user_id: UUID) -> dict[str
                 id,
                 email,
                 supabase_user_id,
-                password_hash,
                 role,
                 name,
                 posting_code,
@@ -527,6 +526,12 @@ async def reset_staff_account_password(
     actor: StaffActorContext,
     settings: Settings,
 ) -> dict[str, Any]:
+    if actor.actor_user_id == user_id:
+        raise _validation_error(
+            "Master Admins cannot reset their own password through staff "
+            "account management"
+        )
+
     before = await _get_staff_account_row(db, user_id=user_id)
     raw_supabase_user_id = before.get("supabase_user_id")
 
