@@ -164,6 +164,75 @@ def test_production_configuration_rejects_insecure_transport_and_origin_shortcut
         )
 
 
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"supabase_url": "http://project.supabase.co"}, "SUPABASE_URL"),
+        ({"supabase_url": "https://localhost"}, "SUPABASE_URL"),
+        ({"supabase_url": "https://identity.example.invalid"}, "SUPABASE_URL"),
+        (
+            {"supabase_url": "https://project.supabase.co.example.invalid"},
+            "SUPABASE_URL",
+        ),
+        ({"supabase_url": "https://user@project.supabase.co"}, "SUPABASE_URL"),
+        ({"supabase_url": "https://project.supabase.co/tenant"}, "SUPABASE_URL"),
+        ({"supabase_url": "https://project.supabase.co?tenant=other"}, "SUPABASE_URL"),
+        ({"supabase_url": "https://project.supabase.co#other"}, "SUPABASE_URL"),
+        ({"supabase_url": "https://project.supabase.co:444"}, "SUPABASE_URL"),
+        (
+            {
+                "supabase_jwt_issuer": (
+                    "https://unrelated.supabase.co/auth/v1"
+                )
+            },
+            "SUPABASE_JWT_ISSUER",
+        ),
+        (
+            {"supabase_jwt_issuer": "https://project.supabase.co/auth/v2"},
+            "SUPABASE_JWT_ISSUER",
+        ),
+        (
+            {
+                "supabase_jwks_url": (
+                    "https://unrelated.supabase.co/auth/v1/.well-known/jwks.json"
+                )
+            },
+            "SUPABASE_JWKS_URL",
+        ),
+        (
+            {
+                "supabase_jwks_url": (
+                    "https://project.supabase.co/.well-known/jwks.json"
+                )
+            },
+            "SUPABASE_JWKS_URL",
+        ),
+    ],
+)
+def test_production_rejects_unapproved_supabase_urls(
+    overrides: dict[str, str],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _production_settings(**overrides)
+
+
+def test_production_accepts_consistent_supabase_project_urls() -> None:
+    settings = _production_settings(
+        supabase_url="https://project.supabase.co/",
+        supabase_jwt_issuer="https://project.supabase.co/auth/v1/",
+        supabase_jwks_url=(
+            "https://project.supabase.co/auth/v1/.well-known/jwks.json"
+        ),
+    )
+
+    assert settings.supabase_url == "https://project.supabase.co/"
+    assert settings.supabase_jwt_issuer == "https://project.supabase.co/auth/v1/"
+    assert settings.supabase_jwks_url == (
+        "https://project.supabase.co/auth/v1/.well-known/jwks.json"
+    )
+
+
 class _RouterDb:
     def __init__(self) -> None:
         self.commits = 0

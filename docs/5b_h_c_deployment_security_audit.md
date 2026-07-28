@@ -1,5 +1,9 @@
 # 5B-H-C Deployment Security and Functional UAT Audit
 
+> **Current contract:** `docs/security.md`. This file is retained as dated
+> deployment audit evidence and does not override the current security
+> contract.
+
 > **Historical evidence boundary — 2026-07-22:** This document is a point-in-time Phase 5B-H-C record. Its commit identifiers, migration revision, test counts, live observations, and `BLOCKED` / `MANUAL VERIFICATION REQUIRED` results must remain unchanged. Phase 5B-H-D later replaced the browser-bearer transport described here; current implementation and local verification evidence is recorded in `docs/5b_h_d_production_security_implementation.md`. That later local evidence does not retroactively change any deployed result in this document.
 
 ## 1. Audit metadata

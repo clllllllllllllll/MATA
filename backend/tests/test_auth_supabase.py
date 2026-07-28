@@ -148,6 +148,7 @@ def _settings() -> Settings:
         database_rls_enabled=False,
         supabase_url="https://mata-test.supabase.co",
         mata_resident_session_secret=RESIDENT_SECRET,
+        _env_file=None,
     )
 
 

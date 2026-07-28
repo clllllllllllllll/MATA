@@ -1,5 +1,9 @@
 # 5B-G-F Supabase Migration Smoke Plan
 
+> **Current contract:** `docs/security.md`. This phase-specific smoke plan is
+> retained as deployment evidence guidance and does not override the current
+> security contract.
+
 Status: Ready for dry-run execution
 
 Last updated: 2026-07-06

@@ -1,5 +1,8 @@
 # Phase 5B-H AUD-M-04 — Atomic Attendance and Ad-hoc Ownership
 
+> **Current contract:** `docs/security.md`. This file is retained as dated
+> implementation evidence and does not override the current security contract.
+
 ## Scope
 
 This change closes AUD-M-04 and records the transaction boundary for every

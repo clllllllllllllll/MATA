@@ -1,5 +1,9 @@
 # 5B-H Vercel UAT Security Plan
 
+> **Current contract:** `docs/security.md`. This phase-specific plan is retained
+> as deployment evidence guidance and does not override the current security
+> contract.
+
 Status: 5B-H-A/B/C retained as historical UAT work; 5B-H-D implemented and locally verified; deployment verification and 5B-H-E RLS pending
 
 Last updated: 2026-07-26

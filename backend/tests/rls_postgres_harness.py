@@ -17,7 +17,7 @@ from app.config import Settings
 from app.services.database_context import MataSyncSession
 
 
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_m05_upload_limits_verify"
+DISPOSABLE_DATABASE_NAME = "mata_phase5b_final_security_review"
 RUNTIME_GROUP = "mata_app_runtime"
 AUTH_GROUP = "mata_auth_internal"
 REQUIRED_REVISION = "20260728_000028"
@@ -221,6 +221,12 @@ async def rls_postgres_harness() -> AsyncIterator[RlsPostgresHarness]:
             )
             assert revision == REQUIRED_REVISION
 
+        print(
+            "PostgreSQL role-provisioning target: "
+            f"database={owner_sync_url.database} "
+            f"host={owner_sync_url.host}:{owner_sync_url.port or 5432}",
+            flush=True,
+        )
         _create_login_member(
             admin_engine,
             role_name=runtime_role,
@@ -279,6 +285,13 @@ async def rls_postgres_harness() -> AsyncIterator[RlsPostgresHarness]:
         if owner_engine is not None:
             await owner_engine.dispose()
         cleanup_errors: list[Exception] = []
+        if created_roles:
+            print(
+                "PostgreSQL role-cleanup target: "
+                f"database={owner_sync_url.database} "
+                f"host={owner_sync_url.host}:{owner_sync_url.port or 5432}",
+                flush=True,
+            )
         for role_name, group_name in reversed(created_roles):
             try:
                 _drop_login_member(

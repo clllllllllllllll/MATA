@@ -1,5 +1,8 @@
 # 5B-H-A Vercel/Supabase UAT Security Audit
 
+> **Current contract:** `docs/security.md`. This file is retained as dated UAT
+> audit evidence and does not override the current security contract.
+
 Status: 5B-H-A audit complete; 5B-H-B code fixes verified
 Last updated: 2026-07-06
 

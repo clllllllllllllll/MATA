@@ -1,5 +1,8 @@
 # 5B-H-D Production Security Implementation
 
+> **Current contract:** `docs/security.md`. This file is retained as dated
+> implementation evidence and does not override the current security contract.
+
 Status: local/source implementation and verification complete on 2026-07-26; deployment verification not performed.
 
 This report records the Phase 5B-H-D security implementation and its local evidence. It does not claim that Vercel, Supabase, or any other deployed environment has these controls. No live deployment, live database, live account, or live environment setting was changed while producing this evidence.

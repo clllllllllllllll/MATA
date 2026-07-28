@@ -568,14 +568,10 @@ export const AdminWarningsPage = () => {
 
   const openMultiPostingRules = () => {
     const basePath = isProgrammePc ? '/pc/config' : '/admin/config'
-    const params = new URLSearchParams({ section: 'multi-posting-rules' })
-    if (warningDetail?.mcr) {
-      params.set('mcr', warningDetail.mcr)
-    }
-    if (warningDetail?.monthLabel) {
-      params.set('month', warningDetail.monthLabel)
-    }
-    params.set('warningType', 'unmatched_multi_posting')
+    const params = new URLSearchParams({
+      section: 'multi-posting-rules',
+      warningType: 'unmatched_multi_posting',
+    })
     navigate(`${basePath}?${params.toString()}`, {
       state: { configSection: 'multi-posting-rules' },
     })

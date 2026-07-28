@@ -1,5 +1,8 @@
 # Phase 5B-G Supabase Production Readiness Audit
 
+> **Current contract:** `docs/security.md`. This file is retained as dated
+> readiness evidence and does not override the current security contract.
+
 Status: Complete for Phase 5B-G D/E/F/G docs and audit package
 
 Last updated: 2026-07-06

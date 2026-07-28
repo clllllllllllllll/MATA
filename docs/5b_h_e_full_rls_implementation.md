@@ -1,5 +1,8 @@
 # 5B-H-E Full PostgreSQL RLS Implementation
 
+> **Current contract:** `docs/security.md`. This file is retained as dated
+> implementation evidence and does not override the current security contract.
+
 Status: locally implemented and verified against disposable PostgreSQL on 2026-07-27. This is not a deployment record.
 
 **PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED**

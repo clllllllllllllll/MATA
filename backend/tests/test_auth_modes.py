@@ -102,6 +102,7 @@ def test_production_rejects_raw_identity_headers() -> None:
             rate_limit_hash_secret="test-rate-limit-key-that-is-at-least-32-characters",
             cors_origins=["https://mata.example.com"],
             allowed_hosts=["mata.example.com"],
+            _env_file=None,
         ),
     )
 

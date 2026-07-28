@@ -25,13 +25,6 @@ import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 type RuleTab = MultiPostingRuleType
 type ConfigViewRole = 'master_admin' | 'programme_pc'
 
-interface WarningContext {
-  type: string
-  mcr?: string
-  monthLabel?: string
-  residentName?: string
-}
-
 interface MultiPostingFormState {
   programmeCode: string
   postingCode1: string
@@ -254,17 +247,9 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
   const [confirmingDeleteRule, setConfirmingDeleteRule] = useState<MultiPostingRule | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
-  const warningContext = useMemo<WarningContext | null>(() => {
+  const isResolvingWarning = useMemo(() => {
     const params = new URLSearchParams(location.search)
-    const type = params.get('warningType') ?? ''
-    if (type !== 'unmatched_multi_posting') {
-      return null
-    }
-    return {
-      type,
-      mcr: params.get('mcr') ?? undefined,
-      monthLabel: params.get('month') ?? undefined,
-    }
+    return params.get('warningType') === 'unmatched_multi_posting'
   }, [location.search])
 
   const fetchRules = useCallback(async (): Promise<MultiPostingConfigData> => {
@@ -593,11 +578,10 @@ export const MultiPostingRulesSection = ({ configViewRole }: MultiPostingRulesSe
         </div>
       </header>
 
-      {warningContext ? (
+      {isResolvingWarning ? (
         <section className="inline-callout callout-warning">
-          Resolving unmatched multi-posting warning:{' '}
-          {warningContext.residentName ?? 'Resident'} - {warningContext.mcr ?? 'M00000X'} -{' '}
-          {warningContext.monthLabel ?? 'Unknown month'}
+          Resolving an unmatched multi-posting warning. Review the rules before returning to
+          the warning.
         </section>
       ) : null}
 

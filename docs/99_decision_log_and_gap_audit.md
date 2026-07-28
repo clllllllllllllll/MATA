@@ -79,7 +79,8 @@ These entries supersede any earlier contradictory current-state entry in this au
 - **Verification:** Complete backend `1104 passed, 7 warnings`; focused H-D security `230 passed, 1 warning`; PostgreSQL security integration `13 passed`; 20/20 process-isolated concurrent-rotation repeats; frontend `78 passed` plus lint, typecheck, and production/Supabase build.
 - **Evidence boundary:** Code completion and local verification do not prove deployed security.
 
-PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
+Resident identity assurance remains separately governed product debt. Reopen
+only under an approved product scope.
 
 ---
 
@@ -709,7 +710,9 @@ PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
 - **Consequences for codebase:** `POST /auth/login` with `role: 'resident'` is the neutral shared resident request. It checks `residents` and `external_residents` in one backend resolution, relies on global MCR uniqueness, validates the resolved row is active, returns the resolved `resident | external_resident` role, and rejects cross-table duplicates without issuing a token. The frontend makes exactly one request and never probes the tables sequentially.
 - **Assurance boundary:** MCR-only remains the implemented and approved resident credential path. This decision is not evidence that resident production authentication assurance is sufficient, and H-D does not invent an unapproved factor.
 
-PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
+- **Product-debt status:** Resident identity assurance remains separately
+  governed. Do not invent a second factor or claim workflow outside an approved
+  product scope.
 - **Reference file and section:** `api.md` § POST `/auth/login`; `AGENTS.md` § Security Rules
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -1143,7 +1146,7 @@ Status: ✅ Resolved
 |---|----------------|---------------|--------------------------|-------------------------------|
 | 2 | TBD-MIGRATION option selection | Determines historical data availability | No code exists — placeholder TODO only | New migration script(s) when option confirmed |
 | 3 | Complete clawback financial/final-close contract | Required only for deferred clawback | No implementation-ready placeholder; legacy evidence is non-authoritative | Source-of-truth documents after stakeholder confirmation |
-| 7 | Approved resident second factor | Required to close the explicit production-auth assurance blocker | No factor is invented or implemented by H-D | Auth contract and deployment approval records after stakeholder decision |
+| 7 | Approved resident identity-assurance change, if any | Separately governed product debt; not a stop condition for the final security review | No factor is invented or implemented by H-D | Auth contract and deployment approval records after stakeholder decision |
 | 8 | Deployed H-D/H-E verification | Required to distinguish local code evidence from live cookie/session and RLS behavior | H-D and H-E implementation reports contain local evidence only | Deployment smoke/evidence document |
 
 > **⚠️ Most likely LLM mistake:** Treating legacy clawback evidence as an implementation-ready formula. The entire financial/final-close contract is deferred; ordinary compliance remains independently specified.
@@ -1320,7 +1323,7 @@ These are implementation errors that would fail silently — no exception thrown
 | 39 | Master Admin force deletion is an explicit, audited, transactional exception for Secretary/PC scheduled events only | Prevents silent partial deletion or privilege expansion while allowing destructive operational correction | PM / Security owner | Dedicated `/admin/secretary-events/{id}/force-delete` action and audit service |
 | 40 | Backend-owned opaque cookie/CSRF transport is the normal production path | Prevents reintroduction of browser-visible application credentials | PM / Security owner | H-D implementation and auth contract |
 | 41 | Subject → family advisory lock → fresh locked-row rotation order and unique one-child invariant | Prevents concurrent session resurrection or double rotation | Security owner | `app_sessions` service and PostgreSQL race tests |
-| 42 | No resident second factor may be invented without approval | Authentication policy and clinical-user workflow require stakeholder authority | PM / Security owner / Programme leadership | H-D blocker and auth contract |
+| 42 | No resident second factor may be invented without approval | Authentication policy and clinical-user workflow require stakeholder authority | PM / Security owner / Programme leadership | Separately governed product-debt record and auth contract |
 
 > **⚠️ Most likely LLM mistake:** Changing the 70% threshold to 75% or 65% because it "seems more reasonable." The threshold is a regulatory requirement. The silent consequence is every compliance calculation being wrong for every resident.
 

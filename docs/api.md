@@ -2,6 +2,11 @@
 
 Base URL: `http://localhost:8000/api/v1`
 
+`security.md` is authoritative for cross-cutting authentication,
+authorization, session, CSRF, rate-limit, privacy, deployment, and RLS
+requirements. This file remains authoritative for route and request/response
+contracts.
+
 ---
 
 ## Phase 5B-H-D Authentication and Browser Transport
@@ -21,7 +26,8 @@ An emergency production rollback therefore requires a coordinated application
 and database version rollback plus forced reauthentication; the legacy flag
 alone cannot enable bearer transport.
 
-PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
+Resident identity assurance remains separately governed product debt. Do not
+invent a second factor or claim workflow outside an approved product scope.
 
 ## Phase 5B-H-E Database Authorization Boundary
 

@@ -1,5 +1,8 @@
 # 5B-G-D Staff Bootstrap Runbook
 
+> **Current contract:** `docs/security.md`. This phase-specific runbook remains
+> operational evidence and does not override the current security contract.
+
 Status: production runbook, not automation.
 Last updated: 2026-07-06
 

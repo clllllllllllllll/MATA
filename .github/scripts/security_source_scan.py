@@ -149,6 +149,7 @@ _PLACEHOLDER_HTTP_URL_RE = re.compile(
     rf"(?::(?:\d+|{_PLACEHOLDER_TOKEN}))?(?:/{_PLACEHOLDER_TOKEN})?/?$",
     re.IGNORECASE,
 )
+_PYTHON_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _is_text_candidate(path: str | Path) -> bool:
@@ -242,6 +243,17 @@ def _scan_text(
                 rule.rule_id == "backend-secret-assignment"
                 and _is_placeholder(match.group(1))
             ):
+                continue
+            if (
+                rule.rule_id == "backend-secret-assignment"
+                and Path(path).suffix.casefold() == ".py"
+                and _PYTHON_IDENTIFIER_RE.fullmatch(match.group(1).strip())
+                and re.match(r"\s*(?:,|\r?\n|[}\])]|$)", text[match.end():])
+            ):
+                # A bare Python name is a runtime reference, not an embedded
+                # credential. Quoted and prefixed-string literals remain
+                # findings because the character after the regex match is a
+                # quote rather than a Python delimiter.
                 continue
             line_number = starting_line + text.count("\n", 0, match.start())
             findings.append(f"{rule.rule_id}: {path}:{line_number}")

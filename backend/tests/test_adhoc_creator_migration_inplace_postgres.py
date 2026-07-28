@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, time
 import os
 import re
+from time import sleep
 from typing import Any
 from uuid import UUID
 
@@ -23,6 +24,7 @@ from tests.test_external_registration_migrations_postgres import (
     _adhoc_creator_columns,
     _assert_local_postgres_source,
     _h_e_database_identity,
+    _migration_environment,
     _repository_head_revision,
     _revision,
 )
@@ -99,21 +101,34 @@ class InPlaceHarness:
 
 
 def _assert_exclusive(engine: Engine) -> None:
-    with engine.connect() as connection:
-        identity = _h_e_database_identity(connection)
-        assert identity["database_name"] == H_E_DISPOSABLE_DATABASE_NAME
-        assert identity["current_role"] == identity["session_role"]
-        assert identity["session_role"] == identity["database_owner"]
-        assert connection.scalar(
-            text(
-                """
-                SELECT count(*)
-                FROM pg_catalog.pg_stat_activity
-                WHERE datname = current_database()
-                  AND pid <> pg_catalog.pg_backend_pid()
-                """
+    other_connections = -1
+    for attempt in range(20):
+        with engine.connect() as connection:
+            identity = _h_e_database_identity(connection)
+            assert identity["database_name"] == H_E_DISPOSABLE_DATABASE_NAME
+            assert identity["current_role"] == identity["session_role"]
+            assert identity["session_role"] == identity["database_owner"]
+            other_connections = int(
+                connection.scalar(
+                    text(
+                        """
+                        SELECT count(*)
+                        FROM pg_catalog.pg_stat_activity
+                        WHERE datname = current_database()
+                          AND pid <> pg_catalog.pg_backend_pid()
+                        """
+                    )
+                )
+                or 0
             )
-        ) == 0
+        if other_connections == 0:
+            return
+        if attempt < 19:
+            sleep(0.1)
+    pytest.fail(
+        "Migration mutation requires an exclusive disposable-database connection",
+        pytrace=False,
+    )
 
 
 def _migrate(
@@ -794,14 +809,9 @@ def _recover_head(harness: InPlaceHarness) -> None:
 def in_place_migration_database() -> Iterator[InPlaceHarness]:
     settings = Settings(_env_file=None)
     source_url = make_url(settings.sync_database_url)
-    _assert_local_postgres_source(source_url, h_e_restricted=True)
+    _assert_local_postgres_source(source_url)
     assert _repository_head_revision() == HEAD_REVISION
-    environment = os.environ.copy()
-    environment["SYNC_DATABASE_URL"] = source_url.render_as_string(
-        hide_password=False
-    )
-    environment["ENVIRONMENT"] = "test"
-    environment["AUTH_MODE"] = "stub"
+    environment = _migration_environment(source_url)
     engine = create_engine(source_url, poolclass=NullPool)
     try:
         with engine.connect() as connection:

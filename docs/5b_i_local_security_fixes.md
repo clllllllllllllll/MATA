@@ -1,5 +1,8 @@
 # 5B-I Local Security Fixes
 
+> **Current contract:** `docs/security.md`. This file is retained as dated local
+> fix evidence and does not override the current security contract.
+
 ## Summary
 
 Phase 5B-I-B resolved the local frontend dependency blockers before the Vercel/Supabase POC deployment setup. The backend was also checked for Vercel compatibility and given a minimal backend-root Vercel entrypoint that reuses the existing FastAPI app.

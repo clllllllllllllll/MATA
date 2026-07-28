@@ -25,6 +25,7 @@ import { useAuth } from './context/useAuth'
 import { LoginPage } from './pages/auth/LoginPage'
 import { NonNhgRegistrationPage } from './pages/auth/NonNhgRegistrationPage'
 import { getRouteAccessDecision, shouldRenderRoutes } from './routeGuards'
+import { protectedRouteAuthorityKey } from './utils/protectedRouteAuthorityKey'
 import { formatUserFacingApiError } from './utils/userFacingErrors'
 
 const AuthLoadingScreen = () => (
@@ -101,6 +102,7 @@ const StaffActorNameGate = () => {
 const AccessControlledRoutes = () => {
   const { authState, hasExplicitSession, identity, isLoading, staffActorNameRequired } = useAuth()
   const location = useLocation()
+  const protectedAuthorityKey = protectedRouteAuthorityKey(identity)
   const decision = getRouteAccessDecision({
     pathname: location.pathname,
     isLoading,
@@ -134,7 +136,7 @@ const AccessControlledRoutes = () => {
     return <StaffActorNameGate />
   }
 
-  return <AppRoutes />
+  return <AppRoutes key={protectedAuthorityKey} />
 }
 
 const shellElement = (children: ReactElement) => <AppShell>{children}</AppShell>

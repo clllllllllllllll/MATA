@@ -1,5 +1,8 @@
 # Phase 5B-H M-06 Reliable Logout
 
+> **Current contract:** `docs/security.md`. This file is retained as dated
+> implementation evidence and does not override the current security contract.
+
 Status: implemented and verified locally on `CL/5b-h-m06-reliable-logout`;
 deployed verification is pending.
 

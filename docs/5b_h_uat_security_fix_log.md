@@ -1,5 +1,8 @@
 # 5B-H-B UAT Security Fix Log
 
+> **Current contract:** `docs/security.md`. This file is retained as dated fix
+> evidence and does not override the current security contract.
+
 Status: 5B-H-B fixes implemented and verified locally
 Last updated: 2026-07-06
 

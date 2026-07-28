@@ -1,5 +1,8 @@
 # Phase 5B-H Session Lifecycle Assurance
 
+> **Current contract:** `docs/security.md`. This file is retained as dated
+> implementation evidence and does not override the current security contract.
+
 Status: implemented and locally verified on
 `CL/5b-h-session-lifecycle-assurance`; not deployed or verified against live
 Vercel/Supabase.

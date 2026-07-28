@@ -1,7 +1,7 @@
 """Bootstrap ephemeral restricted PostgreSQL logins before pytest collection.
 
 Invoke from ``backend`` with ``SYNC_DATABASE_URL`` explicitly targeting
-``mata_phase5b_m05_upload_limits_verify``:
+``mata_phase5b_final_security_review``:
 
 ``python -B -m tests.run_rls_restricted_pytest <pytest arguments>``
 """
@@ -24,7 +24,7 @@ from sqlalchemy.pool import NullPool
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_m05_upload_limits_verify"
+DISPOSABLE_DATABASE_NAME = "mata_phase5b_final_security_review"
 POLICY_REVISION = "20260728_000028"
 RUNTIME_GROUP = "mata_app_runtime"
 AUTH_GROUP = "mata_auth_internal"
@@ -224,6 +224,45 @@ def _verify_owner_and_groups(admin_engine: Engine) -> None:
                     "H-E capability-role attributes do not match the restricted "
                     "catalogue"
                 )
+        residual_test_roles = connection.scalar(
+            text(
+                r"""
+                SELECT count(*)
+                FROM pg_roles
+                WHERE rolname LIKE 'mata\_test\_%' ESCAPE '\'
+                """
+            )
+        )
+        if residual_test_roles != 0:
+            raise RestrictedRlsRunnerError(
+                "Residual mata_test_* roles must be removed before restricted "
+                "pytest starts"
+            )
+
+
+def _test_role_count(admin_engine: Engine) -> int:
+    with admin_engine.connect() as connection:
+        return int(
+            connection.scalar(
+                text(
+                    r"""
+                    SELECT count(*)
+                    FROM pg_roles
+                    WHERE rolname LIKE 'mata\_test\_%' ESCAPE '\'
+                    """
+                )
+            )
+            or 0
+        )
+
+
+def _announce_mutation_target(owner_sync_url: URL, *, operation: str) -> None:
+    print(
+        f"PostgreSQL {operation} target: "
+        f"database={owner_sync_url.database} "
+        f"host={owner_sync_url.host}:{owner_sync_url.port or 5432}",
+        flush=True,
+    )
 
 
 def _create_login_member(
@@ -360,6 +399,7 @@ def run(pytest_args: Sequence[str], environment: Mapping[str, str]) -> int:
     try:
         admin_engine = create_engine(owner_sync_url, poolclass=NullPool)
         _verify_owner_and_groups(admin_engine)
+        _announce_mutation_target(owner_sync_url, operation="role-provisioning")
         _create_login_member(
             admin_engine,
             role_name=runtime_role,
@@ -413,6 +453,8 @@ def run(pytest_args: Sequence[str], environment: Mapping[str, str]) -> int:
         )
     finally:
         if admin_engine is not None:
+            if created_roles:
+                _announce_mutation_target(owner_sync_url, operation="role-cleanup")
             for role_name, group_name in reversed(created_roles):
                 try:
                     _drop_login_member(
@@ -422,6 +464,11 @@ def run(pytest_args: Sequence[str], environment: Mapping[str, str]) -> int:
                     )
                 except (RestrictedRlsRunnerError, SQLAlchemyError):
                     cleanup_failed = True
+            try:
+                if _test_role_count(admin_engine) != 0:
+                    cleanup_failed = True
+            except SQLAlchemyError:
+                cleanup_failed = True
             admin_engine.dispose()
 
     if cleanup_failed:

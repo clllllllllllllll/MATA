@@ -1,5 +1,9 @@
 # 5B-G-E Supabase RLS, Grants, And Data API Readiness Matrix
 
+> **Current contract:** `docs/security.md`. This file is retained as dated
+> planning and catalogue evidence and does not override the current security
+> contract.
+
 Status: historical 5B-G planning matrix reconciled with the locally implemented 5B-H-E catalogue; deployed verification pending.
 Last updated: 2026-07-27
 

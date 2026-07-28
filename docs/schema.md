@@ -1,5 +1,10 @@
 # Database Schema
 
+`security.md` is authoritative for cross-cutting database roles, RLS, grants,
+helper ownership, default ACLs, credential separation, and local-versus-deployed
+security evidence. This file remains authoritative for schema objects and
+persistence behavior.
+
 All tables use UUID primary keys (`id UUID DEFAULT gen_random_uuid()`), `created_at TIMESTAMPTZ DEFAULT now()`, and `updated_at TIMESTAMPTZ DEFAULT now()` unless noted otherwise. `app_sessions` is an explicit exception: it has `created_at` and `last_seen_at`, but no `updated_at`.
 
 ## Entity Relationship Summary
@@ -1127,7 +1132,8 @@ execute `revoke_app_session_family_for_logout(bytea,bytea,text)`.
 
 These statements describe the local source and disposable-PostgreSQL implementation. They do not establish the revision, role catalogue, grants, policies, or behavior of a deployed Supabase project.
 
-PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
+Resident identity assurance remains separately governed product debt. Do not
+invent a second factor or claim workflow outside an approved product scope.
 
 ---
 

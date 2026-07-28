@@ -7,11 +7,15 @@ pending.
 
 This document defines the current auth/account contract. Phase 5B-H-D replaced normal browser bearer transport with backend-owned opaque PostgreSQL sessions, a host-only cookie, and synchronizer CSRF. Phase 5B-H-E adds the restricted non-owner PostgreSQL runtime, a separate auth-helper boundary, signed transaction-local identity context, complete application-table RLS, and exact grants. Revision `20260727_000027` adds absolute-expiry assurance, interval-gated activity, minimal session helpers, and expiry-aware RLS context. AUD-M-06 supersedes H-D's best-effort frontend logout-completion semantics with an explicit pending/unconfirmed state and proof-positive server confirmation. Historical implementation entries below are retained as an audit trail; where they describe browser Supabase or resident bearer tokens, the H-D/H-E/current lifecycle contract supersedes them.
 
+`security.md` is the current cross-cutting security source of truth. This file
+remains authoritative for identity, account, and session-lifecycle behavior.
+
 References checked:
 - `AGENTS.md`
 - `docs/00_project_context.md`
 - `docs/api.md` Authentication Model and Auth/Non-NHG resident endpoints
 - `docs/schema.md` `users`, `residents`, `resident_postings`, `external_residents`, `external_resident_postings`, `attendance_records`, `external_attendance_records`, `teaching_events`
+- `docs/security.md` cross-cutting security contract and evidence boundary
 - `docs/business-logic.md` BL-9 and BL-12 Non-NHG / Cross-Cluster Resident Attendance
 - `docs/99_decision_log_and_gap_audit.md` decisions for Non-NHG Residents, master admin, secretary visibility capability flag, bulk TTF deferral, latest TTF export/email deferral
 - Supabase docs: JWTs, user management, RLS, and changelog
@@ -81,7 +85,8 @@ References checked:
 - Migration `20260722_000024` revokes public/browser-role object privileges. Migrations `20260726_000025` and `20260726_000026` add the H-E role/context/helper foundation and full policy/grant cutover. Migration `20260727_000027` narrows the callable session helpers and makes signed RLS context reject an expired backing session.
 - Detailed implementation and evidence: `docs/5b_h_d_production_security_implementation.md`, `docs/5b_h_e_full_rls_implementation.md`, `docs/5b_h_session_lifecycle_assurance.md`, and `docs/5b_h_m06_reliable_logout.md`.
 
-PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
+Resident identity assurance remains separately governed product debt. Do not
+invent a second factor or claim workflow outside an approved product scope.
 
 ## Phase 5B-H-E Current Database Contract
 

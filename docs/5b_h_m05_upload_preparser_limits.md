@@ -1,5 +1,8 @@
 # Phase 5B-H AUD-M-05 — Pre-parser Request-Body Limits
 
+> **Current contract:** `docs/security.md`. This file is retained as dated
+> implementation evidence and does not override the current security contract.
+
 ## Scope and result
 
 AUD-M-05 closes the application-layer gap in which a misleading or absent

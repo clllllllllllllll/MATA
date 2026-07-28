@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ from unittest import mock
 
 
 SCRIPT_ROOT = Path(__file__).resolve().parent
+WORKFLOW_ROOT = SCRIPT_ROOT.parent / "workflows"
 
 
 def _load_module(name: str, filename: str):
@@ -96,6 +98,44 @@ class SecuritySourceScanTests(unittest.TestCase):
             scan.SECRET_RULES,
         )
         self.assertEqual([], lower_case_setting)
+
+    def test_python_runtime_url_references_are_not_secret_literals(self):
+        database_url_name = "_".join(("SYNC", "DATABASE", "URL"))
+        dynamic_reference = scan._scan_text(
+            "backend/tests/migration_harness.py",
+            f'"{database_url_name}": owner_sync_url,\n',
+            scan.SECRET_RULES,
+        )
+        self.assertEqual([], dynamic_reference)
+
+        sentinel = "sentinel-sensitive-value"
+        for literal in (
+            f'"{database_url_name}": "postgresql://admin:{sentinel}@db/prod",',
+            f'"{database_url_name}": f"postgresql://admin:{{{sentinel}}}@db/prod",',
+        ):
+            finding = scan._scan_text(
+                "backend/tests/migration_harness.py",
+                literal,
+                scan.SECRET_RULES,
+            )
+            self.assertEqual(
+                [
+                    "backend-secret-assignment: "
+                    "backend/tests/migration_harness.py:1"
+                ],
+                finding,
+            )
+            self.assertNotIn(sentinel, str(finding))
+
+        env_assignment = scan._scan_text(
+            "backend.env",
+            f"{database_url_name}=owner_sync_url",
+            scan.SECRET_RULES,
+        )
+        self.assertEqual(
+            ["backend-secret-assignment: backend.env:1"],
+            env_assignment,
+        )
 
     def test_placeholder_matching_is_anchored_and_rejects_mixed_values(self):
         accepted = (
@@ -274,6 +314,33 @@ class SecuritySourceScanTests(unittest.TestCase):
             scan._scan_added_patch(text_patch),
         )
         self.assertEqual([], scan._scan_added_patch(asset_patch))
+
+
+class WorkflowSecurityTests(unittest.TestCase):
+    def test_external_actions_are_pinned_to_full_commit_shas(self):
+        for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
+            source = workflow.read_text(encoding="utf-8")
+            uses_values = re.findall(r"^\s*uses:\s*(\S+)", source, re.MULTILINE)
+            self.assertTrue(uses_values, workflow.name)
+            for value in uses_values:
+                if value.startswith("./"):
+                    continue
+                self.assertRegex(
+                    value,
+                    r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$",
+                    f"{workflow.name}: {value}",
+                )
+
+    def test_workflows_limit_default_token_permissions(self):
+        for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
+            source = workflow.read_text(encoding="utf-8")
+            pre_jobs, separator, _ = source.partition("\njobs:")
+            self.assertEqual("\njobs:", separator, workflow.name)
+            self.assertRegex(
+                pre_jobs,
+                r"(?m)^permissions:\r?\n  contents: read$",
+                workflow.name,
+            )
 
 
 class DependencySanitizerTests(unittest.TestCase):

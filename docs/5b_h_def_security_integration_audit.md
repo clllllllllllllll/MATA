@@ -1,5 +1,8 @@
 # Phase 5B-H-D/E/Lifecycle Combined Security Integration Audit
 
+> **Current contract:** `docs/security.md`. This file is retained as dated
+> audit evidence and does not override the current security contract.
+
 Date: 27 July 2026 (Asia/Singapore)
 
 Historical status at audit close:

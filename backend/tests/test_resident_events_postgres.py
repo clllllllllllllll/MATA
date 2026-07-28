@@ -20,7 +20,7 @@ from app.services.database_context import (
 )
 
 
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_m05_upload_limits_verify"
+DISPOSABLE_DATABASE_NAME = "mata_phase5b_final_security_review"
 _TEST_SESSION_HASH_KEY = "rls-resident-events-test-session-key-32-bytes"
 
 

@@ -12,6 +12,34 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 MINIMUM_HS256_SECRET_BYTES = 32
 
 
+def _production_https_url_parts(
+    raw_url: str,
+    *,
+    label: str,
+) -> tuple[str, int, str]:
+    try:
+        parsed = urlsplit(raw_url.strip())
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"Production {label} must be an explicit HTTPS URL") from exc
+
+    hostname = (parsed.hostname or "").casefold()
+    if (
+        parsed.scheme.casefold() != "https"
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or port not in {None, 443}
+    ):
+        raise ValueError(
+            f"Production {label} must be an explicit HTTPS URL without "
+            "credentials, query, fragment, or a non-standard port"
+        )
+    return hostname, port or 443, parsed.path
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -453,6 +481,54 @@ class Settings(BaseSettings):
             )
         if not self.supabase_url:
             raise ValueError("Production SUPABASE_URL is required")
+        supabase_host, supabase_port, supabase_path = _production_https_url_parts(
+            self.supabase_url,
+            label="SUPABASE_URL",
+        )
+        if (
+            supabase_path not in {"", "/"}
+            or supabase_host == "supabase.co"
+            or not supabase_host.endswith(".supabase.co")
+        ):
+            raise ValueError(
+                "Production SUPABASE_URL must be the explicit HTTPS origin "
+                "of an approved Supabase project"
+            )
+        supabase_origin = (supabase_host, supabase_port)
+
+        configured_issuer = (
+            self.supabase_jwt_issuer
+            or f"{self.supabase_url.rstrip('/')}/auth/v1"
+        )
+        issuer_host, issuer_port, issuer_path = _production_https_url_parts(
+            configured_issuer,
+            label="SUPABASE_JWT_ISSUER",
+        )
+        if (
+            (issuer_host, issuer_port) != supabase_origin
+            or issuer_path.rstrip("/") != "/auth/v1"
+        ):
+            raise ValueError(
+                "Production SUPABASE_JWT_ISSUER must use the SUPABASE_URL "
+                "origin and /auth/v1 path"
+            )
+
+        configured_jwks_url = (
+            self.supabase_jwks_url
+            or f"{configured_issuer.rstrip('/')}/.well-known/jwks.json"
+        )
+        jwks_host, jwks_port, jwks_path = _production_https_url_parts(
+            configured_jwks_url,
+            label="SUPABASE_JWKS_URL",
+        )
+        if (
+            (jwks_host, jwks_port) != supabase_origin
+            or jwks_path != "/auth/v1/.well-known/jwks.json"
+        ):
+            raise ValueError(
+                "Production SUPABASE_JWKS_URL must use the SUPABASE_URL "
+                "origin and /auth/v1/.well-known/jwks.json path"
+            )
         if not (self.supabase_publishable_key or self.supabase_anon_key):
             raise ValueError("A backend Supabase publishable key is required in production")
         if self.auth_transport == "bearer_compat":

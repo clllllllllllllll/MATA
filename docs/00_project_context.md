@@ -1,8 +1,8 @@
 # 00_project_context.md — MATA Dashboard Master Orientation Document
 
-> **Purpose:** This is the master orientation and navigation document for the MATA (Medical Attendance Tracking Application) project. Read this file first before any of the five source-of-truth files. It summarises, cross-references, and highlights critical rules — it does not duplicate full table definitions or code blocks that already exist in the source-of-truth files.
+> **Purpose:** This is the master orientation and navigation document for the MATA (Medical Attendance Tracking Application) project. Read this file first before any of the six domain source-of-truth documents and `AGENTS.md`. It summarises, cross-references, and highlights critical rules — it does not duplicate full table definitions or code blocks that already exist in the source-of-truth files.
 >
-> **Authority:** This document is a navigation aid. If it conflicts with `schema.md`, `api.md`, `business-logic.md`, `parsing.md`, or `AGENTS.md`, trust the domain-specific source-of-truth file and flag this document for update.
+> **Authority:** This document is a navigation aid. If it conflicts with `schema.md`, `api.md`, `business-logic.md`, `parsing.md`, `auth-account-contract.md`, `security.md`, or `AGENTS.md`, trust the domain-specific source-of-truth file or repository instruction and flag this document for update.
 
 ---
 
@@ -77,7 +77,8 @@ revision/request-id/watermark fenced. A replacement login resolves the
 matching lifecycle only after the new session is committed inside the same Web
 Lock. Local gate evidence passed; deployed verification remains pending.
 
-PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
+Resident identity assurance remains separately governed product debt. Do not
+invent a factor outside an approved product scope.
 
 ### Three User Roles
 
@@ -115,12 +116,12 @@ Hard cutover at a period boundary. FormSG and Google Forms submission channels a
 
 ### Conflict Resolution
 
-If this document (`00_project_context.md`) or `99_decision_log_and_gap_audit.md` conflicts with `schema.md`, `api.md`, `business-logic.md`, `parsing.md`, or `AGENTS.md`, **trust the domain-specific source-of-truth file**. This document is navigation only. `99_decision_log_and_gap_audit.md` is an audit trail. Neither overrides the source-of-truth files.
+If this document (`00_project_context.md`) or `99_decision_log_and_gap_audit.md` conflicts with `schema.md`, `api.md`, `business-logic.md`, `parsing.md`, `auth-account-contract.md`, `security.md`, or `AGENTS.md`, **trust the domain-specific source-of-truth file or repository instruction**. This document is navigation only. `99_decision_log_and_gap_audit.md` is an audit trail. Neither overrides the source-of-truth files.
 
 ### Reading Order for Generating Migration Documents
 
 1. Read `00_project_context.md` (this file) first
-2. Then read all five source-of-truth files (`schema.md`, `api.md`, `business-logic.md`, `parsing.md`, `AGENTS.md`) before generating any output
+2. Then read all six domain source-of-truth documents (`schema.md`, `api.md`, `business-logic.md`, `parsing.md`, `auth-account-contract.md`, and `security.md`) plus `AGENTS.md` before generating any output
 
 ### Reading Order for Coding Tasks
 
@@ -132,6 +133,8 @@ Before coding, always read `00_project_context.md` and `AGENTS.md`. Then read th
 | Endpoint, API, or Pydantic schema changes | `api.md` |
 | Compliance, surplus, hibernation, reallocation, exceptions, thresholds | `business-logic.md` |
 | RDB, TTF, FormF1, or PH upload parsing | `parsing.md` |
+| Identity, account, or session-lifecycle behavior | `auth-account-contract.md` plus `security.md` |
+| Authentication, authorization, sessions, CSRF, RLS, privacy, deployment, or security maintenance | `security.md` plus the applicable domain file |
 | Cross-cutting changes | All relevant files before editing any code |
 
 ### Implementation Status of Source-of-Truth Files
@@ -146,6 +149,8 @@ The source-of-truth files began as build specifications, but substantial pre-com
 | `api.md` | FastAPI endpoints, request/response contracts, status codes, auth headers, API behaviour |
 | `business-logic.md` | Non-clawback compliance engine (BL-1 through BL-11), surplus chain, raw-count reallocation, hibernation, exceptions, and an explicit deferred clawback register |
 | `parsing.md` | RDB, TTF, FormF1, and PH Excel parsing rules, cell format handling, edge cases, validation rules |
+| `auth-account-contract.md` | Identity, account, and session-lifecycle behavior |
+| `security.md` | Cross-cutting authentication, authorization, sessions, CSRF, rate limits, RLS, privacy, deployment, CI, and rollback contracts |
 | `AGENTS.md` | Coding-agent behaviour, repo structure, implementation conventions, tech stack, security rules, confirmed decisions |
 
 ### Hard Rules That Apply Everywhere
@@ -245,9 +250,9 @@ All other TBDs (TBD-1 mechanism, TBD-2, TBD-3, TBD-4/PH, TBD-5, TBD-5b, TBD-6, T
 
 **[Assumed — standard/org choice]:** The selection of FastAPI, React/Vite/TypeScript, and PostgreSQL/Supabase was not documented with explicit alternatives-considered reasoning. These are standard technology choices for this type of application.
 
-**Resident auth:** Residents currently authenticate with MCR number only. H-D does not invent an unapproved factor, and this implemented credential path is not evidence that resident production assurance is sufficient.
-
-PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
+**Resident auth:** Residents currently authenticate with MCR number only. This
+assurance decision is separately governed product debt. Do not invent a second
+factor or claim workflow outside an approved product scope.
 
 > **⚠️ Most likely LLM mistake:** Assuming Tailwind JIT is available and using dynamic class generation (e.g., `bg-[#custom]`). Only pre-defined core utility classes are available. The silent consequence is unstyled elements in the rendered UI.
 
@@ -409,6 +414,7 @@ mata/
 | `api.md` | Current FastAPI endpoints, request/response shapes, auth model, error codes | Implemented pre-compliance contract with explicit future items | Any router, endpoint, or Pydantic schema | Three separate server-owned identity tables converge on one opaque application-session envelope; role/scope is reloaded from the current subject row. |
 | `business-logic.md` | Non-clawback engine (BL-1–BL-11), surplus, raw-count reallocation, exceptions, FM rules, and deferred clawback register | Implemented non-clawback rules plus explicit deferrals | Compliance engine, surplus chain, reallocation, any calculation | Reallocation sorts alphabetically by tag and transfers raw session counts before final capping; duration never drives the arithmetic. |
 | `parsing.md` | RDB, TTF, FormF1, and Academic Calendar / PH upload parsing rules, cell format variants, edge cases, validation rules | Implemented parser contract | Any upload endpoint or Excel parsing work | RDB posting columns are NOT at a fixed column range (I–T). The parser must detect them dynamically by scanning row 2 for date-range headers. Hardcoding column positions silently misses months. |
+| `security.md` | Current cross-cutting security contract, local/deployed evidence boundary, and deferred debt | Implemented local contract; deployed verification remains separate | Any authentication, authorization, session, CSRF, RLS, privacy, deployment, CI, or rollback change | Local passing tests do not prove the deployed database, proxy, cookie, environment, or role catalogue. |
 | `AGENTS.md` | Coding-agent behaviour, repo structure, tech stack, roles, initialisation order, key architectural rules, confirmed decisions, security rules | Current project instructions and architecture authority | Every coding task (alongside this document) | Multi-posting cell with explicit date ranges applies to ALL RDB sheets, not FM only. Assuming it's FM-only causes silent parsing failures for non-FM programmes. |
 
 > **⚠️ Most likely LLM mistake:** Assuming every documented future or deferred field is already implemented. Cross-check the current model, migration, route, and test before changing code, while treating the domain contracts as the authority for intended behavior.
@@ -988,7 +994,7 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
 
 ## Section 18 — Security
 
-**For full security rules, see `AGENTS.md` Security section.**
+**For the current cross-cutting security contract, see `security.md`.**
 
 ### Key Rules (Summary)
 
@@ -1051,7 +1057,7 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
 | Clawback specification | Financial and final-close rules remain deferred | Do not implement or infer them from legacy evidence |
 | FormF1 year suffix | Parser sample hardcodes '25'/'26' | Must be dynamic based on reporting period |
 | FM Saturday exception | Removed from confirmed list | No FM row in `weekend_exceptions` seed data |
-| Resident second factor not approved | MCR-only production assurance remains unresolved | Do not invent a factor; retain the explicit blocker pending stakeholder approval |
+| Resident identity assurance | Separately governed product debt | Do not invent a factor; reopen only under an approved product scope |
 | Local verification versus deployment | Passing code/tests do not prove deployed environment, migrations, grants, or cookie behavior | Run the documented post-deployment smoke against the approved target |
 | Local H-E/lifecycle versus deployed RLS | A locally verified role/policy/session catalogue can be mistaken for deployed Supabase protection | Independently verify revision `20260727_000027`, lifecycle settings, credentials, ownership, policies, grants, helpers, PUBLIC/browser roles, expiry behavior, and five-role workflows on the approved target |
 | Local AUD-M-04 versus deployed RLS | Immutable ad-hoc ownership and atomic helper behavior may be mistaken for deployed protection | Independently verify revision `20260728_000028`, strict populated backfill, creator/family RLS, helper ACLs, rollback, and concurrency on the approved target |

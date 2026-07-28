@@ -114,7 +114,9 @@ The backend runs on `http://localhost:8000` and the frontend on `http://localhos
 | `DATABASE_URL` | Async PostgreSQL URL using the restricted runtime login when RLS is enabled | `postgresql+asyncpg://<runtime-login>:<runtime-password>@<database-host>/<database-name>` |
 | `MATA_AUTH_DATABASE_URL` | Async PostgreSQL URL using the distinct auth-helper login when RLS is enabled | `postgresql+asyncpg://<auth-login>:<auth-password>@<database-host>/<database-name>` |
 | `SYNC_DATABASE_URL` | Sync PostgreSQL URL using the distinct migration/ownership login | `postgresql://<owner-login>:<owner-password>@<database-host>/<database-name>` |
-| `SUPABASE_URL` | Backend Supabase project URL for Supabase mode | `https://<project-ref>.supabase.co` |
+| `SUPABASE_URL` | Reviewed backend Supabase project origin; production requires exact HTTPS `*.supabase.co` origin syntax | `https://<project-ref>.supabase.co` |
+| `SUPABASE_JWT_ISSUER` | Optional explicit JWT issuer; production requires the same project origin and `/auth/v1` | `https://<project-ref>.supabase.co/auth/v1` |
+| `SUPABASE_JWKS_URL` | Optional explicit JWKS URL; production requires the same project origin and exact Auth JWKS path | `https://<project-ref>.supabase.co/auth/v1/.well-known/jwks.json` |
 | `SUPABASE_PUBLISHABLE_KEY` | Backend-used key for mediated staff authentication and legacy verification | `<placeholder>` |
 | `SUPABASE_SERVICE_ROLE_KEY` | Backend-only Supabase Admin/service-role key | `<server-only-service-role-key>` |
 | `MATA_SESSION_HASH_KEY` | Backend-only keyed-digest secret; minimum 32 characters | `<backend-only-random-value>` |
@@ -191,6 +193,8 @@ All technical specifications live in `docs/`:
 | `docs/api.md` | API endpoints — routes, request/response shapes, auth requirements |
 | `docs/business-logic.md` | Compliance engine, surplus chain, tag-based reallocation, exception handling |
 | `docs/parsing.md` | RDB and TTF Excel upload parsing rules and edge cases |
+| `docs/auth-account-contract.md` | Current identity, account, and session-lifecycle contract |
+| `docs/security.md` | Current cross-cutting security contract, locally verified controls, deployment assumptions, and deferred debt |
 | `docs/5b_h_aud_m04_atomic_attendance.md` | Immutable ad-hoc creator/storage-family RLS and attendance transaction matrix |
 | `AGENTS.md` | Architectural rules, TBD items, confirmed decisions — read before coding |
 
@@ -242,7 +246,8 @@ removal identifiers cannot affect newer evidence.
 
 Staff login, Resident login, registration options, and Non-NHG registration are intentionally public entry points. Application authentication, authorization, rate limiting, CSRF, and session controls protect them; a Vercel outer gate is not required by the H-D design.
 
-PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
+Resident identity assurance remains separately governed product debt. Do not
+invent a second factor or claim workflow outside an approved product scope.
 
 Frontend route guards are UX only; backend authorization remains authoritative.
 
@@ -271,7 +276,16 @@ alembic downgrade -1
 
 ## Project Status
 
-MATA remains in active phased development. Phase 5B-H-D session transport hardening, Phase 5B-H-E full PostgreSQL RLS, the focused session-lifecycle assurance work, atomic attendance, AUD-M-05 pre-parser request limits, and AUD-M-06 reliable logout are implemented and verified locally; see `docs/5b_h_d_production_security_implementation.md`, `docs/5b_h_e_full_rls_implementation.md`, `docs/5b_h_session_lifecycle_assurance.md`, `docs/5b_h_aud_m04_atomic_attendance.md`, `docs/5b_h_m05_upload_preparser_limits.md`, and `docs/5b_h_m06_reliable_logout.md`. The approved Vercel product contract caps each uploaded file at 3 MiB and the complete multipart or other request body at 4 MiB, below the platform's separate 4.5 MB Function ceiling. Larger-file support requires a separately approved ingress and is not implemented here. Phase 6 compliance remains separate. Local code completion is not proof that migrations, roles, policies, grants, lifecycle settings, request limits, or configuration are deployed to Vercel/Supabase.
+MATA remains in active phased development. `docs/security.md` is the current
+cross-cutting security contract. The retained `5b_*` security documents are
+dated implementation and audit evidence, not competing current specifications.
+The approved Vercel product contract caps each uploaded file at 3 MiB and the
+complete multipart or other request body at 4 MiB, below the platform's
+separate 4.5 MB Function ceiling. Larger-file support requires a separately
+approved ingress and is not implemented here. Phase 6 compliance remains
+separate. Local code completion is not proof that migrations, roles, policies,
+grants, lifecycle settings, request limits, or configuration are deployed to
+Vercel/Supabase.
 
 ---
 

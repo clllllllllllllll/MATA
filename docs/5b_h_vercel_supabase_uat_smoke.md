@@ -1,5 +1,9 @@
 # 5B-H-C Supabase/Vercel UAT Smoke Checklist
 
+> **Current contract:** `docs/security.md`. This checklist remains the deployed
+> evidence template; its historical results do not override the current
+> repository security contract.
+
 > **Historical evidence boundary:** Sections and result rows dated 2026-07-22 preserve the Phase 5B-H-C point-in-time record. Do not rewrite their commit identifiers, migration head, test counts, deployment observations, or blocked/manual classifications. Phase 5B-H-D supersedes the earlier browser-bearer and mandatory outer-gate design assumptions; Phase 5B-H-E subsequently adds the local restricted-role/RLS boundary. Current local evidence is recorded separately in `docs/5b_h_d_production_security_implementation.md`, `docs/5b_h_e_full_rls_implementation.md`, and descendant implementation records including `docs/5b_h_m06_reliable_logout.md`; it is not proof of deployed behavior.
 
 Status: Historical H-C results preserved; H-D/H-E and descendant M-06 local implementation do not change the NO-GO pending deployed Vercel/Supabase, environment, account, RLS, grant, auth-lifecycle, and workflow evidence

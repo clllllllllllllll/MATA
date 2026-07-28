@@ -1,5 +1,8 @@
 # 5B-G-G Service-Role And Privileged Backend Access Review
 
+> **Current contract:** `docs/security.md`. This file is retained as dated
+> review evidence and does not override the current security contract.
+
 Status: historical 5B-G review reconciled with locally implemented 5B-H-D/H-E controls; deployed verification pending
 
 Last updated: 2026-07-27

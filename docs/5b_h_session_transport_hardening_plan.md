@@ -1,5 +1,8 @@
 # 5B-H-D Session Transport Hardening Plan
 
+> **Current contract:** `docs/security.md`. This file is retained as dated
+> planning evidence and does not override the current security contract.
+
 Status: H-D implemented and locally verified; deployment smoke pending; H-E was excluded from H-D scope and is reconciled in the post-H-D appendix
 Last updated: 2026-07-26
 

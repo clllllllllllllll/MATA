@@ -324,9 +324,9 @@ const initialFiltersFromParams = (params: URLSearchParams): AdminLogFilterState 
   actorRole: normalizeParam(params.get('actor_role')) || 'all',
   uploadType: parseUploadType(params.get('upload_type')),
   warningType: normalizeParam(params.get('warning_type')),
-  actorUserId: normalizeParam(params.get('actor_user_id')),
+  actorUserId: '',
   entityType: normalizeParam(params.get('entity_type')),
-  entityId: normalizeParam(params.get('entity_id')),
+  entityId: '',
   programmeCode: normalizeParam(params.get('programme_code')) || 'all',
   reportingPeriodId: normalizeParam(params.get('reporting_period_id')),
   status: normalizeParam(params.get('status')) || 'all',
@@ -339,7 +339,6 @@ const initialFiltersFromParams = (params: URLSearchParams): AdminLogFilterState 
 
 const buildSearchParams = (
   filters: AdminLogFilterState,
-  searchTerm: string,
   offset: number,
 ) => {
   const params = new URLSearchParams()
@@ -363,16 +362,13 @@ const buildSearchParams = (
   }
 
   const simpleFilters: Array<[string, string]> = [
-    ['actor_user_id', filters.actorUserId],
     ['warning_type', filters.warningType],
     ['entity_type', filters.entityType],
-    ['entity_id', filters.entityId],
     ['reporting_period_id', filters.reportingPeriodId],
     ['date_from', filters.dateFrom],
     ['date_to', filters.dateTo],
     ['correction_type', filters.correctionType],
     ['config_entity_type', filters.configEntityType],
-    ['search', searchTerm],
   ]
 
   simpleFilters.forEach(([key, value]) => {
@@ -417,8 +413,8 @@ export const AdminLogsPage = () => {
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(() => parseOffset(searchParams.get('offset')))
   const [filters, setFilters] = useState<AdminLogFilterState>(() => initialFiltersFromParams(searchParams))
-  const [searchTerm, setSearchTerm] = useState(() => normalizeParam(searchParams.get('search')))
-  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(() => normalizeParam(searchParams.get('search')))
+  const [searchTerm, setSearchTerm] = useState('')
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('')
   const [isInitialLoading, setIsInitialLoading] = useState(true)
   const [isRefetching, setIsRefetching] = useState(false)
   const [isManualRefreshing, setIsManualRefreshing] = useState(false)
@@ -485,12 +481,12 @@ export const AdminLogsPage = () => {
   }, [authScopeKey])
 
   useEffect(() => {
-    const nextParams = buildSearchParams(filters, searchTerm, offset)
+    const nextParams = buildSearchParams(filters, offset)
     const nextQueryString = nextParams.toString()
     if (nextQueryString !== currentQueryString) {
       setSearchParams(nextParams, { replace: true })
     }
-  }, [currentQueryString, filters, offset, searchTerm, setSearchParams])
+  }, [currentQueryString, filters, offset, setSearchParams])
 
   const requestFilters = useCallback((
     querySearch: string,

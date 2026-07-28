@@ -18,6 +18,8 @@ Before implementing:
   - `docs/api.md` for endpoints and request/response contracts.
   - `docs/business-logic.md` for calculations and domain behavior.
   - `docs/parsing.md` for workbook uploads and parsing.
+  - `docs/security.md` for cross-cutting authentication, authorization,
+    session, RLS, privacy, deployment, and security-maintenance contracts.
 - Read every applicable document when a change crosses domains.
 - Treat the documentation as authoritative over existing implementation.
 - Check whether the requested behavior is marked TBD or deferred.
