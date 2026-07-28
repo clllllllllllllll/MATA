@@ -23,6 +23,8 @@ from app.routers import auth
 from app.services.app_sessions import AppSessionInvalidError, CreatedSession
 from app.services.auth import AuthenticatedSubject
 from app.services.session_transport import (
+    AUTH_COOKIE_COORDINATION_HEADER_NAME,
+    AUTH_COOKIE_COORDINATION_PROTOCOL,
     clear_session_cookie,
     session_cookie_name,
     set_session_cookie,
@@ -33,6 +35,9 @@ from tests.resident_fakes import FakeResidentSession
 SESSION_KEY = "unit-test-session-hash-key-at-least-32-characters"
 RATE_KEY = "unit-test-rate-limit-key-at-least-32-characters"
 SUBJECT_ID = UUID("00000000-0000-0000-0000-000000000123")
+COORDINATION_HEADERS = {
+    AUTH_COOKIE_COORDINATION_HEADER_NAME: AUTH_COOKIE_COORDINATION_PROTOCOL,
+}
 
 
 def _production_settings(**overrides) -> Settings:
@@ -212,6 +217,36 @@ def _auth_router_client(
     app.dependency_overrides[auth._persistent_login_rate_limit] = no_rate_limit
     app.include_router(auth.router, prefix="/api/v1")
     return TestClient(app), db
+
+
+def test_production_auth_routes_require_cookie_coordination_protocol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _production_settings()
+    client, _ = _auth_router_client(
+        monkeypatch,
+        settings=settings,
+        identity=AuthIdentity(role="resident", subject_id=str(SUBJECT_ID)),
+        app_session=_active_session(subject_type="resident"),
+        session_token="presented-session",
+    )
+
+    responses = [
+        client.post(
+            "/api/v1/auth/login",
+            json={"role": "resident", "mcr": "M10000A"},
+        ),
+        client.post("/api/v1/auth/session/refresh"),
+        client.post("/api/v1/auth/logout"),
+        client.post(
+            "/api/v1/auth/logout",
+            headers={AUTH_COOKIE_COORDINATION_HEADER_NAME: "wrong-version"},
+        ),
+    ]
+
+    assert [response.status_code for response in responses] == [409, 409, 409, 409]
+    assert all(response.json()["error_code"] == ErrorCode.CONFLICT.value for response in responses)
+    assert all("set-cookie" not in response.headers for response in responses)
 
 
 def test_cookie_login_returns_identity_and_csrf_without_upstream_tokens(
@@ -598,7 +633,7 @@ def test_refresh_rotates_cookie_and_logout_revokes_then_clears(
 
 
 @pytest.mark.parametrize("csrf_token", (None, "malformed"))
-def test_logout_with_unusable_proof_remains_idempotent_and_clears_cookie(
+def test_logout_with_unusable_proof_remains_idempotent_without_clearing_cookie(
     monkeypatch: pytest.MonkeyPatch,
     csrf_token: str | None,
 ) -> None:
@@ -634,12 +669,12 @@ def test_logout_with_unusable_proof_remains_idempotent_and_clears_cookie(
 
     assert response.status_code == 200
     assert response.json() == {"success": True}
-    assert "Max-Age=0" in response.headers["set-cookie"]
+    assert "set-cookie" not in response.headers
     assert revoke_calls == [("malformed-or-stale-session", csrf_token)]
     assert db.commits == 1
 
 
-def test_concurrent_refresh_failure_is_generic_and_clears_cookie(
+def test_concurrent_refresh_failure_is_conflict_and_preserves_shared_cookie(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     identity = AuthIdentity(role="admin", subject_id=str(SUBJECT_ID))
@@ -670,10 +705,10 @@ def test_concurrent_refresh_failure_is_generic_and_clears_cookie(
 
     response = client.post("/api/v1/auth/session/refresh")
 
-    assert response.status_code == 401
-    assert response.json()["error_code"] == ErrorCode.UNAUTHORIZED.value
+    assert response.status_code == 409
+    assert response.json()["error_code"] == ErrorCode.CONFLICT.value
     assert "internal rotation detail" not in response.text
-    assert "Max-Age=0" in response.headers["set-cookie"]
+    assert "set-cookie" not in response.headers
     assert db.rollbacks == 1
 
 
@@ -751,6 +786,30 @@ def _cookie_middleware_client(
     return TestClient(app), touches, csrf_values
 
 
+def test_production_protected_requests_require_cookie_coordination_before_hydration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _production_settings()
+    client, touches, csrf_values = _cookie_middleware_client(
+        monkeypatch,
+        settings=settings,
+        resolved_session=_active_session(),
+    )
+    client.cookies.set(session_cookie_name(settings), "opaque-session-token")
+
+    missing = client.get("/api/v1/protected")
+    wrong = client.get(
+        "/api/v1/protected",
+        headers={AUTH_COOKIE_COORDINATION_HEADER_NAME: "wrong-version"},
+    )
+    assert missing.status_code == 409
+    assert wrong.status_code == 409
+    assert "set-cookie" not in missing.headers
+    assert "set-cookie" not in wrong.headers
+    assert touches == []
+    assert csrf_values == []
+
+
 def test_cookie_logout_bypasses_hydration_and_csrf_but_keeps_outer_guards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -786,7 +845,10 @@ def test_cookie_logout_bypasses_hydration_and_csrf_but_keeps_outer_guards(
     app.add_middleware(AuthStubMiddleware, settings=settings)
     client = TestClient(app, base_url="https://mata.example.com")
     cookie_name = session_cookie_name(settings)
-    approved_origin = {"Origin": "https://mata.example.com"}
+    approved_origin = {
+        "Origin": "https://mata.example.com",
+        **COORDINATION_HEADERS,
+    }
 
     client.cookies.set(cookie_name, "active-child-cookie")
     stale_proof = client.post(
@@ -823,7 +885,7 @@ def test_cookie_logout_bypasses_hydration_and_csrf_but_keeps_outer_guards(
 
     assert stale_proof.status_code == 200
     assert stale_proof.json() == {"success": True}
-    assert "Max-Age=0" in stale_proof.headers["set-cookie"]
+    assert "set-cookie" not in stale_proof.headers
     assert matching_proof.status_code == 200
     assert matching_proof.json() == {"success": True}
     assert "Max-Age=0" in matching_proof.headers["set-cookie"]
@@ -888,7 +950,7 @@ def test_unsafe_cookie_request_requires_matching_csrf(
     ],
     ids=["invalidated", "store-error"],
 )
-def test_failed_post_response_touch_replaces_success_with_unauthorized(
+def test_failed_post_response_touch_rejects_without_clearing_shared_cookie(
     monkeypatch: pytest.MonkeyPatch,
     touch_result: bool,
     touch_error: Exception | None,
@@ -908,13 +970,13 @@ def test_failed_post_response_touch_replaces_success_with_unauthorized(
 
     assert response.status_code == 401
     assert response.json()["error_code"] == ErrorCode.UNAUTHORIZED.value
-    assert "Max-Age=0" in response.headers["set-cookie"]
+    assert "set-cookie" not in response.headers
     assert response.json() != {"role": "admin"}
     assert touches == [False, True]
     assert csrf_values == ["valid-csrf-token"]
 
 
-def test_unknown_session_and_session_store_failure_are_controlled_and_clear_cookie(
+def test_unknown_session_and_store_failure_do_not_clear_shared_cookie(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     missing_client, _, _ = _cookie_middleware_client(monkeypatch, resolved_session=None)
@@ -923,7 +985,7 @@ def test_unknown_session_and_session_store_failure_are_controlled_and_clear_cook
 
     assert unknown.status_code == 401
     assert unknown.json()["error_code"] == ErrorCode.UNAUTHORIZED.value
-    assert "Max-Age=0" in unknown.headers["set-cookie"]
+    assert "set-cookie" not in unknown.headers
 
     failing_client, _, _ = _cookie_middleware_client(
         monkeypatch,
@@ -935,7 +997,7 @@ def test_unknown_session_and_session_store_failure_are_controlled_and_clear_cook
     assert unavailable.status_code == 503
     assert "postgresql" not in unavailable.text
     assert "opaque-session-secret" not in unavailable.text
-    assert "Max-Age=0" in unavailable.headers["set-cookie"]
+    assert "set-cookie" not in unavailable.headers
 
 
 def test_cookie_mode_rejects_raw_identity_headers_and_authorization(
@@ -975,7 +1037,23 @@ def test_production_public_mutations_require_exact_origin_and_json(
 
     approved = client.post(
         "/api/v1/auth/login",
+        headers={
+            "Origin": "https://mata.example.com",
+            **COORDINATION_HEADERS,
+        },
+        json={"role": "resident", "mcr": "M10000A"},
+    )
+    missing_coordination = client.post(
+        "/api/v1/auth/login",
         headers={"Origin": "https://mata.example.com"},
+        json={"role": "resident", "mcr": "M10000A"},
+    )
+    wrong_coordination = client.post(
+        "/api/v1/auth/login",
+        headers={
+            "Origin": "https://mata.example.com",
+            AUTH_COOKIE_COORDINATION_HEADER_NAME: "wrong-version",
+        },
         json={"role": "resident", "mcr": "M10000A"},
     )
     missing_origin = client.post(
@@ -1000,17 +1078,26 @@ def test_production_public_mutations_require_exact_origin_and_json(
         headers={
             "Origin": "https://mata.example.com",
             "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": "content-type",
+            "Access-Control-Request-Headers": (
+                "content-type,x-mata-session-coordination"
+            ),
         },
     )
 
     assert approved.status_code == 200
+    assert missing_coordination.status_code == 409
+    assert wrong_coordination.status_code == 409
+    assert "set-cookie" not in missing_coordination.headers
+    assert "set-cookie" not in wrong_coordination.headers
     assert missing_origin.status_code == 403
     assert unapproved.status_code == 403
     assert "preview-attacker" not in unapproved.text
     assert wrong_content_type.status_code == 415
     assert preflight.status_code == 200
     assert preflight.headers["access-control-allow-origin"] == "https://mata.example.com"
+    assert AUTH_COOKIE_COORDINATION_HEADER_NAME.lower() in (
+        preflight.headers["access-control-allow-headers"].lower()
+    )
 
 
 def test_security_headers_no_store_and_trusted_host_contract() -> None:

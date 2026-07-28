@@ -3,10 +3,16 @@ import { frontendConfig } from '../config/frontendConfig'
 import { clearMemoryCache } from '../utils/memoryReadCache'
 import {
   clearAuthSession,
+  clearAuthSessionIfPresent,
   readAuthSessionEpoch,
   readAuthSessionRevision,
   readStoredAuthSession,
 } from './authSessionStore'
+import {
+  assertAuthCookieCoordinationAvailable,
+  AUTH_COOKIE_COORDINATION_HEADER_NAME,
+  AUTH_COOKIE_COORDINATION_PROTOCOL,
+} from './authCookieCoordination'
 import {
   applySessionRequestHeaders,
   handleUnauthorizedSessionResponse,
@@ -72,6 +78,22 @@ const headerValue = (headers: unknown, name: string): unknown => {
 
 httpClient.interceptors.request.use((request) => {
   request.headers = request.headers ?? {}
+  if (frontendConfig.authMode === 'supabase') {
+    try {
+      assertAuthCookieCoordinationAvailable()
+    } catch (error) {
+      clearAuthSessionIfPresent({
+        broadcast: 'unauthorized',
+        sessionEpoch: readAuthSessionEpoch(),
+      })
+      clearMemoryCache()
+      throw error
+    }
+    request.headers.set(
+      AUTH_COOKIE_COORDINATION_HEADER_NAME,
+      AUTH_COOKIE_COORDINATION_PROTOCOL,
+    )
+  }
   const storedSession = readStoredAuthSession()
   request.authSessionWasAuthenticated = storedSession !== null
   if (request.authSessionRevision === undefined) {

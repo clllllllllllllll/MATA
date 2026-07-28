@@ -104,7 +104,10 @@ The implementation slices were completed as follows:
 
 5. Middleware update.
    - Resolve normal production identity from the backend session cookie.
-   - `bearer_compat` is emergency-only and requires both explicit transport selection and the separate production rollback opt-in.
+   - Historical H-D `bearer_compat` required explicit transport selection and
+     a production rollback opt-in. H-E supersedes this: mandatory production
+     RLS requires cookie transport, so the current binary cannot enable the
+     compatibility path.
    - Preserve production rejection of raw `X-User-*` identity headers.
 
 6. Security controls.
@@ -180,8 +183,11 @@ End-to-end/manual tests:
 
 Rollback is emergency-only:
 
-- `bearer_compat` requires explicit transport selection plus the separate production rollback opt-in; it must be time-bounded and monitored.
-- If cookie mode breaks after deployment, restrict access while diagnosing and use the compatibility path only under the documented emergency authorization.
+- The legacy bearer rollback flag is not a current production switch. H-E
+  requires RLS and cookie transport.
+- If cookie mode breaks after deployment, restrict access while diagnosing and
+  use a coordinated application/database version rollback with forced
+  reauthentication; do not relax the current RLS requirement in place.
 - Revoke new backend sessions and clear cookies through logout/expiry response.
 - Rotate session-signing or encryption material if exposure is suspected.
 - Migration `20260722_000023` downgrade removes session state and generation columns and therefore requires an application rollback coordinated with forced reauthentication.

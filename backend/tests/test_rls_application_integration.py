@@ -531,7 +531,7 @@ def test_cookie_middleware_keeps_invalid_and_unexpected_failures_distinct(
     assert response.status_code == expected_status
     assert "database rejected" not in response.text
     assert "database connection" not in response.text
-    assert "Max-Age=0" in response.headers["set-cookie"]
+    assert "set-cookie" not in response.headers
 
 
 def _route(router, path: str, method: str) -> APIRoute:
@@ -603,4 +603,4 @@ def test_no_cookie_logout_uses_auth_boundary_and_remains_idempotent(
     assert response.json() == {"success": True}
     assert len(auth_boundary_factory.sessions) == 1
     assert auth_boundary_factory.sessions[0].commits == 0
-    assert "Max-Age=0" in response.headers["set-cookie"]
+    assert "set-cookie" not in response.headers

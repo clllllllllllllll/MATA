@@ -57,7 +57,7 @@ def _capability_role_row(*, inherits: bool) -> dict[str, bool]:
         "postgresql://owner:test@db.example.invalid:5432/"
         f"{DISPOSABLE_DATABASE_NAME}",
         "postgresql://owner:test@localhost:5432/mata_db",
-        "postgresql://localhost:5432/mata_phase5b_session_lifecycle_verify",
+        "postgresql://localhost:5432/mata_phase5b_security_integration_audit",
         "postgresql://owner:test@localhost:5432/"
         f"{DISPOSABLE_DATABASE_NAME}?host=db.example.invalid",
     ],

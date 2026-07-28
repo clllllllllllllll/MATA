@@ -14,7 +14,12 @@ Login, registration options, and Non-NHG registration are intentionally public a
 
 Normal production responses use the same-origin relative `/api/v1` path and credentialed cookie requests. The frontend holds only identity, session-bound CSRF, and a refresh hint in module memory. It stores no application access/refresh token and does not routinely send `Authorization: Bearer`.
 
-`bearer_compat` is retained only for emergency rollback and is disabled in production unless the separate rollback flag is enabled. The claim examples retained below document that fallback, not the normal H-D transport.
+`bearer_compat` is retained for non-production compatibility and historical
+claim documentation. It is not reachable in the current production
+configuration: production requires H-E RLS and RLS requires cookie transport.
+An emergency production rollback therefore requires a coordinated application
+and database version rollback plus forced reauthentication; the legacy flag
+alone cannot enable bearer transport.
 
 PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
 
@@ -315,7 +320,16 @@ Frontend-facing `data_revalidation` responses expose stable summary fields at th
 }
 ```
 
-In `AUTH_MODE=supabase`, protected browser requests use the opaque MATA application cookie. Staff Supabase JWTs are transient backend credential-verification proof only, and resident MATA JWTs are not normal browser application credentials. The backend reloads the active `users`, `residents`, or `external_residents` row, checks `session_generation`, and derives current role and scope on every protected request. Raw client headers, cookie contents, browser state, and Supabase `user_metadata` are not authorization sources. `bearer_compat` is retained only as an explicitly gated emergency rollback mode.
+In `AUTH_MODE=supabase`, protected browser requests use the opaque MATA
+application cookie. Staff Supabase JWTs are transient backend
+credential-verification proof only, and resident MATA JWTs are not normal
+browser application credentials. The backend reloads the active `users`,
+`residents`, or `external_residents` row, checks `session_generation`, and
+derives current role and scope on every protected request. Raw client headers,
+cookie contents, browser state, and Supabase `user_metadata` are not
+authorization sources. `bearer_compat` remains only as non-production and
+historical rollback compatibility; the current production/RLS configuration
+cannot enable it in place.
 
 5B-E staff accounts are generic role accounts. `users.name` is the account display name. `current_staff_actor_name` is a self-declared current human name used for audit/display context only; it never grants role, programme scope, admin level, or posting scope.
 

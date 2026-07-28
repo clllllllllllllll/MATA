@@ -17,7 +17,7 @@ from app.config import Settings
 from app.services.database_context import MataSyncSession
 
 
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_session_lifecycle_verify"
+DISPOSABLE_DATABASE_NAME = "mata_phase5b_security_integration_audit"
 RUNTIME_GROUP = "mata_app_runtime"
 AUTH_GROUP = "mata_auth_internal"
 REQUIRED_REVISION = "20260727_000027"

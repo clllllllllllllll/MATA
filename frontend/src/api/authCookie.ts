@@ -3,6 +3,7 @@ import type { AppRole } from '../types/app'
 import type { AuthIdentity, StoredAuthSession } from '../types/auth'
 import { httpClient, toApiRequestError } from './http'
 import type { ResidentLoginPayload } from './loginPayloads'
+import { withAuthCookieResponseLock } from './authCookieCoordination'
 import {
   parseNonNhgRegistrationOptions,
   type NonNhgRegistrationOptions,
@@ -61,6 +62,13 @@ const optionalString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
 
 const requiredString = (value: unknown): string => optionalString(value) ?? ''
+
+const withCookieResponseCoordination = <T>(
+  operation: () => Promise<T>,
+): Promise<T> =>
+  frontendConfig.authMode === 'supabase'
+    ? withAuthCookieResponseLock(operation)
+    : operation()
 
 export {
   announceAuthSessionEstablished,
@@ -146,8 +154,10 @@ const parseLoginOrHydrationResponse = (value: unknown): StoredAuthSession => {
 
 export const login = async (payload: LoginPayload): Promise<StoredAuthSession> => {
   try {
-    const response = await httpClient.post<unknown>('/auth/login', payload)
-    return parseLoginOrHydrationResponse(response.data)
+    return await withCookieResponseCoordination(async () => {
+      const response = await httpClient.post<unknown>('/auth/login', payload)
+      return parseLoginOrHydrationResponse(response.data)
+    })
   } catch (error) {
     throw toApiRequestError(error)
   }
@@ -160,8 +170,10 @@ export const loginStaff = (email: string, password: string): Promise<StoredAuthS
 
 export const refreshAuthSession = async (): Promise<StoredAuthSession> => {
   try {
-    const response = await httpClient.post<unknown>('/auth/session/refresh')
-    return parseAuthSessionResponse(response.data)
+    return await withCookieResponseCoordination(async () => {
+      const response = await httpClient.post<unknown>('/auth/session/refresh')
+      return parseAuthSessionResponse(response.data)
+    })
   } catch (error) {
     throw toApiRequestError(error)
   }
@@ -181,10 +193,12 @@ export const logoutAuthSession = async (
   fence: AuthSessionFence,
 ): Promise<void> => {
   try {
-    await httpClient.post('/auth/logout', undefined, {
-      authSessionCsrfToken: session.csrfToken,
-      authSessionEpoch: fence.sessionEpoch,
-      authSessionRevision: fence.revision,
+    await withCookieResponseCoordination(async () => {
+      await httpClient.post('/auth/logout', undefined, {
+        authSessionCsrfToken: session.csrfToken,
+        authSessionEpoch: fence.sessionEpoch,
+        authSessionRevision: fence.revision,
+      })
     })
   } catch (error) {
     throw toApiRequestError(error)

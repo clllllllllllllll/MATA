@@ -28,12 +28,26 @@ from app.services.app_sessions import (
 )
 from app.services.session_transport import (
     clear_session_cookie,
+    has_auth_cookie_coordination,
     session_cookie_name,
     set_session_cookie,
 )
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def _require_auth_cookie_coordination(
+    request: Request,
+    settings: Settings,
+) -> None:
+    if has_auth_cookie_coordination(request, settings=settings):
+        return
+    raise ApiError(
+        status_code=409,
+        detail="Browser session coordination required",
+        error_code=ErrorCode.CONFLICT.value,
+    )
 
 
 async def _persistent_login_rate_limit(
@@ -73,6 +87,7 @@ async def login(
     db: AsyncSession = Depends(get_auth_db_session),
     settings: Settings = Depends(get_settings),
 ) -> dict:
+    _require_auth_cookie_coordination(request, settings)
     if settings.auth_transport == "bearer_compat":
         return await auth_service.login(
             db,
@@ -160,6 +175,7 @@ async def refresh_session(
     db: AsyncSession = Depends(get_exclusive_db_session),
     settings: Settings = Depends(get_settings),
 ) -> SessionResponse | Response:
+    _require_auth_cookie_coordination(request, settings)
     app_session = getattr(request.state, "app_session", None)
     raw_session_token = getattr(request.state, "session_token", None)
     if app_session is None or not isinstance(raw_session_token, str):
@@ -186,13 +202,11 @@ async def refresh_session(
         )
     except AppSessionInvalidError:
         await db.rollback()
-        error_response = build_error_response(
-            status_code=401,
-            detail="Unauthorized",
-            error_code=ErrorCode.UNAUTHORIZED.value,
+        return build_error_response(
+            status_code=409,
+            detail="Session refresh conflicted with a newer lifecycle operation",
+            error_code=ErrorCode.CONFLICT.value,
         )
-        clear_session_cookie(error_response, settings=settings)
-        return error_response
     await db.commit()
     set_session_cookie(
         response,
@@ -213,9 +227,11 @@ async def logout(
     db: AsyncSession = Depends(get_logout_db_session),
     settings: Settings = Depends(get_settings),
 ) -> LogoutResponse:
+    _require_auth_cookie_coordination(request, settings)
     raw_session_token = request.cookies.get(session_cookie_name(settings))
+    revoked_count = 0
     if raw_session_token is not None:
-        await revoke_session_family_for_logout(
+        revoked_count = await revoke_session_family_for_logout(
             db,
             settings,
             session_token=raw_session_token,
@@ -223,7 +239,8 @@ async def logout(
             reason="logout",
         )
         await db.commit()
-    clear_session_cookie(response, settings=settings)
+    if revoked_count > 0:
+        clear_session_cookie(response, settings=settings)
     return LogoutResponse(success=True)
 
 

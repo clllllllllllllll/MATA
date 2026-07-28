@@ -33,7 +33,10 @@ from app.services.mata_resident_token import (
     verify_mata_resident_token,
 )
 from app.services.supabase_jwt import SupabaseJwtError, SupabaseJwtVerifier
-from app.services.session_transport import clear_session_cookie, session_cookie_name
+from app.services.session_transport import (
+    has_auth_cookie_coordination,
+    session_cookie_name,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -96,6 +99,11 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
                     detail="Unsupported media type",
                     error_code=ErrorCode.VALIDATION_FAILED.value,
                 )
+            if path == login_path and not has_auth_cookie_coordination(
+                request,
+                settings=self._settings,
+            ):
+                return self._coordination_required_response()
             return await call_next(request)
 
         if (
@@ -104,6 +112,12 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             or (request.method == "GET" and path == registration_options_path)
         ):
             return await call_next(request)
+
+        if not has_auth_cookie_coordination(
+            request,
+            settings=self._settings,
+        ):
+            return self._coordination_required_response()
 
         if not self._stub_header_auth_allowed() and self._has_raw_identity_headers(request):
             return self._unauthorized_response()
@@ -148,10 +162,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             return identity_or_error
 
         request.state.identity = identity_or_error
-        response = await call_next(request)
-        if response.status_code == 401:
-            clear_session_cookie(response, settings=self._settings)
-        return response
+        return await call_next(request)
 
     async def _dispatch_cookie_auth(self, request: Request, call_next) -> Response | None:
         if request.headers.get("Authorization") and not self._stub_header_auth_allowed():
@@ -162,9 +173,9 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
         if request.url.path == logout_path and request.method == "POST":
             # Logout is an identity-free auth-boundary operation. The route
             # validates the exact cookie/CSRF proof through the termination-only
-            # helper and always clears the presented browser cookie. Resolving
-            # or CSRF-validating the cookie here would reject a stale or raced
-            # proof before that idempotent route can run.
+            # helper and clears only after that proof revokes the presented
+            # family. Resolving or CSRF-validating the cookie here would reject
+            # rotated proof before that idempotent route can run.
             return await call_next(request)
 
         raw_session_token = request.cookies.get(session_cookie_name(self._settings))
@@ -191,26 +202,18 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
                     )
                 await session_db.commit()
         except AppSessionInvalidError:
-            response = self._unauthorized_response()
-            clear_session_cookie(response, settings=self._settings)
-            return response
+            return self._unauthorized_response()
         except Exception:
-            response = build_error_response(
+            return build_error_response(
                 status_code=503,
                 detail="Authentication service unavailable",
                 error_code=ErrorCode.INTERNAL_ERROR.value,
             )
-            clear_session_cookie(response, settings=self._settings)
-            return response
 
         if app_session is None:
-            response = self._unauthorized_response()
-            clear_session_cookie(response, settings=self._settings)
-            return response
+            return self._unauthorized_response()
         if csrf_validation == "invalid_session":
-            response = self._unauthorized_response()
-            clear_session_cookie(response, settings=self._settings)
-            return response
+            return self._unauthorized_response()
         if csrf_validation == "invalid_csrf":
             return self._forbidden_response()
 
@@ -256,7 +259,6 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
                     exc,
                     category="session_revocation",
                 )
-            clear_session_cookie(identity_or_error, settings=self._settings)
             return identity_or_error
 
         request.state.identity = identity_or_error
@@ -266,9 +268,7 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             request.state.authorization_fingerprint = authorization_fingerprint
 
         response = await call_next(request)
-        if response.status_code == 401:
-            clear_session_cookie(response, settings=self._settings)
-        elif (
+        if (
             is_unsafe_method(request.method)
             and 200 <= response.status_code < 300
             and request.url.path not in {logout_path, refresh_path}
@@ -295,7 +295,6 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
                 # a protected success payload after it proves that the session
                 # expired, was revoked, or otherwise became stale.
                 response = self._unauthorized_response()
-                clear_session_cookie(response, settings=self._settings)
         return response
 
     def _identity_from_rls_session(
@@ -708,6 +707,14 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             status_code=403,
             detail="Forbidden",
             error_code=ErrorCode.FORBIDDEN.value,
+        )
+
+    @staticmethod
+    def _coordination_required_response() -> Response:
+        return build_error_response(
+            status_code=409,
+            detail="Browser session coordination required",
+            error_code=ErrorCode.CONFLICT.value,
         )
 
     @staticmethod

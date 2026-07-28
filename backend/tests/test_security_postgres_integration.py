@@ -64,7 +64,7 @@ from app.services.staff_accounts import (
 
 SESSION_KEY = "postgres-session-integration-key-at-least-32-characters"
 RATE_KEY = "postgres-rate-integration-key-at-least-32-characters"
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_session_lifecycle_verify"
+DISPOSABLE_DATABASE_NAME = "mata_phase5b_security_integration_audit"
 EXPECTED_ALEMBIC_REVISION = "20260727_000027"
 CONCURRENCY_TIMEOUT_SECONDS = 10
 
@@ -1842,7 +1842,7 @@ async def test_local_rotated_logout_proof_expires_at_absolute_boundary(
 
 @pytest.mark.parametrize("csrf_token", (None, "not-base64url", "A" * 43))
 @pytest.mark.asyncio
-async def test_rotated_parent_logout_requires_exact_csrf_proof_but_still_clears(
+async def test_rotated_parent_logout_rejects_bad_proof_without_clearing_cookie(
     security_database: SecurityDatabase,
     csrf_token: str | None,
 ) -> None:
@@ -1901,10 +1901,7 @@ async def test_rotated_parent_logout_requires_exact_csrf_proof_but_still_clears(
             )
 
         assert result.success is True
-        assert any(
-            "Max-Age=0" in header
-            for header in response.headers.getlist("set-cookie")
-        )
+        assert response.headers.getlist("set-cookie") == []
         async with security_database.auth_session() as db:
             resolved_child = await resolve_session(
                 db,

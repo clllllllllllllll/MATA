@@ -36,7 +36,18 @@ References checked:
 - Rotation locks subject, family, and the database session row in a fixed order. `SELECT ... FOR UPDATE` plus `populate_existing=True` prevents stale SQLAlchemy identity-map state from bypassing the locked row.
 - Logout uses an auth-only termination helper with keyed token and CSRF digests. It derives the family server-side. Active proof must be before both deadlines; a parent revoked specifically as `rotated` remains termination-only proof until the immutable family absolute deadline even after its superseded idle deadline. Refresh-first races therefore still terminate the replacement without granting hydration, signed-context, touch, rotation, or refresh authority.
 - Cleanup retains a `rotated` parent as bounded logout proof until the immutable family absolute deadline, even after its superseded idle deadline or under shorter retention, and never makes a still-valid unrevoked child eligible.
-- `AUTH_TRANSPORT=bearer_compat` is emergency rollback only. Production also requires the explicit rollback flag and a minimum 32-byte resident signing secret.
+- `AUTH_TRANSPORT=bearer_compat` is retained for non-production compatibility
+  only in the current H-E configuration. Production requires RLS, and RLS
+  requires cookie transport, so the legacy rollback flag cannot enable it.
+  Production rollback requires a coordinated application/database version
+  rollback and forced reauthentication.
+- Every current production browser request carries
+  `X-MATA-Session-Coordination: web-locks-v1`. Login, refresh, and logout hold
+  one same-origin exclusive Web Lock through HTTP response completion so an
+  older response cannot overwrite or delete a newer fixed-name HttpOnly
+  cookie. Missing/wrong protocol requests fail without `Set-Cookie`; generic
+  authentication failures also leave the shared cookie untouched. Logout
+  clears it only when the presented token/CSRF proof revokes that family.
 - Migration `20260722_000024` revokes public/browser-role object privileges. Migrations `20260726_000025` and `20260726_000026` add the H-E role/context/helper foundation and full policy/grant cutover. Migration `20260727_000027` narrows the callable session helpers and makes signed RLS context reject an expired backing session.
 - Detailed implementation and evidence: `docs/5b_h_d_production_security_implementation.md`, `docs/5b_h_e_full_rls_implementation.md`, and `docs/5b_h_session_lifecycle_assurance.md`.
 
@@ -323,6 +334,12 @@ SUPABASE_JWT_AUDIENCE=authenticated
 VITE_APP_ENV=preview
 VITE_AUTH_MODE=supabase
 ```
+
+`preview:supabase` uses the same fixed-name cookie response coordination as
+production. The frontend must therefore run in a browser secure context
+(normally HTTPS, or localhost for development) with Web Locks support.
+Unsupported HTTP preview origins and embedded browsers without Web Locks fail
+closed before any API request; they are not supported Supabase-cookie clients.
 
 If a production-like demo/UAT mode is needed later, it must use both backend and frontend explicit flags and must not point at real production data:
 

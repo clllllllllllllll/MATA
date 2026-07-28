@@ -1,8 +1,34 @@
 from __future__ import annotations
 
+from starlette.requests import Request
 from starlette.responses import Response
 
 from app.config import Settings
+
+
+AUTH_COOKIE_COORDINATION_HEADER_NAME = "X-MATA-Session-Coordination"
+AUTH_COOKIE_COORDINATION_PROTOCOL = "web-locks-v1"
+
+
+def auth_cookie_coordination_required(settings: Settings) -> bool:
+    return (
+        settings.environment == "production"
+        and settings.auth_mode == "supabase"
+        and settings.auth_transport == "cookie"
+    )
+
+
+def has_auth_cookie_coordination(
+    request: Request,
+    *,
+    settings: Settings,
+) -> bool:
+    if not auth_cookie_coordination_required(settings):
+        return True
+    return (
+        request.headers.get(AUTH_COOKIE_COORDINATION_HEADER_NAME)
+        == AUTH_COOKIE_COORDINATION_PROTOCOL
+    )
 
 
 def session_cookie_name(settings: Settings) -> str:

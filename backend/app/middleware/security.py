@@ -11,6 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import Settings
 from app.middleware.errors import safe_unexpected_error_response
+from app.services.session_transport import AUTH_COOKIE_COORDINATION_HEADER_NAME
 
 
 _HOST_HEADER_PATTERN = re.compile(
@@ -38,6 +39,7 @@ def configure_cors(app: FastAPI, settings: Settings) -> None:
         "Accept",
         "Content-Type",
         settings.csrf_header_name,
+        AUTH_COOKIE_COORDINATION_HEADER_NAME,
         "X-Requested-With",
     ]
     if settings.auth_transport == "bearer_compat":

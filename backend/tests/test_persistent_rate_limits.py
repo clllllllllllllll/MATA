@@ -421,6 +421,31 @@ def test_auth_login_resident_roles_share_one_identifier_allowance(
         )
         == "staff:email:staff@example.com"
     )
+    staff_alias_payloads = [
+        {
+            "role": ("staff", "admin", "secretary")[attempt % 3],
+            "email": (
+                " Coordinator@Example.com "
+                if attempt % 2 == 0
+                else "coordinator@example.com"
+            ),
+            "password": "invalid-password",
+        }
+        for attempt in range(11)
+    ]
+    staff_identifiers = [
+        persistent_rate_limit_dependency._login_identifier(payload)
+        for payload in staff_alias_payloads
+    ]
+    staff_responses = [
+        client.post("/auth/login", json=payload)
+        for payload in staff_alias_payloads
+    ]
+
+    assert staff_identifiers == ["staff:email:coordinator@example.com"] * 11
+    assert [response.status_code for response in staff_responses[:10]] == [401] * 10
+    assert staff_responses[10].status_code == 429
+    assert staff_responses[10].headers["Retry-After"]
     assert "M90001Z" not in repr(session.rate_limit_rows)
 
 

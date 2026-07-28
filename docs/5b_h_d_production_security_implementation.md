@@ -30,7 +30,12 @@ Browser
 
 The browser does not persist or routinely send an application bearer token. Staff credentials are sent to the MATA backend; the backend mediates the Supabase password flow and creates a MATA session. Native and Non-NHG Resident MCR login also create the same kind of backend-owned application session while retaining separate subject tables.
 
-The normal production transport is `AUTH_TRANSPORT=cookie`. `bearer_compat` is an emergency rollback path only. Production rejects it unless the explicit rollback flag is also enabled; its resident HS256 secret must be at least 32 UTF-8 bytes and strict key-length enforcement is enabled.
+The normal production transport is `AUTH_TRANSPORT=cookie`. This historical
+H-D slice introduced a flag-gated `bearer_compat` rollback path, but H-E later
+made production RLS mandatory and RLS cookie-only. Consequently the current
+production configuration always rejects `bearer_compat`, including when the
+legacy rollback flag is set. A production rollback now requires a coordinated
+application/database version rollback and forced reauthentication.
 
 ## Cookie and CSRF contract
 
@@ -241,7 +246,12 @@ Required production names are documented without values:
 - `RATE_LIMIT_CLEANUP_RETENTION_SECONDS`
 - `RATE_LIMIT_CLEANUP_BATCH_SIZE`
 
-`MATA_ENABLE_PRODUCTION_BEARER_ROLLBACK` and `MATA_RESIDENT_SESSION_SECRET` are rollback-only. Frontend production configuration contains only `VITE_APP_ENV=production`, `VITE_AUTH_MODE=supabase`, and the relative API path; it requires no Supabase browser URL or key.
+`MATA_ENABLE_PRODUCTION_BEARER_ROLLBACK` and
+`MATA_RESIDENT_SESSION_SECRET` remain compatibility settings but cannot enable
+bearer transport in the current H-E production configuration. Frontend
+production configuration contains only `VITE_APP_ENV=production`,
+`VITE_AUTH_MODE=supabase`, and the relative API path; it requires no Supabase
+browser URL or key.
 
 ## Rollout and rollback
 
@@ -255,7 +265,11 @@ Deployment must be separately authorized and verified:
 6. exercise all five identities and the post-deployment checklist below;
 7. keep migration-owner recovery access separate from application runtime access.
 
-Rollback must not restore raw production header trust, weaken CSRF/CORS/cookies, or broadly restore database grants. Prefer reverting application code and revoking/clearing H-D sessions. Emergency bearer compatibility requires explicit owner action, the rollback flag, a minimum 32-byte resident secret, strict JWT key checks, and renewed access restriction until cookie mode is restored.
+Rollback must not restore raw production header trust, weaken
+CSRF/CORS/cookies, or broadly restore database grants. Revert application and
+database authorization versions as one reviewed operation, revoke H-D/H-E
+sessions, and force reauthentication. The current production binary cannot be
+switched to bearer compatibility with an environment flag.
 
 ## Post-deployment verification checklist
 

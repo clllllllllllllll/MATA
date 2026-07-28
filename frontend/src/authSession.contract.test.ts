@@ -328,6 +328,41 @@ test('login, hydration, rotation, logout, and staff actor updates use fenced bac
   )
 })
 
+test('production cookie mutation responses use one fail-closed cross-tab lock', () => {
+  const authSource = read('src/api/authCookie.ts')
+  const coordinationSource = read('src/api/authCookieCoordination.ts')
+  const httpSource = read('src/api/http.ts')
+  const loginBody = authSource.slice(
+    authSource.indexOf('export const login ='),
+    authSource.indexOf('export const loginResident'),
+  )
+  const refreshBody = authSource.slice(
+    authSource.indexOf('export const refreshAuthSession'),
+    authSource.indexOf('export const hydrateAuthSession'),
+  )
+  const logoutBody = authSource.slice(
+    authSource.indexOf('export const logoutAuthSession'),
+    authSource.indexOf('export const updateStaffActorName'),
+  )
+
+  for (const body of [loginBody, refreshBody, logoutBody]) {
+    assert.match(body, /withCookieResponseCoordination\(async \(\) =>/)
+  }
+  assert.match(
+    coordinationSource,
+    /window\.isSecureContext !== true[\s\S]*navigator\.locks/,
+  )
+  assert.match(
+    coordinationSource,
+    /AUTH_COOKIE_RESPONSE_LOCK_NAME,[\s\S]*mode: 'exclusive'[\s\S]*operation/,
+  )
+  assert.doesNotMatch(coordinationSource, /BroadcastChannel|localStorage/)
+  assert.match(
+    httpSource,
+    /assertAuthCookieCoordinationAvailable\(\)[\s\S]*request\.headers\.set\([\s\S]*AUTH_COOKIE_COORDINATION_HEADER_NAME,[\s\S]*AUTH_COOKIE_COORDINATION_PROTOCOL/,
+  )
+})
+
 test('production API requests are forced through the relative same-origin proxy', () => {
   const configSource = read('src/config/frontendConfig.ts')
   const environmentSource = read('src/config/frontendEnvironment.ts')

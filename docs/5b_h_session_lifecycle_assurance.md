@@ -349,6 +349,21 @@ identity/authority change advances them. An authenticated hydration 401
 terminates the store exactly once even though both the HTTP layer and context
 observe the failure.
 
+Supabase-cookie frontends additionally use a versioned browser coordination
+protocol. Every frontend request carries
+`X-MATA-Session-Coordination: web-locks-v1`; in production the backend rejects
+a missing/wrong protocol before protected hydration and emits no cookie
+mutation.
+Login, refresh, and logout acquire one same-origin exclusive Web Lock and hold
+it until the HTTP response completes, after the browser has applied any
+`Set-Cookie`. This orders fixed-name cookie responses across tabs. There is no
+`BroadcastChannel` or `localStorage` mutex fallback: an insecure context or
+missing Web Locks support fails before dispatch and clears local protected
+state. Generic 401/503/final-touch failures leave an inert or current shared
+cookie untouched. Refresh conflicts return a non-clearing 409. Logout clears
+only after the exact presented proof revokes its family, so an older logout
+cannot delete a newer login cookie.
+
 ## Cleanup
 
 Cleanup remains bounded, deterministic, retention-based, and independent of
@@ -400,11 +415,15 @@ named disposable verification database.
 
 ## Local verification target
 
-Accepted PostgreSQL evidence for this phase must use exactly:
+Historical lifecycle-commit PostgreSQL evidence used exactly:
 
 ```text
 mata_phase5b_session_lifecycle_verify
 ```
+
+The descendant combined integration audit uses only
+`mata_phase5b_security_integration_audit`; see
+`docs/5b_h_def_security_integration_audit.md`.
 
 Use fresh child processes, three distinct local credentials, and verify
 `current_database()` before every migration or destructive command. Never use

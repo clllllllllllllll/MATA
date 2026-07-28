@@ -8,6 +8,10 @@ from app.config import Settings, get_settings
 from app.dependencies.staff_actor import StaffActorContext, require_staff_actor
 from app.middleware import install_error_handlers
 from app.middleware.auth_stub import AuthStubMiddleware
+from app.services.session_transport import (
+    AUTH_COOKIE_COORDINATION_HEADER_NAME,
+    AUTH_COOKIE_COORDINATION_PROTOCOL,
+)
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.routers.admin import AdminContext, require_admin_context
 from app.services import auth as auth_service
@@ -108,6 +112,9 @@ def test_production_rejects_raw_identity_headers() -> None:
             "X-User-Id": "00000000-0000-0000-0000-000000000001",
             "X-User-Programme": "DR,GERI",
             "X-Admin-Level": "master",
+            AUTH_COOKIE_COORDINATION_HEADER_NAME: (
+                AUTH_COOKIE_COORDINATION_PROTOCOL
+            ),
         },
     )
 
