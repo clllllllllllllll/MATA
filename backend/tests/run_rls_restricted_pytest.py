@@ -1,7 +1,7 @@
 """Bootstrap ephemeral restricted PostgreSQL logins before pytest collection.
 
 Invoke from ``backend`` with ``SYNC_DATABASE_URL`` explicitly targeting
-``mata_phase5b_aud_m04_atomic_attendance_verify``:
+``mata_phase5b_m05_upload_limits_verify``:
 
 ``python -B -m tests.run_rls_restricted_pytest <pytest arguments>``
 """
@@ -24,7 +24,7 @@ from sqlalchemy.pool import NullPool
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_aud_m04_atomic_attendance_verify"
+DISPOSABLE_DATABASE_NAME = "mata_phase5b_m05_upload_limits_verify"
 POLICY_REVISION = "20260728_000028"
 RUNTIME_GROUP = "mata_app_runtime"
 AUTH_GROUP = "mata_auth_internal"

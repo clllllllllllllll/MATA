@@ -100,11 +100,11 @@ def validate_allowed_extension(upload_type: UploadType, filename: str | None) ->
 
 
 def _upload_limit_label(max_size_bytes: int) -> str:
-    max_size_mb = max_size_bytes / (1024 * 1024)
+    max_size_mib = max_size_bytes / (1024 * 1024)
     return (
-        f"{int(max_size_mb)} MB"
-        if max_size_mb.is_integer()
-        else f"{max_size_mb:.1f} MB"
+        f"{int(max_size_mib)} MiB"
+        if max_size_mib.is_integer()
+        else f"{max_size_mib:.1f} MiB"
     )
 
 

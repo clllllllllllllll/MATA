@@ -239,6 +239,9 @@ Required production names are documented without values:
 - `MATA_SESSION_CLEANUP_RETENTION_SECONDS`
 - `MATA_SESSION_CLEANUP_BATCH_SIZE`
 - `MATA_CSRF_HEADER_NAME`
+- `MAX_REQUEST_BODY_SIZE_MB`
+- `MAX_UPLOAD_REQUEST_SIZE_MB`
+- `MAX_UPLOAD_SIZE_MB`
 - `MATA_ALLOWED_HOSTS`
 - `CORS_ORIGINS`
 - `RATE_LIMIT_STORE`
@@ -302,3 +305,30 @@ pre-validation touch behavior. Current requests resolve without touching;
 only successful protected mutations qualify after CSRF/business validation,
 and normal refresh extends neither the parent's idle deadline nor the family
 absolute deadline.
+
+## AUD-M-05 descendant request-body perimeter
+
+The M-05 descendant adds a pure ASGI body counter outside authentication and
+multipart parsing. Defaults are 4 MiB globally and for complete
+`/api/v1/admin/upload/*` requests, with a 3 MiB per-file/parser limit that
+leaves room for multipart framing.
+Malformed/conflicting lengths fail with controlled `400`; known or streamed
+over-limit bodies fail with controlled no-store `413`. Exact-boundary bodies
+remain valid, and actual bytes are counted even when `Content-Length` is absent
+or false.
+
+The four upload routes additionally parse at most one file, only their
+route-specific number of non-file fields, 4 KiB per non-file field, and a
+255-byte UTF-8 filename before handler execution. Existing workbook, ZIP, XML,
+archive, authorization, CSRF, rate-limit, and redaction controls remain in
+force.
+
+The repository Nginx proxy mirrors the 4 MiB cap and disables request
+buffering for the normalized upload location. This is not deployed proof. The
+current Vercel Function path has a separate non-configurable 4.5 MB payload
+ceiling. The approved Vercel product contract is therefore 3 MiB per file
+inside a complete request capped at 4 MiB. Application enforcement does not
+replace that upstream boundary, and larger-file support requires a separately
+approved ingress that is not implemented here. See
+`5b_h_m05_upload_preparser_limits.md` for exact behavior and required deployed
+verification.

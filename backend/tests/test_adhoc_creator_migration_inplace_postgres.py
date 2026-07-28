@@ -39,6 +39,7 @@ ATOMIC_HELPER = (
     "time without time zone,numeric,uuid)"
 )
 _SAFE_IDENTIFIER = re.compile(r"[a-z][a-z0-9_]*")
+_EPHEMERAL_ROLE = re.compile(r"mata_test_(?:runtime|auth)_[0-9a-f]{16}")
 
 # Every other current model table must be empty before this deliberately
 # in-place schema lifecycle starts.
@@ -147,6 +148,18 @@ def _public_tables(connection: Connection) -> set[str]:
     }
 
 
+def _expected_restricted_runner_roles() -> set[str]:
+    expected: set[str] = set()
+    for variable_name in ("DATABASE_URL", "MATA_AUTH_DATABASE_URL"):
+        raw_url = os.environ.get(variable_name, "").strip()
+        if not raw_url:
+            continue
+        username = make_url(raw_url).username
+        if username and _EPHEMERAL_ROLE.fullmatch(username):
+            expected.add(username)
+    return expected
+
+
 def _assert_seed_only_head(connection: Connection) -> None:
     assert _revision(connection) == HEAD_REVISION
     model_tables = {table.name for table in Base.metadata.tables.values()}
@@ -160,15 +173,18 @@ def _assert_seed_only_head(connection: Connection) -> None:
     assert connection.scalar(
         text("SELECT count(*) FROM mata_private.context_signing_key")
     ) == 1
-    assert connection.scalar(
-        text(
-            r"""
-            SELECT count(*)
-            FROM pg_catalog.pg_roles
-            WHERE rolname LIKE 'mata\_test\_%' ESCAPE '\'
-            """
+    ephemeral_roles = set(
+        connection.scalars(
+            text(
+                r"""
+                SELECT rolname
+                FROM pg_catalog.pg_roles
+                WHERE rolname LIKE 'mata\_test\_%' ESCAPE '\'
+                """
+            )
         )
-    ) == 0
+    )
+    assert ephemeral_roles == _expected_restricted_runner_roles()
 
 
 def _assert_base(connection: Connection) -> None:

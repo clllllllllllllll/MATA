@@ -249,12 +249,14 @@ point-in-time classification or accepted evidence above.
 - Origin: H-D upload hardening.
 - Affected symbols: upload guard/multipart endpoints in the backend and the
   Nginx request-size/rate-limit configuration.
-- Execution path: `Content-Length` is checked when present, but Starlette may
-  parse/spool multipart bodies before the handler's 10 MiB reader. Chunked or
+- Historical execution path, superseded by the descendant resolution below:
+  `Content-Length` was checked when present, but Starlette could parse/spool
+  multipart bodies before the then-configured 10 MiB handler reader. Chunked or
   missing-length requests and multipart part counts can consume disk/I/O before
   the inner size check.
-- Impact: bounded but real local resource pressure. The 25 MiB proxy limit and
-  10/hour rate limit reduce, but do not remove, the risk.
+- Historical impact: bounded but real local resource pressure. The
+  then-configured 25 MiB proxy limit and 10/hour rate limit reduced, but did
+  not remove, the risk.
 - Prior test gap: tests begin after framework multipart parsing and do not
   exercise aggregate streaming bytes/parts.
 - Smallest safe correction: an outer streaming ASGI aggregate-byte/part guard
@@ -263,6 +265,18 @@ point-in-time classification or accepted evidence above.
   over-limit, disconnect, and normal upload cases.
 - Deferral reason: middleware streaming semantics and deployment proxy
   compatibility require a separately verified design.
+
+**Descendant resolution:** `CL/5b-h-m05-upload-preparser-limits` implements a
+pure ASGI boundary before authentication/multipart parsing, strict duplicate
+`Content-Length` handling, actual streamed-byte counting, bounded route-specific
+multipart parsing, and a reconciled Docker Nginx path. The approved Vercel
+contract is 4 MiB globally and per aggregate upload request, with a 3 MiB
+per-file limit that leaves multipart headroom. The historical classification
+and evidence above remain unchanged. The current Vercel Function topology's
+separate 4.5 MB platform ceiling remains an upstream boundary; larger-file
+support requires a separately approved ingress and is not implemented here.
+Implementation and deployed checks are in
+`docs/5b_h_m05_upload_preparser_limits.md`.
 
 #### AUD-M-06 — failed server logout is silently presented as complete
 

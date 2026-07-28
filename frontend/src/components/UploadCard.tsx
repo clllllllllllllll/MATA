@@ -2,6 +2,10 @@ import { useEffect, useMemo, useRef, useState, type DragEventHandler, type React
 import { StatusBadge } from './StatusBadge'
 import { getSummaryCounts, getWarningsCount } from '../utils/warnings'
 import { ApiRequestError } from '../api/http'
+import {
+  UPLOAD_FILE_SIZE_HELP_TEXT,
+  validateUploadFile,
+} from '../config/uploadLimits'
 import { IconCheck, IconWarn } from './icons'
 import { resolveUploadErrorMessage } from './uploadErrorMessages'
 import { resolveUploadCardAvailability, type UploadCardStatus } from './uploadCardLogic'
@@ -83,19 +87,6 @@ export const UploadCard = ({
     return () => window.clearInterval(timer)
   }, [status])
 
-  const validateFile = (candidate: File): string | null => {
-    const acceptedExtensions = accept
-      .split(',')
-      .map((entry) => entry.trim().toLowerCase())
-      .filter(Boolean)
-
-    const fileName = candidate.name.toLowerCase()
-    const isAllowed = acceptedExtensions.some((extension) => fileName.endsWith(extension))
-    return isAllowed
-      ? null
-      : `Invalid file type. Allowed: ${acceptedExtensions.join(', ')}`
-  }
-
   const handleFileChange = (selected: File | null) => {
     if (!selected) {
       setFile(null)
@@ -105,7 +96,7 @@ export const UploadCard = ({
       setUploadProgressPercent(0)
       return
     }
-    const validationError = validateFile(selected)
+    const validationError = validateUploadFile(selected, accept)
     if (validationError) {
       setErrorMessage(validationError)
       setErrorDetails(null)
@@ -198,9 +189,9 @@ export const UploadCard = ({
     }
     const kb = bytes / 1024
     if (kb < 1024) {
-      return `${kb.toFixed(1)} KB`
+      return `${kb.toFixed(1)} KiB`
     }
-    return `${(kb / 1024).toFixed(2)} MB`
+    return `${(kb / 1024).toFixed(2)} MiB`
   }
 
   const isLoadingState = status === 'uploading' || status === 'parsing'
@@ -241,9 +232,12 @@ export const UploadCard = ({
                 onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)}
               />
               {!file ? (
-                <span>
-                  Drop file here or <strong>Browse</strong>
-                </span>
+                <>
+                  <span>
+                    Drop file here or <strong>Browse</strong>
+                  </span>
+                  <small>{UPLOAD_FILE_SIZE_HELP_TEXT}</small>
+                </>
               ) : (
                 <div className="selected-file-chip">
                   <span>

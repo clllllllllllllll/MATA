@@ -168,8 +168,13 @@ retains or restores a stale session cookie.
 - Enforce server-side file validation on upload endpoints:
   - allowed extensions: `.xlsx` for RDB, TTF, FormF1; `.xlsx` or `.csv` for public holidays
   - validate MIME/content where practical
-  - enforce maximum upload size from config
+  - enforce the configured 4 MiB global and aggregate upload-request caps and the 3 MiB per-file cap
+  - allow at most one file and only the documented route fields; each non-file field is capped at 4 KiB and decoded filenames at 255 UTF-8 bytes
   - reject password-protected or unreadable workbooks with `422`
+- The pure ASGI body limiter runs before authentication and multipart parsing. It validates every observable `Content-Length` value and also counts actual streamed bytes, so missing or false-small lengths do not bypass the cap.
+- A malformed or conflicting `Content-Length` returns controlled `400`. A known or streamed body over the selected cap returns controlled `413` with `Cache-Control: no-store`; exact-boundary bodies are allowed.
+- Known oversized requests do not invoke the downstream parser. Unknown-length bodies may still be consumed or spooled up to the cap before the crossing chunk is rejected.
+- Application limits do not prevent buffering or earlier rejection by an ingress/provider. The approved Vercel contract is 3 MiB per file inside a complete request capped at 4 MiB; larger files require a separately approved ingress. See `5b_h_m05_upload_preparser_limits.md` for the Nginx rule, Vercel 4.5 MB platform constraint, and required deployed checks.
 - All write endpoints must be idempotent only where explicitly documented. Otherwise duplicate/conflict cases return `409`.
 
 ### SQL injection protection

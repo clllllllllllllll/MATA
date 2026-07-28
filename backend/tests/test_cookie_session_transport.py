@@ -1184,6 +1184,7 @@ def test_application_middleware_order_rejects_host_before_auth_and_wraps_all_err
         "StrictHostSyntaxMiddleware",
         "TrustedHostMiddleware",
         "CORSMiddleware",
+        "RequestBodyLimitMiddleware",
         "AuthStubMiddleware",
         "UploadGuardMiddleware",
         "RateLimitMiddleware",

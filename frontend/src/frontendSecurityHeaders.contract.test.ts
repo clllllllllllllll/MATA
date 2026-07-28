@@ -5,6 +5,11 @@ import { existsSync, readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+import {
+  MAX_REQUEST_BODY_SIZE_MIB,
+  MAX_UPLOAD_REQUEST_SIZE_MIB,
+} from './config/uploadLimits.ts'
+
 type VercelHeader = {
   key: string
   value: string
@@ -101,6 +106,33 @@ test('external font loading is removed and Nginx mirrors the core policy', () =>
   assert.match(nginx, /X-Permitted-Cross-Domain-Policies "none"/)
   assert.match(nginx, /proxy_set_header X-Forwarded-Host \$host/)
   assert.match(nginx, /proxy_no_cache 1/)
+})
+
+test('Nginx bounds request bodies before proxying upload streams', () => {
+  const nginx = read('../nginx.conf')
+  const firstLocationIndex = nginx.indexOf('location ')
+  const uploadLocationMatch = nginx.match(
+    /location \^~ \/api\/v1\/admin\/upload\/ \{([^{}]*)\}/,
+  )
+
+  assert.notEqual(firstLocationIndex, -1)
+  const serverDirectives = nginx.slice(0, firstLocationIndex)
+  assert.match(
+    serverDirectives,
+    new RegExp(`client_max_body_size\\s+${MAX_REQUEST_BODY_SIZE_MIB}m;`),
+  )
+  assert.ok(uploadLocationMatch)
+  const uploadLocation = uploadLocationMatch[1]
+  assert.match(
+    uploadLocation,
+    new RegExp(`client_max_body_size\\s+${MAX_UPLOAD_REQUEST_SIZE_MIB}m;`),
+  )
+  assert.match(uploadLocation, /proxy_request_buffering off;/)
+  assert.match(uploadLocation, /proxy_http_version 1\.1;/)
+  assert.match(
+    uploadLocation,
+    /proxy_pass http:\/\/backend:8000\/api\/v1\/admin\/upload\/;/,
+  )
 })
 
 test('the standard security contact file remains published', () => {

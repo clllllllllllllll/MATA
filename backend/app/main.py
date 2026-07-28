@@ -12,6 +12,7 @@ from app.errors import ErrorCode, build_error_response
 from app.middleware import (
     AuthStubMiddleware,
     RateLimitMiddleware,
+    RequestBodyLimitMiddleware,
     SecurityHeadersMiddleware,
     UploadGuardMiddleware,
     configure_cors,
@@ -58,10 +59,17 @@ def create_app() -> FastAPI:
 
     # Starlette wraps middleware in reverse registration order. Register from
     # innermost to outermost so the effective perimeter is:
-    # Security headers -> trusted host -> CORS -> auth -> upload -> rate limit.
+    # Security headers -> trusted host -> CORS -> body limit -> auth -> upload
+    # content type -> rate limit.
     app.add_middleware(RateLimitMiddleware, settings=settings)
     app.add_middleware(UploadGuardMiddleware, settings=settings)
     app.add_middleware(AuthStubMiddleware, settings=settings)
+    app.add_middleware(
+        RequestBodyLimitMiddleware,
+        global_limit_bytes=settings.max_request_body_size_bytes,
+        upload_limit_bytes=settings.max_upload_request_size_bytes,
+        api_prefix=settings.api_prefix,
+    )
     configure_cors(app, settings)
     configure_trusted_hosts(app, settings)
     # Added last so security/cache headers wrap middleware-generated auth and

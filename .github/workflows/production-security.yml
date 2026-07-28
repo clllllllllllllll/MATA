@@ -93,6 +93,9 @@ jobs:
           tests/test_admin_staff_accounts.py
           tests/test_security_postgres_integration.py
           tests/test_persistent_rate_limits.py
+          tests/test_request_body_limits.py
+          tests/test_upload_multipart_limits.py
+          tests/test_settings.py
           tests/test_workbook_security.py
           tests/test_security_redaction.py
           tests/test_error_responses.py

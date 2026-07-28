@@ -17,7 +17,7 @@ from app.config import Settings
 from app.services.database_context import MataSyncSession
 
 
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_aud_m04_atomic_attendance_verify"
+DISPOSABLE_DATABASE_NAME = "mata_phase5b_m05_upload_limits_verify"
 RUNTIME_GROUP = "mata_app_runtime"
 AUTH_GROUP = "mata_auth_internal"
 REQUIRED_REVISION = "20260728_000028"

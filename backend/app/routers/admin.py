@@ -22,6 +22,10 @@ from app.dependencies.staff_actor import (
 )
 from app.errors import ApiError, ErrorCode, UploadValidationApiError
 from app.middleware.auth_stub import AuthIdentity
+from app.routers.upload_multipart import (
+    BoundedAdminUploadRoute,
+    bounded_admin_upload,
+)
 from app.schemas import (
     AcademicMonthBoundaryResponse,
     AdminExternalAttendanceDetailResponse,
@@ -157,7 +161,11 @@ from app.services.public_holiday_parser import parse_public_holiday_upload
 from app.services.ttf_parser import TTFUploadLockError, parse_ttf_upload
 
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(
+    prefix="/admin",
+    tags=["admin"],
+    route_class=BoundedAdminUploadRoute,
+)
 RDB_RAW_MULTI_POSTING_FRAGMENT_RESPONSE_LIMIT = 50
 
 
@@ -1073,6 +1081,7 @@ async def reset_staff_account_password(
 
 
 @router.post("/upload/rdb")
+@bounded_admin_upload("/admin/upload/rdb")
 async def upload_rdb(
     file: UploadFile = File(...),
     reporting_period_id: UUID = Form(...),
@@ -1144,6 +1153,7 @@ async def upload_rdb(
 
 
 @router.post("/upload/ttf")
+@bounded_admin_upload("/admin/upload/ttf")
 async def upload_ttf(
     file: UploadFile = File(...),
     reporting_period_id: UUID = Form(...),
@@ -1219,6 +1229,7 @@ async def upload_ttf(
 
 
 @router.post("/upload/form-f1")
+@bounded_admin_upload("/admin/upload/form-f1")
 async def upload_formf1(
     file: UploadFile = File(...),
     reporting_period_id: UUID = Form(...),
@@ -1278,6 +1289,7 @@ async def upload_formf1(
 
 
 @router.post("/upload/public-holidays")
+@bounded_admin_upload("/admin/upload/public-holidays")
 async def upload_public_holidays(
     file: UploadFile = File(...),
     admin_context: AdminContext = Depends(require_master_admin_context),

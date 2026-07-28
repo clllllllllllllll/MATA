@@ -207,19 +207,31 @@ Residual risk: the store is in-memory and per process. This is acceptable for pr
 Current controls:
 
 - Upload endpoints are admin-only.
-- `UploadGuardMiddleware` enforces multipart content type and rejects `Content-Length` above `settings.max_upload_size_bytes` where the header is available.
-- Config default max upload size is 10 MB.
+- The AUD-M-05 descendant adds a pure ASGI boundary that enforces a 4 MiB
+  global and aggregate upload-request cap before
+  authentication or multipart parsing. It validates every observable
+  `Content-Length` value and independently counts streamed bytes, including
+  requests with absent or falsely small lengths.
+- `UploadGuardMiddleware` retains the upload-route multipart content-type
+  check. The per-file reader limit is 3 MiB, leaving multipart framing
+  headroom.
 - `parser_common.validate_upload_payload` enforces endpoint-specific extensions: RDB, TTF, and FormF1 accept `.xlsx`; Public Holidays accepts `.xlsx` and `.csv`.
 - `.xlsx` payloads go through an `openpyxl.load_workbook(read_only=True, data_only=True)` readability check before parser dispatch.
 - Password-protected/unreadable workbooks return a safe validation message.
 
-Required 5B-H-B fix:
+Historical 5B-H-B finding, now superseded:
 
-- Recheck actual byte length after `await file.read()` and before workbook/CSV parsing. This closes the gap where missing/misleading `Content-Length` skips the middleware size limit.
+- The audit required an actual-byte recheck after `await file.read()` and
+  before workbook/CSV parsing. The bounded streaming reader now performs this
+  check and rejects above 3 MiB before parser dispatch.
 
-Residual deferred risk:
+Historical archive finding, now superseded:
 
-- No deep ZIP member/XML bomb scanning was found. Protected UAT can proceed after byte-size fix, but broader production should add stronger workbook resource controls if upload surface becomes public or high-volume.
+- At that audit point, no deep ZIP member/XML bomb scanning was found. The
+  H-D descendant now enforces the compressed file cap, 100 MiB aggregate
+  expansion, 2,048 members, 20 MiB per expanded member, a 100:1 ratio ceiling,
+  and nested-archive, encrypted-entry, unsafe-name/relationship, and unsafe-XML
+  rejection. These controls remain in force under AUD-M-05.
 
 ## 11. Export and Formula-Injection Review
 
@@ -348,7 +360,9 @@ Deferred out of 5B-H-A/B/C or to later approved phases:
 - Production email/export productivity features.
 - Broad dependency upgrades.
 - Redis/platform rate-limit store unless UAT threat model changes.
-- Deep XLSX ZIP/XML bomb scanning beyond the immediate byte-size and readability controls.
+- Historical deferral, superseded by H-D: deep XLSX ZIP/XML/archive scanning
+  was outside this audit, but the descendant protections listed in Section 10
+  are now implemented.
 
 ## Verification Performed For This Audit
 

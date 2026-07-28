@@ -163,7 +163,9 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("MATA_CSRF_HEADER_NAME", "CSRF_HEADER_NAME"),
     )
 
-    max_upload_size_mb: int = 10
+    max_request_body_size_mb: int = 4
+    max_upload_request_size_mb: int = 4
+    max_upload_size_mb: int = 3
     upload_archive_max_uncompressed_bytes: int = 100 * 1024 * 1024
     upload_archive_max_entries: int = 2048
     upload_archive_max_entry_bytes: int = 20 * 1024 * 1024
@@ -215,6 +217,9 @@ class Settings(BaseSettings):
             "session touch interval": self.session_touch_interval_seconds,
             "session cleanup retention": self.session_cleanup_retention_seconds,
             "session cleanup batch size": self.session_cleanup_batch_size,
+            "request body size": self.max_request_body_size_mb,
+            "upload request size": self.max_upload_request_size_mb,
+            "upload file size": self.max_upload_size_mb,
             "upload archive total size": self.upload_archive_max_uncompressed_bytes,
             "upload archive entry count": self.upload_archive_max_entries,
             "upload archive entry size": self.upload_archive_max_entry_bytes,
@@ -226,6 +231,14 @@ class Settings(BaseSettings):
             raise ValueError(f"Security settings must be positive: {', '.join(invalid)}")
         if self.upload_archive_max_compression_ratio <= 1:
             raise ValueError("Upload archive compression ratio must be greater than 1")
+        if self.max_upload_size_mb >= self.max_upload_request_size_mb:
+            raise ValueError(
+                "Upload file size must be smaller than the upload request size"
+            )
+        if self.max_upload_request_size_mb > self.max_request_body_size_mb:
+            raise ValueError(
+                "Upload request size cannot exceed the global request body size"
+            )
         if self.staff_session_idle_timeout_seconds > self.staff_session_absolute_timeout_seconds:
             raise ValueError("Staff idle timeout cannot exceed the absolute timeout")
         if self.resident_session_idle_timeout_seconds > self.resident_session_absolute_timeout_seconds:
@@ -389,6 +402,18 @@ class Settings(BaseSettings):
         if self.environment != "production":
             return self
 
+        approved_request_limits = (4, 4, 3)
+        configured_request_limits = (
+            self.max_request_body_size_mb,
+            self.max_upload_request_size_mb,
+            self.max_upload_size_mb,
+        )
+        if configured_request_limits != approved_request_limits:
+            raise ValueError(
+                "Production request-body limits must match the approved "
+                "Vercel contract: 4 MiB global, 4 MiB aggregate upload, "
+                "and 3 MiB per file"
+            )
         if self.auth_mode != "supabase":
             raise ValueError("Production AUTH_MODE must be supabase")
         if not self.database_rls_enabled:
@@ -481,6 +506,14 @@ class Settings(BaseSettings):
             ):
                 raise ValueError("Production allowed hosts must be explicit deployment hosts")
         return self
+
+    @property
+    def max_request_body_size_bytes(self) -> int:
+        return self.max_request_body_size_mb * 1024 * 1024
+
+    @property
+    def max_upload_request_size_bytes(self) -> int:
+        return self.max_upload_request_size_mb * 1024 * 1024
 
     @property
     def max_upload_size_bytes(self) -> int:

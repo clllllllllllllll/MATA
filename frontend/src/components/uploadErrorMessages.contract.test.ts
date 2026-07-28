@@ -2,6 +2,7 @@ import {
   GENERIC_UPLOAD_VALIDATION_MESSAGE,
   resolveUploadErrorMessage,
 } from './uploadErrorMessages.ts'
+import { UPLOAD_REQUEST_SIZE_ERROR_MESSAGE } from '../config/uploadLimits.ts'
 
 const assertEqual = <T,>(actual: T, expected: T, label: string) => {
   if (actual !== expected) {
@@ -74,3 +75,14 @@ assertEqual(
 )
 assert(!multipleErrorMessage.includes('UPLOAD_VALIDATION_FAILED'), 'upload errors do not expose backend error codes')
 assert(!multipleErrorMessage.includes('f2f9d5e0'), 'upload errors do not expose UUID-like technical values')
+
+const oversizedError = {
+  message: 'Request failed with status code 413',
+  status: 413,
+  details: '<html>upstream payload rejection</html>',
+}
+assertEqual(
+  resolveUploadErrorMessage(oversizedError),
+  UPLOAD_REQUEST_SIZE_ERROR_MESSAGE,
+  'application or ingress 413 responses explain aggregate and file caps',
+)

@@ -371,4 +371,24 @@ from the approved target.
 
 Passing local AUD-M-04 suites is a prerequisite, not deployed proof.
 
+## Phase 5B-H AUD-M-05 Deployed Request-Limit Checks
+
+This descendant appendix does not rewrite historical UAT results. Local ASGI
+and Nginx tests are prerequisites, not evidence of the approved target.
+
+| Check | Required deployed result |
+|---|---|
+| Effective ingress cap | The approved ingress rejects above its configured limit before application parsing, with sanitized evidence and no request content in logs. |
+| Product/ingress agreement | The UI/API advertised file limit does not exceed the reachable deployed request limit after multipart overhead. |
+| Vercel topology decision | Verify the approved 3 MiB per-file and 4 MiB complete-request contract below the current 4.5 MB Function ceiling; no unsupported `vercel.json` control or larger-file ingress is claimed. |
+| Boundary behavior | Exact-boundary and boundary-plus-one requests behave as approved for global and upload paths. |
+| Streaming behavior | Missing and false-small `Content-Length` streams terminate at the configured boundary without an application retry loop. |
+| Same-origin route | `/api/v1/admin/upload/*` reaches the intended upload-specific ingress and ASGI rules without path rewriting drift. |
+| Response safety | Both upstream and application `413` behavior is reviewed for no-cache behavior and absence of internal/personal data; upstream HTML is not mistaken for the API envelope. |
+| Regression | Authentication, CSRF, upload rate limiting, valid uploads, ZIP/XML/archive checks, disconnect cleanup, and ordinary JSON/form requests remain correct. |
+| Slow-client control | Ingress request/header/body timeouts are separately approved and verified; the default Nginx inter-read timeout is not claimed as a total request deadline. |
+
+No live Vercel setting, Supabase project, remote database, or deployment was
+accessed or changed while producing M-05 evidence.
+
 PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED

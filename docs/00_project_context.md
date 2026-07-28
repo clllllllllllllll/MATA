@@ -990,6 +990,16 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
   ordinary direct ad-hoc insertion, another Resident, and the opposite storage
   family are denied. See `5b_h_aud_m04_atomic_attendance.md`.
 - **Session management:** Opaque 256-bit session and CSRF credentials; only keyed digests persist. Strict host-only cookie, synchronized CSRF, one-winner rotation, family logout, and generation fencing are implemented.
+- **Request-body perimeter:** AUD-M-05 adds a pure ASGI 4 MiB global body
+  cap and the same 4 MiB aggregate cap on same-origin
+  `/api/v1/admin/upload/*` before authentication or multipart parsing. Files
+  are capped at 3 MiB, leaving room for multipart framing;
+  multipart requests accept one file, route-specific field counts, 4 KiB
+  non-file parts, and 255-byte UTF-8 filenames. The Docker Nginx path mirrors
+  the aggregate limits and streams uploads. This approved contract remains
+  below the current Vercel Function path's separate 4.5 MB platform ceiling.
+  Larger-file support requires a separately approved upload ingress. See
+  `5b_h_m05_upload_preparser_limits.md`.
 
 > **⚠️ Most likely LLM mistake:** Storing JWT tokens in `localStorage`. The confirmed approach is `HttpOnly` cookies. The silent consequence is XSS vulnerability — any script injection can steal the token.
 
@@ -1014,6 +1024,7 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
 | Local verification versus deployment | Passing code/tests do not prove deployed environment, migrations, grants, or cookie behavior | Run the documented post-deployment smoke against the approved target |
 | Local H-E/lifecycle versus deployed RLS | A locally verified role/policy/session catalogue can be mistaken for deployed Supabase protection | Independently verify revision `20260727_000027`, lifecycle settings, credentials, ownership, policies, grants, helpers, PUBLIC/browser roles, expiry behavior, and five-role workflows on the approved target |
 | Local AUD-M-04 versus deployed RLS | Immutable ad-hoc ownership and atomic helper behavior may be mistaken for deployed protection | Independently verify revision `20260728_000028`, strict populated backfill, creator/family RLS, helper ACLs, rollback, and concurrency on the approved target |
+| Local AUD-M-05 versus deployed ingress | Application tests may be mistaken for proof that a provider enforces the same body limits before buffering | Verify the approved 3 MiB file and 4 MiB request contract, ingress buffering, timeout, same-origin path, response-cache behavior, and advertised upload size |
 | Emergency bearer compatibility | Routine enablement would reintroduce browser-token risk | Keep double opt-in, time-bounded, and rollback-only |
 
 See `99_decision_log_and_gap_audit.md` for the full risk register.

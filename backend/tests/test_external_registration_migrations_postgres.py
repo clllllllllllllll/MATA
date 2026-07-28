@@ -25,7 +25,7 @@ from app.config import Settings
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
 VERSIONS_DIR = BACKEND_ROOT / "alembic" / "versions"
-H_E_DISPOSABLE_DATABASE_NAME = "mata_phase5b_aud_m04_atomic_attendance_verify"
+H_E_DISPOSABLE_DATABASE_NAME = "mata_phase5b_m05_upload_limits_verify"
 _H_E_QUOTED_DATABASE_NAME = f'"{H_E_DISPOSABLE_DATABASE_NAME}"'
 _LOCAL_POSTGRES_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _SYNC_POSTGRES_DRIVERS = frozenset(

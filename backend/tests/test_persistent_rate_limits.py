@@ -25,7 +25,6 @@ def _settings() -> Settings:
     return Settings(
         environment="test",
         rate_limit_hash_secret="unit-test-rate-limit-hash-secret",
-        max_upload_size_mb=10,
         _env_file=None,
     )
 

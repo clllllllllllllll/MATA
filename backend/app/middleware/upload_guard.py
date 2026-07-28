@@ -17,29 +17,11 @@ class UploadGuardMiddleware(BaseHTTPMiddleware):
             f"{self._settings.api_prefix}/admin/upload/",
         ):
             content_type = (request.headers.get("content-type") or "").lower()
-            content_length = request.headers.get("content-length")
-
             if "multipart/form-data" not in content_type:
                 return build_error_response(
                     status_code=422,
                     detail="Invalid upload content type",
                     error_code=ErrorCode.FILE_VALIDATION_FAILED.value,
                 )
-
-            if content_length:
-                try:
-                    content_length_int = int(content_length)
-                except ValueError:
-                    return build_error_response(
-                        status_code=422,
-                        detail="Invalid upload content length",
-                        error_code=ErrorCode.FILE_VALIDATION_FAILED.value,
-                    )
-                if content_length_int > self._settings.max_upload_size_bytes:
-                    return build_error_response(
-                        status_code=413,
-                        detail="Uploaded file exceeds maximum allowed size",
-                        error_code=ErrorCode.FILE_VALIDATION_FAILED.value,
-                    )
 
         return await call_next(request)

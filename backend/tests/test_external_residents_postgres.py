@@ -52,7 +52,7 @@ APPROVED_TTSH_MAPPINGS = (
     ("MICROB", "TTSHLabMed"),
 )
 INACTIVE_TTSH_PROGRAMMES = ("FM", "PATH", "SPORTSMED", "PALLMED")
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_aud_m04_atomic_attendance_verify"
+DISPOSABLE_DATABASE_NAME = "mata_phase5b_m05_upload_limits_verify"
 EXPECTED_ALEMBIC_REVISION = "20260728_000028"
 
 

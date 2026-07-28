@@ -128,6 +128,9 @@ The backend runs on `http://localhost:8000` and the frontend on `http://localhos
 | `MATA_SESSION_CLEANUP_RETENTION_SECONDS` | Retention after revocation/effective expiry before cleanup eligibility | `604800` |
 | `MATA_SESSION_CLEANUP_BATCH_SIZE` | Maximum rows deleted by one cleanup call | `500` |
 | `MATA_CSRF_HEADER_NAME` | Synchronizer-token request header | `X-CSRF-Token` |
+| `MAX_REQUEST_BODY_SIZE_MB` | Hard application cap for every HTTP request body | `4` |
+| `MAX_UPLOAD_REQUEST_SIZE_MB` | Aggregate multipart cap for `/admin/upload/*` requests | `4` |
+| `MAX_UPLOAD_SIZE_MB` | Per-file reader/workbook cap; must be lower than the upload-request cap | `3` |
 | `RATE_LIMIT_STORE` | `postgres` is required in production | `memory` |
 | `RATE_LIMIT_HASH_SECRET` | Backend-only HMAC secret; minimum 32 characters | `<backend-only-random-value>` |
 | `MATA_RESIDENT_SESSION_SECRET` | Rollback-only bearer compatibility secret; minimum 32 UTF-8 bytes | `<rollback-only-placeholder>` |
@@ -258,7 +261,7 @@ alembic downgrade -1
 
 ## Project Status
 
-MATA remains in active phased development. Phase 5B-H-D session transport hardening, Phase 5B-H-E full PostgreSQL RLS, and the focused session-lifecycle assurance work are implemented locally; see `docs/5b_h_d_production_security_implementation.md`, `docs/5b_h_e_full_rls_implementation.md`, and `docs/5b_h_session_lifecycle_assurance.md`. Phase 6 compliance remains separate. Local code completion is not proof that migrations, roles, policies, grants, lifecycle settings, or configuration are deployed to Vercel/Supabase.
+MATA remains in active phased development. Phase 5B-H-D session transport hardening, Phase 5B-H-E full PostgreSQL RLS, the focused session-lifecycle assurance work, atomic attendance, and AUD-M-05 pre-parser request limits are implemented locally; see `docs/5b_h_d_production_security_implementation.md`, `docs/5b_h_e_full_rls_implementation.md`, `docs/5b_h_session_lifecycle_assurance.md`, `docs/5b_h_aud_m04_atomic_attendance.md`, and `docs/5b_h_m05_upload_preparser_limits.md`. The approved Vercel product contract caps each uploaded file at 3 MiB and the complete multipart or other request body at 4 MiB, below the platform's separate 4.5 MB Function ceiling. Larger-file support requires a separately approved ingress and is not implemented here. Phase 6 compliance remains separate. Local code completion is not proof that migrations, roles, policies, grants, lifecycle settings, request limits, or configuration are deployed to Vercel/Supabase.
 
 ---
 
