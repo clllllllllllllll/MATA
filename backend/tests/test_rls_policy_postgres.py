@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -12,8 +13,10 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.pool import NullPool
 
+from app.services import resident_submission
 from tests.rls_postgres_harness import (
     RUNTIME_GROUP,
     RlsPostgresHarness,
@@ -149,6 +152,58 @@ async def _scalar_set(
 ) -> set[Any]:
     result = await db.scalars(text(statement), dict(parameters or {}))
     return set(result.all())
+
+
+async def _wait_for_matching_advisory_lock(
+    harness: RlsPostgresHarness,
+    *,
+    holder_pid: int,
+    waiter_pid: int,
+    blocked_task: asyncio.Task[Any],
+) -> None:
+    async def _poll() -> None:
+        async with harness.owner_session() as db:
+            while True:
+                matching_lock = await db.scalar(
+                    text(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM pg_catalog.pg_locks AS holder
+                            JOIN pg_catalog.pg_locks AS waiter
+                              ON waiter.locktype = holder.locktype
+                             AND waiter.database
+                                 IS NOT DISTINCT FROM holder.database
+                             AND waiter.classid
+                                 IS NOT DISTINCT FROM holder.classid
+                             AND waiter.objid
+                                 IS NOT DISTINCT FROM holder.objid
+                             AND waiter.objsubid
+                                 IS NOT DISTINCT FROM holder.objsubid
+                            WHERE holder.pid = :holder_pid
+                              AND waiter.pid = :waiter_pid
+                              AND holder.locktype = 'advisory'
+                              AND holder.granted
+                              AND NOT waiter.granted
+                        )
+                        """
+                    ),
+                    {
+                        "holder_pid": holder_pid,
+                        "waiter_pid": waiter_pid,
+                    },
+                )
+                if matching_lock:
+                    return
+                if blocked_task.done():
+                    await blocked_task
+                    pytest.fail(
+                        "Scheduled submission did not wait on the "
+                        "ad-hoc helper's advisory lock",
+                        pytrace=False,
+                    )
+
+    await asyncio.wait_for(_poll(), timeout=10)
 
 
 @asynccontextmanager
@@ -290,7 +345,7 @@ async def _issue_context(
 async def policy_harness(
     rls_postgres_harness: RlsPostgresHarness,
 ) -> AsyncIterator[RlsPostgresHarness]:
-    assert rls_postgres_harness.revision == "20260727_000027"
+    assert rls_postgres_harness.revision == "20260728_000028"
     yield rls_postgres_harness
 
 
@@ -305,6 +360,7 @@ async def policy_seed(
         "posting_a": f"RLSA{suffix}",
         "posting_b": f"RLSB{suffix}",
         "keyword": f"RLS Policy Teaching {suffix}",
+        "session_name": f"RLS Session {suffix}",
         "holiday_date": date(2199, 1, 1)
         + timedelta(days=int(suffix, 16) % 365),
     }
@@ -327,12 +383,16 @@ async def policy_seed(
         "secretary_supabase_id",
         "resident_a_id",
         "resident_b_id",
+        "resident_peer_id",
         "external_a_id",
         "external_b_id",
+        "external_peer_id",
         "resident_posting_a_id",
         "resident_posting_b_id",
+        "resident_posting_peer_id",
         "external_posting_a_id",
         "external_posting_b_id",
+        "external_posting_peer_id",
         "catalogue_a_id",
         "catalogue_b_id",
         "catalogue_cross_id",
@@ -354,8 +414,10 @@ async def policy_seed(
         values[key] = uuid4()
     values["resident_a_mcr"] = f"RLNA{suffix}"
     values["resident_b_mcr"] = f"RLNB{suffix}"
+    values["resident_peer_mcr"] = f"RLNP{suffix}"
     values["external_a_mcr"] = f"RLEA{suffix}"
     values["external_b_mcr"] = f"RLEB{suffix}"
+    values["external_peer_mcr"] = f"RLEP{suffix}"
 
     async with policy_harness.owner_session() as db:
         await db.execute(
@@ -424,7 +486,7 @@ async def policy_seed(
                 VALUES (:session_type_id, :name, 1.00, '1h')
                 """
             ),
-            {**values, "name": f"RLS Session {suffix}"},
+            {**values, "name": values["session_name"]},
         )
         await db.execute(
             text(
@@ -488,6 +550,10 @@ async def policy_seed(
                     (
                         :resident_b_id, 'RLS Native B', :resident_b_mcr,
                         :programme_b, 'R1', 'active', 0
+                    ),
+                    (
+                        :resident_peer_id, 'RLS Native Peer',
+                        :resident_peer_mcr, :programme_a, 'R1', 'active', 0
                     )
                 """
             ),
@@ -508,6 +574,10 @@ async def policy_seed(
                     (
                         :external_b_id, 'RLS External B', :external_b_mcr,
                         'SingHealth', :posting_b, 'active', 0
+                    ),
+                    (
+                        :external_peer_id, 'RLS External Peer',
+                        :external_peer_mcr, 'NUH', :posting_a, 'active', 0
                     )
                 """
             ),
@@ -530,6 +600,11 @@ async def policy_seed(
                         :resident_posting_b_id, :resident_b_id, :posting_b,
                         :period_id, DATE '2035-01-01', DATE '2035-12-31',
                         'R1', 'active'
+                    ),
+                    (
+                        :resident_posting_peer_id, :resident_peer_id,
+                        :posting_a, :period_id, DATE '2035-01-01',
+                        DATE '2035-12-31', 'R1', 'active'
                     )
                 """
             ),
@@ -552,6 +627,11 @@ async def policy_seed(
                         :external_posting_b_id, :external_b_id, :posting_b,
                         :programme_b, DATE '2035-01-01', DATE '2035-12-31',
                         true
+                    ),
+                    (
+                        :external_posting_peer_id, :external_peer_id,
+                        :posting_a, :programme_a, DATE '2035-01-01',
+                        DATE '2035-12-31', true
                     )
                 """
             ),
@@ -747,11 +827,25 @@ async def policy_seed(
             normalized_mcr=values["resident_a_mcr"],
             session_generation=0,
         )
+        contexts["resident_peer"] = await _issue_context(
+            policy_harness,
+            subject_type="resident",
+            subject_id=values["resident_peer_id"],
+            normalized_mcr=values["resident_peer_mcr"],
+            session_generation=0,
+        )
         contexts["external"] = await _issue_context(
             policy_harness,
             subject_type="external_resident",
             subject_id=values["external_a_id"],
             normalized_mcr=values["external_a_mcr"],
+            session_generation=0,
+        )
+        contexts["external_peer"] = await _issue_context(
+            policy_harness,
+            subject_type="external_resident",
+            subject_id=values["external_peer_id"],
+            normalized_mcr=values["external_peer_mcr"],
             session_generation=0,
         )
         yield PolicyMatrixSeed(contexts=contexts, values=values)
@@ -767,8 +861,10 @@ async def policy_seed(
                     "secretary_id",
                     "resident_a_id",
                     "resident_b_id",
+                    "resident_peer_id",
                     "external_a_id",
                     "external_b_id",
+                    "external_peer_id",
                 )
             ]
             await db.execute(
@@ -803,17 +899,28 @@ async def policy_seed(
                 ("multi_posting_rules", ("rule_a_id", "rule_b_id")),
                 (
                     "external_resident_postings",
-                    ("external_posting_a_id", "external_posting_b_id"),
+                    (
+                        "external_posting_a_id",
+                        "external_posting_b_id",
+                        "external_posting_peer_id",
+                    ),
                 ),
                 (
                     "resident_postings",
-                    ("resident_posting_a_id", "resident_posting_b_id"),
+                    (
+                        "resident_posting_a_id",
+                        "resident_posting_b_id",
+                        "resident_posting_peer_id",
+                    ),
                 ),
                 (
                     "external_residents",
-                    ("external_a_id", "external_b_id"),
+                    ("external_a_id", "external_b_id", "external_peer_id"),
                 ),
-                ("residents", ("resident_a_id", "resident_b_id")),
+                (
+                    "residents",
+                    ("resident_a_id", "resident_b_id", "resident_peer_id"),
+                ),
                 (
                     "users",
                     (
@@ -1508,11 +1615,15 @@ async def test_native_resident_owns_only_native_rows_and_attendance_mutation(
             text(
                 """
                 INSERT INTO attendance_records (
-                    id, resident_id, teaching_event_id, status, posting_code
+                    id, resident_id, teaching_event_id, status, posting_code,
+                    submitted_at, created_at, updated_at
                 )
                 VALUES (
                     :id, :resident_id, :event_id, 'submitted',
-                    :posting_code
+                    :posting_code,
+                    TIMESTAMPTZ '2000-01-01 00:00:00+00',
+                    TIMESTAMPTZ '2000-01-01 00:00:00+00',
+                    TIMESTAMPTZ '2000-01-01 00:00:00+00'
                 )
                 RETURNING id
                 """
@@ -1525,18 +1636,32 @@ async def test_native_resident_owns_only_native_rows_and_attendance_mutation(
             },
         )
         assert inserted == action_id
+        assert await db.scalar(
+            text(
+                """
+                SELECT
+                    submitted_at = created_at
+                    AND created_at = updated_at
+                    AND submitted_at
+                        > TIMESTAMPTZ '2000-01-01 00:00:00+00'
+                FROM attendance_records
+                WHERE id = :id
+                """
+            ),
+            {"id": action_id},
+        ) is True
         updated = await db.scalar(
             text(
                 """
                 UPDATE attendance_records
-                SET status = 'confirmed'
+                SET status = 'removed'
                 WHERE id = :id
                 RETURNING status
                 """
             ),
             {"id": action_id},
         )
-        assert updated == "confirmed"
+        assert updated == "removed"
         await _assert_permission_denied(
             db,
             """
@@ -1558,7 +1683,7 @@ async def test_native_resident_owns_only_native_rows_and_attendance_mutation(
             text(
                 """
                 UPDATE attendance_records
-                SET status = 'confirmed'
+                SET status = 'flagged'
                 WHERE id = :id
                 """
             ),
@@ -1573,7 +1698,7 @@ async def test_native_resident_owns_only_native_rows_and_attendance_mutation(
         assert await db.scalar(
             text("SELECT status FROM attendance_records WHERE id = :id"),
             {"id": action_id},
-        ) == "confirmed"
+        ) == "removed"
 
 
 @pytest.mark.asyncio
@@ -1645,11 +1770,14 @@ async def test_external_resident_owns_only_external_rows_and_attendance_mutation
                 """
                 INSERT INTO external_attendance_records (
                     id, external_resident_id, teaching_event_id,
-                    status, posting_code
+                    status, posting_code, submitted_at, created_at, updated_at
                 )
                 VALUES (
                     :id, :external_resident_id, :event_id,
-                    'submitted', :posting_code
+                    'submitted', :posting_code,
+                    TIMESTAMPTZ '2000-01-01 00:00:00+00',
+                    TIMESTAMPTZ '2000-01-01 00:00:00+00',
+                    TIMESTAMPTZ '2000-01-01 00:00:00+00'
                 )
                 RETURNING id
                 """
@@ -1662,18 +1790,32 @@ async def test_external_resident_owns_only_external_rows_and_attendance_mutation
             },
         )
         assert inserted == action_id
+        assert await db.scalar(
+            text(
+                """
+                SELECT
+                    submitted_at = created_at
+                    AND created_at = updated_at
+                    AND submitted_at
+                        > TIMESTAMPTZ '2000-01-01 00:00:00+00'
+                FROM external_attendance_records
+                WHERE id = :id
+                """
+            ),
+            {"id": action_id},
+        ) is True
         updated = await db.scalar(
             text(
                 """
                 UPDATE external_attendance_records
-                SET status = 'confirmed'
+                SET status = 'removed'
                 WHERE id = :id
                 RETURNING status
                 """
             ),
             {"id": action_id},
         )
-        assert updated == "confirmed"
+        assert updated == "removed"
         await _assert_permission_denied(
             db,
             """
@@ -1697,7 +1839,7 @@ async def test_external_resident_owns_only_external_rows_and_attendance_mutation
             text(
                 """
                 UPDATE external_attendance_records
-                SET status = 'confirmed'
+                SET status = 'flagged'
                 WHERE id = :id
                 """
             ),
@@ -1718,4 +1860,904 @@ async def test_external_resident_owns_only_external_rows_and_attendance_mutation
                 """
             ),
             {"id": action_id},
-        ) == "confirmed"
+        ) == "removed"
+
+
+@pytest.mark.asyncio
+async def test_atomic_adhoc_and_scheduled_submission_share_canonical_lock(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = policy_seed.values
+    event_date = date(2035, 3, 6)
+    scheduled_task: asyncio.Task[dict[str, Any]] | None = None
+    waiter_pid_ready = asyncio.Event()
+    waiter_pid: int | None = None
+    waiter_engine = create_async_engine(
+        policy_harness.runtime_engine.url,
+        poolclass=NullPool,
+    )
+    waiter_harness = RlsPostgresHarness(
+        owner_engine=policy_harness.owner_engine,
+        runtime_engine=waiter_engine,
+        auth_engine=policy_harness.auth_engine,
+        runtime_role=policy_harness.runtime_role,
+        auth_role=policy_harness.auth_role,
+        revision=policy_harness.revision,
+    )
+    monkeypatch.setattr(
+        resident_submission,
+        "invalidate_resident_caches",
+        lambda **_scope: None,
+    )
+
+    async def submit_scheduled() -> dict[str, Any]:
+        nonlocal waiter_pid
+        async with _runtime_context(
+            waiter_harness,
+            policy_seed.contexts["resident"],
+        ) as scheduled_db:
+            waiter_pid = int(
+                await scheduled_db.scalar(text("SELECT pg_backend_pid()"))
+            )
+            waiter_pid_ready.set()
+            return await resident_submission.submit_attendance(
+                scheduled_db,
+                resident_id=values["resident_a_id"],
+                event_ids=[values["event_action_a_id"]],
+                today=event_date,
+            )
+
+    try:
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["resident"],
+        ) as helper_db:
+            holder_pid = int(
+                await helper_db.scalar(text("SELECT pg_backend_pid()"))
+            )
+            created = (
+                await helper_db.execute(
+                    text(
+                        """
+                        SELECT event_id, attendance_id
+                        FROM mata_rls.create_adhoc_attendance(
+                            :posting_code,
+                            :attended_posting_code,
+                            :attended_teaching_name,
+                            :teaching_name,
+                            NULL,
+                            :event_date,
+                            TIME '10:00',
+                            TIME '11:00',
+                            1.00,
+                            :session_type_id
+                        )
+                        """
+                    ),
+                    {
+                        "posting_code": values["posting_a"],
+                        "attended_posting_code": values["posting_a"],
+                        "attended_teaching_name": values["keyword"],
+                        "teaching_name": values["session_name"],
+                        "event_date": event_date,
+                        "session_type_id": values["session_type_id"],
+                    },
+                )
+            ).mappings().one()
+            assert created["event_id"] is not None
+            assert created["attendance_id"] is not None
+
+            scheduled_task = asyncio.create_task(submit_scheduled())
+            await asyncio.wait_for(waiter_pid_ready.wait(), timeout=10)
+            assert waiter_pid is not None
+            await _wait_for_matching_advisory_lock(
+                policy_harness,
+                holder_pid=holder_pid,
+                waiter_pid=waiter_pid,
+                blocked_task=scheduled_task,
+            )
+            assert not scheduled_task.done()
+            await helper_db.rollback()
+
+        outcome = await asyncio.wait_for(scheduled_task, timeout=10)
+        assert outcome["submitted"] == 1
+        assert len(outcome["submitted_events"]) == 1
+        assert str(outcome["submitted_events"][0]["id"]) == str(
+            values["event_action_a_id"]
+        )
+    finally:
+        if scheduled_task is not None and not scheduled_task.done():
+            scheduled_task.cancel()
+            await asyncio.gather(scheduled_task, return_exceptions=True)
+        await waiter_engine.dispose()
+        async with policy_harness.owner_session() as owner_db:
+            await owner_db.execute(
+                text(
+                    """
+                    DELETE FROM attendance_records
+                    WHERE resident_id = :resident_id
+                      AND teaching_event_id = :event_id
+                    """
+                ),
+                {
+                    "resident_id": values["resident_a_id"],
+                    "event_id": values["event_action_a_id"],
+                },
+            )
+            await owner_db.commit()
+
+
+@pytest.mark.asyncio
+async def test_adhoc_creator_and_storage_family_are_database_owned(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+) -> None:
+    values = policy_seed.values
+    native_event_id: UUID | None = None
+    native_attendance_id: UUID | None = None
+    external_event_id: UUID | None = None
+    external_attendance_id: UUID | None = None
+    holiday_id = uuid4()
+    alternate_catalogue_id = uuid4()
+    ambiguous_period_id = uuid4()
+    holiday_date = date(2035, 6, 1) + timedelta(
+        days=values["resident_a_id"].int % 20
+    )
+    alternate_keyword = f"{values['keyword']} alternate"
+    rollback_constraint = (
+        f"ck_rls_adhoc_rollback_{str(values['resident_peer_id']).replace('-', '')}"
+    )
+
+    async def assert_write_denied(
+        db: AsyncSession,
+        statement: str,
+        parameters: Mapping[str, object],
+        *,
+        sqlstates: set[str],
+    ) -> None:
+        with pytest.raises(DBAPIError) as caught:
+            async with db.begin_nested():
+                await db.execute(text(statement), dict(parameters))
+        assert _sqlstate(caught.value) in sqlstates
+
+    try:
+        async with policy_harness.owner_session() as owner_db:
+            await owner_db.execute(
+                text(
+                    """
+                    INSERT INTO public_holidays (
+                        id, holiday_date, name, day_of_week, year
+                    )
+                    VALUES (
+                        :id, :holiday_date, 'Ad-hoc helper boundary',
+                        'Monday', 2035
+                    )
+                    """
+                ),
+                {"id": holiday_id, "holiday_date": holiday_date},
+            )
+            await owner_db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_catalogue (
+                        id, keyword, session_type_id, posting_code,
+                        programme_code, r_year, reporting_period_id,
+                        duration_hours, is_tracked
+                    )
+                    VALUES (
+                        :id, :keyword, :session_type_id, :posting_code,
+                        :programme_code, 'R1', :period_id, 1.00, true
+                    )
+                    """
+                ),
+                {
+                    "id": alternate_catalogue_id,
+                    "keyword": alternate_keyword,
+                    "session_type_id": values["session_type_id"],
+                    "posting_code": values["posting_b"],
+                    "programme_code": values["programme_b"],
+                    "period_id": values["period_id"],
+                },
+            )
+            await owner_db.commit()
+
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["resident"],
+        ) as db:
+            created = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT event_id, attendance_id
+                        FROM mata_rls.create_adhoc_attendance(
+                            CAST(:posting_code AS text),
+                            CAST(:attended_posting_code AS text),
+                            CAST(:attended_teaching_name AS text),
+                            CAST(:teaching_name AS text),
+                            CAST(:details AS text),
+                            DATE '2035-04-01',
+                            TIME '09:00',
+                            TIME '10:00',
+                            CAST(1.00 AS numeric),
+                            CAST(:session_type_id AS uuid)
+                        )
+                        """
+                    ),
+                    {
+                        "posting_code": values["posting_a"],
+                        "attended_posting_code": values["posting_a"],
+                        "attended_teaching_name": values["keyword"],
+                        "teaching_name": values["session_name"],
+                        "details": "native creator matrix",
+                        "session_type_id": values["session_type_id"],
+                    },
+                )
+            ).mappings().one()
+            native_event_id = created["event_id"]
+            native_attendance_id = created["attendance_id"]
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT created_by_resident_id
+                    FROM teaching_events
+                    WHERE id = :event_id
+                    """
+                ),
+                {"event_id": native_event_id},
+            ) == values["resident_a_id"]
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT resident_id
+                    FROM attendance_records
+                    WHERE id = :attendance_id
+                    """
+                ),
+                {"attendance_id": native_attendance_id},
+            ) == values["resident_a_id"]
+            await assert_write_denied(
+                db,
+                """
+                INSERT INTO attendance_records (
+                    id, resident_id, teaching_event_id, status, posting_code
+                )
+                VALUES (
+                    :id, :resident_id, :event_id, 'flagged', :posting_code
+                )
+                """,
+                {
+                    "id": uuid4(),
+                    "resident_id": values["resident_a_id"],
+                    "event_id": native_event_id,
+                    "posting_code": values["posting_a"],
+                },
+                sqlstates={"23514", "42501"},
+            )
+            await assert_write_denied(
+                db,
+                """
+                INSERT INTO attendance_records (
+                    id, resident_id, teaching_event_id, status,
+                    posting_code, submitted_at, created_at, updated_at
+                )
+                VALUES (
+                    :id, :resident_id, :event_id, 'submitted',
+                    :posting_code, TIMESTAMPTZ '2000-01-01 00:00:00+00',
+                    TIMESTAMPTZ '2000-01-01 00:00:00+00',
+                    TIMESTAMPTZ '2000-01-01 00:00:00+00'
+                )
+                """,
+                {
+                    "id": uuid4(),
+                    "resident_id": values["resident_a_id"],
+                    "event_id": native_event_id,
+                    "posting_code": values["posting_b"],
+                },
+                sqlstates={"23514"},
+            )
+            await assert_write_denied(
+                db,
+                """
+                UPDATE attendance_records
+                SET status = 'flagged'
+                WHERE id = :attendance_id
+                """,
+                {"attendance_id": native_attendance_id},
+                sqlstates={"23514"},
+            )
+            await assert_write_denied(
+                db,
+                """
+                SELECT *
+                FROM mata_rls.create_adhoc_attendance(
+                    CAST(:posting_code AS text),
+                    CAST(:attended_posting_code AS text),
+                    'not an allowed attended teaching',
+                    CAST(:teaching_name AS text),
+                    'invalid native catalogue marker',
+                    DATE '2035-04-02',
+                    TIME '11:00',
+                    TIME '12:00',
+                    CAST(1.00 AS numeric),
+                    CAST(:session_type_id AS uuid)
+                )
+                """,
+                {
+                    "posting_code": values["posting_a"],
+                    "attended_posting_code": values["posting_a"],
+                    "teaching_name": values["session_name"],
+                    "session_type_id": values["session_type_id"],
+                },
+                sqlstates={"22023"},
+            )
+            await assert_write_denied(
+                db,
+                """
+                SELECT *
+                FROM mata_rls.create_adhoc_attendance(
+                    CAST(:posting_code AS text),
+                    CAST(:attended_posting_code AS text),
+                    CAST(:attended_teaching_name AS text),
+                    CAST(:teaching_name AS text),
+                    'public holiday marker',
+                    CAST(:event_date AS date),
+                    TIME '11:00',
+                    TIME '12:00',
+                    CAST(1.00 AS numeric),
+                    CAST(:session_type_id AS uuid)
+                )
+                """,
+                {
+                    "posting_code": values["posting_a"],
+                    "attended_posting_code": values["posting_a"],
+                    "attended_teaching_name": values["keyword"],
+                    "teaching_name": values["session_name"],
+                    "event_date": holiday_date,
+                    "session_type_id": values["session_type_id"],
+                },
+                sqlstates={"22023"},
+            )
+            await assert_write_denied(
+                db,
+                """
+                SELECT *
+                FROM mata_rls.create_adhoc_attendance(
+                    CAST(:posting_code AS text),
+                    CAST(:attended_posting_code AS text),
+                    CAST(:attended_teaching_name AS text),
+                    CAST(:teaching_name AS text),
+                    'overlap marker',
+                    DATE '2035-04-01',
+                    TIME '09:30',
+                    TIME '10:30',
+                    CAST(1.00 AS numeric),
+                    CAST(:session_type_id AS uuid)
+                )
+                """,
+                {
+                    "posting_code": values["posting_a"],
+                    "attended_posting_code": values["posting_a"],
+                    "attended_teaching_name": values["keyword"],
+                    "teaching_name": values["session_name"],
+                    "session_type_id": values["session_type_id"],
+                },
+                sqlstates={"23P01"},
+            )
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM teaching_events
+                    WHERE details_of_session IN (
+                        'invalid native catalogue marker',
+                        'public holiday marker',
+                        'overlap marker'
+                    )
+                    """
+                )
+            ) == 0
+            await db.commit()
+
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["resident_peer"],
+        ) as db:
+            assert await db.scalar(
+                text(
+                    "SELECT id FROM teaching_events WHERE id = :event_id"
+                ),
+                {"event_id": native_event_id},
+            ) is None
+            await assert_write_denied(
+                db,
+                """
+                INSERT INTO attendance_records (
+                    id, resident_id, teaching_event_id, status, posting_code
+                )
+                VALUES (
+                    :id, :resident_id, :event_id, 'submitted', :posting_code
+                )
+                """,
+                {
+                    "id": uuid4(),
+                    "resident_id": values["resident_peer_id"],
+                    "event_id": native_event_id,
+                    "posting_code": values["posting_a"],
+                },
+                sqlstates={"23514", "42501"},
+            )
+            await assert_write_denied(
+                db,
+                """
+                INSERT INTO teaching_events (
+                    posting_code, teaching_name, event_date, start_time,
+                    end_time, duration_hours, session_type_id, is_adhoc,
+                    created_by_role, created_by_resident_id
+                )
+                VALUES (
+                    :posting_code, :teaching_name, DATE '2035-04-02',
+                    TIME '09:00', TIME '10:00', 1.00, :session_type_id,
+                    true, 'resident', :resident_id
+                )
+                """,
+                {
+                    "posting_code": values["posting_a"],
+                    "teaching_name": values["session_name"],
+                    "session_type_id": values["session_type_id"],
+                    "resident_id": values["resident_peer_id"],
+                },
+                sqlstates={"42501"},
+            )
+
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["external"],
+        ) as db:
+            assert await db.scalar(
+                text(
+                    "SELECT id FROM teaching_events WHERE id = :event_id"
+                ),
+                {"event_id": native_event_id},
+            ) is None
+            await assert_write_denied(
+                db,
+                """
+                INSERT INTO external_attendance_records (
+                    id, external_resident_id, teaching_event_id,
+                    status, posting_code
+                )
+                VALUES (
+                    :id, :external_resident_id, :event_id,
+                    'submitted', :posting_code
+                )
+                """,
+                {
+                    "id": uuid4(),
+                    "external_resident_id": values["external_a_id"],
+                    "event_id": native_event_id,
+                    "posting_code": values["posting_a"],
+                },
+                sqlstates={"23514", "42501"},
+            )
+            await assert_write_denied(
+                db,
+                """
+                SELECT *
+                FROM mata_rls.create_adhoc_attendance(
+                    CAST(:posting_code AS text),
+                    CAST(:attended_posting_code AS text),
+                    CAST(:attended_teaching_name AS text),
+                    CAST(:teaching_name AS text),
+                    'wrong attended posting marker',
+                    DATE '2035-04-02',
+                    TIME '11:00',
+                    TIME '12:00',
+                    CAST(1.00 AS numeric),
+                    CAST(:session_type_id AS uuid)
+                )
+                """,
+                {
+                    "posting_code": values["posting_a"],
+                    "attended_posting_code": values["posting_a"],
+                    "attended_teaching_name": alternate_keyword,
+                    "teaching_name": alternate_keyword,
+                    "session_type_id": values["session_type_id"],
+                },
+                sqlstates={"22023"},
+            )
+
+            created = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT event_id, attendance_id
+                        FROM mata_rls.create_adhoc_attendance(
+                            CAST(:posting_code AS text),
+                            CAST(:attended_posting_code AS text),
+                            CAST(:attended_teaching_name AS text),
+                            CAST(:teaching_name AS text),
+                            CAST(:details AS text),
+                            DATE '2035-04-03',
+                            TIME '09:00',
+                            TIME '10:00',
+                            CAST(1.00 AS numeric),
+                            CAST(:session_type_id AS uuid)
+                        )
+                        """
+                    ),
+                    {
+                        "posting_code": values["posting_a"],
+                        "attended_posting_code": values["posting_a"],
+                        "attended_teaching_name": values["keyword"],
+                        "teaching_name": values["keyword"],
+                        "details": "external creator matrix",
+                        "session_type_id": values["session_type_id"],
+                    },
+                )
+            ).mappings().one()
+            external_event_id = created["event_id"]
+            external_attendance_id = created["attendance_id"]
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT created_by_external_resident_id
+                    FROM teaching_events
+                    WHERE id = :event_id
+                    """
+                ),
+                {"event_id": external_event_id},
+            ) == values["external_a_id"]
+            await assert_write_denied(
+                db,
+                """
+                UPDATE external_attendance_records
+                SET status = 'flagged'
+                WHERE id = :attendance_id
+                """,
+                {"attendance_id": external_attendance_id},
+                sqlstates={"23514"},
+            )
+            await assert_write_denied(
+                db,
+                """
+                INSERT INTO external_attendance_records (
+                    id, external_resident_id, teaching_event_id,
+                    status, posting_code
+                )
+                VALUES (
+                    :id, :external_resident_id, :event_id,
+                    'removed', :posting_code
+                )
+                """,
+                {
+                    "id": uuid4(),
+                    "external_resident_id": values["external_a_id"],
+                    "event_id": external_event_id,
+                    "posting_code": values["posting_a"],
+                },
+                sqlstates={"23514", "42501"},
+            )
+            await db.commit()
+
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["external_peer"],
+        ) as db:
+            assert await db.scalar(
+                text(
+                    "SELECT id FROM teaching_events WHERE id = :event_id"
+                ),
+                {"event_id": external_event_id},
+            ) is None
+            await assert_write_denied(
+                db,
+                """
+                INSERT INTO external_attendance_records (
+                    id, external_resident_id, teaching_event_id,
+                    status, posting_code
+                )
+                VALUES (
+                    :id, :external_resident_id, :event_id,
+                    'submitted', :posting_code
+                )
+                """,
+                {
+                    "id": uuid4(),
+                    "external_resident_id": values["external_peer_id"],
+                    "event_id": external_event_id,
+                    "posting_code": values["posting_a"],
+                },
+                sqlstates={"23514", "42501"},
+            )
+
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["resident"],
+        ) as db:
+            assert await db.scalar(
+                text(
+                    "SELECT id FROM teaching_events WHERE id = :event_id"
+                ),
+                {"event_id": external_event_id},
+            ) is None
+            await assert_write_denied(
+                db,
+                """
+                INSERT INTO attendance_records (
+                    id, resident_id, teaching_event_id, status, posting_code
+                )
+                VALUES (
+                    :id, :resident_id, :event_id, 'submitted', :posting_code
+                )
+                """,
+                {
+                    "id": uuid4(),
+                    "resident_id": values["resident_a_id"],
+                    "event_id": external_event_id,
+                    "posting_code": values["posting_a"],
+                },
+                sqlstates={"23514", "42501"},
+            )
+
+        async with policy_harness.owner_session() as owner_db:
+            with pytest.raises(DBAPIError) as caught:
+                async with owner_db.begin_nested():
+                    await owner_db.execute(
+                        text(
+                            """
+                            UPDATE teaching_events
+                            SET created_by_resident_id = :resident_id
+                            WHERE id = :event_id
+                            """
+                        ),
+                        {
+                            "resident_id": values["resident_peer_id"],
+                            "event_id": native_event_id,
+                        },
+                    )
+            assert _sqlstate(caught.value) == "23514"
+
+            with pytest.raises(DBAPIError) as caught:
+                async with owner_db.begin_nested():
+                    await owner_db.execute(
+                        text(
+                            """
+                            UPDATE teaching_events
+                            SET created_by_role = 'external_resident'
+                            WHERE id = :event_id
+                            """
+                        ),
+                        {"event_id": native_event_id},
+                    )
+            assert _sqlstate(caught.value) == "23514"
+
+            with pytest.raises(DBAPIError) as caught:
+                async with owner_db.begin_nested():
+                    await owner_db.execute(
+                        text(
+                            """
+                            UPDATE attendance_records
+                            SET resident_id = :resident_id
+                            WHERE id = :attendance_id
+                            """
+                        ),
+                        {
+                            "resident_id": values["resident_peer_id"],
+                            "attendance_id": native_attendance_id,
+                        },
+                    )
+            assert _sqlstate(caught.value) == "23514"
+
+            with pytest.raises(DBAPIError) as caught:
+                async with owner_db.begin_nested():
+                    await owner_db.execute(
+                        text(
+                            """
+                            INSERT INTO external_attendance_records (
+                                external_resident_id, teaching_event_id,
+                                status, posting_code
+                            )
+                            VALUES (
+                                :external_resident_id, :event_id,
+                                'submitted', :posting_code
+                            )
+                            """
+                        ),
+                        {
+                            "external_resident_id": values["external_a_id"],
+                            "event_id": native_event_id,
+                            "posting_code": values["posting_a"],
+                        },
+                    )
+            assert _sqlstate(caught.value) == "23514"
+
+            assert await owner_db.scalar(
+                text(
+                    """
+                    UPDATE attendance_records
+                    SET status = 'removed'
+                    WHERE id = :attendance_id
+                    RETURNING status
+                    """
+                ),
+                {"attendance_id": native_attendance_id},
+            ) == "removed"
+            with pytest.raises(DBAPIError) as caught:
+                async with owner_db.begin_nested():
+                    await owner_db.execute(
+                        text(
+                            """
+                            UPDATE attendance_records
+                            SET status = 'flagged'
+                            WHERE id = :attendance_id
+                            """
+                        ),
+                        {"attendance_id": native_attendance_id},
+                    )
+            assert _sqlstate(caught.value) == "23514"
+
+            await owner_db.execute(
+                text(
+                    f"""
+                    ALTER TABLE attendance_records
+                    ADD CONSTRAINT {rollback_constraint}
+                    CHECK (posting_code <> '{values["posting_a"]}')
+                    NOT VALID
+                    """
+                )
+            )
+            await owner_db.commit()
+
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["resident_peer"],
+        ) as db:
+            with pytest.raises(DBAPIError):
+                async with db.begin_nested():
+                    await db.execute(
+                        text(
+                            """
+                            SELECT *
+                            FROM mata_rls.create_adhoc_attendance(
+                                CAST(:posting_code AS text),
+                                CAST(:attended_posting_code AS text),
+                                CAST(:attended_teaching_name AS text),
+                                CAST(:teaching_name AS text),
+                                'rollback marker',
+                                DATE '2035-04-04',
+                                TIME '09:00',
+                                TIME '10:00',
+                                CAST(1.00 AS numeric),
+                                CAST(:session_type_id AS uuid)
+                            )
+                            """
+                        ),
+                        {
+                            "posting_code": values["posting_a"],
+                            "attended_posting_code": values["posting_a"],
+                            "attended_teaching_name": values["keyword"],
+                            "teaching_name": values["session_name"],
+                            "session_type_id": values["session_type_id"],
+                        },
+                    )
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM teaching_events
+                    WHERE details_of_session = 'rollback marker'
+                    """
+                )
+            ) == 0
+
+        async with policy_harness.owner_session() as owner_db:
+            await owner_db.execute(
+                text(
+                    """
+                    INSERT INTO reporting_periods (
+                        id, label, start_date, end_date, status
+                    )
+                    VALUES (
+                        :id, :label, DATE '2035-01-01',
+                        DATE '2035-12-31', 'active'
+                    )
+                    """
+                ),
+                {
+                    "id": ambiguous_period_id,
+                    "label": f"AMB{ambiguous_period_id.hex[:20]}",
+                },
+            )
+            await owner_db.commit()
+
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["resident"],
+        ) as db:
+            await assert_write_denied(
+                db,
+                """
+                SELECT *
+                FROM mata_rls.create_adhoc_attendance(
+                    CAST(:posting_code AS text),
+                    CAST(:attended_posting_code AS text),
+                    CAST(:attended_teaching_name AS text),
+                    CAST(:teaching_name AS text),
+                    'ambiguous period marker',
+                    DATE '2035-05-01',
+                    TIME '11:00',
+                    TIME '12:00',
+                    CAST(1.00 AS numeric),
+                    CAST(:session_type_id AS uuid)
+                )
+                """,
+                {
+                    "posting_code": values["posting_a"],
+                    "attended_posting_code": values["posting_a"],
+                    "attended_teaching_name": values["keyword"],
+                    "teaching_name": values["session_name"],
+                    "session_type_id": values["session_type_id"],
+                },
+                sqlstates={"22023"},
+            )
+    finally:
+        async with policy_harness.owner_session() as owner_db:
+            await owner_db.execute(
+                text(
+                    f"""
+                    ALTER TABLE attendance_records
+                    DROP CONSTRAINT IF EXISTS {rollback_constraint}
+                    """
+                )
+            )
+            await owner_db.execute(
+                text("DELETE FROM reporting_periods WHERE id = :id"),
+                {"id": ambiguous_period_id},
+            )
+            await owner_db.execute(
+                text("DELETE FROM public_holidays WHERE id = :id"),
+                {"id": holiday_id},
+            )
+            await owner_db.execute(
+                text("DELETE FROM teaching_name_catalogue WHERE id = :id"),
+                {"id": alternate_catalogue_id},
+            )
+            event_ids = [
+                event_id
+                for event_id in (native_event_id, external_event_id)
+                if event_id is not None
+            ]
+            if event_ids:
+                await owner_db.execute(
+                    text(
+                        """
+                        DELETE FROM external_attendance_records
+                        WHERE teaching_event_id
+                            = ANY(CAST(:event_ids AS uuid[]))
+                        """
+                    ),
+                    {"event_ids": event_ids},
+                )
+                await owner_db.execute(
+                    text(
+                        """
+                        DELETE FROM attendance_records
+                        WHERE teaching_event_id
+                            = ANY(CAST(:event_ids AS uuid[]))
+                        """
+                    ),
+                    {"event_ids": event_ids},
+                )
+                await owner_db.execute(
+                    text(
+                        """
+                        DELETE FROM teaching_events
+                        WHERE id = ANY(CAST(:event_ids AS uuid[]))
+                        """
+                    ),
+                    {"event_ids": event_ids},
+                )
+            await owner_db.commit()

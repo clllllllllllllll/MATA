@@ -14,6 +14,7 @@ from app.errors import ApiError, ErrorCode
 from app.security import log_safe_exception
 from app.services import cache_invalidation
 from app.services.audit import write_audit_log
+from app.services.teaching_event_locks import acquire_teaching_event_locks
 
 
 logger = logging.getLogger(__name__)
@@ -447,6 +448,7 @@ async def force_delete_event(
                 error_code=ErrorCode.VALIDATION_FAILED.value,
             )
 
+        await acquire_teaching_event_locks(db, event_ids=[event_id])
         event_result = await db.execute(
             text(
                 """

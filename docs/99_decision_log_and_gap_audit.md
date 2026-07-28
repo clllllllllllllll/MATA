@@ -1028,7 +1028,7 @@ Status: ✅ Resolved
 | Date/timestamp format normalisation (dd-MMM-yy, dd/MM/yy, dd/MM/YYYY, etc.) | Parsed 6+ date formats from free-text submissions | Portal submits ISO-8601 | ISO-8601 `DATE` type in Pydantic |
 | MCR extraction from free-text name string | Extracted MCR from "Name (MCR)" free-text format | Session-authenticated identity provides MCR directly | Validated app session → current `residents.id` |
 | Non-resident filtering via 'I am a' column | Filtered out non-resident FormSG submissions | Portal enforces current database-owned role at login/request time | App-session subject and server-side role reload |
-| Consecutive teaching row duplication (`_consec2`, `_consec3` suffixes) | Duplicated rows for consecutive identical teachings in the same FormSG response | Each teaching event is a discrete DB record with its own `teaching_events.id` | `UNIQUE(resident_id, teaching_event_id)` constraint |
+| Consecutive teaching row duplication (`_consec2`, `_consec3` suffixes) | Duplicated rows for consecutive identical teachings in the same FormSG response | Each teaching event is a discrete DB record with its own `teaching_events.id` | Submitted-only unique `(resident_id, teaching_event_id)` index; removed cycles remain immutable history |
 | `responseIDwithproblemALL` error-code feedback loop | Tagged submissions with error codes for manual review | Real-time 422 validation at submission time | `status` field on `attendance_records` |
 
 ### String Matching and Posting Resolution (Scripts A, B, C)

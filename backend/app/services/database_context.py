@@ -52,6 +52,11 @@ _RUNTIME_ONLY_HELPERS = frozenset(
         "resolve_ttf_session_type(text,numeric,text,text)",
         "ensure_ttf_posting_code(text,text)",
         "append_audit_log(text,text,text,jsonb,jsonb,jsonb)",
+        (
+            "create_adhoc_attendance("
+            "text,text,text,text,text,date,time without time zone,"
+            "time without time zone,numeric,uuid)"
+        ),
         "update_own_staff_actor_name(text)",
         "reporting_period_dependency_counts(uuid)",
         "hibernate_stale_surplus(uuid)",
@@ -625,6 +630,8 @@ _ROLE_ATTESTATION_SQL = text(
             FROM pg_catalog.pg_proc AS procedure
             JOIN pg_catalog.pg_namespace AS namespace
               ON namespace.oid = procedure.pronamespace
+            JOIN pg_catalog.pg_roles AS owner_role
+              ON owner_role.oid = procedure.proowner
             WHERE namespace.nspname = 'mata_rls'
               AND has_function_privilege(
                   login.oid,
@@ -635,7 +642,35 @@ _ROLE_ATTESTATION_SQL = text(
                   NOT procedure.prosecdef
                   OR procedure.proconfig IS DISTINCT FROM
                       ARRAY['search_path=pg_catalog, pg_temp']::text[]
-                  OR procedure.proowner <> namespace.nspowner
+                  OR (
+                      procedure.proowner <> namespace.nspowner
+                      AND NOT (
+                          procedure.oid = pg_catalog.to_regprocedure(
+                              'mata_rls.create_adhoc_attendance('
+                              'text,text,text,text,text,date,'
+                              'time without time zone,'
+                              'time without time zone,numeric,uuid)'
+                          )
+                          AND owner_role.rolname
+                              = 'mata_adhoc_attendance_definer'
+                          AND NOT owner_role.rolcanlogin
+                          AND NOT owner_role.rolinherit
+                          AND NOT owner_role.rolsuper
+                          AND owner_role.rolbypassrls
+                          AND NOT owner_role.rolcreatedb
+                          AND NOT owner_role.rolcreaterole
+                          AND NOT owner_role.rolreplication
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM pg_catalog.pg_auth_members
+                                  AS owner_membership
+                              WHERE owner_membership.member
+                                  = owner_role.oid
+                                 OR owner_membership.roleid
+                                  = owner_role.oid
+                          )
+                      )
+                  )
               )
         ) AS executable_rls_helpers_are_hardened,
         COALESCE(
@@ -1037,6 +1072,366 @@ _ROLE_ATTESTATION_SQL = text(
     LEFT JOIN pg_roles AS forbidden_capability
       ON forbidden_capability.rolname = :forbidden_capability_group
     WHERE login.rolname = session_user
+    """
+)
+
+_ADHOC_DEFINER_ACL_ATTESTATION_SQL = text(
+    """
+    WITH definer AS (
+        SELECT role.oid
+        FROM pg_catalog.pg_roles AS role
+        WHERE role.rolname = 'mata_adhoc_attendance_definer'
+    ),
+    expected_schema(schema_name, action) AS (
+        VALUES
+            ('public', 'USAGE'),
+            ('mata_rls', 'USAGE')
+    ),
+    actual_schema AS (
+        SELECT namespace.nspname AS schema_name, privilege.action
+        FROM definer
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.nspname IN ('public', 'mata_rls', 'mata_private')
+        CROSS JOIN (
+            VALUES ('USAGE'), ('CREATE')
+        ) AS privilege(action)
+        WHERE pg_catalog.has_schema_privilege(
+            definer.oid,
+            namespace.oid,
+            privilege.action
+        )
+    ),
+    expected_table(table_name, action) AS (
+        VALUES
+            ('attendance_records', 'SELECT'),
+            ('attendance_records', 'INSERT'),
+            ('external_attendance_records', 'SELECT'),
+            ('external_attendance_records', 'INSERT'),
+            ('external_resident_postings', 'SELECT'),
+            ('external_residents', 'SELECT'),
+            ('global_session_types', 'SELECT'),
+            ('public_holidays', 'SELECT'),
+            ('reporting_periods', 'SELECT'),
+            ('resident_postings', 'SELECT'),
+            ('residents', 'SELECT'),
+            ('session_types', 'SELECT'),
+            ('teaching_events', 'SELECT'),
+            ('teaching_events', 'INSERT'),
+            ('teaching_name_catalogue', 'SELECT'),
+            ('teaching_targets', 'SELECT')
+    ),
+    actual_table AS (
+        SELECT relation.relname AS table_name, privilege.action
+        FROM definer
+        JOIN pg_catalog.pg_class AS relation
+          ON relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+         AND namespace.nspname = 'public'
+        CROSS JOIN (
+            VALUES
+                ('SELECT'),
+                ('INSERT'),
+                ('UPDATE'),
+                ('DELETE'),
+                ('TRUNCATE'),
+                ('REFERENCES'),
+                ('TRIGGER')
+        ) AS privilege(action)
+        WHERE pg_catalog.has_table_privilege(
+            definer.oid,
+            relation.oid,
+            privilege.action
+        )
+    ),
+    expected_function(signature) AS (
+        VALUES
+            ('mata_rls.current_subject_type()'),
+            ('mata_rls.current_subject_id()'),
+            (
+                'mata_rls.create_adhoc_attendance('
+                'text,text,text,text,text,date,time without time zone,'
+                'time without time zone,numeric,uuid)'
+            ),
+            ('public.gen_random_uuid()')
+    ),
+    reviewed_function AS (
+        SELECT
+            procedure.oid,
+            procedure.proowner,
+            procedure.proacl,
+            pg_catalog.format(
+                '%I.%I(%s)',
+                namespace.nspname,
+                procedure.proname,
+                pg_catalog.replace(
+                    pg_catalog.oidvectortypes(procedure.proargtypes),
+                    ', ',
+                    ','
+                )
+            ) AS signature
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname IN ('mata_rls', 'mata_private')
+           OR procedure.oid IN (
+               pg_catalog.to_regprocedure('public.digest(bytea,text)'),
+               pg_catalog.to_regprocedure('public.hmac(bytea,bytea,text)'),
+               pg_catalog.to_regprocedure(
+                   'public.gen_random_bytes(integer)'
+               ),
+               pg_catalog.to_regprocedure('public.gen_random_uuid()')
+           )
+    ),
+    actual_function AS (
+        SELECT reviewed_function.signature
+        FROM definer
+        CROSS JOIN reviewed_function
+        WHERE pg_catalog.has_function_privilege(
+            definer.oid,
+            reviewed_function.oid,
+            'EXECUTE'
+        )
+    )
+    SELECT
+        (SELECT pg_catalog.count(*) FROM definer) = 1
+        AND NOT EXISTS (
+            SELECT 1
+            FROM expected_schema
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM actual_schema
+                WHERE actual_schema.schema_name
+                        = expected_schema.schema_name
+                  AND actual_schema.action = expected_schema.action
+            )
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM actual_schema
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM expected_schema
+                WHERE expected_schema.schema_name
+                        = actual_schema.schema_name
+                  AND expected_schema.action = actual_schema.action
+            )
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM expected_table
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM actual_table
+                WHERE actual_table.table_name = expected_table.table_name
+                  AND actual_table.action = expected_table.action
+            )
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM actual_table
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM expected_table
+                WHERE expected_table.table_name = actual_table.table_name
+                  AND expected_table.action = actual_table.action
+            )
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM expected_function
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM actual_function
+                WHERE actual_function.signature = expected_function.signature
+            )
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM actual_function
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM expected_function
+                WHERE expected_function.signature = actual_function.signature
+            )
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM definer
+            JOIN pg_catalog.pg_class AS relation
+              ON relation.relkind = 'S'
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+             AND namespace.nspname = 'public'
+            CROSS JOIN (
+                VALUES ('USAGE'), ('SELECT'), ('UPDATE')
+            ) AS privilege(action)
+            WHERE pg_catalog.has_sequence_privilege(
+                definer.oid,
+                relation.oid,
+                privilege.action
+            )
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM definer
+            JOIN pg_catalog.pg_class AS relation
+              ON relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+             AND namespace.nspname = 'public'
+            JOIN pg_catalog.pg_attribute AS attribute
+              ON attribute.attrelid = relation.oid
+             AND attribute.attnum > 0
+             AND NOT attribute.attisdropped
+            CROSS JOIN (
+                VALUES
+                    ('SELECT'),
+                    ('INSERT'),
+                    ('UPDATE'),
+                    ('REFERENCES')
+            ) AS privilege(action)
+            WHERE pg_catalog.has_column_privilege(
+                definer.oid,
+                relation.oid,
+                attribute.attnum,
+                privilege.action
+            )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM expected_table
+                  WHERE expected_table.table_name = relation.relname
+                    AND expected_table.action = privilege.action
+              )
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM definer
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.nspname IN (
+                  'public',
+                  'mata_rls',
+                  'mata_private'
+              )
+            CROSS JOIN LATERAL pg_catalog.aclexplode(
+                COALESCE(
+                    namespace.nspacl,
+                    pg_catalog.acldefault('n', namespace.nspowner)
+                )
+            ) AS acl
+            WHERE acl.grantee = definer.oid
+              AND acl.is_grantable
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM definer
+            JOIN pg_catalog.pg_class AS relation
+              ON relation.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+             AND namespace.nspname = 'public'
+            CROSS JOIN LATERAL pg_catalog.aclexplode(
+                COALESCE(
+                    relation.relacl,
+                    pg_catalog.acldefault(
+                        CAST(
+                            CASE
+                                WHEN relation.relkind = 'S' THEN 'S'
+                                ELSE 'r'
+                            END
+                            AS "char"
+                        ),
+                        relation.relowner
+                    )
+                )
+            ) AS acl
+            WHERE acl.grantee = definer.oid
+              AND acl.is_grantable
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM definer
+            CROSS JOIN reviewed_function
+            CROSS JOIN LATERAL pg_catalog.aclexplode(
+                COALESCE(
+                    reviewed_function.proacl,
+                    pg_catalog.acldefault(
+                        'f',
+                        reviewed_function.proowner
+                    )
+                )
+            ) AS acl
+            WHERE reviewed_function.proowner <> definer.oid
+              AND acl.grantee = definer.oid
+              AND acl.is_grantable
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM definer
+            JOIN pg_catalog.pg_attribute AS attribute
+              ON attribute.attacl IS NOT NULL
+            JOIN pg_catalog.pg_class AS relation
+              ON relation.oid = attribute.attrelid
+             AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+             AND namespace.nspname = 'public'
+            CROSS JOIN LATERAL pg_catalog.aclexplode(
+                attribute.attacl
+            ) AS acl
+            WHERE acl.grantee IN (0, definer.oid)
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_namespace AS namespace
+            CROSS JOIN LATERAL pg_catalog.aclexplode(
+                COALESCE(
+                    namespace.nspacl,
+                    pg_catalog.acldefault('n', namespace.nspowner)
+                )
+            ) AS acl
+            WHERE namespace.nspname IN ('mata_rls', 'mata_private')
+              AND acl.grantee = 0
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_class AS relation
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+             AND namespace.nspname = 'public'
+            CROSS JOIN LATERAL pg_catalog.aclexplode(
+                COALESCE(
+                    relation.relacl,
+                    pg_catalog.acldefault(
+                        CAST(
+                            CASE
+                                WHEN relation.relkind = 'S' THEN 'S'
+                                ELSE 'r'
+                            END
+                            AS "char"
+                        ),
+                        relation.relowner
+                    )
+                )
+            ) AS acl
+            WHERE relation.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+              AND acl.grantee = 0
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM reviewed_function
+            CROSS JOIN LATERAL pg_catalog.aclexplode(
+                COALESCE(
+                    reviewed_function.proacl,
+                    pg_catalog.acldefault(
+                        'f',
+                        reviewed_function.proowner
+                    )
+                )
+            ) AS acl
+            WHERE acl.grantee = 0
+              AND acl.privilege_type = 'EXECUTE'
+        ) AS adhoc_definer_acl_surface_is_exact
     """
 )
 
@@ -1484,6 +1879,9 @@ async def attest_database_role(
         session_helper_acls_are_exact = bool(
             await connection.scalar(_SESSION_HELPER_ACL_ATTESTATION_SQL)
         )
+        adhoc_definer_acl_surface_is_exact = bool(
+            await connection.scalar(_ADHOC_DEFINER_ACL_ATTESTATION_SQL)
+        )
 
     if row is None:
         raise RlsRuntimeRoleError(
@@ -1493,6 +1891,8 @@ async def attest_database_role(
     failed_checks: list[str] = []
     if not session_helper_acls_are_exact:
         failed_checks.append("session_helper_acls_are_exact")
+    if not adhoc_definer_acl_surface_is_exact:
+        failed_checks.append("adhoc_definer_acl_surface_is_exact")
     boolean_requirements = {
         "login_can_login": True,
         "login_inherits": True,

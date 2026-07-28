@@ -3,11 +3,14 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import DBAPIError
 
 from app.middleware.errors import install_error_handlers
 from app.routers import resident
+from app.services import resident_submission
 from tests.auth_identity_test_helpers import install_stub_header_identity_middleware
 from tests.resident_fakes import FakeResidentSession
 
@@ -19,17 +22,30 @@ def _fake_db() -> FakeResidentSession:
     return FakeResidentSession(today=ADHOC_FIXTURE_TODAY)
 
 
-def _client(fake_db: FakeResidentSession) -> TestClient:
+def _client(
+    fake_db: FakeResidentSession,
+    *,
+    raise_server_exceptions: bool = True,
+    rollback_on_error: bool = False,
+) -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
     install_stub_header_identity_middleware(app)
 
     async def _db_override():
-        yield fake_db
+        try:
+            yield fake_db
+        except Exception:
+            if rollback_on_error:
+                await fake_db.rollback()
+            raise
 
     app.dependency_overrides[resident.get_db_session] = _db_override
     app.include_router(resident.router)
-    return TestClient(app)
+    return TestClient(
+        app,
+        raise_server_exceptions=raise_server_exceptions,
+    )
 
 
 def _headers(fake_db: FakeResidentSession) -> dict[str, str]:
@@ -103,6 +119,58 @@ def test_adhoc_teaching_derives_posting_from_submitted_date() -> None:
     assert payload["event"]["is_adhoc"] is True
     assert payload["attendance"]["posting_code"] == "TTSHCardio"
     assert any(row["is_adhoc"] for row in fake_db.events)
+    assert len(fake_db.native_attendance_lock_calls) == 1
+    assert len(fake_db.adhoc_helper_calls) == 1
+    assert set(fake_db.adhoc_helper_calls[0]) == {
+        "posting_code",
+        "attended_posting_code",
+        "attended_teaching_name",
+        "teaching_name",
+        "details_of_session",
+        "event_date",
+        "start_time",
+        "end_time",
+        "duration_hours",
+        "session_type_id",
+    }
+
+
+def test_native_adhoc_commit_failure_rolls_back_event_and_attendance_and_returns_no_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_db = _fake_db()
+    initial = fake_db.transaction_state()
+    fake_db.fail_next_commit()
+    cache_calls: list[dict] = []
+    monkeypatch.setattr(
+        "app.services.resident_submission.invalidate_resident_caches",
+        lambda **scope: cache_calls.append(scope),
+    )
+    client = _client(
+        fake_db,
+        raise_server_exceptions=False,
+        rollback_on_error=True,
+    )
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "date": ADHOC_FIXTURE_TODAY.isoformat(),
+            "start_time": "14:00",
+            "teaching_name": "Journal Club",
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Internal server error"
+    assert "event" not in response.json()
+    assert "attendance" not in response.json()
+    assert fake_db.commits == 1
+    assert fake_db.rollbacks == 1
+    assert fake_db.transaction_state() == initial
+    assert len(fake_db.adhoc_helper_calls) == 1
+    assert cache_calls == []
 
 
 def test_adhoc_teaching_accepts_all_r_year_catalogue_and_target_for_assigned_posting() -> None:
@@ -569,6 +637,8 @@ def test_native_adhoc_teaching_rejects_overlap_before_writing_event_or_attendanc
     assert fake_db.events == events_before
     assert fake_db.attendance == attendance_before
     assert fake_db.attendance[0] == earlier_attendance_before
+    assert len(fake_db.native_attendance_lock_calls) == 1
+    assert fake_db.adhoc_helper_calls == []
 
 
 def test_adhoc_weekend_non_exception_returns_warning() -> None:
@@ -697,3 +767,99 @@ def test_adhoc_options_fail_closed_for_overlapping_effectively_active_periods() 
 
     assert response.status_code == 409
     assert "ambiguous" in response.json()["detail"].lower()
+
+
+@pytest.mark.parametrize(
+    (
+        "sqlstate",
+        "expected_status",
+        "expected_detail",
+        "expected_error_code",
+        "expected_rollbacks",
+    ),
+    [
+        (
+            "22023",
+            422,
+            "Invalid ad-hoc teaching event",
+            "VALIDATION_FAILED",
+            1,
+        ),
+        (
+            "28000",
+            401,
+            "Unauthorized",
+            "UNAUTHORIZED",
+            1,
+        ),
+        (
+            "23P01",
+            409,
+            "Attendance overlaps an earlier accepted event",
+            "CONFLICT",
+            1,
+        ),
+        (
+            "42501",
+            500,
+            "Internal server error",
+            "INTERNAL_ERROR",
+            0,
+        ),
+    ],
+)
+def test_adhoc_helper_sqlstates_use_expected_api_contract(
+    monkeypatch,
+    sqlstate: str,
+    expected_status: int,
+    expected_detail: str,
+    expected_error_code: str,
+    expected_rollbacks: int,
+) -> None:
+    class _HelperRejection(Exception):
+        def __init__(self) -> None:
+            super().__init__("database helper rejection")
+            self.sqlstate = sqlstate
+
+    fake_db = _fake_db()
+    events_before = len(fake_db.events)
+    attendance_before = len(fake_db.attendance)
+    rollback_count = 0
+
+    async def _rollback() -> None:
+        nonlocal rollback_count
+        rollback_count += 1
+
+    async def _reject_helper(*_args, **_kwargs) -> None:
+        raise DBAPIError(
+            "SELECT mata_rls.create_adhoc_attendance(...)",
+            {},
+            _HelperRejection(),
+            False,
+        )
+
+    monkeypatch.setattr(fake_db, "rollback", _rollback)
+    monkeypatch.setattr(
+        resident_submission,
+        "_create_adhoc_attendance",
+        _reject_helper,
+    )
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "date": "2026-05-18",
+            "start_time": "10:00",
+            "teaching_name": "Journal Club",
+        },
+    )
+
+    assert response.status_code == expected_status
+    assert response.json()["detail"] == expected_detail
+    assert response.json()["error_code"] == expected_error_code
+    assert rollback_count == expected_rollbacks
+    assert fake_db.commits == 0
+    assert len(fake_db.events) == events_before
+    assert len(fake_db.attendance) == attendance_before

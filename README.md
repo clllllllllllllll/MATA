@@ -188,6 +188,7 @@ All technical specifications live in `docs/`:
 | `docs/api.md` | API endpoints — routes, request/response shapes, auth requirements |
 | `docs/business-logic.md` | Compliance engine, surplus chain, tag-based reallocation, exception handling |
 | `docs/parsing.md` | RDB and TTF Excel upload parsing rules and edge cases |
+| `docs/5b_h_aud_m04_atomic_attendance.md` | Immutable ad-hoc creator/storage-family RLS and attendance transaction matrix |
 | `AGENTS.md` | Architectural rules, TBD items, confirmed decisions — read before coding |
 
 ---
@@ -219,6 +220,12 @@ approved production policy; the organisation and operations owner must
 approve explicit deployed values.
 
 With H-E RLS enabled, protected application SQL uses a credentialed login that inherits only the `mata_app_runtime` capability. Public authentication and registration helpers use a different login that inherits only `mata_auth_internal`; Alembic uses the separate table-owning migration credential. All three URLs must reach the same database, and startup fails closed unless the exact role, ownership, helper, policy, grant, sequence, default-ACL, `PUBLIC`, and browser-role catalogue is present.
+
+Resident ad-hoc creation uses a narrow database function that derives the
+verified native/Non-NHG subject, persists immutable creator ownership, and
+creates the event plus matching attendance in the caller transaction. Removed
+attendance rows are retained; resubmission creates a new active row so stale
+removal identifiers cannot affect newer evidence.
 
 Staff login, Resident login, registration options, and Non-NHG registration are intentionally public entry points. Application authentication, authorization, rate limiting, CSRF, and session controls protect them; a Vercel outer gate is not required by the H-D design.
 

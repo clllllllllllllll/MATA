@@ -78,6 +78,11 @@ RUNTIME_ONLY_FUNCTIONS = frozenset(
         "mata_rls.resolve_ttf_session_type(text,numeric,text,text)",
         "mata_rls.ensure_ttf_posting_code(text,text)",
         "mata_rls.append_audit_log(text,text,text,jsonb,jsonb,jsonb)",
+        (
+            "mata_rls.create_adhoc_attendance("
+            "text,text,text,text,text,date,time without time zone,"
+            "time without time zone,numeric,uuid)"
+        ),
         "mata_rls.update_own_staff_actor_name(text)",
         "mata_rls.reporting_period_dependency_counts(uuid)",
         "mata_rls.hibernate_stale_surplus(uuid)",
@@ -163,6 +168,50 @@ POLICY_HELPER_FUNCTIONS = frozenset(
     }
 )
 
+PRIVATE_FUNCTIONS = frozenset(
+    {
+        "mata_private.normalized_scope(text[])",
+        "mata_private.normalize_mcr(text)",
+        (
+            "mata_private.authorization_fingerprint("
+            "text,uuid,bigint,text,text,text[],text,uuid,text)"
+        ),
+        (
+            "mata_private.context_signature("
+            "text,uuid,text,text,text[],text,uuid,text,"
+            "bigint,integer,oid)"
+        ),
+        "mata_private.verified_context()",
+        "mata_private.hydrate_app_session(bytea,text,boolean,integer)",
+        "mata_private.mcr_advisory_key(text)",
+        "mata_private.enforce_global_mcr_uniqueness()",
+        (
+            "mata_private.insert_root_app_session("
+            "text,uuid,bigint,text,uuid,bytea,bytea,"
+            "integer,integer,bytea)"
+        ),
+        "mata_private.resolve_external_schedule(jsonb)",
+        "mata_private.can_select_teaching_event_000027(uuid)",
+        (
+            "mata_private.can_insert_teaching_event_000027("
+            "text,text,text,date,boolean,text)"
+        ),
+        (
+            "mata_private.can_submit_native_attendance_000027("
+            "uuid,uuid)"
+        ),
+        (
+            "mata_private.can_submit_external_attendance_000027("
+            "uuid,uuid)"
+        ),
+        (
+            "mata_private."
+            "enforce_teaching_event_creator_immutability()"
+        ),
+        "mata_private.enforce_attendance_integrity()",
+    }
+)
+
 _INSTALL_CONTEXT_SQL = text(
     """
     SELECT
@@ -223,7 +272,14 @@ _TOUCH_APP_SESSION_SQL = text(
 )
 
 POLICY_CUTOVER_REVISIONS = frozenset(
-    {"20260726_000026", "20260727_000027"}
+    {
+        "20260726_000026",
+        "20260727_000027",
+        "20260728_000028",
+    }
+)
+SESSION_LIFECYCLE_REVISIONS = frozenset(
+    {"20260727_000027", "20260728_000028"}
 )
 
 ISSUE_LIFECYCLE_RESULT_COLUMNS = frozenset(
@@ -686,6 +742,12 @@ async def test_policy_cutover_denies_public_schema_create_exactly(
         "browser_schema_create",
         "helper_security_invoker",
         "helper_search_path",
+        "adhoc_definer_membership",
+        "adhoc_definer_schema_grant",
+        "adhoc_definer_table_grant",
+        "adhoc_definer_function_grant",
+        "adhoc_definer_public_function_grant",
+        "adhoc_definer_grant_option",
         "policy_name",
         "policy_predicate",
     ],
@@ -725,6 +787,24 @@ async def test_startup_attestation_rejects_transactional_privilege_injection(
         "browser_schema_create": "browser_roles_are_denied",
         "helper_security_invoker": "executable_rls_helpers_are_hardened",
         "helper_search_path": "executable_rls_helpers_are_hardened",
+        "adhoc_definer_membership": (
+            "executable_rls_helpers_are_hardened"
+        ),
+        "adhoc_definer_schema_grant": (
+            "adhoc_definer_acl_surface_is_exact"
+        ),
+        "adhoc_definer_table_grant": (
+            "adhoc_definer_acl_surface_is_exact"
+        ),
+        "adhoc_definer_function_grant": (
+            "adhoc_definer_acl_surface_is_exact"
+        ),
+        "adhoc_definer_public_function_grant": (
+            "adhoc_definer_acl_surface_is_exact"
+        ),
+        "adhoc_definer_grant_option": (
+            "adhoc_definer_acl_surface_is_exact"
+        ),
         "policy_name": "application_policy_catalogue",
         "policy_predicate": "unsafe_application_policy_count",
     }[mutation_kind]
@@ -831,6 +911,59 @@ async def test_startup_attestation_rejects_transactional_privilege_injection(
                     "bytea,text,text,uuid,uuid,text) "
                     "SET search_path = public"
                 )
+            elif mutation_kind == "adhoc_definer_membership":
+                if harness.revision != "20260728_000028":
+                    pytest.skip(
+                        "Ad-hoc definer requires revision 000028"
+                    )
+                third_role = f"mata_test_auth_{uuid4().hex[:16]}"
+                quoted_third_role = _quoted_test_role(third_role)
+                await connection.exec_driver_sql(
+                    f"CREATE ROLE {quoted_third_role} "
+                    "NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS "
+                    "NOCREATEDB NOCREATEROLE NOREPLICATION"
+                )
+                await connection.exec_driver_sql(
+                    f"GRANT {quoted_third_role} "
+                    "TO mata_adhoc_attendance_definer"
+                )
+            elif mutation_kind.startswith("adhoc_definer_"):
+                if harness.revision != "20260728_000028":
+                    pytest.skip(
+                        "Ad-hoc definer requires revision 000028"
+                    )
+                if mutation_kind == "adhoc_definer_schema_grant":
+                    statement = (
+                        "GRANT CREATE ON SCHEMA mata_rls "
+                        "TO mata_adhoc_attendance_definer"
+                    )
+                elif mutation_kind == "adhoc_definer_table_grant":
+                    statement = (
+                        "GRANT UPDATE ON TABLE public.reporting_periods "
+                        "TO mata_adhoc_attendance_definer"
+                    )
+                elif mutation_kind == "adhoc_definer_function_grant":
+                    statement = (
+                        "GRANT EXECUTE ON FUNCTION "
+                        "mata_rls.is_authenticated() "
+                        "TO mata_adhoc_attendance_definer"
+                    )
+                elif mutation_kind == (
+                    "adhoc_definer_public_function_grant"
+                ):
+                    statement = (
+                        "GRANT EXECUTE ON FUNCTION "
+                        "mata_rls.current_subject_type() TO PUBLIC"
+                    )
+                else:
+                    assert mutation_kind == "adhoc_definer_grant_option"
+                    statement = (
+                        "GRANT EXECUTE ON FUNCTION "
+                        "mata_rls.current_subject_type() "
+                        "TO mata_adhoc_attendance_definer "
+                        "WITH GRANT OPTION"
+                    )
+                await connection.exec_driver_sql(statement)
             elif mutation_kind in {"policy_name", "policy_predicate"}:
                 if not require_policy_cutover:
                     pytest.skip("Policy mutation requires revision 000026 or later")
@@ -968,7 +1101,7 @@ async def test_session_lifecycle_helpers_return_only_minimum_results(
     seeded_staff_context: StaffContextSeed,
 ) -> None:
     harness = rls_postgres_harness
-    if harness.revision != "20260727_000027":
+    if harness.revision not in SESSION_LIFECYCLE_REVISIONS:
         pytest.skip("Minimum lifecycle wrappers are installed by revision 000027")
 
     parent_id = uuid4()
@@ -1525,6 +1658,7 @@ async def test_foundation_function_acls_search_paths_and_table_denials_are_exact
                         p.prosecdef AS security_definer,
                         p.proconfig AS configuration,
                         p.proowner = n.nspowner AS owned_by_schema_owner,
+                        owner_role.rolname AS owner_role,
                         has_function_privilege(
                             :runtime_role, p.oid, 'EXECUTE'
                         ) AS runtime_execute,
@@ -1568,6 +1702,8 @@ async def test_foundation_function_acls_search_paths_and_table_denials_are_exact
                         ) AS public_denied
                     FROM pg_proc AS p
                     JOIN pg_namespace AS n ON n.oid = p.pronamespace
+                    JOIN pg_roles AS owner_role
+                      ON owner_role.oid = p.proowner
                     WHERE n.nspname IN ('mata_rls', 'mata_private')
                     ORDER BY signature
                     """
@@ -1584,6 +1720,11 @@ async def test_foundation_function_acls_search_paths_and_table_denials_are_exact
             for row in functions
             if row["schema_name"] == "mata_rls"
         }
+        mata_private_signatures = {
+            str(row["signature"])
+            for row in functions
+            if row["schema_name"] == "mata_private"
+        }
         expected_public_helpers = (
             RUNTIME_ONLY_FUNCTIONS
             | AUTH_ONLY_FUNCTIONS
@@ -1591,9 +1732,10 @@ async def test_foundation_function_acls_search_paths_and_table_denials_are_exact
         )
         if harness.revision in POLICY_CUTOVER_REVISIONS:
             expected_public_helpers |= POLICY_HELPER_FUNCTIONS
-        if harness.revision == "20260727_000027":
+        if harness.revision in SESSION_LIFECYCLE_REVISIONS:
             expected_public_helpers |= RETIRED_SESSION_FUNCTIONS
         assert mata_rls_signatures == expected_public_helpers
+        assert mata_private_signatures == PRIVATE_FUNCTIONS
         assert all(row["public_denied"] is True for row in functions)
         assert all(row["anon_execute"] is False for row in functions)
         assert all(row["authenticated_execute"] is False for row in functions)
@@ -1620,7 +1762,7 @@ async def test_foundation_function_acls_search_paths_and_table_denials_are_exact
                 assert row["runtime_execute"] is True
                 assert row["auth_execute"] is False
 
-        if harness.revision == "20260727_000027":
+        if harness.revision in SESSION_LIFECYCLE_REVISIONS:
             for signature in RETIRED_SESSION_FUNCTIONS:
                 row = by_signature[signature]
                 assert row["runtime_execute"] is False
@@ -1631,7 +1773,17 @@ async def test_foundation_function_acls_search_paths_and_table_denials_are_exact
                 assert row["runtime_execute"] is False
                 assert row["auth_execute"] is False
             assert row["security_definer"] is True
-            assert row["owned_by_schema_owner"] is True
+            if row["signature"] == (
+                "mata_rls.create_adhoc_attendance("
+                "text,text,text,text,text,date,time without time zone,"
+                "time without time zone,numeric,uuid)"
+            ):
+                assert row["owned_by_schema_owner"] is False
+                assert row["owner_role"] == (
+                    "mata_adhoc_attendance_definer"
+                )
+            else:
+                assert row["owned_by_schema_owner"] is True
             configuration = [
                 str(value) for value in (row["configuration"] or [])
             ]

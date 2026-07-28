@@ -210,7 +210,9 @@ parent idle deadline and carrying forward the last qualifying-activity
 timestamp; logout revokes the family. If the final post-response touch reports
 that the session expired, was revoked, or became stale—or if the lifecycle
 store fails—the middleware replaces the pending protected 2xx payload with a
-controlled cookie-clearing `401`.
+controlled `401` that leaves the shared session cookie unchanged. Generic or
+stale failure paths must not delete a newer valid cookie; cookie deletion
+remains limited to reviewed proof-conditional logout or invalid-session paths.
 
 The touch helper:
 
@@ -291,7 +293,8 @@ The existing controls remain:
   logout route bypasses normal middleware hydration and active-session CSRF
   handling so only the termination helper evaluates the bounded proof;
 - malformed, missing, or mismatched logout proof revokes nothing. Logout remains
-  idempotent and clears the browser cookie;
+  idempotent and leaves the shared browser cookie unchanged; the cookie is
+  cleared only after the reviewed proof revokes its presented family;
 - password reset and observable upstream credential reset fence applicable
   staff sessions;
 - account deactivation, role, admin-level, programme-scope, and posting-scope
@@ -405,8 +408,11 @@ no table, column, index, or permissive RLS policy. Upgrade:
 
 Startup attestation additionally proves the exact named 34-table/84-policy
 catalogue, command-appropriate helper-backed policy predicates, and that every
-executable `mata_rls` helper is `SECURITY DEFINER`, owned by the schema owner,
-and configured with exactly `search_path=pg_catalog, pg_temp`.
+executable `mata_rls` helper is `SECURITY DEFINER`, owned by its reviewed
+owner, and configured with exactly `search_path=pg_catalog, pg_temp`. The
+ad-hoc atomic helper is the narrow exception to schema-owner ownership: it is
+owned by the dedicated, non-login `mata_adhoc_attendance_definer` role whose
+attributes, zero-membership posture, and exact privileges are attested.
 
 Downgrade drops the new wrappers, restores the earlier helper grants and
 context-signature behavior, and leaves session evidence untouched. Clean
@@ -484,9 +490,10 @@ Before an approved production release, an operator must record:
    registered Non-NHG Resident;
 7. rotation preserving the family deadline and replacing CSRF;
 8. expired context denial and pool reuse without residual identity;
-9. current-session 401 clearing/redirect behavior in the production frontend;
+9. current-session 401 local-state clearing/redirect behavior in the production
+   frontend without server-side cookie deletion;
 10. exact cookie flags, no persistent lifetime directive, and controlled
-    cookie clearing on invalidation.
+    proof-conditional cookie clearing on logout.
 
 Local evidence is not deployed evidence.
 

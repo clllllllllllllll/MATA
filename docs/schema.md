@@ -366,7 +366,7 @@ Teaching sessions created by secretaries, Programme PC CRUD, or ad-hoc submissio
 | posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Posting/site context for the event. Secretary-created events are posting-owned; PC-created events also carry explicit programme ownership in `created_for_programme_code`. For NHG Resident ad-hoc submissions, this is the assigned/compliance posting for the selected date, not necessarily the attended TTSH department. |
 | created_for_programme_code | VARCHAR(20) | FK → programmes.code, nullable | Explicit programme ownership for PC-created scheduled events. Required for PC-created programme-owned events. Null for secretary-created posting-owned/programme-neutral events unless explicitly set by a future workflow. |
 | teaching_name | VARCHAR(200) | NOT NULL | Stored teaching keyword/name. Secretary and PC scheduled events use approved dropdown options; planned ad-hoc rework requires NHG/Non-NHG Resident selections to come from catalogue-backed options, not arbitrary free text for compliance mapping. |
-| details_of_session | TEXT | nullable | **Planned, not yet in current models/migrations.** Display/audit-only free text for ad-hoc session context. No operational use and no compliance use. Preferred storage is on `teaching_events` because ad-hoc submission creates an event row for both NHG and Non-NHG Residents. |
+| details_of_session | TEXT | nullable | Display/audit-only free text for ad-hoc session context. It has no operational or compliance use and is stored on the shared event row for both NHG and Non-NHG Residents. |
 | event_date | DATE | NOT NULL | |
 | start_time | TIME | NOT NULL | |
 | end_time | TIME | | Server-computed from start_time + session_type.duration_hours at creation |
@@ -377,6 +377,17 @@ Teaching sessions created by secretaries, Programme PC CRUD, or ad-hoc submissio
 | smc_event_code | VARCHAR(50) | | |
 | is_adhoc | BOOLEAN | DEFAULT false | True for resident-submitted ad-hoc events, false for secretary-created events |
 | created_by_role | VARCHAR(20) | | `secretary`, `programme_pc`, `resident`, or `external_resident` depending on creator/source role. This is role/source metadata only, not an actor-name field. |
+| created_by_resident_id | UUID | FK → residents.id, nullable | Immutable native creator identity for `is_adhoc = true AND created_by_role = 'resident'`; null for every other event family. |
+| created_by_external_resident_id | UUID | FK → external_residents.id, nullable | Immutable Non-NHG creator identity for `is_adhoc = true AND created_by_role = 'external_resident'`; null for every other event family. |
+
+**Ad-hoc ownership constraint:** Scheduled events carry neither creator foreign
+key. A Resident-created ad-hoc event carries exactly one creator foreign key,
+and the populated family must agree with `created_by_role`. Ad-hoc rows cannot
+carry scheduled programme/series ownership. The event kind, creator role, and
+both creator foreign keys are immutable. Migration `20260728_000028` backfills
+only a role-consistent event with exactly one distinct same-family attendance
+subject across all statuses and no opposite-family subject; an ambiguous,
+orphaned, mixed-family, or role-mismatched event aborts the upgrade.
 
 **Programme ownership visibility rule:**
 - `created_for_programme_code IS NULL` → treat the event as normal posting-owned/programme-neutral secretary/ad-hoc visibility. For NHG Residents, secretary-created events may qualify through assigned posting visibility or through the resident's explicit native-programme TTSH department posting mapping. Resident visibility still requires date/catalogue checks.
@@ -386,7 +397,7 @@ Teaching sessions created by secretaries, Programme PC CRUD, or ad-hoc submissio
 
 **Master Admin transactional hard-delete exception:** No schema migration, cascade constraint, soft-delete column, or deletion-history table is required for the **Secretary/PC Events** operational override. The dedicated Master Admin service locks the selected scheduled `teaching_events` row, verifies that linked native/external counts still match the confirmed impact, explicitly deletes every linked native `attendance_records` row and every linked `external_attendance_records` row, deletes only that event occurrence, and writes the immutable audit record before the single transaction commits. Foreign keys retain their existing non-cascade behaviour and remain the final integrity guard. Ad-hoc events are not eligible; series siblings and the `event_series` row are preserved.
 
-**Ad-hoc detail contract (planned):** `details_of_session` is optional context text only. It must not participate in event visibility, session type resolution, denominator/numerator calculation, surplus, snapshots, or clawback.
+**Ad-hoc detail contract:** `details_of_session` is optional context text only. It must not participate in event visibility, session type resolution, denominator/numerator calculation, surplus, snapshots, or clawback.
 
 **Ad-hoc attended posting metadata (planned / pending schema choice):** Phase 5B ad-hoc UX captures the attended TTSH department/programme separately from the assigned/compliance posting. If audit/display requires persistence, add a dedicated field such as `attended_posting_code` FK → `posting_codes.code` or an equivalent audit table. Until then, selected attended posting is API/request context for option filtering and export/audit display only. It must not replace `posting_code` for NHG compliance attribution.
 
@@ -413,7 +424,8 @@ TODO: If Programme PC recurrence support is added later, decide whether `event_s
 
 ## Table: `attendance_records`
 
-One row per (resident, teaching_event) submission.
+One immutable row per native attendance submission cycle. A removed cycle is
+retained and a later resubmission receives a new row.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
@@ -424,7 +436,13 @@ One row per (resident, teaching_event) submission.
 | status | VARCHAR(20) | DEFAULT 'submitted' | `submitted`, `flagged`, `removed` |
 | posting_code | VARCHAR(50) | | Audit copy of event posting at submission time. **Never used for compliance attribution** — compliance always uses teaching_events.posting_code. |
 
-**Unique constraint:** `UNIQUE(resident_id, teaching_event_id)` — DB-level duplicate prevention.
+**Active uniqueness and history:** A submitted-only unique index on
+`(resident_id, teaching_event_id)` prevents two active submissions while
+allowing each removed row to remain immutable history. Resubmission inserts a
+new row with a new identifier; it does not restore or overwrite the removed
+row. `status` is constrained to `submitted`, `flagged`, or `removed`, subject
+and event identifiers cannot be retargeted, and a removed row cannot be
+resurrected in place.
 
 **Distinct-event overlap invariant:** Before inserting a later submission, the attendance service rejects it if its event interval overlaps an already accepted distinct event for the same resident. The earlier accepted attendance is preserved unchanged. This submission-time rule is separate from same-event uniqueness and requires no additional stored session-type field.
 
@@ -484,7 +502,10 @@ Confirmed Phase 5B source for Non-NHG forecasted/date-specific posting derivatio
 
 ## Table: `external_attendance_records`
 
-One row per Non-NHG Resident attendance submission. Stored separately from native `attendance_records` so external attendance cannot enter NHG compliance joins accidentally.
+One immutable row per Non-NHG Resident attendance submission cycle. Removed
+cycles are retained and a later resubmission receives a new row. Storage stays
+separate from native `attendance_records` so external attendance cannot enter
+NHG compliance joins accidentally.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
@@ -495,7 +516,11 @@ One row per Non-NHG Resident attendance submission. Stored separately from nativ
 | status | VARCHAR(20) | DEFAULT 'submitted' | `submitted`, `flagged`, `removed` |
 | posting_code | VARCHAR(50) | | Audit copy of event posting at submission time. Not used for NHG compliance. |
 
-**Unique constraint:** `UNIQUE(external_resident_id, teaching_event_id)`
+**Active uniqueness and history:** A submitted-only unique index on
+`(external_resident_id, teaching_event_id)` prevents two active submissions
+while preserving removed rows. The same immutable-history and no-resurrection
+rules used for native attendance apply here. `status` is constrained to
+`submitted`, `flagged`, or `removed`.
 
 **Session type is NOT stored here.** External attendance can be viewed/exported for the resident's home-cluster PC, but it does not participate in NHG PTT compliance.
 
@@ -1259,7 +1284,8 @@ ON event_series(posting_code);
 #### `attendance_records`
 
 ```sql
--- UNIQUE(resident_id, teaching_event_id) already prevents duplicate submission.
+-- The submitted-only unique index prevents duplicate active submissions while
+-- preserving removed history.
 CREATE INDEX idx_attendance_records_resident_status
 ON attendance_records(resident_id, status);
 

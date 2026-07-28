@@ -547,6 +547,10 @@ class FakeAdminEventForceDeleteSession:
         payload = dict(params or {})
         self.executed_sql.append(sql)
 
+        if "/* teaching_event_mutation_lock */" in sql:
+            assert str(payload["lock_scope"]).startswith("teaching-event:")
+            return _FakeResult()
+
         if "/* admin_secretary_events:force_delete_lock */" in sql:
             self.operations.append("lock_event")
             event = self.events.get(str(payload["event_id"]))

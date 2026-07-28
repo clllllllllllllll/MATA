@@ -25,7 +25,7 @@ from app.config import Settings
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
 VERSIONS_DIR = BACKEND_ROOT / "alembic" / "versions"
-H_E_DISPOSABLE_DATABASE_NAME = "mata_phase5b_security_integration_audit"
+H_E_DISPOSABLE_DATABASE_NAME = "mata_phase5b_aud_m04_atomic_attendance_verify"
 _H_E_QUOTED_DATABASE_NAME = f'"{H_E_DISPOSABLE_DATABASE_NAME}"'
 _LOCAL_POSTGRES_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _SYNC_POSTGRES_DRIVERS = frozenset(
@@ -646,6 +646,185 @@ def _run_success(
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def _seed_adhoc_creator_backfill(
+    connection: Connection,
+    *,
+    case: str,
+) -> dict[str, UUID]:
+    ids = {
+        "posting": uuid4(),
+        "native_a": uuid4(),
+        "native_b": uuid4(),
+        "external": uuid4(),
+        "native_event": uuid4(),
+        "external_event": uuid4(),
+    }
+    posting_code = f"MIG{uuid4().hex[:20].upper()}"
+    connection.execute(
+        text("INSERT INTO posting_codes (id, code) VALUES (:id, :code)"),
+        {"id": ids["posting"], "code": posting_code},
+    )
+    connection.execute(
+        text(
+            """
+            INSERT INTO residents (id, name, mcr)
+            VALUES (:id, :name, :mcr)
+            """
+        ),
+        [
+            {
+                "id": ids["native_a"],
+                "name": "Migration native A",
+                "mcr": f"M{uuid4().hex[:18].upper()}",
+            },
+            {
+                "id": ids["native_b"],
+                "name": "Migration native B",
+                "mcr": f"M{uuid4().hex[:18].upper()}",
+            },
+        ],
+    )
+    connection.execute(
+        text(
+            """
+            INSERT INTO external_residents (
+                id, name, mcr, home_cluster, current_nhg_posting_code
+            )
+            VALUES (
+                :id, 'Migration external', :mcr, 'NUH', :posting_code
+            )
+            """
+        ),
+        {
+            "id": ids["external"],
+            "mcr": f"M{uuid4().hex[:18].upper()}",
+            "posting_code": posting_code,
+        },
+    )
+    event_rows = [
+        {
+            "id": ids["native_event"],
+            "posting_code": posting_code,
+            "teaching_name": "Migration native ad-hoc",
+            "created_by_role": "resident",
+        }
+    ]
+    if case == "valid":
+        event_rows.append(
+            {
+                "id": ids["external_event"],
+                "posting_code": posting_code,
+                "teaching_name": "Migration external ad-hoc",
+                "created_by_role": "external_resident",
+            }
+        )
+    connection.execute(
+        text(
+            """
+            INSERT INTO teaching_events (
+                id, posting_code, teaching_name, event_date, start_time,
+                is_adhoc, created_by_role
+            )
+            VALUES (
+                :id, :posting_code, :teaching_name, DATE '2035-05-01',
+                TIME '09:00', true, :created_by_role
+            )
+            """
+        ),
+        event_rows,
+    )
+
+    if case in {"valid", "ambiguous", "mixed"}:
+        native_ids = (
+            [ids["native_a"], ids["native_b"]]
+            if case == "ambiguous"
+            else [ids["native_a"]]
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO attendance_records (
+                    resident_id, teaching_event_id, status, posting_code
+                )
+                VALUES (
+                    :resident_id, :event_id, 'submitted', :posting_code
+                )
+                """
+            ),
+            [
+                {
+                    "resident_id": resident_id,
+                    "event_id": ids["native_event"],
+                    "posting_code": posting_code,
+                }
+                for resident_id in native_ids
+            ],
+        )
+    if case == "valid":
+        connection.execute(
+            text(
+                """
+                INSERT INTO external_attendance_records (
+                    external_resident_id, teaching_event_id,
+                    status, posting_code
+                )
+                VALUES (
+                    :external_id, :event_id, :status, :posting_code
+                )
+                """
+            ),
+            [
+                {
+                    "external_id": ids["external"],
+                    "event_id": ids["external_event"],
+                    "status": status,
+                    "posting_code": posting_code,
+                }
+                for status in ("removed", "submitted")
+            ],
+        )
+    elif case == "mixed":
+        connection.execute(
+            text(
+                """
+                INSERT INTO external_attendance_records (
+                    external_resident_id, teaching_event_id,
+                    status, posting_code
+                )
+                VALUES (
+                    :external_id, :event_id, 'submitted', :posting_code
+                )
+                """
+            ),
+            {
+                "external_id": ids["external"],
+                "event_id": ids["native_event"],
+                "posting_code": posting_code,
+            },
+        )
+    return ids
+
+
+def _adhoc_creator_columns(connection: Connection) -> set[str]:
+    return {
+        str(column)
+        for column in connection.scalars(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'teaching_events'
+                  AND column_name IN (
+                      'created_by_resident_id',
+                      'created_by_external_resident_id'
+                  )
+                """
+            )
+        )
+    }
+
+
 def _cutover_relation_state(
     connection: Connection,
 ) -> dict[str, tuple[bool, bool, int]]:
@@ -698,7 +877,11 @@ def _assert_cutover_revision_state(
         )
     )
 
-    if revision in {"20260726_000026", "20260727_000027"}:
+    if revision in {
+        "20260726_000026",
+        "20260727_000027",
+        "20260728_000028",
+    }:
         assert relation_state["users"][0] is True
         assert relation_state["users"][2] > 0
         assert relation_state["programmes"][0] is True
@@ -805,19 +988,23 @@ def _assert_session_lifecycle_helper_state(
         ).mappings()
     }
 
-    assert revision in {"20260726_000026", "20260727_000027"}
+    assert revision in {
+        "20260726_000026",
+        "20260727_000027",
+        "20260728_000028",
+    }
     for signature, expected_access in retired_helper_access.items():
         row = rows[signature]
         assert row["helper_exists"] is True
         assert (row["runtime_execute"], row["auth_execute"]) == (
             (False, False)
-            if revision == "20260727_000027"
+            if revision in {"20260727_000027", "20260728_000028"}
             else expected_access
         )
 
     for signature, expected_access in new_helper_access.items():
         row = rows[signature]
-        if revision == "20260727_000027":
+        if revision in {"20260727_000027", "20260728_000028"}:
             assert row["helper_exists"] is True
             assert (row["runtime_execute"], row["auth_execute"]) == (
                 expected_access
@@ -1121,6 +1308,217 @@ def test_full_rls_cutover_clean_populated_downgrade_and_reupgrade_lifecycle(
                 {"session_id": session_id},
             ).one()
         ) == session_snapshot
+
+
+def test_adhoc_creator_backfill_populated_downgrade_and_reupgrade(
+    clean_migration_database: MigrationHarness,
+) -> None:
+    harness = clean_migration_database
+    _run_success(harness, "upgrade", "20260727_000027")
+    with harness.engine.begin() as connection:
+        ids = _seed_adhoc_creator_backfill(connection, case="valid")
+
+    for action, revision in (
+        ("upgrade", "20260728_000028"),
+        ("downgrade", "20260727_000027"),
+        ("upgrade", "20260728_000028"),
+    ):
+        _run_success(harness, action, revision)
+        with harness.engine.connect() as connection:
+            assert _revision(connection) == revision
+            if revision == "20260727_000027":
+                assert _adhoc_creator_columns(connection) == set()
+                assert connection.scalar(
+                    text(
+                        """
+                        SELECT pg_catalog.to_regprocedure(
+                            'mata_rls.create_adhoc_attendance('
+                            'text,text,text,text,text,date,time without time zone,'
+                            'time without time zone,numeric,uuid)'
+                        )
+                        """
+                    )
+                ) is None
+                assert connection.scalar(
+                    text(
+                        """
+                        SELECT
+                            has_table_privilege(
+                                'mata_adhoc_attendance_definer',
+                                'public.teaching_events',
+                                'INSERT'
+                            )
+                            OR has_function_privilege(
+                                'mata_adhoc_attendance_definer',
+                                'public.gen_random_uuid()',
+                                'EXECUTE'
+                            )
+                        """
+                    )
+                ) is False
+                continue
+
+            assert _adhoc_creator_columns(connection) == {
+                "created_by_resident_id",
+                "created_by_external_resident_id",
+            }
+            definer = connection.execute(
+                text(
+                    """
+                    SELECT
+                        role.rolcanlogin,
+                        role.rolinherit,
+                        role.rolsuper,
+                        role.rolbypassrls,
+                        role.rolcreatedb,
+                        role.rolcreaterole,
+                        role.rolreplication,
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM pg_catalog.pg_auth_members AS membership
+                            WHERE membership.member = role.oid
+                               OR membership.roleid = role.oid
+                        ) AS has_no_memberships,
+                        owner.rolname AS function_owner,
+                        has_function_privilege(
+                            role.oid,
+                            'public.gen_random_uuid()',
+                            'EXECUTE'
+                        ) AS can_generate_uuid,
+                        has_function_privilege(
+                            role.oid,
+                            'mata_rls.current_subject_type()',
+                            'EXECUTE'
+                        ) AS can_read_subject_type,
+                        has_function_privilege(
+                            role.oid,
+                            'mata_rls.current_subject_id()',
+                            'EXECUTE'
+                        ) AS can_read_subject_id
+                    FROM pg_catalog.pg_roles AS role
+                    JOIN pg_catalog.pg_proc AS helper
+                      ON helper.oid = pg_catalog.to_regprocedure(
+                          'mata_rls.create_adhoc_attendance('
+                          'text,text,text,text,text,date,'
+                          'time without time zone,'
+                          'time without time zone,numeric,uuid)'
+                      )
+                    JOIN pg_catalog.pg_roles AS owner
+                      ON owner.oid = helper.proowner
+                    WHERE role.rolname
+                        = 'mata_adhoc_attendance_definer'
+                    """
+                )
+            ).mappings().one()
+            assert tuple(definer.values()) == (
+                False,
+                False,
+                False,
+                True,
+                False,
+                False,
+                False,
+                True,
+                "mata_adhoc_attendance_definer",
+                True,
+                True,
+                True,
+            )
+            definer_table_privileges = {
+                (
+                    str(row["table_name"]),
+                    str(row["privilege_type"]),
+                )
+                for row in connection.execute(
+                    text(
+                        """
+                        SELECT
+                            relation.relname AS table_name,
+                            privilege.privilege_type
+                        FROM pg_catalog.pg_class AS relation
+                        JOIN pg_catalog.pg_namespace AS namespace
+                          ON namespace.oid = relation.relnamespace
+                        CROSS JOIN LATERAL pg_catalog.aclexplode(
+                            relation.relacl
+                        ) AS privilege
+                        WHERE namespace.nspname = 'public'
+                          AND relation.relkind IN ('r', 'p')
+                          AND privilege.grantee = pg_catalog.to_regrole(
+                              'mata_adhoc_attendance_definer'
+                          )
+                        """
+                    )
+                ).mappings()
+            }
+            select_tables = {
+                "attendance_records",
+                "external_attendance_records",
+                "external_resident_postings",
+                "external_residents",
+                "global_session_types",
+                "public_holidays",
+                "reporting_periods",
+                "resident_postings",
+                "residents",
+                "session_types",
+                "teaching_events",
+                "teaching_name_catalogue",
+                "teaching_targets",
+            }
+            assert definer_table_privileges == {
+                *((table_name, "SELECT") for table_name in select_tables),
+                ("attendance_records", "INSERT"),
+                ("external_attendance_records", "INSERT"),
+                ("teaching_events", "INSERT"),
+            }
+            creator_rows = {
+                UUID(str(row["id"])): (
+                    row["created_by_resident_id"],
+                    row["created_by_external_resident_id"],
+                )
+                for row in connection.execute(
+                    text(
+                        """
+                        SELECT id, created_by_resident_id,
+                               created_by_external_resident_id
+                        FROM teaching_events
+                        WHERE id IN (:native_event, :external_event)
+                        """
+                    ),
+                    {
+                        "native_event": ids["native_event"],
+                        "external_event": ids["external_event"],
+                    },
+                ).mappings()
+            }
+            assert creator_rows[ids["native_event"]] == (
+                ids["native_a"],
+                None,
+            )
+            assert creator_rows[ids["external_event"]] == (
+                None,
+                ids["external"],
+            )
+
+
+@pytest.mark.parametrize("case", ["orphaned", "ambiguous", "mixed"])
+def test_adhoc_creator_backfill_rejects_non_deterministic_history(
+    clean_migration_database: MigrationHarness,
+    case: str,
+) -> None:
+    harness = clean_migration_database
+    _run_success(harness, "upgrade", "20260727_000027")
+    with harness.engine.begin() as connection:
+        _seed_adhoc_creator_backfill(connection, case=case)
+
+    result = harness.alembic("upgrade", "20260728_000028")
+    assert result.returncode != 0
+    assert "Cannot infer immutable ad-hoc creator" in (
+        result.stdout + result.stderr
+    )
+    with harness.engine.connect() as connection:
+        assert _revision(connection) == "20260727_000027"
+        assert _adhoc_creator_columns(connection) == set()
 
 
 def test_external_registration_migration_lifecycle_on_clean_postgres(

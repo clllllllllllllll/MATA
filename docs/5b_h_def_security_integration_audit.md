@@ -233,6 +233,16 @@ None confirmed.
   transaction shape, and populated downgrade/re-upgrade proof. It is not a
   low-risk bounded Medium patch.
 
+**Descendant resolution:** The dedicated uncommitted
+`CL/5b-h-atomic-attendance` branch addresses this finding in revision
+`20260728_000028`. It persists immutable typed native/external creator foreign
+keys, refuses ambiguous populated backfill, routes ad-hoc event-plus-attendance
+creation through one narrow runtime-only function, denies ordinary direct
+ad-hoc inserts, preserves scheduled policy behavior, and adds exact
+own/other/cross-family coverage. The transaction/state/concurrency record is
+`docs/5b_h_aud_m04_atomic_attendance.md`. This note does not rewrite the
+point-in-time classification or accepted evidence above.
+
 #### AUD-M-05 — multipart upload limit is enforced after framework spooling
 
 - Classification: confirmed resource-exhaustion defense gap.

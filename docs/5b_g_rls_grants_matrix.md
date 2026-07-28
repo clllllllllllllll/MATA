@@ -46,6 +46,17 @@ Current Supabase posture to account for:
 - `mata_auth_internal` has no direct application-table or sequence privilege. `PUBLIC` and optional `anon`, `authenticated`, and `service_role` roles have no application-relation, H-E helper, or `CREATE` authority in `public`.
 - Default privileges grant no future application tables, sequences, or functions to runtime, auth, browser, or PUBLIC roles. Future objects require explicit review.
 
+Revision `20260728_000028` retains those table actions but narrows how Resident
+ad-hoc rows are created. Ordinary `teaching_events` and attendance INSERT
+policies accept scheduled paths only. `mata_app_runtime` alone may execute
+`mata_rls.create_adhoc_attendance(...)`, which derives the verified subject and
+native/external family, persists immutable typed creator ownership, and creates
+the matching event/attendance pair without committing. `mata_auth_internal`,
+PUBLIC, browser roles, and `service_role` have no execution right. Update
+policies plus immutable triggers allow only the exact creator's matching-family
+attendance removal and reject subject/event retargeting or in-place
+resurrection.
+
 | Application table | Implemented runtime actions |
 |---|---|
 | `academic_month_boundaries` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
@@ -131,6 +142,10 @@ The local direct policy matrix and existing application suite exercise these inv
 - NHG Resident sees and mutates only its native resident/posting/event/attendance surface and sees no external identity or attendance rows.
 - Non-NHG Resident sees and mutates only its own external identity/schedule/event/attendance surface and sees no native resident or attendance rows.
 - Native and external attendance remain separate; external rows never enter native compliance.
+- Native and external ad-hoc ownership is persistent and exact: only the
+  creator can select the ad-hoc event through a Resident context, only the
+  matching attendance family can attach, and another Resident cannot reuse the
+  event. Scheduled-event policy behavior is unchanged.
 - Uploads, warnings, audit logging, reports, event guards, registration, session lifecycle, rate limits, and other existing workflows run through either scoped runtime policies or a reviewed helper boundary.
 - Revision `20260727_000027` replaces restricted execution of the original
   full-row session resolve/issue/rotate functions with minimal lifecycle

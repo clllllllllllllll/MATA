@@ -521,13 +521,17 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 **Attendance Submission:**
 - `POST /resident/attendance` with `{ "event_ids": ["uuid1", "uuid2"] }`
 - Weekend sessions with no matching `weekend_exceptions` rule: stored, but `compliance_warning` returned in response
-- Duplicate prevention via `UNIQUE(resident_id, teaching_event_id)` at DB level
+- Active duplicate prevention uses a submitted-only unique index on
+  `(resident_id, teaching_event_id)`; removed history is retained and a later
+  resubmission receives a new row.
 
 **Ad-hoc Teaching:**
 - Date-first dropdown flow: resident selects teaching date, backend derives assigned posting, resident selects attended TTSH department/programme, then selects catalogue-backed teaching evidence from TTF Column K / `teaching_name_catalogue`
 - `POST /resident/adhoc-teaching` — resident submits selected teaching not pre-created by secretary
-- Creates `teaching_events` row (`is_adhoc = true`, `posting_code = assigned/compliance posting`, `cme_points_awarded = false`, `smc_event_code = null`) and `attendance_records` row in same transaction
-- Planned `details_of_session` is display/audit-only and has no compliance use
+- A narrow database function derives the authenticated creator/family and
+  creates the immutable-owned `teaching_events` row plus matching attendance
+  row in the same caller transaction.
+- `details_of_session` is display/audit-only and has no compliance use
 - PH dates hard-blocked (422)
 - Countable ad-hoc compliance maps to `Department/Programme Teaching [1h]` under the assigned posting for the selected date, not the attended TTSH department unless it is also the assigned posting
 - If the assigned-posting `Department/Programme Teaching [1h]` target cannot be resolved, return unavailable/not-countable rather than guessing
@@ -980,6 +984,11 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
 - **Supabase service role key:** Server-only. Never exposed to frontend or client-side env vars.
 - **Browser/Data API grants:** `PUBLIC`, optional `anon`, and optional `authenticated` application-object privileges are revoked by `20260722_000024`.
 - **RLS:** H-E locally implements 34 RLS-enabled application tables, 84 runtime-targeted policies, exact helper/table/column grants, and a restricted non-owner runtime. Grant revocation alone was not RLS, and local implementation is not deployed proof.
+- **Ad-hoc ownership:** Revision `20260728_000028` adds immutable typed native
+  or Non-NHG creator identity to every Resident-created ad-hoc event. Only a
+  narrow runtime helper may create the matching event/attendance pair;
+  ordinary direct ad-hoc insertion, another Resident, and the opposite storage
+  family are denied. See `5b_h_aud_m04_atomic_attendance.md`.
 - **Session management:** Opaque 256-bit session and CSRF credentials; only keyed digests persist. Strict host-only cookie, synchronized CSRF, one-winner rotation, family logout, and generation fencing are implemented.
 
 > **⚠️ Most likely LLM mistake:** Storing JWT tokens in `localStorage`. The confirmed approach is `HttpOnly` cookies. The silent consequence is XSS vulnerability — any script injection can steal the token.
@@ -1004,6 +1013,7 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
 | Resident second factor not approved | MCR-only production assurance remains unresolved | Do not invent a factor; retain the explicit blocker pending stakeholder approval |
 | Local verification versus deployment | Passing code/tests do not prove deployed environment, migrations, grants, or cookie behavior | Run the documented post-deployment smoke against the approved target |
 | Local H-E/lifecycle versus deployed RLS | A locally verified role/policy/session catalogue can be mistaken for deployed Supabase protection | Independently verify revision `20260727_000027`, lifecycle settings, credentials, ownership, policies, grants, helpers, PUBLIC/browser roles, expiry behavior, and five-role workflows on the approved target |
+| Local AUD-M-04 versus deployed RLS | Immutable ad-hoc ownership and atomic helper behavior may be mistaken for deployed protection | Independently verify revision `20260728_000028`, strict populated backfill, creator/family RLS, helper ACLs, rollback, and concurrency on the approved target |
 | Emergency bearer compatibility | Routine enablement would reintroduce browser-token risk | Keep double opt-in, time-bounded, and rollback-only |
 
 See `99_decision_log_and_gap_audit.md` for the full risk register.

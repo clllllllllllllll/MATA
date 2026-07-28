@@ -21,6 +21,25 @@ descendant in `docs/5b_h_session_lifecycle_assurance.md` adds revision
 Do not rewrite the H-E revision, counts, commands, incident record, or evidence
 below as session-lifecycle evidence.
 
+## Later AUD-M-04 addendum
+
+Revision `20260728_000028` closes the ad-hoc owner/storage-family gap identified
+after the H-E point-in-time audit. It adds two typed creator foreign keys to
+`teaching_events`, strict and immutable native/external family constraints, and
+a narrow runtime-only `mata_rls.create_adhoc_attendance(...)` boundary that
+derives the verified subject and creates the event/attendance pair in the
+caller's transaction. Ordinary table policies reject Resident ad-hoc event and
+attendance insertion; exact-owner update policies preserve the reviewed
+removal path. Another Resident and the opposite storage family cannot select
+or reuse the ad-hoc association.
+
+The populated upgrade refuses ambiguous ownership instead of inventing it.
+Scheduled event behavior and the existing 34-table runtime-action boundary
+remain unchanged. See `docs/5b_h_aud_m04_atomic_attendance.md` for the
+transaction matrix, migration rule, and descendant verification evidence. Do
+not rewrite the original `20260726_000026` counts or commands below as
+AUD-M-04 evidence.
+
 This report records the bounded Phase 5B-H-E implementation on
 `CL/5b-h-e-full-rls`. All accepted H-E database evidence used only the named
 local disposable database `mata_phase5b_verify_5bhe`. No live Supabase or

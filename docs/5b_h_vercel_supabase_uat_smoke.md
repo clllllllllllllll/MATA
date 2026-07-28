@@ -347,3 +347,28 @@ requires separately authorized, sanitized evidence from the approved target.
 | Expired context | An expired/revoked session cannot install or continue satisfying signed RLS context; commit, rollback, failed transaction, and pool-size-one reuse retain no prior identity. |
 | Frontend termination | A current-session `401` clears identity, CSRF, protected read/upload state, redirects once to login, and does not loop refresh. |
 | Logs | No cookie value, CSRF value, digest, MCR, database URL, SQL parameters, or personal row appears in logs or evidence. |
+
+## Phase 5B-H AUD-M-04 Deployed Checks
+
+This descendant appendix does not rewrite the historical results above. Every
+row remains manual until separately authorized, sanitized evidence is captured
+from the approved target.
+
+| Check | Required deployed result |
+|---|---|
+| Migration | Approved target reports exactly `20260728_000028`; populated upgrade reports no ambiguous/orphaned/mixed-family ad-hoc ownership. |
+| Creator schema | Every scheduled event has no Resident creator FK; every ad-hoc event has exactly one typed creator FK agreeing with `created_by_role`. |
+| Native isolation | Native A can create/read/remove its own ad-hoc attendance; native B and every Non-NHG Resident cannot select or attach to that event. |
+| External isolation | External A can create/read/remove its own ad-hoc attendance; external B and every native Resident cannot select or attach to that event. |
+| Direct insertion | Ordinary direct runtime INSERT cannot create a Resident ad-hoc event, orphan it, or attach attendance to an ad-hoc event. |
+| Atomic helper | Only `mata_app_runtime` executes `mata_rls.create_adhoc_attendance(...)`; it accepts no subject/family/table selector and event/attendance failure rolls back both rows. |
+| ACLs | `mata_auth_internal`, PUBLIC, `anon`, `authenticated`, and `service_role` cannot execute the atomic helper or private integrity functions. |
+| Immutable history | Creator/family and attendance subject/event retargeting fail; removal preserves the row; resubmission creates a new identifier; a stale old removal cannot affect it. |
+| Concurrency | Native and external same-event/overlap races produce one valid active outcome; submit/remove and double-remove produce a valid serialized state. |
+| Event mutation | Secretary audit failure rolls back the scheduled event mutation; ordinary Secretary/PC edit/delete locks the event and returns `409` for any linked attendance status. |
+| Scheduled regression | Existing Secretary, Programme PC, native, external, Master force-delete, and staff scope behavior remains constrained by the prior contract. |
+| Evidence hygiene | No connection string, credential, cookie/CSRF value, MCR, Resident identifier, or production row is recorded. |
+
+Passing local AUD-M-04 suites is a prerequisite, not deployed proof.
+
+PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED

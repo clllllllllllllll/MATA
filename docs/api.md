@@ -142,7 +142,9 @@ These rules apply to every endpoint unless a stricter endpoint-specific rule is 
   requests, safe reads, polling, refresh, and logout do not qualify. If the
   final touch finds an expired, revoked, or stale session—or the lifecycle
   store fails—the pending protected 2xx response is replaced by a controlled
-  cookie-clearing `401`.
+  `401` that leaves the shared session cookie unchanged. Generic or stale
+  failure paths must not delete a newer valid cookie; cookie deletion remains
+  limited to reviewed proof-conditional logout or invalid-session paths.
 - Normal cookie mode ignores raw client identity headers and does not use caller-provided authorization as the application credential. Local stub/demo and explicitly gated emergency bearer compatibility remain separate.
 
 Effective expiry is the earlier of idle and family absolute expiry, with
@@ -1304,6 +1306,9 @@ Edit a programme-owned scheduled teaching event.
 - **Scope:** request `programme_code IN programme_scope`, and event must be programme-owned for that programme or a secretary-created/null-owner scheduled row visible to that programme.
 - **Validation:** Public holiday block and catalogue option validation apply to changed event date/name/posting fields.
 - **Constraint:** Returns `409` if any native `attendance_records` or `external_attendance_records` exist for the event. `created_by_role` is preserved.
+- **Concurrency:** The service locks and reloads the event before the
+  all-status attendance guard and update, so a concurrent submission cannot
+  validate against the pre-edit interval and attach after the edit.
 
 ### POST `/admin/programme-teaching-events/{id}/duplicate`
 
@@ -1320,6 +1325,8 @@ Delete a programme-owned scheduled teaching event.
 - **Auth:** admin/PC only
 - **Scope:** request `programme_code IN programme_scope`, and event must be programme-owned for that programme or a secretary-created/null-owner scheduled row visible to that programme.
 - **Constraint:** Returns `409` if any native `attendance_records` or `external_attendance_records` exist for the event.
+- **Concurrency:** The service locks and reloads the event before checking
+  every linked attendance status and deleting.
 
 ---
 
@@ -1450,6 +1457,9 @@ Create a new teaching event.
   - `end_time` = `start_time + session_type.duration_hours` (server-computed — NOT a request field)
   - `duration_hours` copied from the selected option for event display/time computation only; it is never a compliance multiplier
 - **Returns 422 if:** `teaching_name` is not an allowed canonical option in the secretary's resolved teaching-name pool
+- **Transaction:** the event mutation and its existing Secretary audit entry
+  commit once. Audit or commit failure rolls back the event; cache invalidation
+  runs only after commit.
 
 ### POST `/secretary/teaching-events/duplicate`
 
@@ -1466,6 +1476,8 @@ Duplicate an existing event.
 }
 ```
 - **Validation:** Returns `422` if `event_date` is a public holiday.
+- **Transaction:** the duplicate and its existing Secretary audit entry commit
+  together.
 
 ### DELETE `/secretary/teaching-events/{id}`
 
@@ -1473,6 +1485,8 @@ Delete a teaching event.
 
 - **Auth:** secretary only
 - **Constraint:** Returns `409` if any attendance records exist against this event.
+- **Transaction:** the event is locked before the all-status dependency check;
+  deletion and the existing Secretary audit entry commit together.
 
 ### POST `/secretary/teaching-events/series`
 
@@ -1496,6 +1510,8 @@ Create a recurring event series.
 }
 ```
 - **Backend:** Materialises individual `teaching_events` rows per occurrence.
+- **Transaction:** series metadata, every materialised occurrence, and the
+  existing Secretary audit entry are one all-or-nothing operation.
 
 ### DELETE `/secretary/teaching-events/series/{series_id}`
 
@@ -1503,6 +1519,8 @@ Delete a series. Options: `scope=single&event_id=X`, `scope=following&event_id=X
 
 - **Auth:** secretary only
 - **Constraint:** Cannot delete occurrences that have attendance records.
+- **Transaction:** affected occurrences are locked in deterministic order;
+  deletion and the existing Secretary audit entry commit once.
 
 ### GET `/secretary/cme-dashboard`
 
@@ -1626,10 +1644,17 @@ Submit attendance for one or more events.
   2. Validates `event_date` falls within a `resident_postings` row with `status IN ('active', 'loa_working')` → `422` if outside tenure
   3. For an assigned-posting event, validates the exact canonical name in `(reporting period, resident programme, assigned posting, phase R-year)`. For an approved native-programme event outside that posting, validates the allowed source and the assigned-posting `Department/Programme Teaching [1h]` target used by the read-time projection; it does not require the creator posting to become a compliance result.
   4. Validates programme ownership: events with `created_for_programme_code` set must match the resident's `programme_code`
-  5. Validates no duplicate (`UNIQUE(resident_id, teaching_event_id)`)
+  5. Validates no active duplicate; a submitted-only unique index on
+     `(resident_id, teaching_event_id)` is the database race boundary.
   6. Before insert, rejects a later submission whose distinct event interval overlaps an already accepted event for the same resident. The earlier accepted attendance remains unchanged; this check is separate from same-event uniqueness.
   7. Creates accepted `attendance_records` rows — **does NOT store `session_type_id`**
   8. Checks each submitted event against `weekend_exceptions` — if a weekend session has no matching rule, adds a `compliance_warning` to the response
+- **Transaction/concurrency:** The complete `event_ids` list is one atomic
+  batch. Transaction-scoped event advisory keys are acquired in deterministic
+  order and are shared with staff event edit/delete paths; a family-specific
+  subject/date advisory key then serializes submit/remove and overlap
+  decisions. The service validates the whole batch before DML and commits once;
+  any item, insert, or commit failure rolls back every row in the request.
 - **Response:**
 ```json
 {
@@ -1644,12 +1669,17 @@ An overlapping distinct event is returned as a submission conflict for the later
 
 ### DELETE `/resident/attendance/{attendance_id}`
 
-Delete own submitted attendance.
+Remove own submitted attendance without hard-deleting its history.
 
 - **Auth:** resident only
 - **Constraint:** Can only delete own records.
+- **Persistence:** Takes the shared event advisory key, the same family-specific
+  subject/date advisory key used by submission, and a row lock on the current
+  attendance before conditionally changing `submitted` to `removed`. A repeated
+  removal is idempotent. Resubmission creates a new row/identifier; a request
+  carrying an older removed identifier cannot remove that newer row.
 
-### Planned GET `/resident/adhoc-teaching-options`
+### GET `/resident/adhoc-teaching-options`
 
 Return assigned-posting context, attended TTSH department options, and catalogue-backed teaching options for the ad-hoc form.
 
@@ -1661,22 +1691,25 @@ Return assigned-posting context, attended TTSH department options, and catalogue
   1. Derives `assigned_posting_code` from `resident_postings` for `teaching_date` with `status IN ('active', 'loa_working')`.
   2. Uses resident native `programme_code` from `residents.programme_code`.
   3. Builds `attended_posting_options[]` from validated TTSH department/programme posting codes backed by `posting_codes` and configured mapping. Do not generate posting codes by string concatenation or regex.
-  4. When `attended_posting_code` is provided, returns `teaching_options[]` from TTF Column K / `teaching_name_catalogue` for the selected attended department posting, scoped to resident native programme where applicable.
-  5. Sets `compliance_posting_code = assigned_posting_code`.
-  6. Sets `compliance_session_type_name = "Department/Programme Teaching [1h]"`.
-  7. Resolves the fixed compliance session type against a tracked target for assigned posting, resident native programme, resident `r_year` for the selected date, and active/effectively active `reporting_period_id`.
-  8. If assigned posting or the required fixed target cannot be resolved, return `countable = false` with a clear `reason`/`message`; do not guess.
+  4. Returns `options[]` from TTF Column K / `teaching_name_catalogue` for the selected attended department posting, scoped to the resident's native programme and `r_year`.
+  5. Returns the assigned posting as `posting_code`/`posting_label`; the selected attended posting remains separate.
+  6. If no posting matches, multiple postings match, or no attended-posting/catalogue options exist, returns `available = false` with the corresponding controlled `reason`/`message`; it does not guess.
+  7. Fixed NHG compliance attribution is resolved and enforced by `POST /resident/adhoc-teaching`, not by this options response.
 - **Non-NHG Resident backend:**
-  1. Derives date-specific host posting from `external_resident_postings` for `teaching_date` once forecast posting schedule is implemented.
-  2. If no schedule row matches the date, returns `countable = false` and `reason = "posting_unavailable_for_date"`.
+  1. Derives the date-specific host posting from `external_resident_postings` for `teaching_date`.
+  2. If no schedule row matches the date, returns `available = false` and `reason = "posting_unavailable"`.
   3. Uses attended department selection only for option filtering/export context.
-  4. Returns no NHG compliance attribution: `compliance_posting_code = null`, `compliance_session_type_name = null`, and `countable = false`.
+  4. Returns catalogue-backed options for the selected attended posting. Non-NHG submissions remain outside NHG compliance.
 - **Response example:**
 ```json
 {
+  "date": "2026-04-15",
   "teaching_date": "2026-04-15",
-  "assigned_posting_code": "TTSHRehab",
-  "assigned_posting_label": "TTSH Rehabilitation Medicine",
+  "available": true,
+  "reporting_period_id": "uuid",
+  "posting_code": "TTSHRehab",
+  "posting_label": "TTSH Rehabilitation Medicine",
+  "r_year": "R2",
   "attended_posting_options": [
     {
       "posting_code": "TTSHGerMed",
@@ -1686,15 +1719,23 @@ Return assigned-posting context, attended TTSH department options, and catalogue
     }
   ],
   "selected_attended_posting_code": "TTSHGerMed",
-  "teaching_options": [
+  "selected_attended_posting_label": "TTSH Geriatric Medicine",
+  "options": [
     {
-      "catalogue_id": "uuid",
-      "teaching_name": "Journal Club"
+      "teaching_name": "Journal Club",
+      "keyword": "Journal Club",
+      "session_type": "Journal Club",
+      "session_type_name": "Journal Club",
+      "session_type_id": "uuid",
+      "duration_hours": 1.0,
+      "posting_code": "TTSHGerMed",
+      "posting_label": "TTSH Geriatric Medicine",
+      "reporting_period_id": "uuid",
+      "r_year": "R2",
+      "is_tracked": true,
+      "is_global": false
     }
   ],
-  "compliance_session_type_name": "Department/Programme Teaching [1h]",
-  "compliance_posting_code": "TTSHRehab",
-  "countable": true,
   "reason": null,
   "message": null
 }
@@ -1712,7 +1753,6 @@ Submit an ad-hoc teaching not pre-created by a secretary.
   "teaching_date": "2026-04-15",
   "start_time": "10:00",
   "teaching_name": "Journal Club",
-  "catalogue_id": "uuid",
   "attended_posting_code": "TTSHGerMed",
   "details_of_session": "Case discussion after ward teaching"
 }
@@ -1721,22 +1761,35 @@ Submit an ad-hoc teaching not pre-created by a secretary.
   1. Validates `teaching_date` is not a public holiday → `422` if PH.
   2. Derives assigned posting for the selected date:
      - NHG Resident: `resident_postings` date match with `status IN ('active', 'loa_working')`.
-     - Non-NHG Resident: `external_resident_postings` date match once forecast posting schedule is implemented.
+     - Non-NHG Resident: `external_resident_postings` date match.
   3. Validates `attended_posting_code` / selected TTSH department posting against `posting_codes` and configured mapping. Do not generate codes by string concatenation or regex.
-  4. Validates submitted `teaching_name` or `catalogue_id` was selected from the catalogue-backed options for the selected date and attended posting context. Arbitrary free-text teaching names must not drive compliance mapping.
+  4. Validates submitted `teaching_name` was selected from the catalogue-backed options for the selected date and attended posting context. Arbitrary free-text teaching names must not drive compliance mapping.
   5. For NHG Residents, resolves fixed compliance attribution:
      - `compliance_posting_code = assigned_posting_code`
      - `compliance_session_type_name = "Department/Programme Teaching [1h]"`
      - required tracked target exists for assigned posting, resident native programme, `resident_postings.r_year`, and active/effectively active `reporting_period_id`
   6. If the required assigned-posting `Department/Programme Teaching [1h]` target cannot be resolved, return a clear unavailable/not-countable response rather than guessing.
-  7. For an NHG Resident, before either row is inserted, rejects the ad-hoc interval when it overlaps an already submitted distinct native event for that resident on the same date. It uses the same controlled `409` conflict and preserves the earlier attendance unchanged. Non-NHG storage remains separate and unchanged.
-  8. Creates `teaching_events` row with `is_adhoc = true`, `posting_code = assigned/compliance posting for NHG Resident ad-hoc`, `created_by_role = 'resident'` or `'external_resident'`, `cme_points_awarded = false`, `smc_event_code = null`, and planned `details_of_session` when provided.
-  9. Creates `attendance_records` for NHG Residents or `external_attendance_records` for Non-NHG Residents in the same transaction.
+  7. Before either row is inserted, takes the native/external subject-date lock
+     and rejects an interval that overlaps an already submitted distinct event
+     for that Resident. It uses a controlled `409` and preserves the earlier
+     attendance.
+  8. Calls the narrow PostgreSQL ad-hoc creation function. It derives trusted
+     subject identity and family from the signed transaction-local context,
+     creates `teaching_events` with the matching immutable
+     `created_by_resident_id` or `created_by_external_resident_id`, and inserts
+     only the corresponding attendance family. The client supplies none of
+     those ownership fields.
+  9. The function and service share the caller transaction and commit once.
+     Failure leaves neither an orphan event nor provisional attendance.
   10. `end_time` = `start_time + 1 hour` for countable NHG ad-hoc compliance attribution. Display duration for the attended catalogue option must not override fixed NHG compliance attribution.
   11. Checks weekend exception — returns `compliance_warning` if session will not count for native compliance.
 - **NHG compliance treatment:** All countable NHG Resident ad-hoc sessions map to `Department/Programme Teaching [1h]` and count under the assigned posting for the selected date. They do not count under the attended TTSH department unless that department is also the assigned posting.
 - **Non-NHG treatment:** Non-NHG ad-hoc sessions create `external_attendance_records` only for attendance storage. They do not create native `attendance_records`, receive no NHG compliance attribution, and never enter NHG numerator, denominator, surplus, snapshots, clawback, or native reports.
-- **Planned schema/API note:** `details_of_session` is not present in current models/migrations. It is display/audit-only and must have no operational or compliance use. `attended_posting_code` is planned audit/display metadata; if current schema does not support it, keep it as pending schema/API field and do not overload `teaching_events.posting_code`.
+- **Schema/API note:** `details_of_session` is stored on the event as
+  display/audit-only context and has no operational or compliance use.
+  `attended_posting_code` still has no dedicated persisted field; keep it as
+  request/option-filtering context and do not overload
+  `teaching_events.posting_code`.
 
 ### GET `/resident/dashboard`
 
@@ -1854,13 +1907,13 @@ Return current identity from the validated opaque application session, together 
 
 ### POST `/auth/session/refresh`
 
-Requires an active cookie session and valid CSRF. It atomically revokes the current session row and creates one replacement in the same family, preserving or tightening the parent's idle deadline, carrying forward the parent's last qualifying-activity timestamp, preserving absolute expiry, and rotating both cookie and CSRF state. Refresh is not qualifying activity, cannot slide either deadline, and cannot delay eligibility for the next real activity touch. Concurrent refresh permits exactly one child; the losing attempt receives a controlled `401` and cannot create another replacement. The old cookie and old CSRF material are unusable.
+Requires an active cookie session and valid CSRF. It atomically revokes the current session row and creates one replacement in the same family, preserving or tightening the parent's idle deadline, carrying forward the parent's last qualifying-activity timestamp, preserving absolute expiry, and rotating both cookie and CSRF state. Refresh is not qualifying activity, cannot slide either deadline, and cannot delay eligibility for the next real activity touch. Concurrent refresh permits exactly one child; the losing attempt receives a controlled non-clearing `409` and cannot create another replacement. The old cookie and old CSRF material are unusable.
 
 ### POST `/auth/logout`
 
-Logout derives keyed token and CSRF digests from the presented cookie/header and sends only those digests to the auth-helper database boundary. After production origin and raw-authorization guards, the exact cookie-mode logout route bypasses ordinary active-session hydration and middleware CSRF handling; the termination helper alone evaluates the proof. Normally both digests identify the same active row, or the same row revoked only as `rotated`. A stale tab may instead present the current active child token with a rotated ancestor's CSRF value; that pair is accepted only when both rows have the same subject, subject generation, family, and authentication source, the child is before its idle and absolute deadlines, and the rotated proof is before the immutable family absolute deadline. The auth-only helper derives the subject and rotation family server-side; callers cannot supply a subject, session ID, or family ID. It then revokes every active row in only that family, returns no identity/context material, and grants no hydration, touch, rotation, or refresh authority. This permits a logout that began before refresh, or a stale tab updated to the child cookie, to terminate the refreshed child. Other device/session families remain active. Missing, malformed, cross-family, expired, or otherwise mismatched proof revokes nothing; the response still clears the presented browser cookie.
+Logout derives keyed token and CSRF digests from the presented cookie/header and sends only those digests to the auth-helper database boundary. After production origin and raw-authorization guards, the exact cookie-mode logout route bypasses ordinary active-session hydration and middleware CSRF handling; the termination helper alone evaluates the proof. Normally both digests identify the same active row, or the same row revoked only as `rotated`. A stale tab may instead present the current active child token with a rotated ancestor's CSRF value; that pair is accepted only when both rows have the same subject, subject generation, family, and authentication source, the child is before its idle and absolute deadlines, and the rotated proof is before the immutable family absolute deadline. The auth-only helper derives the subject and rotation family server-side; callers cannot supply a subject, session ID, or family ID. It then revokes every active row in only that family, returns no identity/context material, and grants no hydration, touch, rotation, or refresh authority. This permits a logout that began before refresh, or a stale tab updated to the child cookie, to terminate the refreshed child. Other device/session families remain active. Missing, malformed, cross-family, expired, or otherwise mismatched proof revokes nothing and leaves the shared browser cookie unchanged.
 
-The runtime capability cannot execute the termination helper. Missing, malformed, mismatched, absolute-expired, idle-expired active, or non-`rotated` revoked proof revokes nothing. Logout remains idempotent and clears the browser cookie.
+The runtime capability cannot execute the termination helper. Missing, malformed, mismatched, absolute-expired, idle-expired active, or non-`rotated` revoked proof revokes nothing. Logout remains idempotent; it clears the browser cookie only when the reviewed proof revokes at least one row in the presented family.
 
 ### POST `/auth/staff-actor-name`
 
@@ -2074,7 +2127,11 @@ The same route may support NHG and Non-NHG Residents through identity branching.
 - A Secretary-created event requires an exact posting match, `created_for_programme_code IS NULL`, and the existing Secretary capability, scheduled-event, reporting-period, status, duplicate, and overlap checks.
 - A Programme PC-created event requires exact posting and non-null programme matches: `event.posting_code = schedule.posting_code` and `event.created_for_programme_code = schedule.programme_code`. Another programme or posting returns controlled `422`; unresolved legacy schedule programme provenance never grants access. The same scheduled-event, reporting-period, status, duplicate, and overlap checks apply.
 - Create `external_attendance_records`, not native `attendance_records`.
-- Duplicate protected by `UNIQUE(external_resident_id, teaching_event_id)`.
+- Active duplicates are protected by the submitted-only unique index on
+  `(external_resident_id, teaching_event_id)`; removed history is retained.
+- External submissions use the same deterministic event-lock and
+  subject/date advisory-lock protocol as native submissions, including
+  distinct-event overlap rejection and controlled same-event conflicts.
 - Weekend non-exception attendance is stored and returns `compliance_warning`.
 - Do not store `session_type_id`.
 - Do not include the row in NHG compliance.
@@ -2089,8 +2146,12 @@ The same route may support NHG and Non-NHG Residents through identity branching.
 - Attended department/programme selection is for option filtering/export context only.
 - Resolve selected attended posting against `posting_codes` using validated/configured mapping. Do not concatenate strings or infer codes by regex.
 - PH hard-block with `422`.
-- Create `teaching_events` with `is_adhoc = true`, `created_by_role = 'external_resident'`, `posting_code = derived host posting`, `cme_points_awarded = false`, `smc_event_code = null`, and planned display/audit-only `details_of_session` when provided.
-- Create `external_attendance_records` in the same transaction.
+- The narrow PostgreSQL function derives the exact Non-NHG subject, persists
+  immutable `created_by_external_resident_id`, and creates the event plus
+  `external_attendance_records` in the same caller transaction. Optional
+  `details_of_session` is persisted as display/audit-only event context.
+- Another external Resident and every native Resident are denied visibility
+  and attachment; ordinary direct ad-hoc table inserts are denied.
 - Weekend non-exception attendance is stored and returns `compliance_warning`.
 - Do not create native `attendance_records`.
 - No NHG compliance attribution, numerator, denominator, surplus, snapshots, clawback, or native reports.
@@ -2171,5 +2232,5 @@ Workbook columns and programme/r_year routing metadata remain implementation-own
 { "detail": "Attendance submission invalid: event date is outside your tenure at this posting" }  // 422
 { "detail": "Teaching name not found in catalogue for your programme and posting" }  // 422
 { "detail": "Too many requests" }                                                // 429 persistent limit exceeded; Retry-After supplied
-{ "detail": "Authentication service unavailable" }                              // 503 session store unavailable; cookie cleared
+{ "detail": "Authentication service unavailable" }                              // 503 session store unavailable; shared cookie unchanged
 ```

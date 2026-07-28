@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -18,17 +18,27 @@ def _client(
     fake_db: FakeResidentSession,
     *,
     identity: AuthIdentity | None = None,
+    raise_server_exceptions: bool = True,
+    rollback_on_error: bool = False,
 ) -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
     install_stub_header_identity_middleware(app, default_identity=identity)
 
     async def _db_override():
-        yield fake_db
+        try:
+            yield fake_db
+        except Exception:
+            if rollback_on_error:
+                await fake_db.rollback()
+            raise
 
     app.dependency_overrides[resident.get_db_session] = _db_override
     app.include_router(resident.router)
-    return TestClient(app)
+    return TestClient(
+        app,
+        raise_server_exceptions=raise_server_exceptions,
+    )
 
 
 def _external_headers(fake_db: FakeResidentSession) -> dict[str, str]:
@@ -234,6 +244,55 @@ def test_external_attendance_creates_external_record_only() -> None:
     assert all("created_by_role" not in row for row in payload["submitted_events"])
     assert len(fake_db.external_attendance) == before_external + 1
     assert len(fake_db.attendance) == before_native
+
+
+def test_external_scheduled_attendance_commit_failure_rolls_back_full_batch_and_returns_no_success(
+    monkeypatch,
+) -> None:
+    fake_db = FakeResidentSession()
+    first = fake_db._event(  # noqa: SLF001
+        str(uuid4()),
+        "TTSHCardio",
+        "Journal Club",
+        fake_db.today - timedelta(days=3),
+        start_time=time(8, 0),
+    )
+    first["end_time"] = time(9, 0)
+    second = fake_db._event(  # noqa: SLF001
+        str(uuid4()),
+        "TTSHCardio",
+        "Journal Club",
+        fake_db.today - timedelta(days=4),
+        start_time=time(14, 0),
+    )
+    second["end_time"] = time(15, 0)
+    fake_db.events.extend((first, second))
+    initial = fake_db.transaction_state()
+    fake_db.fail_next_commit()
+    cache_calls: list[dict] = []
+    monkeypatch.setattr(
+        "app.services.resident_submission.invalidate_resident_caches",
+        lambda **scope: cache_calls.append(scope),
+    )
+    client = _client(
+        fake_db,
+        raise_server_exceptions=False,
+        rollback_on_error=True,
+    )
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_external_headers(fake_db),
+        json={"event_ids": [first["id"], second["id"]]},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Internal server error"
+    assert "submitted" not in response.json()
+    assert fake_db.commits == 1
+    assert fake_db.rollbacks == 1
+    assert fake_db.transaction_state() == initial
+    assert cache_calls == []
 
 
 def test_external_legacy_null_role_secretary_event_is_visible_and_submittable() -> None:
@@ -814,6 +873,25 @@ def test_external_duplicate_attendance_is_rejected() -> None:
     assert response.status_code == 409
 
 
+def test_external_batch_prevalidates_before_writing_any_attendance() -> None:
+    fake_db = FakeResidentSession()
+    before_attendance = [dict(row) for row in fake_db.external_attendance]
+    requested_ids = [fake_db.event_id, fake_db.future_event_id]
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_external_headers(fake_db),
+        json={"event_ids": requested_ids},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Future teaching events cannot be submitted"
+    assert fake_db.external_attendance == before_attendance
+    assert fake_db.teaching_event_lock_calls == sorted(requested_ids)
+    assert len(fake_db.external_attendance_lock_calls) == 2
+
+
 def test_external_cannot_submit_attendance_for_event_outside_current_posting() -> None:
     fake_db = FakeResidentSession()
     client = _client(fake_db)
@@ -894,6 +972,100 @@ def test_external_resident_can_remove_own_external_attendance() -> None:
         if row["id"] == fake_db.external_existing_attendance_id
     )["status"] == "removed"
     assert fake_db.attendance == before_native
+    assert fake_db.external_attendance_removal_lock_calls == [
+        fake_db.external_existing_attendance_id
+    ]
+
+
+def test_external_attendance_removal_commit_failure_rolls_back_and_returns_no_success(
+    monkeypatch,
+) -> None:
+    fake_db = FakeResidentSession()
+    initial = fake_db.transaction_state()
+    fake_db.fail_next_commit()
+    cache_calls: list[dict] = []
+    monkeypatch.setattr(
+        "app.services.resident_submission.invalidate_resident_caches",
+        lambda **scope: cache_calls.append(scope),
+    )
+    client = _client(
+        fake_db,
+        raise_server_exceptions=False,
+        rollback_on_error=True,
+    )
+
+    response = client.delete(
+        f"/resident/attendance/{fake_db.external_existing_attendance_id}",
+        headers=_external_headers(fake_db),
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Internal server error"
+    assert "removed_count" not in response.json()
+    assert fake_db.commits == 1
+    assert fake_db.rollbacks == 1
+    assert fake_db.transaction_state() == initial
+    assert cache_calls == []
+
+
+def test_external_removed_attendance_resubmission_creates_new_history_row() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.external_attendance[0]["status"] = "removed"
+    removed_id = fake_db.external_attendance[0]["id"]
+    before_count = len(fake_db.external_attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_external_headers(fake_db),
+        json={"event_ids": [fake_db.second_event_id]},
+    )
+
+    assert response.status_code == 200
+    assert len(fake_db.external_attendance) == before_count + 1
+    assert next(
+        row for row in fake_db.external_attendance if row["id"] == removed_id
+    )["status"] == "removed"
+    submitted = [
+        row
+        for row in fake_db.external_attendance
+        if row["external_resident_id"] == fake_db.external_resident_id
+        and row["teaching_event_id"] == fake_db.second_event_id
+        and row["status"] == "submitted"
+    ]
+    assert len(submitted) == 1
+    assert submitted[0]["id"] != removed_id
+
+
+def test_external_stale_removed_id_cannot_remove_new_resubmission() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.external_attendance[0]["status"] = "removed"
+    removed_id = fake_db.external_attendance[0]["id"]
+    client = _client(fake_db)
+
+    submitted_response = client.post(
+        "/resident/attendance",
+        headers=_external_headers(fake_db),
+        json={"event_ids": [fake_db.second_event_id]},
+    )
+    active = next(
+        row
+        for row in fake_db.external_attendance
+        if row["external_resident_id"] == fake_db.external_resident_id
+        and row["teaching_event_id"] == fake_db.second_event_id
+        and row["status"] == "submitted"
+    )
+    removal_response = client.delete(
+        f"/resident/attendance/{removed_id}",
+        headers=_external_headers(fake_db),
+    )
+
+    assert submitted_response.status_code == 200
+    assert active["id"] != removed_id
+    assert removal_response.status_code == 200
+    assert removal_response.json()["removed_count"] == 0
+    assert active["status"] == "submitted"
+    assert fake_db.external_attendance_removal_lock_calls == [removed_id]
 
 
 def test_external_resident_cannot_remove_another_external_residents_attendance() -> None:

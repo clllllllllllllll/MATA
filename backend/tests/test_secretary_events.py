@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from uuid import uuid4
@@ -13,6 +14,14 @@ from app.middleware.auth_stub import AuthIdentity
 from app.middleware.errors import install_error_handlers
 from app.routers import secretary
 from tests.auth_identity_test_helpers import install_stub_header_identity_middleware
+
+
+class _FakeScalarResult:
+    def __init__(self, values: list[object]) -> None:
+        self._values = values
+
+    def all(self) -> list[object]:
+        return list(self._values)
 
 
 class _FakeResult:
@@ -28,6 +37,9 @@ class _FakeResult:
 
     def mappings(self) -> "_FakeResult":
         return self
+
+    def scalars(self) -> _FakeScalarResult:
+        return _FakeScalarResult([next(iter(row.values())) for row in self._rows])
 
     def all(self) -> list[dict]:
         return list(self._rows)
@@ -75,6 +87,13 @@ class FakeSecretarySession:
         self.deleted_event_ids: list[str] = []
         self.cache_mutation_count = 0
         self.audit_logs: list[dict] = []
+        self.commits = 0
+        self.rollbacks = 0
+        self.operations: list[str] = []
+        self.fail_at: str | None = None
+        self.locked_event_ids: list[str] = []
+        self.locked_series_ids: list[str] = []
+        self.event_lock_modes: list[tuple[str, str]] = []
 
         self.public_holidays = [
             {
@@ -300,6 +319,8 @@ class FakeSecretarySession:
             }
         ]
         self.attendance_event_ids = {self.attended_event_id}
+        self.attendance_statuses = {self.attended_event_id: "submitted"}
+        self._committed_state = self._snapshot()
 
     def _event(
         self,
@@ -355,16 +376,46 @@ class FakeSecretarySession:
         row["created_by_role"] = "programme_pc"
         row["created_for_programme_code"] = "GERI"
         self.events.append(row)
+        self._committed_state = self._snapshot()
+
+    def _snapshot(self) -> dict:
+        return {
+            "events": deepcopy(self.events),
+            "series": deepcopy(self.series),
+            "audit_logs": deepcopy(self.audit_logs),
+            "deleted_event_ids": deepcopy(self.deleted_event_ids),
+        }
+
+    def _restore(self, snapshot: dict) -> None:
+        self.events = deepcopy(snapshot["events"])
+        self.series = deepcopy(snapshot["series"])
+        self.audit_logs = deepcopy(snapshot["audit_logs"])
+        self.deleted_event_ids = deepcopy(snapshot["deleted_event_ids"])
 
     async def commit(self) -> None:
-        return None
+        self.operations.append("commit")
+        self.commits += 1
+        if self.fail_at == "commit":
+            raise RuntimeError("forced commit failure")
+        self._committed_state = self._snapshot()
 
     async def rollback(self) -> None:
-        return None
+        self.operations.append("rollback")
+        self.rollbacks += 1
+        self._restore(self._committed_state)
+
+    async def scalars(self, statement, params=None) -> _FakeScalarResult:
+        return (await self.execute(statement, params)).scalars()
 
     async def execute(self, statement, params=None):  # noqa: C901, PLR0912, PLR0915
         sql = str(statement)
         payload = dict(params or {})
+
+        if "/* teaching_event_mutation_lock */" in sql:
+            lock_scope = str(payload["lock_scope"])
+            if not lock_scope.startswith("teaching-event:"):
+                raise AssertionError("Teaching-event mutation lock used an invalid scope")
+            return _FakeResult()
 
         if "/* secretary_events:list_reporting_periods */" in sql:
             return _FakeResult(rows=list(self.reporting_periods))
@@ -381,6 +432,9 @@ class FakeSecretarySession:
             return _FakeResult(rows=rows)
 
         if "INSERT INTO audit_logs" in sql:
+            self.operations.append("write_audit")
+            if self.fail_at == "audit":
+                raise RuntimeError("forced audit failure")
             row = dict(payload)
             row["created_at"] = self.now
             self.audit_logs.append(row)
@@ -396,6 +450,10 @@ class FakeSecretarySession:
                 ),
                 None,
             )
+            if event is not None and ("FOR UPDATE" in sql or "FOR SHARE" in sql):
+                lock_mode = "update" if "FOR UPDATE" in sql else "share"
+                self.locked_event_ids.append(event["id"])
+                self.event_lock_modes.append((event["id"], lock_mode))
             return _FakeResult(rows=[dict(event)] if event else [])
 
         if "/* audit_snapshot:secretary_series */" in sql:
@@ -408,6 +466,8 @@ class FakeSecretarySession:
                 ),
                 None,
             )
+            if series is not None and "FOR UPDATE" in sql:
+                self.locked_series_ids.append(series["id"])
             return _FakeResult(rows=[dict(series)] if series else [])
 
         if "/* audit_snapshot:secretary_series_events */" in sql:
@@ -417,6 +477,8 @@ class FakeSecretarySession:
                 if row["series_id"] == str(payload["series_id"])
                 and row["posting_code"] == payload["posting_code"]
             ]
+            if "FOR UPDATE" in sql:
+                self.locked_event_ids.extend(sorted(row["id"] for row in rows))
             rows.sort(key=lambda row: (row["event_date"], row["start_time"]))
             return _FakeResult(rows=rows)
 
@@ -535,6 +597,9 @@ class FakeSecretarySession:
                 ),
                 None,
             )
+            if "FOR UPDATE" in sql and event is not None:
+                self.locked_event_ids.append(event["id"])
+                self.event_lock_modes.append((event["id"], "update"))
             return _FakeResult(rows=[event] if event else [])
 
         if "FROM teaching_events" in sql and "WHERE id = :event_id" in sql:
@@ -547,6 +612,9 @@ class FakeSecretarySession:
                 ),
                 None,
             )
+            if "FOR UPDATE" in sql and event is not None:
+                self.locked_event_ids.append(event["id"])
+                self.event_lock_modes.append((event["id"], "update"))
             return _FakeResult(rows=[event] if event else [])
 
         if "FROM teaching_events" in sql and "WHERE series_id = :series_id" in sql:
@@ -556,6 +624,12 @@ class FakeSecretarySession:
                 if row["series_id"] == str(payload["series_id"])
                 and row["posting_code"] == payload["posting_code"]
             ]
+            if "FOR UPDATE" not in sql and "ORDER BY" not in sql:
+                return _FakeResult(rows=[{"id": row["id"]} for row in rows])
+            if "ORDER BY id ASC" in sql:
+                rows.sort(key=lambda row: row["id"])
+            if "FOR UPDATE" in sql:
+                self.locked_event_ids.extend(sorted(row["id"] for row in rows))
             if payload.get("scope") == "single":
                 rows = [row for row in rows if row["id"] == str(payload["event_id"])]
             if payload.get("scope") == "following":
@@ -627,7 +701,14 @@ class FakeSecretarySession:
             ids = set(payload.get("event_ids", []))
             if not ids and "event_id" in payload:
                 ids = {str(payload["event_id"])}
-            has_attendance = bool(ids & self.attendance_event_ids)
+            linked_ids = ids & self.attendance_event_ids
+            if "status = 'submitted'" in sql:
+                has_attendance = any(
+                    self.attendance_statuses.get(event_id, "submitted") == "submitted"
+                    for event_id in linked_ids
+                )
+            else:
+                has_attendance = bool(linked_ids)
             return _FakeResult(scalar=1 if has_attendance else None)
 
         if "INSERT INTO event_series" in sql:
@@ -703,6 +784,7 @@ def _client(
     fake_db: FakeSecretarySession,
     *,
     identity: AuthIdentity | None = None,
+    raise_server_exceptions: bool = True,
 ) -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
@@ -713,7 +795,7 @@ def _client(
 
     app.dependency_overrides[secretary.get_db_session] = _db_override
     app.include_router(secretary.router)
-    return TestClient(app)
+    return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
 
 def _headers(fake_db: FakeSecretarySession, *, role: str = "secretary", site: str = "TTSHCardio"):
@@ -930,6 +1012,162 @@ def test_secretary_teaching_event_mutations_write_audit_logs() -> None:
     assert delete_metadata["deleted_event_ids"] == [series_event_id]
     assert delete_metadata["deleted_count"] == 1
     assert delete_metadata["posting_code"] == "TTSHCardio"
+    assert fake_db.commits == 6
+    assert fake_db.rollbacks == 0
+    assert fake_db.operations == ["write_audit", "commit"] * 6
+    assert (source_event_id, "share") in fake_db.event_lock_modes
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["create", "duplicate", "update", "delete", "series_create", "series_delete"],
+)
+def test_secretary_audit_failure_rolls_back_business_mutation_and_skips_cache(
+    mutation: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_db = FakeSecretarySession()
+    fake_db.attendance_event_ids = set()
+    initial = fake_db._snapshot()
+    fake_db.fail_at = "audit"
+    cache_calls: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        "app.services.secretary_events.invalidate_secretary_event_caches",
+        lambda *args, **kwargs: cache_calls.append((args, kwargs)),
+    )
+    client = _client(fake_db, raise_server_exceptions=False)
+    headers = _headers(fake_db)
+
+    if mutation == "create":
+        response = client.post(
+            "/secretary/teaching-events",
+            headers=headers,
+            json={
+                "teaching_name": "Journal Club",
+                "event_date": "2026-05-18",
+                "start_time": "10:00",
+            },
+        )
+    elif mutation == "duplicate":
+        response = client.post(
+            "/secretary/teaching-events/duplicate",
+            headers=headers,
+            json={
+                "source_event_id": fake_db.events[0]["id"],
+                "event_date": "2026-05-25",
+                "start_time": "10:00",
+            },
+        )
+    elif mutation == "update":
+        response = client.put(
+            f"/secretary/teaching-events/{fake_db.events[1]['id']}",
+            headers=headers,
+            json={
+                "teaching_name": "Journal Club",
+                "event_date": "2026-05-26",
+                "start_time": "11:00",
+            },
+        )
+    elif mutation == "delete":
+        response = client.delete(
+            f"/secretary/teaching-events/{fake_db.events[1]['id']}",
+            headers=headers,
+        )
+    elif mutation == "series_create":
+        response = client.post(
+            "/secretary/teaching-events/series",
+            headers=headers,
+            json={
+                "teaching_name": "Journal Club",
+                "start_date": "2026-04-24",
+                "start_time": "10:00",
+                "recurrence_pattern": "weekly",
+                "recurrence_interval": 1,
+                "days_of_week": ["fri"],
+                "end_type": "by_count",
+                "end_after_count": 2,
+            },
+        )
+    else:
+        response = client.delete(
+            f"/secretary/teaching-events/series/{fake_db.series_id}",
+            headers=headers,
+            params={"scope": "single", "event_id": fake_db.events[1]["id"]},
+        )
+
+    assert response.status_code == 500
+    assert fake_db.commits == 0
+    assert fake_db.rollbacks == 1
+    assert fake_db._snapshot() == initial
+    assert fake_db.audit_logs == []
+    assert fake_db.operations == ["write_audit", "rollback"]
+    assert cache_calls == []
+
+
+def test_secretary_commit_failure_rolls_back_event_and_audit_and_skips_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_db = FakeSecretarySession()
+    initial = fake_db._snapshot()
+    fake_db.fail_at = "commit"
+    cache_calls: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        "app.services.secretary_events.invalidate_secretary_event_caches",
+        lambda *args, **kwargs: cache_calls.append((args, kwargs)),
+    )
+
+    response = _client(fake_db, raise_server_exceptions=False).post(
+        "/secretary/teaching-events",
+        headers=_headers(fake_db),
+        json={
+            "teaching_name": "Journal Club",
+            "event_date": "2026-05-18",
+            "start_time": "10:00",
+        },
+    )
+
+    assert response.status_code == 500
+    assert fake_db.commits == 1
+    assert fake_db.rollbacks == 1
+    assert fake_db._snapshot() == initial
+    assert fake_db.audit_logs == []
+    assert fake_db.operations == ["write_audit", "commit", "rollback"]
+    assert cache_calls == []
+
+
+def test_secretary_cache_failure_does_not_misreport_committed_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake_db = FakeSecretarySession()
+    initial_event_count = len(fake_db.events)
+
+    def _fail_cache(_posting_code: str) -> None:
+        raise RuntimeError("forced cache failure")
+
+    monkeypatch.setattr(
+        "app.services.secretary_events.invalidate_secretary_event_caches",
+        _fail_cache,
+    )
+
+    response = _client(fake_db).post(
+        "/secretary/teaching-events",
+        headers=_headers(fake_db),
+        json={
+            "teaching_name": "Journal Club",
+            "event_date": "2026-05-18",
+            "start_time": "10:00",
+        },
+    )
+
+    assert response.status_code == 200
+    assert fake_db.commits == 1
+    assert fake_db.rollbacks == 0
+    assert len(fake_db.events) == initial_event_count + 1
+    assert len(fake_db.audit_logs) == 1
+    assert fake_db.operations == ["write_audit", "commit"]
+    assert "secretary_event_cache_invalidation_failed" in caplog.text
+    assert "forced cache failure" not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -1397,6 +1635,48 @@ def test_delete_event_without_attendance_succeeds_and_with_attendance_conflicts(
     assert conflict_response.status_code == 409
 
 
+@pytest.mark.parametrize(
+    ("status", "method"),
+    [("removed", "put"), ("flagged", "delete")],
+)
+def test_secretary_event_mutation_locks_and_rejects_any_attendance_status(
+    status: str,
+    method: str,
+) -> None:
+    fake_db = FakeSecretarySession()
+    event_id = fake_db.events[1]["id"]
+    fake_db.attendance_event_ids = {event_id}
+    fake_db.attendance_statuses = {event_id: status}
+    initial = fake_db._snapshot()
+    client = _client(fake_db)
+
+    if method == "put":
+        response = client.put(
+            f"/secretary/teaching-events/{event_id}",
+            headers=_headers(fake_db),
+            json={
+                "teaching_name": "Journal Club",
+                "event_date": "2026-05-26",
+                "start_time": "11:00",
+            },
+        )
+    else:
+        response = client.delete(
+            f"/secretary/teaching-events/{event_id}",
+            headers=_headers(fake_db),
+        )
+
+    assert response.status_code == 409
+    assert fake_db._snapshot() == initial
+    assert fake_db.locked_event_ids == [event_id, event_id]
+    assert fake_db.event_lock_modes == [
+        (event_id, "update"),
+        (event_id, "update"),
+    ]
+    assert fake_db.commits == 0
+    assert fake_db.rollbacks == 1
+
+
 def test_recurring_series_create_scopes_events_and_skips_public_holidays() -> None:
     fake_db = FakeSecretarySession()
     client = _client(fake_db)
@@ -1470,6 +1750,30 @@ def test_series_deletion_scopes_single_following_all_and_blocks_attendance() -> 
     assert blocked.status_code == 409
 
 
+def test_series_delete_locks_deterministically_and_rejects_flagged_attendance() -> None:
+    fake_db = FakeSecretarySession()
+    event_id = fake_db.events[1]["id"]
+    fake_db.attendance_event_ids = {event_id}
+    fake_db.attendance_statuses = {event_id: "flagged"}
+    initial = fake_db._snapshot()
+
+    response = _client(fake_db).delete(
+        f"/secretary/teaching-events/series/{fake_db.series_id}",
+        headers=_headers(fake_db),
+        params={"scope": "single", "event_id": event_id},
+    )
+
+    series_event_ids = sorted(
+        row["id"] for row in fake_db.events if row["series_id"] == fake_db.series_id
+    )
+    assert response.status_code == 409
+    assert fake_db._snapshot() == initial
+    assert fake_db.locked_event_ids == series_event_ids * 2
+    assert fake_db.locked_series_ids == [fake_db.series_id]
+    assert fake_db.commits == 0
+    assert fake_db.rollbacks == 1
+
+
 def test_cme_dashboard_is_scoped_to_secretary_posting() -> None:
     fake_db = FakeSecretarySession()
     client = _client(fake_db)
@@ -1490,6 +1794,7 @@ def test_cache_invalidation_called_after_event_mutations(monkeypatch) -> None:
     series_delete_event_id = fake_db.events[2]["id"]
 
     def _spy(domains, **scope):  # noqa: ANN001
+        assert fake_db.commits == len(calls) + 1
         calls.append((set(domains), scope))
         return []
 

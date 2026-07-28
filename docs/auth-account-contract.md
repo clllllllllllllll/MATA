@@ -566,7 +566,8 @@ Still deferred beyond this auth/account roadmap alignment:
 
 ## 5A Guardrails Preserved
 
-This contract and patch do not change:
+This contract and patch do not change the following, except for the
+history-preserving AUD-M-04 resubmission clarification called out explicitly:
 - NHG Resident scheduled attendance workflow.
 - Date-first NHG Resident ad-hoc teaching flow with attended TTSH department dropdown.
 - Catalogue-backed ad-hoc options.
@@ -575,7 +576,9 @@ This contract and patch do not change:
 - Public holiday hard-blocking.
 - Weekend non-exception storage plus `compliance_warning`.
 - Soft delete with `status = removed`.
-- Resubmission by restoring removed scheduled attendance.
+- Soft-removed attendance remains immutable history; AUD-M-04 resubmission
+  inserts a new active row and identifier so stale removal cannot affect the
+  newer submission.
 - `/resident/attendance` and `/resident/attendance-history` compatibility.
 - Scheduled filters and Recent Submissions widget behaviour.
 - No resident-facing Created By.

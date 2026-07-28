@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import date
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, AsyncIterator, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
@@ -14,6 +16,7 @@ from app.dependencies.auth import require_secretary
 from app.dependencies.staff_actor import StaffActorContext, require_staff_actor
 from app.errors import ApiError, ErrorCode
 from app.middleware.auth_stub import AuthIdentity
+from app.security import log_safe_exception
 from app.schemas.secretary import (
     SecretaryTeachingEventCreateRequest,
     SecretaryTeachingEventUpdateRequest,
@@ -22,9 +25,11 @@ from app.schemas.secretary import (
 )
 from app.services.audit import write_audit_log
 from app.services import secretary_events
+from app.services.teaching_event_locks import acquire_teaching_event_locks
 
 
 router = APIRouter(prefix="/secretary", tags=["secretary"])
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -83,6 +88,7 @@ _SERIES_SNAPSHOT_SQL = """
     FROM event_series
     WHERE id = :series_id
       AND posting_code = :posting_code
+    FOR UPDATE
 """
 
 _SERIES_EVENTS_SNAPSHOT_SQL = """
@@ -106,7 +112,8 @@ _SERIES_EVENTS_SNAPSHOT_SQL = """
     FROM teaching_events
     WHERE series_id = :series_id
       AND posting_code = :posting_code
-    ORDER BY event_date ASC, start_time ASC
+    ORDER BY id ASC
+    FOR UPDATE
 """
 
 
@@ -121,9 +128,17 @@ async def _read_event_audit_snapshot(
     *,
     posting_code: str,
     event_id: UUID,
+    lock: Literal["share", "update"] | None = None,
 ) -> dict[str, Any] | None:
+    if lock is not None:
+        await acquire_teaching_event_locks(db, event_ids=[event_id])
+    lock_clause = {
+        "share": "FOR SHARE",
+        "update": "FOR UPDATE",
+        None: "",
+    }[lock]
     result = await db.execute(
-        text(_EVENT_SNAPSHOT_SQL),
+        text(f"{_EVENT_SNAPSHOT_SQL}\n{lock_clause}"),
         {"event_id": str(event_id), "posting_code": posting_code},
     )
     return _compact_snapshot(result.mappings().one_or_none())
@@ -137,6 +152,23 @@ async def _read_series_audit_snapshot(
     scope: str | None = None,
     event_id: UUID | None = None,
 ) -> dict[str, Any]:
+    event_ids = (
+        await db.scalars(
+            text(
+                """
+                SELECT id
+                FROM teaching_events
+                WHERE series_id = :series_id
+                  AND posting_code = :posting_code
+                """
+            ),
+            {
+                "series_id": str(series_id),
+                "posting_code": posting_code,
+            },
+        )
+    ).all()
+    await acquire_teaching_event_locks(db, event_ids=event_ids)
     series_result = await db.execute(
         text(_SERIES_SNAPSHOT_SQL),
         {"series_id": str(series_id), "posting_code": posting_code},
@@ -147,6 +179,7 @@ async def _read_series_audit_snapshot(
         {"series_id": str(series_id), "posting_code": posting_code},
     )
     events = [dict(row) for row in events_result.mappings().all()]
+    events.sort(key=lambda row: (row["event_date"], row["start_time"], str(row["id"])))
     if scope == "single":
         events = [row for row in events if str(row["id"]) == str(event_id)]
     elif scope == "following":
@@ -256,7 +289,6 @@ async def _write_secretary_event_audit(
             after=after,
         ),
     )
-    await db.commit()
 
 
 async def _write_secretary_series_audit(
@@ -279,7 +311,29 @@ async def _write_secretary_series_audit(
         after=after,
         metadata=metadata,
     )
-    await db.commit()
+
+
+@asynccontextmanager
+async def _secretary_event_mutation(
+    db: AsyncSession,
+    *,
+    posting_code: str,
+) -> AsyncIterator[None]:
+    try:
+        yield
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    try:
+        secretary_events.invalidate_secretary_event_caches(posting_code)
+    except Exception as exc:
+        log_safe_exception(
+            logger,
+            "secretary_event_cache_invalidation_failed",
+            exc,
+            category="cache_invalidation",
+        )
 
 
 async def require_secretary_context(
@@ -322,24 +376,28 @@ async def create_teaching_event(
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    event = await secretary_events.create_teaching_event(
+    async with _secretary_event_mutation(
         db,
         posting_code=secretary_context.posting_code,
-        teaching_name=request.teaching_name,
-        event_date=request.event_date,
-        start_time=request.start_time,
-        cme_points_awarded=request.cme_points_awarded,
-        smc_event_code=request.smc_event_code,
-    )
-    await _write_secretary_event_audit(
-        db,
-        actor=staff_actor,
-        mutation="create",
-        event_id=event["id"],
-        posting_code=secretary_context.posting_code,
-        before=None,
-        after=_compact_snapshot(event),
-    )
+    ):
+        event = await secretary_events.create_teaching_event(
+            db,
+            posting_code=secretary_context.posting_code,
+            teaching_name=request.teaching_name,
+            event_date=request.event_date,
+            start_time=request.start_time,
+            cme_points_awarded=request.cme_points_awarded,
+            smc_event_code=request.smc_event_code,
+        )
+        await _write_secretary_event_audit(
+            db,
+            actor=staff_actor,
+            mutation="create",
+            event_id=event["id"],
+            posting_code=secretary_context.posting_code,
+            before=None,
+            after=_compact_snapshot(event),
+        )
     return event
 
 
@@ -350,28 +408,33 @@ async def duplicate_teaching_event(
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    before = await _read_event_audit_snapshot(
+    async with _secretary_event_mutation(
         db,
         posting_code=secretary_context.posting_code,
-        event_id=request.source_event_id,
-    )
-    event = await secretary_events.duplicate_teaching_event(
-        db,
-        posting_code=secretary_context.posting_code,
-        source_event_id=request.source_event_id,
-        event_date=request.event_date,
-        start_time=request.start_time,
-        teaching_name=request.teaching_name,
-    )
-    await _write_secretary_event_audit(
-        db,
-        actor=staff_actor,
-        mutation="duplicate",
-        event_id=event["id"],
-        posting_code=secretary_context.posting_code,
-        before=before,
-        after=_compact_snapshot(event),
-    )
+    ):
+        before = await _read_event_audit_snapshot(
+            db,
+            posting_code=secretary_context.posting_code,
+            event_id=request.source_event_id,
+            lock="share",
+        )
+        event = await secretary_events.duplicate_teaching_event(
+            db,
+            posting_code=secretary_context.posting_code,
+            source_event_id=request.source_event_id,
+            event_date=request.event_date,
+            start_time=request.start_time,
+            teaching_name=request.teaching_name,
+        )
+        await _write_secretary_event_audit(
+            db,
+            actor=staff_actor,
+            mutation="duplicate",
+            event_id=event["id"],
+            posting_code=secretary_context.posting_code,
+            before=before,
+            after=_compact_snapshot(event),
+        )
     return event
 
 
@@ -383,30 +446,35 @@ async def update_teaching_event(
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    before = await _read_event_audit_snapshot(
+    async with _secretary_event_mutation(
         db,
         posting_code=secretary_context.posting_code,
-        event_id=event_id,
-    )
-    event = await secretary_events.update_teaching_event(
-        db,
-        posting_code=secretary_context.posting_code,
-        event_id=event_id,
-        teaching_name=request.teaching_name,
-        event_date=request.event_date,
-        start_time=request.start_time,
-        cme_points_awarded=request.cme_points_awarded,
-        smc_event_code=request.smc_event_code,
-    )
-    await _write_secretary_event_audit(
-        db,
-        actor=staff_actor,
-        mutation="update",
-        event_id=event_id,
-        posting_code=secretary_context.posting_code,
-        before=before,
-        after=_compact_snapshot(event),
-    )
+    ):
+        before = await _read_event_audit_snapshot(
+            db,
+            posting_code=secretary_context.posting_code,
+            event_id=event_id,
+            lock="update",
+        )
+        event = await secretary_events.update_teaching_event(
+            db,
+            posting_code=secretary_context.posting_code,
+            event_id=event_id,
+            teaching_name=request.teaching_name,
+            event_date=request.event_date,
+            start_time=request.start_time,
+            cme_points_awarded=request.cme_points_awarded,
+            smc_event_code=request.smc_event_code,
+        )
+        await _write_secretary_event_audit(
+            db,
+            actor=staff_actor,
+            mutation="update",
+            event_id=event_id,
+            posting_code=secretary_context.posting_code,
+            before=before,
+            after=_compact_snapshot(event),
+        )
     return event
 
 
@@ -417,25 +485,30 @@ async def delete_teaching_event(
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    before = await _read_event_audit_snapshot(
+    async with _secretary_event_mutation(
         db,
         posting_code=secretary_context.posting_code,
-        event_id=event_id,
-    )
-    result = await secretary_events.delete_teaching_event(
-        db,
-        posting_code=secretary_context.posting_code,
-        event_id=event_id,
-    )
-    await _write_secretary_event_audit(
-        db,
-        actor=staff_actor,
-        mutation="delete",
-        event_id=event_id,
-        posting_code=secretary_context.posting_code,
-        before=before,
-        after=None,
-    )
+    ):
+        before = await _read_event_audit_snapshot(
+            db,
+            posting_code=secretary_context.posting_code,
+            event_id=event_id,
+            lock="update",
+        )
+        result = await secretary_events.delete_teaching_event(
+            db,
+            posting_code=secretary_context.posting_code,
+            event_id=event_id,
+        )
+        await _write_secretary_event_audit(
+            db,
+            actor=staff_actor,
+            mutation="delete",
+            event_id=event_id,
+            posting_code=secretary_context.posting_code,
+            before=before,
+            after=None,
+        )
     return result
 
 
@@ -446,31 +519,35 @@ async def create_event_series(
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    result = await secretary_events.create_event_series(
+    async with _secretary_event_mutation(
         db,
         posting_code=secretary_context.posting_code,
-        teaching_name=request.teaching_name,
-        start_date=request.start_date,
-        start_time=request.start_time,
-        cme_points_awarded=request.cme_points_awarded,
-        smc_event_code=request.smc_event_code,
-        recurrence_pattern=request.recurrence_pattern,
-        recurrence_interval=request.recurrence_interval,
-        days_of_week=request.days_of_week,
-        end_type=request.end_type,
-        end_date=request.end_date,
-        end_after_count=request.end_after_count,
-    )
-    after, metadata = _series_create_audit_payload(result)
-    await _write_secretary_series_audit(
-        db,
-        actor=staff_actor,
-        mutation="create",
-        series_id=(result.get("series") or {}).get("id"),
-        before=None,
-        after=after,
-        metadata=metadata,
-    )
+    ):
+        result = await secretary_events.create_event_series(
+            db,
+            posting_code=secretary_context.posting_code,
+            teaching_name=request.teaching_name,
+            start_date=request.start_date,
+            start_time=request.start_time,
+            cme_points_awarded=request.cme_points_awarded,
+            smc_event_code=request.smc_event_code,
+            recurrence_pattern=request.recurrence_pattern,
+            recurrence_interval=request.recurrence_interval,
+            days_of_week=request.days_of_week,
+            end_type=request.end_type,
+            end_date=request.end_date,
+            end_after_count=request.end_after_count,
+        )
+        after, metadata = _series_create_audit_payload(result)
+        await _write_secretary_series_audit(
+            db,
+            actor=staff_actor,
+            mutation="create",
+            series_id=(result.get("series") or {}).get("id"),
+            before=None,
+            after=after,
+            metadata=metadata,
+        )
     return result
 
 
@@ -483,36 +560,40 @@ async def delete_event_series(
     staff_actor: StaffActorContext = Depends(require_staff_actor),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    before = await _read_series_audit_snapshot(
+    async with _secretary_event_mutation(
         db,
         posting_code=secretary_context.posting_code,
-        series_id=series_id,
-        scope=scope,
-        event_id=event_id,
-    )
-    result = await secretary_events.delete_event_series(
-        db,
-        posting_code=secretary_context.posting_code,
-        series_id=series_id,
-        scope=scope,
-        event_id=event_id,
-    )
-    await _write_secretary_series_audit(
-        db,
-        actor=staff_actor,
-        mutation=f"delete_{scope}",  # type: ignore[arg-type]
-        series_id=series_id,
-        before=before,
-        after=None,
-        metadata=_series_delete_audit_metadata(
+    ):
+        before = await _read_series_audit_snapshot(
+            db,
             posting_code=secretary_context.posting_code,
             series_id=series_id,
             scope=scope,
             event_id=event_id,
+        )
+        result = await secretary_events.delete_event_series(
+            db,
+            posting_code=secretary_context.posting_code,
+            series_id=series_id,
+            scope=scope,
+            event_id=event_id,
+        )
+        await _write_secretary_series_audit(
+            db,
+            actor=staff_actor,
+            mutation=f"delete_{scope}",  # type: ignore[arg-type]
+            series_id=series_id,
             before=before,
-            result=result,
-        ),
-    )
+            after=None,
+            metadata=_series_delete_audit_metadata(
+                posting_code=secretary_context.posting_code,
+                series_id=series_id,
+                scope=scope,
+                event_id=event_id,
+                before=before,
+                result=result,
+            ),
+        )
     return result
 
 

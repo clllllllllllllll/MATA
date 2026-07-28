@@ -13,17 +13,30 @@ from tests.auth_identity_test_helpers import install_stub_header_identity_middle
 from tests.resident_fakes import FakeResidentSession
 
 
-def _client(fake_db: FakeResidentSession) -> TestClient:
+def _client(
+    fake_db: FakeResidentSession,
+    *,
+    raise_server_exceptions: bool = True,
+    rollback_on_error: bool = False,
+) -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
     install_stub_header_identity_middleware(app)
 
     async def _db_override():
-        yield fake_db
+        try:
+            yield fake_db
+        except Exception:
+            if rollback_on_error:
+                await fake_db.rollback()
+            raise
 
     app.dependency_overrides[resident.get_db_session] = _db_override
     app.include_router(resident.router)
-    return TestClient(app)
+    return TestClient(
+        app,
+        raise_server_exceptions=raise_server_exceptions,
+    )
 
 
 def _external_headers(fake_db: FakeResidentSession) -> dict[str, str]:
@@ -56,6 +69,85 @@ def test_external_adhoc_creates_event_and_external_attendance() -> None:
     assert payload["attendance"]["external_resident_id"] == fake_db.external_resident_id
     assert len(fake_db.events) == before_events + 1
     assert len(fake_db.external_attendance) == before_attendance + 1
+    assert len(fake_db.external_attendance_lock_calls) == 1
+    assert len(fake_db.adhoc_helper_calls) == 1
+    assert set(fake_db.adhoc_helper_calls[0]) == {
+        "posting_code",
+        "attended_posting_code",
+        "attended_teaching_name",
+        "teaching_name",
+        "details_of_session",
+        "event_date",
+        "start_time",
+        "end_time",
+        "duration_hours",
+        "session_type_id",
+    }
+
+
+def test_external_adhoc_commit_failure_rolls_back_event_and_attendance_and_returns_no_success(
+    monkeypatch,
+) -> None:
+    fake_db = FakeResidentSession(today=date(2026, 5, 18))
+    initial = fake_db.transaction_state()
+    fake_db.fail_next_commit()
+    cache_calls: list[dict] = []
+    monkeypatch.setattr(
+        "app.services.resident_submission.invalidate_resident_caches",
+        lambda **scope: cache_calls.append(scope),
+    )
+    client = _client(
+        fake_db,
+        raise_server_exceptions=False,
+        rollback_on_error=True,
+    )
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_external_headers(fake_db),
+        json={
+            "date": "2026-05-18",
+            "start_time": "14:00",
+            "teaching_name": "Journal Club",
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Internal server error"
+    assert "event" not in response.json()
+    assert "attendance" not in response.json()
+    assert fake_db.commits == 1
+    assert fake_db.rollbacks == 1
+    assert fake_db.transaction_state() == initial
+    assert len(fake_db.adhoc_helper_calls) == 1
+    assert cache_calls == []
+
+
+def test_external_adhoc_rejects_overlap_before_calling_atomic_helper() -> None:
+    fake_db = FakeResidentSession()
+    existing_event = next(
+        row for row in fake_db.events if row["id"] == fake_db.second_event_id
+    )
+    events_before = [dict(row) for row in fake_db.events]
+    attendance_before = [dict(row) for row in fake_db.external_attendance]
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_external_headers(fake_db),
+        json={
+            "date": existing_event["event_date"].isoformat(),
+            "start_time": existing_event["start_time"].isoformat(),
+            "teaching_name": "Journal Club",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Attendance overlaps an earlier accepted event"
+    assert fake_db.events == events_before
+    assert fake_db.external_attendance == attendance_before
+    assert len(fake_db.external_attendance_lock_calls) == 1
+    assert fake_db.adhoc_helper_calls == []
 
 
 def test_external_adhoc_options_use_date_matched_posting_schedule() -> None:

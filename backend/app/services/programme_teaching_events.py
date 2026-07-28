@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
@@ -9,14 +10,32 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
+from app.security import log_safe_exception
 from app.services.reporting_period_status import (
     resolve_active_reporting_period_for_date,
     resolve_explicit_reporting_period,
 )
 from app.services import cache_invalidation
+from app.services.teaching_event_locks import acquire_teaching_event_locks
 
+
+logger = logging.getLogger(__name__)
 
 MANAGEABLE_CREATED_BY_ROLES = {"secretary", "programme_pc", None}
+
+
+def _invalidate_event_caches(posting_code: str) -> None:
+    try:
+        cache_invalidation.invalidate_after_secretary_event_mutation(
+            posting_code=posting_code,
+        )
+    except Exception as exc:
+        log_safe_exception(
+            logger,
+            "programme_teaching_event_cache_invalidation_failed",
+            exc,
+            category="cache_invalidation",
+        )
 
 
 def _event_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -566,10 +585,18 @@ async def list_teaching_events(
     return [_event_row(dict(row)) for row in result.mappings().all()]
 
 
-async def _get_event(db: AsyncSession, event_id: UUID) -> dict[str, Any]:
+async def _get_event(
+    db: AsyncSession,
+    event_id: UUID,
+    *,
+    for_update: bool = False,
+) -> dict[str, Any]:
+    if for_update:
+        await acquire_teaching_event_locks(db, event_ids=[event_id])
+    lock_clause = "FOR UPDATE OF te" if for_update else ""
     result = await db.execute(
         text(
-            """
+            f"""
             /* programme_teaching_events:get_event */
             SELECT
                 te.id,
@@ -592,6 +619,7 @@ async def _get_event(db: AsyncSession, event_id: UUID) -> dict[str, Any]:
             FROM teaching_events te
             LEFT JOIN session_types st ON st.id = te.session_type_id
             WHERE te.id = :event_id
+            {lock_clause}
             """
         ),
         {"event_id": str(event_id)},
@@ -695,13 +723,11 @@ async def _has_attendance(db: AsyncSession, *, event_id: UUID) -> bool:
                 SELECT 1
                 FROM attendance_records ar
                 WHERE ar.teaching_event_id = :event_id
-                  AND ar.status = 'submitted'
             )
             OR EXISTS (
                 SELECT 1
                 FROM external_attendance_records ear
                 WHERE ear.teaching_event_id = :event_id
-                  AND ear.status = 'submitted'
             )
             """
         ),
@@ -832,9 +858,7 @@ async def create_teaching_event(
         smc_event_code=smc_event_code,
     )
     await db.commit()
-    cache_invalidation.invalidate_after_secretary_event_mutation(
-        posting_code=posting_code,
-    )
+    _invalidate_event_caches(posting_code)
     return event
 
 
@@ -850,7 +874,7 @@ async def update_teaching_event(
     cme_points_awarded: bool,
     smc_event_code: str | None,
 ) -> dict[str, Any]:
-    source = await _get_event(db, event_id)
+    source = await _get_event(db, event_id, for_update=True)
     await _ensure_event_manageable_for_programme(
         db,
         event=source,
@@ -941,13 +965,9 @@ async def update_teaching_event(
             error_code=ErrorCode.CONFLICT.value,
         )
     await db.commit()
-    cache_invalidation.invalidate_after_secretary_event_mutation(
-        posting_code=source["posting_code"],
-    )
+    _invalidate_event_caches(source["posting_code"])
     if posting_code != source["posting_code"]:
-        cache_invalidation.invalidate_after_secretary_event_mutation(
-            posting_code=posting_code,
-        )
+        _invalidate_event_caches(posting_code)
     return _event_row(dict(event))
 
 
@@ -963,7 +983,7 @@ async def duplicate_teaching_event(
     cme_points_awarded: bool | None,
     smc_event_code: str | None,
 ) -> dict[str, Any]:
-    source = await _get_event(db, event_id)
+    source = await _get_event(db, event_id, for_update=True)
     await _ensure_event_manageable_for_programme(
         db,
         event=source,
@@ -988,9 +1008,7 @@ async def duplicate_teaching_event(
         created_by_role="programme_pc",
     )
     await db.commit()
-    cache_invalidation.invalidate_after_secretary_event_mutation(
-        posting_code=new_posting_code,
-    )
+    _invalidate_event_caches(new_posting_code)
     return event
 
 
@@ -1000,7 +1018,7 @@ async def delete_teaching_event(
     event_id: UUID,
     programme_code: str,
 ) -> dict[str, int]:
-    source = await _get_event(db, event_id)
+    source = await _get_event(db, event_id, for_update=True)
     await _ensure_event_manageable_for_programme(
         db,
         event=source,
@@ -1025,7 +1043,5 @@ async def delete_teaching_event(
         {"event_id": str(event_id)},
     )
     await db.commit()
-    cache_invalidation.invalidate_after_secretary_event_mutation(
-        posting_code=source["posting_code"],
-    )
+    _invalidate_event_caches(source["posting_code"])
     return {"deleted_count": 1}

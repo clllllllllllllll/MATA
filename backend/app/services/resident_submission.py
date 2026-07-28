@@ -1,22 +1,29 @@
 from __future__ import annotations
 
+import logging
+from collections.abc import Sequence
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from hashlib import blake2b
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 from uuid import UUID
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
+from app.security import log_safe_exception
 from app.services import cache_invalidation
 from app.services.reporting_period_status import (
     list_effectively_active_reporting_periods,
     resolve_active_reporting_period_for_date,
     resolve_reporting_period_for_date,
 )
+from app.services.teaching_event_locks import acquire_teaching_event_locks
 
+
+logger = logging.getLogger(__name__)
 
 ACTIVE_POSTING_STATUSES = {"active", "loa_working"}
 WEEKEND_WARNING = (
@@ -143,14 +150,22 @@ def invalidate_resident_caches(
     reporting_period_id: UUID | str | None = None,
     include_secretary_events: bool = False,
 ) -> None:
-    cache_invalidation.invalidate_after_resident_attendance_mutation(
-        resident_id=resident_id,
-        external_resident_id=external_resident_id,
-        posting_codes=posting_codes,
-        programme_code=programme_code,
-        reporting_period_id=reporting_period_id,
-        include_secretary_events=include_secretary_events,
-    )
+    try:
+        cache_invalidation.invalidate_after_resident_attendance_mutation(
+            resident_id=resident_id,
+            external_resident_id=external_resident_id,
+            posting_codes=posting_codes,
+            programme_code=programme_code,
+            reporting_period_id=reporting_period_id,
+            include_secretary_events=include_secretary_events,
+        )
+    except Exception as exc:
+        log_safe_exception(
+            logger,
+            "resident_attendance_cache_invalidation_failed",
+            exc,
+            category="cache_invalidation",
+        )
 
 
 async def _resident(db: AsyncSession, resident_id: UUID) -> dict[str, Any]:
@@ -1751,7 +1766,7 @@ async def list_available_events(
     }
 
 
-async def _attendance_for_event(
+async def _submitted_attendance_for_event(
     db: AsyncSession,
     *,
     resident_id: UUID,
@@ -1764,10 +1779,66 @@ async def _attendance_for_event(
             FROM attendance_records
             WHERE resident_id = :resident_id
               AND teaching_event_id = :event_id
+              AND status = 'submitted'
+            ORDER BY submitted_at DESC, id DESC
             LIMIT 1
             """
         ),
         {"resident_id": str(resident_id), "event_id": str(event_id)},
+    )
+    row = result.mappings().one_or_none()
+    return dict(row) if row is not None else None
+
+
+async def _attendance_by_id(
+    db: AsyncSession,
+    *,
+    resident_id: UUID,
+    attendance_id: UUID | str,
+) -> dict[str, Any] | None:
+    result = await db.execute(
+        text(
+            """
+            SELECT id, resident_id, teaching_event_id, status, posting_code, submitted_at
+            FROM attendance_records
+            WHERE id = :attendance_id
+              AND resident_id = :resident_id
+            """
+        ),
+        {
+            "attendance_id": str(attendance_id),
+            "resident_id": str(resident_id),
+        },
+    )
+    row = result.mappings().one_or_none()
+    return dict(row) if row is not None else None
+
+
+async def _external_attendance_by_id(
+    db: AsyncSession,
+    *,
+    external_resident_id: UUID,
+    attendance_id: UUID | str,
+) -> dict[str, Any] | None:
+    result = await db.execute(
+        text(
+            """
+            SELECT
+                id,
+                external_resident_id,
+                teaching_event_id,
+                status,
+                posting_code,
+                submitted_at
+            FROM external_attendance_records
+            WHERE id = :attendance_id
+              AND external_resident_id = :external_resident_id
+            """
+        ),
+        {
+            "attendance_id": str(attendance_id),
+            "external_resident_id": str(external_resident_id),
+        },
     )
     row = result.mappings().one_or_none()
     return dict(row) if row is not None else None
@@ -1801,35 +1872,6 @@ async def _insert_attendance(
         {
             "resident_id": str(resident_id),
             "event_id": str(event_id),
-            "posting_code": posting_code,
-        },
-    )
-    return _attendance_row(dict(result.mappings().one()))
-
-
-async def _restore_removed_attendance(
-    db: AsyncSession,
-    *,
-    attendance_id: UUID | str,
-    resident_id: UUID,
-    posting_code: str,
-) -> dict[str, Any]:
-    result = await db.execute(
-        text(
-            """
-            UPDATE attendance_records
-            SET status = 'submitted',
-                submitted_at = now(),
-                posting_code = :posting_code
-            WHERE id = :attendance_id
-              AND resident_id = :resident_id
-              AND status = 'removed'
-            RETURNING id, resident_id, teaching_event_id, status, posting_code, submitted_at
-            """
-        ),
-        {
-            "attendance_id": str(attendance_id),
-            "resident_id": str(resident_id),
             "posting_code": posting_code,
         },
     )
@@ -1893,6 +1935,36 @@ def _native_attendance_lock_keys(
     return key1, key2
 
 
+def _external_attendance_lock_keys(
+    *,
+    external_resident_id: UUID,
+    event_date: date,
+) -> tuple[int, int]:
+    scope = (
+        f"external-attendance:{external_resident_id}:{event_date.isoformat()}".encode(
+            "utf-8"
+        )
+    )
+    signed = int.from_bytes(
+        blake2b(scope, digest_size=8).digest(),
+        byteorder="big",
+        signed=True,
+    )
+    key1 = signed >> 32
+    key2 = signed & 0xFFFFFFFF
+    if key2 >= 2**31:
+        key2 -= 2**32
+    return key1, key2
+
+
+async def _lock_teaching_events(
+    db: AsyncSession,
+    *,
+    event_ids: Sequence[UUID | str],
+) -> None:
+    await acquire_teaching_event_locks(db, event_ids=event_ids)
+
+
 async def _acquire_native_attendance_locks(
     db: AsyncSession,
     *,
@@ -1912,6 +1984,60 @@ async def _acquire_native_attendance_locks(
                 """
             ),
             {"key1": key1, "key2": key2},
+        )
+        await db.execute(
+            text(
+                """
+                /* native_attendance_database_overlap_lock */
+                SELECT pg_advisory_xact_lock(
+                    hashtextextended(:lock_scope, 0)
+                )
+                """
+            ),
+            {
+                "lock_scope": (
+                    f"native-attendance:{resident_id}:"
+                    f"{event_date.isoformat()}"
+                )
+            },
+        )
+
+
+async def _acquire_external_attendance_locks(
+    db: AsyncSession,
+    *,
+    external_resident_id: UUID,
+    event_dates: set[date],
+) -> None:
+    for event_date in sorted(event_dates):
+        key1, key2 = _external_attendance_lock_keys(
+            external_resident_id=external_resident_id,
+            event_date=event_date,
+        )
+        await db.execute(
+            text(
+                """
+                /* external_attendance_overlap_lock */
+                SELECT pg_advisory_xact_lock(:key1, :key2)
+                """
+            ),
+            {"key1": key1, "key2": key2},
+        )
+        await db.execute(
+            text(
+                """
+                /* external_attendance_database_overlap_lock */
+                SELECT pg_advisory_xact_lock(
+                    hashtextextended(:lock_scope, 0)
+                )
+                """
+            ),
+            {
+                "lock_scope": (
+                    f"external-attendance:{external_resident_id}:"
+                    f"{event_date.isoformat()}"
+                )
+            },
         )
 
 
@@ -1971,13 +2097,16 @@ async def _overlapping_external_attendance_exists(
               ON existing.id = attendance.teaching_event_id
             WHERE attendance.external_resident_id = :external_resident_id
               AND attendance.status = 'submitted'
-              AND existing.id <> :event_id
+              AND (
+                  CAST(:event_id AS uuid) IS NULL
+                  OR existing.id <> CAST(:event_id AS uuid)
+              )
               AND existing.event_date = :event_date
             """
         ),
         {
             "external_resident_id": str(external_resident_id),
-            "event_id": str(event["id"]),
+            "event_id": str(event["id"]) if event.get("id") is not None else None,
             "event_date": event["event_date"],
         },
     )
@@ -2024,6 +2153,116 @@ async def _insert_external_attendance(
         },
     )
     return _external_attendance_row(dict(result.mappings().one()))
+
+
+async def _create_adhoc_attendance(
+    db: AsyncSession,
+    *,
+    posting_code: str,
+    attended_posting_code: str,
+    attended_teaching_name: str,
+    teaching_name: str,
+    details_of_session: str | None,
+    event_date: date,
+    start_time: time,
+    end_time: time | None,
+    duration_hours: Decimal | None,
+    session_type_id: UUID | str | None,
+) -> dict[str, Any]:
+    result = await db.execute(
+        text(
+            """
+            SELECT event_id, attendance_id
+            FROM mata_rls.create_adhoc_attendance(
+                :posting_code,
+                :attended_posting_code,
+                :attended_teaching_name,
+                :teaching_name,
+                :details_of_session,
+                :event_date,
+                :start_time,
+                :end_time,
+                :duration_hours,
+                :session_type_id
+            )
+            """
+        ),
+        {
+            "posting_code": posting_code,
+            "attended_posting_code": attended_posting_code,
+            "attended_teaching_name": attended_teaching_name,
+            "teaching_name": teaching_name,
+            "details_of_session": details_of_session,
+            "event_date": event_date,
+            "start_time": start_time,
+            "end_time": end_time,
+            "duration_hours": duration_hours,
+            "session_type_id": (
+                str(session_type_id) if session_type_id is not None else None
+            ),
+        },
+    )
+    return dict(result.mappings().one())
+
+
+def _database_sqlstate(exc: DBAPIError) -> str | None:
+    original = getattr(exc, "orig", None)
+    return (
+        getattr(original, "sqlstate", None)
+        or getattr(original, "pgcode", None)
+    )
+
+
+def _is_unique_violation(exc: IntegrityError) -> bool:
+    return _database_sqlstate(exc) == "23505"
+
+
+async def _raise_duplicate_attendance_conflict(
+    db: AsyncSession,
+    exc: IntegrityError,
+) -> NoReturn:
+    if not _is_unique_violation(exc):
+        raise exc
+    await db.rollback()
+    raise ApiError(
+        status_code=409,
+        detail="Attendance already submitted for this teaching event",
+        error_code=ErrorCode.CONFLICT.value,
+    ) from exc
+
+
+async def _raise_adhoc_helper_error(
+    db: AsyncSession,
+    exc: DBAPIError,
+) -> NoReturn:
+    sqlstate = _database_sqlstate(exc)
+    if sqlstate not in {"22023", "23P01", "23505", "28000"}:
+        raise exc
+
+    await db.rollback()
+    if sqlstate == "23505":
+        raise ApiError(
+            status_code=409,
+            detail="Attendance already submitted for this teaching event",
+            error_code=ErrorCode.CONFLICT.value,
+        ) from exc
+    if sqlstate == "23P01":
+        raise ApiError(
+            status_code=409,
+            detail="Attendance overlaps an earlier accepted event",
+            error_code=ErrorCode.CONFLICT.value,
+        ) from exc
+    if sqlstate == "22023":
+        raise ApiError(
+            status_code=422,
+            detail="Invalid ad-hoc teaching event",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        ) from exc
+    raise ApiError(
+        status_code=401,
+        detail="Unauthorized",
+        error_code=ErrorCode.UNAUTHORIZED.value,
+    ) from exc
 
 
 async def _resolve_teaching_name_for_posting(
@@ -2151,13 +2390,38 @@ async def submit_attendance(
                 error_code=ErrorCode.UNAUTHORIZED.value,
             )
         await _external_resident(db, external_resident_id)
-        submitted = 0
-        submitted_events: list[dict[str, Any]] = []
-        weekend_warning_count = 0
-        touched_postings: set[str] = set()
-        touched_period_ids: set[str] = set()
+        await _lock_teaching_events(db, event_ids=event_ids)
+
+        event_lookups: list[
+            tuple[UUID, dict[str, Any] | None, ApiError | None]
+        ] = []
         for event_id in event_ids:
-            event = await _get_event(db, event_id)
+            try:
+                event = await _get_event(db, event_id)
+            except ApiError as exc:
+                event_lookups.append((event_id, None, exc))
+            else:
+                event_lookups.append((event_id, event, None))
+
+        lock_dates: set[date] = set()
+        for _, event, lookup_error in event_lookups:
+            if lookup_error is not None:
+                break
+            assert event is not None
+            lock_dates.add(event["event_date"])
+        await _acquire_external_attendance_locks(
+            db,
+            external_resident_id=external_resident_id,
+            event_dates=lock_dates,
+        )
+
+        submission_plans: list[dict[str, Any]] = []
+        seen_event_ids: set[str] = set()
+        planned_events: list[dict[str, Any]] = []
+        for event_id, event, lookup_error in event_lookups:
+            if lookup_error is not None:
+                raise lookup_error
+            assert event is not None
             period = await _active_reporting_period(
                 db,
                 relevant_date=event["event_date"],
@@ -2183,6 +2447,9 @@ async def submit_attendance(
                     if context.get("posting_code")
                 },
             )
+            event_key = str(event_id)
+            if event_key in seen_event_ids:
+                raise _external_event_ineligibility_error("already_attended")
             already_attended = await _duplicate_external_attendance_exists(
                 db,
                 external_resident_id=external_resident_id,
@@ -2197,30 +2464,64 @@ async def submit_attendance(
             )
             if reason is not None:
                 raise _external_event_ineligibility_error(reason)
-            if await _overlapping_external_attendance_exists(
+            overlaps_accepted = await _overlapping_external_attendance_exists(
                 db,
                 external_resident_id=external_resident_id,
                 event=event,
-            ):
-                raise _external_event_ineligibility_error("overlapping_attendance")
-            await _insert_external_attendance(
-                db,
-                external_resident_id=external_resident_id,
-                event_id=event_id,
-                posting_code=event["posting_code"],
             )
-            submitted += 1
-            submitted_events.append(_event_row(event))
-            touched_postings.add(event["posting_code"])
-            touched_period_ids.add(str(period["id"]))
+            overlaps_planned = any(
+                prior_event["event_date"] == event["event_date"]
+                and _event_intervals_overlap(
+                    left_start=event["start_time"],
+                    left_end=event.get("end_time"),
+                    right_start=prior_event["start_time"],
+                    right_end=prior_event.get("end_time"),
+                )
+                for prior_event in planned_events
+            )
+            if overlaps_accepted or overlaps_planned:
+                raise _external_event_ineligibility_error("overlapping_attendance")
             accepted = await _weekend_is_accepted(
                 db,
                 event=event,
                 programme_code="",
                 session_type_id=event.get("session_type_id"),
             )
-            if not accepted:
-                weekend_warning_count += 1
+            submission_plans.append(
+                {
+                    "event_id": event_id,
+                    "event": event,
+                    "period": period,
+                    "accepted": accepted,
+                }
+            )
+            seen_event_ids.add(event_key)
+            planned_events.append(event)
+
+        submitted = 0
+        submitted_events: list[dict[str, Any]] = []
+        weekend_warning_count = 0
+        touched_postings: set[str] = set()
+        touched_period_ids: set[str] = set()
+        try:
+            for plan in submission_plans:
+                event_id = plan["event_id"]
+                event = plan["event"]
+                period = plan["period"]
+                await _insert_external_attendance(
+                    db,
+                    external_resident_id=external_resident_id,
+                    event_id=event_id,
+                    posting_code=event["posting_code"],
+                )
+                submitted += 1
+                submitted_events.append(_event_row(event))
+                touched_postings.add(event["posting_code"])
+                touched_period_ids.add(str(period["id"]))
+                if not plan["accepted"]:
+                    weekend_warning_count += 1
+        except IntegrityError as exc:
+            await _raise_duplicate_attendance_conflict(db, exc)
 
         await db.commit()
         for reporting_period_id in touched_period_ids:
@@ -2247,6 +2548,7 @@ async def submit_attendance(
             error_code=ErrorCode.UNAUTHORIZED.value,
         )
     resident = await _resident(db, resident_id)
+    await _lock_teaching_events(db, event_ids=event_ids)
 
     event_lookups: list[tuple[UUID, dict[str, Any] | None, ApiError | None]] = []
     for event_id in event_ids:
@@ -2345,21 +2647,15 @@ async def submit_attendance(
                 detail="Attendance already submitted for this teaching event",
                 error_code=ErrorCode.CONFLICT.value,
             )
-        existing_attendance = await _attendance_for_event(
+        existing_attendance = await _submitted_attendance_for_event(
             db,
             resident_id=resident_id,
             event_id=event_id,
         )
-        if existing_attendance and existing_attendance["status"] == "submitted":
+        if existing_attendance is not None:
             raise ApiError(
                 status_code=409,
                 detail="Attendance already submitted for this teaching event",
-                error_code=ErrorCode.CONFLICT.value,
-            )
-        if existing_attendance and existing_attendance["status"] != "removed":
-            raise ApiError(
-                status_code=409,
-                detail="Attendance already exists for this teaching event",
                 error_code=ErrorCode.CONFLICT.value,
             )
         overlaps_accepted = await _overlapping_native_attendance_exists(
@@ -2389,7 +2685,6 @@ async def submit_attendance(
                 "event": event,
                 "period": period,
                 "resolved": resolved,
-                "existing_attendance": existing_attendance,
             }
         )
         seen_event_ids.add(event_key)
@@ -2400,38 +2695,32 @@ async def submit_attendance(
     weekend_warning_count = 0
     touched_postings: set[str] = set()
     touched_period_ids: set[str] = set()
-    for plan in submission_plans:
-        event_id = plan["event_id"]
-        event = plan["event"]
-        period = plan["period"]
-        resolved = plan["resolved"]
-        existing_attendance = plan["existing_attendance"]
-        if existing_attendance is not None:
-            await _restore_removed_attendance(
-                db,
-                attendance_id=existing_attendance["id"],
-                resident_id=resident_id,
-                posting_code=event["posting_code"],
-            )
-        else:
+    try:
+        for plan in submission_plans:
+            event_id = plan["event_id"]
+            event = plan["event"]
+            period = plan["period"]
+            resolved = plan["resolved"]
             await _insert_attendance(
                 db,
                 resident_id=resident_id,
                 event_id=event_id,
                 posting_code=event["posting_code"],
             )
-        submitted += 1
-        submitted_events.append(_available_event_row(event, resolved=resolved))
-        touched_postings.add(event["posting_code"])
-        touched_period_ids.add(str(period["id"]))
-        accepted = await _weekend_is_accepted(
-            db,
-            event=event,
-            programme_code=resident["programme_code"],
-            session_type_id=resolved.get("session_type_id"),
-        )
-        if not accepted:
-            weekend_warning_count += 1
+            submitted += 1
+            submitted_events.append(_available_event_row(event, resolved=resolved))
+            touched_postings.add(event["posting_code"])
+            touched_period_ids.add(str(period["id"]))
+            accepted = await _weekend_is_accepted(
+                db,
+                event=event,
+                programme_code=resident["programme_code"],
+                session_type_id=resolved.get("session_type_id"),
+            )
+            if not accepted:
+                weekend_warning_count += 1
+    except IntegrityError as exc:
+        await _raise_duplicate_attendance_conflict(db, exc)
 
     await db.commit()
     for reporting_period_id in touched_period_ids:
@@ -2526,70 +2815,49 @@ async def submit_adhoc_teaching(
             if duration_hours is not None
             else None
         )
-        event_result = await db.execute(
-            text(
-                """
-                INSERT INTO teaching_events (
-                    posting_code,
-                    teaching_name,
-                    details_of_session,
-                    event_date,
-                    start_time,
-                    end_time,
-                    duration_hours,
-                    session_type_id,
-                    is_adhoc,
-                    created_by_role
-                )
-                VALUES (
-                    :posting_code,
-                    :teaching_name,
-                    :details_of_session,
-                    :event_date,
-                    :start_time,
-                    :end_time,
-                    :duration_hours,
-                    :session_type_id,
-                    true,
-                    'external_resident'
-                )
-                RETURNING
-                    id,
-                    posting_code,
-                    teaching_name,
-                    details_of_session,
-                    event_date,
-                    start_time,
-                    end_time,
-                    duration_hours,
-                    session_type_id,
-                    series_id,
-                    cme_points_awarded,
-                    smc_event_code,
-                    is_adhoc,
-                    created_by_role,
-                    created_at,
-                    updated_at
-                """
-            ),
-            {
-                "posting_code": posting_code,
-                "teaching_name": teaching_name,
-                "details_of_session": details_of_session,
+        await _acquire_external_attendance_locks(
+            db,
+            external_resident_id=external_resident_id,
+            event_dates={event_date},
+        )
+        if await _overlapping_external_attendance_exists(
+            db,
+            external_resident_id=external_resident_id,
+            event={
+                "id": None,
                 "event_date": event_date,
                 "start_time": start_time,
                 "end_time": end_time,
-                "duration_hours": duration_hours,
-                "session_type_id": resolved.get("session_type_id") if resolved else None,
             },
-        )
-        event = _event_row(dict(event_result.mappings().one()))
-        attendance = await _insert_external_attendance(
+        ):
+            raise _external_event_ineligibility_error("overlapping_attendance")
+        try:
+            created = await _create_adhoc_attendance(
+                db,
+                posting_code=posting_code,
+                attended_posting_code=selected_attended_posting[
+                    "posting_code"
+                ],
+                attended_teaching_name=teaching_name,
+                teaching_name=teaching_name,
+                details_of_session=details_of_session,
+                event_date=event_date,
+                start_time=start_time,
+                end_time=end_time,
+                duration_hours=duration_hours,
+                session_type_id=resolved.get("session_type_id"),
+            )
+        except DBAPIError as exc:
+            await _raise_adhoc_helper_error(db, exc)
+        event = _event_row(await _get_event(db, created["event_id"]))
+        attendance_row = await _external_attendance_by_id(
             db,
             external_resident_id=external_resident_id,
-            event_id=event["id"],
-            posting_code=event["posting_code"],
+            attendance_id=created["attendance_id"],
         )
+        if attendance_row is None:
+            raise RuntimeError("Ad-hoc attendance was not visible after creation")
+        attendance = _external_attendance_row(attendance_row)
         accepted = await _weekend_is_accepted(
             db,
             event=event,
@@ -2719,70 +2987,31 @@ async def submit_adhoc_teaching(
             detail="Attendance overlaps an earlier accepted event",
             error_code=ErrorCode.CONFLICT.value,
         )
-    event_result = await db.execute(
-        text(
-            """
-            INSERT INTO teaching_events (
-                posting_code,
-                teaching_name,
-                details_of_session,
-                event_date,
-                start_time,
-                end_time,
-                duration_hours,
-                session_type_id,
-                is_adhoc,
-                created_by_role
-            )
-            VALUES (
-                :posting_code,
-                :teaching_name,
-                :details_of_session,
-                :event_date,
-                :start_time,
-                :end_time,
-                :duration_hours,
-                :session_type_id,
-                true,
-                'resident'
-            )
-            RETURNING
-                id,
-                posting_code,
-                teaching_name,
-                details_of_session,
-                event_date,
-                start_time,
-                end_time,
-                duration_hours,
-                session_type_id,
-                series_id,
-                cme_points_awarded,
-                smc_event_code,
-                is_adhoc,
-                created_by_role,
-                created_at,
-                updated_at
-            """
-        ),
-        {
-            "posting_code": context["posting_code"],
-            "teaching_name": ADHOC_COMPLIANCE_TEACHING_NAME,
-            "details_of_session": details_of_session,
-            "event_date": event_date,
-            "start_time": start_time,
-            "end_time": end_time,
-            "duration_hours": duration_hours,
-            "session_type_id": resolved.get("session_type_id"),
-        },
-    )
-    event = _event_row(dict(event_result.mappings().one()))
-    attendance = await _insert_attendance(
+    try:
+        created = await _create_adhoc_attendance(
+            db,
+            posting_code=context["posting_code"],
+            attended_posting_code=selected_attended_posting["posting_code"],
+            attended_teaching_name=teaching_name,
+            teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
+            details_of_session=details_of_session,
+            event_date=event_date,
+            start_time=start_time,
+            end_time=end_time,
+            duration_hours=duration_hours,
+            session_type_id=resolved.get("session_type_id"),
+        )
+    except DBAPIError as exc:
+        await _raise_adhoc_helper_error(db, exc)
+    event = _event_row(await _get_event(db, created["event_id"]))
+    attendance_row = await _attendance_by_id(
         db,
         resident_id=resident_id,
-        event_id=event["id"],
-        posting_code=event["posting_code"],
+        attendance_id=created["attendance_id"],
     )
+    if attendance_row is None:
+        raise RuntimeError("Ad-hoc attendance was not visible after creation")
+    attendance = _attendance_row(attendance_row)
     accepted = await _weekend_is_accepted(
         db,
         event=event,
@@ -2810,27 +3039,64 @@ async def remove_attendance(
     resident_id: UUID,
     attendance_id: UUID,
 ) -> dict[str, Any]:
-    existing_result = await db.execute(
-        text(
-            """
-            SELECT id, resident_id, teaching_event_id, status, posting_code, submitted_at
-            FROM attendance_records
-            WHERE id = :attendance_id
-              AND resident_id = :resident_id
-            """
-        ),
-        {"attendance_id": str(attendance_id), "resident_id": str(resident_id)},
+    existing = await _attendance_by_id(
+        db,
+        resident_id=resident_id,
+        attendance_id=attendance_id,
     )
-    existing = existing_result.mappings().one_or_none()
     if existing is None:
         raise ApiError(
             status_code=404,
             detail="Attendance record not found",
             error_code=ErrorCode.NOT_FOUND.value,
         )
-    if existing["status"] == "removed":
+
+    await _lock_teaching_events(
+        db,
+        event_ids=[existing["teaching_event_id"]],
+    )
+    event = await _get_event(db, existing["teaching_event_id"])
+    await _acquire_native_attendance_locks(
+        db,
+        resident_id=resident_id,
+        event_dates={event["event_date"]},
+    )
+    locked_result = await db.execute(
+        text(
+            """
+            /* native_attendance_removal_lock */
+            SELECT
+                attendance.id,
+                attendance.resident_id,
+                attendance.teaching_event_id,
+                attendance.status,
+                attendance.posting_code,
+                attendance.submitted_at,
+                teaching_event.event_date
+            FROM attendance_records AS attendance
+            JOIN teaching_events AS teaching_event
+              ON teaching_event.id = attendance.teaching_event_id
+            WHERE attendance.id = :attendance_id
+              AND attendance.resident_id = :resident_id
+            FOR UPDATE OF attendance
+            """
+        ),
+        {
+            "attendance_id": str(attendance_id),
+            "resident_id": str(resident_id),
+        },
+    )
+    locked = locked_result.mappings().one_or_none()
+    if locked is None:
+        raise ApiError(
+            status_code=404,
+            detail="Attendance record not found",
+            error_code=ErrorCode.NOT_FOUND.value,
+        )
+    if locked["status"] == "removed":
+        await db.commit()
         return {
-            "attendance_id": existing["id"],
+            "attendance_id": locked["id"],
             "status": "removed",
             "removed_count": 0,
         }
@@ -2839,7 +3105,8 @@ async def remove_attendance(
         text(
             """
             UPDATE attendance_records
-            SET status = 'removed'
+            SET status = 'removed',
+                updated_at = now()
             WHERE id = :attendance_id
               AND resident_id = :resident_id
               AND status = 'submitted'
@@ -2873,13 +3140,46 @@ async def remove_external_attendance(
     external_resident_id: UUID,
     attendance_id: UUID,
 ) -> dict[str, Any]:
-    existing_result = await db.execute(
+    existing = await _external_attendance_by_id(
+        db,
+        external_resident_id=external_resident_id,
+        attendance_id=attendance_id,
+    )
+    if existing is None:
+        raise ApiError(
+            status_code=404,
+            detail="Attendance record not found",
+            error_code=ErrorCode.NOT_FOUND.value,
+        )
+
+    await _lock_teaching_events(
+        db,
+        event_ids=[existing["teaching_event_id"]],
+    )
+    event = await _get_event(db, existing["teaching_event_id"])
+    await _acquire_external_attendance_locks(
+        db,
+        external_resident_id=external_resident_id,
+        event_dates={event["event_date"]},
+    )
+    locked_result = await db.execute(
         text(
             """
-            SELECT id, external_resident_id, teaching_event_id, status, posting_code, submitted_at
-            FROM external_attendance_records
-            WHERE id = :attendance_id
-              AND external_resident_id = :external_resident_id
+            /* external_attendance_removal_lock */
+            SELECT
+                attendance.id,
+                attendance.external_resident_id,
+                attendance.teaching_event_id,
+                attendance.status,
+                attendance.posting_code,
+                attendance.submitted_at,
+                teaching_event.event_date
+            FROM external_attendance_records AS attendance
+            JOIN teaching_events AS teaching_event
+              ON teaching_event.id = attendance.teaching_event_id
+            WHERE attendance.id = :attendance_id
+              AND attendance.external_resident_id = :external_resident_id
+            FOR UPDATE OF attendance
             """
         ),
         {
@@ -2887,16 +3187,17 @@ async def remove_external_attendance(
             "external_resident_id": str(external_resident_id),
         },
     )
-    existing = existing_result.mappings().one_or_none()
-    if existing is None:
+    locked = locked_result.mappings().one_or_none()
+    if locked is None:
         raise ApiError(
             status_code=404,
             detail="Attendance record not found",
             error_code=ErrorCode.NOT_FOUND.value,
         )
-    if existing["status"] == "removed":
+    if locked["status"] == "removed":
+        await db.commit()
         return {
-            "attendance_id": existing["id"],
+            "attendance_id": locked["id"],
             "status": "removed",
             "removed_count": 0,
         }
@@ -2905,7 +3206,8 @@ async def remove_external_attendance(
         text(
             """
             UPDATE external_attendance_records
-            SET status = 'removed'
+            SET status = 'removed',
+                updated_at = now()
             WHERE id = :attendance_id
               AND external_resident_id = :external_resident_id
               AND status = 'submitted'

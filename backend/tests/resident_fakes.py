@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
@@ -382,6 +383,16 @@ class FakeResidentSession:
             }
         ]
         self.commits = 0
+        self.rollbacks = 0
+        self.fail_commit = False
+        self._rollback_snapshot: dict[str, list[dict]] | None = None
+        self.teaching_event_lock_calls: list[str] = []
+        self.native_attendance_lock_calls: list[tuple[int, int]] = []
+        self.external_attendance_lock_calls: list[tuple[int, int]] = []
+        self.native_attendance_removal_lock_calls: list[str] = []
+        self.external_attendance_removal_lock_calls: list[str] = []
+        self.adhoc_helper_calls: list[dict] = []
+        self._adhoc_attendance_family: str | None = None
 
     def _catalogue(
         self,
@@ -548,11 +559,34 @@ class FakeResidentSession:
             "current_posting_label": self._posting_label(posting_code),
         }
 
+    def transaction_state(self) -> dict[str, list[dict]]:
+        return {
+            "events": deepcopy(self.events),
+            "attendance": deepcopy(self.attendance),
+            "external_attendance": deepcopy(self.external_attendance),
+        }
+
+    def fail_next_commit(self) -> None:
+        self._rollback_snapshot = self.transaction_state()
+        self.fail_commit = True
+
     async def commit(self) -> None:
         self.commits += 1
+        if self.fail_commit:
+            self.fail_commit = False
+            raise RuntimeError("forced commit failure")
 
     async def rollback(self) -> None:
-        return None
+        self.rollbacks += 1
+        if self._rollback_snapshot is None:
+            return
+        snapshot = self._rollback_snapshot
+        self._rollback_snapshot = None
+        self.events = deepcopy(snapshot["events"])
+        self.attendance = deepcopy(snapshot["attendance"])
+        self.external_attendance = deepcopy(
+            snapshot["external_attendance"]
+        )
 
     def _execute_rate_limit_bucket(self, payload: dict) -> FakeResult:
         key = (
@@ -1180,6 +1214,77 @@ class FakeResidentSession:
                 ]
             return FakeResult(rows=rows)
 
+        if "mata_rls.create_adhoc_attendance" in sql:
+            self.adhoc_helper_calls.append(payload)
+            event = self._event(
+                str(uuid4()),
+                payload["posting_code"],
+                payload["teaching_name"],
+                payload["event_date"],
+                start_time=payload["start_time"],
+                duration_hours=payload["duration_hours"],
+            )
+            event["end_time"] = payload["end_time"]
+            event["session_type_id"] = (
+                str(payload["session_type_id"])
+                if payload.get("session_type_id")
+                else None
+            )
+            event["details_of_session"] = payload.get("details_of_session")
+            event["is_adhoc"] = True
+            event["created_by_role"] = (
+                "external_resident"
+                if self._adhoc_attendance_family == "external"
+                else "resident"
+            )
+            self.events.append(event)
+
+            attendance_id = str(uuid4())
+            if self._adhoc_attendance_family == "external":
+                self.external_attendance.append(
+                    {
+                        "id": attendance_id,
+                        "external_resident_id": self.external_resident_id,
+                        "teaching_event_id": event["id"],
+                        "status": "submitted",
+                        "posting_code": event["posting_code"],
+                        "submitted_at": self.now,
+                    }
+                )
+            elif self._adhoc_attendance_family == "native":
+                self.attendance.append(
+                    {
+                        "id": attendance_id,
+                        "resident_id": self.resident_id,
+                        "teaching_event_id": event["id"],
+                        "status": "submitted",
+                        "posting_code": event["posting_code"],
+                        "submitted_at": self.now,
+                    }
+                )
+            else:
+                raise AssertionError("ad-hoc helper called without a subject-family lock")
+            return FakeResult(
+                rows=[{"event_id": event["id"], "attendance_id": attendance_id}]
+            )
+
+        if "resident_submission_teaching_event_lock" in sql:
+            self.teaching_event_lock_calls.append(str(payload["event_id"]))
+            rows = [row for row in self.events if row["id"] == str(payload["event_id"])]
+            return FakeResult(rows=rows)
+
+        if "teaching_event_mutation_lock" in sql:
+            lock_scope = str(payload["lock_scope"])
+            prefix = "teaching-event:"
+            if not lock_scope.startswith(prefix):
+                raise AssertionError(
+                    "teaching-event mutation lock used an invalid scope"
+                )
+            self.teaching_event_lock_calls.append(
+                lock_scope.removeprefix(prefix)
+            )
+            return FakeResult()
+
         if "FROM teaching_events" in sql and "WHERE id = :event_id" in sql:
             rows = [row for row in self.events if row["id"] == str(payload["event_id"])]
             return FakeResult(rows=rows)
@@ -1251,6 +1356,23 @@ class FakeResidentSession:
             return FakeResult(rows=rows)
 
         if "native_attendance_overlap_lock" in sql:
+            self.native_attendance_lock_calls.append(
+                (payload["key1"], payload["key2"])
+            )
+            self._adhoc_attendance_family = "native"
+            return FakeResult()
+
+        if "native_attendance_database_overlap_lock" in sql:
+            return FakeResult()
+
+        if "external_attendance_overlap_lock" in sql:
+            self.external_attendance_lock_calls.append(
+                (payload["key1"], payload["key2"])
+            )
+            self._adhoc_attendance_family = "external"
+            return FakeResult()
+
+        if "external_attendance_database_overlap_lock" in sql:
             return FakeResult()
 
         if "native_attendance_overlap_candidates" in sql:
@@ -1285,6 +1407,29 @@ class FakeResidentSession:
                 for row in self.attendance
                 if row["resident_id"] == str(payload.get("resident_id"))
                 and row["teaching_event_id"] == str(payload.get("event_id"))
+                and (
+                    "status = 'submitted'" not in sql
+                    or row["status"] == "submitted"
+                )
+            ]
+            return FakeResult(rows=rows[:1])
+
+        if "native_attendance_removal_lock" in sql:
+            self.native_attendance_removal_lock_calls.append(
+                str(payload["attendance_id"])
+            )
+            rows = [
+                {
+                    **row,
+                    "event_date": next(
+                        event["event_date"]
+                        for event in self.events
+                        if event["id"] == row["teaching_event_id"]
+                    ),
+                }
+                for row in self.attendance
+                if row["id"] == str(payload.get("attendance_id"))
+                and row["resident_id"] == str(payload.get("resident_id"))
             ]
             return FakeResult(rows=rows[:1])
 
@@ -1304,7 +1449,11 @@ class FakeResidentSession:
                     attendance["external_resident_id"]
                     != str(payload.get("external_resident_id"))
                     or attendance["status"] != "submitted"
-                    or attendance["teaching_event_id"] == str(payload.get("event_id"))
+                    or (
+                        payload.get("event_id") is not None
+                        and attendance["teaching_event_id"]
+                        == str(payload.get("event_id"))
+                    )
                 ):
                     continue
                 existing = next(
@@ -1320,6 +1469,26 @@ class FakeResidentSession:
                         }
                     )
             return FakeResult(rows=rows)
+
+        if "external_attendance_removal_lock" in sql:
+            self.external_attendance_removal_lock_calls.append(
+                str(payload["attendance_id"])
+            )
+            rows = [
+                {
+                    **row,
+                    "event_date": next(
+                        event["event_date"]
+                        for event in self.events
+                        if event["id"] == row["teaching_event_id"]
+                    ),
+                }
+                for row in self.external_attendance
+                if row["id"] == str(payload.get("attendance_id"))
+                and row["external_resident_id"]
+                == str(payload.get("external_resident_id"))
+            ]
+            return FakeResult(rows=rows[:1])
 
         if "FROM external_attendance_records" in sql and "id = :attendance_id" in sql:
             rows = [
@@ -1346,6 +1515,7 @@ class FakeResidentSession:
                 for row in self.attendance
                 if row["resident_id"] == str(payload["resident_id"])
                 and row["teaching_event_id"] == str(payload["event_id"])
+                and row["status"] == "submitted"
             )
             if duplicate:
                 raise AssertionError("duplicate insert attempted")
@@ -1383,18 +1553,6 @@ class FakeResidentSession:
 
         if "UPDATE attendance_records" in sql:
             rows: list[dict] = []
-            if "SET status = 'submitted'" in sql:
-                for row in self.attendance:
-                    if (
-                        row["id"] == str(payload["attendance_id"])
-                        and row["resident_id"] == str(payload["resident_id"])
-                        and row["status"] == "removed"
-                    ):
-                        row["status"] = "submitted"
-                        row["posting_code"] = payload.get("posting_code")
-                        row["submitted_at"] = self.now
-                        rows.append(row)
-                return FakeResult(rows=rows, rowcount=len(rows))
             for row in self.attendance:
                 if (
                     row["id"] == str(payload["attendance_id"])
@@ -1402,7 +1560,7 @@ class FakeResidentSession:
                     and row["status"] == "submitted"
                 ):
                     row["status"] = "removed"
-                    row["submitted_at"] = self.now
+                    row["updated_at"] = self.now
                     rows.append(row)
             return FakeResult(rows=rows, rowcount=len(rows))
 
@@ -1415,7 +1573,7 @@ class FakeResidentSession:
                     and row["status"] == "submitted"
                 ):
                     row["status"] = "removed"
-                    row["submitted_at"] = self.now
+                    row["updated_at"] = self.now
                     rows.append(row)
             return FakeResult(rows=rows, rowcount=len(rows))
 

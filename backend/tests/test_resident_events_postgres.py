@@ -20,7 +20,7 @@ from app.services.database_context import (
 )
 
 
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_security_integration_audit"
+DISPOSABLE_DATABASE_NAME = "mata_phase5b_aud_m04_atomic_attendance_verify"
 _TEST_SESSION_HASH_KEY = "rls-resident-events-test-session-key-32-bytes"
 
 
