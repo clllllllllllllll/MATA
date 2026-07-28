@@ -54,6 +54,29 @@ Session rotation is serialized by subject, transaction-scoped family advisory lo
 
 Local code and disposable-database verification are not proof of deployed Supabase behavior.
 
+**AUD-M-06 reliable-logout local state (2026-07-28):** Logout clears local
+identity, the in-memory CSRF value, protected read/upload state, and
+authenticated UI state immediately, then remains explicitly
+pending/unconfirmed unless either the matching server response returns
+`server_logout_confirmed = true` or a successfully committed replacement login
+resolves the matching lifecycle. Only the proof-positive response confirms
+server revocation; replacement login does not make that claim. Pending state
+blocks mount, focus/visibility hydration and protected requests. Durable state
+is limited to a non-sensitive pending tombstone (format version, timestamp,
+bounded retry state, and local request id) plus a fixed-size non-sensitive
+resolution watermark used to order cross-tab/reload recovery; no copy of
+token/cookie material, CSRF, identity, MCR, role, scope, credential, or
+server-expiry data is written to application storage.
+The browser-managed HttpOnly cookie may remain while server revocation is
+unconfirmed, but it cannot bypass the pending fence. The original proof
+remains in memory only for at most four attempts at nominal automatic offsets
+0, 1, 3, and 7 seconds. Manual retry or an `online` event may advance one
+eligible attempt, but triggers coalesce and never increase that bound. Reload
+is proofless; cross-tab and stale-response handling is
+revision/request-id/watermark fenced. A replacement login resolves the
+matching lifecycle only after the new session is committed inside the same Web
+Lock. Local gate evidence passed; deployed verification remains pending.
+
 PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
 
 ### Three User Roles
@@ -990,6 +1013,14 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
   ordinary direct ad-hoc insertion, another Resident, and the opposite storage
   family are denied. See `5b_h_aud_m04_atomic_attendance.md`.
 - **Session management:** Opaque 256-bit session and CSRF credentials; only keyed digests persist. Strict host-only cookie, synchronized CSRF, one-winner rotation, family logout, and generation fencing are implemented.
+- **Reliable logout:** AUD-M-06 distinguishes immediate local sign-out from
+  proof-positive server revocation. Pending/unconfirmed state blocks hydration
+  and protected requests; only a non-sensitive pending tombstone and resolution
+  watermark persist, while retry proof remains in memory and is bounded to
+  four attempts with nominal automatic offsets of 0/1/3/7 seconds. Matching
+  request ids, authentication revisions, and monotonic lifecycle ordering
+  protect cross-tab, reload, stale-response, and newer-login transitions. See
+  `5b_h_m06_reliable_logout.md`.
 - **Request-body perimeter:** AUD-M-05 adds a pure ASGI 4 MiB global body
   cap and the same 4 MiB aggregate cap on same-origin
   `/api/v1/admin/upload/*` before authentication or multipart parsing. Files
@@ -1025,6 +1056,7 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
 | Local H-E/lifecycle versus deployed RLS | A locally verified role/policy/session catalogue can be mistaken for deployed Supabase protection | Independently verify revision `20260727_000027`, lifecycle settings, credentials, ownership, policies, grants, helpers, PUBLIC/browser roles, expiry behavior, and five-role workflows on the approved target |
 | Local AUD-M-04 versus deployed RLS | Immutable ad-hoc ownership and atomic helper behavior may be mistaken for deployed protection | Independently verify revision `20260728_000028`, strict populated backfill, creator/family RLS, helper ACLs, rollback, and concurrency on the approved target |
 | Local AUD-M-05 versus deployed ingress | Application tests may be mistaken for proof that a provider enforces the same body limits before buffering | Verify the approved 3 MiB file and 4 MiB request contract, ingress buffering, timeout, same-origin path, response-cache behavior, and advertised upload size |
+| Local AUD-M-06 versus deployed logout behavior | Local state-machine tests may be mistaken for proof of real network, browser-cookie, reload, or cross-tab behavior | Verify immediate local clearing, explicit pending state, proof-positive `server_logout_confirmed`, bounded retry, proofless reload, Web Lock replacement login, and storage/evidence hygiene on the approved target |
 | Emergency bearer compatibility | Routine enablement would reintroduce browser-token risk | Keep double opt-in, time-bounded, and rollback-only |
 
 See `99_decision_log_and_gap_audit.md` for the full risk register.

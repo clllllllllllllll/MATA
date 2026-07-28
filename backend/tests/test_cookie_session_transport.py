@@ -620,7 +620,10 @@ def test_refresh_rotates_cookie_and_logout_revokes_then_clears(
         },
     )
     assert logged_out.status_code == 200
-    assert logged_out.json() == {"success": True}
+    assert logged_out.json() == {
+        "success": True,
+        "server_logout_confirmed": True,
+    }
     assert "Max-Age=0" in logged_out.headers["set-cookie"]
     assert revoke_calls == [
         (
@@ -668,7 +671,10 @@ def test_logout_with_unusable_proof_remains_idempotent_without_clearing_cookie(
     response = client.post("/api/v1/auth/logout", headers=headers)
 
     assert response.status_code == 200
-    assert response.json() == {"success": True}
+    assert response.json() == {
+        "success": True,
+        "server_logout_confirmed": False,
+    }
     assert "set-cookie" not in response.headers
     assert revoke_calls == [("malformed-or-stale-session", csrf_token)]
     assert db.commits == 1
@@ -884,10 +890,16 @@ def test_cookie_logout_bypasses_hydration_and_csrf_but_keeps_outer_guards(
     )
 
     assert stale_proof.status_code == 200
-    assert stale_proof.json() == {"success": True}
+    assert stale_proof.json() == {
+        "success": True,
+        "server_logout_confirmed": False,
+    }
     assert "set-cookie" not in stale_proof.headers
     assert matching_proof.status_code == 200
-    assert matching_proof.json() == {"success": True}
+    assert matching_proof.json() == {
+        "success": True,
+        "server_logout_confirmed": True,
+    }
     assert "Max-Age=0" in matching_proof.headers["set-cookie"]
     assert bearer.status_code == 401
     assert unapproved_origin.status_code == 403

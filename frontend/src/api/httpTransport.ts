@@ -14,6 +14,11 @@ const legacyCredentialHeaders = [
 export const isUnsafeRequestMethod = (method: string | undefined): boolean =>
   unsafeMethods.has((method ?? '').toUpperCase())
 
+export const shouldBlockRequestDuringLogoutPending = (
+  logoutPending: boolean,
+  explicitlyAllowed: boolean | undefined,
+): boolean => logoutPending && explicitlyAllowed !== true
+
 export const csrfHeadersForRequest = (
   method: string | undefined,
   csrfToken: string | undefined,

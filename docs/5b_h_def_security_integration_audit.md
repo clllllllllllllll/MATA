@@ -2,18 +2,23 @@
 
 Date: 27 July 2026 (Asia/Singapore)
 
-Status: **PARTIAL AUDIT COMPLETE — CONTINUATION REQUIRED**
+Historical status at audit close:
+**PARTIAL AUDIT COMPLETE — CONTINUATION REQUIRED**
 
-The cumulative H-D transport, H-E PostgreSQL RLS, and session-lifecycle work
-was audited locally. No Critical finding remains. One High cross-account
-cookie-response race was confirmed, corrected, and covered by deterministic
-regressions. Three bounded Medium corrections were also completed. Confirmed
-design-heavy Medium findings remain documented for a later, separately scoped
-change.
+At that historical audit close, the cumulative H-D transport, H-E PostgreSQL
+RLS, and session-lifecycle work had been audited locally. No Critical finding
+remained. One High cross-account cookie-response race was confirmed, corrected,
+and covered by deterministic regressions. Three bounded Medium corrections were
+also completed. Confirmed design-heavy Medium findings remained documented for
+a later, separately scoped change.
 
 This audit did not push, merge, deploy, access live Supabase, access Vercel,
 run a remote migration, or change a live system. Local evidence is not
 production verification.
+
+Current descendant note (28 July 2026): AUD-M-06 is resolved and verified
+locally. The descendant resolution below defines the current logout contract
+without rewriting this point-in-time audit or claiming deployed behavior.
 
 PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
 
@@ -278,7 +283,11 @@ support requires a separately approved ingress and is not implemented here.
 Implementation and deployed checks are in
 `docs/5b_h_m05_upload_preparser_limits.md`.
 
-#### AUD-M-06 — failed server logout is silently presented as complete
+#### Historical AUD-M-06 finding — failed server logout was silently presented as complete
+
+**Historical audit finding:** The following classification, execution path,
+test gap, correction sketch, and deferral record the 27 July point-in-time
+state before the M-06 descendant implementation.
 
 - Classification: confirmed session-termination correctness/UX gap.
 - Origin: H-D/lifecycle best-effort logout contract.
@@ -299,6 +308,39 @@ Implementation and deployed checks are in
   completion, cross-tab, and accessibility/UX cases.
 - Deferral reason: changing the documented immediate/best-effort behavior needs
   product semantics and broader frontend verification.
+
+**Descendant resolution:** AUD-M-06 now clears local identity, CSRF, protected
+read/upload state, and the authenticated UI immediately while distinguishing
+that local sign-out from server revocation. It records an explicit
+logout-pending/unconfirmed state. Only the compatible proof-positive machine
+field `server_logout_confirmed = true` confirms server revocation; transport
+ambiguity, an ordinary 2xx response without that proof, and
+`server_logout_confirmed = false` remain unconfirmed.
+
+Pending state blocks mount, focus/visibility hydration and protected requests.
+Durable state is limited to a non-sensitive pending tombstone and a fixed-size
+non-sensitive resolution watermark. No copy of a session token or cookie
+material, CSRF value or digest, identity, MCR, role, scope, credential, or
+server expiry is written to application storage. The browser-managed HttpOnly
+cookie can remain while server revocation is unconfirmed, but the pending fence
+prevents it from restoring frontend authority. The logout proof
+(CSRF/session epoch/revision) remains only in memory for at most four attempts
+with nominal automatic offsets 0, 1, 3, and 7 seconds. Explicit retry or an
+`online` trigger may advance one eligible attempt, but concurrent triggers
+coalesce and cannot increase the bound.
+
+Matching request ids, authentication revisions, deterministic pending
+election, and monotonic resolution ordering fence storage, cross-tab, reload,
+and response handling. A stale response or fallback replica cannot alter a
+newer login or resurrect a completed lifecycle. Reloaded pending state is
+proofless: it blocks rehydration, cannot retry the old proof, and offers full
+reauthentication. The applicable lifecycle is resolved only after either
+proof-positive logout confirmation or a successful replacement login is
+committed inside the same origin-scoped Web Lock; failed login leaves it
+intact. A replacement login resolves the pending lifecycle without claiming
+that the earlier server session was revoked. The implementation is resolved
+and verified locally and remains unverified on any deployment. See
+`docs/5b_h_m06_reliable_logout.md`.
 
 ### Low
 
@@ -555,6 +597,11 @@ This document does not authorize that rollout.
 
 ## Continuation checkpoint
 
+The following checkpoint is retained as historical handoff text from the audit
+branch. Its instruction not to implement AUD-M-05/AUD-M-06 has been superseded
+by separately authorized descendant work and is not a current repository
+instruction.
+
 The next implementation should address one design-heavy Medium at a time,
 starting with AUD-M-04. Do not combine the RLS ownership migration, streaming
 upload middleware, and logout UX redesign in one change.
@@ -611,11 +658,12 @@ Record AUD-M-05 and AUD-M-06 but do not implement them in the same run.
 Leave all new audit-branch work uncommitted unless explicitly authorized.
 ```
 
-## Repository status
+## Historical repository status at audit handoff
 
-The active branch is `CL/5b-h-def-security-integration-audit` at committed
-HEAD `ac6ed465e3d4fdbd9a7577b2d71a339caf4694f9`. Audit fixes and this report are
-intentionally unstaged and uncommitted. The final audit delta has 32 paths:
+At that historical checkpoint, the active branch was
+`CL/5b-h-def-security-integration-audit` at committed
+HEAD `ac6ed465e3d4fdbd9a7577b2d71a339caf4694f9`. Audit fixes and this report were
+intentionally unstaged and uncommitted. The final audit delta had 32 paths:
 29 modified tracked files and three untracked files, with 1,230 insertions and
 93 deletions. No push, merge, deployment, live-system operation, or remote
 migration occurred.

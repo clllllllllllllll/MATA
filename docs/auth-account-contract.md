@@ -1,10 +1,11 @@
 # Auth and Account Contract
 
 Status: Phase 5B-H-E locally implemented and verified; focused session
-lifecycle assurance implemented locally on July 27, 2026. Deployment
-verification remains pending.
+lifecycle assurance implemented locally on July 27, 2026; AUD-M-06 reliable
+logout implemented and verified locally. Deployment verification remains
+pending.
 
-This document defines the current auth/account contract. Phase 5B-H-D replaced normal browser bearer transport with backend-owned opaque PostgreSQL sessions, a host-only cookie, and synchronizer CSRF. Phase 5B-H-E adds the restricted non-owner PostgreSQL runtime, a separate auth-helper boundary, signed transaction-local identity context, complete application-table RLS, and exact grants. Revision `20260727_000027` adds absolute-expiry assurance, interval-gated activity, minimal session helpers, and expiry-aware RLS context. Historical implementation entries below are retained as an audit trail; where they describe browser Supabase or resident bearer tokens, the H-D/H-E/current lifecycle contract supersedes them.
+This document defines the current auth/account contract. Phase 5B-H-D replaced normal browser bearer transport with backend-owned opaque PostgreSQL sessions, a host-only cookie, and synchronizer CSRF. Phase 5B-H-E adds the restricted non-owner PostgreSQL runtime, a separate auth-helper boundary, signed transaction-local identity context, complete application-table RLS, and exact grants. Revision `20260727_000027` adds absolute-expiry assurance, interval-gated activity, minimal session helpers, and expiry-aware RLS context. AUD-M-06 supersedes H-D's best-effort frontend logout-completion semantics with an explicit pending/unconfirmed state and proof-positive server confirmation. Historical implementation entries below are retained as an audit trail; where they describe browser Supabase or resident bearer tokens, the H-D/H-E/current lifecycle contract supersedes them.
 
 References checked:
 - `AGENTS.md`
@@ -48,8 +49,37 @@ References checked:
   cookie. Missing/wrong protocol requests fail without `Set-Cookie`; generic
   authentication failures also leave the shared cookie untouched. Logout
   clears it only when the presented token/CSRF proof revokes that family.
+- Logout clears local identity, CSRF, protected read/upload state, and
+  user-facing authenticated state immediately, then enters an explicit
+  logout-pending/unconfirmed state. A successful HTTP status alone is not
+  revocation proof: only `server_logout_confirmed = true` confirms that the
+  server revoked the presented family and applied controlled cookie deletion.
+- While logout is pending, mount, focus/visibility hydration, and protected
+  requests remain blocked. Durable browser state is limited to a non-sensitive
+  pending tombstone containing its format version, timestamp, bounded retry
+  state, and local request id plus one fixed-size non-sensitive resolution
+  watermark containing only its version, request id, initiation/resolution
+  timestamps, and resolution kind. No copy of the session token or cookie
+  material, CSRF value or digest, identity, MCR, role, scope, credential, or
+  server expiry is written to application storage. Until proof-positive
+  deletion or expiry, the browser-managed HttpOnly cookie may still exist but
+  cannot restore frontend authority through the pending fence.
+- A bounded controller may dispatch the original logout proof at nominal
+  automatic offsets 0, 1, 3, and 7 seconds while that CSRF/session
+  epoch/revision proof remains only in memory, with at most four attempts.
+  Explicit retry or an `online` signal may advance one eligible attempt;
+  concurrent triggers coalesce and cannot increase the bound. A newer
+  authentication revision, superseded lifecycle, or confirmed completion
+  cancels old work and releases its memory-only proof.
+- After reload, a pending tombstone is proofless and cannot retry or rehydrate
+  the old session. Deterministic tombstone election plus the monotonic
+  resolution watermark prevents a stale fallback replica or older tab from
+  resurrecting a completed lifecycle. The user may establish a fresh login;
+  only the successful replacement session commit inside the same Web Lock
+  resolves the applicable lifecycle. Failed login does not resolve it, and a
+  stale logout response cannot affect a newer pending logout or login.
 - Migration `20260722_000024` revokes public/browser-role object privileges. Migrations `20260726_000025` and `20260726_000026` add the H-E role/context/helper foundation and full policy/grant cutover. Migration `20260727_000027` narrows the callable session helpers and makes signed RLS context reject an expired backing session.
-- Detailed implementation and evidence: `docs/5b_h_d_production_security_implementation.md`, `docs/5b_h_e_full_rls_implementation.md`, and `docs/5b_h_session_lifecycle_assurance.md`.
+- Detailed implementation and evidence: `docs/5b_h_d_production_security_implementation.md`, `docs/5b_h_e_full_rls_implementation.md`, `docs/5b_h_session_lifecycle_assurance.md`, and `docs/5b_h_m06_reliable_logout.md`.
 
 PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED
 
@@ -127,6 +157,11 @@ Frontend:
 - `frontend/src/types/auth.ts` defines the implemented typed frontend auth/session identity contract.
 - As of 5B-C, the frontend has a universal `/login`, frontend auth/session provider, role-aware route guards, logout/session clearing, and Non-NHG Resident registration plus confirmation UI.
 - In `VITE_AUTH_MODE=supabase`, the frontend uses backend cookie-session APIs only. It has no Supabase browser client, bearer persistence, or routine bearer injection.
+- AUD-M-06 clears authenticated local state immediately but does not present
+  server revocation as complete until the machine-readable logout response
+  returns `server_logout_confirmed = true`. Pending state blocks hydration and
+  protected requests across mount, focus, visibility, reload, and tabs without
+  persisting credentials or identity data.
 - The shared NHG/registered Non-NHG Resident MCR login checks both identity tables in one request, relies on PostgreSQL-enforced normalized global MCR uniqueness as well as the service preflight, creates an opaque application session, and reloads the resolved active row on protected requests.
 - As of 5B-E, staff accounts are generic pass-down role accounts. Master Admin can manage staff accounts at `/admin/staff-accounts`; Supabase-mode create/reset calls are backend-only service-role operations and are mocked in tests.
 - As of 5B-E, staff users save `current_staff_actor_name` once after login and can change it from Settings. This is self-declared audit/display metadata only and never an authorization source. Resetting a staff account password clears the saved actor name for handover.
@@ -406,6 +441,18 @@ The in-memory frontend session is the source of truth:
 
 `mode`, `role`, and `isAuthenticated` are derived `AuthSessionState` fields, not persisted credential fields.
 
+Reliable logout has three distinct lifecycle meanings:
+
+- authenticated: a current in-memory identity/CSRF session is usable;
+- logout pending/unconfirmed: local session state is already empty, the
+  non-sensitive tombstone takes precedence over hydration and protected
+  requests, and the server result remains unknown or negative; and
+- server logout confirmed: a proof-positive
+  `server_logout_confirmed = true` response established revocation.
+
+The tombstone is not an auth session and contains no credential or identity
+material.
+
 Responsibilities:
 - Stub/demo mode derives frontend identity from `/auth/login` and `/auth/me`; local header emission is based on the stored session identity.
 - Supabase mode derives every role from backend session responses and `/auth/me`.
@@ -548,6 +595,22 @@ Phase 5B programme/institution mapping rollout:
 - Enabled RLS on all 34 application tables and installed 84 policies plus exact table, column, helper, schema, sequence, PUBLIC, browser-role, ownership, and default-ACL boundaries.
 - Preserved FastAPI authorization and native/Non-NHG identity separation. Privileged infrastructure tables remain helper-only rather than receiving broad direct runtime grants.
 - Verified the policy matrix and migration lifecycle only against the named local disposable PostgreSQL database. Deployment remains unverified. See `docs/5b_h_e_full_rls_implementation.md`.
+
+AUD-M-06 descendant locally implemented:
+
+- Immediate local sign-out is distinct from confirmed server revocation.
+  Ambiguous transport results and `server_logout_confirmed = false` remain
+  explicitly pending/unconfirmed; only the proof-positive boolean confirms
+  server revocation.
+- A durable non-sensitive pending tombstone blocks hydration/protected
+  requests; a separate fixed-size non-sensitive resolution watermark prevents
+  completed fallback state from being resurrected. The retry proof remains in
+  memory only and is bounded to four attempts with nominal automatic offsets
+  0/1/3/7 seconds. Cross-tab, reload, stale-response, deterministic-election,
+  and replacement-login transitions are coordinated so an older logout cannot
+  affect a newer committed session.
+- Final M-06 local gates passed; deployed verification remains pending. See
+  `docs/5b_h_m06_reliable_logout.md`.
 
 5B-H historical sequencing:
 - `5B-H-A`: Vercel UAT security audit and minimal deployment hardening plan.

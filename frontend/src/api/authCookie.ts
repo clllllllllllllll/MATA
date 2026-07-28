@@ -3,6 +3,10 @@ import type { AppRole } from '../types/app'
 import type { AuthIdentity, StoredAuthSession } from '../types/auth'
 import { httpClient, toApiRequestError } from './http'
 import type { ResidentLoginPayload } from './loginPayloads'
+import {
+  parseLogoutAuthSessionResponse,
+  type LogoutAuthSessionResult,
+} from './logoutResponse'
 import { withAuthCookieResponseLock } from './authCookieCoordination'
 import {
   parseNonNhgRegistrationOptions,
@@ -12,6 +16,7 @@ import { parseAuthSessionResponse, toAuthIdentity } from './authSessionResponse'
 import {
   announceAuthSessionEstablished,
   authSessionChangedEvent,
+  authSessionEstablishedEvent,
   authSessionRevalidationEvent,
   captureAuthSessionFence,
   clearAuthSession,
@@ -33,6 +38,18 @@ type LoginPayload =
       password: string
     }
   | ResidentLoginPayload
+
+export type LogoutAuthSessionProof = {
+  csrfToken: string
+  sessionEpoch: string | null
+  sessionRevision: number
+}
+
+export type LogoutAuthSessionCoordination = {
+  prepareDispatch: () => boolean
+  confirmRevocation: () => boolean
+  signal: AbortSignal
+}
 
 export interface NonNhgRegistrationPayload {
   name: string
@@ -65,14 +82,16 @@ const requiredString = (value: unknown): string => optionalString(value) ?? ''
 
 const withCookieResponseCoordination = <T>(
   operation: () => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> =>
   frontendConfig.authMode === 'supabase'
-    ? withAuthCookieResponseLock(operation)
+    ? withAuthCookieResponseLock(operation, undefined, signal)
     : operation()
 
 export {
   announceAuthSessionEstablished,
   authSessionChangedEvent,
+  authSessionEstablishedEvent,
   authSessionRevalidationEvent,
   captureAuthSessionFence,
   clearAuthSession,
@@ -152,21 +171,35 @@ const parseLoginOrHydrationResponse = (value: unknown): StoredAuthSession => {
   }
 }
 
-export const login = async (payload: LoginPayload): Promise<StoredAuthSession> => {
+export const login = async (
+  payload: LoginPayload,
+  commitSession?: (session: StoredAuthSession) => boolean,
+): Promise<StoredAuthSession> => {
   try {
     return await withCookieResponseCoordination(async () => {
-      const response = await httpClient.post<unknown>('/auth/login', payload)
-      return parseLoginOrHydrationResponse(response.data)
+      const response = await httpClient.post<unknown>('/auth/login', payload, {
+        allowDuringLogoutPending: true,
+      })
+      const session = parseLoginOrHydrationResponse(response.data)
+      commitSession?.(session)
+      return session
     })
   } catch (error) {
     throw toApiRequestError(error)
   }
 }
 
-export const loginResident = (payload: ResidentLoginPayload) => login(payload)
+export const loginResident = (
+  payload: ResidentLoginPayload,
+  commitSession?: (session: StoredAuthSession) => boolean,
+) => login(payload, commitSession)
 
-export const loginStaff = (email: string, password: string): Promise<StoredAuthSession> =>
-  login({ role: 'staff', email, password })
+export const loginStaff = (
+  email: string,
+  password: string,
+  commitSession?: (session: StoredAuthSession) => boolean,
+): Promise<StoredAuthSession> =>
+  login({ role: 'staff', email, password }, commitSession)
 
 export const refreshAuthSession = async (): Promise<StoredAuthSession> => {
   try {
@@ -189,17 +222,27 @@ export const hydrateAuthSession = async (): Promise<StoredAuthSession> => {
 }
 
 export const logoutAuthSession = async (
-  session: StoredAuthSession,
-  fence: AuthSessionFence,
-): Promise<void> => {
+  proof: LogoutAuthSessionProof,
+  coordination: LogoutAuthSessionCoordination,
+): Promise<LogoutAuthSessionResult> => {
   try {
-    await withCookieResponseCoordination(async () => {
-      await httpClient.post('/auth/logout', undefined, {
-        authSessionCsrfToken: session.csrfToken,
-        authSessionEpoch: fence.sessionEpoch,
-        authSessionRevision: fence.revision,
+    return await withCookieResponseCoordination(async () => {
+      if (coordination.signal.aborted || !coordination.prepareDispatch()) {
+        return 'stale'
+      }
+      const response = await httpClient.post<unknown>('/auth/logout', undefined, {
+        allowDuringLogoutPending: true,
+        authSessionCsrfToken: proof.csrfToken,
+        authSessionEpoch: proof.sessionEpoch,
+        authSessionRevision: proof.sessionRevision,
+        signal: coordination.signal,
       })
-    })
+      const result = parseLogoutAuthSessionResponse(response.data)
+      if (result !== 'confirmed') {
+        return result
+      }
+      return coordination.confirmRevocation() ? 'confirmed' : 'stale'
+    }, coordination.signal)
   } catch (error) {
     throw toApiRequestError(error)
   }

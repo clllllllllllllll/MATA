@@ -332,3 +332,41 @@ replace that upstream boundary, and larger-file support requires a separately
 approved ingress that is not implemented here. See
 `5b_h_m05_upload_preparser_limits.md` for exact behavior and required deployed
 verification.
+
+## AUD-M-06 descendant reliable logout
+
+The M-06 descendant separates immediate local sign-out from confirmed server
+revocation. Logout immediately clears local identity, the in-memory CSRF value,
+protected read/upload state, and authenticated UI state, then records an
+explicit pending/unconfirmed state. A successful HTTP response is not by itself
+confirmation: only the compatible machine-readable
+`server_logout_confirmed = true` response means the presented family was
+revoked and the controlled cookie deletion was applied. A false value or
+transport ambiguity remains pending/unconfirmed.
+
+Pending state blocks protected requests and mount, focus, or visibility
+hydration. Durable state is limited to a non-sensitive pending tombstone and a
+fixed-size non-sensitive resolution watermark that orders cross-tab/reload
+recovery. No copy of a session token or cookie material, CSRF value or digest,
+identity, MCR, role, scope, credential, or server expiry is written to
+application storage. The CSRF/session epoch/revision proof required for retry
+exists only in memory; the session token remains confined to the
+browser-managed HttpOnly cookie, which may remain until proof-positive deletion
+or expiry without bypassing the pending fence.
+
+The controller permits at most four attempts, with nominal automatic offsets
+0, 1, 3, and 7 seconds. Explicit retry or an `online` event may advance one
+eligible attempt; concurrent triggers coalesce and cannot expand the maximum.
+Request ids, authentication revisions, deterministic pending election, and the
+monotonic resolution watermark fence response, storage, and cross-tab
+handling. Thus a stale response or fallback replica cannot affect a newer
+login or resurrect a completed logout. Reloaded pending state has no proof,
+cannot dispatch the old logout, and continues to block rehydration while
+offering full reauthentication. Only proof-positive logout confirmation or a
+successful replacement login committed inside the same origin-scoped Web Lock
+resolves the applicable lifecycle; a failed login does not.
+
+AUD-M-06 is implemented and verified locally. This record does not establish
+Vercel/Supabase deployment behavior, and no larger deployment or live-system
+action is claimed. See
+`5b_h_m06_reliable_logout.md` for the implementation and evidence record.

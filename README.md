@@ -1,4 +1,4 @@
-# MATA — Medical Attendance Tracking Application
+# MATA — Monitoring and Analysing of Teaching Attendances
 
 MATA is a web application that tracks medical resident attendance at teaching events across hospital postings, calculates compliance against programme-specific targets, and manages surplus session reallocation. It replaces a legacy system built on FormSG CSV exports and R scripts.
 
@@ -211,7 +211,17 @@ X-User-Programme: <programme_code> # admin/resident
 
 Normal Supabase/production operation uses `AUTH_TRANSPORT=cookie`. Staff credentials are submitted to the backend, which mediates Supabase Auth and maps the verified subject to database-owned role and scope. NHG Resident and Non-NHG Resident login is also backend-mediated. Every role receives a backend-owned opaque application session through an `HttpOnly` cookie; raw app access tokens and refresh tokens are not stored in browser storage or sent on normal application requests.
 
-Unsafe cookie-authenticated requests require the session-bound `X-CSRF-Token`. Logout, rotation, password reset, account changes, expiry, and revocation invalidate server-side session state. Production bearer compatibility is disabled unless the narrowly scoped rollback flag is explicitly enabled.
+Unsafe cookie-authenticated requests require the session-bound `X-CSRF-Token`.
+Logout clears local identity, CSRF, protected state, and authenticated UI
+immediately. Server revocation is described as confirmed only after the
+backend returns its proof-positive confirmation field; otherwise the frontend
+remains explicitly logout-pending/unconfirmed and blocks hydration and
+protected requests. A successfully committed replacement login may resolve the
+matching pending lifecycle, but does not confirm that the previous server
+session was revoked. Rotation, proof-positive logout, password reset, account
+changes, expiry, and revocation invalidate server-side session state.
+Production bearer compatibility is disabled unless the narrowly scoped
+rollback flag is explicitly enabled.
 
 The effective session deadline is the earlier of its sliding inactivity
 deadline and its fixed family absolute deadline; equality is expired. Only a
@@ -261,7 +271,7 @@ alembic downgrade -1
 
 ## Project Status
 
-MATA remains in active phased development. Phase 5B-H-D session transport hardening, Phase 5B-H-E full PostgreSQL RLS, the focused session-lifecycle assurance work, atomic attendance, and AUD-M-05 pre-parser request limits are implemented locally; see `docs/5b_h_d_production_security_implementation.md`, `docs/5b_h_e_full_rls_implementation.md`, `docs/5b_h_session_lifecycle_assurance.md`, `docs/5b_h_aud_m04_atomic_attendance.md`, and `docs/5b_h_m05_upload_preparser_limits.md`. The approved Vercel product contract caps each uploaded file at 3 MiB and the complete multipart or other request body at 4 MiB, below the platform's separate 4.5 MB Function ceiling. Larger-file support requires a separately approved ingress and is not implemented here. Phase 6 compliance remains separate. Local code completion is not proof that migrations, roles, policies, grants, lifecycle settings, request limits, or configuration are deployed to Vercel/Supabase.
+MATA remains in active phased development. Phase 5B-H-D session transport hardening, Phase 5B-H-E full PostgreSQL RLS, the focused session-lifecycle assurance work, atomic attendance, AUD-M-05 pre-parser request limits, and AUD-M-06 reliable logout are implemented and verified locally; see `docs/5b_h_d_production_security_implementation.md`, `docs/5b_h_e_full_rls_implementation.md`, `docs/5b_h_session_lifecycle_assurance.md`, `docs/5b_h_aud_m04_atomic_attendance.md`, `docs/5b_h_m05_upload_preparser_limits.md`, and `docs/5b_h_m06_reliable_logout.md`. The approved Vercel product contract caps each uploaded file at 3 MiB and the complete multipart or other request body at 4 MiB, below the platform's separate 4.5 MB Function ceiling. Larger-file support requires a separately approved ingress and is not implemented here. Phase 6 compliance remains separate. Local code completion is not proof that migrations, roles, policies, grants, lifecycle settings, request limits, or configuration are deployed to Vercel/Supabase.
 
 ---
 

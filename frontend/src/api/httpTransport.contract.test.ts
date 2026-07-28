@@ -8,6 +8,7 @@ import {
   CSRF_HEADER_NAME,
   handleUnauthorizedSessionResponse,
   shouldClearSessionForUnauthorized,
+  shouldBlockRequestDuringLogoutPending,
 } from './httpTransport.ts'
 
 test('cookie transport strips legacy identity credentials and replaces unsafe CSRF', () => {
@@ -52,6 +53,13 @@ test('safe requests never retain a caller-supplied CSRF header', () => {
     stripLegacyCredentials: true,
   })
   assert.equal(headers.has(CSRF_HEADER_NAME), false)
+})
+
+test('pending logout blocks protected safe and unsafe requests unless explicitly allowed', () => {
+  assert.equal(shouldBlockRequestDuringLogoutPending(true, undefined), true)
+  assert.equal(shouldBlockRequestDuringLogoutPending(true, false), true)
+  assert.equal(shouldBlockRequestDuringLogoutPending(true, true), false)
+  assert.equal(shouldBlockRequestDuringLogoutPending(false, undefined), false)
 })
 
 test('only a 401 from the current session revision clears memory state', () => {

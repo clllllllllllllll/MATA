@@ -9,6 +9,7 @@ import {
   parseAuthSessionResponse,
   type BackendAuthSessionResponse,
 } from './api/authSessionResponse.ts'
+import { parseLogoutAuthSessionResponse } from './api/logoutResponse.ts'
 import {
   announceAuthSessionEstablished,
   announceAuthSessionRotated,
@@ -18,6 +19,7 @@ import {
   createAuthSessionRevalidationCoordinator,
   isAuthSessionFenceCurrent,
   isAuthSessionUpdateCompletionCurrent,
+  readAuthSessionEstablishedLogoutRequestId,
   readAuthSessionEpoch,
   readAuthSessionRevision,
   readStoredAuthSession,
@@ -145,6 +147,26 @@ test('session response parsing fails closed without a user, CSRF token, or valid
       home_cluster: 'Unknown',
     })),
   )
+})
+
+test('logout response parsing distinguishes proof-positive confirmation from unconfirmed success', () => {
+  assert.equal(parseLogoutAuthSessionResponse({
+    success: true,
+    server_logout_confirmed: true,
+  }), 'confirmed')
+  assert.equal(parseLogoutAuthSessionResponse({
+    success: true,
+    server_logout_confirmed: false,
+  }), 'unconfirmed')
+  for (const malformed of [
+    null,
+    {},
+    { success: false, server_logout_confirmed: true },
+    { success: true },
+    { success: true, server_logout_confirmed: 'true' },
+  ]) {
+    assert.throws(() => parseLogoutAuthSessionResponse(malformed))
+  }
 })
 
 test('auth session state is module memory only and clears identity with CSRF state together', () => {
@@ -282,10 +304,16 @@ test('login, hydration, rotation, logout, and staff actor updates use fenced bac
   const contextSource = read('src/context/AuthContext.tsx')
   const appShellSource = read('src/components/AppShell.tsx')
 
-  assert.match(authSource, /post<unknown>\('\/auth\/login', payload\)/)
+  assert.match(
+    authSource,
+    /post<unknown>\('\/auth\/login', payload,[\s\S]*allowDuringLogoutPending: true/,
+  )
   assert.match(authSource, /get<unknown>\('\/auth\/me'/)
   assert.match(authSource, /post<unknown>\('\/auth\/session\/refresh'\)/)
-  assert.match(authSource, /post\('\/auth\/logout', undefined,[\s\S]*authSessionCsrfToken/)
+  assert.match(
+    authSource,
+    /post<unknown>\('\/auth\/logout', undefined,[\s\S]*allowDuringLogoutPending: true[\s\S]*authSessionCsrfToken/,
+  )
   assert.match(authSource, /parseAuthSessionResponse\(response\.data\)/)
   assert.match(authSource, /parseLoginOrHydrationResponse\(response\.data\)/)
   assert.match(authSource, /'\/auth\/staff-actor-name'/)
@@ -312,16 +340,26 @@ test('login, hydration, rotation, logout, and staff actor updates use fenced bac
     contextSource.indexOf('const logout = useCallback'),
     contextSource.indexOf('const updateStaffActorName'),
   )
-  assert.ok(logoutBody.indexOf('logoutAuthSession(currentSession, sessionFence)')
-    < logoutBody.indexOf('clearLocalAuthState({'))
-  assert.ok(logoutBody.indexOf('clearLocalAuthState({') < logoutBody.indexOf('await logoutRequest'))
-  assert.match(logoutBody, /broadcast: 'logout'/)
-  assert.doesNotMatch(logoutBody, /finally\s*{/)
-  assert.match(
-    appShellSource,
-    /void logout\(\)[\s\S]*navigate\('\/login', \{ replace: true \}\)/,
+  const newLogoutBody = logoutBody.slice(
+    logoutBody.indexOf('const requestId = createLogoutRequestId()'),
   )
+  assert.ok(logoutBody.indexOf('currentSession = readStoredAuthSession()')
+    < logoutBody.indexOf('const requestId = createLogoutRequestId()'))
+  assert.ok(
+    newLogoutBody.indexOf('logoutPendingStore.begin(requestId, Date.now())')
+      < newLogoutBody.indexOf('clearLocalAuthState({'),
+  )
+  assert.ok(newLogoutBody.indexOf('clearLocalAuthState({')
+    < newLogoutBody.indexOf('startLogoutRetry(requestId, proof)'))
+  assert.match(logoutBody, /broadcast: 'logout'/)
+  assert.doesNotMatch(logoutBody, /best effort|catch\s*\{\s*\}/)
+  assert.match(appShellSource, /onClick=\{\(\) => void logout\(\)\}/)
+  assert.doesNotMatch(appShellSource, /navigate\('\/login'/)
   assert.match(contextSource, /const hydratedSession = await hydrateAuthSession\(\)/)
+  assert.match(
+    contextSource,
+    /isLogoutPendingBlocked\(logoutPendingStore\.read\(\)\)[\s\S]*setIsLoading\(false\)[\s\S]*return/,
+  )
   assert.match(
     contextSource,
     /operationFence = captureAuthSessionFence\(\)[\s\S]*isAuthSessionFenceCurrent\(operationFence\)[\s\S]*identity: updatedIdentity/,
@@ -348,18 +386,176 @@ test('production cookie mutation responses use one fail-closed cross-tab lock', 
   for (const body of [loginBody, refreshBody, logoutBody]) {
     assert.match(body, /withCookieResponseCoordination\(async \(\) =>/)
   }
+  assert.ok(loginBody.indexOf('commitSession?.(session)')
+    < loginBody.indexOf('return session'))
+  assert.ok(logoutBody.indexOf('!coordination.prepareDispatch()')
+    < logoutBody.indexOf("httpClient.post<unknown>('/auth/logout'"))
+  assert.ok(logoutBody.indexOf('parseLogoutAuthSessionResponse(response.data)')
+    < logoutBody.indexOf('coordination.confirmRevocation()'))
+  assert.match(logoutBody, /signal: coordination\.signal/)
   assert.match(
     coordinationSource,
     /window\.isSecureContext !== true[\s\S]*navigator\.locks/,
   )
   assert.match(
     coordinationSource,
-    /AUTH_COOKIE_RESPONSE_LOCK_NAME,[\s\S]*mode: 'exclusive'[\s\S]*operation/,
+    /mode: 'exclusive'[\s\S]*AUTH_COOKIE_RESPONSE_LOCK_NAME,[\s\S]*options,[\s\S]*operation/,
   )
+  assert.match(coordinationSource, /options\.signal = signal/)
   assert.doesNotMatch(coordinationSource, /BroadcastChannel|localStorage/)
   assert.match(
     httpSource,
     /assertAuthCookieCoordinationAvailable\(\)[\s\S]*request\.headers\.set\([\s\S]*AUTH_COOKIE_COORDINATION_HEADER_NAME,[\s\S]*AUTH_COOKIE_COORDINATION_PROTOCOL/,
+  )
+})
+
+test('pending logout blocks hydration and protected dispatch while preserving explicit recovery', () => {
+  const contextSource = read('src/context/AuthContext.tsx')
+  const httpSource = read('src/api/http.ts')
+  const loginSource = read('src/pages/auth/LoginPage.tsx')
+  const reliabilitySource = read('src/api/logoutReliability.ts')
+  const authStoreSource = read('src/api/authSessionStore.ts')
+  const requestInterceptor = httpSource.slice(
+    httpSource.indexOf('httpClient.interceptors.request.use'),
+    httpSource.indexOf('httpClient.interceptors.response.use'),
+  )
+  const loginCommitBody = contextSource.slice(
+    contextSource.indexOf('const loginWithSession'),
+    contextSource.indexOf('const logout = useCallback'),
+  )
+
+  assert.ok(requestInterceptor.indexOf('readLogoutPendingSnapshot()')
+    < requestInterceptor.indexOf('readStoredAuthSession()'))
+  assert.ok(requestInterceptor.indexOf('shouldBlockRequestDuringLogoutPending')
+    < requestInterceptor.indexOf('applySessionRequestHeaders'))
+  assert.match(
+    httpSource,
+    /allowDuringLogoutPending\?: boolean/,
+  )
+  assert.match(
+    contextSource,
+    /const hydrateSession = useCallback[\s\S]*isLogoutPendingBlocked\(logoutPendingStore\.read\(\)\)[\s\S]*return/,
+  )
+  assert.match(
+    contextSource,
+    /const hydrateSession = useCallback[\s\S]*loginAttemptRef\.current[\s\S]*deferredAuthRevalidationRef\.current = true[\s\S]*nextAuthRequestGeneration\(\)/,
+  )
+  assert.match(
+    contextSource,
+    /onFocus = \(\) => revalidation\.request\(true\)[\s\S]*onVisibilityChange/,
+  )
+  assert.ok(loginCommitBody.indexOf('commitSession(nextSession)')
+    < loginCommitBody.indexOf('clearAfterSuccessfulLogin'))
+  assert.ok(loginCommitBody.indexOf('clearAfterSuccessfulLogin')
+    < loginCommitBody.indexOf(
+      'announceAuthSessionEstablished(clearedLogoutRequestId)',
+    ))
+  assert.match(
+    loginSource,
+    /loginStaff\(staffEmail, staffPassword, \(nextSession\) =>[\s\S]*loginWithSession\(nextSession, loginGeneration\)/,
+  )
+  assert.match(
+    loginSource,
+    /Server sign-out not confirmed[\s\S]*Protected requests and session restoration remain blocked/,
+  )
+  assert.match(
+    loginSource,
+    /logoutRetryReason === 'no-proof'[\s\S]*The sign-out proof is no longer available after reload/,
+  )
+  assert.match(
+    loginSource,
+    /const isLogoutStatusPolite =[\s\S]*logoutRetryReason === 'retry-scheduled'[\s\S]*role=\{isLogoutStatusPolite[\s\S]*aria-live=\{isLogoutStatusPolite/,
+  )
+  assert.match(loginSource, /role=\{[\s\S]*'alert'[\s\S]*aria-live=/)
+  assert.match(loginSource, /Retry server sign-out/)
+  assert.match(loginSource, /Server sign-out confirmed/)
+  assert.match(loginSource, /tabIndex=\{-1\}/)
+  assert.match(
+    reliabilitySource,
+    /storageFailureLatches[\s\S]*runtimeUnconfirmedClearFences[\s\S]*verifyStorageWritable[\s\S]*storage-write-failed/,
+  )
+  assert.match(
+    contextSource,
+    /prepareDispatch: \(\) =>[\s\S]*logoutPendingStore\.recordRetry[\s\S]*confirmRevocation: \(\) =>[\s\S]*logoutPendingStore\.clearIfMatching/,
+  )
+  assert.match(
+    contextSource,
+    /const retryLogout = useCallback[\s\S]*logoutPendingRequestId\(pendingSnapshot\)[\s\S]*requestExplicitRetry\([\s\S]*const onOnline[\s\S]*logoutPendingRequestId\(pendingSnapshot\)[\s\S]*notifyOnline/,
+  )
+  assert.doesNotMatch(
+    contextSource.slice(
+      contextSource.indexOf('const startLogoutRetry'),
+      contextSource.indexOf('const loginWithSession'),
+    ),
+    /recordAttempt:/,
+  )
+  assert.match(
+    contextSource,
+    /const authGeneration = proof\?\.authGeneration \?\? null[\s\S]*isCurrentAuthRequest\(authGeneration\)/,
+  )
+  assert.match(
+    contextSource,
+    /controlledLocalClear[\s\S]*setLogoutStatus\('pending'\)[\s\S]*status: 'unconfirmed'/,
+  )
+  assert.match(
+    contextSource,
+    /queuedReplacementLoginClear[\s\S]*pendingLoginRequestId === previousRequestId[\s\S]*locallyControlledResolution[\s\S]*queuedReplacementLoginClear/,
+  )
+  assert.match(
+    contextSource,
+    /shouldRetainRuntimeFence[\s\S]*logoutPendingStore\.retainRuntimeFence/,
+  )
+  assert.match(
+    contextSource,
+    /retainRuntimeFence\(candidateRequestId\)[\s\S]*clearIfMatching[\s\S]*releaseRuntimeFenceIfMatching/,
+  )
+  assert.match(
+    contextSource,
+    /authSessionEstablishedEvent[\s\S]*readAuthSessionEstablishedLogoutRequestId\(event\)[\s\S]*releaseRuntimeFenceAfterLogin\(\s*clearedLogoutRequestId/,
+  )
+  assert.match(
+    contextSource,
+    /if \(matchingResolvedClear\)[\s\S]*nextAuthRequestGeneration\(\)[\s\S]*logoutRetryCoordinatorRef\.current\?\.cancel[\s\S]*changeContext\.resolution === 'replacement-login'[\s\S]*queueMicrotask[\s\S]*hydrateSession\(\)/,
+  )
+  assert.match(
+    contextSource,
+    /releaseRuntimeFenceAfterLogin\([\s\S]*logoutRetryCoordinatorRef\.current\?\.cancel[\s\S]*nextAuthRequestGeneration\(\)[\s\S]*revalidation\.request\(true\)/,
+  )
+  assert.match(
+    contextSource,
+    /loginAttemptActive = loginAttemptRef\.current !== null[\s\S]*releaseRuntimeFenceAfterLogin\([\s\S]*if \(loginAttemptActive\)[\s\S]*deferredAuthRevalidationRef\.current = true[\s\S]*nextAuthRequestGeneration\(\)[\s\S]*revalidation\.request\(true\)/,
+  )
+  assert.match(
+    contextSource,
+    /const onCrossTabRevalidation = \(\) => \{[\s\S]*loginAttemptRef\.current[\s\S]*deferredAuthRevalidationRef\.current = true[\s\S]*revalidation\.request\(true\)/,
+  )
+  assert.match(
+    contextSource,
+    /const replayDeferredAuthRevalidation = useCallback[\s\S]*deferredAuthRevalidationRef\.current = false[\s\S]*window\.dispatchEvent\(new Event\(authSessionRevalidationEvent\)\)/,
+  )
+  assert.match(
+    contextSource,
+    /const clearCurrentAuthRequest = useCallback[\s\S]*loginAttemptRef\.current = null[\s\S]*replayDeferredAuthRevalidation\(\)/,
+  )
+  assert.match(
+    contextSource,
+    /const nextAuthRequestGeneration = useCallback[\s\S]*loginAttemptRef\.current = null[\s\S]*authRequestGenerationRef\.current \+= 1/,
+  )
+  assert.match(
+    loginCommitBody,
+    /announceAuthSessionEstablished\(clearedLogoutRequestId\)[\s\S]*deferredAuthRevalidationRef\.current = false/,
+  )
+  assert.match(
+    authStoreSource,
+    /session-established[\s\S]*clearedLogoutRequestId[\s\S]*notifyCrossTabSessionEstablished\(message\.clearedLogoutRequestId\)[\s\S]*notifySessionRevalidationRequired\(\)/,
+  )
+  assert.match(
+    contextSource,
+    /const clearedLogoutRequestId = logoutPendingRequestId\([\s\S]*clearAfterSuccessfulLogin[\s\S]*announceAuthSessionEstablished\(clearedLogoutRequestId\)/,
+  )
+  assert.match(
+    loginSource,
+    /submitAttemptRef[\s\S]*submitAttemptRef\.current === submitAttempt[\s\S]*setSubmittingForm\(null\)/,
   )
 })
 
@@ -626,6 +822,31 @@ test('cross-tab establishment converges concurrent tabs on the newest epoch', ()
   assert.equal(shouldAcceptCrossTabSessionEstablished('9-family-a', '10-family-a'), true)
 })
 
+test('cross-tab establishment releases only a valid matching logout request id', () => {
+  const matchingEvent = new Event('mata-auth-session-established')
+  Object.defineProperty(matchingEvent, 'detail', {
+    value: { clearedLogoutRequestId: 'logout-request:1' },
+  })
+  assert.equal(
+    readAuthSessionEstablishedLogoutRequestId(matchingEvent),
+    'logout-request:1',
+  )
+
+  for (const detail of [
+    undefined,
+    null,
+    {},
+    { clearedLogoutRequestId: null },
+    { clearedLogoutRequestId: '' },
+    { clearedLogoutRequestId: 'contains a space' },
+    { clearedLogoutRequestId: 'x'.repeat(129) },
+  ]) {
+    const invalidEvent = new Event('mata-auth-session-established')
+    Object.defineProperty(invalidEvent, 'detail', { value: detail })
+    assert.equal(readAuthSessionEstablishedLogoutRequestId(invalidEvent), null)
+  }
+})
+
 test('cross-tab rotation is accepted only inside the current family epoch', () => {
   assert.equal(shouldAcceptCrossTabSessionRotation(null, 'family-a'), false)
   assert.equal(shouldAcceptCrossTabSessionRotation('family-a', 'family-a'), true)
@@ -655,7 +876,10 @@ test('cross-tab and focus revalidation reuse hydration without refresh loops', (
     contextSource,
     /document\.visibilityState === 'visible'[\s\S]*revalidation\.request\(true\)/,
   )
-  assert.match(contextSource, /onCrossTabRevalidation = \(\) => revalidation\.request\(true\)/)
+  assert.match(
+    contextSource,
+    /onCrossTabRevalidation = \(\) => \{[\s\S]*loginAttemptRef\.current[\s\S]*deferredAuthRevalidationRef\.current = true[\s\S]*revalidation\.request\(true\)/,
+  )
   assert.doesNotMatch(contextSource, /setInterval/)
 })
 

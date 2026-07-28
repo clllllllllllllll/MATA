@@ -212,7 +212,7 @@ that the session expired, was revoked, or became stale—or if the lifecycle
 store fails—the middleware replaces the pending protected 2xx payload with a
 controlled `401` that leaves the shared session cookie unchanged. Generic or
 stale failure paths must not delete a newer valid cookie; cookie deletion
-remains limited to reviewed proof-conditional logout or invalid-session paths.
+remains limited to reviewed proof-positive logout.
 
 The touch helper:
 
@@ -292,9 +292,16 @@ The existing controls remain:
 - after production origin and raw-authorization guards, the exact cookie-mode
   logout route bypasses normal middleware hydration and active-session CSRF
   handling so only the termination helper evaluates the bounded proof;
-- malformed, missing, or mismatched logout proof revokes nothing. Logout remains
-  idempotent and leaves the shared browser cookie unchanged; the cookie is
-  cleared only after the reviewed proof revokes its presented family;
+- malformed, missing, or mismatched logout proof revokes nothing. The
+  server-side revocation effect remains idempotent and leaves the shared browser
+  cookie unchanged; the cookie is cleared only after the reviewed proof revokes
+  its presented family;
+- the HTTP response remains successful and includes only the non-sensitive
+  outcome `server_logout_confirmed`: it is `true` only on that same
+  proof-positive revocation and cookie-clear branch, and `false` for every
+  zero-result case. A false value is not an assertion that a server session
+  exists, and the response exposes no count, reason, session/family identifier,
+  or identity;
 - password reset and observable upstream credential reset fence applicable
   staff sessions;
 - account deactivation, role, admin-level, programme-scope, and posting-scope
@@ -337,15 +344,31 @@ it. Protected list, detail, history, mutation, error, and loading completions
 are fenced by session revision/epoch, normalized authority scope, and the
 latest page request.
 
-Logout captures the current CSRF/revision/session-epoch fence for its
-best-effort server revocation request, then clears local identity, CSRF,
-protected caches, and upload state immediately. Staff-name and upload
-completions may update the UI only while their full authentication fence
-remains current. `BroadcastChannel` synchronizes logout, unauthorized loss, and
-new-session epochs across tabs where available. Rotation emits a same-epoch
-message so peer tabs immediately discard stale memory and rehydrate without
-creating a new login epoch. Focus/visibility always forces server hydration,
-including when local memory is empty, as the fallback when channel delivery is
+AUD-M-06 supersedes the earlier best-effort logout-completion behavior.
+Logout captures the current CSRF/revision/session-epoch proof only in memory,
+records a non-sensitive durable pending marker, and clears local identity,
+CSRF, protected caches, upload state, and authenticated UI immediately. Mount,
+focus/visibility hydration, and protected requests remain blocked while that
+state is pending or unconfirmed. Only
+`server_logout_confirmed = true` establishes server revocation; an ordinary
+successful response, false confirmation, ambiguous transport outcome, or
+proofless reload does not.
+
+Automatic retry uses nominal offsets of 0, 1, 3, and 7 seconds and never
+exceeds four attempts while the original proof remains in memory. An explicit
+retry or `online` event may advance one eligible attempt, but concurrent
+triggers coalesce and cannot raise that bound. A successful replacement login
+may release the matching pending lifecycle only after the new session commits
+inside the same origin-scoped Web Lock; a failed login retains it.
+
+`BroadcastChannel` synchronizes the typed pending and resolution lifecycle,
+unauthorized loss, and new-session epochs across tabs where available.
+Non-sensitive durable ordering state prevents stale fallback replicas or
+responses from resurrecting an older logout or affecting a newer login.
+Rotation emits a same-epoch message so peer tabs immediately discard stale
+memory and rehydrate without creating a new login epoch. Focus/visibility
+forces server hydration only when the logout fence is clear, including when
+local auth memory is empty, as the fallback when channel delivery is
 unavailable. The backend remains authoritative. An equivalent hydration
 preserves the current revision and in-flight fences; CSRF rotation or an
 identity/authority change advances them. An authenticated hydration 401

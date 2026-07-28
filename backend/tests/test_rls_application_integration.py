@@ -600,7 +600,10 @@ def test_no_cookie_logout_uses_auth_boundary_and_remains_idempotent(
     response = TestClient(app).post("/api/v1/auth/logout")
 
     assert response.status_code == 200
-    assert response.json() == {"success": True}
+    assert response.json() == {
+        "success": True,
+        "server_logout_confirmed": False,
+    }
     assert len(auth_boundary_factory.sessions) == 1
     assert auth_boundary_factory.sessions[0].commits == 0
     assert "set-cookie" not in response.headers

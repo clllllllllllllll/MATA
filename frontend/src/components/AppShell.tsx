@@ -1,6 +1,6 @@
 ﻿import { useEffect, useRef, useState } from 'react'
 import type { FormEvent, PropsWithChildren } from 'react'
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
+import { NavLink, Outlet, useLocation } from 'react-router'
 import {
   captureAuthSessionFence,
   isAuthSessionFenceCurrent,
@@ -37,7 +37,6 @@ export const AppShell = ({ children }: PropsWithChildren) => {
   const { role } = useAppState()
   const { identity, logout, updateStaffActorName } = useAuth()
   const location = useLocation()
-  const navigate = useNavigate()
   const [mobileNavOpenPath, setMobileNavOpenPath] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsName, setSettingsName] = useState('')
@@ -279,10 +278,7 @@ export const AppShell = ({ children }: PropsWithChildren) => {
             type="button"
             aria-label="Log out"
             title="Log out"
-            onClick={() => {
-              void logout()
-              navigate('/login', { replace: true })
-            }}
+            onClick={() => void logout()}
           >
             <span className="sidebar-footer-icon" aria-hidden="true">
               <IconLogOut size={16} />

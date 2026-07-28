@@ -144,7 +144,7 @@ These rules apply to every endpoint unless a stricter endpoint-specific rule is 
   store fails—the pending protected 2xx response is replaced by a controlled
   `401` that leaves the shared session cookie unchanged. Generic or stale
   failure paths must not delete a newer valid cookie; cookie deletion remains
-  limited to reviewed proof-conditional logout or invalid-session paths.
+  limited to reviewed proof-positive logout.
 - Normal cookie mode ignores raw client identity headers and does not use caller-provided authorization as the application credential. Local stub/demo and explicitly gated emergency bearer compatibility remain separate.
 
 Effective expiry is the earlier of idle and family absolute expiry, with
@@ -1918,7 +1918,18 @@ Requires an active cookie session and valid CSRF. It atomically revokes the curr
 
 Logout derives keyed token and CSRF digests from the presented cookie/header and sends only those digests to the auth-helper database boundary. After production origin and raw-authorization guards, the exact cookie-mode logout route bypasses ordinary active-session hydration and middleware CSRF handling; the termination helper alone evaluates the proof. Normally both digests identify the same active row, or the same row revoked only as `rotated`. A stale tab may instead present the current active child token with a rotated ancestor's CSRF value; that pair is accepted only when both rows have the same subject, subject generation, family, and authentication source, the child is before its idle and absolute deadlines, and the rotated proof is before the immutable family absolute deadline. The auth-only helper derives the subject and rotation family server-side; callers cannot supply a subject, session ID, or family ID. It then revokes every active row in only that family, returns no identity/context material, and grants no hydration, touch, rotation, or refresh authority. This permits a logout that began before refresh, or a stale tab updated to the child cookie, to terminate the refreshed child. Other device/session families remain active. Missing, malformed, cross-family, expired, or otherwise mismatched proof revokes nothing and leaves the shared browser cookie unchanged.
 
-The runtime capability cannot execute the termination helper. Missing, malformed, mismatched, absolute-expired, idle-expired active, or non-`rotated` revoked proof revokes nothing. Logout remains idempotent; it clears the browser cookie only when the reviewed proof revokes at least one row in the presented family.
+The runtime capability cannot execute the termination helper. Missing, malformed, mismatched, absolute-expired, idle-expired active, or non-`rotated` revoked proof revokes nothing. The server-side revocation effect remains idempotent; the route clears the browser cookie only when that request's reviewed proof revokes at least one row in the presented family.
+
+The response remains HTTP `200` with `success: true` after the endpoint completes. `server_logout_confirmed` is `true` only when that request's reviewed proof revokes at least one row; this is the same proof-positive branch that clears the browser cookie. It is `false` for every zero-result case, including missing, malformed, mismatched, expired, or already-inert proof. The response discloses no revocation count, reason, session identifier, family identifier, or identity. A `false` value means only that this request did not obtain positive server-revocation confirmation; it is not an assertion that a server session exists.
+
+The production browser clears local identity, CSRF, protected caches, upload
+state, and authenticated UI immediately before awaiting this result. It treats
+only the exact boolean `server_logout_confirmed: true` as confirmed server
+revocation. A false value, malformed response, network ambiguity, or exhausted
+bounded retry remains explicitly pending/unconfirmed and blocks hydration and
+ordinary protected requests. Cross-tab/reload ordering uses only a
+non-sensitive pending tombstone and resolution watermark; no token, cookie,
+CSRF value, identity, MCR, role, or scope is persisted by that mechanism.
 
 ### POST `/auth/staff-actor-name`
 

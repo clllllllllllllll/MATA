@@ -239,9 +239,13 @@ async def logout(
             reason="logout",
         )
         await db.commit()
-    if revoked_count > 0:
+    server_logout_confirmed = revoked_count > 0
+    if server_logout_confirmed:
         clear_session_cookie(response, settings=settings)
-    return LogoutResponse(success=True)
+    return LogoutResponse(
+        success=True,
+        server_logout_confirmed=server_logout_confirmed,
+    )
 
 
 @router.post("/staff-actor-name")

@@ -54,6 +54,7 @@ class LogoutResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     success: bool = True
+    server_logout_confirmed: bool = False
 
 
 class StaffActorNameRequest(BaseModel):

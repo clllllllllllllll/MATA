@@ -2,12 +2,17 @@ import type { AuthIdentity, StoredAuthSession } from '../types/auth'
 
 const AUTH_SESSION_CHANGED_EVENT = 'mata-auth-session-change'
 const AUTH_SESSION_REVALIDATION_EVENT = 'mata-auth-session-revalidation'
+const AUTH_SESSION_ESTABLISHED_EVENT = 'mata-auth-session-established'
 const AUTH_SESSION_CHANNEL_NAME = 'mata-auth-session-lifecycle'
 let memoryAuthSession: StoredAuthSession | null = null
 let memoryAuthSessionRevision = 0
 let memoryAuthSessionEpoch: string | null = null
 
 export type AuthSessionLossReason = 'logout' | 'unauthorized'
+
+export type AuthSessionEstablishedEventDetail = Readonly<{
+  clearedLogoutRequestId: string | null
+}>
 
 export type AuthSessionFence = {
   revision: number
@@ -35,6 +40,7 @@ type AuthSessionChannelMessage =
   | {
       type: 'session-established'
       sessionEpoch: string
+      clearedLogoutRequestId: string | null
     }
   | {
       type: 'session-rotated'
@@ -42,6 +48,7 @@ type AuthSessionChannelMessage =
     }
 
 const isBrowser = () => typeof window !== 'undefined'
+const logoutRequestIdPattern = /^[A-Za-z0-9._:-]{1,128}$/
 
 const notifySessionChanged = () => {
   if (isBrowser()) {
@@ -52,6 +59,19 @@ const notifySessionChanged = () => {
 const notifySessionRevalidationRequired = () => {
   if (isBrowser()) {
     window.dispatchEvent(new Event(AUTH_SESSION_REVALIDATION_EVENT))
+  }
+}
+
+const notifyCrossTabSessionEstablished = (
+  clearedLogoutRequestId: string | null,
+) => {
+  if (isBrowser()) {
+    window.dispatchEvent(new CustomEvent<AuthSessionEstablishedEventDetail>(
+      AUTH_SESSION_ESTABLISHED_EVENT,
+      {
+        detail: { clearedLogoutRequestId },
+      },
+    ))
   }
 }
 
@@ -75,7 +95,25 @@ const parseAuthSessionChannelMessage = (value: unknown): AuthSessionChannelMessa
     }
   }
   if (
-    (candidate.type === 'session-established' || candidate.type === 'session-rotated')
+    candidate.type === 'session-established'
+    && typeof candidate.sessionEpoch === 'string'
+    && candidate.sessionEpoch.length > 0
+    && (
+      candidate.clearedLogoutRequestId === null
+      || (
+        typeof candidate.clearedLogoutRequestId === 'string'
+        && logoutRequestIdPattern.test(candidate.clearedLogoutRequestId)
+      )
+    )
+  ) {
+    return {
+      type: candidate.type,
+      sessionEpoch: candidate.sessionEpoch,
+      clearedLogoutRequestId: candidate.clearedLogoutRequestId,
+    }
+  }
+  if (
+    candidate.type === 'session-rotated'
     && typeof candidate.sessionEpoch === 'string'
     && candidate.sessionEpoch.length > 0
   ) {
@@ -226,6 +264,7 @@ const authSessionChannel = (() => {
         }
         memoryAuthSessionEpoch = message.sessionEpoch
         writeAuthSession(null)
+        notifyCrossTabSessionEstablished(message.clearedLogoutRequestId)
         notifySessionRevalidationRequired()
         return
       }
@@ -264,6 +303,20 @@ const broadcastAuthSessionMessage = (message: AuthSessionChannelMessage) => {
 
 export const authSessionChangedEvent = AUTH_SESSION_CHANGED_EVENT
 export const authSessionRevalidationEvent = AUTH_SESSION_REVALIDATION_EVENT
+export const authSessionEstablishedEvent = AUTH_SESSION_ESTABLISHED_EVENT
+
+export const readAuthSessionEstablishedLogoutRequestId = (
+  event: Event,
+): string | null => {
+  const detail = (event as CustomEvent<unknown>).detail
+  if (!detail || typeof detail !== 'object') {
+    return null
+  }
+  const requestId = (detail as Record<string, unknown>).clearedLogoutRequestId
+  return typeof requestId === 'string' && logoutRequestIdPattern.test(requestId)
+    ? requestId
+    : null
+}
 
 export const readStoredAuthSession = (): StoredAuthSession | null => memoryAuthSession
 export const readAuthSessionRevision = (): number => memoryAuthSessionRevision
@@ -303,12 +356,21 @@ export const isAuthSessionUpdateCompletionCurrent = (
     && currentSession?.identity === updatedIdentity
 }
 
-export const announceAuthSessionEstablished = (): string => {
+export const announceAuthSessionEstablished = (
+  clearedLogoutRequestId: string | null = null,
+): string => {
+  if (
+    clearedLogoutRequestId !== null
+    && !logoutRequestIdPattern.test(clearedLogoutRequestId)
+  ) {
+    throw new Error('Invalid cleared logout request id.')
+  }
   const sessionEpoch = createSessionEpoch()
   memoryAuthSessionEpoch = sessionEpoch
   broadcastAuthSessionMessage({
     type: 'session-established',
     sessionEpoch,
+    clearedLogoutRequestId,
   })
   return sessionEpoch
 }

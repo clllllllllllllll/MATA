@@ -31,7 +31,7 @@ class FifoLockManager implements AuthCookieLockManager {
 
   request<T>(
     name: string,
-    options: { mode: 'exclusive' },
+    options: { mode: 'exclusive'; signal?: AbortSignal },
     callback: () => Promise<T>,
   ): Promise<T> {
     assert.equal(name, AUTH_COOKIE_RESPONSE_LOCK_NAME)
@@ -105,6 +105,37 @@ test('a rejected operation releases the exclusive response lock', async () => {
   assert.equal(secondRan, true)
 })
 
+test('a queued logout rechecks currency inside the lock after a newer login wins', async () => {
+  const loginStarted = deferred<void>()
+  const releaseLogin = deferred<void>()
+  const environment = coordinatedEnvironment()
+  let logoutIsCurrent = true
+  let logoutDispatches = 0
+  let sharedCookie = 'older-session'
+
+  const newerLogin = withAuthCookieResponseLock(async () => {
+    loginStarted.resolve()
+    await releaseLogin.promise
+    sharedCookie = 'newer-session'
+    logoutIsCurrent = false
+  }, environment)
+  await loginStarted.promise
+
+  const staleLogout = withAuthCookieResponseLock(async () => {
+    if (!logoutIsCurrent) {
+      return 'stale'
+    }
+    logoutDispatches += 1
+    sharedCookie = ''
+    return 'confirmed'
+  }, environment)
+
+  releaseLogin.resolve()
+  assert.deepEqual(await Promise.all([newerLogin, staleLogout]), [undefined, 'stale'])
+  assert.equal(logoutDispatches, 0)
+  assert.equal(sharedCookie, 'newer-session')
+})
+
 test('missing secure Web Locks support fails before network dispatch', async () => {
   let dispatchCount = 0
   const operation = async () => {
@@ -146,6 +177,56 @@ test('lock acquisition failure never invokes the lifecycle request', async () =>
   )
 
   assert.equal(dispatchCount, 0)
+})
+
+test('logout cancellation reaches Web Lock acquisition', async () => {
+  const controller = new AbortController()
+  let observedSignal: AbortSignal | undefined
+  const observingManager: AuthCookieLockManager = {
+    request: async (_name, options, callback) => {
+      observedSignal = options.signal
+      return callback()
+    },
+  }
+
+  await withAuthCookieResponseLock(
+    async () => undefined,
+    coordinatedEnvironment(observingManager),
+    controller.signal,
+  )
+
+  assert.equal(observedSignal, controller.signal)
+})
+
+test('replacement login wins before queued retry bookkeeping can run', async () => {
+  const loginStarted = deferred<void>()
+  const releaseLogin = deferred<void>()
+  const environment = coordinatedEnvironment()
+  let pendingRequestId: string | null = 'logout-a'
+  let retryWrites = 0
+
+  const replacementLogin = withAuthCookieResponseLock(async () => {
+    loginStarted.resolve()
+    await releaseLogin.promise
+    pendingRequestId = null
+  }, environment)
+  await loginStarted.promise
+
+  const staleRetry = withAuthCookieResponseLock(async () => {
+    if (pendingRequestId !== 'logout-a') {
+      return 'stale'
+    }
+    retryWrites += 1
+    return 'dispatched'
+  }, environment)
+
+  releaseLogin.resolve()
+  assert.deepEqual(
+    await Promise.all([replacementLogin, staleRetry]),
+    [undefined, 'stale'],
+  )
+  assert.equal(pendingRequestId, null)
+  assert.equal(retryWrites, 0)
 })
 
 test('the versioned production coordination protocol is exact', () => {

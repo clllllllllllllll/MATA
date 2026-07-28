@@ -9,6 +9,14 @@ Last updated: 2026-07-26
 
 This document began as the design plan. The implemented state and exact local evidence are recorded here and in `docs/5b_h_d_production_security_implementation.md`. Full RLS, Phase 6 compliance, final close, snapshots, and clawback are not part of H-D.
 
+> **Current descendant override:** AUD-M-06 supersedes H-D's original
+> best-effort/logout-ordering statements. Local identity and protected state
+> now clear immediately; server revocation is confirmed only by
+> `server_logout_confirmed = true`, and every unconfirmed outcome remains
+> fenced. Unqualified logout completion statements retained elsewhere in this
+> plan describe the historical H-D target, not the current contract. See
+> `docs/5b_h_m06_reliable_logout.md`.
+
 ## 2. Historical Pre-H-D Temporary State
 
 The following bearer/Supabase-browser description is retained only as the pre-H-D design baseline:
@@ -91,7 +99,8 @@ The implementation slices were completed as follows:
    - Login issues the opaque application cookie.
    - `/auth/me` resolves the cookie to the current identity and CSRF state without rotating it.
    - `/auth/session/refresh` performs serialized one-winner rotation.
-   - `/auth/logout` revokes the current family and clears the cookie.
+   - `/auth/logout` revokes the current family and clears the cookie only when
+     the presented proof produces the proof-positive confirmation result.
 
 3. Staff Supabase exchange.
    - The backend performs the Supabase password call, verifies the returned access token, maps `sub` to `users.supabase_user_id`, and discards upstream credentials.
@@ -139,7 +148,11 @@ The frontend slices were completed as follows:
    - Clear token on logout/session expiry.
 
 5. Logout and hydration.
-   - Call backend logout before clearing local identity.
+   - Clear local identity and protected state immediately, record explicit
+     pending/unconfirmed state, and attempt backend logout with memory-only
+     proof.
+   - Block hydration and protected requests until proof-positive confirmation
+     or a successful replacement login resolves the matching lifecycle.
    - Treat hydration failures as local state reset without leaking tokens.
    - Keep route guards synchronous and based on hydrated identity, not raw token claims.
 
@@ -227,7 +240,8 @@ The code and local-verification criteria below are satisfied. Deployed Vercel/Su
 - All protected roles hydrate through backend session cookies.
 - Cookies are `HttpOnly`, `Secure`, and have the approved `SameSite` setting.
 - Unsafe methods require valid CSRF tokens.
-- Logout invalidates backend session state and clears cookies.
+- A proof-positive logout invalidates backend session state and clears the
+  presented cookie; every other outcome remains explicitly unconfirmed.
 - Staff authorization still derives from `users.supabase_user_id` and DB-owned role/scope fields.
 - NHG Resident and Non-NHG Resident sessions remain table-separated and correctly scoped.
 - Raw identity headers remain rejected in production/Supabase mode.

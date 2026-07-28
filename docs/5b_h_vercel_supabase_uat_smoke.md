@@ -1,9 +1,9 @@
 # 5B-H-C Supabase/Vercel UAT Smoke Checklist
 
-> **Historical evidence boundary:** Sections and result rows dated 2026-07-22 preserve the Phase 5B-H-C point-in-time record. Do not rewrite their commit identifiers, migration head, test counts, deployment observations, or blocked/manual classifications. Phase 5B-H-D supersedes the earlier browser-bearer and mandatory outer-gate design assumptions; Phase 5B-H-E subsequently adds the local restricted-role/RLS boundary. Current local evidence is recorded separately in `docs/5b_h_d_production_security_implementation.md` and `docs/5b_h_e_full_rls_implementation.md` and is not proof of deployed behavior.
+> **Historical evidence boundary:** Sections and result rows dated 2026-07-22 preserve the Phase 5B-H-C point-in-time record. Do not rewrite their commit identifiers, migration head, test counts, deployment observations, or blocked/manual classifications. Phase 5B-H-D supersedes the earlier browser-bearer and mandatory outer-gate design assumptions; Phase 5B-H-E subsequently adds the local restricted-role/RLS boundary. Current local evidence is recorded separately in `docs/5b_h_d_production_security_implementation.md`, `docs/5b_h_e_full_rls_implementation.md`, and descendant implementation records including `docs/5b_h_m06_reliable_logout.md`; it is not proof of deployed behavior.
 
-Status: Historical H-C results preserved; H-D/H-E local implementation does not change the NO-GO pending deployed Vercel/Supabase, environment, account, RLS, grant, and workflow evidence
-Last updated: 2026-07-27
+Status: Historical H-C results preserved; H-D/H-E and descendant M-06 local implementation do not change the NO-GO pending deployed Vercel/Supabase, environment, account, RLS, grant, auth-lifecycle, and workflow evidence
+Last updated: 2026-07-28
 
 ## 1. Purpose
 
@@ -390,5 +390,29 @@ and Nginx tests are prerequisites, not evidence of the approved target.
 
 No live Vercel setting, Supabase project, remote database, or deployment was
 accessed or changed while producing M-05 evidence.
+
+## Phase 5B-H AUD-M-06 Deployed Reliable-Logout Checks
+
+This descendant appendix defines evidence required from an authorized target.
+The local M-06 implementation and its final gates are prerequisites, not
+deployed proof. Every row remains `MANUAL VERIFICATION REQUIRED` until an
+authorized operator captures sanitized evidence.
+
+| Check | Required deployed result |
+|---|---|
+| Immediate local sign-out | Selecting logout immediately clears identity, CSRF, protected read/upload state, and authenticated UI state without waiting for the network, then visibly enters pending/unconfirmed state. |
+| Proof-positive outcome | A response is called confirmed only when its machine field is exactly `server_logout_confirmed = true`; a 2xx response with false confirmation and every ambiguous transport result remain pending/unconfirmed. |
+| Server/cookie result | Proof-positive confirmation corresponds to family revocation and controlled deletion of the presented cookie. No-cookie, malformed, mismatched, already-revoked, and race outcomes reveal no sensitive session detail. |
+| Pending fence | Mount, focus, visibility, ordinary hydration, and every protected request remain blocked while pending; only the explicitly allowed logout/login recovery paths can dispatch. |
+| Durable state hygiene | Storage contains only the non-sensitive pending tombstone fields and the fixed-size resolution-watermark fields needed to order cross-tab/reload recovery. It contains no token, cookie, CSRF value/digest, identity, MCR, role, scope, credential, or server expiry. |
+| Bounded retry | While the original proof remains in memory, the controller permits at most four attempts with nominal automatic offsets 0, 1, 3, and 7 seconds. Explicit retry or an `online` signal may advance one eligible attempt; concurrent triggers coalesce and do not add attempts beyond the bound. |
+| Reload recovery | Reloaded pending state has no reusable proof, performs no old-session hydration or logout replay, blocks protected traffic, and offers explicit full login recovery. |
+| Cross-tab and stale-response safety | Matching request ids, authentication revisions, deterministic pending election, and monotonic resolution ordering fence storage/broadcast responses. An older tab, stale fallback replica, or stale logout response cannot resurrect a completed lifecycle, clear a newer tombstone, or affect a newer login. |
+| Replacement login | Failed login leaves pending state intact. A successful replacement session resolves the applicable pending lifecycle only after the new session is committed inside the same origin-scoped Web Lock. |
+| UX/accessibility | Pending/unconfirmed and proof-positive confirmed states are distinguishable to assistive technology, expose safe recovery actions, and never imply server revocation before proof. |
+| Evidence hygiene | Logs, screenshots, storage captures, and network evidence contain no cookie, token, CSRF, digest, MCR, identity, database URL, or personal/application row. |
+
+No live Vercel setting, Supabase project, remote database, or deployment was
+accessed or changed while producing M-06 local evidence.
 
 PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED

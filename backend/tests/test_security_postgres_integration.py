@@ -1585,6 +1585,7 @@ async def test_refresh_first_logout_without_hydrated_parent_revokes_late_child(
             )
 
         assert logout_result.success is True
+        assert logout_result.server_logout_confirmed is True
         assert any(
             "Max-Age=0" in header
             for header in logout_response.headers.getlist("set-cookie")
@@ -1901,6 +1902,7 @@ async def test_rotated_parent_logout_rejects_bad_proof_without_clearing_cookie(
             )
 
         assert result.success is True
+        assert result.server_logout_confirmed is False
         assert response.headers.getlist("set-cookie") == []
         async with security_database.auth_session() as db:
             resolved_child = await resolve_session(

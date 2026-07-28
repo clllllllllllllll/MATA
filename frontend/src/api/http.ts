@@ -17,7 +17,12 @@ import {
   applySessionRequestHeaders,
   handleUnauthorizedSessionResponse,
   isUnsafeRequestMethod,
+  shouldBlockRequestDuringLogoutPending,
 } from './httpTransport'
+import {
+  isLogoutPendingBlocked,
+  readLogoutPendingSnapshot,
+} from './logoutReliability'
 
 declare module 'axios' {
   interface AxiosRequestConfig {
@@ -26,6 +31,7 @@ declare module 'axios' {
     authSessionEpoch?: string | null
     authSessionRevision?: number
     authSessionWasAuthenticated?: boolean
+    allowDuringLogoutPending?: boolean
   }
 }
 
@@ -78,6 +84,15 @@ const headerValue = (headers: unknown, name: string): unknown => {
 
 httpClient.interceptors.request.use((request) => {
   request.headers = request.headers ?? {}
+  if (shouldBlockRequestDuringLogoutPending(
+    isLogoutPendingBlocked(readLogoutPendingSnapshot()),
+    request.allowDuringLogoutPending,
+  )) {
+    throw new ApiRequestError(
+      'Server logout is not confirmed. Protected requests remain blocked.',
+      { status: 409 },
+    )
+  }
   if (frontendConfig.authMode === 'supabase') {
     try {
       assertAuthCookieCoordinationAvailable()

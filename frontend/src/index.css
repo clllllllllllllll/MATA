@@ -7604,6 +7604,71 @@ button:disabled,
   line-height: 1.45;
 }
 
+.auth-logout-status {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 18px;
+  padding: 13px 14px;
+  border: 1px solid rgba(88, 69, 139, 0.22);
+  border-radius: 12px;
+  background: var(--purple-tint-2);
+}
+
+.auth-logout-status-pending {
+  border-color: rgba(180, 83, 9, 0.24);
+  background: #fffbeb;
+}
+
+.auth-logout-status-confirmed {
+  border-color: rgba(21, 128, 61, 0.22);
+  background: #f0fdf4;
+}
+
+.auth-logout-status h2,
+.auth-logout-status p {
+  margin: 0;
+}
+
+.auth-logout-status h2 {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.auth-logout-status h2:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 3px;
+}
+
+.auth-logout-status p {
+  color: var(--ink-3);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.auth-logout-retry {
+  justify-self: start;
+  min-height: 38px;
+  padding: 8px 14px;
+  border: 1px solid var(--purple);
+  border-radius: 999px;
+  color: var(--purple);
+  background: #fff;
+  font-size: 12.5px;
+  font-weight: 800;
+}
+
+.auth-logout-retry:hover:not(:disabled) {
+  color: #fff;
+  background: var(--purple);
+}
+
+.auth-logout-retry:disabled {
+  border-color: var(--line-2);
+  color: var(--ink-4);
+  cursor: wait;
+}
+
 .staff-actor-gate {
   min-height: 100vh;
   display: grid;

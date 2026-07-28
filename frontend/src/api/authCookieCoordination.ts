@@ -6,7 +6,7 @@ export const AUTH_COOKIE_RESPONSE_LOCK_NAME = 'mata-session-cookie-v1'
 export type AuthCookieLockManager = {
   request: <T>(
     name: string,
-    options: { mode: 'exclusive' },
+    options: { mode: 'exclusive'; signal?: AbortSignal },
     callback: () => Promise<T>,
   ) => Promise<T>
 }
@@ -59,11 +59,18 @@ export const withAuthCookieResponseLock = async <T>(
   operation: () => Promise<T>,
   environment: AuthCookieCoordinationEnvironment =
     readBrowserCoordinationEnvironment(),
+  signal?: AbortSignal,
 ): Promise<T> => {
   const lockManager = requireLockManager(environment)
+  const options: { mode: 'exclusive'; signal?: AbortSignal } = {
+    mode: 'exclusive',
+  }
+  if (signal) {
+    options.signal = signal
+  }
   return lockManager.request(
     AUTH_COOKIE_RESPONSE_LOCK_NAME,
-    { mode: 'exclusive' },
+    options,
     operation,
   )
 }
