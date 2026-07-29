@@ -44,11 +44,15 @@ npm test
 npm run lint
 npm run typecheck
 VITE_APP_ENV=production VITE_AUTH_MODE=supabase VITE_API_BASE_URL=/api/v1 npm run build
+python ../.github/scripts/security_source_scan.py --frontend-dist
 ```
 
 The three build variables are public, non-secret configuration. A production
-build deliberately fails when `VITE_APP_ENV` or `VITE_AUTH_MODE` is absent or
-the pair is not approved; no browser Supabase URL or key is required.
+build deliberately fails when any is absent, the environment/mode pair is not
+approved, or `VITE_API_BASE_URL` is anything other than `/api/v1`; no browser
+Supabase URL or key is required. The emitted-artifact scan fails closed when
+`dist` is missing, a source map exists, or a legacy Supabase/bearer/token,
+absolute backend API, privileged configuration, or database marker is present.
 
 ## 6. Run manual upload + view smoke verification
 
@@ -154,6 +158,18 @@ npm audit --audit-level=high
 Use `.github/scripts/sanitize_dependency_audit.py` and the workflow contract in `.github/workflows/production-security.yml` for saved evidence. Raw registry JSON is temporary and must be deleted after the bounded sanitized report is produced.
 
 Production configuration validation requires cookie transport, RLS enabled, three distinct credentialed database logins targeting the same PostgreSQL endpoint, non-local PostgreSQL URLs, explicit HTTPS CORS origins, explicit allowed hosts, `RATE_LIMIT_STORE=postgres`, and backend-only session/rate-limit secrets of at least 32 characters. The runtime and auth logins inherit only `mata_app_runtime` and `mata_auth_internal`, respectively; the migration login owns application objects. Startup attestation rejects role, ownership, helper, policy, grant, sequence, default-ACL, `PUBLIC`, or browser-role drift. The production browser uses relative `/api/v1` and has no Supabase client configuration.
+
+The first corrected production load removes only the exact historical
+`mata.auth.session.v1` key. It deliberately does not wildcard-delete `sb-*`
+storage because the repository does not carry a trustworthy exact legacy
+Supabase project reference. Users who used a pre-cookie deployment must clear
+site data once after the corrected release, then open a new tab. This
+operational cleanup is not a substitute for the cookie-only build.
+
+The exact read-only Vercel inspection, deployment configuration, and
+post-deployment browser checklist is
+`docs/deployed_auth_transport_uat.md`. Do not treat local gates as deployed
+evidence or deploy without separate authorization.
 
 The current security contract is `docs/security.md`. Historical
 session-transport, restricted-role, lifecycle, and request-ingress reports

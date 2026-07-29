@@ -95,6 +95,78 @@ FRONTEND_RULES = (
     ),
 )
 
+FRONTEND_DIST_RULES = (
+    Rule(
+        "frontend-dist-upstream-token-field",
+        re.compile(
+            r"(?<![A-Za-z0-9_-])(?:access[_-]?token|refresh[_-]?token)"
+            r"(?![A-Za-z0-9_-])",
+            re.IGNORECASE,
+        ),
+    ),
+    Rule(
+        "frontend-dist-password-grant",
+        re.compile(r"grant_type\s*=\s*password", re.IGNORECASE),
+    ),
+    Rule(
+        "frontend-dist-supabase-auth",
+        re.compile(
+            r"signInWithPassword|\.auth\s*\.\s*(?:getSession|setSession|"
+            r"refreshSession|onAuthStateChange)\s*\(|/auth/v1/",
+            re.IGNORECASE,
+        ),
+    ),
+    Rule(
+        "frontend-dist-supabase-client",
+        re.compile(
+            r"@supabase/(?:supabase-js|auth-js|ssr)|createBrowserClient",
+            re.IGNORECASE,
+        ),
+    ),
+    Rule(
+        "frontend-dist-supabase-origin",
+        re.compile(r"https?://[A-Za-z0-9.-]+\.supabase\.co\b", re.IGNORECASE),
+    ),
+    Rule(
+        "frontend-dist-bearer",
+        re.compile(r"\bBearer(?:\s+|[\"'`])", re.IGNORECASE),
+    ),
+    Rule(
+        "frontend-dist-absolute-api-origin",
+        re.compile(r"https?://[^/\s\"'`]+/api/v1(?:/|\b)", re.IGNORECASE),
+    ),
+    Rule(
+        "frontend-dist-known-backend-origin",
+        re.compile(r"https://mata-backend\.vercel\.app\b", re.IGNORECASE),
+    ),
+    Rule(
+        "frontend-dist-privileged-name",
+        re.compile(
+            r"\b(?:SUPABASE_SERVICE_ROLE_KEY|MATA_SESSION_HASH_KEY|"
+            r"MATA_RESIDENT_SESSION_SECRET|RATE_LIMIT_HASH_SECRET|JWT_SECRET|"
+            r"SECRET_KEY|DATABASE_URL|SYNC_DATABASE_URL|PRIVATE_KEY|DB_PASSWORD)\b"
+        ),
+    ),
+    Rule(
+        "frontend-dist-database-url",
+        re.compile(
+            r"\bpostgresql(?:\+(?:asyncpg|psycopg|psycopg2))?://",
+            re.IGNORECASE,
+        ),
+    ),
+    Rule(
+        "frontend-dist-jwt-value",
+        re.compile(
+            r"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}"
+            r"\.[A-Za-z0-9_-]{20,}\b"
+        ),
+    ),
+    Rule(
+        "frontend-dist-supabase-key-value",
+        re.compile(r"\bsb_(?:publishable|secret)_[A-Za-z0-9_-]{10,}\b"),
+    ),
+)
+
 SECRET_RULES = (
     Rule("private-key-material", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
     Rule("github-token", re.compile(r"\b(?:ghp|github_pat)_[A-Za-z0-9_]{20,}\b")),
@@ -313,6 +385,38 @@ def scan_frontend() -> list[str]:
     return findings
 
 
+def scan_frontend_dist() -> list[str]:
+    dist_root = ROOT / "frontend" / "dist"
+    if not dist_root.is_dir():
+        return ["frontend-dist-missing"]
+
+    findings: list[str] = []
+    files = sorted(path for path in dist_root.rglob("*") if path.is_file())
+    if not (dist_root / "index.html").is_file():
+        findings.append("frontend-dist-index-missing")
+    if not any(path.suffix.lower() == ".js" for path in files):
+        findings.append("frontend-dist-javascript-missing")
+
+    for path in files:
+        relative = path.relative_to(ROOT).as_posix()
+        if path.suffix.lower() == ".map":
+            findings.append(f"frontend-dist-source-map: {relative}")
+            continue
+        if not _is_text_candidate(path):
+            continue
+        try:
+            content = path.read_bytes()
+        except OSError:
+            findings.append(f"frontend-dist-file-unreadable: {relative}")
+            continue
+        text = _decode_text(content)
+        if text is None:
+            findings.append(f"frontend-dist-file-unreadable: {relative}")
+            continue
+        findings.extend(_scan_text(relative, text, FRONTEND_DIST_RULES))
+    return findings
+
+
 def _git_stdout(*args: str) -> str | None:
     completed = subprocess.run(
         ["git", *args],
@@ -494,6 +598,7 @@ def scan_worktree() -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--frontend", action="store_true")
+    parser.add_argument("--frontend-dist", action="store_true")
     parser.add_argument("--diff-base")
     parser.add_argument("--worktree", action="store_true")
     args = parser.parse_args()
@@ -501,6 +606,8 @@ def main() -> int:
     findings: list[str] = []
     if args.frontend:
         findings.extend(scan_frontend())
+    if args.frontend_dist:
+        findings.extend(scan_frontend_dist())
     if args.diff_base is not None:
         findings.extend(scan_added_diff(args.diff_base))
     if args.worktree:

@@ -226,7 +226,13 @@ test('production frontend source has no browser credential persistence or bearer
   )
 
   for (const { path, source } of productionSources) {
-    assert.equal(credentialStorage.test(source), false, `credential storage found in ${path}`)
+    if (path.endsWith('legacyAuthStorage.ts')) {
+      assert.match(source, /\.removeItem\(/)
+      assert.doesNotMatch(source, /\.(?:setItem|getItem|clear)\(/)
+      assert.doesNotMatch(source, /\.(?:key|length)\b/)
+    } else {
+      assert.equal(credentialStorage.test(source), false, `credential storage found in ${path}`)
+    }
     assert.equal(bearerHeader.test(source), false, `bearer injection found in ${path}`)
     assert.equal(browserAuthSessionRead.test(source), false, `browser auth session lookup found in ${path}`)
   }
@@ -567,12 +573,15 @@ test('production API requests are forced through the relative same-origin proxy'
     rewrites: Array<{ source: string; destination: string }>
   }
 
-  assert.match(
-    configSource,
-    /appEnv === 'production'[\s\S]*\? '\/api\/v1'/,
-  )
+  assert.match(configSource, /apiBaseUrl:\s*import\.meta\.env\.VITE_API_BASE_URL/)
+  assert.match(configSource, /apiBaseUrl,/)
   assert.match(environmentSource, /frontend build requires VITE_APP_ENV/)
   assert.match(environmentSource, /frontend build requires VITE_AUTH_MODE/)
+  assert.match(environmentSource, /frontend build requires VITE_API_BASE_URL/)
+  assert.match(
+    environmentSource,
+    /appEnv === 'production'[\s\S]*apiBaseUrl !== '\/api\/v1'/,
+  )
   assert.match(environmentSource, /approvedEnvironmentModes/)
   assert.match(environmentSource, /'production:supabase'/)
   assert.match(viteSource, /command === 'build'[\s\S]*requireExplicit: true/)

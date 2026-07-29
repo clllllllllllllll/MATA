@@ -189,6 +189,9 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Scan emitted frontend artifact
+        run: python ../.github/scripts/security_source_scan.py --frontend-dist
+
       - name: Audit frontend production dependencies
         shell: bash
         run: |

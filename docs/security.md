@@ -87,6 +87,9 @@ The following are invariants:
 ## 3. Frontend and browser security
 
 - Production uses same-origin relative `/api/v1` requests with credentials.
+- Production and Supabase-mode builds require
+  `VITE_API_BASE_URL=/api/v1` exactly. Missing, absolute, scheme-relative,
+  credentialed, or differently rooted values fail the build.
 - The browser does not construct a Supabase client or call Supabase Auth,
   REST, GraphQL, or RPC endpoints directly.
 - The opaque session credential exists only in an `HttpOnly` cookie. The
@@ -109,6 +112,12 @@ The following are invariants:
 - Production builds must omit source maps and be scanned for privileged
   configuration names, secrets, local paths, test identities, and personal
   data before deployment.
+- Startup removes only the exact historical `mata.auth.session.v1` entry from
+  browser persistence. It reads no stored value, preserves unrelated keys, and
+  is defense-in-depth only; current authentication never depends on that
+  cleanup. The repository does not carry a trustworthy exact legacy Supabase
+  project reference, so wildcard `sb-*` cleanup is forbidden. Users exposed to
+  the browser-token deployment must clear site data once after remediation.
 
 ## 4. Backend authentication and authorization
 
@@ -356,6 +365,19 @@ Production assumes:
 - 4 MiB ingress request enforcement; and
 - secure cookie preservation through the proxy.
 
+The frontend Vercel route is an external rewrite, not a redirect. It preserves
+the `/api/v1/:path*` suffix and must preserve the method, query, request body,
+response status, `Set-Cookie`, CSRF, correlation, and cache-control headers.
+It must not synthesize `Authorization`. API caching is explicitly opted out
+with browser, CDN, Vercel-CDN, and rewrite-caching controls.
+
+Production public mutations accept browser Fetch Metadata only when
+`Sec-Fetch-Site: same-origin`. A direct browser call to the backend deployment
+therefore fails even when the frontend and backend share the `vercel.app`
+site. Missing Fetch Metadata remains supported for approved non-browser
+operational checks that independently satisfy Origin, content-type, rate-limit,
+and session-coordination controls.
+
 Required headers include CSP, HSTS, `X-Frame-Options: DENY`,
 `X-Content-Type-Options: nosniff`, a strict referrer policy, a restrictive
 permissions policy, COOP/CORP where supported, and cache denial for API and
@@ -380,12 +402,14 @@ CI runs:
 - frontend tests, lint, type-check, production build, and dependency audit;
 - security-scanner unit tests;
 - frontend browser-auth/secret-boundary scans; and
+- post-build frontend artifact and source-map scans; and
 - redacted added-diff secret scanning.
 
 Every CI production frontend build explicitly supplies the public, non-secret
 contract `VITE_APP_ENV=production`, `VITE_AUTH_MODE=supabase`, and
 `VITE_API_BASE_URL=/api/v1`. The build-time environment validator remains
-fail-closed; no browser Supabase URL or key is needed.
+fail-closed for all three variables and rejects every other production API
+base; no browser Supabase URL or key is needed.
 
 Backend CI starts PostgreSQL on its maintenance database, then a shared local
 workflow action creates and attests exactly
@@ -478,6 +502,20 @@ silently reused.
 Before UAT or production approval, verify against the explicitly approved
 target:
 
+- the frontend and backend aliases resolve to the same reviewed remediation
+  commit and expected project roots;
+- browser staff login contacts only the frontend-origin
+  `/api/v1/auth/login`; no browser request reaches a Supabase Auth endpoint or
+  the backend origin directly;
+- `/auth/me`, refresh, logout, and protected API traffic remain same-origin,
+  carry no `Authorization` header, and cause no authentication-related CORS
+  preflight;
+- `__Host-mata_session` is host-only, `Secure`, `HttpOnly`,
+  `SameSite=Strict`, `Path=/`, and has no `Domain`, `Max-Age`, or `Expires`;
+- no Supabase access/refresh token exists in browser storage, IndexedDB, URL,
+  log, source map, or application state;
+- `/health` and controlled auth errors are application responses rather than
+  `FUNCTION_INVOCATION_FAILED`;
 - exact environment configuration without disclosing values;
 - reviewed Supabase origin, issuer, JWKS and service-role destination;
 - TLS, HSTS, CORS, Host, cookie, CSRF, proxy-IP and cache behavior;
@@ -502,6 +540,8 @@ approved deployment record; archived Phase 5B verdicts and evidence rows are
 never edited to imply a later deployment result.
 
 No local test result should be relabelled as deployed evidence.
+Use `docs/deployed_auth_transport_uat.md` for the current bounded deployment
+configuration and verification record.
 
 ## 18. Deferred security debt
 

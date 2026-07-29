@@ -138,9 +138,14 @@ These rules apply to every endpoint unless a stricter endpoint-specific rule is 
 ### Browser session transport, Origin, and CSRF
 
 - Production/Supabase frontend requests use relative same-origin `/api/v1` with credentials enabled.
+- Staff email/password is submitted to `POST /api/v1/auth/login` on the
+  frontend origin. The backend alone calls the approved Supabase password Auth
+  endpoint, verifies the upstream subject, reloads MATA authority from trusted
+  storage, discards upstream access/refresh tokens, and issues an opaque
+  PostgreSQL-backed application session.
 - Protected unsafe methods (`POST`, `PUT`, `PATCH`, `DELETE`) require `X-CSRF-Token` matching the active session digest.
 - Every production unsafe request also requires an exact `Origin` from `CORS_ORIGINS`; missing, wildcard, malformed, or unapproved origins fail with generic `403`.
-- Public login and Non-NHG registration do not require an existing-session CSRF token because these endpoints are intentionally unauthenticated, but require exact production Origin and `application/json`; form-encoded variants return `415`.
+- Public login and Non-NHG registration do not require an existing-session CSRF token because these endpoints are intentionally unauthenticated, but require exact production Origin and `application/json`; form-encoded variants return `415`. A production browser request with Fetch Metadata other than `Sec-Fetch-Site: same-origin` returns generic `403`, so direct browser-to-backend login is unsupported. An `Authorization` header on these cookie-mode routes returns generic `401`.
 - `GET /auth/me` hydration is side-effect-free for session timestamps. Session
   resolution never touches. After session/CSRF validation and a successful 2xx
   protected unsafe response, the server may atomically extend idle expiry when
@@ -152,6 +157,8 @@ These rules apply to every endpoint unless a stricter endpoint-specific rule is 
   failure paths must not delete a newer valid cookie; cookie deletion remains
   limited to reviewed proof-positive logout.
 - Normal cookie mode ignores raw client identity headers and does not use caller-provided authorization as the application credential. Local stub/demo and explicitly gated emergency bearer compatibility remain separate.
+- Normal production browser requests do not send `Authorization`, do not rely
+  on CORS, and hydrate `GET /auth/me` from the session cookie.
 
 Effective expiry is the earlier of idle and family absolute expiry, with
 equality treated as expired. Refresh replaces the credential and CSRF value
@@ -1897,6 +1904,13 @@ Explicit `{ "role": "external_resident", "mcr": "..." }` remains temporarily acc
 ```
 
 Success sets `__Host-mata_session=<opaque>` with `Secure; HttpOnly; SameSite=Strict; Path=/`, no `Domain`, and no persistent `Max-Age` or `Expires` in production. No `access_token`, refresh token, or `token_type` is returned in normal cookie mode.
+
+For staff login, the browser request target is the frontend-origin
+`/api/v1/auth/login`; the Vercel rewrite forwards it to this endpoint without a
+redirect. Supabase password authentication and upstream JWT verification occur
+only inside the backend. Neither upstream access nor refresh tokens are
+persisted, returned, placed in the cookie, or used as the MATA request
+credential.
 
 - **Error responses:**
   - `401` - MCR not found or the resolved native/external resident is inactive; the response does not disclose which condition occurred

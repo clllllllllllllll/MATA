@@ -13,6 +13,7 @@ export default defineConfig(({ command, mode }) => {
       {
         appEnv: environment.VITE_APP_ENV,
         authMode: environment.VITE_AUTH_MODE,
+        apiBaseUrl: environment.VITE_API_BASE_URL,
       },
       { requireExplicit: true },
     )
@@ -21,5 +22,8 @@ export default defineConfig(({ command, mode }) => {
   return {
     root: projectRoot,
     plugins: [react()],
+    build: {
+      sourcemap: false,
+    },
   }
 })

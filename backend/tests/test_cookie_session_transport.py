@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import logging
+import re
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -461,8 +462,19 @@ class _StaffLoginDb:
     async def execute(self, statement, params=None):
         self.execute_count += 1
         if self.execute_count > 1 and self.subsequent_row is not None:
-            return _MappingResult(self.subsequent_row)
-        return _MappingResult(self.row)
+            row = self.subsequent_row
+        else:
+            row = self.row
+        if row is None:
+            return _MappingResult(None)
+        projection = str(statement).partition("FROM")[0]
+        return _MappingResult(
+            {
+                key: value
+                for key, value in row.items()
+                if re.search(rf"\b{re.escape(key)}\b", projection)
+            }
+        )
 
     async def rollback(self) -> None:
         self.rollbacks += 1
@@ -1120,6 +1132,7 @@ def test_production_public_mutations_require_exact_origin_and_json(
         "/api/v1/auth/login",
         headers={
             "Origin": "https://mata.example.com",
+            "Sec-Fetch-Site": "same-origin",
             **COORDINATION_HEADERS,
         },
         json={"role": "resident", "mcr": "M10000A"},
@@ -1146,6 +1159,24 @@ def test_production_public_mutations_require_exact_origin_and_json(
         headers={"Origin": "https://preview-attacker.example.com"},
         json={"role": "resident", "mcr": "M10000A"},
     )
+    direct_backend_browser = client.post(
+        "/api/v1/auth/login",
+        headers={
+            "Origin": "https://mata.example.com",
+            "Sec-Fetch-Site": "same-site",
+            **COORDINATION_HEADERS,
+        },
+        json={"role": "resident", "mcr": "M10000A"},
+    )
+    bearer = client.post(
+        "/api/v1/auth/login",
+        headers={
+            "Origin": "https://mata.example.com",
+            "Authorization": "Bearer browser-token",
+            **COORDINATION_HEADERS,
+        },
+        json={"role": "resident", "mcr": "M10000A"},
+    )
     wrong_content_type = client.post(
         "/api/v1/auth/login",
         headers={
@@ -1164,6 +1195,14 @@ def test_production_public_mutations_require_exact_origin_and_json(
             ),
         },
     )
+    bearer_preflight = client.options(
+        "/api/v1/auth/login",
+        headers={
+            "Origin": "https://mata.example.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization",
+        },
+    )
 
     assert approved.status_code == 200
     assert missing_coordination.status_code == 409
@@ -1173,12 +1212,20 @@ def test_production_public_mutations_require_exact_origin_and_json(
     assert missing_origin.status_code == 403
     assert unapproved.status_code == 403
     assert "preview-attacker" not in unapproved.text
+    assert direct_backend_browser.status_code == 403
+    assert bearer.status_code == 401
+    assert "browser-token" not in bearer.text
     assert wrong_content_type.status_code == 415
     assert preflight.status_code == 200
     assert preflight.headers["access-control-allow-origin"] == "https://mata.example.com"
     assert AUTH_COOKIE_COORDINATION_HEADER_NAME.lower() in (
         preflight.headers["access-control-allow-headers"].lower()
     )
+    assert bearer_preflight.status_code == 400
+    assert "authorization" not in (
+        bearer_preflight.headers.get("access-control-allow-headers", "").lower()
+    )
+    assert "browser-token" not in bearer_preflight.text
 
 
 def test_security_headers_no_store_and_trusted_host_contract() -> None:
