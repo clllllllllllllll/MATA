@@ -1116,6 +1116,34 @@ Migration `20260722_000024` revokes all existing table, sequence, and function p
 
 Migrations `20260726_000025` and `20260726_000026` add the separate full-RLS layer. The capability groups `mata_app_runtime` and `mata_auth_internal` are `NOLOGIN`, `NOINHERIT`, non-owner, `NOSUPERUSER`, and `NOBYPASSRLS`; credentialed runtime, auth-helper, and migration/ownership logins must be distinct. H-E enables RLS on all 34 application tables, installs 84 policies targeted only to `mata_app_runtime`, and keeps all application tables without `FORCE ROW LEVEL SECURITY` because normal application traffic is required to use a non-owner role.
 
+Before creating the H-E helper foundation, revision `20260726_000025`
+normalizes Supabase's standard `extensions`-schema `pgcrypto` installation to
+the repository's reviewed `public` namespace. The operation is transactional
+and fail-closed: only `public` and `extensions` are supported, the migration
+user must own the extension, relocation must be supported when required, and
+the exact `digest`, `hmac`, `gen_random_bytes`, and `gen_random_uuid`
+C-language extension members are verified before and after normalization.
+Existing object identities and dependent defaults remain attached to the
+extension; no replacement wrapper or search-path fallback is introduced.
+Execution is revoked from `PUBLIC`, application capabilities, and optional
+Supabase browser/service roles for every `pgcrypto` member routine before the
+four-function dependency contract is retained. Only `public.gen_random_uuid()`
+is granted directly to `mata_app_runtime`; the other reviewed functions remain
+available only through the narrowly owned helper boundaries that require them.
+
+The approved revision-`20260721_000022` Supabase baseline also has RLS already
+enabled on `users`, while the original disposable-local inventory counted only
+14 pre-existing RLS tables. Revision `20260726_000026` enables `users` RLS
+idempotently before its exact preflight and then requires 15 pre-existing plus
+19 newly protected tables. `users` is treated as pre-existing hardening, so
+the revision's downgrade removes its own policies and grants but does not
+disable `users` RLS. The `pgcrypto` namespace normalization is likewise not
+reversed by downgrade.
+
+Production `SYNC_DATABASE_URL` uses the packaged synchronous driver through
+`postgresql://` or `postgresql+psycopg2://`. The unbundled psycopg 3 form
+`postgresql+psycopg://` is rejected during settings validation.
+
 Normal runtime access is explicit: 27 tables receive reviewed table actions, `users` additionally receives `INSERT`/`UPDATE` and column-limited `SELECT` that excludes `password_hash`, and six tables remain helper-only with no direct runtime table privilege: `app_sessions`, `clawback_records`, `period_snapshots`, `programme_institution_posting_map`, `rate_limit_buckets`, and `surplus_ledger`. `mata_auth_internal` has no direct application-table or sequence privileges.
 
 `PUBLIC` and optional `anon`, `authenticated`, and `service_role` roles receive no application relation, H-E helper, or schema-creation authority. Default privileges do not grant future tables, sequences, or functions to runtime, auth, browser, or PUBLIC roles. A future application table is therefore inaccessible by default and still requires explicit RLS, policy, grant, helper, ownership, and test review.

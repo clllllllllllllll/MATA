@@ -62,8 +62,9 @@ APPLICATION_TABLES = (
     "weekend_exceptions",
 )
 
-# These tables already had RLS at revision 000024.  A downgrade of this
-# revision must preserve that earlier state.
+# Fourteen tables already had RLS at revision 000024.  ``users`` is normalized
+# to the approved deployed RLS baseline at the start of this revision.  A
+# downgrade must preserve all fifteen hardened states.
 PREEXISTING_RLS_TABLES = (
     "academic_month_boundaries",
     "event_series",
@@ -78,6 +79,7 @@ PREEXISTING_RLS_TABLES = (
     "reporting_periods",
     "secretary_programme_pools",
     "session_types",
+    "users",
     "weekend_exceptions",
 )
 
@@ -645,8 +647,8 @@ BEGIN
     END LOOP;
 
     IF pg_catalog.cardinality(expected_tables) <> 34
-       OR pg_catalog.cardinality(expected_old_rls) <> 14
-       OR pg_catalog.cardinality(expected_new_rls) <> 20
+       OR pg_catalog.cardinality(expected_old_rls) <> 15
+       OR pg_catalog.cardinality(expected_new_rls) <> 19
     THEN
         RAISE EXCEPTION 'Reviewed RLS table inventory is inconsistent'
             USING ERRCODE = '22023';
@@ -2114,6 +2116,12 @@ $migration$;
 
 
 def upgrade() -> None:
+    # The approved Supabase baseline already protects users with
+    # deny-by-default RLS.  Normalize clean databases to that same state
+    # transactionally before enforcing the exact reviewed inventory.
+    _execute(
+        "ALTER TABLE IF EXISTS public.users ENABLE ROW LEVEL SECURITY"
+    )
     _assert_foundation_catalogue()
     _create_relationship_predicates()
     _enable_rls_and_create_policies()

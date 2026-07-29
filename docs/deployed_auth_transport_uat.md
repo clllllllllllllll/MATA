@@ -1,8 +1,9 @@
 # Deployed Authentication Transport Remediation and UAT
 
-Status: local remediation prepared; live Vercel inspection, configuration
-changes, deployment, and post-deployment verification require separate
-authorization.
+Status: local remediation prepared and initial read-only Vercel deployment/log
+inspection completed; remaining project configuration inspection, live
+configuration changes, deployment, and post-deployment verification require
+separate authorization.
 
 This is the current deployment record for the authentication transport. It
 does not amend or reuse verdicts from archived Phase 5B evidence.
@@ -32,12 +33,25 @@ path and has no frontend Supabase dependency. Therefore the observed browser
 traffic is strong evidence of frontend deployment/alias/version drift or an
 already-open stale asset, not an execution branch in current source.
 
-The public backend currently also fails on `GET /health`, before login business
-logic is involved. That narrows the platform failure to deployment identity,
-project root/entrypoint, import-time settings, dependency/runtime loading, or
-lifespan database-boundary attestation. The exact category is not established
-without Vercel runtime logs and environment-name/scope inspection. No
-speculative fallback application or weakened startup check is approved.
+The public backend currently also fails before `GET /health` can be
+registered. Read-only Vercel logs establish an import-time production settings
+failure: database RLS was not enabled in the deployed configuration. The
+database was still at revision `20260721_000022`, so enabling the flag alone
+would not be safe. The settings loader now rethrows validation failures
+without Pydantic's input/context rendering, so a future import failure can
+identify the violated contract without including fragments of environment
+values in function logs.
+
+The approved Supabase baseline inspection also established two repository
+compatibility mismatches: Supabase installed `pgcrypto` in its standard
+`extensions` schema while the H-E migrations required the reviewed functions
+in `public`, and `users` already had RLS enabled while the original migration
+preflight expected only 14 pre-existing RLS tables. Revisions
+`20260726_000025` and `20260726_000026` now normalize those states
+transactionally and retain the exact function, policy, grant, and startup
+attestations. These database mismatches are separate from the stale frontend
+deployment that produced the browser bearer path. No speculative fallback or
+weakened startup check is approved.
 
 ## Required architecture
 
@@ -86,7 +100,7 @@ depend on CORS.
   fields, bearer construction, absolute API origins, database URLs, and
   privileged configuration.
 
-## Read-only Vercel inspection required before any mutation
+## Remaining read-only Vercel configuration inspection before any mutation
 
 An authorized operator must inspect both projects without copying values into
 the evidence record.
@@ -192,6 +206,44 @@ the same approved database endpoint with distinct roles and that the endpoint
 is reachable from Vercel. Do not switch blindly between direct, session-pool,
 or transaction-pool endpoints; asyncpg prepared-statement compatibility and
 the startup attestation must be tested against the selected mode.
+
+### Database cutover prerequisite
+
+The approved production baseline is revision `20260721_000022`, with a
+verified recovery point and an authorized recovery owner/maintenance window.
+Before setting `MATA_DATABASE_RLS_ENABLED=true` or deploying the backend:
+
+1. use only the reviewed migration-owner `SYNC_DATABASE_URL` against the
+   approved database and reviewed remediation commit; its scheme must be
+   `postgresql://` or `postgresql+psycopg2://` because the production package
+   does not include psycopg 3 and rejects `postgresql+psycopg://`;
+2. run the Alembic upgrade to the single head `20260728_000028`;
+3. allow revision `000025` to move an owned, relocatable `pgcrypto` extension
+   from `extensions` to `public` inside the migration transaction; do not run a
+   separate manual `ALTER EXTENSION`;
+4. allow revision `000026` to normalize `users` RLS before it asserts the exact
+   15-pre-existing/19-new table inventory; do not disable `users` RLS;
+5. verify the final extension members, 34 RLS tables, 84 policies, roles,
+   grants, helper ownership, default ACLs, browser-role denial, and Alembic
+   head;
+6. create two distinct credentialed PostgreSQL login roles outside Alembic:
+   the runtime login must be `LOGIN INHERIT NOSUPERUSER NOBYPASSRLS
+   NOCREATEDB NOCREATEROLE NOREPLICATION` and inherit only
+   `mata_app_runtime`; the auth-helper login must have the same restricted
+   attributes and inherit only `mata_auth_internal`. Neither login may own
+   application objects, inherit the migration owner or the other capability,
+   or receive membership with `ADMIN OPTION`. Set their passwords only
+   through a private database credential channel. Configure `DATABASE_URL`
+   and `MATA_AUTH_DATABASE_URL` with those two logins and retain the owner only
+   in `SYNC_DATABASE_URL`; all three URLs must identify the same host, port,
+   and database with three distinct usernames; and
+7. run startup attestation with the reviewed restricted credentials before
+   serving traffic.
+
+Downgrade retains the `pgcrypto` `public` namespace and `users` RLS, just as it
+retains other security hardening whose prior privilege provenance cannot be
+reconstructed. Do not move the extension back or disable `users` RLS as an
+ad-hoc rollback.
 
 ## Separately authorized deployment actions
 

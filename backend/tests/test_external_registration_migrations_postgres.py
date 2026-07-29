@@ -99,6 +99,10 @@ POSTING_PROGRAMME_MIGRATION = _load_migration(
     "20260721_000022_external_resident_posting_programme.py",
     "external_resident_posting_programme_migration",
 )
+RLS_CUTOVER_MIGRATION = _load_migration(
+    "20260726_000026_full_rls_policy_grant_cutover.py",
+    "full_rls_policy_grant_cutover_migration",
+)
 
 
 def test_external_registration_migration_chain_and_constants() -> None:
@@ -530,6 +534,129 @@ def _revision(connection: Connection) -> str:
     return str(connection.scalar(text("SELECT version_num FROM alembic_version")))
 
 
+def _pgcrypto_catalogue(connection: Connection) -> dict[str, Any]:
+    row = connection.execute(
+        text(
+            """
+            SELECT
+                extension.oid AS extension_oid,
+                namespace.nspname AS extension_schema,
+                ARRAY[
+                    pg_catalog.to_regprocedure(
+                        pg_catalog.format(
+                            '%I.digest(bytea,text)',
+                            namespace.nspname
+                        )
+                    )::oid,
+                    pg_catalog.to_regprocedure(
+                        pg_catalog.format(
+                            '%I.hmac(bytea,bytea,text)',
+                            namespace.nspname
+                        )
+                    )::oid,
+                    pg_catalog.to_regprocedure(
+                        pg_catalog.format(
+                            '%I.gen_random_bytes(integer)',
+                            namespace.nspname
+                        )
+                    )::oid,
+                    pg_catalog.to_regprocedure(
+                        pg_catalog.format(
+                            '%I.gen_random_uuid()',
+                            namespace.nspname
+                        )
+                    )::oid
+                ] AS function_oids,
+                ARRAY(
+                    SELECT procedure.oid
+                    FROM pg_catalog.pg_depend AS dependency
+                    JOIN pg_catalog.pg_proc AS procedure
+                      ON procedure.oid = dependency.objid
+                    WHERE dependency.classid =
+                              'pg_catalog.pg_proc'::pg_catalog.regclass
+                      AND dependency.refclassid =
+                              'pg_catalog.pg_extension'::pg_catalog.regclass
+                      AND dependency.refobjid = extension.oid
+                      AND dependency.deptype = 'e'
+                    ORDER BY procedure.oid
+                ) AS member_function_oids
+            FROM pg_catalog.pg_extension AS extension
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = extension.extnamespace
+            WHERE extension.extname = 'pgcrypto'
+            """
+        )
+    ).mappings().one()
+    return {
+        "extension_oid": int(row["extension_oid"]),
+        "extension_schema": str(row["extension_schema"]),
+        "function_oids": tuple(int(oid) for oid in row["function_oids"]),
+        "member_function_oids": tuple(
+            int(oid) for oid in row["member_function_oids"]
+        ),
+    }
+
+
+def _pgcrypto_denied_execute_grants(
+    connection: Connection,
+) -> set[tuple[str, str]]:
+    return {
+        (str(row["routine_identity"]), str(row["grantee"]))
+        for row in connection.execute(
+            text(
+                """
+                SELECT
+                    pg_catalog.format(
+                        '%I.%I(%s)',
+                        namespace.nspname,
+                        procedure.proname,
+                        pg_catalog.pg_get_function_identity_arguments(
+                            procedure.oid
+                        )
+                    ) AS routine_identity,
+                    CASE
+                        WHEN privilege.grantee = 0 THEN 'PUBLIC'
+                        ELSE grantee_role.rolname
+                    END AS grantee
+                FROM pg_catalog.pg_extension AS extension
+                JOIN pg_catalog.pg_depend AS dependency
+                  ON dependency.refclassid =
+                      'pg_catalog.pg_extension'::pg_catalog.regclass
+                 AND dependency.refobjid = extension.oid
+                 AND dependency.classid =
+                      'pg_catalog.pg_proc'::pg_catalog.regclass
+                 AND dependency.deptype = 'e'
+                JOIN pg_catalog.pg_proc AS procedure
+                  ON procedure.oid = dependency.objid
+                JOIN pg_catalog.pg_namespace AS namespace
+                  ON namespace.oid = procedure.pronamespace
+                CROSS JOIN LATERAL pg_catalog.aclexplode(
+                    COALESCE(
+                        procedure.proacl,
+                        pg_catalog.acldefault('f', procedure.proowner)
+                    )
+                ) AS privilege
+                LEFT JOIN pg_catalog.pg_roles AS grantee_role
+                  ON grantee_role.oid = privilege.grantee
+                WHERE extension.extname = 'pgcrypto'
+                  AND privilege.privilege_type = 'EXECUTE'
+                  AND (
+                      privilege.grantee = 0
+                      OR grantee_role.rolname IN (
+                          'mata_app_runtime',
+                          'mata_auth_internal',
+                          'anon',
+                          'authenticated',
+                          'service_role'
+                      )
+                  )
+                ORDER BY routine_identity, grantee
+                """
+            )
+        ).mappings()
+    }
+
+
 def _assert_stage_one_mappings(connection: Connection) -> None:
     counts = connection.execute(
         text(
@@ -815,6 +942,37 @@ def _cutover_relation_state(
     }
 
 
+def _relation_security_state(
+    connection: Connection,
+    table_name: str,
+) -> tuple[bool, bool, int]:
+    row = connection.execute(
+        text(
+            """
+            SELECT relation.relrowsecurity AS rls_enabled,
+                   relation.relforcerowsecurity AS rls_forced,
+                   count(policy.oid) AS policy_count
+            FROM pg_catalog.pg_class AS relation
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+            LEFT JOIN pg_catalog.pg_policy AS policy
+              ON policy.polrelid = relation.oid
+            WHERE namespace.nspname = 'public'
+              AND relation.relname = :table_name
+              AND relation.relkind IN ('r', 'p')
+            GROUP BY relation.relrowsecurity,
+                     relation.relforcerowsecurity
+            """
+        ),
+        {"table_name": table_name},
+    ).mappings().one()
+    return (
+        bool(row["rls_enabled"]),
+        bool(row["rls_forced"]),
+        int(row["policy_count"]),
+    )
+
+
 def _assert_cutover_revision_state(
     connection: Connection,
     *,
@@ -847,7 +1005,9 @@ def _assert_cutover_revision_state(
         return
 
     assert revision == "20260726_000025"
-    assert relation_state["users"] == (False, False, 0)
+    # The cutover downgrade deliberately preserves the reviewed users RLS
+    # baseline even though it removes all 000026 policies and runtime grants.
+    assert relation_state["users"] == (True, False, 0)
     # programmes had deny-by-default RLS before the H-E policy cutover and a
     # 000026 downgrade must preserve that earlier hardening.
     assert relation_state["programmes"] == (True, False, 0)
@@ -1004,6 +1164,430 @@ def _cutover_data_snapshot(
         "programme": tuple(programme),
         "user": tuple(user),
     }
+
+
+@pytest.mark.migration_mutation
+def test_rls_foundation_moves_extensions_pgcrypto_without_recreating_objects(
+    clean_migration_database: MigrationHarness,
+) -> None:
+    harness = clean_migration_database
+    _run_success(harness, "upgrade", "20260722_000024")
+
+    created_extensions_schema = False
+    created_anon_role = False
+    try:
+        with harness.engine.begin() as connection:
+            created_extensions_schema = not bool(
+                connection.scalar(
+                    text(
+                        "SELECT pg_catalog.to_regnamespace('extensions') "
+                        "IS NOT NULL"
+                    )
+                )
+            )
+            connection.execute(text("CREATE SCHEMA IF NOT EXISTS extensions"))
+            connection.execute(
+                text("ALTER EXTENSION pgcrypto SET SCHEMA extensions")
+            )
+            created_anon_role = not bool(
+                connection.scalar(
+                    text(
+                        "SELECT pg_catalog.to_regrole('anon') IS NOT NULL"
+                    )
+                )
+            )
+            if created_anon_role:
+                connection.execute(
+                    text(
+                        "CREATE ROLE anon NOLOGIN NOSUPERUSER NOBYPASSRLS "
+                        "NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT"
+                    )
+                )
+            connection.execute(
+                text(
+                    "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA extensions "
+                    "TO PUBLIC, anon"
+                )
+            )
+            before = _pgcrypto_catalogue(connection)
+            before_denied_grants = _pgcrypto_denied_execute_grants(connection)
+        assert before["extension_schema"] == "extensions"
+        assert {grantee for _routine, grantee in before_denied_grants} >= {
+            "PUBLIC",
+            "anon",
+        }
+
+        _run_success(harness, "upgrade", "20260726_000025")
+        with harness.engine.connect() as connection:
+            after = _pgcrypto_catalogue(connection)
+            assert _revision(connection) == "20260726_000025"
+            assert _pgcrypto_denied_execute_grants(connection) == set()
+
+        assert after == {
+            **before,
+            "extension_schema": "public",
+        }
+    finally:
+        with harness.engine.begin() as connection:
+            if _pgcrypto_catalogue(connection)["extension_schema"] != "public":
+                connection.execute(
+                    text("ALTER EXTENSION pgcrypto SET SCHEMA public")
+                )
+            if created_extensions_schema:
+                connection.execute(text("DROP SCHEMA extensions"))
+            if created_anon_role:
+                connection.execute(text("DROP OWNED BY anon"))
+                connection.execute(text("DROP ROLE anon"))
+
+
+@pytest.mark.migration_mutation
+def test_rls_foundation_rejects_unsupported_pgcrypto_schema_atomically(
+    clean_migration_database: MigrationHarness,
+) -> None:
+    harness = clean_migration_database
+    _run_success(harness, "upgrade", "20260722_000024")
+
+    try:
+        with harness.engine.begin() as connection:
+            connection.execute(
+                text('CREATE SCHEMA "mata_pgcrypto_unreviewed_test"')
+            )
+            connection.execute(
+                text(
+                    "ALTER EXTENSION pgcrypto SET SCHEMA "
+                    '"mata_pgcrypto_unreviewed_test"'
+                )
+            )
+            before = _pgcrypto_catalogue(connection)
+
+        result = harness.alembic("upgrade", "20260726_000025")
+        assert result.returncode != 0
+        assert "Unsupported pgcrypto extension schema" in (
+            result.stdout + result.stderr
+        )
+        with harness.engine.connect() as connection:
+            assert _revision(connection) == "20260722_000024"
+            assert _pgcrypto_catalogue(connection) == before
+            assert connection.scalar(
+                text(
+                    """
+                    SELECT
+                        pg_catalog.to_regnamespace('mata_rls') IS NULL
+                        AND pg_catalog.to_regnamespace('mata_private') IS NULL
+                    """
+                )
+            ) is True
+    finally:
+        with harness.engine.begin() as connection:
+            if _pgcrypto_catalogue(connection)["extension_schema"] != "public":
+                connection.execute(
+                    text("ALTER EXTENSION pgcrypto SET SCHEMA public")
+                )
+            connection.execute(
+                text('DROP SCHEMA IF EXISTS "mata_pgcrypto_unreviewed_test"')
+            )
+
+
+@pytest.mark.migration_mutation
+def test_deployed_000022_supabase_baseline_upgrades_to_head_preserving_staff(
+    clean_migration_database: MigrationHarness,
+) -> None:
+    harness = clean_migration_database
+    _run_success(harness, "upgrade", "20260721_000022")
+
+    created_extensions_schema = False
+    staff_id = uuid4()
+    supabase_user_id = uuid4()
+    staff_snapshot: tuple[Any, ...] | None = None
+    before_pgcrypto: dict[str, Any] | None = None
+    try:
+        with harness.engine.begin() as connection:
+            created_extensions_schema = not bool(
+                connection.scalar(
+                    text(
+                        "SELECT pg_catalog.to_regnamespace('extensions') "
+                        "IS NOT NULL"
+                    )
+                )
+            )
+            connection.execute(text("CREATE SCHEMA IF NOT EXISTS extensions"))
+            connection.execute(
+                text("ALTER EXTENSION pgcrypto SET SCHEMA extensions")
+            )
+            connection.execute(
+                text(
+                    "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA extensions "
+                    "TO PUBLIC"
+                )
+            )
+            connection.execute(
+                text("ALTER TABLE public.users ENABLE ROW LEVEL SECURITY")
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO public.users (
+                        id,
+                        email,
+                        password_hash,
+                        role,
+                        name,
+                        admin_level,
+                        supabase_user_id
+                    )
+                    VALUES (
+                        :staff_id,
+                        :email,
+                        'synthetic-migration-only',
+                        'admin',
+                        'Synthetic migration staff',
+                        'master',
+                        :supabase_user_id
+                    )
+                    """
+                ),
+                {
+                    "staff_id": staff_id,
+                    "email": f"{staff_id.hex}@example.invalid",
+                    "supabase_user_id": supabase_user_id,
+                },
+            )
+            staff_snapshot = tuple(
+                connection.execute(
+                    text(
+                        """
+                        SELECT
+                            id,
+                            email,
+                            password_hash,
+                            role,
+                            name,
+                            admin_level,
+                            is_active,
+                            supabase_user_id
+                        FROM public.users
+                        WHERE id = :staff_id
+                        """
+                    ),
+                    {"staff_id": staff_id},
+                ).one()
+            )
+            before_pgcrypto = _pgcrypto_catalogue(connection)
+            baseline_denied_grants = _pgcrypto_denied_execute_grants(
+                connection
+            )
+
+        assert staff_snapshot is not None
+        assert before_pgcrypto is not None
+        assert before_pgcrypto["extension_schema"] == "extensions"
+        with harness.engine.connect() as connection:
+            assert _revision(connection) == "20260721_000022"
+            assert _relation_security_state(connection, "users") == (
+                True,
+                False,
+                0,
+            )
+        public_routines = {
+            routine
+            for routine, grantee in baseline_denied_grants
+            if grantee == "PUBLIC"
+        }
+        assert len(public_routines) == len(
+            before_pgcrypto["member_function_oids"]
+        )
+
+        _run_success(harness, "upgrade", "20260728_000028")
+        with harness.engine.connect() as connection:
+            assert _revision(connection) == "20260728_000028"
+            assert _relation_security_state(connection, "users") == (
+                True,
+                False,
+                3,
+            )
+            assert tuple(
+                connection.execute(
+                    text(
+                        """
+                        SELECT
+                            id,
+                            email,
+                            password_hash,
+                            role,
+                            name,
+                            admin_level,
+                            is_active,
+                            supabase_user_id
+                        FROM public.users
+                        WHERE id = :staff_id
+                        """
+                    ),
+                    {"staff_id": staff_id},
+                ).one()
+            ) == staff_snapshot
+            session_defaults = connection.execute(
+                text(
+                    """
+                    SELECT session_generation, session_issuance_blocked
+                    FROM public.users
+                    WHERE id = :staff_id
+                    """
+                ),
+                {"staff_id": staff_id},
+            ).one()
+            assert tuple(session_defaults) == (0, False)
+
+            after_pgcrypto = _pgcrypto_catalogue(connection)
+            assert after_pgcrypto == {
+                **before_pgcrypto,
+                "extension_schema": "public",
+            }
+            # The final cutover grants only this reviewed UUID-default
+            # dependency to the runtime capability role.  PUBLIC and all
+            # browser/service roles remain denied across every member.
+            assert _pgcrypto_denied_execute_grants(connection) == {
+                ("public.gen_random_uuid()", "mata_app_runtime")
+            }
+
+            users_policies = {
+                (str(row["policy_name"]), str(row["command"]))
+                for row in connection.execute(
+                    text(
+                        """
+                        SELECT policy.polname AS policy_name,
+                               policy.polcmd AS command
+                        FROM pg_catalog.pg_policy AS policy
+                        WHERE policy.polrelid =
+                              'public.users'::pg_catalog.regclass
+                        """
+                    )
+                ).mappings()
+            }
+            assert users_policies == {
+                ("mata_rls_users_select", "r"),
+                ("mata_rls_users_insert", "a"),
+                ("mata_rls_users_update", "w"),
+            }
+
+            application_tables = tuple(RLS_CUTOVER_MIGRATION.APPLICATION_TABLES)
+            assert len(application_tables) == 34
+            assert len(RLS_CUTOVER_MIGRATION.POLICIES) == 84
+            catalogue = connection.execute(
+                text(
+                    """
+                    SELECT
+                        count(DISTINCT relation.oid) AS table_count,
+                        count(DISTINCT relation.oid) FILTER (
+                            WHERE relation.relrowsecurity
+                        ) AS rls_count,
+                        count(DISTINCT relation.oid) FILTER (
+                            WHERE relation.relforcerowsecurity
+                        ) AS forced_rls_count,
+                        count(policy.oid) AS policy_count,
+                        count(policy.oid) FILTER (
+                            WHERE NOT policy.polpermissive
+                               OR policy.polroles <>
+                                  ARRAY[
+                                      pg_catalog.to_regrole(
+                                          'mata_app_runtime'
+                                      )::oid
+                                  ]
+                        ) AS invalid_policy_count
+                    FROM pg_catalog.pg_class AS relation
+                    JOIN pg_catalog.pg_namespace AS namespace
+                      ON namespace.oid = relation.relnamespace
+                    LEFT JOIN pg_catalog.pg_policy AS policy
+                      ON policy.polrelid = relation.oid
+                    WHERE namespace.nspname = 'public'
+                      AND relation.relname =
+                          ANY(CAST(:table_names AS text[]))
+                      AND relation.relkind IN ('r', 'p')
+                    """
+                ),
+                {"table_names": list(application_tables)},
+            ).one()
+            assert tuple(catalogue) == (34, 34, 0, 84, 0)
+    finally:
+        with harness.engine.begin() as connection:
+            if _pgcrypto_catalogue(connection)["extension_schema"] != "public":
+                connection.execute(
+                    text("ALTER EXTENSION pgcrypto SET SCHEMA public")
+                )
+            if created_extensions_schema:
+                connection.execute(text("DROP SCHEMA extensions"))
+
+
+@pytest.mark.migration_mutation
+def test_full_rls_cutover_normalizes_and_preserves_users_rls(
+    clean_migration_database: MigrationHarness,
+) -> None:
+    harness = clean_migration_database
+    _run_success(harness, "upgrade", "20260726_000025")
+    with harness.engine.connect() as connection:
+        assert _relation_security_state(connection, "users") == (
+            False,
+            False,
+            0,
+        )
+
+    _run_success(harness, "upgrade", "20260726_000026")
+    with harness.engine.connect() as connection:
+        users_cutover = _relation_security_state(connection, "users")
+        assert users_cutover[0:2] == (True, False)
+        assert users_cutover[2] > 0
+
+    _run_success(harness, "downgrade", "20260726_000025")
+    with harness.engine.connect() as connection:
+        assert _relation_security_state(connection, "users") == (
+            True,
+            False,
+            0,
+        )
+
+    # Re-upgrade from the deployed-compatible baseline where users RLS was
+    # already enabled before the reviewed policy cutover.
+    _run_success(harness, "upgrade", "20260726_000026")
+    with harness.engine.connect() as connection:
+        assert _revision(connection) == "20260726_000026"
+        users_recutover = _relation_security_state(connection, "users")
+        assert users_recutover[0:2] == (True, False)
+        assert users_recutover[2] > 0
+
+
+@pytest.mark.migration_mutation
+def test_full_rls_cutover_rejects_other_unexpected_preexisting_rls_atomically(
+    clean_migration_database: MigrationHarness,
+) -> None:
+    harness = clean_migration_database
+    _run_success(harness, "upgrade", "20260726_000025")
+    with harness.engine.begin() as connection:
+        connection.execute(
+            text("ALTER TABLE public.residents ENABLE ROW LEVEL SECURITY")
+        )
+        assert _relation_security_state(connection, "users") == (
+            False,
+            False,
+            0,
+        )
+
+    result = harness.alembic("upgrade", "20260726_000026")
+    assert result.returncode != 0
+    assert "Unexpected pre-cutover RLS state for table residents" in (
+        result.stdout + result.stderr
+    )
+    with harness.engine.connect() as connection:
+        assert _revision(connection) == "20260726_000025"
+        # The users normalization occurs in 000026's failed transaction and
+        # therefore must not leak through a rejected catalogue.
+        assert _relation_security_state(connection, "users") == (
+            False,
+            False,
+            0,
+        )
+        assert _relation_security_state(connection, "residents") == (
+            True,
+            False,
+            0,
+        )
 
 
 @pytest.mark.migration_mutation

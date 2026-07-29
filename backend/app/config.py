@@ -5,11 +5,57 @@ from functools import lru_cache
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 MINIMUM_HS256_SECRET_BYTES = 32
+SUPPORTED_SYNC_DATABASE_SCHEMES = frozenset(
+    {"postgresql", "postgresql+psycopg2"}
+)
+
+
+class SettingsConfigurationError(RuntimeError):
+    """A startup-safe settings error that never renders Pydantic input."""
+
+
+class _SettingsContractError(ValueError):
+    """An authored validation message that is safe to render at startup."""
+
+
+def _safe_settings_validation_summary(exc: ValidationError) -> str:
+    summaries: list[str] = []
+    for error in exc.errors(
+        include_url=False,
+        include_context=True,
+        include_input=False,
+    ):
+        location = ".".join(str(part) for part in error.get("loc", ()))
+        error_type = str(error.get("type", "invalid_configuration"))
+        context = error.get("ctx")
+        context_error = (
+            context.get("error")
+            if isinstance(context, dict)
+            else None
+        )
+        if (
+            not location
+            and error_type == "value_error"
+            and isinstance(context_error, _SettingsContractError)
+        ):
+            message = " ".join(str(context_error).split())
+            summaries.append(message[:240] or "invalid configuration")
+            continue
+        summaries.append(
+            f"{location or 'configuration'} ({error_type})"
+        )
+    return "; ".join(summaries) or "invalid configuration"
 
 
 def _production_https_url_parts(
@@ -21,7 +67,9 @@ def _production_https_url_parts(
         parsed = urlsplit(raw_url.strip())
         port = parsed.port
     except ValueError as exc:
-        raise ValueError(f"Production {label} must be an explicit HTTPS URL") from exc
+        raise _SettingsContractError(
+            f"Production {label} must be an explicit HTTPS URL"
+        ) from exc
 
     hostname = (parsed.hostname or "").casefold()
     if (
@@ -33,7 +81,7 @@ def _production_https_url_parts(
         or parsed.fragment
         or port not in {None, 443}
     ):
-        raise ValueError(
+        raise _SettingsContractError(
             f"Production {label} must be an explicit HTTPS URL without "
             "credentials, query, fragment, or a non-standard port"
         )
@@ -256,33 +304,41 @@ class Settings(BaseSettings):
         }
         invalid = [name for name, value in positive_values.items() if value <= 0]
         if invalid:
-            raise ValueError(f"Security settings must be positive: {', '.join(invalid)}")
+            raise _SettingsContractError(
+                f"Security settings must be positive: {', '.join(invalid)}"
+            )
         if self.upload_archive_max_compression_ratio <= 1:
-            raise ValueError("Upload archive compression ratio must be greater than 1")
+            raise _SettingsContractError(
+                "Upload archive compression ratio must be greater than 1"
+            )
         if self.max_upload_size_mb >= self.max_upload_request_size_mb:
-            raise ValueError(
+            raise _SettingsContractError(
                 "Upload file size must be smaller than the upload request size"
             )
         if self.max_upload_request_size_mb > self.max_request_body_size_mb:
-            raise ValueError(
+            raise _SettingsContractError(
                 "Upload request size cannot exceed the global request body size"
             )
         if self.staff_session_idle_timeout_seconds > self.staff_session_absolute_timeout_seconds:
-            raise ValueError("Staff idle timeout cannot exceed the absolute timeout")
+            raise _SettingsContractError(
+                "Staff idle timeout cannot exceed the absolute timeout"
+            )
         if self.resident_session_idle_timeout_seconds > self.resident_session_absolute_timeout_seconds:
-            raise ValueError("Resident idle timeout cannot exceed the absolute timeout")
+            raise _SettingsContractError(
+                "Resident idle timeout cannot exceed the absolute timeout"
+            )
         if self.session_touch_interval_seconds >= min(
             self.staff_session_idle_timeout_seconds,
             self.resident_session_idle_timeout_seconds,
         ):
-            raise ValueError(
+            raise _SettingsContractError(
                 "Session touch interval must be shorter than every idle timeout"
             )
         if self.session_rotation_seconds >= min(
             self.staff_session_absolute_timeout_seconds,
             self.resident_session_absolute_timeout_seconds,
         ):
-            raise ValueError(
+            raise _SettingsContractError(
                 "Session rotation threshold must be shorter than every absolute timeout"
             )
         helper_upper_bounds = {
@@ -317,32 +373,34 @@ class Settings(BaseSettings):
             if value > maximum
         ]
         if oversized:
-            raise ValueError(
+            raise _SettingsContractError(
                 "Security settings exceed PostgreSQL helper bounds: "
                 + ", ".join(oversized)
             )
         if not self.csrf_header_name.strip():
-            raise ValueError("CSRF header name cannot be blank")
+            raise _SettingsContractError("CSRF header name cannot be blank")
 
         if self.database_rls_enabled:
             runtime_role = self.database_runtime_role.strip()
             auth_role = self.database_auth_role.strip()
             if runtime_role != "mata_app_runtime":
-                raise ValueError(
+                raise _SettingsContractError(
                     "DATABASE_RUNTIME_ROLE must be the stable mata_app_runtime group"
                 )
             if auth_role != "mata_auth_internal":
-                raise ValueError(
+                raise _SettingsContractError(
                     "DATABASE_AUTH_ROLE must be the stable mata_auth_internal group"
                 )
             if runtime_role == auth_role:
-                raise ValueError("Runtime and auth database groups must be distinct")
+                raise _SettingsContractError(
+                    "Runtime and auth database groups must be distinct"
+                )
             if self.auth_transport != "cookie":
-                raise ValueError(
+                raise _SettingsContractError(
                     "RLS enforcement requires cookie session transport"
                 )
             if not self.auth_database_url:
-                raise ValueError(
+                raise _SettingsContractError(
                     "AUTH_DATABASE_URL is required when RLS enforcement is enabled"
                 )
             parsed_runtime_database_url = urlsplit(self.database_url)
@@ -356,7 +414,9 @@ class Settings(BaseSettings):
                 try:
                     port = parsed_url.port or 5432
                 except ValueError as exc:
-                    raise ValueError(f"{label} contains an invalid port") from exc
+                    raise _SettingsContractError(
+                        f"{label} contains an invalid port"
+                    ) from exc
                 if (
                     parsed_url.scheme != "postgresql+asyncpg"
                     or not parsed_url.username
@@ -364,24 +424,24 @@ class Settings(BaseSettings):
                     or not parsed_url.path.lstrip("/")
                     or port <= 0
                 ):
-                    raise ValueError(
+                    raise _SettingsContractError(
                         f"{label} must be an explicit PostgreSQL asyncpg URL"
                     )
             try:
                 migration_port = parsed_migration_database_url.port or 5432
             except ValueError as exc:
-                raise ValueError(
+                raise _SettingsContractError(
                     "SYNC_DATABASE_URL contains an invalid port"
                 ) from exc
             if (
                 parsed_migration_database_url.scheme
-                not in {"postgresql", "postgresql+psycopg", "postgresql+psycopg2"}
+                not in SUPPORTED_SYNC_DATABASE_SCHEMES
                 or not parsed_migration_database_url.username
                 or not parsed_migration_database_url.hostname
                 or not parsed_migration_database_url.path.lstrip("/")
                 or migration_port <= 0
             ):
-                raise ValueError(
+                raise _SettingsContractError(
                     "SYNC_DATABASE_URL must be an explicit PostgreSQL URL"
                 )
 
@@ -401,12 +461,12 @@ class Settings(BaseSettings):
                 parsed_migration_database_url.path.lstrip("/"),
             )
             if runtime_endpoint != auth_endpoint:
-                raise ValueError(
+                raise _SettingsContractError(
                     "DATABASE_URL and AUTH_DATABASE_URL must target the same "
                     "PostgreSQL host, port, and database"
                 )
             if runtime_endpoint != migration_endpoint:
-                raise ValueError(
+                raise _SettingsContractError(
                     "DATABASE_URL and SYNC_DATABASE_URL must target the same "
                     "PostgreSQL host, port, and database"
                 )
@@ -414,7 +474,7 @@ class Settings(BaseSettings):
                 parsed_runtime_database_url.username
                 == parsed_auth_database_url.username
             ):
-                raise ValueError(
+                raise _SettingsContractError(
                     "Runtime and auth database URLs must use distinct credentialed "
                     "login roles"
                 )
@@ -422,7 +482,7 @@ class Settings(BaseSettings):
                 parsed_runtime_database_url.username,
                 parsed_auth_database_url.username,
             }:
-                raise ValueError(
+                raise _SettingsContractError(
                     "Migration, runtime, and auth database URLs must use "
                     "distinct credentialed roles"
                 )
@@ -437,21 +497,23 @@ class Settings(BaseSettings):
             self.max_upload_size_mb,
         )
         if configured_request_limits != approved_request_limits:
-            raise ValueError(
+            raise _SettingsContractError(
                 "Production request-body limits must match the approved "
                 "Vercel contract: 4 MiB global, 4 MiB aggregate upload, "
                 "and 3 MiB per file"
             )
         if self.auth_mode != "supabase":
-            raise ValueError("Production AUTH_MODE must be supabase")
+            raise _SettingsContractError("Production AUTH_MODE must be supabase")
         if not self.database_rls_enabled:
-            raise ValueError("Production DATABASE_RLS_ENABLED must be true")
+            raise _SettingsContractError(
+                "Production DATABASE_RLS_ENABLED must be true"
+            )
         database_contracts = (
             ("DATABASE_URL", self.database_url, {"postgresql+asyncpg"}),
             (
                 "SYNC_DATABASE_URL",
                 self.sync_database_url,
-                {"postgresql", "postgresql+psycopg", "postgresql+psycopg2"},
+                SUPPORTED_SYNC_DATABASE_SCHEMES,
             ),
         )
         for label, raw_url, allowed_schemes in database_contracts:
@@ -466,7 +528,7 @@ class Settings(BaseSettings):
                 or hostname in {"localhost", "127.0.0.1", "::1"}
                 or hostname.endswith(".localhost")
             ):
-                raise ValueError(
+                raise _SettingsContractError(
                     f"Production {label} must be an explicit non-local PostgreSQL URL"
                 )
         parsed_auth_database_url = urlsplit(self.auth_database_url)
@@ -475,12 +537,12 @@ class Settings(BaseSettings):
             auth_hostname in {"localhost", "127.0.0.1", "::1"}
             or auth_hostname.endswith(".localhost")
         ):
-            raise ValueError(
+            raise _SettingsContractError(
                 "Production AUTH_DATABASE_URL must be an explicit non-local "
                 "PostgreSQL URL"
             )
         if not self.supabase_url:
-            raise ValueError("Production SUPABASE_URL is required")
+            raise _SettingsContractError("Production SUPABASE_URL is required")
         supabase_host, supabase_port, supabase_path = _production_https_url_parts(
             self.supabase_url,
             label="SUPABASE_URL",
@@ -490,7 +552,7 @@ class Settings(BaseSettings):
             or supabase_host == "supabase.co"
             or not supabase_host.endswith(".supabase.co")
         ):
-            raise ValueError(
+            raise _SettingsContractError(
                 "Production SUPABASE_URL must be the explicit HTTPS origin "
                 "of an approved Supabase project"
             )
@@ -508,7 +570,7 @@ class Settings(BaseSettings):
             (issuer_host, issuer_port) != supabase_origin
             or issuer_path.rstrip("/") != "/auth/v1"
         ):
-            raise ValueError(
+            raise _SettingsContractError(
                 "Production SUPABASE_JWT_ISSUER must use the SUPABASE_URL "
                 "origin and /auth/v1 path"
             )
@@ -525,35 +587,47 @@ class Settings(BaseSettings):
             (jwks_host, jwks_port) != supabase_origin
             or jwks_path != "/auth/v1/.well-known/jwks.json"
         ):
-            raise ValueError(
+            raise _SettingsContractError(
                 "Production SUPABASE_JWKS_URL must use the SUPABASE_URL "
                 "origin and /auth/v1/.well-known/jwks.json path"
             )
         if not (self.supabase_publishable_key or self.supabase_anon_key):
-            raise ValueError("A backend Supabase publishable key is required in production")
+            raise _SettingsContractError(
+                "A backend Supabase publishable key is required in production"
+            )
         if self.auth_transport == "bearer_compat":
             if not self.enable_production_bearer_rollback:
-                raise ValueError(
+                raise _SettingsContractError(
                     "AUTH_TRANSPORT=bearer_compat is disabled in production unless the narrowly "
                     "scoped emergency rollback flag is enabled"
                 )
             resident_secret = (self.mata_resident_session_secret or "").strip()
             if len(resident_secret.encode("utf-8")) < MINIMUM_HS256_SECRET_BYTES:
-                raise ValueError(
+                raise _SettingsContractError(
                     "Production bearer compatibility requires "
                     "MATA_RESIDENT_SESSION_SECRET with at least 32 bytes"
                 )
         if self.auth_transport == "cookie":
             if not self.mata_session_hash_key or len(self.mata_session_hash_key) < 32:
-                raise ValueError("MATA_SESSION_HASH_KEY must contain at least 32 characters")
+                raise _SettingsContractError(
+                    "MATA_SESSION_HASH_KEY must contain at least 32 characters"
+                )
             if self.mata_session_cookie_name != "__Host-mata_session":
-                raise ValueError("Production session cookie must be named __Host-mata_session")
+                raise _SettingsContractError(
+                    "Production session cookie must be named __Host-mata_session"
+                )
         if self.rate_limit_store != "postgres":
-            raise ValueError("Production RATE_LIMIT_STORE must be postgres")
+            raise _SettingsContractError(
+                "Production RATE_LIMIT_STORE must be postgres"
+            )
         if not self.rate_limit_hash_secret or len(self.rate_limit_hash_secret) < 32:
-            raise ValueError("RATE_LIMIT_HASH_SECRET must contain at least 32 characters")
+            raise _SettingsContractError(
+                "RATE_LIMIT_HASH_SECRET must contain at least 32 characters"
+            )
         if not self.cors_origins:
-            raise ValueError("Production CORS_ORIGINS cannot be empty")
+            raise _SettingsContractError(
+                "Production CORS_ORIGINS cannot be empty"
+            )
         for origin in self.cors_origins:
             lowered = origin.strip().lower()
             parsed = urlsplit(lowered)
@@ -569,9 +643,13 @@ class Settings(BaseSettings):
                 or "localhost" in lowered
                 or "127.0.0.1" in lowered
             ):
-                raise ValueError("Production CORS origins must be explicit HTTPS origins")
+                raise _SettingsContractError(
+                    "Production CORS origins must be explicit HTTPS origins"
+                )
         if not self.allowed_hosts:
-            raise ValueError("Production ALLOWED_HOSTS cannot be empty")
+            raise _SettingsContractError(
+                "Production ALLOWED_HOSTS cannot be empty"
+            )
         for host in self.allowed_hosts:
             lowered = host.strip().lower()
             if (
@@ -580,7 +658,9 @@ class Settings(BaseSettings):
                 or "/" in lowered
                 or lowered in {"localhost", "127.0.0.1", "testserver"}
             ):
-                raise ValueError("Production allowed hosts must be explicit deployment hosts")
+                raise _SettingsContractError(
+                    "Production allowed hosts must be explicit deployment hosts"
+                )
         return self
 
     @property
@@ -598,4 +678,12 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    try:
+        return Settings()
+    except ValidationError as exc:
+        validation_summary = _safe_settings_validation_summary(exc)
+
+    raise SettingsConfigurationError(
+        "Backend settings validation failed: "
+        f"{validation_summary}"
+    ) from None
