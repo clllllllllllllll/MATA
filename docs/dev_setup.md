@@ -66,11 +66,12 @@ From backend directory:
 python scripts/smoke_phase5a_resident_flow.py
 ```
 
-## 8. Run Phase 5B native resident UI smoke verification
+## 8. Run native and Non-NHG Resident UI smoke verification
 
-Follow the browser checklist at:
-
-`docs/manual_smoke_phase5b_native_resident_ui.md`
+Use the current identity and workflow contract in
+`docs/auth-account-contract.md` and the deployed verification requirements in
+`docs/security.md` Section 17. No standalone Phase 5B browser checklist is a
+current contract.
 
 ## 9. Security verification boundaries
 
@@ -116,6 +117,10 @@ python -B -m tests.run_rls_restricted_pytest -q --tb=short -p no:cacheprovider t
 Print and assert the exact database name and local host before every mutation.
 Do not drop the database without separate authorization.
 
+Production migration rehearsal follows `docs/security.md` Section 15. First
+Master Admin bootstrap follows the controlled boundary in
+`docs/auth-account-contract.md`; neither is a normal development command.
+
 Registry-backed dependency audits are:
 
 ```bash
@@ -133,8 +138,8 @@ Production configuration validation requires cookie transport, RLS enabled, thre
 
 The current security contract is `docs/security.md`. Historical
 session-transport, restricted-role, lifecycle, and request-ingress reports
-remain dated implementation evidence. Local completion does not prove deployed
-behavior.
+are indexed at `docs/archive/security/phase-5b/README.md` as dated
+implementation evidence. Local completion does not prove deployed behavior.
 
 Resident identity assurance remains separately governed product debt. Do not
 invent a second factor or claim workflow outside an approved product scope.

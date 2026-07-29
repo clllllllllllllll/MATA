@@ -2,7 +2,7 @@
 
 > **Purpose:** This is the exhaustive safety and audit document for the MATA project. It is not meant to be read linearly — it is a reference and audit trail for decisions, TBDs, rejected approaches, risks, and blind spots.
 >
-> **Authority:** This document is an audit trail. If it conflicts with `schema.md`, `api.md`, `business-logic.md`, `parsing.md`, or `AGENTS.md`, trust the domain-specific source-of-truth file and flag this document for update.
+> **Authority:** This document is the current decision and gap audit trail. If it conflicts with `schema.md`, `api.md`, `business-logic.md`, `parsing.md`, `auth-account-contract.md`, `security.md`, or `AGENTS.md`, trust the domain-specific source-of-truth file and flag this document for update. `security.md` is the current cross-cutting security contract; archived Phase 5B records are supporting historical evidence only.
 >
 > **Status markers:** ❓ unresolved, ⚠️ high-risk, ✅ confirmed, 🔧 partially implemented, ❌ deprecated
 
@@ -63,7 +63,7 @@ These entries supersede any earlier contradictory current-state entry in this au
 - **Phase boundary:** Full RLS enablement and policy SQL remain deferred to a dedicated RLS phase. Cookie/BFF/CSRF/session hardening remains part of 5B-H, with the deployment-safe cut first.
 - **Compliance sequencing:** Phase 6 compliance should not begin until the protected deployment/security baseline is acceptable.
 - **Non-NHG invariant:** Non-NHG data remains separate and must not enter NHG compliance later.
-- **Reference file and section:** `docs/5b_h_vercel_uat_security_plan.md`; `docs/auth-account-contract.md` 5B-H roadmap alignment; `docs/5b_g_rls_grants_matrix.md`
+- **Reference file and section:** `docs/archive/security/phase-5b/5b_h_vercel_uat_security_plan.md`; `docs/auth-account-contract.md` 5B-H roadmap alignment; `docs/archive/security/phase-5b/5b_g_rls_grants_matrix.md`
 - **Do not change without PM/stakeholder approval:** Yes
 
 ---
@@ -75,7 +75,7 @@ These entries supersede any earlier contradictory current-state entry in this au
 - **Browser boundary:** Production uses relative `/api/v1`, credentialed cookie requests, memory-only identity/CSRF state, and no routine bearer persistence or injection.
 - **Session boundary:** `__Host-mata_session` is host-only, `Secure`, `HttpOnly`, `SameSite=Strict`, and `Path=/`. Raw session and CSRF values are 256-bit and only keyed digests persist. One-winner family rotation, family logout, expiry, generation fencing, and password-reset issuance blocking fail closed.
 - **Database boundary:** `20260722_000023` adds application sessions and subject generations. `20260722_000024` revokes application-object privileges from `PUBLIC` and optional browser roles. This is not full RLS; Phase 5B-H-E owns the restricted runtime role, trusted transaction context, policies, and full-table verification.
-- **Dependency disposition:** The final sanitized `pip-audit`, npm runtime audit, and npm full-tree audit reported zero findings. Exact advisory history and version changes are recorded in `docs/5b_h_d_production_security_implementation.md`.
+- **Dependency disposition:** The final sanitized `pip-audit`, npm runtime audit, and npm full-tree audit reported zero findings. Exact advisory history and version changes are recorded in `docs/archive/security/phase-5b/5b_h_d_production_security_implementation.md`.
 - **Verification:** Complete backend `1104 passed, 7 warnings`; focused H-D security `230 passed, 1 warning`; PostgreSQL security integration `13 passed`; 20/20 process-isolated concurrent-rotation repeats; frontend `78 passed` plus lint, typecheck, and production/Supabase build.
 - **Evidence boundary:** Code completion and local verification do not prove deployed security.
 
@@ -92,7 +92,7 @@ only under an approved product scope.
 - **Application boundary:** FastAPI authorization remains mandatory. RLS is defense in depth and must not broaden or replace current route/service role, programme, posting, resident, external-resident, period, or workflow checks.
 - **Identity separation:** Native and Non-NHG Resident rows, schedules, attendance, and compliance eligibility remain separate. Migration `20260726_000025` adds serialized database-level normalized MCR uniqueness across the two identity tables.
 - **Evidence boundary:** Local tests and catalogue inspection do not prove deployed Supabase revision, roles, ownership, policies, grants, environment, or runtime behavior.
-- **Reference files:** `docs/5b_h_e_full_rls_implementation.md`; `docs/5b_g_rls_grants_matrix.md`; `docs/schema.md`
+- **Reference files:** `docs/archive/security/phase-5b/5b_h_e_full_rls_implementation.md`; `docs/archive/security/phase-5b/5b_g_rls_grants_matrix.md`; `docs/schema.md`
 - **Do not change without PM/security-owner approval:** Yes
 
 ---

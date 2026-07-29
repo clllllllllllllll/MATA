@@ -455,7 +455,7 @@ mata_phase5b_session_lifecycle_verify
 
 The descendant combined integration audit uses only
 `mata_phase5b_security_integration_audit`; see
-`docs/5b_h_def_security_integration_audit.md`.
+`docs/archive/security/phase-5b/5b_h_def_security_integration_audit.md`.
 
 Use fresh child processes, three distinct local credentials, and verify
 `current_database()` before every migration or destructive command. Never use

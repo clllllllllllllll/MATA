@@ -8,7 +8,7 @@ Last updated: 2026-07-06
 
 ## Scope
 
-This log records the minimal high-priority local-code fixes from `docs/5b_h_uat_security_audit.md`. It does not claim that Vercel or Supabase UAT has been deployed, protected, migrated, or manually smoke-tested.
+This log records the minimal high-priority local-code fixes from `docs/archive/security/phase-5b/5b_h_uat_security_audit.md`. It does not claim that Vercel or Supabase UAT has been deployed, protected, migrated, or manually smoke-tested.
 
 No RLS enablement, RLS policy SQL, database migrations, Phase 6 compliance logic, final close, snapshots, clawback, dependency upgrades, or secret changes were made.
 

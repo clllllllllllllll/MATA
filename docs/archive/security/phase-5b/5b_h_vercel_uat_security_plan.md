@@ -14,11 +14,11 @@ This plan records the security path from the historical protected H-C UAT postur
 
 Related 5B-H outputs:
 
-- `docs/5b_h_uat_security_audit.md`
-- `docs/5b_h_uat_security_fix_log.md`
-- `docs/5b_h_vercel_supabase_uat_smoke.md`
-- `docs/5b_h_session_transport_hardening_plan.md`
-- `docs/5b_h_d_production_security_implementation.md`
+- `docs/archive/security/phase-5b/5b_h_uat_security_audit.md`
+- `docs/archive/security/phase-5b/5b_h_uat_security_fix_log.md`
+- `docs/archive/security/phase-5b/5b_h_vercel_supabase_uat_smoke.md`
+- `docs/archive/security/phase-5b/5b_h_session_transport_hardening_plan.md`
+- `docs/archive/security/phase-5b/5b_h_d_production_security_implementation.md`
 
 ## 2. Scope
 
@@ -150,7 +150,7 @@ Scope:
 
 RLS planning is complete from 5B-G-E. Full RLS enablement and policy SQL are not part of 5B-H-A/B/C/D.
 
-Phase 5B-H-E must use `docs/5b_g_rls_grants_matrix.md`, a restricted non-owner runtime role, trusted transaction-local identity context, and a PostgreSQL policy test harness. Migration `20260722_000024` is grant hardening, not RLS.
+Phase 5B-H-E must use `docs/archive/security/phase-5b/5b_g_rls_grants_matrix.md`, a restricted non-owner runtime role, trusted transaction-local identity context, and a PostgreSQL policy test harness. Migration `20260722_000024` is grant hardening, not RLS.
 
 ## 10. Go/No-Go Criteria For Stakeholder UAT
 
@@ -171,7 +171,7 @@ For the current H-D design, intentionally public authentication entry points do 
 
 ## 11. Verification Commands/Checks
 
-The exact H-D commands, counts, migration verification, dependency audits, and source scans are recorded in `docs/5b_h_d_production_security_implementation.md`. Representative repository checks remain:
+The exact H-D commands, counts, migration verification, dependency audits, and source scans are recorded in `docs/archive/security/phase-5b/5b_h_d_production_security_implementation.md`. Representative repository checks remain:
 
 ```powershell
 git status --short --branch

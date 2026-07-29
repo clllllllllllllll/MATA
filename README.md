@@ -189,13 +189,15 @@ All technical specifications live in `docs/`:
 
 | File | Contents |
 |------|----------|
+| `docs/00_project_context.md` | Project orientation, documentation authority, and implementation status |
 | `docs/schema.md` | Database schema — all tables, columns, constraints, and relationships |
 | `docs/api.md` | API endpoints — routes, request/response shapes, auth requirements |
 | `docs/business-logic.md` | Compliance engine, surplus chain, tag-based reallocation, exception handling |
 | `docs/parsing.md` | RDB and TTF Excel upload parsing rules and edge cases |
 | `docs/auth-account-contract.md` | Current identity, account, and session-lifecycle contract |
 | `docs/security.md` | Current cross-cutting security contract, locally verified controls, deployment assumptions, and deferred debt |
-| `docs/5b_h_aud_m04_atomic_attendance.md` | Immutable ad-hoc creator/storage-family RLS and attendance transaction matrix |
+| `docs/99_decision_log_and_gap_audit.md` | Architectural decisions, accepted trade-offs, unresolved gaps, and superseded history |
+| `docs/archive/security/phase-5b/README.md` | Historical Phase 5B security, migration, UAT, and verification records |
 | `AGENTS.md` | Architectural rules, TBD items, confirmed decisions — read before coding |
 
 ---
@@ -277,8 +279,10 @@ alembic downgrade -1
 ## Project Status
 
 MATA remains in active phased development. `docs/security.md` is the current
-cross-cutting security contract. The retained `5b_*` security documents are
-dated implementation and audit evidence, not competing current specifications.
+cross-cutting security contract. The Phase 5B security archive contains dated
+implementation, migration, UAT, and audit evidence, not competing current
+specifications. `docs/99_decision_log_and_gap_audit.md` remains the current
+architectural decision and gap history.
 The approved Vercel product contract caps each uploaded file at 3 MiB and the
 complete multipart or other request body at 4 MiB, below the platform's
 separate 4.5 MB Function ceiling. Larger-file support requires a separately

@@ -180,7 +180,7 @@ retains or restores a stale session cookie.
 - The pure ASGI body limiter runs before authentication and multipart parsing. It validates every observable `Content-Length` value and also counts actual streamed bytes, so missing or false-small lengths do not bypass the cap.
 - A malformed or conflicting `Content-Length` returns controlled `400`. A known or streamed body over the selected cap returns controlled `413` with `Cache-Control: no-store`; exact-boundary bodies are allowed.
 - Known oversized requests do not invoke the downstream parser. Unknown-length bodies may still be consumed or spooled up to the cap before the crossing chunk is rejected.
-- Application limits do not prevent buffering or earlier rejection by an ingress/provider. The approved Vercel contract is 3 MiB per file inside a complete request capped at 4 MiB; larger files require a separately approved ingress. See `5b_h_m05_upload_preparser_limits.md` for the Nginx rule, Vercel 4.5 MB platform constraint, and required deployed checks.
+- Application limits do not prevent buffering or earlier rejection by an ingress/provider. The approved Vercel contract is 3 MiB per file inside a complete request capped at 4 MiB; larger files require a separately approved ingress. `docs/security.md` Sections 8, 13, and 17 define the current ingress and deployed-verification contract; `docs/archive/security/phase-5b/5b_h_m05_upload_preparser_limits.md` preserves the historical implementation evidence.
 - All write endpoints must be idempotent only where explicitly documented. Otherwise duplicate/conflict cases return `409`.
 
 ### SQL injection protection

@@ -1,10 +1,11 @@
 # 5B-H-C Supabase/Vercel UAT Smoke Checklist
 
-> **Current contract:** `docs/security.md`. This checklist remains the deployed
-> evidence template; its historical results do not override the current
-> repository security contract.
+> **Archived Phase 5B record:** Current deployed verification and evidence
+> requirements are defined by `docs/security.md` Section 17. This checklist
+> preserves its historical template and results and does not override the
+> current repository security contract.
 
-> **Historical evidence boundary:** Sections and result rows dated 2026-07-22 preserve the Phase 5B-H-C point-in-time record. Do not rewrite their commit identifiers, migration head, test counts, deployment observations, or blocked/manual classifications. Phase 5B-H-D supersedes the earlier browser-bearer and mandatory outer-gate design assumptions; Phase 5B-H-E subsequently adds the local restricted-role/RLS boundary. Current local evidence is recorded separately in `docs/5b_h_d_production_security_implementation.md`, `docs/5b_h_e_full_rls_implementation.md`, and descendant implementation records including `docs/5b_h_m06_reliable_logout.md`; it is not proof of deployed behavior.
+> **Historical evidence boundary:** Sections and result rows dated 2026-07-22 preserve the Phase 5B-H-C point-in-time record. Do not rewrite their commit identifiers, migration head, test counts, deployment observations, or blocked/manual classifications. Phase 5B-H-D supersedes the earlier browser-bearer and mandatory outer-gate design assumptions; Phase 5B-H-E subsequently adds the local restricted-role/RLS boundary. Current local evidence is recorded separately in `docs/archive/security/phase-5b/5b_h_d_production_security_implementation.md`, `docs/archive/security/phase-5b/5b_h_e_full_rls_implementation.md`, and descendant implementation records including `docs/archive/security/phase-5b/5b_h_m06_reliable_logout.md`; it is not proof of deployed behavior.
 
 Status: Historical H-C results preserved; H-D/H-E and descendant M-06 local implementation do not change the NO-GO pending deployed Vercel/Supabase, environment, account, RLS, grant, auth-lifecycle, and workflow evidence
 Last updated: 2026-07-28
@@ -13,7 +14,7 @@ Last updated: 2026-07-28
 
 This checklist is the required evidence template before stakeholder UAT on Vercel/Supabase. It confirms the protected deployment posture, Supabase auth wiring, first Master Admin bootstrap, migration smoke status, role-scoped API behavior, CORS behavior, no-secret exposure, and no direct browser access to sensitive MATA app tables.
 
-Historical baseline: when this checklist was created on 2026-07-06, every evidence row was `Not run`. The 2026-07-22 results below preserve unsupported deployed checks as `MANUAL VERIFICATION REQUIRED` or `BLOCKED`; local automated evidence is labelled as such. Full findings are in `docs/5b_h_c_deployment_security_audit.md`.
+Historical baseline: when this checklist was created on 2026-07-06, every evidence row was `Not run`. The 2026-07-22 results below preserve unsupported deployed checks as `MANUAL VERIFICATION REQUIRED` or `BLOCKED`; local automated evidence is labelled as such. Full findings are in `docs/archive/security/phase-5b/5b_h_c_deployment_security_audit.md`.
 
 ## Post-remediation update — 2026-07-22
 
@@ -31,9 +32,9 @@ Historical baseline: when this checklist was created on 2026-07-06, every eviden
 
 ## 2. Preconditions
 
-- 5B-G docs are available: `docs/5b_g_staff_bootstrap_runbook.md`, `docs/5b_g_supabase_migration_smoke_plan.md`, `docs/5b_g_rls_grants_matrix.md`, and `docs/5b_g_service_role_access_review.md`.
-- 5B-H-A audit exists: `docs/5b_h_uat_security_audit.md`.
-- 5B-H-B fixes are committed or explicitly accepted in `docs/5b_h_uat_security_fix_log.md`.
+- 5B-G docs are available: `docs/archive/security/phase-5b/5b_g_staff_bootstrap_runbook.md`, `docs/archive/security/phase-5b/5b_g_supabase_migration_smoke_plan.md`, `docs/archive/security/phase-5b/5b_g_rls_grants_matrix.md`, and `docs/archive/security/phase-5b/5b_g_service_role_access_review.md`.
+- 5B-H-A audit exists: `docs/archive/security/phase-5b/5b_h_uat_security_audit.md`.
+- 5B-H-B fixes are committed or explicitly accepted in `docs/archive/security/phase-5b/5b_h_uat_security_fix_log.md`.
 - A staging/disposable Supabase project or approved UAT database is selected.
 - Vercel frontend and backend UAT URLs are known.
 - The deployment protection method is selected before sharing URLs.
@@ -94,7 +95,7 @@ Stakeholder UAT is GO only if the URL is intentionally access-controlled. Accept
 
 ## 5. Supabase Database And Migration Smoke
 
-Use `docs/5b_g_supabase_migration_smoke_plan.md` as the source checklist. Do not run RLS enablement, RLS policy SQL, broad grants changes, or production-data migration as part of 5B-H-C.
+Use `docs/archive/security/phase-5b/5b_g_supabase_migration_smoke_plan.md` as the source checklist. Do not run RLS enablement, RLS policy SQL, broad grants changes, or production-data migration as part of 5B-H-C.
 
 Required evidence:
 
@@ -113,7 +114,7 @@ Required evidence:
 
 ## 6. First Master Admin Bootstrap Smoke
 
-Use `docs/5b_g_staff_bootstrap_runbook.md`. The bootstrap operator must not paste passwords, service-role keys, or Supabase Auth tokens into this document.
+Use `docs/archive/security/phase-5b/5b_g_staff_bootstrap_runbook.md`. The bootstrap operator must not paste passwords, service-role keys, or Supabase Auth tokens into this document.
 
 | Check | Result | Operator | Date | Notes |
 |---|---|---|---|---|

@@ -29,8 +29,10 @@ part is limited to 4 KiB and a decoded filename to 255 UTF-8 bytes. Starlette's
 `max_part_size` does not cap file content; the aggregate and per-file limits do.
 Known oversized `Content-Length` requests are rejected before parsing. Missing
 or false-small lengths can consume/spool data only until the streaming counter
-crosses the cap. See `5b_h_m05_upload_preparser_limits.md` for ingress limits and
-deployed constraints.
+crosses the cap. `docs/security.md` Sections 8, 13, and 17 define current
+ingress limits and deployed constraints;
+`docs/archive/security/phase-5b/5b_h_m05_upload_preparser_limits.md` preserves
+the historical implementation evidence.
 
 ---
 

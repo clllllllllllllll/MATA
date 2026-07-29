@@ -11,7 +11,7 @@ Status: locally implemented and verified against disposable PostgreSQL on 2026-0
 
 This document preserves the H-E point-in-time evidence at revision
 `20260726_000026` and database `mata_phase5b_verify_5bhe`. The focused
-descendant in `docs/5b_h_session_lifecycle_assurance.md` adds revision
+descendant in `docs/archive/security/phase-5b/5b_h_session_lifecycle_assurance.md` adds revision
 `20260727_000027` on a new disposable database. It preserves the 34-table,
 84-policy, non-owner/NOBYPASSRLS posture while:
 
@@ -38,7 +38,7 @@ or reuse the ad-hoc association.
 
 The populated upgrade refuses ambiguous ownership instead of inventing it.
 Scheduled event behavior and the existing 34-table runtime-action boundary
-remain unchanged. See `docs/5b_h_aud_m04_atomic_attendance.md` for the
+remain unchanged. See `docs/archive/security/phase-5b/5b_h_aud_m04_atomic_attendance.md` for the
 transaction matrix, migration rule, and descendant verification evidence. Do
 not rewrite the original `20260726_000026` counts or commands below as
 AUD-M-04 evidence.

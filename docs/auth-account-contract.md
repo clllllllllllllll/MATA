@@ -83,7 +83,7 @@ References checked:
   resolves the applicable lifecycle. Failed login does not resolve it, and a
   stale logout response cannot affect a newer pending logout or login.
 - Migration `20260722_000024` revokes public/browser-role object privileges. Migrations `20260726_000025` and `20260726_000026` add the H-E role/context/helper foundation and full policy/grant cutover. Migration `20260727_000027` narrows the callable session helpers and makes signed RLS context reject an expired backing session.
-- Detailed implementation and evidence: `docs/5b_h_d_production_security_implementation.md`, `docs/5b_h_e_full_rls_implementation.md`, `docs/5b_h_session_lifecycle_assurance.md`, and `docs/5b_h_m06_reliable_logout.md`.
+- Detailed implementation and evidence: `docs/archive/security/phase-5b/5b_h_d_production_security_implementation.md`, `docs/archive/security/phase-5b/5b_h_e_full_rls_implementation.md`, `docs/archive/security/phase-5b/5b_h_session_lifecycle_assurance.md`, and `docs/archive/security/phase-5b/5b_h_m06_reliable_logout.md`.
 
 Resident identity assurance remains separately governed product debt. Do not
 invent a second factor or claim workflow outside an approved product scope.
@@ -308,6 +308,37 @@ Derived application identity:
 ```
 
 Master access must never be inferred from `programme_scope = NULL`, empty scope, missing scope, or a special programme code.
+
+#### First Master Admin bootstrap boundary
+
+A clean production environment cannot use the normal Master Admin-only staff
+account API to create its first Master Admin. That first mapping is a
+controlled backend operations task, not a browser flow or public bootstrap
+endpoint.
+
+The approved operator must:
+
+1. verify the exact application commit, Supabase project origin, database
+   target, change approval, and rollback owner without printing credentials;
+2. create or identify the intended Supabase Auth staff subject through an
+   approved server-side administrative path;
+3. map only that subject identifier to one `users` row with
+   `role = 'admin'`, explicit `admin_level = 'master'`, `is_active = true`,
+   no posting scope, and no inferred programme authority;
+4. verify that the subject mapping is unique, at least one intended active
+   Master Admin remains, Programme PC scopes are non-empty, and Secretary
+   posting scopes are non-empty; and
+5. verify backend-mediated login and `/auth/me` return the database-owned
+   Master Admin identity before using the normal staff-account workflow.
+
+Passwords, session values, service-role keys, database URLs, and other
+credentials must not enter SQL text, shell history, logs, screenshots, or
+documentation. A wrong mapping is disabled first and repaired under the same
+controlled process; referenced staff rows are not casually deleted.
+
+The detailed historical procedure is retained at
+`docs/archive/security/phase-5b/5b_g_staff_bootstrap_runbook.md`, but this
+account contract and `docs/security.md` govern any current execution.
 
 ### 5B-E Generic Staff Role Accounts and Actor Names
 
@@ -592,14 +623,14 @@ Phase 5B programme/institution mapping rollout:
 - Added backend-owned opaque PostgreSQL sessions, strict cookie/CSRF transport, rotation-family locking, generation fencing, logout/revocation, persistent rate limiting, upload/archive hardening, error redaction, same-origin frontend transport, and browser-role privilege revocation.
 - Removed the normal frontend Supabase session and bearer-token paths.
 - Verified migrations through `20260722_000024`, dependency audits, backend/frontend suites, PostgreSQL races, and source scans locally.
-- Deployment remains unverified. See `docs/5b_h_d_production_security_implementation.md`.
+- Deployment remains unverified. See `docs/archive/security/phase-5b/5b_h_d_production_security_implementation.md`.
 
 5B-H-E locally implemented:
 
 - Added the `mata_app_runtime` and `mata_auth_internal` capability groups, distinct runtime/auth database session factories, signed transaction-local identity context, startup catalogue attestation, and database-enforced global MCR uniqueness.
 - Enabled RLS on all 34 application tables and installed 84 policies plus exact table, column, helper, schema, sequence, PUBLIC, browser-role, ownership, and default-ACL boundaries.
 - Preserved FastAPI authorization and native/Non-NHG identity separation. Privileged infrastructure tables remain helper-only rather than receiving broad direct runtime grants.
-- Verified the policy matrix and migration lifecycle only against the named local disposable PostgreSQL database. Deployment remains unverified. See `docs/5b_h_e_full_rls_implementation.md`.
+- Verified the policy matrix and migration lifecycle only against the named local disposable PostgreSQL database. Deployment remains unverified. See `docs/archive/security/phase-5b/5b_h_e_full_rls_implementation.md`.
 
 AUD-M-06 descendant locally implemented:
 
@@ -615,7 +646,7 @@ AUD-M-06 descendant locally implemented:
   and replacement-login transitions are coordinated so an older logout cannot
   affect a newer committed session.
 - Final M-06 local gates passed; deployed verification remains pending. See
-  `docs/5b_h_m06_reliable_logout.md`.
+  `docs/archive/security/phase-5b/5b_h_m06_reliable_logout.md`.
 
 5B-H historical sequencing:
 - `5B-H-A`: Vercel UAT security audit and minimal deployment hardening plan.

@@ -12,11 +12,15 @@ alongside:
 - `api.md` for routes and request/response contracts;
 - `business-logic.md` for domain calculations and invariants;
 - `parsing.md` for upload formats and parser behavior; and
-- `auth-account-contract.md` for identity and account lifecycle details.
+- `auth-account-contract.md` for identity and account lifecycle details; and
+- `99_decision_log_and_gap_audit.md` for architectural decisions, accepted
+  trade-offs, unresolved gaps, and superseded decision history.
 
-Historical `5b_*` security reports are retained as dated implementation and
-audit evidence. When a historical statement conflicts with this document, this
-document and the current domain contract take precedence.
+Historical Phase 5B security reports are retained in the
+[Phase 5B security archive](archive/security/phase-5b/README.md) as dated
+implementation, migration, UAT, and audit evidence. When a historical
+statement conflicts with this document, this document and the current domain
+contract take precedence.
 
 ## 1. Security objectives and threat model
 
@@ -390,6 +394,27 @@ migration, verify the exact target, backup/recovery plan, credential role and
 maintenance window. Application traffic must use a compatible application and
 database revision.
 
+For a staging rehearsal or approved production change, the phase-neutral
+migration smoke sequence is:
+
+1. record the intended commit, expected Alembic head, safe target label,
+   maintenance approval, backup/recovery owner, and rollback revision;
+2. prove that the effective synchronous and asynchronous URLs name the same
+   exact target without displaying their credentials;
+3. run `alembic heads` and `alembic current` before the change, then use only
+   the reviewed migration/ownership credential for `alembic upgrade head`;
+4. verify the resulting revision, required seed/catalogue invariants from
+   `schema.md`, and the complete role, ownership, helper, RLS, policy, grant,
+   sequence, default-ACL, `PUBLIC`, and browser-role catalogue;
+5. run the application startup attestation and the approved role/workflow
+   smoke without inserting production personal data into evidence; and
+6. retain only redacted commands, safe target identifiers, revisions, counts,
+   outcomes, timestamps, and reviewer attribution.
+
+An ambiguous target, missing backup/recovery owner, catalogue mismatch, or
+failed startup attestation is a stop condition. Historical Phase 5B migration
+plans remain evidence of earlier rehearsals and do not replace this sequence.
+
 Security migrations may restore historically compatible but weaker behavior
 during downgrade. A generic `alembic downgrade -1` is not an online production
 security procedure. Downgrade of session, RLS, helper, role/grant, or ad-hoc
@@ -448,6 +473,14 @@ target:
 - Master Admin, Programme PC, Secretary, native Resident, and Non-NHG Resident
   workflow isolation.
 
+For each deployed check, record the reviewed target label, application commit,
+database revision, time, operator/reviewer, safe command or observation, and
+one of `PASS`, `FAIL`, `BLOCKED`, or `MANUAL VERIFICATION REQUIRED`. Evidence
+must contain no credential, session/CSRF value, MCR, personal record, raw
+protected response, or connection string. Current results belong in a new
+approved deployment record; archived Phase 5B verdicts and evidence rows are
+never edited to imply a later deployment result.
+
 No local test result should be relabelled as deployed evidence.
 
 ## 18. Deferred security debt
@@ -481,7 +514,8 @@ Every such change must:
 2. update this cross-cutting contract;
 3. add or update observable regression coverage;
 4. record what is locally verified versus still deployment-dependent;
-5. preserve historical `5b_*` reports as dated evidence rather than rewriting
-   their results; and
+5. preserve reports in the
+   [Phase 5B security archive](archive/security/phase-5b/README.md) as dated
+   evidence rather than rewriting their results; and
 6. avoid real secrets, credentials, MCRs, personal data, or production
    connection strings.

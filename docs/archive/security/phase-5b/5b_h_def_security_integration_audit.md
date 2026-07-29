@@ -248,7 +248,7 @@ keys, refuses ambiguous populated backfill, routes ad-hoc event-plus-attendance
 creation through one narrow runtime-only function, denies ordinary direct
 ad-hoc inserts, preserves scheduled policy behavior, and adds exact
 own/other/cross-family coverage. The transaction/state/concurrency record is
-`docs/5b_h_aud_m04_atomic_attendance.md`. This note does not rewrite the
+`docs/archive/security/phase-5b/5b_h_aud_m04_atomic_attendance.md`. This note does not rewrite the
 point-in-time classification or accepted evidence above.
 
 #### AUD-M-05 — multipart upload limit is enforced after framework spooling
@@ -284,7 +284,7 @@ and evidence above remain unchanged. The current Vercel Function topology's
 separate 4.5 MB platform ceiling remains an upstream boundary; larger-file
 support requires a separately approved ingress and is not implemented here.
 Implementation and deployed checks are in
-`docs/5b_h_m05_upload_preparser_limits.md`.
+`docs/archive/security/phase-5b/5b_h_m05_upload_preparser_limits.md`.
 
 #### Historical AUD-M-06 finding — failed server logout was silently presented as complete
 
@@ -343,7 +343,7 @@ committed inside the same origin-scoped Web Lock; failed login leaves it
 intact. A replacement login resolves the pending lifecycle without claiming
 that the earlier server session was revoked. The implementation is resolved
 and verified locally and remains unverified on any deployment. See
-`docs/5b_h_m06_reliable_logout.md`.
+`docs/archive/security/phase-5b/5b_h_m06_reliable_logout.md`.
 
 ### Low
 
@@ -508,7 +508,7 @@ Before commit, the lifecycle branch passed:
 The branch was committed locally as
 `ac6ed465e3d4fdbd9a7577b2d71a339caf4694f9` and verified clean. The complete
 recovery evidence and its transient failed attempts are preserved in
-`docs/5b_h_session_lifecycle_assurance.md`.
+`docs/archive/security/phase-5b/5b_h_session_lifecycle_assurance.md`.
 
 ### Audit-fix gate
 

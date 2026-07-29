@@ -81,7 +81,7 @@ The lifecycle is:
 8. revoke the whole family on logout;
 9. delete expired/revoked rows only through bounded cleanup.
 
-Staff idle/absolute defaults are 1,800/28,800 seconds. Resident defaults are 3,600/43,200 seconds. Rotation defaults to 900 seconds. Revision `20260727_000027` subsequently adds a 60-second default touch interval, post-validation qualifying activity, minimal lifecycle helpers, and expiry-aware RLS context. All values remain configurable examples rather than approved production durations; see `docs/5b_h_session_lifecycle_assurance.md`.
+Staff idle/absolute defaults are 1,800/28,800 seconds. Resident defaults are 3,600/43,200 seconds. Rotation defaults to 900 seconds. Revision `20260727_000027` subsequently adds a 60-second default touch interval, post-validation qualifying activity, minimal lifecycle helpers, and expiry-aware RLS context. All values remain configurable examples rather than approved production durations; see `docs/archive/security/phase-5b/5b_h_session_lifecycle_assurance.md`.
 
 ### Concurrent rotation result
 
@@ -333,7 +333,7 @@ ceiling. The approved Vercel product contract is therefore 3 MiB per file
 inside a complete request capped at 4 MiB. Application enforcement does not
 replace that upstream boundary, and larger-file support requires a separately
 approved ingress that is not implemented here. See
-`5b_h_m05_upload_preparser_limits.md` for exact behavior and required deployed
+`docs/archive/security/phase-5b/5b_h_m05_upload_preparser_limits.md` for exact behavior and required deployed
 verification.
 
 ## AUD-M-06 descendant reliable logout
@@ -372,4 +372,4 @@ resolves the applicable lifecycle; a failed login does not.
 AUD-M-06 is implemented and verified locally. This record does not establish
 Vercel/Supabase deployment behavior, and no larger deployment or live-system
 action is claimed. See
-`5b_h_m06_reliable_logout.md` for the implementation and evidence record.
+`docs/archive/security/phase-5b/5b_h_m06_reliable_logout.md` for the implementation and evidence record.

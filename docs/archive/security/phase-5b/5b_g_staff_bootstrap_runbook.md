@@ -1,7 +1,9 @@
 # 5B-G-D Staff Bootstrap Runbook
 
-> **Current contract:** `docs/security.md`. This phase-specific runbook remains
-> operational evidence and does not override the current security contract.
+> **Archived Phase 5B record:** The current bootstrap boundary is defined by
+> `docs/auth-account-contract.md` and `docs/security.md`. This phase-specific
+> runbook preserves historical operational context and does not override those
+> current contracts.
 
 Status: production runbook, not automation.
 Last updated: 2026-07-06

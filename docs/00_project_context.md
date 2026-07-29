@@ -212,8 +212,8 @@ This file is navigation only. Detailed contracts live in `99_decision_log_and_ga
 - `5B` Non-NHG Resident workflow and visibility are implemented: registration/login, upcoming posting schedule, event listing, attendance/ad-hoc submission, past attendance, admin/PC list/read, Excel export, native programme department visibility, and fixed ad-hoc attribution.
 - `5B-G` Supabase readiness is complete as documentation/audit work: staff bootstrap runbook, RLS/grants/Data API planning matrix, Supabase migration smoke plan, service-role access review, and readiness audit. It did not enable RLS, write policy SQL, implement cookie/BFF/CSRF, or implement compliance.
 - `5B-H-A`, `5B-H-B`, and `5B-H-C` are retained as historical deployment-security/UAT phases.
-- `5B-H-D` is implemented and locally verified; see `docs/5b_h_d_production_security_implementation.md`. Deployment smoke remains separate.
-- `5B-H-E` is locally implemented and verified against the named disposable PostgreSQL database; see `docs/5b_h_e_full_rls_implementation.md`. It reconciles `docs/5b_g_rls_grants_matrix.md`; deployed verification remains separate.
+- `5B-H-D` is implemented and locally verified; see `docs/archive/security/phase-5b/5b_h_d_production_security_implementation.md`. Deployment smoke remains separate.
+- `5B-H-E` is locally implemented and verified against the named disposable PostgreSQL database; see `docs/archive/security/phase-5b/5b_h_e_full_rls_implementation.md`. It reconciles `docs/archive/security/phase-5b/5b_g_rls_grants_matrix.md`; deployed verification remains separate.
 - Programme PC NHG Resident Attendance is implemented as a pre-compliance, read-only overview plus a dedicated resident history page. Backend scope is `residents.programme_code IN users.programme_scope`; reads use native `attendance_records` only. Non-NHG Attendance remains separate, and no attendance mutation or compliance/target-progress UI is part of this feature.
 - Phase 6 compliance remains the next major feature phase after the protected deployment/security baseline is acceptable. Phase 6 compliance must read native `attendance_records` only and never join `external_attendance_records`.
 
@@ -1017,7 +1017,8 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
   or Non-NHG creator identity to every Resident-created ad-hoc event. Only a
   narrow runtime helper may create the matching event/attendance pair;
   ordinary direct ad-hoc insertion, another Resident, and the opposite storage
-  family are denied. See `5b_h_aud_m04_atomic_attendance.md`.
+  family are denied. See
+  `docs/archive/security/phase-5b/5b_h_aud_m04_atomic_attendance.md`.
 - **Session management:** Opaque 256-bit session and CSRF credentials; only keyed digests persist. Strict host-only cookie, synchronized CSRF, one-winner rotation, family logout, and generation fencing are implemented.
 - **Reliable logout:** AUD-M-06 distinguishes immediate local sign-out from
   proof-positive server revocation. Pending/unconfirmed state blocks hydration
@@ -1026,7 +1027,7 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
   four attempts with nominal automatic offsets of 0/1/3/7 seconds. Matching
   request ids, authentication revisions, and monotonic lifecycle ordering
   protect cross-tab, reload, stale-response, and newer-login transitions. See
-  `5b_h_m06_reliable_logout.md`.
+  `docs/archive/security/phase-5b/5b_h_m06_reliable_logout.md`.
 - **Request-body perimeter:** AUD-M-05 adds a pure ASGI 4 MiB global body
   cap and the same 4 MiB aggregate cap on same-origin
   `/api/v1/admin/upload/*` before authentication or multipart parsing. Files
@@ -1036,7 +1037,7 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
   the aggregate limits and streams uploads. This approved contract remains
   below the current Vercel Function path's separate 4.5 MB platform ceiling.
   Larger-file support requires a separately approved upload ingress. See
-  `5b_h_m05_upload_preparser_limits.md`.
+  `docs/archive/security/phase-5b/5b_h_m05_upload_preparser_limits.md`.
 
 > **⚠️ Most likely LLM mistake:** Storing JWT tokens in `localStorage`. The confirmed approach is `HttpOnly` cookies. The silent consequence is XSS vulnerability — any script injection can steal the token.
 

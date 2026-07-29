@@ -10,7 +10,7 @@ Last updated: 2026-07-26
 
 5B-H-D defines the session transport hardening implemented after the earlier protected-UAT security cut. It replaces the temporary browser-visible bearer-token transport with backend-owned opaque PostgreSQL sessions, strict cookies, CSRF, and same-origin API transport.
 
-This document began as the design plan. The implemented state and exact local evidence are recorded here and in `docs/5b_h_d_production_security_implementation.md`. Full RLS, Phase 6 compliance, final close, snapshots, and clawback are not part of H-D.
+This document began as the design plan. The implemented state and exact local evidence are recorded here and in `docs/archive/security/phase-5b/5b_h_d_production_security_implementation.md`. Full RLS, Phase 6 compliance, final close, snapshots, and clawback are not part of H-D.
 
 > **Current descendant override:** AUD-M-06 supersedes H-D's original
 > best-effort/logout-ordering statements. Local identity and protected state
@@ -18,7 +18,7 @@ This document began as the design plan. The implemented state and exact local ev
 > `server_logout_confirmed = true`, and every unconfirmed outcome remains
 > fenced. Unqualified logout completion statements retained elsewhere in this
 > plan describe the historical H-D target, not the current contract. See
-> `docs/5b_h_m06_reliable_logout.md`.
+> `docs/archive/security/phase-5b/5b_h_m06_reliable_logout.md`.
 
 ## 2. Historical Pre-H-D Temporary State
 
@@ -165,7 +165,7 @@ The frontend slices were completed as follows:
 
 ## 8. Verification Contract
 
-Final local H-D evidence is recorded in `docs/5b_h_d_production_security_implementation.md`: `1104 passed, 7 warnings` for the complete backend suite; `230 passed, 1 warning` for the focused security set; `13 passed` for PostgreSQL security integration; 20/20 process-isolated one-winner rotation repeats; and `78 passed` plus lint, typecheck, and production/Supabase build for the frontend. Deployment/manual checks remain pending.
+Final local H-D evidence is recorded in `docs/archive/security/phase-5b/5b_h_d_production_security_implementation.md`: `1104 passed, 7 warnings` for the complete backend suite; `230 passed, 1 warning` for the focused security set; `13 passed` for PostgreSQL security integration; 20/20 process-isolated one-winner rotation repeats; and `78 passed` plus lint, typecheck, and production/Supabase build for the frontend. Deployment/manual checks remain pending.
 
 Backend tests:
 
@@ -266,6 +266,6 @@ H-E subsequently integrates the H-D session envelope with the restricted Postgre
 - invalid/stale session context is a controlled unauthorized outcome, while SQLAlchemy, PostgreSQL, transaction, connection, and pool errors remain unexpected failures;
 - transaction-local advisory locks and signed GUCs cannot survive commit/rollback as valid pooled-connection authority.
 
-The H-E policy and lifecycle evidence belongs in `docs/5b_h_e_full_rls_implementation.md`. It does not change the historical H-D test counts in this document and is not evidence of deployed Supabase behavior.
+The H-E policy and lifecycle evidence belongs in `docs/archive/security/phase-5b/5b_h_e_full_rls_implementation.md`. It does not change the historical H-D test counts in this document and is not evidence of deployed Supabase behavior.
 
 PRODUCTION AUTH ASSURANCE BLOCKER — RESIDENT SECOND FACTOR NOT APPROVED

@@ -1,8 +1,9 @@
 # 5B-G-F Supabase Migration Smoke Plan
 
-> **Current contract:** `docs/security.md`. This phase-specific smoke plan is
-> retained as deployment evidence guidance and does not override the current
-> security contract.
+> **Archived Phase 5B record:** The current migration and rollback boundary is
+> defined by `docs/security.md` Section 15. This phase-specific smoke plan
+> preserves historical operational context and does not override the current
+> contract.
 
 Status: Ready for dry-run execution
 
@@ -86,7 +87,7 @@ Before migration execution:
 - Confirm `DATABASE_URL` uses the async driver and `SYNC_DATABASE_URL` uses the sync driver.
 - Confirm `ENV` and `AUTH_MODE` match the target. Production-like environments should use `AUTH_MODE=supabase`.
 - Confirm no real credentials are written into docs, `.env.example`, frontend env files, Vite build args, screenshots, or issue comments.
-- Confirm the operator understands this plan does not bootstrap the first Master Admin; that is covered by `docs/5b_g_staff_bootstrap_runbook.md`.
+- Confirm the operator understands this plan does not bootstrap the first Master Admin; that is covered by `docs/archive/security/phase-5b/5b_g_staff_bootstrap_runbook.md`.
 
 Stop immediately if the target looks like production and the run was not explicitly approved for production.
 

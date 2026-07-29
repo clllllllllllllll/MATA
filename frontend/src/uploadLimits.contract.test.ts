@@ -113,9 +113,9 @@ test('active upload documentation agrees with the approved limits', () => {
     read('../../docs/api.md'),
     read('../../docs/parsing.md'),
     read('../../docs/00_project_context.md'),
-    read('../../docs/5b_h_d_production_security_implementation.md'),
-    read('../../docs/5b_h_uat_security_audit.md'),
-    read('../../docs/5b_h_m05_upload_preparser_limits.md'),
+    read('../../docs/archive/security/phase-5b/5b_h_d_production_security_implementation.md'),
+    read('../../docs/archive/security/phase-5b/5b_h_uat_security_audit.md'),
+    read('../../docs/archive/security/phase-5b/5b_h_m05_upload_preparser_limits.md'),
   ]
 
   for (const document of documentedContracts) {
