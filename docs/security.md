@@ -382,6 +382,26 @@ CI runs:
 - frontend browser-auth/secret-boundary scans; and
 - redacted added-diff secret scanning.
 
+Every CI production frontend build explicitly supplies the public, non-secret
+contract `VITE_APP_ENV=production`, `VITE_AUTH_MODE=supabase`, and
+`VITE_API_BASE_URL=/api/v1`. The build-time environment validator remains
+fail-closed; no browser Supabase URL or key is needed.
+
+Backend CI starts PostgreSQL on its maintenance database, then a shared local
+workflow action creates and attests exactly
+`mata_phase5b_final_security_review`. The workflow owns that provisioning and
+applies the single Alembic head before tests. Complete and PostgreSQL-containing
+focused suites must run through `tests.run_rls_restricted_pytest`, which derives
+distinct ephemeral runtime/auth logins, enables RLS, retains cookie transport,
+and removes every generated `mata_test_*` role. A dedicated restricted
+integration step exercises `RATE_LIMIT_STORE=postgres`; broad regression steps
+override only that setting to `memory` because their unit fixtures explicitly
+test the in-memory middleware. The RLS, database-role, and cookie contracts stay
+enabled in both modes. The local harness deliberately uses `ENV=test` and stub
+application identities; production Settings reject localhost. Session and
+rate-limit secrets are synthetic CI-only placeholders, and the jobs contain no
+live Supabase configuration.
+
 Dependency lockfiles and exact Python requirement versions are committed.
 Saved advisory artifacts contain only approved package/advisory metadata; raw
 registry output is temporary. Dependency audit success means only that the

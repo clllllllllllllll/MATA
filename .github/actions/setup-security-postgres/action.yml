@@ -1,0 +1,82 @@
+name: Set up security-test PostgreSQL
+description: Provision the exact local disposable database and synthetic CI settings.
+
+inputs:
+  container-id:
+    description: GitHub Actions PostgreSQL service-container identifier.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Provision and attest the exact disposable database
+      shell: bash
+      env:
+        CI_POSTGRES_CONTAINER: ${{ inputs.container-id }}
+        CI_DATABASE_NAME: mata_phase5b_final_security_review
+        CI_DATABASE_HOST: localhost
+        CI_DATABASE_PORT: "5432"
+        CI_DATABASE_OWNER: postgres
+        CI_DATABASE_PASSWORD: postgres
+        CI_RUNTIME_DATABASE_USER: mata_ci_runtime
+        CI_AUTH_DATABASE_USER: mata_ci_auth
+      run: |
+        set -euo pipefail
+
+        test -n "$CI_POSTGRES_CONTAINER"
+        test "$CI_DATABASE_HOST" = "localhost"
+        test "$CI_DATABASE_NAME" = "mata_phase5b_final_security_review"
+
+        ready=false
+        for attempt in $(seq 1 20); do
+          if docker exec "$CI_POSTGRES_CONTAINER" \
+            pg_isready --username="$CI_DATABASE_OWNER" --dbname=postgres \
+            >/dev/null 2>&1; then
+            ready=true
+            break
+          fi
+          sleep 1
+        done
+        test "$ready" = "true"
+
+        docker exec "$CI_POSTGRES_CONTAINER" \
+          createdb \
+          --username="$CI_DATABASE_OWNER" \
+          --owner="$CI_DATABASE_OWNER" \
+          "$CI_DATABASE_NAME"
+
+        actual_database="$(
+          docker exec "$CI_POSTGRES_CONTAINER" \
+            psql \
+            --username="$CI_DATABASE_OWNER" \
+            --dbname="$CI_DATABASE_NAME" \
+            --tuples-only \
+            --no-align \
+            --command="SELECT current_database()"
+        )"
+        test "$actual_database" = "$CI_DATABASE_NAME"
+
+        runtime_database_url="postgresql+asyncpg://${CI_RUNTIME_DATABASE_USER}:${CI_DATABASE_PASSWORD}@${CI_DATABASE_HOST}:${CI_DATABASE_PORT}/${CI_DATABASE_NAME}"
+        auth_database_url="postgresql+asyncpg://${CI_AUTH_DATABASE_USER}:${CI_DATABASE_PASSWORD}@${CI_DATABASE_HOST}:${CI_DATABASE_PORT}/${CI_DATABASE_NAME}"
+        owner_database_url="postgresql://${CI_DATABASE_OWNER}:${CI_DATABASE_PASSWORD}@${CI_DATABASE_HOST}:${CI_DATABASE_PORT}/${CI_DATABASE_NAME}"
+
+        {
+          echo "ENVIRONMENT=test"
+          echo "ENV=test"
+          echo "AUTH_MODE=stub"
+          echo "AUTH_TRANSPORT=cookie"
+          echo "DATABASE_URL=${runtime_database_url}"
+          echo "AUTH_DATABASE_URL=${auth_database_url}"
+          echo "MATA_AUTH_DATABASE_URL=${auth_database_url}"
+          echo "SYNC_DATABASE_URL=${owner_database_url}"
+          echo "DATABASE_RLS_ENABLED=true"
+          echo "MATA_DATABASE_RLS_ENABLED=true"
+          echo "DATABASE_RUNTIME_ROLE=mata_app_runtime"
+          echo "MATA_DATABASE_RUNTIME_ROLE=mata_app_runtime"
+          echo "DATABASE_AUTH_ROLE=mata_auth_internal"
+          echo "MATA_DATABASE_AUTH_ROLE=mata_auth_internal"
+          echo "RATE_LIMIT_STORE=postgres"
+          echo "MATA_SESSION_COOKIE_NAME=__Host-mata_session"
+          echo "MATA_SESSION_HASH_KEY=<synthetic-ci-session-hash-key-at-least-32-characters>"
+          echo "RATE_LIMIT_HASH_SECRET=<synthetic-ci-rate-limit-hash-secret-at-least-32-characters>"
+        } >> "$GITHUB_ENV"

@@ -38,19 +38,16 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: mata_phase5b_verify_ci
+          POSTGRES_DB: postgres
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d mata_phase5b_verify_ci"
+          --health-cmd "pg_isready -U postgres -d postgres"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
-    env:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/mata_phase5b_verify_ci
-      SYNC_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mata_phase5b_verify_ci
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -63,26 +60,46 @@ jobs:
       - name: Install backend and scanner dependencies
         run: pip install -r backend/requirements.txt pip-audit
 
+      - name: Provision exact disposable PostgreSQL database
+        uses: ./.github/actions/setup-security-postgres
+        with:
+          container-id: ${{ job.services.postgres.id }}
+
       - name: Compile backend application and tests
         working-directory: backend
-        run: python -m compileall app tests
+        run: python -B -m compileall app tests
 
-      - name: Verify a single Alembic head
+      - name: Verify the exact single Alembic head
+        shell: bash
         working-directory: backend
-        run: test "$(alembic heads | wc -l)" -eq 1
+        run: |
+          heads="$(python -B -m alembic heads)"
+          test "$(printf '%s\n' "$heads" | wc -l)" -eq 1
+          test "$heads" = "20260728_000028 (head)"
 
       - name: Apply clean baseline-to-head migration
         working-directory: backend
-        run: alembic upgrade head
+        run: python -B -m alembic upgrade head
 
       - name: Verify the disposable database is at every Alembic head
         working-directory: backend
-        run: alembic current --check-heads
+        run: python -B -m alembic current --check-heads
+
+      - name: Run full backend regression suite
+        working-directory: backend
+        env:
+          RATE_LIMIT_STORE: memory
+        run: >-
+          python -B -m tests.run_rls_restricted_pytest
+          -q --tb=short -p no:cacheprovider tests
 
       - name: Run focused security tests
         working-directory: backend
+        env:
+          RATE_LIMIT_STORE: memory
         run: >-
-          pytest -q --tb=short -p no:cacheprovider
+          python -B -m tests.run_rls_restricted_pytest
+          -q --tb=short -p no:cacheprovider
           tests/test_app_sessions.py
           tests/test_cookie_session_transport.py
           tests/test_auth_modes.py
@@ -101,9 +118,12 @@ jobs:
           tests/test_error_responses.py
           tests/test_grant_hardening_migration.py
 
-      - name: Run full backend regression suite
+      - name: Run PostgreSQL rate-limit security integration
         working-directory: backend
-        run: pytest -q --tb=short -p no:cacheprovider
+        run: >-
+          python -B -m tests.run_rls_restricted_pytest
+          -q --tb=short -p no:cacheprovider
+          tests/test_security_postgres_integration.py
 
       - name: Audit Python runtime dependencies
         id: pip_audit

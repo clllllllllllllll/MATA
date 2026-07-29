@@ -145,10 +145,15 @@ PostgreSQL idle and absolute deadlines are the sole expiry authority.
 
 | Variable | Description | Example |
 |----------|-------------|---------|
+| `VITE_APP_ENV` | Frontend environment; production builds require an explicit value | `production` |
 | `VITE_API_BASE_URL` | Backend API base URL; production is same-origin | `/api/v1` |
 | `VITE_AUTH_MODE` | Frontend auth mode | `stub` |
 
 All `VITE_*` variables are public browser-exposed values. The production browser needs no Supabase URL/key. Never put backend secrets, database credentials, signing keys, or session/rate-limit secrets in frontend env files or Vite build args.
+
+Every CI production build explicitly uses `VITE_APP_ENV=production`,
+`VITE_AUTH_MODE=supabase`, and `VITE_API_BASE_URL=/api/v1`. The build remains
+fail-closed when the environment/mode pair is absent or unapproved.
 
 ---
 
@@ -260,6 +265,9 @@ cd backend
 python -B -m compileall app tests
 python -B -m pytest -q --tb=short -p no:cacheprovider
 ```
+
+The complete CI backend gate includes guarded PostgreSQL suites and therefore
+uses the restricted runner described in `docs/dev_setup.md`, not plain pytest.
 
 ### Database Migrations
 

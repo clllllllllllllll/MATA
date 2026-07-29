@@ -14,20 +14,16 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: mata_phase5b_verify_ci
+          POSTGRES_DB: postgres
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d mata_phase5b_verify_ci"
+          --health-cmd "pg_isready -U postgres -d postgres"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
-
-    env:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/mata_phase5b_verify_ci
-      SYNC_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mata_phase5b_verify_ci
 
     steps:
       - name: Checkout repository
@@ -41,13 +37,42 @@ jobs:
       - name: Install backend dependencies
         run: pip install -r backend/requirements.txt
 
-      - name: Compile backend app
-        run: python -m compileall backend/app
+      - name: Provision exact disposable PostgreSQL database
+        uses: ./.github/actions/setup-security-postgres
+        with:
+          container-id: ${{ job.services.postgres.id }}
 
-      - name: Run migrations
-        run: alembic upgrade head
+      - name: Compile backend application and tests
+        run: python -B -m compileall app tests
         working-directory: backend
 
-      - name: Run backend tests
-        run: pytest -q
+      - name: Verify the exact single Alembic head
+        shell: bash
+        working-directory: backend
+        run: |
+          heads="$(python -B -m alembic heads)"
+          test "$(printf '%s\n' "$heads" | wc -l)" -eq 1
+          test "$heads" = "20260728_000028 (head)"
+
+      - name: Run migrations
+        run: python -B -m alembic upgrade head
+        working-directory: backend
+
+      - name: Verify the disposable database is at every Alembic head
+        run: python -B -m alembic current --check-heads
+        working-directory: backend
+
+      - name: Run backend tests through restricted PostgreSQL roles
+        env:
+          RATE_LIMIT_STORE: memory
+        run: >-
+          python -B -m tests.run_rls_restricted_pytest
+          -q --tb=short -p no:cacheprovider tests
+        working-directory: backend
+
+      - name: Run PostgreSQL rate-limit security integration
+        run: >-
+          python -B -m tests.run_rls_restricted_pytest
+          -q --tb=short -p no:cacheprovider
+          tests/test_security_postgres_integration.py
         working-directory: backend

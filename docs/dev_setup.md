@@ -43,8 +43,12 @@ npm ci
 npm test
 npm run lint
 npm run typecheck
-npm run build
+VITE_APP_ENV=production VITE_AUTH_MODE=supabase VITE_API_BASE_URL=/api/v1 npm run build
 ```
+
+The three build variables are public, non-secret configuration. A production
+build deliberately fails when `VITE_APP_ENV` or `VITE_AUTH_MODE` is absent or
+the pair is not approved; no browser Supabase URL or key is required.
 
 ## 6. Run manual upload + view smoke verification
 
@@ -116,6 +120,21 @@ python -B -m tests.run_rls_restricted_pytest -q --tb=short -p no:cacheprovider t
 
 Print and assert the exact database name and local host before every mutation.
 Do not drop the database without separate authorization.
+
+GitHub backend jobs start their PostgreSQL service on the maintenance database
+`postgres`. The shared local CI action then creates and attests exactly
+`mata_phase5b_final_security_review`, exports URLs that all name that local
+database, and supplies only synthetic CI session/rate-limit secrets. Alembic
+uses the direct owner URL; the restricted runner replaces the pre-test
+runtime/auth URLs with distinct ephemeral `mata_test_*` logins, enables RLS,
+keeps cookie transport active, and removes those logins after each invocation.
+The job-level `RATE_LIMIT_STORE=postgres` contract is exercised by a dedicated
+restricted PostgreSQL security-integration step. Broad regression invocations
+override only that setting to `memory` because their unit fixtures explicitly
+verify the in-memory middleware; RLS and restricted database credentials remain
+enabled. `ENV=test` and `AUTH_MODE=stub` are intentional for this localhost-only
+harness; production Settings reject local database URLs. CI provisioning never
+contacts Supabase or any other live system.
 
 Production migration rehearsal follows `docs/security.md` Section 15. First
 Master Admin bootstrap follows the controlled boundary in
