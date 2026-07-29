@@ -4,11 +4,18 @@ import json
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import PurePath
-from typing import Any, Awaitable, Callable, Iterable, Literal, Mapping
+from typing import Any, Awaitable, Callable, Iterable, Literal, Mapping, Protocol
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import get_settings
+from app.services.workbook_security import (
+    WORKBOOK_READ_ERROR,
+    WorkbookSecurityLimits,
+    preflight_xlsx_archive,
+)
 
 
 UploadType = Literal["rdb", "ttf", "form_f1", "public_holidays"]
@@ -62,6 +69,10 @@ class UploadValidationError(ValueError):
     pass
 
 
+class AsyncUploadReader(Protocol):
+    async def read(self, size: int = -1) -> bytes: ...
+
+
 SLOT_EXTENSIONS: Mapping[UploadType, tuple[str, ...]] = {
     "rdb": (".xlsx",),
     "ttf": (".xlsx",),
@@ -88,18 +99,73 @@ def validate_allowed_extension(upload_type: UploadType, filename: str | None) ->
     return extension
 
 
-def default_workbook_readability_hook(file_bytes: bytes) -> None:
-    try:
-        from openpyxl import load_workbook
+def _upload_limit_label(max_size_bytes: int) -> str:
+    max_size_mib = max_size_bytes / (1024 * 1024)
+    return (
+        f"{int(max_size_mib)} MiB"
+        if max_size_mib.is_integer()
+        else f"{max_size_mib:.1f} MiB"
+    )
 
-        workbook = load_workbook(
-            filename=BytesIO(file_bytes), read_only=True, data_only=True
+
+async def read_upload_bytes_limited(
+    upload: AsyncUploadReader,
+    *,
+    max_size_bytes: int,
+    chunk_size: int = 64 * 1024,
+) -> bytes:
+    """Read an upload without ever allocating an unbounded file-sized buffer."""
+
+    if max_size_bytes <= 0 or chunk_size <= 0:
+        raise ValueError("Upload read limits must be positive")
+
+    payload = bytearray()
+    while True:
+        remaining_with_sentinel = max_size_bytes + 1 - len(payload)
+        read_size = min(chunk_size, remaining_with_sentinel)
+        chunk = await upload.read(read_size)
+        if not isinstance(chunk, bytes):
+            raise UploadValidationError("Uploaded file could not be read.")
+        if not chunk:
+            break
+        payload.extend(chunk)
+        if len(payload) > max_size_bytes:
+            raise UploadValidationError(
+                f"Uploaded file exceeds the {_upload_limit_label(max_size_bytes)} limit."
+            )
+    return bytes(payload)
+
+
+def _openpyxl_readability_hook(file_bytes: bytes) -> None:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(
+        filename=BytesIO(file_bytes), read_only=True, data_only=True
+    )
+    workbook.close()
+
+
+def _validate_xlsx_workbook(
+    file_bytes: bytes,
+    *,
+    readability_hook: WorkbookReadabilityHook,
+) -> None:
+    try:
+        settings = get_settings()
+        preflight_xlsx_archive(
+            file_bytes,
+            limits=WorkbookSecurityLimits.from_settings(settings),
         )
-        workbook.close()
+        readability_hook(file_bytes)
     except Exception as exc:
-        raise UploadValidationError(
-            "Workbook could not be read. Please upload a valid, non-password-protected Excel file."
-        ) from exc
+        raise UploadValidationError(WORKBOOK_READ_ERROR) from exc
+
+
+def default_workbook_readability_hook(file_bytes: bytes) -> None:
+    _validate_xlsx_workbook(
+        file_bytes,
+        readability_hook=_openpyxl_readability_hook,
+    )
 
 
 def validate_upload_payload(
@@ -111,18 +177,19 @@ def validate_upload_payload(
     workbook_hook: WorkbookReadabilityHook | None = None,
 ) -> ValidatedUpload:
     if max_size_bytes is not None and len(file_bytes) > max_size_bytes:
-        max_size_mb = max_size_bytes / (1024 * 1024)
-        limit_label = (
-            f"{int(max_size_mb)} MB"
-            if max_size_mb.is_integer()
-            else f"{max_size_mb:.1f} MB"
+        raise UploadValidationError(
+            f"Uploaded file exceeds the {_upload_limit_label(max_size_bytes)} limit."
         )
-        raise UploadValidationError(f"Uploaded file exceeds the {limit_label} limit.")
 
     extension = validate_allowed_extension(upload_type, filename)
     if extension == ".xlsx":
-        readability_hook = workbook_hook or default_workbook_readability_hook
-        readability_hook(file_bytes)
+        if workbook_hook is None:
+            default_workbook_readability_hook(file_bytes)
+        else:
+            _validate_xlsx_workbook(
+                file_bytes,
+                readability_hook=workbook_hook,
+            )
 
     return ValidatedUpload(
         upload_type=upload_type,

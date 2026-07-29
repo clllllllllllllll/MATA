@@ -1,8 +1,8 @@
 # 00_project_context.md — MATA Dashboard Master Orientation Document
 
-> **Purpose:** This is the master orientation and navigation document for the MATA (Medical Attendance Tracking Application) project. Read this file first before any of the five source-of-truth files. It summarises, cross-references, and highlights critical rules — it does not duplicate full table definitions or code blocks that already exist in the source-of-truth files.
+> **Purpose:** This is the master orientation and navigation document for the MATA (Medical Attendance Tracking Application) project. Read this file first before any of the six domain source-of-truth documents and `AGENTS.md`. It summarises, cross-references, and highlights critical rules — it does not duplicate full table definitions or code blocks that already exist in the source-of-truth files.
 >
-> **Authority:** This document is a navigation aid. If it conflicts with `schema.md`, `api.md`, `business-logic.md`, `parsing.md`, or `AGENTS.md`, trust the domain-specific source-of-truth file and flag this document for update.
+> **Authority:** This document is a navigation aid. If it conflicts with `schema.md`, `api.md`, `business-logic.md`, `parsing.md`, `auth-account-contract.md`, `security.md`, or `AGENTS.md`, trust the domain-specific source-of-truth file or repository instruction and flag this document for update.
 
 ---
 
@@ -44,12 +44,48 @@ Residents log in via React frontend (MCR-only auth in Phase 1)
   → Future Admin/PC compliance dashboard requirements remain a separate phase
 ```
 
+**5B-H-D current state (2026-07-26):** Production/Supabase mode uses backend-owned opaque PostgreSQL sessions. The browser receives the `HttpOnly`, `Secure`, `SameSite=Strict`, host-only `__Host-mata_session` cookie and retains only identity plus the non-secret CSRF synchronizer value in memory. Unsafe methods require `X-CSRF-Token` and an approved `Origin`; production frontend API traffic uses same-origin relative `/api/v1` requests with credentials.
+
+Staff password authentication is backend-mediated through Supabase, and no Supabase access/refresh token is returned to or persisted by the browser. Login, Non-NHG registration, and registration-options routes are intentionally public application entry points; a Vercel outer gate is not an application-auth requirement.
+
+Session rotation is serialized by subject, transaction-scoped family advisory lock, and locked/refreshed database row. Subject generation fencing invalidates sessions after authorization change, password reset, or deactivation. Revision `20260722_000024` revokes browser-role object privileges.
+
+**5B-H-E/current lifecycle local state (2026-07-27):** Revisions `20260726_000025` and `20260726_000026` add separate non-owner runtime and auth-helper capabilities, database-revalidated signed transaction context, reviewed service helpers, database-enforced global MCR uniqueness, and the full policy/grant cutover. Revision `20260727_000027` narrows restricted session-helper results, adds interval-gated activity, and denies signed RLS context after session expiry/revocation. All 34 application tables have RLS enabled locally; 84 policies target only `mata_app_runtime`. The runtime, auth-helper, and migration/ownership credentials must be distinct, and startup attestation fails closed on unsafe roles, ownership, grants, helpers, policies, schema access, sequences, PUBLIC, or browser-role state. FastAPI authorization remains mandatory.
+
+Local code and disposable-database verification are not proof of deployed Supabase behavior.
+
+**AUD-M-06 reliable-logout local state (2026-07-28):** Logout clears local
+identity, the in-memory CSRF value, protected read/upload state, and
+authenticated UI state immediately, then remains explicitly
+pending/unconfirmed unless either the matching server response returns
+`server_logout_confirmed = true` or a successfully committed replacement login
+resolves the matching lifecycle. Only the proof-positive response confirms
+server revocation; replacement login does not make that claim. Pending state
+blocks mount, focus/visibility hydration and protected requests. Durable state
+is limited to a non-sensitive pending tombstone (format version, timestamp,
+bounded retry state, and local request id) plus a fixed-size non-sensitive
+resolution watermark used to order cross-tab/reload recovery; no copy of
+token/cookie material, CSRF, identity, MCR, role, scope, credential, or
+server-expiry data is written to application storage.
+The browser-managed HttpOnly cookie may remain while server revocation is
+unconfirmed, but it cannot bypass the pending fence. The original proof
+remains in memory only for at most four attempts at nominal automatic offsets
+0, 1, 3, and 7 seconds. Manual retry or an `online` event may advance one
+eligible attempt, but triggers coalesce and never increase that bound. Reload
+is proofless; cross-tab and stale-response handling is
+revision/request-id/watermark fenced. A replacement login resolves the
+matching lifecycle only after the new session is committed inside the same Web
+Lock. Local gate evidence passed; deployed verification remains pending.
+
+Resident identity assurance remains separately governed product debt. Do not
+invent a factor outside an approved product scope.
+
 ### Three User Roles
 
 | Role | Identity | Scope | Primary Actions |
 |------|----------|-------|-----------------|
-| **Master Admin / Programme Coordinator (PC)** | Email + password (Phase 1 stub) | Master Admin is the explicit persisted `role = admin`, `admin_level = master` tier. PCs are programme-scoped via `users.programme_scope TEXT[]`; missing, null, empty, and blank scopes grant no programme access and never imply Master Admin. | Master Admin may upload RDB, FormF1, Academic Calendar / PH, and any programme's TTF. A PC may upload TTF only for a normalized programme in scope; other actions remain programme-scoped. |
-| **Secretary** | Email + password (Phase 1 stub) | Scoped to ONE posting site via `users.posting_code` | Create/manage teaching events; view CME dashboard; view teaching schedule |
+| **Master Admin / Programme Coordinator (PC)** | Backend-mediated Supabase email + password in production | Master Admin is the explicit persisted `role = admin`, `admin_level = master` tier. PCs are programme-scoped via `users.programme_scope TEXT[]`; missing, null, empty, and blank scopes grant no programme access and never imply Master Admin. | Master Admin may upload RDB, FormF1, Academic Calendar / PH, and any programme's TTF. A PC may upload TTF only for a normalized programme in scope; other actions remain programme-scoped. |
+| **Secretary** | Backend-mediated Supabase email + password in production | Scoped to ONE posting site via `users.posting_code` | Create/manage teaching events; view CME dashboard; view teaching schedule |
 | **NHG Resident** | MCR number only (no password in Phase 1) | Own data only; events filtered by assigned posting, native programme department, and native programme PC events | Submit attendance; submit ad-hoc teaching; view past attendance; future personal compliance dashboard remains Phase 6 |
 | **Non-NHG Resident** | MCR number only after self-registration | Own external attendance only; upcoming NHG posting schedule selected/updated by resident | Submit attendance/ad-hoc teaching; view past attendance; no NHG compliance dashboard or clawback |
 
@@ -80,12 +116,12 @@ Hard cutover at a period boundary. FormSG and Google Forms submission channels a
 
 ### Conflict Resolution
 
-If this document (`00_project_context.md`) or `99_decision_log_and_gap_audit.md` conflicts with `schema.md`, `api.md`, `business-logic.md`, `parsing.md`, or `AGENTS.md`, **trust the domain-specific source-of-truth file**. This document is navigation only. `99_decision_log_and_gap_audit.md` is an audit trail. Neither overrides the source-of-truth files.
+If this document (`00_project_context.md`) or `99_decision_log_and_gap_audit.md` conflicts with `schema.md`, `api.md`, `business-logic.md`, `parsing.md`, `auth-account-contract.md`, `security.md`, or `AGENTS.md`, **trust the domain-specific source-of-truth file or repository instruction**. This document is navigation only. `99_decision_log_and_gap_audit.md` is an audit trail. Neither overrides the source-of-truth files.
 
 ### Reading Order for Generating Migration Documents
 
 1. Read `00_project_context.md` (this file) first
-2. Then read all five source-of-truth files (`schema.md`, `api.md`, `business-logic.md`, `parsing.md`, `AGENTS.md`) before generating any output
+2. Then read all six domain source-of-truth documents (`schema.md`, `api.md`, `business-logic.md`, `parsing.md`, `auth-account-contract.md`, and `security.md`) plus `AGENTS.md` before generating any output
 
 ### Reading Order for Coding Tasks
 
@@ -97,11 +133,13 @@ Before coding, always read `00_project_context.md` and `AGENTS.md`. Then read th
 | Endpoint, API, or Pydantic schema changes | `api.md` |
 | Compliance, surplus, hibernation, reallocation, exceptions, thresholds | `business-logic.md` |
 | RDB, TTF, FormF1, or PH upload parsing | `parsing.md` |
+| Identity, account, or session-lifecycle behavior | `auth-account-contract.md` plus `security.md` |
+| Authentication, authorization, sessions, CSRF, RLS, privacy, deployment, or security maintenance | `security.md` plus the applicable domain file |
 | Cross-cutting changes | All relevant files before editing any code |
 
 ### Implementation Status of Source-of-Truth Files
 
-All five source-of-truth files (`schema.md`, `api.md`, `business-logic.md`, `parsing.md`, `AGENTS.md`) are **design-only specifications** — they were written as Codex build specifications to guide implementation. They describe the intended system design, not necessarily implemented code. Before assuming any spec is live code, verify against the actual codebase. See Section 3 for per-component status.
+The source-of-truth files began as build specifications, but substantial pre-compliance code is now implemented. Schema/auth/session/upload/event/attendance surfaces must be verified against current models, migrations, services, and tests. Phase 5B-H-E full RLS is locally implemented; deployed verification remains separate. Phase 6 compliance, final close, snapshots, and clawback remain separately bounded work.
 
 ### Domain-Specific Authority Mapping
 
@@ -111,6 +149,8 @@ All five source-of-truth files (`schema.md`, `api.md`, `business-logic.md`, `par
 | `api.md` | FastAPI endpoints, request/response contracts, status codes, auth headers, API behaviour |
 | `business-logic.md` | Non-clawback compliance engine (BL-1 through BL-11), surplus chain, raw-count reallocation, hibernation, exceptions, and an explicit deferred clawback register |
 | `parsing.md` | RDB, TTF, FormF1, and PH Excel parsing rules, cell format handling, edge cases, validation rules |
+| `auth-account-contract.md` | Identity, account, and session-lifecycle behavior |
+| `security.md` | Cross-cutting authentication, authorization, sessions, CSRF, rate limits, RLS, privacy, deployment, CI, and rollback contracts |
 | `AGENTS.md` | Coding-agent behaviour, repo structure, implementation conventions, tech stack, security rules, confirmed decisions |
 
 ### Hard Rules That Apply Everywhere
@@ -145,20 +185,20 @@ All five source-of-truth files (`schema.md`, `api.md`, `business-logic.md`, `par
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| **Database schema design** (`schema.md`) | 📋 Planned | Non-clawback schema specified; `clawback_records` remains a deferred placeholder pending its final contract |
-| **Alembic migrations** | 📋 Planned | Structure defined in `AGENTS.md` repo layout |
-| **FastAPI backend structure** | 📋 Planned | Routers: `admin.py`, `secretary.py`, `resident.py`, `auth.py`. Services: `compliance.py`, `surplus.py`, `clawback.py`, `rdb_parser.py`, `ttf_parser.py`, `formf1_parser.py`, `validation.py` |
-| **RDB parser** (`rdb_parser.py`) | 📋 Planned | Full spec in `parsing.md` |
-| **TTF parser** (`ttf_parser.py`) | 📋 Planned | Full spec in `parsing.md` |
-| **FormF1 parser** (`formf1_parser.py`) | 📋 Planned | Full spec in `parsing.md` |
-| **Compliance engine** (`compliance.py`) | 📋 Planned | BL-1 through BL-11 specified in `business-logic.md`. Includes `posting_groups` aggregation, `global_session_types` exclusion, ORTHO read-time mutation, FormF1 gate |
-| **Surplus chain + reallocation** (`surplus.py`) | 📋 Planned | BL-3 and BL-4 specified |
+| **Database schema design** (`schema.md`) | ✅ Implemented pre-compliance schema | `clawback_records` remains a deferred placeholder pending its final contract |
+| **Alembic migrations** | ✅ Implemented | Linear history through `20260727_000027` |
+| **FastAPI backend structure** | ✅ Implemented pre-compliance surfaces | Routers, services, middleware, models, schemas, and tests are present |
+| **RDB parser** (`rdb_parser.py`) | ✅ Implemented | Contract and edge cases remain governed by `parsing.md` |
+| **TTF parser** (`ttf_parser.py`) | ✅ Implemented | Contract and edge cases remain governed by `parsing.md` |
+| **FormF1 parser** (`formf1_parser.py`) | ✅ Implemented | Contract and edge cases remain governed by `parsing.md` |
+| **Compliance engine** (`compliance.py`) | ✅ Implemented | BL-1 through BL-11, grouping, global exclusions, ORTHO mutation, and FormF1 gate |
+| **Surplus chain + reallocation** (`surplus.py`) | ✅ Implemented | BL-3 and BL-4 |
 | **Clawback engine** (`clawback.py`) | ⏸ Deferred | Financial and final-close rules are not implementation-ready |
-| **Validation service** (`validation.py`) | 📋 Planned | BL-5 duplicate and later-distinct-event overlap rejection specified |
-| **Frontend (React/Vite/TypeScript)** | 📋 Planned | Structure defined in `AGENTS.md` |
-| **Auth: stub middleware** (Phase 1) | 📋 Planned | Header-based auth specified in `AGENTS.md` and `api.md` |
-| **Auth: Supabase Auth** (Phase 2) | 📋 Planned | RLS policies outlined in `AGENTS.md` |
-| **Security** (headers, RLS, rate limiting) | 📋 Planned | Specified in `AGENTS.md` Security section |
+| **Validation service** (`validation.py`) | ✅ Implemented | Duplicate and later-distinct-event overlap rejection |
+| **Frontend (React/Vite/TypeScript)** | ✅ Implemented pre-compliance surfaces | Cookie/CSRF transport and all current role workflows |
+| **Auth: stub middleware** | ✅ Implemented local/demo only | Synthetic headers are rejected in production-like modes |
+| **Auth: Supabase staff authentication** | ✅ Implemented | Backend-mediated password flow wrapped in MATA app sessions |
+| **Security** | 🔧 H-E locally complete | Deployed role, policy, grant, migration, and workflow verification remains |
 
 ### Pre-Compliance Roadmap Orientation
 
@@ -167,13 +207,13 @@ This file is navigation only. Detailed contracts live in `99_decision_log_and_ga
 - `3I-A` Unified Admin Logs backend contract: complete / committed.
 - `3I-B` Unified Admin Logs backend endpoints: complete / committed.
 - `3I-C` Unified Admin Logs frontend page: complete / committed.
-- `4B` Programme PC Teaching Event CRUD: planned before compliance. PCs manage scheduled, programme-owned teaching events through admin endpoints. See `api.md` planned `4B` endpoints and `schema.md` planned `teaching_events.created_for_programme_code`.
-- `5A` NHG Resident workflow hardening: includes date-first, catalogue-backed ad-hoc teaching flow and planned `details_of_session`.
-- `5B` Non-NHG Resident Workflow and resident visibility update: must be completed before Phase 6 compliance and includes Non-NHG registration/login, upcoming NHG posting schedule update, event listing, attendance/ad-hoc submission, past attendance, admin/PC list/read, Excel export, native programme department visibility, and fixed ad-hoc attribution.
+- `4B` Programme PC Teaching Event CRUD is implemented: PCs manage scheduled, programme-owned teaching events through scoped admin endpoints.
+- `5A` NHG Resident workflow hardening is implemented, including the date-first, catalogue-backed ad-hoc teaching flow. `details_of_session` remains separately pending where the schema contract still says so.
+- `5B` Non-NHG Resident workflow and visibility are implemented: registration/login, upcoming posting schedule, event listing, attendance/ad-hoc submission, past attendance, admin/PC list/read, Excel export, native programme department visibility, and fixed ad-hoc attribution.
 - `5B-G` Supabase readiness is complete as documentation/audit work: staff bootstrap runbook, RLS/grants/Data API planning matrix, Supabase migration smoke plan, service-role access review, and readiness audit. It did not enable RLS, write policy SQL, implement cookie/BFF/CSRF, or implement compliance.
-- `5B-H` is next before stakeholder UAT and before Phase 6 compliance. Its immediate focus is Vercel/Supabase UAT security: deployment protection, frontend/backend env separation, backend `ENV=production` plus `AUTH_MODE=supabase`, tight CORS, Supabase table/Data API exposure review, migration smoke, first Master Admin bootstrap, and deployment smoke testing.
-- `5B-H-A`, `5B-H-B`, and `5B-H-C` are deployment-security/UAT phases. Do not treat full RLS policy implementation or Phase 6 compliance as part of those subphases.
-- RLS policy implementation is deferred to a dedicated later RLS/grants phase that uses `docs/5b_g_rls_grants_matrix.md` as input.
+- `5B-H-A`, `5B-H-B`, and `5B-H-C` are retained as historical deployment-security/UAT phases.
+- `5B-H-D` is implemented and locally verified; see `docs/archive/security/phase-5b/5b_h_d_production_security_implementation.md`. Deployment smoke remains separate.
+- `5B-H-E` is locally implemented and verified against the named disposable PostgreSQL database; see `docs/archive/security/phase-5b/5b_h_e_full_rls_implementation.md`. It reconciles `docs/archive/security/phase-5b/5b_g_rls_grants_matrix.md`; deployed verification remains separate.
 - Programme PC NHG Resident Attendance is implemented as a pre-compliance, read-only overview plus a dedicated resident history page. Backend scope is `residents.programme_code IN users.programme_scope`; reads use native `attendance_records` only. Non-NHG Attendance remains separate, and no attendance mutation or compliance/target-progress UI is part of this feature.
 - Phase 6 compliance remains the next major feature phase after the protected deployment/security baseline is acceptable. Phase 6 compliance must read native `attendance_records` only and never join `external_attendance_records`.
 
@@ -188,7 +228,7 @@ This file is navigation only. Detailed contracts live in `99_decision_log_and_ga
 
 All other TBDs (TBD-1 mechanism, TBD-2, TBD-3, TBD-4/PH, TBD-5, TBD-5b, TBD-6, TBD-FM) are resolved and documented in `AGENTS.md` confirmed decisions table and `business-logic.md`. See Section 9 of this document for the full register summary.
 
-> **⚠️ Most likely LLM mistake:** Assuming components marked 📋 Planned are already implemented and trying to import or call them. The silent consequence is runtime import errors during development, or worse, building a dependent module against an API surface that doesn't yet exist.
+> **⚠️ Most likely LLM mistake:** Treating a design contract or roadmap label as proof of current implementation. Verify current models, migrations, services, routes, and tests before changing a domain, and keep explicitly deferred compliance/final-close/RLS work bounded.
 
 ---
 
@@ -203,14 +243,16 @@ All other TBDs (TBD-1 mechanism, TBD-2, TBD-3, TBD-4/PH, TBD-5, TBD-5b, TBD-6, T
 | Frontend | React + Vite + TypeScript | SPA |
 | Styling | Tailwind CSS | Core utility classes only — no JIT compiler assumed |
 | Excel parsing | openpyxl | [Assumed — verify in `requirements.txt`] |
-| Auth (Phase 1) | Stub middleware | Headers: `X-User-Role`, `X-User-Id`, `X-User-Programme`, `X-User-Site` |
-| Auth (Phase 2) | Supabase Auth | JWT-based; RLS on sensitive tables |
-| Cache / rate limiting | In-memory local dev → Redis/platform store for production | Scoped TTL caching and rate-limit state |
+| Auth (local/demo) | Stub middleware | Synthetic headers are local/demo only and never trusted in production |
+| Auth (production) | Backend-owned opaque PostgreSQL sessions + backend-mediated Supabase staff authentication | Strict cookie/CSRF transport; current subject and generation reloaded server-side |
+| Cache / rate limiting | In-memory local compatibility; PostgreSQL persistent rate limiting in production | Scoped TTL caching and HMAC-keyed atomic rate-limit buckets |
 | Hosting | Supabase (DB) + Vercel (frontend) | [Assumed — AGENTS.md mentions Vercel for HTTPS] |
 
 **[Assumed — standard/org choice]:** The selection of FastAPI, React/Vite/TypeScript, and PostgreSQL/Supabase was not documented with explicit alternatives-considered reasoning. These are standard technology choices for this type of application.
 
-**Resident auth:** Residents authenticate with MCR number only — no password required in Phase 1. This is an intentional design choice for this system, not a temporary shortcut. No upgrade path is planned.
+**Resident auth:** Residents currently authenticate with MCR number only. This
+assurance decision is separately governed product debt. Do not invent a second
+factor or claim workflow outside an approved product scope.
 
 > **⚠️ Most likely LLM mistake:** Assuming Tailwind JIT is available and using dynamic class generation (e.g., `bg-[#custom]`). Only pre-defined core utility classes are available. The silent consequence is unstyled elements in the rendered UI.
 
@@ -227,14 +269,14 @@ Admin/PC ──→ programme-scoped via users.programme_scope TEXT[]
 Secretary ──→ posting-scoped via users.posting_code
               Can only create events at their assigned posting site
 
-NHG Resident ──→ identity-scoped via residents.id (from JWT sub)
+NHG Resident ──→ identity-scoped via residents.id (from validated app session and current subject-row reload)
              Sees assigned posting secretary events + native programme TTSH department secretary events + native programme PC events
              All DB queries filtered to own resident_id
 ```
 
 ### Backend Structure
 
-- **Routers** (`app/routers/`): Handle HTTP concerns only — request parsing, auth header validation, response formatting
+- **Routers** (`app/routers/`): Handle HTTP concerns only — request parsing, session/auth dependency validation, response formatting
 - **Services** (`app/services/`): Contain ALL business logic with zero HTTP concerns. Routers call services.
 - **Models** (`app/models/`): SQLAlchemy ORM models, one file per domain
 - **Schemas** (`app/schemas/`): Pydantic request/response models for API validation
@@ -289,9 +331,9 @@ Reporting period deactivate (PUT /admin/reporting-periods/{id}/deactivate)
 
 ### Auth Flow
 
-**Phase 1 (stub):** Middleware reads identity from request headers set after token validation. Headers: `X-User-Role`, `X-User-Id`, `X-User-Programme`, `X-User-Site`. The rest of the app checks these headers for authorization. When Supabase Auth replaces the stub, only the middleware changes — endpoints stay the same.
+**Local/demo:** Middleware may read the documented synthetic headers. They are never trusted in production-like modes.
 
-**Phase 2 (Supabase Auth):** JWT-based. Admin/secretary login via email + password against `users` table. Resident login via MCR against `residents` table. JWT carries `role`, `programme_scope` (admin), `posting_code` (secretary), or `mcr` + `programme_code` (resident). RLS enabled on all sensitive tables.
+**Production/Supabase:** The browser submits staff credentials to the backend, which performs the bounded Supabase password exchange and discards the upstream tokens after verification. Resident MCR login is backend-owned. All identities receive an opaque MATA application session through `__Host-mata_session`; unsafe requests also require the session-bound CSRF value and approved Origin. The cookie contains no role or scope. The backend resolves `app_sessions`, reloads the current subject row, and checks `session_generation` on every protected request. H-E then installs database-revalidated, signed transaction-local identity before protected SQL executes. Ordinary queries use the non-owner `mata_app_runtime` capability; public authentication/session helpers use the separate `mata_auth_internal` capability; migrations and ownership use neither application credential.
 
 ### Error Handling
 
@@ -315,24 +357,24 @@ mata/
 │   ├── business-logic.md      # Compliance engine, surplus chain, reallocation rules
 │   └── parsing.md             # RDB, TTF, FormF1, PH upload parsing rules and edge cases
 ├── backend/
-│   ├── alembic/               # Database migrations [Planned]
+│   ├── alembic/               # Implemented database migrations
 │   ├── app/
-│   │   ├── main.py            # FastAPI app entry point [Planned]
-│   │   ├── config.py          # Settings (DB URL, env vars) [Planned]
-│   │   ├── database.py        # SQLAlchemy engine + session factory [Planned]
-│   │   ├── models/            # SQLAlchemy ORM models (one file per domain) [Planned]
+│   │   ├── main.py            # FastAPI app entry point
+│   │   ├── config.py          # Settings (DB URL, env vars)
+│   │   ├── database.py        # SQLAlchemy engine + session factory
+│   │   ├── models/            # SQLAlchemy ORM models
 │   │   │   ├── resident.py    # residents table
 │   │   │   ├── posting.py     # posting_codes, resident_postings
 │   │   │   ├── programme.py   # programmes, posting_groups, multi_posting_rules
 │   │   │   ├── teaching.py    # teaching_targets, session_types, teaching_events, teaching_name_catalogue
 │   │   │   ├── attendance.py  # attendance_records
 │   │   │   └── reporting.py   # reporting_periods, surplus_ledger, form_f1_records, period_snapshots, clawback_records
-│   │   ├── routers/           # FastAPI routers (one file per domain) [Planned]
+│   │   ├── routers/           # FastAPI routers (one file per domain)
 │   │   │   ├── admin.py       # All admin endpoints
 │   │   │   ├── secretary.py   # Teaching event CRUD, CME dashboard
 │   │   │   ├── resident.py    # Submission portal, dashboard, attendance, ad-hoc teaching
-│   │   │   └── auth.py        # Auth stub (Phase 1) → Supabase Auth (Phase 2)
-│   │   ├── services/          # Business logic (no HTTP concerns) [Planned]
+│   │   │   └── auth.py        # Backend-owned app-session auth and local/demo compatibility
+│   │   ├── services/          # Business logic (no HTTP concerns)
 │   │   │   ├── compliance.py  # BL-1 through BL-11, posting_groups, global_session_types
 │   │   │   ├── surplus.py     # Surplus chain, tag-based reallocation, hibernation
 │   │   │   ├── clawback.py    # Deferred Phase 10 placeholder; BL-10 has no financial contract yet
@@ -340,22 +382,22 @@ mata/
 │   │   │   ├── ttf_parser.py  # TTF Excel upload parser
 │   │   │   ├── formf1_parser.py  # FormF1 Excel upload parser
 │   │   │   └── validation.py  # Duplicate/conflict detection, date checks
-│   │   ├── schemas/           # Pydantic request/response models [Planned]
-│   │   └── middleware/        # Auth middleware, error handling [Planned]
-│   ├── tests/                 # [Planned]
-│   ├── requirements.txt       # [Planned]
-│   └── alembic.ini            # [Planned]
+│   │   ├── schemas/           # Pydantic request/response models
+│   │   └── middleware/        # Auth, security, rate-limit, and error middleware
+│   ├── tests/                 # Backend test suite
+│   ├── requirements.txt       # Pinned backend dependencies
+│   └── alembic.ini            # Alembic configuration
 └── frontend/
     ├── src/
-    │   ├── pages/             # Route-level page components [Planned]
-    │   ├── components/        # Shared UI components [Planned]
-    │   ├── hooks/             # Custom React hooks [Planned]
-    │   ├── api/               # API client functions [Planned]
-    │   ├── types/             # TypeScript type definitions [Planned]
-    │   └── utils/             # [Planned]
-    ├── package.json           # [Planned]
-    ├── vite.config.ts         # [Planned]
-    └── tsconfig.json          # [Planned]
+    │   ├── pages/             # Route-level page components
+    │   ├── components/        # Shared UI components
+    │   ├── hooks/             # Custom React hooks
+    │   ├── api/               # Cookie/CSRF API transport and domain clients
+    │   ├── types/             # TypeScript type definitions
+    │   └── utils/             # Shared utilities
+    ├── package.json           # Frontend dependencies and gates
+    ├── vite.config.ts         # Vite configuration
+    └── tsconfig.json          # TypeScript configuration
 ```
 
 **`AGENTS.md`** is the LLM coding-agent entry point. It defines: repo structure, implementation conventions, three system roles, auth stub, system initialisation order, key architectural rules, confirmed decisions, and security rules. Do not modify it without understanding its role.
@@ -368,13 +410,14 @@ mata/
 
 | File | Covers | Implementation Status | Read Before | Most Dangerous Rule to Miss |
 |------|--------|----------------------|-------------|----------------------------|
-| `schema.md` | All 23 tables, columns, types, constraints, relationships, indexes, seed data | 📋 Design-only specification | Any model, migration, or database query | `session_type_id` is NOT stored on `attendance_records` — it is resolved at compliance read time. If stored, compliance becomes stale when TTF is re-uploaded. |
-| `api.md` | All FastAPI endpoints, request/response shapes, auth model (two identity paths), error codes | 📋 Design-only specification | Any router, endpoint, or Pydantic schema | Two completely separate identity paths: admin/secretary authenticate via `users` table; residents authenticate via `residents` table with MCR only. They share JWT infrastructure but resolve identity from different tables. |
-| `business-logic.md` | Non-clawback engine (BL-1–BL-11), surplus, raw-count reallocation, exceptions, FM rules, and deferred clawback register | 📋 Design-only specification | Compliance engine, surplus chain, reallocation, any calculation | Reallocation sorts alphabetically by tag and transfers raw session counts before final capping; duration never drives the arithmetic. |
-| `parsing.md` | RDB, TTF, FormF1, and Academic Calendar / PH upload parsing rules, cell format variants (10 types), edge cases, validation rules | 📋 Design-only specification | Any upload endpoint or Excel parsing work | RDB posting columns are NOT at a fixed column range (I–T). The parser must detect them dynamically by scanning row 2 for date-range headers. Hardcoding column positions silently misses months. |
-| `AGENTS.md` | Coding-agent behaviour, repo structure, tech stack, three roles, auth stub, initialisation order, key architectural rules, confirmed decisions, security rules | 📋 Design-only specification | Every coding task (alongside this document) | Multi-posting cell with explicit date ranges applies to ALL RDB sheets, not FM only. Assuming it's FM-only causes silent parsing failures for non-FM programmes. |
+| `schema.md` | Current schema contract plus explicitly deferred tables | Implemented contract; verify current migrations/models | Any model, migration, or database query | `session_type_id` is NOT stored on `attendance_records` — it is resolved at compliance read time. If stored, compliance becomes stale when TTF is re-uploaded. |
+| `api.md` | Current FastAPI endpoints, request/response shapes, auth model, error codes | Implemented pre-compliance contract with explicit future items | Any router, endpoint, or Pydantic schema | Three separate server-owned identity tables converge on one opaque application-session envelope; role/scope is reloaded from the current subject row. |
+| `business-logic.md` | Non-clawback engine (BL-1–BL-11), surplus, raw-count reallocation, exceptions, FM rules, and deferred clawback register | Implemented non-clawback rules plus explicit deferrals | Compliance engine, surplus chain, reallocation, any calculation | Reallocation sorts alphabetically by tag and transfers raw session counts before final capping; duration never drives the arithmetic. |
+| `parsing.md` | RDB, TTF, FormF1, and Academic Calendar / PH upload parsing rules, cell format variants, edge cases, validation rules | Implemented parser contract | Any upload endpoint or Excel parsing work | RDB posting columns are NOT at a fixed column range (I–T). The parser must detect them dynamically by scanning row 2 for date-range headers. Hardcoding column positions silently misses months. |
+| `security.md` | Current cross-cutting security contract, local/deployed evidence boundary, and deferred debt | Implemented local contract; deployed verification remains separate | Any authentication, authorization, session, CSRF, RLS, privacy, deployment, CI, or rollback change | Local passing tests do not prove the deployed database, proxy, cookie, environment, or role catalogue. |
+| `AGENTS.md` | Coding-agent behaviour, repo structure, tech stack, roles, initialisation order, key architectural rules, confirmed decisions, security rules | Current project instructions and architecture authority | Every coding task (alongside this document) | Multi-posting cell with explicit date ranges applies to ALL RDB sheets, not FM only. Assuming it's FM-only causes silent parsing failures for non-FM programmes. |
 
-> **⚠️ Most likely LLM mistake:** Treating these specification files as documenting implemented code and trying to "fix bugs" in them. They are design specs. The silent consequence is generating patches or refactors for code that doesn't exist yet, wasting effort and creating confusion about what is actually implemented.
+> **⚠️ Most likely LLM mistake:** Assuming every documented future or deferred field is already implemented. Cross-check the current model, migration, route, and test before changing code, while treating the domain contracts as the authority for intended behavior.
 
 ---
 
@@ -444,7 +487,7 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 
 **Reporting Periods:** CRUD via `/admin/reporting-periods`. Status values are `active` and `inactive`; admins can also set `activate_on` and `deactivate_on` scheduled transition dates. `PUT /admin/reporting-periods/{id}/activate` and `/deactivate` update operational status only and return Data Revalidation impact summaries. Final close/freeze with surplus hibernation, clawback, and snapshots is separate future work.
 
-**Programme PC Teaching Event CRUD (planned 4B):** PCs manage scheduled teaching events for their own programmes before compliance via planned `/admin/programme-teaching-events` endpoints. PC-created events are programme-owned through planned `teaching_events.created_for_programme_code`; secretary-created events remain posting-owned/programme-neutral. See `api.md` and `business-logic.md` for authorization, visibility, PH block, and delete-with-attendance rules.
+**Programme PC Teaching Event CRUD (implemented 4B):** PCs manage scheduled teaching events for their own programmes through `/admin/programme-teaching-events` endpoints. PC-created events are programme-owned through `teaching_events.created_for_programme_code`; secretary-created events remain posting-owned/programme-neutral. See `api.md` and `business-logic.md` for authorization, visibility, PH block, and delete-with-attendance rules.
 
 **Master Admin Secretary/PC Events:** The user-facing Master Admin review surface is **Secretary/PC Events** while the existing `/admin/secretary-events` route remains stable. It lists both Secretary-created and Programme PC-created scheduled events, excludes resident ad-hoc events, and provides an explicit Master Admin-only force-delete override. The override permanently removes linked native and Non-NHG attendance plus the selected event in one audited transaction; ordinary Secretary/PC delete-with-attendance guards remain unchanged.
 
@@ -490,10 +533,10 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 
 ### NHG Resident
 
-**Scope:** All DB queries filtered to own `resident_id` from JWT `sub`.
+**Scope:** All DB queries are filtered to the current `resident_id` resolved from the validated opaque application session and reloaded resident row.
 
 **Submission Portal:**
-- Resident logs in with MCR → JWT issued with `programme_code`
+- Resident logs in with MCR → backend creates an opaque cookie-backed app session; current `programme_code` is reloaded from `residents`
 - `GET /resident/events` returns teaching events for:
   - Assigned/current posting secretary events: derived from `resident_postings` for the selected/current date
   - Native programme TTSH department secretary events: derived from explicit native-programme-to-TTSH-posting mapping
@@ -507,13 +550,17 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 **Attendance Submission:**
 - `POST /resident/attendance` with `{ "event_ids": ["uuid1", "uuid2"] }`
 - Weekend sessions with no matching `weekend_exceptions` rule: stored, but `compliance_warning` returned in response
-- Duplicate prevention via `UNIQUE(resident_id, teaching_event_id)` at DB level
+- Active duplicate prevention uses a submitted-only unique index on
+  `(resident_id, teaching_event_id)`; removed history is retained and a later
+  resubmission receives a new row.
 
 **Ad-hoc Teaching:**
 - Date-first dropdown flow: resident selects teaching date, backend derives assigned posting, resident selects attended TTSH department/programme, then selects catalogue-backed teaching evidence from TTF Column K / `teaching_name_catalogue`
 - `POST /resident/adhoc-teaching` — resident submits selected teaching not pre-created by secretary
-- Creates `teaching_events` row (`is_adhoc = true`, `posting_code = assigned/compliance posting`, `cme_points_awarded = false`, `smc_event_code = null`) and `attendance_records` row in same transaction
-- Planned `details_of_session` is display/audit-only and has no compliance use
+- A narrow database function derives the authenticated creator/family and
+  creates the immutable-owned `teaching_events` row plus matching attendance
+  row in the same caller transaction.
+- `details_of_session` is display/audit-only and has no compliance use
 - PH dates hard-blocked (422)
 - Countable ad-hoc compliance maps to `Department/Programme Teaching [1h]` under the assigned posting for the selected date, not the attended TTSH department unless it is also the assigned posting
 - If the assigned-posting `Department/Programme Teaching [1h]` target cannot be resolved, return unavailable/not-countable rather than guessing
@@ -754,10 +801,10 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 | `POST /admin/upload/form-f1` | FormF1 upload | Calls `form_f1_parser.py`; full replace |
 | `POST /admin/upload/public-holidays` | Academic Calendar + PH upload | Upsert `public_holidays` and replace/seed `academic_month_boundaries` from AY Dates workbook content |
 | `PUT /admin/teaching-targets/{id}` | Mid-period TTF correction | Re-seeds `teaching_name_catalogue` for that specific target |
-| `GET/POST /admin/programme-teaching-events` | Planned 4B PC event CRUD | Programme-owned scheduled events via planned `created_for_programme_code` |
+| `GET/POST /admin/programme-teaching-events` | Implemented 4B PC event CRUD | Programme-owned scheduled events via `created_for_programme_code` |
 | `GET /admin/secretary-events` | Secretary/PC Events | Master Admin review of both scheduled event sources; stable legacy route |
 | `POST /admin/secretary-events/{id}/force-delete` | Force-delete one scheduled event | Explicit Master Admin only; atomically deletes linked native/Non-NHG attendance, event, and writes audit |
-| `GET /admin/external-attendance/export.xlsx` | Planned external Excel export | Recording/export-only; never enters compliance |
+| `GET /admin/external-attendance/export.xlsx` | Implemented external Excel export | Recording/export-only; never enters compliance |
 | `GET /admin/reports/clawback` | Deferred clawback placeholder | No implementation-ready response or calculation contract |
 | `PUT /admin/reporting-periods/{id}/activate` | Activate period | Allows new resident submissions |
 | `PUT /admin/reporting-periods/{id}/deactivate` | Deactivate period | Blocks new resident submissions; no snapshots/clawback/surplus hibernation |
@@ -820,7 +867,7 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 | `is_reallocatable` + `tag` | `teaching_targets` | Missing tag = no reallocation; surplus silently stays unallocated |
 | `is_hibernating` | `surplus_ledger` | Lifecycle annotation only; the ledger is recomputed from raw attendance/target and is not a reallocation input |
 | `session_type_id` | `teaching_events` | Display only — NOT for compliance |
-| `created_for_programme_code` | `teaching_events` (planned) | PC-created scheduled events are programme-owned; null secretary events remain programme-neutral |
+| `created_for_programme_code` | `teaching_events` | PC-created scheduled events are programme-owned; null secretary events remain programme-neutral |
 | `details_of_session` | `teaching_events` (planned) | Display/audit-only for ad-hoc sessions; no compliance use |
 | `achieved_and_counted` | Computed value | Final post-reallocation, post-context-cap value; raw achieved drives donor supply |
 | `programme_scope` | `users` | `TEXT[]` — Admin sees only listed programmes. NULL = no access. |
@@ -838,16 +885,16 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 
 ## Section 16 — Frontend Architecture
 
-**Status: 📋 Planned — no implementation exists yet.**
+**Status:** Current pre-compliance staff, NHG Resident, and Non-NHG Resident surfaces are implemented. Phase 6 compliance/final-close UI remains separate.
 
 ### Pages and Routes (Per Role)
 
 **Admin:**
 - Upload pages: Master Admin has RDB, TTF, FormF1, and PH; Programme PC has TTF only for a normalized programme in scope (each with file select + POST + result display)
 - Configuration panel: CRUD for `loa_types`, `weekend_exceptions`, `multi_posting_rules`, `posting_groups`, `global_session_types`, `programmes`
-- Programme teaching event management (planned 4B): scheduled PC-created events scoped by programme
+- Programme teaching event management: scheduled PC-created events scoped by programme
 - Secretary/PC Events: Master Admin review of Secretary and Programme PC scheduled events with an audited force-delete confirmation flow
-- Reporting dashboard: 5 tabs — Monthly View, Posting View, Attendance Breakdown, Submitted Attendances, Clawback
+- Phase 6 reporting dashboard remains deferred: Monthly View, Posting View, Attendance Breakdown, Submitted Attendances, and the clawback placeholder
 - Non-NHG attendance export preview/download for forwarding to NUH/SingHealth PCs
 - Reporting period management: list, create, update, activate, deactivate, delete
 - Upload log viewer
@@ -861,7 +908,7 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 **Resident:**
 - Submission portal: event list filtered by posting + catalogue
 - Ad-hoc teaching form: date-first → catalogue-backed teaching option dropdown + optional `details_of_session`
-- Personal compliance dashboard
+- Personal compliance dashboard remains Phase 6 work
 - Submitted attendances list
 
 **Non-NHG Resident:**
@@ -887,7 +934,7 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 - Tailwind CSS: core utility classes only — no JIT compiler
 - TypeScript type definitions: `src/types/`
 - API client functions: `src/api/`
-- Auth state: Phase 1 stub headers set by middleware; Phase 2 Supabase JWT
+- Auth state: local/demo may use synthetic headers; production uses backend-owned opaque cookies, memory-only identity/CSRF state, and backend-mediated Supabase staff authentication
 
 > **⚠️ Most likely LLM mistake:** Building the resident ad-hoc teaching form with teaching name first and date second, or allowing arbitrary free-text teaching names to drive mapping. The confirmed UX flow is date-first, then assigned/date-matched posting derivation, attended TTSH department dropdown, and catalogue-backed teaching option dropdown. For NHG Residents, compliance attribution is fixed to `Department/Programme Teaching [1h]` under the assigned posting. The silent consequence is a broken dropdown, wrong attribution, or bypassed TTF Column K evidence.
 
@@ -899,14 +946,19 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 
 | Name | Layer | Purpose | Example | Required |
 |------|-------|---------|---------|----------|
-| `DATABASE_URL` | Backend (server-only) | PostgreSQL connection string | `postgresql+asyncpg://user:pass@localhost:5432/mata` | Yes |
-| `SUPABASE_SERVICE_ROLE_KEY` | Backend (server-only) | Supabase admin operations | `eyJ...` (placeholder) | Phase 2 |
-| `JWT_SECRET` | Backend (server-only) | JWT signing key | `your-jwt-secret-here` | Yes |
-| `VITE_SUPABASE_URL` | Frontend | Supabase project URL | `https://your-project.supabase.co` | Phase 2 |
-| `VITE_SUPABASE_ANON_KEY` | Frontend | Supabase anonymous key | `eyJ...` (placeholder) | Phase 2 |
-| `VITE_API_BASE_URL` | Frontend | Backend API base URL | `http://localhost:8000/api/v1` | Yes |
+| `DATABASE_URL` | Backend (server-only) | Restricted runtime async PostgreSQL connection when H-E is enabled | `postgresql+asyncpg://runtime-user:placeholder@localhost:5432/mata` | Yes |
+| `MATA_AUTH_DATABASE_URL` | Backend (server-only) | Distinct restricted auth-helper async PostgreSQL connection | `postgresql+asyncpg://auth-user:placeholder@localhost:5432/mata` | H-E / production |
+| `SYNC_DATABASE_URL` | Backend (server-only) | Distinct migration/ownership sync PostgreSQL connection | `postgresql://migration-user:placeholder@localhost:5432/mata` | Migrations |
+| `MATA_DATABASE_RLS_ENABLED` | Backend | Enables the H-E database boundary; production requires `true` | `false` locally / `true` in production | Production |
+| `MATA_DATABASE_RUNTIME_ROLE` | Backend | Stable runtime capability group | `mata_app_runtime` | H-E |
+| `MATA_DATABASE_AUTH_ROLE` | Backend | Stable auth-helper capability group | `mata_auth_internal` | H-E |
+| `SUPABASE_SERVICE_ROLE_KEY` | Backend (server-only) | Bounded Supabase admin operations | placeholder only | Only where required |
+| `SUPABASE_PUBLISHABLE_KEY` | Backend (server-only in H-D) | Backend-mediated staff password authentication | placeholder only | Supabase mode |
+| `MATA_SESSION_HASH_KEY` | Backend (server-only) | Keyed session/CSRF/user-agent digests | placeholder only | Production cookie mode |
+| `RATE_LIMIT_HASH_SECRET` | Backend (server-only) | Keyed rate-limit identifiers | placeholder only | Production PostgreSQL limiter |
+| `VITE_API_BASE_URL` | Frontend | Same-origin API base | `/api/v1` | Yes |
 
-**Server-only variables (`DATABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `JWT_SECRET`) must NEVER be exposed to the frontend** or included in client-side environment variables.
+**Server-only variables and credentials must never be exposed to the frontend.** The production browser has no Supabase client configuration and uses relative `/api/v1`.
 
 ### Local Development
 
@@ -917,7 +969,7 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 | API base URL | `http://localhost:8000/api/v1` |
 | CORS | Explicit allowlist — no wildcard `*` in production |
 
-### Commands [Planned]
+### Commands
 
 ```bash
 # Backend
@@ -928,7 +980,7 @@ uvicorn app.main:app --reload --port 8000
 
 # Frontend
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -942,25 +994,50 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
 
 ## Section 18 — Security
 
-**For full security rules, see `AGENTS.md` Security section.**
+**For the current cross-cutting security contract, see `security.md`.**
 
 ### Key Rules (Summary)
 
 - **All security checks enforced server-side.** Frontend checks are UX convenience only — never security boundaries.
-- **Identity derived exclusively from verified JWT.** Never trust client-provided user IDs, roles, or programme codes.
-- **Admin endpoints:** Check `role = 'admin'` AND `programme_code IN programme_scope`
-- **Secretary endpoints:** Check `role = 'secretary'` AND `posting_code = X-User-Site`
-- **Resident endpoints:** All DB queries scoped to `resident_id` from JWT `sub`
+- **Identity derives from the validated opaque app session plus a current subject-row reload.** Never trust client-provided user IDs, roles, programme codes, cookie claims, or raw identity headers.
+- **Admin endpoints:** Check current `role`, explicit `admin_level`, and normalized programme scope; empty scope grants nothing.
+- **Secretary endpoints:** Check current `role = 'secretary'` and exact database-owned posting scope.
+- **Resident endpoints:** Scope all queries to the current database-owned resident subject.
 - **SQL injection:** SQLAlchemy ORM or parameterized raw SQL only. Never interpolate user input into SQL strings.
 - **Mass assignment:** Never pass `**request.dict()` to ORM. Explicitly allowlist fields in Pydantic schemas.
-- **File uploads:** Type/MIME/size validation server-side. `.xlsx` only (`.csv` additionally for PH). Max 10MB. Server-generated filenames.
+- **File uploads:** Type/MIME/size validation plus ZIP/XML preflight, compression-ratio and workbook-resource bounds server-side. `.xlsx` only (`.csv` additionally for PH).
 - **CORS:** Explicit allowlist of trusted origins. No wildcard in production.
 - **Error responses:** No stack traces, SQL errors, or internals.
-- **Rate limiting:** Required on `POST /auth/login`, all upload endpoints, `POST /resident/adhoc-teaching`
+- **Rate limiting:** PostgreSQL-backed in production with atomic counters and HMAC-only identifiers.
 - **Security headers:** HSTS, X-Frame-Options: DENY, X-Content-Type-Options: nosniff, Referrer-Policy, CSP
 - **Supabase service role key:** Server-only. Never exposed to frontend or client-side env vars.
-- **RLS:** Enabled on all sensitive tables at Phase 9 (Supabase Auth integration). See `AGENTS.md` for policy patterns.
-- **Session management:** Access tokens short-lived (15–60 min). Refresh tokens with rotation. HttpOnly, Secure, SameSite=Strict cookies preferred over localStorage.
+- **Browser/Data API grants:** `PUBLIC`, optional `anon`, and optional `authenticated` application-object privileges are revoked by `20260722_000024`.
+- **RLS:** H-E locally implements 34 RLS-enabled application tables, 84 runtime-targeted policies, exact helper/table/column grants, and a restricted non-owner runtime. Grant revocation alone was not RLS, and local implementation is not deployed proof.
+- **Ad-hoc ownership:** Revision `20260728_000028` adds immutable typed native
+  or Non-NHG creator identity to every Resident-created ad-hoc event. Only a
+  narrow runtime helper may create the matching event/attendance pair;
+  ordinary direct ad-hoc insertion, another Resident, and the opposite storage
+  family are denied. See
+  `docs/archive/security/phase-5b/5b_h_aud_m04_atomic_attendance.md`.
+- **Session management:** Opaque 256-bit session and CSRF credentials; only keyed digests persist. Strict host-only cookie, synchronized CSRF, one-winner rotation, family logout, and generation fencing are implemented.
+- **Reliable logout:** AUD-M-06 distinguishes immediate local sign-out from
+  proof-positive server revocation. Pending/unconfirmed state blocks hydration
+  and protected requests; only a non-sensitive pending tombstone and resolution
+  watermark persist, while retry proof remains in memory and is bounded to
+  four attempts with nominal automatic offsets of 0/1/3/7 seconds. Matching
+  request ids, authentication revisions, and monotonic lifecycle ordering
+  protect cross-tab, reload, stale-response, and newer-login transitions. See
+  `docs/archive/security/phase-5b/5b_h_m06_reliable_logout.md`.
+- **Request-body perimeter:** AUD-M-05 adds a pure ASGI 4 MiB global body
+  cap and the same 4 MiB aggregate cap on same-origin
+  `/api/v1/admin/upload/*` before authentication or multipart parsing. Files
+  are capped at 3 MiB, leaving room for multipart framing;
+  multipart requests accept one file, route-specific field counts, 4 KiB
+  non-file parts, and 255-byte UTF-8 filenames. The Docker Nginx path mirrors
+  the aggregate limits and streams uploads. This approved contract remains
+  below the current Vercel Function path's separate 4.5 MB platform ceiling.
+  Larger-file support requires a separately approved upload ingress. See
+  `docs/archive/security/phase-5b/5b_h_m05_upload_preparser_limits.md`.
 
 > **⚠️ Most likely LLM mistake:** Storing JWT tokens in `localStorage`. The confirmed approach is `HttpOnly` cookies. The silent consequence is XSS vulnerability — any script injection can steal the token.
 
@@ -981,6 +1058,13 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
 | Clawback specification | Financial and final-close rules remain deferred | Do not implement or infer them from legacy evidence |
 | FormF1 year suffix | Parser sample hardcodes '25'/'26' | Must be dynamic based on reporting period |
 | FM Saturday exception | Removed from confirmed list | No FM row in `weekend_exceptions` seed data |
+| Resident identity assurance | Separately governed product debt | Do not invent a factor; reopen only under an approved product scope |
+| Local verification versus deployment | Passing code/tests do not prove deployed environment, migrations, grants, or cookie behavior | Run the documented post-deployment smoke against the approved target |
+| Local H-E/lifecycle versus deployed RLS | A locally verified role/policy/session catalogue can be mistaken for deployed Supabase protection | Independently verify revision `20260727_000027`, lifecycle settings, credentials, ownership, policies, grants, helpers, PUBLIC/browser roles, expiry behavior, and five-role workflows on the approved target |
+| Local AUD-M-04 versus deployed RLS | Immutable ad-hoc ownership and atomic helper behavior may be mistaken for deployed protection | Independently verify revision `20260728_000028`, strict populated backfill, creator/family RLS, helper ACLs, rollback, and concurrency on the approved target |
+| Local AUD-M-05 versus deployed ingress | Application tests may be mistaken for proof that a provider enforces the same body limits before buffering | Verify the approved 3 MiB file and 4 MiB request contract, ingress buffering, timeout, same-origin path, response-cache behavior, and advertised upload size |
+| Local AUD-M-06 versus deployed logout behavior | Local state-machine tests may be mistaken for proof of real network, browser-cookie, reload, or cross-tab behavior | Verify immediate local clearing, explicit pending state, proof-positive `server_logout_confirmed`, bounded retry, proofless reload, Web Lock replacement login, and storage/evidence hygiene on the approved target |
+| Emergency bearer compatibility | Routine enablement would reintroduce browser-token risk | Keep double opt-in, time-bounded, and rollback-only |
 
 See `99_decision_log_and_gap_audit.md` for the full risk register.
 

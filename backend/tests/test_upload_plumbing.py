@@ -16,8 +16,14 @@ from openpyxl import Workbook
 from app.config import Settings
 from app.middleware.auth_stub import AuthIdentity, AuthStubMiddleware
 from app.middleware.errors import install_error_handlers
+from app.middleware.request_body_limit import RequestBodyLimitMiddleware
 from app.routers import admin
 from app.services.parser_common import ParserResult, write_upload_log
+
+
+_MEBIBYTE = 1024 * 1024
+_FILE_LIMIT_BYTES = 3 * _MEBIBYTE
+_AGGREGATE_LIMIT_BYTES = 4 * _MEBIBYTE
 
 
 def _make_valid_xlsx_bytes() -> bytes:
@@ -31,7 +37,7 @@ def _make_valid_xlsx_bytes() -> bytes:
 
 
 def _settings_override() -> Settings:
-    return Settings(max_upload_size_mb=10, _env_file=None)
+    return Settings(_env_file=None)
 
 
 def _build_client(settings: Settings | None = None) -> TestClient:
@@ -46,6 +52,26 @@ def _build_client(settings: Settings | None = None) -> TestClient:
     app.dependency_overrides[admin.get_settings] = (
         (lambda: settings) if settings is not None else _settings_override
     )
+    return TestClient(app)
+
+
+def _build_body_limited_client(settings: Settings | None = None) -> TestClient:
+    selected_settings = settings or _settings_override()
+    app = FastAPI()
+    install_error_handlers(app)
+    app.add_middleware(
+        RequestBodyLimitMiddleware,
+        global_limit_bytes=selected_settings.max_request_body_size_bytes,
+        upload_limit_bytes=selected_settings.max_upload_request_size_bytes,
+        api_prefix=selected_settings.api_prefix,
+    )
+    app.include_router(admin.router, prefix=selected_settings.api_prefix)
+
+    async def _db_override():
+        yield None
+
+    app.dependency_overrides[admin.get_db_session] = _db_override
+    app.dependency_overrides[admin.get_settings] = lambda: selected_settings
     return TestClient(app)
 
 
@@ -91,7 +117,6 @@ def _build_local_middleware_client(
     settings = Settings(
         environment="test",
         auth_mode=auth_mode,
-        max_upload_size_mb=10,
         _env_file=None,
     )
     monkeypatch.setattr(
@@ -367,34 +392,114 @@ def test_invalid_extension_returns_422() -> None:
     assert response.status_code == 422
 
 
-def test_upload_route_rechecks_size_after_file_read(monkeypatch) -> None:
-    called = {"rdb": 0}
+def test_three_mib_file_is_accepted_inside_valid_multipart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_size = 0
 
-    async def _fake_rdb_parser(**kwargs):
-        called["rdb"] += 1
-        return ParserResult(upload_type="rdb")
+    async def _fake_public_holiday_parser(*, file_bytes: bytes, **kwargs):
+        nonlocal captured_size
+        captured_size = len(file_bytes)
+        return ParserResult(upload_type="public_holidays")
 
-    monkeypatch.setattr("app.services.rdb_parser.parse_rdb_upload", _fake_rdb_parser)
+    monkeypatch.setattr(
+        "app.routers.admin.parse_public_holiday_upload",
+        _fake_public_holiday_parser,
+    )
+    csv_header = b"date,name\n2026-01-01,Example\n"
+    payload = csv_header + (b"\n" * (_FILE_LIMIT_BYTES - len(csv_header)))
+    client = _build_body_limited_client()
 
-    client = _build_client()
-    oversized_payload = b"x" * (10 * 1024 * 1024 + 1)
     response = client.post(
-        "/admin/upload/rdb",
+        "/api/v1/admin/upload/public-holidays",
         headers=_admin_headers(),
-        data={"reporting_period_id": str(uuid4())},
+        files={"file": ("holidays.csv", payload, "text/csv")},
+    )
+
+    assert response.status_code == 200
+    assert captured_size == _FILE_LIMIT_BYTES
+
+
+def test_file_larger_than_three_mib_is_rejected_before_parser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = {"public_holidays": 0}
+
+    async def _fake_public_holiday_parser(**kwargs):
+        called["public_holidays"] += 1
+        return ParserResult(upload_type="public_holidays")
+
+    monkeypatch.setattr(
+        "app.routers.admin.parse_public_holiday_upload",
+        _fake_public_holiday_parser,
+    )
+
+    client = _build_body_limited_client()
+    oversized_payload = b"x" * (_FILE_LIMIT_BYTES + 1)
+    response = client.post(
+        "/api/v1/admin/upload/public-holidays",
+        headers=_admin_headers(),
         files={
             "file": (
-                "oversized.xlsx",
+                "oversized.csv",
                 oversized_payload,
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "text/csv",
             )
         },
     )
 
     assert response.status_code == 422
     assert response.json()["error_code"] == "FILE_VALIDATION_FAILED"
-    assert "exceeds the 10 MB limit" in response.text
-    assert called["rdb"] == 0
+    assert "exceeds the 3 MiB limit" in response.text
+    assert called["public_holidays"] == 0
+
+
+def test_multipart_overhead_cannot_bypass_four_mib_aggregate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = {"public_holidays": 0}
+
+    async def _fake_public_holiday_parser(**kwargs):
+        called["public_holidays"] += 1
+        return ParserResult(upload_type="public_holidays")
+
+    monkeypatch.setattr(
+        "app.routers.admin.parse_public_holiday_upload",
+        _fake_public_holiday_parser,
+    )
+    boundary = b"aggregate-boundary"
+    multipart_prefix = (
+        b"--"
+        + boundary
+        + b"\r\n"
+        + b'Content-Disposition: form-data; name="file"; filename="holidays.csv"\r\n'
+        + b"Content-Type: text/csv\r\n"
+        + b"\r\n"
+    )
+    multipart_suffix = b"\r\n--" + boundary + b"--\r\n"
+    file_payload = b"x" * _FILE_LIMIT_BYTES
+    bounded_multipart = multipart_prefix + file_payload + multipart_suffix
+    assert len(bounded_multipart) < _AGGREGATE_LIMIT_BYTES
+    body = bounded_multipart + (
+        b"e" * (_AGGREGATE_LIMIT_BYTES + 1 - len(bounded_multipart))
+    )
+    client = _build_body_limited_client()
+    headers = {
+        **_admin_headers(),
+        "Content-Type": "multipart/form-data; boundary=aggregate-boundary",
+        "Content-Length": str(_FILE_LIMIT_BYTES),
+    }
+
+    response = client.post(
+        "/api/v1/admin/upload/public-holidays",
+        content=body,
+        headers=headers,
+    )
+
+    assert response.status_code == 413
+    assert response.json()["error_code"] == "FILE_VALIDATION_FAILED"
+    assert response.headers["cache-control"] == "no-store"
+    assert called["public_holidays"] == 0
 
 
 def test_non_admin_access_rejected() -> None:
@@ -560,7 +665,6 @@ def test_isolated_router_fallback_requires_explicit_master_header_for_global_upl
     settings = Settings(
         environment="test",
         auth_mode=auth_mode,
-        max_upload_size_mb=10,
         _env_file=None,
     )
     client = _build_client(settings)
@@ -588,6 +692,7 @@ def test_local_auth_middleware_uses_persisted_master_state_for_global_uploads(
         id=programme_pc_id,
         role="admin",
         is_active=True,
+        session_issuance_blocked=False,
         admin_level="programme",
         programme_scope=["DR"],
         current_staff_actor_name=None,
@@ -615,6 +720,7 @@ def test_local_auth_middleware_uses_persisted_master_state_for_global_uploads(
         id=master_id,
         role="admin",
         is_active=True,
+        session_issuance_blocked=False,
         admin_level="master",
         programme_scope=None,
         current_staff_actor_name=None,

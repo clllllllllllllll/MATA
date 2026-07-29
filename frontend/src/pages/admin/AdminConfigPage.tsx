@@ -1,5 +1,5 @@
 import { Fragment, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation } from 'react-router'
 import {
   createLoaType,
   deleteLoaType,

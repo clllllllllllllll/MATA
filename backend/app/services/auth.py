@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy import text
@@ -15,14 +16,33 @@ from app.services.current_posting import (
     NATIVE_CURRENT_POSTING_JOIN_SQL,
     current_reporting_period_params,
 )
+from app.services.database_context import (
+    session_uses_auth_boundary,
+    session_uses_rls,
+)
 from app.services.mata_resident_token import (
     MataResidentTokenError,
     sign_mata_external_resident_token,
     sign_mata_resident_token,
 )
+from app.services.supabase_password_auth import (
+    SupabasePasswordAuthError,
+    authenticate_supabase_password,
+)
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class AuthenticatedSubject:
+    subject_type: Literal["staff", "resident", "external_resident"]
+    subject_id: UUID
+    auth_source: Literal["supabase_staff", "mata_resident"]
+    session_generation: int
+    user: dict[str, Any]
+    normalized_mcr: str | None = None
+    upstream_subject_id: UUID | None = None
 
 
 def _auth_failure() -> ApiError:
@@ -186,6 +206,16 @@ def _normalise_mcr(raw_mcr: str | None) -> str | None:
     return cleaned or None
 
 
+def _session_generation(row: Any) -> int:
+    try:
+        generation = int(row["session_generation"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _auth_failure() from exc
+    if generation < 0:
+        raise _auth_failure()
+    return generation
+
+
 async def _current_reporting_period_params(db: AsyncSession) -> dict[str, Any]:
     return await current_reporting_period_params(db)
 
@@ -203,6 +233,7 @@ async def _lookup_resident_login_rows(
                    r.mcr,
                    r.programme_code,
                    r.status,
+                   r.session_generation,
                    current_posting.posting_code AS current_posting_code,
                    COALESCE(pc.display_name, current_posting.posting_code) AS current_posting_label
             FROM residents r
@@ -220,6 +251,7 @@ async def _lookup_resident_login_rows(
                    er.mcr,
                    er.home_cluster,
                    er.status,
+                   er.session_generation,
                    current_posting.posting_code AS current_posting_code,
                    COALESCE(pc.display_name, current_posting.posting_code) AS current_posting_label
             FROM external_residents er
@@ -261,6 +293,339 @@ async def _lookup_resident_login_rows(
     return (
         resident_result.mappings().one_or_none(),
         external_result.mappings().one_or_none(),
+    )
+
+
+async def _authenticate_with_rls_helpers(
+    db: AsyncSession,
+    *,
+    role: str,
+    email: str | None,
+    password: str | None,
+    mcr: str | None,
+    settings: Settings,
+) -> AuthenticatedSubject:
+    if role in {"resident", "external_resident"}:
+        normalised_mcr = _normalise_mcr(mcr)
+        if not normalised_mcr:
+            raise _auth_failure()
+        result = await db.execute(
+            text(
+                """
+                SELECT *
+                FROM mata_rls.resident_login_candidate(
+                    CAST(:normalized_mcr AS text)
+                )
+                """
+            ),
+            {"normalized_mcr": normalised_mcr},
+        )
+        candidate = result.mappings().one_or_none()
+        # The candidate helper takes the global-MCR read lock. Release it
+        # before the exact issuer starts the canonical subject -> MCR order.
+        await db.rollback()
+        if candidate is None:
+            raise _auth_failure()
+        row = dict(candidate)
+        resolved_role = str(row.get("subject_type") or "")
+        if resolved_role not in {"resident", "external_resident"}:
+            raise _auth_failure()
+        if role == "external_resident" and resolved_role != role:
+            raise _auth_failure()
+        row["id"] = row["subject_id"]
+        return AuthenticatedSubject(
+            subject_type=resolved_role,
+            subject_id=UUID(str(row["subject_id"])),
+            auth_source="mata_resident",
+            session_generation=_session_generation(row),
+            normalized_mcr=normalised_mcr,
+            user=(
+                _resident_user(row)
+                if resolved_role == "resident"
+                else _external_resident_user(row)
+            ),
+        )
+
+    if not email or not password or role not in {"staff", "admin", "secretary"}:
+        raise _auth_failure()
+
+    if settings.auth_mode == "supabase":
+        snapshot_result = await db.execute(
+            text(
+                """
+                SELECT *
+                FROM mata_rls.staff_login_snapshot(
+                    CAST(:normalized_email AS text)
+                )
+                """
+            ),
+            {"normalized_email": email.strip().lower()},
+        )
+        authentication_snapshot = snapshot_result.mappings().one_or_none()
+        # Do not retain an auth-boundary transaction or subject lock across the
+        # bounded upstream password exchange.
+        await db.rollback()
+        try:
+            claims = await authenticate_supabase_password(
+                email=email,
+                password=password,
+                settings=settings,
+            )
+        except SupabasePasswordAuthError as exc:
+            raise _auth_failure() from exc
+        raw_supabase_subject = claims.get("sub")
+        if not isinstance(raw_supabase_subject, str):
+            raise _auth_failure()
+        try:
+            upstream_subject_id = UUID(raw_supabase_subject)
+        except ValueError as exc:
+            raise _auth_failure() from exc
+        if authentication_snapshot is None:
+            raise _auth_failure()
+        snapshot = dict(authentication_snapshot)
+        local_subject_id = UUID(str(snapshot["id"]))
+        expected_generation = _session_generation(snapshot)
+        identity_result = await db.execute(
+            text(
+                """
+                SELECT *
+                FROM mata_rls.staff_login_identity(
+                    CAST(:local_subject_id AS uuid),
+                    CAST(:upstream_subject_id AS uuid),
+                    CAST(:expected_generation AS bigint)
+                )
+                """
+            ),
+            {
+                "local_subject_id": local_subject_id,
+                "upstream_subject_id": upstream_subject_id,
+                "expected_generation": expected_generation,
+            },
+        )
+        user_row = identity_result.mappings().one_or_none()
+    else:
+        candidate_result = await db.execute(
+            text(
+                """
+                SELECT *
+                FROM mata_rls.staff_login_candidate(
+                    CAST(:normalized_email AS text)
+                )
+                """
+            ),
+            {"normalized_email": email.strip().lower()},
+        )
+        user_row = candidate_result.mappings().one_or_none()
+        await db.rollback()
+        if user_row is None or not _password_matches(
+            str(user_row["password_hash"]),
+            password,
+        ):
+            raise _auth_failure()
+        raw_upstream_subject_id = user_row.get("supabase_user_id")
+        if raw_upstream_subject_id is None:
+            raise _auth_failure()
+        upstream_subject_id = UUID(str(raw_upstream_subject_id))
+        expected_generation = _session_generation(user_row)
+
+    if (
+        user_row is None
+        or user_row["role"] not in {"admin", "secretary"}
+        or bool(user_row.get("session_issuance_blocked"))
+    ):
+        raise _auth_failure()
+    if role in {"admin", "secretary"} and user_row["role"] != role:
+        raise _auth_failure()
+
+    row = dict(user_row)
+    return AuthenticatedSubject(
+        subject_type="staff",
+        subject_id=UUID(str(row["id"])),
+        auth_source="supabase_staff",
+        session_generation=expected_generation,
+        upstream_subject_id=upstream_subject_id,
+        user=_user_identity(row),
+    )
+
+
+async def authenticate_for_app_session(
+    db: AsyncSession,
+    *,
+    role: str,
+    email: str | None,
+    password: str | None,
+    mcr: str | None,
+    settings: Settings,
+) -> AuthenticatedSubject:
+    """Authenticate credentials without returning or persisting an upstream token."""
+
+    if session_uses_auth_boundary(db):
+        return await _authenticate_with_rls_helpers(
+            db,
+            role=role,
+            email=email,
+            password=password,
+            mcr=mcr,
+            settings=settings,
+        )
+
+    if role in {"resident", "external_resident"}:
+        normalised_mcr = _normalise_mcr(mcr)
+        if not normalised_mcr:
+            raise _auth_failure()
+        resident_row, external_resident_row = await _lookup_resident_login_rows(
+            db,
+            normalised_mcr,
+        )
+        if resident_row is not None and external_resident_row is not None:
+            logger.error(
+                "Resident login rejected because the global identity uniqueness invariant failed"
+            )
+            raise _auth_failure()
+
+        if role == "external_resident":
+            resolved_role = "external_resident"
+            identity_row = external_resident_row
+        elif resident_row is not None:
+            resolved_role = "resident"
+            identity_row = resident_row
+        else:
+            resolved_role = "external_resident"
+            identity_row = external_resident_row
+
+        if identity_row is None or identity_row.get("status") != "active":
+            raise _auth_failure()
+        row = dict(identity_row)
+        return AuthenticatedSubject(
+            subject_type=resolved_role,
+            subject_id=UUID(str(row["id"])),
+            auth_source="mata_resident",
+            session_generation=_session_generation(row),
+            user=(
+                _resident_user(row)
+                if resolved_role == "resident"
+                else _external_resident_user(row)
+            ),
+        )
+
+    if not email or not password:
+        raise _auth_failure()
+
+    if settings.auth_mode == "supabase":
+        snapshot_result = await db.execute(
+            text(
+                """
+                SELECT
+                    id,
+                    supabase_user_id,
+                    session_generation
+                FROM users
+                WHERE lower(email) = lower(:email)
+                """
+            ),
+            {"email": email},
+        )
+        authentication_snapshot = snapshot_result.mappings().one_or_none()
+        # Release the local snapshot transaction before the upstream password
+        # exchange; the fenced lookup below revalidates the subject afterward.
+        await db.rollback()
+        try:
+            claims = await authenticate_supabase_password(
+                email=email,
+                password=password,
+                settings=settings,
+            )
+        except SupabasePasswordAuthError as exc:
+            raise _auth_failure() from exc
+        raw_supabase_subject = claims.get("sub")
+        if not isinstance(raw_supabase_subject, str):
+            raise _auth_failure()
+        try:
+            supabase_user_id = UUID(raw_supabase_subject)
+        except ValueError as exc:
+            raise _auth_failure() from exc
+
+        result = await db.execute(
+            text(
+                """
+                SELECT
+                    id,
+                    email,
+                    role,
+                    name,
+                    posting_code,
+                    programme_scope,
+                    admin_level,
+                    is_active,
+                    session_generation,
+                    session_issuance_blocked,
+                    current_staff_actor_name,
+                    staff_actor_name_updated_at,
+                    staff_actor_name_updated_by_user_id
+                FROM users
+                WHERE supabase_user_id = :supabase_user_id
+                  AND is_active = true
+                """
+            ),
+            {"supabase_user_id": str(supabase_user_id)},
+        )
+        user_row = result.mappings().one_or_none()
+        if authentication_snapshot is None or user_row is None:
+            raise _auth_failure()
+        snapshot = dict(authentication_snapshot)
+        current = dict(user_row)
+        if (
+            UUID(str(snapshot["id"])) != UUID(str(current["id"]))
+            or snapshot.get("supabase_user_id") != current.get("supabase_user_id")
+            or _session_generation(snapshot) != _session_generation(current)
+        ):
+            raise _auth_failure()
+    else:
+        result = await db.execute(
+            text(
+                """
+                SELECT
+                    id,
+                    email,
+                    password_hash,
+                    role,
+                    name,
+                    posting_code,
+                    programme_scope,
+                    admin_level,
+                    is_active,
+                    session_generation,
+                    session_issuance_blocked,
+                    current_staff_actor_name,
+                    staff_actor_name_updated_at,
+                    staff_actor_name_updated_by_user_id
+                FROM users
+                WHERE lower(email) = lower(:email)
+                  AND is_active = true
+                """
+            ),
+            {"email": email},
+        )
+        user_row = result.mappings().one_or_none()
+        if user_row is None or not _password_matches(user_row["password_hash"], password):
+            raise _auth_failure()
+
+    if (
+        user_row is None
+        or user_row["role"] not in {"admin", "secretary"}
+        or bool(user_row.get("session_issuance_blocked"))
+    ):
+        raise _auth_failure()
+    if role in {"admin", "secretary"} and user_row["role"] != role:
+        raise _auth_failure()
+
+    row = dict(user_row)
+    return AuthenticatedSubject(
+        subject_type="staff",
+        subject_id=UUID(str(row["id"])),
+        auth_source="supabase_staff",
+        session_generation=_session_generation(row),
+        user=_user_identity(row),
     )
 
 
@@ -307,7 +672,7 @@ async def login(
             resolved_role = "external_resident"
             identity_row = external_resident_row
 
-        if identity_row is None or identity_row.get("status") == "inactive":
+        if identity_row is None or identity_row.get("status") != "active":
             raise _auth_failure()
         user = (
             _resident_user(dict(identity_row))
@@ -354,6 +719,7 @@ async def login(
                 programme_scope,
                 admin_level,
                 is_active,
+                session_issuance_blocked,
                 current_staff_actor_name,
                 staff_actor_name_updated_at,
                 staff_actor_name_updated_by_user_id
@@ -361,6 +727,7 @@ async def login(
             WHERE lower(email) = lower(:email)
               AND (:role = 'staff' OR role = :role)
               AND is_active = true
+              AND session_issuance_blocked = false
             """
         ),
         {"email": email, "role": role},
@@ -403,7 +770,7 @@ async def get_current_identity(
             {"resident_id": str(subject_id), **period_params},
         )
         resident = result.mappings().one_or_none()
-        if resident is None or resident.get("status") == "inactive":
+        if resident is None or resident.get("status") != "active":
             raise _auth_failure()
         return _resident_user(dict(resident))
 
@@ -456,7 +823,7 @@ async def get_current_identity(
             {"external_resident_id": str(subject_id), **period_params},
         )
         resident = result.mappings().one_or_none()
-        if resident is None or resident.get("status") == "inactive":
+        if resident is None or resident.get("status") != "active":
             raise _auth_failure()
         return _external_resident_user(dict(resident))
 
@@ -466,19 +833,20 @@ async def get_current_identity(
             SELECT
                 id,
                 email,
-                password_hash,
                 role,
                 name,
                 posting_code,
                 programme_scope,
                 admin_level,
                 is_active,
+                session_issuance_blocked,
                 current_staff_actor_name,
                 staff_actor_name_updated_at,
                 staff_actor_name_updated_by_user_id
             FROM users
             WHERE id = :user_id
               AND is_active = true
+              AND session_issuance_blocked = false
             """
         ),
         {"user_id": str(subject_id)},
@@ -534,42 +902,58 @@ async def update_staff_actor_name(
         raise _auth_failure()
     before_row = dict(before_user)
 
-    result = await db.execute(
-        text(
-            """
-            UPDATE users
-            SET
-                current_staff_actor_name = :actor_name,
-                staff_actor_name_updated_at = now(),
-                staff_actor_name_updated_by_user_id = :updated_by_user_id,
-                updated_at = now()
-            WHERE id = :user_id
-              AND role = :role
-              AND is_active = true
-            RETURNING
-                id,
-                email,
-                password_hash,
-                role,
-                name,
-                posting_code,
-                programme_scope,
-                admin_level,
-                is_active,
-                current_staff_actor_name,
-                staff_actor_name_updated_at,
-                staff_actor_name_updated_by_user_id
-            """
-        ),
-        {
-            "user_id": str(user_id),
-            "role": role,
-            "actor_name": actor_name,
-            "updated_by_user_id": str(user_id),
-        },
-    )
+    if session_uses_rls(db):
+        result = await db.execute(
+            text(
+                """
+                SELECT *
+                FROM mata_rls.update_own_staff_actor_name(
+                    CAST(:actor_name AS text)
+                )
+                """
+            ),
+            {"actor_name": actor_name},
+        )
+    else:
+        result = await db.execute(
+            text(
+                """
+                UPDATE users
+                SET
+                    current_staff_actor_name = :actor_name,
+                    staff_actor_name_updated_at = now(),
+                    staff_actor_name_updated_by_user_id = :updated_by_user_id,
+                    updated_at = now()
+                WHERE id = :user_id
+                  AND role = :role
+                  AND is_active = true
+                RETURNING
+                    id,
+                    email,
+                    role,
+                    name,
+                    posting_code,
+                    programme_scope,
+                    admin_level,
+                    is_active,
+                    current_staff_actor_name,
+                    staff_actor_name_updated_at,
+                    staff_actor_name_updated_by_user_id
+                """
+            ),
+            {
+                "user_id": str(user_id),
+                "role": role,
+                "actor_name": actor_name,
+                "updated_by_user_id": str(user_id),
+            },
+        )
     user = result.mappings().one_or_none()
-    if user is None:
+    if (
+        user is None
+        or UUID(str(user["id"])) != user_id
+        or str(user["role"]) != role
+    ):
         raise _auth_failure()
     after_row = dict(user)
     previous_actor_name = before_row.get("current_staff_actor_name")

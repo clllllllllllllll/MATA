@@ -16,6 +16,7 @@ from app.services.reporting_period_status import (
     resolve_explicit_reporting_period,
 )
 from app.services import cache_invalidation
+from app.services.teaching_event_locks import acquire_teaching_event_locks
 
 
 DAY_INDEX = {
@@ -502,8 +503,6 @@ async def create_teaching_event(
         cme_points_awarded=cme_points_awarded,
         smc_event_code=smc_event_code,
     )
-    await db.commit()
-    invalidate_secretary_event_caches(posting_code)
     return event
 
 
@@ -513,11 +512,16 @@ async def _get_event_for_posting(
     event_id: UUID,
     posting_code: str,
     source: bool = False,
+    for_update: bool = False,
 ) -> dict[str, Any]:
     id_param = "source_event_id" if source else "event_id"
+    if for_update:
+        await acquire_teaching_event_locks(db, event_ids=[event_id])
+    lock_clause = "FOR UPDATE" if for_update else ""
     result = await db.execute(
         text(
             f"""
+            /* secretary_events:get_event_for_posting */
             SELECT
                 id,
                 posting_code,
@@ -538,6 +542,7 @@ async def _get_event_for_posting(
             FROM teaching_events
             WHERE id = :{id_param}
               AND posting_code = :posting_code
+            {lock_clause}
             """
         ),
         {id_param: str(event_id), "posting_code": posting_code},
@@ -577,6 +582,7 @@ async def duplicate_teaching_event(
         event_id=source_event_id,
         posting_code=posting_code,
         source=True,
+        for_update=True,
     )
     new_teaching_name = teaching_name or source["teaching_name"]
     new_start_time = start_time or source["start_time"]
@@ -590,8 +596,6 @@ async def duplicate_teaching_event(
         cme_points_awarded=source.get("cme_points_awarded", False),
         smc_event_code=source.get("smc_event_code"),
     )
-    await db.commit()
-    invalidate_secretary_event_caches(posting_code)
     return event
 
 
@@ -610,6 +614,7 @@ async def update_teaching_event(
         db,
         event_id=event_id,
         posting_code=posting_code,
+        for_update=True,
     )
     if source.get("created_by_role") not in {"secretary", "programme_pc", None} or source.get("is_adhoc"):
         raise ApiError(
@@ -700,8 +705,6 @@ async def update_teaching_event(
             detail="Teaching event could not be updated",
             error_code=ErrorCode.CONFLICT.value,
         )
-    await db.commit()
-    invalidate_secretary_event_caches(posting_code)
     return _event_row(dict(event))
 
 
@@ -720,13 +723,11 @@ async def _has_attendance(
                 SELECT 1
                 FROM attendance_records ar
                 WHERE ar.teaching_event_id = ANY(:event_ids)
-                  AND ar.status = 'submitted'
             )
             OR EXISTS (
                 SELECT 1
                 FROM external_attendance_records ear
                 WHERE ear.teaching_event_id = ANY(:event_ids)
-                  AND ear.status = 'submitted'
             )
             """
         ),
@@ -741,7 +742,12 @@ async def delete_teaching_event(
     posting_code: str,
     event_id: UUID,
 ) -> dict[str, int]:
-    source = await _get_event_for_posting(db, event_id=event_id, posting_code=posting_code)
+    source = await _get_event_for_posting(
+        db,
+        event_id=event_id,
+        posting_code=posting_code,
+        for_update=True,
+    )
     if source.get("created_by_role") not in {"secretary", "programme_pc", None} or source.get("is_adhoc"):
         raise ApiError(
             status_code=409,
@@ -766,8 +772,6 @@ async def delete_teaching_event(
         ),
         {"event_ids": event_ids, "posting_code": posting_code},
     )
-    await db.commit()
-    invalidate_secretary_event_caches(posting_code)
     return {"deleted_count": 1}
 
 
@@ -1107,8 +1111,6 @@ async def create_event_series(
             )
         )
 
-    await db.commit()
-    invalidate_secretary_event_caches(posting_code)
     return {
         "series": series,
         "events": created_events,
@@ -1132,6 +1134,26 @@ async def _series_events_for_scope(
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
 
+    candidate_event_ids = (
+        await db.scalars(
+            text(
+                """
+                SELECT id
+                FROM teaching_events
+                WHERE series_id = :series_id
+                  AND posting_code = :posting_code
+                """
+            ),
+            {
+                "series_id": str(series_id),
+                "posting_code": posting_code,
+            },
+        )
+    ).all()
+    await acquire_teaching_event_locks(
+        db,
+        event_ids=candidate_event_ids,
+    )
     result = await db.execute(
         text(
             """
@@ -1155,7 +1177,8 @@ async def _series_events_for_scope(
             FROM teaching_events
             WHERE series_id = :series_id
               AND posting_code = :posting_code
-            ORDER BY event_date ASC, start_time ASC
+            ORDER BY id ASC
+            FOR UPDATE
             """
         ),
         {
@@ -1234,8 +1257,6 @@ async def delete_event_series(
             ),
             {"series_id": str(series_id), "posting_code": posting_code},
         )
-    await db.commit()
-    invalidate_secretary_event_caches(posting_code)
     return {"deleted_count": len(event_ids)}
 
 

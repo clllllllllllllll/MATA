@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router'
 import {
   getAdminLogDetail,
   listAdminLogs,
@@ -20,11 +20,14 @@ import type {
 import {
   clearMemoryCache,
   getMemoryCache,
+  isMemoryCacheInvalidatedError,
   makeScopedCacheKey,
   readThroughMemoryCache,
-  setMemoryCache,
-  type CacheScope,
 } from '../../utils/memoryReadCache'
+import {
+  captureProtectedAsyncRequestFence,
+  isProtectedAsyncRequestFenceCurrent,
+} from '../../utils/protectedAsyncFence'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 type BadgeTone = 'success' | 'warning' | 'critical' | 'info' | 'neutral'
@@ -321,9 +324,9 @@ const initialFiltersFromParams = (params: URLSearchParams): AdminLogFilterState 
   actorRole: normalizeParam(params.get('actor_role')) || 'all',
   uploadType: parseUploadType(params.get('upload_type')),
   warningType: normalizeParam(params.get('warning_type')),
-  actorUserId: normalizeParam(params.get('actor_user_id')),
+  actorUserId: '',
   entityType: normalizeParam(params.get('entity_type')),
-  entityId: normalizeParam(params.get('entity_id')),
+  entityId: '',
   programmeCode: normalizeParam(params.get('programme_code')) || 'all',
   reportingPeriodId: normalizeParam(params.get('reporting_period_id')),
   status: normalizeParam(params.get('status')) || 'all',
@@ -336,7 +339,6 @@ const initialFiltersFromParams = (params: URLSearchParams): AdminLogFilterState 
 
 const buildSearchParams = (
   filters: AdminLogFilterState,
-  searchTerm: string,
   offset: number,
 ) => {
   const params = new URLSearchParams()
@@ -360,16 +362,13 @@ const buildSearchParams = (
   }
 
   const simpleFilters: Array<[string, string]> = [
-    ['actor_user_id', filters.actorUserId],
     ['warning_type', filters.warningType],
     ['entity_type', filters.entityType],
-    ['entity_id', filters.entityId],
     ['reporting_period_id', filters.reportingPeriodId],
     ['date_from', filters.dateFrom],
     ['date_to', filters.dateTo],
     ['correction_type', filters.correctionType],
     ['config_entity_type', filters.configEntityType],
-    ['search', searchTerm],
   ]
 
   simpleFilters.forEach(([key, value]) => {
@@ -407,14 +406,15 @@ export const AdminLogsPage = () => {
     role,
     demoAdminId,
     demoAdminProgrammes,
+    authCacheScope,
     reportingPeriods,
   } = useAppState()
   const [logs, setLogs] = useState<AdminLogListItem[]>([])
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(() => parseOffset(searchParams.get('offset')))
   const [filters, setFilters] = useState<AdminLogFilterState>(() => initialFiltersFromParams(searchParams))
-  const [searchTerm, setSearchTerm] = useState(() => normalizeParam(searchParams.get('search')))
-  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(() => normalizeParam(searchParams.get('search')))
+  const [searchTerm, setSearchTerm] = useState('')
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('')
   const [isInitialLoading, setIsInitialLoading] = useState(true)
   const [isRefetching, setIsRefetching] = useState(false)
   const [isManualRefreshing, setIsManualRefreshing] = useState(false)
@@ -424,15 +424,20 @@ export const AdminLogsPage = () => {
   const [detailError, setDetailError] = useState<string | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const hasLoadedLogsRef = useRef(false)
+  const listRequestRef = useRef(0)
   const detailRequestRef = useRef(0)
+  const authScopeKey = useMemo(
+    () => makeScopedCacheKey(authCacheScope, 'admin.logs.auth-scope', {}),
+    [authCacheScope],
+  )
+  const currentAuthScopeKeyRef = useRef(authScopeKey)
+
+  useLayoutEffect(() => {
+    currentAuthScopeKeyRef.current = authScopeKey
+    detailRequestRef.current += 1
+  }, [authScopeKey])
 
   const adminLevel = role === 'programme_pc' ? 'programme' : 'master'
-
-  const cacheScope = useMemo<CacheScope>(() => ({
-    role,
-    userId: demoAdminId,
-    programmeScope: demoAdminProgrammes,
-  }), [demoAdminId, demoAdminProgrammes, role])
 
   const updateFilter = <Key extends keyof AdminLogFilterState>(
     key: Key,
@@ -453,12 +458,35 @@ export const AdminLogsPage = () => {
   }, [searchTerm])
 
   useEffect(() => {
-    const nextParams = buildSearchParams(filters, searchTerm, offset)
+    let active = true
+    queueMicrotask(() => {
+      if (!active) {
+        return
+      }
+      hasLoadedLogsRef.current = false
+      setLogs([])
+      setTotal(0)
+      setError(null)
+      setSelectedLog(null)
+      setSelectedDetail(null)
+      setDetailError(null)
+      setDetailLoading(false)
+      setIsManualRefreshing(false)
+      setIsRefetching(false)
+      setIsInitialLoading(true)
+    })
+    return () => {
+      active = false
+    }
+  }, [authScopeKey])
+
+  useEffect(() => {
+    const nextParams = buildSearchParams(filters, offset)
     const nextQueryString = nextParams.toString()
     if (nextQueryString !== currentQueryString) {
       setSearchParams(nextParams, { replace: true })
     }
-  }, [currentQueryString, filters, offset, searchTerm, setSearchParams])
+  }, [currentQueryString, filters, offset, setSearchParams])
 
   const requestFilters = useCallback((
     querySearch: string,
@@ -484,10 +512,17 @@ export const AdminLogsPage = () => {
   }), [filters, offset])
 
   const adminLogsCacheKey = useCallback((querySearch: string) => makeScopedCacheKey(
-    cacheScope,
+    authCacheScope,
     'admin.logs.list',
     requestFilters(querySearch),
-  ), [cacheScope, requestFilters])
+  ), [authCacheScope, requestFilters])
+  const listRequestContextKey = adminLogsCacheKey(searchTerm)
+  const currentListRequestContextKeyRef = useRef(listRequestContextKey)
+
+  useLayoutEffect(() => {
+    currentListRequestContextKeyRef.current = listRequestContextKey
+    listRequestRef.current += 1
+  }, [listRequestContextKey])
 
   const loadLogs = useCallback(async (querySearch: string) => {
     return listAdminLogs({
@@ -499,18 +534,35 @@ export const AdminLogsPage = () => {
   }, [adminLevel, demoAdminId, demoAdminProgrammes, requestFilters])
 
   const fetchLogs = useCallback(async () => {
+    const requestId = listRequestRef.current + 1
+    listRequestRef.current = requestId
+    const requestFence = captureProtectedAsyncRequestFence(listRequestContextKey, requestId)
+    const isCurrentRequest = () => isProtectedAsyncRequestFenceCurrent(
+      requestFence,
+      currentListRequestContextKeyRef.current,
+      listRequestRef.current,
+    )
     setIsManualRefreshing(true)
     setError(null)
     try {
       const key = adminLogsCacheKey(searchTerm)
       clearMemoryCache((cacheKey) => cacheKey === key)
-      const response = await loadLogs(searchTerm)
-      setMemoryCache(key, response)
+      const { data: response } = await readThroughMemoryCache(
+        key,
+        () => loadLogs(searchTerm),
+        { force: true },
+      )
+      if (!isCurrentRequest()) {
+        return
+      }
       setDebouncedSearchTerm((previous) => (previous === searchTerm ? previous : searchTerm))
       setLogs(response.items)
       setTotal(response.total)
       hasLoadedLogsRef.current = true
     } catch (fetchError) {
+      if (isMemoryCacheInvalidatedError(fetchError) || !isCurrentRequest()) {
+        return
+      }
       setLogs([])
       setTotal(0)
       hasLoadedLogsRef.current = true
@@ -518,18 +570,31 @@ export const AdminLogsPage = () => {
         fallbackMessage: 'Unable to load admin logs.',
       }))
     } finally {
-      setIsManualRefreshing(false)
-      setIsInitialLoading(false)
-      setIsRefetching(false)
+      if (isCurrentRequest()) {
+        setIsManualRefreshing(false)
+        setIsInitialLoading(false)
+        setIsRefetching(false)
+      }
     }
-  }, [adminLogsCacheKey, loadLogs, searchTerm])
+  }, [adminLogsCacheKey, listRequestContextKey, loadLogs, searchTerm])
 
   useEffect(() => {
     let active = true
     ;(async () => {
+      if (adminLogsCacheKey(debouncedSearchTerm) !== listRequestContextKey) {
+        return
+      }
+      const requestId = listRequestRef.current + 1
+      listRequestRef.current = requestId
+      const requestFence = captureProtectedAsyncRequestFence(listRequestContextKey, requestId)
+      const isCurrentRequest = () => active && isProtectedAsyncRequestFenceCurrent(
+        requestFence,
+        currentListRequestContextKeyRef.current,
+        listRequestRef.current,
+      )
       const key = adminLogsCacheKey(debouncedSearchTerm)
       const cached = getMemoryCache<Awaited<ReturnType<typeof listAdminLogs>>>(key)
-      if (cached) {
+      if (cached && isCurrentRequest()) {
         setLogs(cached.data.items)
         setTotal(cached.data.total)
         hasLoadedLogsRef.current = true
@@ -550,13 +615,13 @@ export const AdminLogsPage = () => {
           () => loadLogs(debouncedSearchTerm),
           { force: Boolean(cached) },
         )
-        if (active) {
+        if (isCurrentRequest()) {
           setLogs(response.items)
           setTotal(response.total)
           hasLoadedLogsRef.current = true
         }
       } catch (fetchError) {
-        if (active) {
+        if (!isMemoryCacheInvalidatedError(fetchError) && isCurrentRequest()) {
           if (!isBackgroundRefetch) {
             setLogs([])
             setTotal(0)
@@ -567,7 +632,7 @@ export const AdminLogsPage = () => {
           }))
         }
       } finally {
-        if (active) {
+        if (isCurrentRequest()) {
           setIsInitialLoading(false)
           setIsRefetching(false)
         }
@@ -577,7 +642,7 @@ export const AdminLogsPage = () => {
     return () => {
       active = false
     }
-  }, [adminLogsCacheKey, debouncedSearchTerm, loadLogs])
+  }, [adminLogsCacheKey, debouncedSearchTerm, listRequestContextKey, loadLogs])
 
   const programmeOptions = useMemo(() => {
     return Array.from(
@@ -638,6 +703,12 @@ export const AdminLogsPage = () => {
   const openDetail = (log: AdminLogListItem) => {
     const requestId = detailRequestRef.current + 1
     detailRequestRef.current = requestId
+    const requestFence = captureProtectedAsyncRequestFence(authScopeKey, requestId)
+    const isCurrentRequest = () => isProtectedAsyncRequestFenceCurrent(
+      requestFence,
+      currentAuthScopeKeyRef.current,
+      detailRequestRef.current,
+    )
     setSelectedLog(log)
     setSelectedDetail(null)
     setDetailError(null)
@@ -651,11 +722,11 @@ export const AdminLogsPage = () => {
           adminLevel,
           logId: log.id,
         })
-        if (detailRequestRef.current === requestId) {
+        if (isCurrentRequest()) {
           setSelectedDetail(detail)
         }
       } catch (detailFetchError) {
-        if (detailRequestRef.current === requestId) {
+        if (isCurrentRequest()) {
           setDetailError(
             formatUserFacingApiError(detailFetchError, {
               fallbackMessage: 'Unable to load admin log detail.',
@@ -663,7 +734,7 @@ export const AdminLogsPage = () => {
           )
         }
       } finally {
-        if (detailRequestRef.current === requestId) {
+        if (isCurrentRequest()) {
           setDetailLoading(false)
         }
       }

@@ -1,8 +1,11 @@
 import { createContext } from 'react'
 import type { AppRole } from '../types/app'
 import type { ReportingPeriodOption, UploadMeta } from '../types/upload'
+import type { AuthSessionFence } from '../api/authSessionStore'
+import type { CacheScope } from '../utils/memoryReadCache'
 
 export interface UploadResultInput {
+  authSessionFence: AuthSessionFence
   uploadType: UploadMeta['uploadType']
   response: Record<string, unknown>
   filename?: string
@@ -26,8 +29,9 @@ export interface AppStateContextValue {
   reloadReportingPeriods: () => Promise<void>
   demoAdminId: string
   demoAdminProgrammes: string[]
+  authCacheScope: CacheScope
   uploadHistory: UploadMeta[]
-  addUploadResult: (input: UploadResultInput) => UploadMeta
+  addUploadResult: (input: UploadResultInput) => UploadMeta | null
 }
 
 export const AppStateContext = createContext<AppStateContextValue | undefined>(undefined)

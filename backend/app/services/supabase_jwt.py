@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 import jwt
-from jwt import InvalidTokenError, PyJWK
+from jwt import InvalidKeyError, InvalidTokenError, PyJWK
 
 from app.config import Settings
 
@@ -78,10 +78,13 @@ class SupabaseJwtVerifier:
                 algorithms=[algorithm],
                 audience=self._config.audience,
                 issuer=self._config.issuer,
-                options={"require": ["iss", "aud", "sub", "exp", "iat"]},
+                options={
+                    "require": ["iss", "aud", "sub", "exp", "iat"],
+                    "enforce_minimum_key_length": True,
+                },
                 leeway=SUPABASE_JWT_CLOCK_SKEW_LEEWAY_SECONDS,
             )
-        except InvalidTokenError as exc:
+        except (InvalidKeyError, InvalidTokenError) as exc:
             raise SupabaseJwtError("Invalid Supabase JWT") from exc
 
         if not isinstance(claims, dict):

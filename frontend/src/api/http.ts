@@ -1,12 +1,37 @@
 import axios from 'axios'
 import { frontendConfig } from '../config/frontendConfig'
 import { clearMemoryCache } from '../utils/memoryReadCache'
-import { readStoredAuthSession } from './authSessionStore'
-import { getCurrentSupabaseAccessToken } from './supabaseClient'
+import {
+  clearAuthSession,
+  clearAuthSessionIfPresent,
+  readAuthSessionEpoch,
+  readAuthSessionRevision,
+  readStoredAuthSession,
+} from './authSessionStore'
+import {
+  assertAuthCookieCoordinationAvailable,
+  AUTH_COOKIE_COORDINATION_HEADER_NAME,
+  AUTH_COOKIE_COORDINATION_PROTOCOL,
+} from './authCookieCoordination'
+import {
+  applySessionRequestHeaders,
+  handleUnauthorizedSessionResponse,
+  isUnsafeRequestMethod,
+  shouldBlockRequestDuringLogoutPending,
+} from './httpTransport'
+import {
+  isLogoutPendingBlocked,
+  readLogoutPendingSnapshot,
+} from './logoutReliability'
 
 declare module 'axios' {
   interface AxiosRequestConfig {
     skipMemoryCacheClear?: boolean
+    authSessionCsrfToken?: string
+    authSessionEpoch?: string | null
+    authSessionRevision?: number
+    authSessionWasAuthenticated?: boolean
+    allowDuringLogoutPending?: boolean
   }
 }
 
@@ -32,10 +57,8 @@ export class ApiRequestError extends Error {
 export const httpClient = axios.create({
   baseURL: frontendConfig.apiBaseUrl,
   timeout: 60000,
+  withCredentials: true,
 })
-
-const isMataResidentSessionRole = (role: string) =>
-  role === 'resident' || role === 'external_resident'
 
 const headerValue = (headers: unknown, name: string): unknown => {
   if (!headers || typeof headers !== 'object') {
@@ -59,53 +82,49 @@ const headerValue = (headers: unknown, name: string): unknown => {
   return undefined
 }
 
-const setHeaderValue = (headers: unknown, name: string, value: string) => {
-  if (!headers || typeof headers !== 'object') {
-    return
-  }
-  const setter = (headers as { set?: unknown }).set
-  if (typeof setter === 'function') {
-    setter.call(headers, name, value)
-    return
-  }
-  ;(headers as Record<string, unknown>)[name] = value
-}
-
-httpClient.interceptors.request.use(async (request) => {
+httpClient.interceptors.request.use((request) => {
   request.headers = request.headers ?? {}
-
-  if (frontendConfig.authMode !== 'supabase') {
-    return request
+  if (shouldBlockRequestDuringLogoutPending(
+    isLogoutPendingBlocked(readLogoutPendingSnapshot()),
+    request.allowDuringLogoutPending,
+  )) {
+    throw new ApiRequestError(
+      'Server logout is not confirmed. Protected requests remain blocked.',
+      { status: 409 },
+    )
   }
-
-  delete request.headers['X-User-Role']
-  delete request.headers['X-User-Id']
-  delete request.headers['X-User-Programme']
-  delete request.headers['X-User-Site']
-  delete request.headers['X-User-MCR']
-  delete request.headers['X-Admin-Level']
-
-  const explicitAuthorization = headerValue(request.headers, 'Authorization')
-  const hasExplicitAuthorization =
-    typeof explicitAuthorization === 'string' && explicitAuthorization.trim().length > 0
-  if (hasExplicitAuthorization) {
-    return request
+  if (frontendConfig.authMode === 'supabase') {
+    try {
+      assertAuthCookieCoordinationAvailable()
+    } catch (error) {
+      clearAuthSessionIfPresent({
+        broadcast: 'unauthorized',
+        sessionEpoch: readAuthSessionEpoch(),
+      })
+      clearMemoryCache()
+      throw error
+    }
+    request.headers.set(
+      AUTH_COOKIE_COORDINATION_HEADER_NAME,
+      AUTH_COOKIE_COORDINATION_PROTOCOL,
+    )
   }
-
   const storedSession = readStoredAuthSession()
-  if (
-    storedSession?.mode === 'supabase' &&
-    isMataResidentSessionRole(storedSession.identity.role) &&
-    storedSession?.accessToken
-  ) {
-    setHeaderValue(request.headers, 'Authorization', `Bearer ${storedSession.accessToken}`)
-    return request
+  request.authSessionWasAuthenticated = storedSession !== null
+  if (request.authSessionRevision === undefined) {
+    request.authSessionRevision = readAuthSessionRevision()
+  }
+  if (request.authSessionEpoch === undefined) {
+    request.authSessionEpoch = readAuthSessionEpoch()
   }
 
-  const accessToken = await getCurrentSupabaseAccessToken()
-  if (accessToken) {
-    setHeaderValue(request.headers, 'Authorization', `Bearer ${accessToken}`)
-  }
+  const csrfToken = request.authSessionCsrfToken ?? storedSession?.csrfToken
+  delete request.authSessionCsrfToken
+  applySessionRequestHeaders(request.headers, {
+    method: request.method,
+    csrfToken,
+    stripLegacyCredentials: frontendConfig.authMode === 'supabase',
+  })
 
   return request
 })
@@ -113,8 +132,7 @@ httpClient.interceptors.request.use(async (request) => {
 httpClient.interceptors.response.use((response) => {
   const method = response.config.method?.toUpperCase()
   if (
-    method &&
-    method !== 'GET' &&
+    isUnsafeRequestMethod(method) &&
     response.status >= 200 &&
     response.status < 300 &&
     !response.config.skipMemoryCacheClear
@@ -122,6 +140,24 @@ httpClient.interceptors.response.use((response) => {
     clearMemoryCache()
   }
   return response
+}, (error: unknown) => {
+  if (axios.isAxiosError(error)) {
+    handleUnauthorizedSessionResponse(
+      error.response?.status,
+      error.config?.authSessionWasAuthenticated,
+      error.config?.authSessionRevision,
+      readStoredAuthSession() !== null,
+      readAuthSessionRevision(),
+      () => {
+        clearAuthSession({
+          broadcast: 'unauthorized',
+          sessionEpoch: error.config?.authSessionEpoch,
+        })
+        clearMemoryCache()
+      },
+    )
+  }
+  return Promise.reject(error)
 })
 
 export const parseRetryAfterSeconds = (value: unknown): number | undefined => {

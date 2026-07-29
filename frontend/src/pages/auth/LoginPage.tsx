@@ -1,11 +1,6 @@
-import { useState, type FormEvent } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
-import {
-  STAFF_SUPABASE_BACKEND_AUTH_ERROR,
-  loginResident,
-  loginStaff,
-} from '../../api/auth'
-import { ApiRequestError } from '../../api/http'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router'
+import { loginResident, loginStaff } from '../../api/auth'
 import {
   GENERIC_LOGIN_ERROR,
   getRateLimitLoginErrorMessage,
@@ -20,7 +15,6 @@ type LoginFormId = 'staff' | 'resident'
 
 const RESIDENT_HELP =
   'NHG and registered Non-NHG residents use this shared MCR login.'
-const SUPABASE_CONFIGURATION_ERROR_MARKER = 'VITE_AUTH_MODE=supabase requires'
 
 const getRedirectPath = (role: AppRole, from?: string) => {
   if (from && isPathAllowedForRole(from, role)) {
@@ -31,26 +25,27 @@ const getRedirectPath = (role: AppRole, from?: string) => {
 
 const getStaffLoginErrorMessage = (loginError: unknown) => {
   const rateLimitMessage = getRateLimitLoginErrorMessage(loginError)
-  if (rateLimitMessage) {
-    return rateLimitMessage
-  }
-  if (!(loginError instanceof ApiRequestError)) {
-    return GENERIC_LOGIN_ERROR
-  }
-  if (
-    loginError.message.includes(SUPABASE_CONFIGURATION_ERROR_MARKER) ||
-    loginError.message.includes(STAFF_SUPABASE_BACKEND_AUTH_ERROR)
-  ) {
-    return loginError.message
-  }
-  return GENERIC_LOGIN_ERROR
+  return rateLimitMessage ?? GENERIC_LOGIN_ERROR
 }
 
 export const LoginPage = () => {
   const navigate = useNavigate()
   const location = useLocation()
-  const { beginLoginAttempt, isAuthRequestCurrent, clearCurrentAuthRequest, loginWithSession } = useAuth()
+  const {
+    beginLoginAttempt,
+    isAuthRequestCurrent,
+    clearCurrentAuthRequest,
+    loginWithSession,
+    logoutStatus,
+    isLogoutRetrying,
+    canRetryLogout,
+    logoutRetryCount,
+    logoutRetryReason,
+    retryLogout,
+  } = useAuth()
   const fromPath = (location.state as { from?: string } | null)?.from
+  const logoutStatusHeadingRef = useRef<HTMLHeadingElement | null>(null)
+  const submitAttemptRef = useRef(0)
 
   const [staffEmail, setStaffEmail] = useState('')
   const [staffPassword, setStaffPassword] = useState('')
@@ -58,6 +53,14 @@ export const LoginPage = () => {
   const [error, setError] = useState<{ formId: LoginFormId; message: string } | null>(null)
   const [submittingForm, setSubmittingForm] = useState<LoginFormId | null>(null)
   const isSubmitting = submittingForm !== null
+  const isLogoutStatusPolite =
+    isLogoutRetrying || logoutRetryReason === 'retry-scheduled'
+
+  useEffect(() => {
+    if (logoutStatus !== 'none') {
+      logoutStatusHeadingRef.current?.focus()
+    }
+  }, [logoutStatus])
 
   const submitStaffLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -69,28 +72,36 @@ export const LoginPage = () => {
       return
     }
 
+    const submitAttempt = submitAttemptRef.current + 1
+    submitAttemptRef.current = submitAttempt
     setSubmittingForm('staff')
     setError(null)
     const loginGeneration = beginLoginAttempt()
     try {
-      const session = await loginStaff(staffEmail, staffPassword)
+      let loginCommitted = false
+      const session = await loginStaff(staffEmail, staffPassword, (nextSession) => {
+        loginCommitted = loginWithSession(nextSession, loginGeneration)
+        return loginCommitted
+      })
       if (!isAuthRequestCurrent(loginGeneration)) {
         return
       }
+      if (!loginCommitted) {
+        return
+      }
       setSubmittingForm(null)
-      loginWithSession(session)
       navigate(getRedirectPath(session.identity.role, fromPath), { replace: true })
     } catch (loginError) {
       if (!isAuthRequestCurrent(loginGeneration)) {
         return
       }
-      const clearedCurrentRequest = await clearCurrentAuthRequest(loginGeneration, { signOutSupabase: true })
+      const clearedCurrentRequest = await clearCurrentAuthRequest(loginGeneration)
       if (!clearedCurrentRequest) {
         return
       }
       setError({ formId: 'staff', message: getStaffLoginErrorMessage(loginError) })
     } finally {
-      if (isAuthRequestCurrent(loginGeneration)) {
+      if (submitAttemptRef.current === submitAttempt) {
         setSubmittingForm(null)
       }
     }
@@ -106,19 +117,33 @@ export const LoginPage = () => {
       return
     }
 
+    const submitAttempt = submitAttemptRef.current + 1
+    submitAttemptRef.current = submitAttempt
     setSubmittingForm('resident')
     setError(null)
     const loginGeneration = beginLoginAttempt()
     try {
+      let loginCommitted = false
       const result = await submitSharedResidentLogin({
         rawMcr: residentMcr,
-        authenticate: loginResident,
+        authenticate: (payload) => loginResident(payload, (nextSession) => {
+          if (
+            nextSession.identity.role !== 'resident'
+            && nextSession.identity.role !== 'external_resident'
+          ) {
+            return false
+          }
+          loginCommitted = loginWithSession(nextSession, loginGeneration)
+          return loginCommitted
+        }),
       })
       if (!isAuthRequestCurrent(loginGeneration)) {
         return
       }
+      if (!loginCommitted) {
+        return
+      }
       setSubmittingForm(null)
-      loginWithSession(result.session)
       navigate(result.redirectPath, { replace: true })
     } catch (loginError) {
       if (!isAuthRequestCurrent(loginGeneration)) {
@@ -130,7 +155,7 @@ export const LoginPage = () => {
       }
       setError({ formId: 'resident', message: resolveResidentLoginError(loginError) })
     } finally {
-      if (isAuthRequestCurrent(loginGeneration)) {
+      if (submitAttemptRef.current === submitAttempt) {
         setSubmittingForm(null)
       }
     }
@@ -156,6 +181,66 @@ export const LoginPage = () => {
             Staff use email and password. NHG Residents and registered Non-NHG Residents use MCR-only sign-in.
           </p>
         </div>
+
+        {logoutStatus === 'pending' ? (
+          <section
+            className="auth-logout-status auth-logout-status-pending"
+            role={isLogoutStatusPolite ? 'status' : 'alert'}
+            aria-live={isLogoutStatusPolite ? 'polite' : 'assertive'}
+            aria-busy={isLogoutRetrying}
+          >
+            <h2 ref={logoutStatusHeadingRef} tabIndex={-1}>
+              {isLogoutRetrying
+                ? 'Confirming server sign-out'
+                : 'Server sign-out not confirmed'}
+            </h2>
+            <p>
+              Your local identity and protected data were cleared immediately.
+              Protected requests and session restoration remain blocked until
+              server sign-out is confirmed or you successfully sign in again.
+            </p>
+            {logoutRetryReason === 'offline' ? (
+              <p>Reconnect to continue the bounded server sign-out retry.</p>
+            ) : null}
+            {isLogoutRetrying ? (
+              <button
+                type="button"
+                className="auth-logout-retry"
+                disabled
+              >
+                Confirming attempt {logoutRetryCount}...
+              </button>
+            ) : canRetryLogout ? (
+              <button
+                type="button"
+                className="auth-logout-retry"
+                onClick={() => retryLogout()}
+              >
+                Retry server sign-out
+              </button>
+            ) : (
+              <p>
+                {logoutRetryReason === 'no-proof'
+                  ? 'The sign-out proof is no longer available after reload. '
+                  : 'No further retry is available in this tab. '}
+                Use either sign-in form below to establish a replacement session.
+              </p>
+            )}
+          </section>
+        ) : null}
+
+        {logoutStatus === 'confirmed' ? (
+          <section
+            className="auth-logout-status auth-logout-status-confirmed"
+            role="status"
+            aria-live="polite"
+          >
+            <h2 ref={logoutStatusHeadingRef} tabIndex={-1}>
+              Server sign-out confirmed
+            </h2>
+            <p>Your local data was cleared and the server revoked the presented session family.</p>
+          </section>
+        ) : null}
 
         <form
           className="auth-form auth-form-block"

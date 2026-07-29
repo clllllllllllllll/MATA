@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -8,6 +7,11 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.database import (
+    get_auth_db_session,
+    get_db_session,
+    get_exclusive_db_session,
+)
 from app.dependencies.auth import require_external_resident
 from app.dependencies.persistent_rate_limit import (
     enforce_external_registration_persistent_rate_limit,
@@ -26,17 +30,9 @@ from app.services import external_residents
 router = APIRouter(prefix="/external-residents", tags=["external-residents"])
 
 
-try:
-    from app.database import get_db_session
-except Exception:
-
-    async def get_db_session() -> AsyncIterator[AsyncSession | None]:
-        yield None
-
-
 async def _persistent_registration_rate_limit(
     request: Request,
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_auth_db_session),
     settings: Settings = Depends(get_settings),
 ) -> None:
     await enforce_external_registration_persistent_rate_limit(
@@ -69,7 +65,7 @@ async def require_external_resident_context(
     response_model=ExternalResidentRegistrationOptions,
 )
 async def list_registration_options(
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_auth_db_session),
 ) -> ExternalResidentRegistrationOptions:
     rows = await external_residents.list_registration_options(db)
     return ExternalResidentRegistrationOptions.model_validate(rows)
@@ -78,7 +74,7 @@ async def list_registration_options(
 @router.post("/register", dependencies=[Depends(_persistent_registration_rate_limit)])
 async def register_external_resident(
     request: ExternalResidentRegisterRequest,
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_auth_db_session),
 ) -> dict:
     return await external_residents.register_external_resident(
         db,
@@ -95,7 +91,7 @@ async def update_my_posting(
     external_context: ExternalResidentContext = Depends(
         require_external_resident_context
     ),
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_exclusive_db_session),
 ) -> dict:
     return await external_residents.update_my_posting(
         db,
@@ -111,7 +107,7 @@ async def replace_my_posting_schedule(
     external_context: ExternalResidentContext = Depends(
         require_external_resident_context
     ),
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_exclusive_db_session),
 ) -> dict:
     return await external_residents.replace_my_posting_schedule(
         db,

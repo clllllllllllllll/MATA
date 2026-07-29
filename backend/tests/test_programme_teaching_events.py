@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from uuid import uuid4
@@ -120,8 +121,13 @@ class FakeProgrammeTeachingEventsSession:
         ]
         self.attendance_event_ids = {self.native_attended_event_id}
         self.external_attendance_event_ids = {self.external_attended_event_id}
+        self.attendance_statuses = {self.native_attended_event_id: "submitted"}
+        self.external_attendance_statuses = {
+            self.external_attended_event_id: "submitted",
+        }
         self.commits = 0
         self.deleted_event_ids: list[str] = []
+        self.locked_event_ids: list[str] = []
 
     def _catalogue(
         self,
@@ -182,6 +188,10 @@ class FakeProgrammeTeachingEventsSession:
     async def execute(self, statement, params=None):  # noqa: C901, PLR0912, PLR0915
         sql = str(statement)
         payload = dict(params or {})
+
+        if "/* teaching_event_mutation_lock */" in sql:
+            assert str(payload["lock_scope"]).startswith("teaching-event:")
+            return _FakeResult()
 
         if "/* reporting_period_resolution:list */" in sql:
             return _FakeResult(rows=list(self.reporting_periods))
@@ -343,6 +353,8 @@ class FakeProgrammeTeachingEventsSession:
 
         if "/* programme_teaching_events:get_event */" in sql:
             event = next((row for row in self.events if row["id"] == str(payload["event_id"])), None)
+            if "FOR UPDATE OF te" in sql and event is not None:
+                self.locked_event_ids.append(event["id"])
             return _FakeResult(rows=[event] if event else [])
 
         if "/* programme_teaching_events:event_programme_match */" in sql:
@@ -360,7 +372,15 @@ class FakeProgrammeTeachingEventsSession:
 
         if "/* programme_teaching_events:attendance_guard */" in sql:
             event_id = str(payload["event_id"])
-            has_attendance = event_id in self.attendance_event_ids or event_id in self.external_attendance_event_ids
+            native_status = self.attendance_statuses.get(event_id)
+            external_status = self.external_attendance_statuses.get(event_id)
+            if "status = 'submitted'" in sql:
+                has_attendance = native_status == "submitted" or external_status == "submitted"
+            else:
+                has_attendance = (
+                    event_id in self.attendance_event_ids
+                    or event_id in self.external_attendance_event_ids
+                )
             return _FakeResult(scalar=1 if has_attendance else None)
 
         if "/* programme_teaching_events:update */" in sql:
@@ -690,6 +710,56 @@ def test_edit_preserves_created_by_role_and_duplicate_uses_pc_role() -> None:
     assert duplicated.status_code == 200
     assert duplicated.json()["created_by_role"] == "programme_pc"
     assert duplicated.json()["created_for_programme_code"] == "DR"
+    assert session.locked_event_ids == [
+        session.pc_dr_event_id,
+        session.secretary_dr_event_id,
+    ]
+
+
+def test_pc_update_cache_failure_after_commit_is_best_effort_for_both_postings(
+    monkeypatch,
+    caplog,
+) -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    session.catalogue.append(
+        session._catalogue(  # noqa: SLF001
+            "Journal Club",
+            "DR",
+            "TTSHNeuro",
+            session.session_type_id,
+        )
+    )
+    invalidated_postings: list[str] = []
+
+    def _invalidate(*, posting_code: str) -> None:
+        invalidated_postings.append(posting_code)
+        if posting_code == "TTSHCardio":
+            raise RuntimeError("cache backend unavailable")
+
+    monkeypatch.setattr(
+        "app.services.cache_invalidation.invalidate_after_secretary_event_mutation",
+        _invalidate,
+    )
+    client = _client(session)
+
+    response = client.put(
+        f"/admin/programme-teaching-events/{session.pc_dr_event_id}",
+        headers=_headers(scope="DR"),
+        json={
+            "programme_code": "DR",
+            "posting_code": "TTSHNeuro",
+            "teaching_name": "Journal Club",
+            "event_date": "2026-05-21",
+            "start_time": "11:00",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["posting_code"] == "TTSHNeuro"
+    assert session.commits == 1
+    assert invalidated_postings == ["TTSHCardio", "TTSHNeuro"]
+    assert "programme_teaching_event_cache_invalidation_failed" in caplog.text
+    assert "cache backend unavailable" not in caplog.text
 
 
 def test_ph_and_attendance_guards_apply_to_pc_mutations() -> None:
@@ -721,6 +791,40 @@ def test_ph_and_attendance_guards_apply_to_pc_mutations() -> None:
     assert public_holiday.status_code == 422
     assert native_attendance.status_code == 409
     assert external_attendance.status_code == 409
+
+
+def test_pc_mutations_lock_and_reject_removed_or_flagged_linked_attendance() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    session.attendance_statuses[session.native_attended_event_id] = "removed"
+    session.external_attendance_statuses[session.external_attended_event_id] = "flagged"
+    initial_events = deepcopy(session.events)
+    client = _client(session)
+    body = {
+        "programme_code": "DR",
+        "posting_code": "TTSHCardio",
+        "teaching_name": "Journal Club",
+        "event_date": "2026-05-20",
+        "start_time": "10:00",
+    }
+
+    removed_native = client.delete(
+        f"/admin/programme-teaching-events/{session.native_attended_event_id}",
+        headers=_headers(scope="DR"),
+    )
+    flagged_external = client.put(
+        f"/admin/programme-teaching-events/{session.external_attended_event_id}",
+        headers=_headers(scope="DR"),
+        json=body,
+    )
+
+    assert removed_native.status_code == 409
+    assert flagged_external.status_code == 409
+    assert session.events == initial_events
+    assert session.commits == 0
+    assert session.locked_event_ids == [
+        session.native_attended_event_id,
+        session.external_attended_event_id,
+    ]
 
 
 def test_teaching_name_options_are_programme_scoped() -> None:

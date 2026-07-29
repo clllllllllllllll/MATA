@@ -15,13 +15,18 @@ import {
   type UploadResultInput,
 } from './appStateContext'
 import {
+  clearUploadHistory,
   loadUploadHistory,
   saveUploadHistory,
 } from '../utils/storage'
 import {
   makeUploadMeta,
 } from '../utils/warnings'
-import { authSessionChangedEvent, readStoredAuthSession } from '../api/auth'
+import {
+  authSessionChangedEvent,
+  isAuthSessionFenceCurrent,
+  readStoredAuthSession,
+} from '../api/auth'
 import { listReportingPeriods } from '../api/reportingPeriods'
 import { listSecretaryReportingPeriods } from '../api/secretaryEvents'
 import { formatUserFacingApiError } from '../utils/userFacingErrors'
@@ -89,6 +94,11 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
   const [reportingPeriodsError, setReportingPeriodsError] = useState<string | null>(null)
   const [uploadHistory, setUploadHistory] = useState<UploadMeta[]>(loadUploadHistory)
 
+  const clearUploadState = useCallback(() => {
+    clearUploadHistory()
+    setUploadHistory([])
+  }, [])
+
   const updateReportingPeriodContext = useCallback(
     (transition: (state: ReportingPeriodContextState) => ReportingPeriodContextState) => {
       const next = transition(reportingPeriodContextRef.current)
@@ -110,6 +120,13 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
       sessionIdentity?.role === 'master_admin' || sessionIdentity?.role === 'programme_pc'
         ? sessionIdentity.programmeScope
         : [],
+    postingCode: sessionIdentity?.role === 'secretary'
+      ? sessionIdentity.postingCode
+      : undefined,
+    residentId:
+      sessionIdentity?.role === 'resident' || sessionIdentity?.role === 'external_resident'
+        ? sessionIdentity.subjectId
+        : undefined,
   }), [role, sessionIdentity])
 
   const updateRole = useCallback((nextRole: AppRole) => {
@@ -247,6 +264,9 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
       const nextIdentity = readStoredAuthSession()?.identity ?? null
       const previousContext = reportingPeriodContextRef.current
       const nextContext = transitionReportingPeriodAuthenticationContext(previousContext, nextIdentity)
+      if (!nextIdentity || nextContext !== previousContext) {
+        clearUploadState()
+      }
       if (nextContext !== previousContext) {
         invalidateReportingPeriodRequests()
         reportingPeriodContextRef.current = nextContext
@@ -261,7 +281,7 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
     }
     window.addEventListener(authSessionChangedEvent, onAuthSessionChanged)
     return () => window.removeEventListener(authSessionChangedEvent, onAuthSessionChanged)
-  }, [invalidateReportingPeriodRequests])
+  }, [clearUploadState, invalidateReportingPeriodRequests])
 
   const updateReportingPeriodId = useCallback((selectedId: string) => {
     updateReportingPeriodContext((state) => selectValidatedReportingPeriod(state, selectedId))
@@ -272,7 +292,10 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
     [reportingPeriods, reportingPeriodId],
   )
 
-  const addUploadResult = useCallback((input: UploadResultInput): UploadMeta => {
+  const addUploadResult = useCallback((input: UploadResultInput): UploadMeta | null => {
+    if (!isAuthSessionFenceCurrent(input.authSessionFence)) {
+      return null
+    }
     clearMemoryCacheResource('admin.upload-logs.list')
     clearMemoryCacheResource('admin.upload-warnings.list')
     clearMemoryCacheResource('admin.parsed-data')
@@ -311,6 +334,7 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
       reloadReportingPeriods,
       demoAdminId: frontendConfig.demoAdminId,
       demoAdminProgrammes: frontendConfig.demoAdminProgrammes,
+      authCacheScope: adminCacheScope,
       uploadHistory,
       addUploadResult,
     }),
@@ -326,6 +350,7 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
       reloadReportingPeriods,
       uploadHistory,
       addUploadResult,
+      adminCacheScope,
       updateRole,
       updateReportingPeriodId,
       updateSelectedProgrammeCode,

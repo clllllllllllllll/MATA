@@ -12,6 +12,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.security import log_safe_exception
 from app.services.parser_common import ParserResult
 
 
@@ -1975,6 +1976,10 @@ async def _update_resident(
                 name = :name,
                 classification = :classification,
                 base_institution = :base_institution,
+                session_generation = session_generation + CASE
+                    WHEN programme_code IS DISTINCT FROM :programme_code THEN 1
+                    ELSE 0
+                END,
                 programme_code = :programme_code,
                 r_year = :r_year,
                 reg_type = :reg_type,
@@ -2463,7 +2468,12 @@ async def parse_rdb_upload(
         )
     except Exception as exc:
         await db_session.rollback()
-        logger.exception("Unexpected RDB upload processing failure")
+        log_safe_exception(
+            logger,
+            "rdb_upload_processing_failed",
+            exc,
+            category="upload_processing",
+        )
         return ParserResult(
             upload_type="rdb",
             errors=[UNEXPECTED_UPLOAD_FAILURE_MESSAGE],

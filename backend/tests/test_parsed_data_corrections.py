@@ -630,16 +630,19 @@ class FakeRdbUploadCorrectionWarningSession:
             self.rate_limit_request_counts.append(request_count)
             return _FakeResult(rows=[{"request_count": request_count}])
         if (
-            normalised_sql.startswith("DELETE FROM RATE_LIMIT_BUCKETS")
-            and normalised_sql.endswith("WHERE EXPIRES_AT < :CUTOFF")
+            "DELETE FROM RATE_LIMIT_BUCKETS" in normalised_sql
+            and "WHERE EXPIRES_AT < :CUTOFF" in normalised_sql
         ):
             cutoff = payload["cutoff"]
-            expired_keys = [
-                key
-                for key, bucket in self.rate_limit_buckets.items()
-                if isinstance(bucket.get("expires_at"), datetime)
-                and bucket["expires_at"] < cutoff
-            ]
+            expired_keys = sorted(
+                (
+                    key
+                    for key, bucket in self.rate_limit_buckets.items()
+                    if isinstance(bucket.get("expires_at"), datetime)
+                    and bucket["expires_at"] < cutoff
+                ),
+                key=lambda key: self.rate_limit_buckets[key]["expires_at"],
+            )[: int(payload.get("batch_size", len(self.rate_limit_buckets)))]
             for key in expired_keys:
                 del self.rate_limit_buckets[key]
             self.rate_limit_cleanup_calls += 1

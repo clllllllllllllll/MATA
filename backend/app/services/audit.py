@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.staff_actor import StaffActorContext
 from app.errors import ApiError, ErrorCode
+from app.services.database_context import session_uses_rls
 
 
 def _require_non_empty_label(value: str, *, field_name: str) -> str:
@@ -70,6 +71,24 @@ async def write_audit_log(
         "after_json": _json_payload(after),
         "metadata_json": _metadata_payload(actor, metadata),
     }
+
+    if session_uses_rls(db):
+        result = await db.execute(
+            text(
+                """
+                SELECT mata_rls.append_audit_log(
+                    CAST(:action AS text),
+                    CAST(:entity_type AS text),
+                    CAST(:entity_id AS text),
+                    CAST(:before_json AS jsonb),
+                    CAST(:after_json AS jsonb),
+                    CAST(:metadata_json AS jsonb)
+                )
+                """
+            ),
+            params,
+        )
+        return {"id": result.scalar_one()}
 
     result = await db.execute(
         text(

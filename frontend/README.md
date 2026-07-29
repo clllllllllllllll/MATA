@@ -1,18 +1,22 @@
-## MATA Frontend (Phase 0)
+## MATA Frontend
 
-React + Vite + TypeScript frontend for the Master Admin upload workflow demo path.
+React + Vite + TypeScript frontend for staff, NHG Resident, and Non-NHG Resident workflows.
 
 ### Run locally
 
+Prerequisite: Node.js 22.22+.
+
 1. `cd frontend`
-2. `npm install`
+2. `npm ci`
 3. `npm run dev`
 4. Open [http://localhost:5173](http://localhost:5173)
 
-### Build / lint
+### Verification gates
 
+- `npm test`
 - `npm run build`
 - `npm run lint`
+- `npm run typecheck`
 
 ### Environment variables
 
@@ -35,12 +39,11 @@ Notes:
   - `X-User-Id: <VITE_DEMO_ADMIN_USER_ID>`
   - `X-User-Programme: <VITE_DEMO_ADMIN_PROGRAMME_SCOPE>`
 - TTF upload requires the selected `programme_code` to be inside `X-User-Programme`.
-- Supabase frontend mode requires only public browser-safe variables:
-  - `VITE_AUTH_MODE=supabase`
-  - `VITE_SUPABASE_URL=https://<project-ref>.supabase.co`
-  - `VITE_SUPABASE_PUBLISHABLE_KEY=<publishable-key>` or `VITE_SUPABASE_ANON_KEY=<anon-key>`
-- Never add server-only Supabase secrets to frontend env vars.
-- In Supabase mode, staff sign in through Supabase Auth and MATA identity is loaded from backend `/auth/me`. NHG and registered Non-NHG Resident MCR-only login use backend-signed MATA resident session tokens.
+- Production uses `VITE_AUTH_MODE=supabase`, but the browser has no Supabase client configuration. Staff credentials are submitted to the MATA backend, which mediates Supabase Auth server-side.
+- Production always uses the relative `/api/v1` browser API path, even if a different `VITE_API_BASE_URL` is supplied at build time.
+- All roles use the backend-owned `HttpOnly` application-session cookie. The frontend keeps only the current identity and synchronizer CSRF token in module memory, includes credentials on API requests, and sends `X-CSRF-Token` only on `POST`, `PUT`, `PATCH`, and `DELETE`.
+- No authentication credential is retained in `localStorage` or `sessionStorage`.
+- Do not add backend secrets or database credentials to frontend env vars. No Supabase URL or publishable/anonymous key is required by the frontend.
 - Backward-compatible fallbacks still supported:
   - `VITE_DEMO_ADMIN_ID`
   - `VITE_DEMO_ADMIN_PROGRAMMES`
@@ -53,6 +56,14 @@ Notes:
 - For Docker full-stack startup, frontend is served by Nginx on `http://localhost:8080` and proxies API calls to backend using `/api/v1`.
 - In Docker mode, set frontend build-time API base to `/api/v1` (already wired in `docker-compose.yml`).
 - Local Vite dev can still use direct backend API base: `http://localhost:8000/api/v1`.
+
+Production frontend values:
+
+```dotenv
+VITE_APP_ENV=production
+VITE_AUTH_MODE=supabase
+VITE_API_BASE_URL=/api/v1
+```
 
 ### Docker full-stack startup
 

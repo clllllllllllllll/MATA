@@ -13,7 +13,16 @@ const assert = (condition: boolean, label: string) => {
 }
 
 const pageSource = read('./AdminWarningsPage.tsx')
+const multiPostingSource = read('./AdminMultiPostingPage.tsx')
 const stylesSource = read('../../index.css').replace(/\r\n/g, '\n')
+const warningNavigationSource = pageSource.slice(
+  pageSource.indexOf('const openMultiPostingRules'),
+  pageSource.indexOf('const submitWarningAction'),
+)
+const warningContextSource = multiPostingSource.slice(
+  multiPostingSource.indexOf('const isResolvingWarning'),
+  multiPostingSource.indexOf('const fetchRules'),
+)
 
 assert(
   pageSource.includes('className="warning-type-cell-content"'),
@@ -28,4 +37,19 @@ assert(
 assert(
   /\.grouped-warnings-table\s+\.warning-type-cell-content\s*\{[^}]*display:\s*inline-flex[^}]*align-items:\s*center[^}]*gap:\s*10px/s.test(stylesSource),
   'persisted warning type badge wrapper handles inline alignment inside the table cell',
+)
+
+assert(
+  !/\bmcr\b/i.test(warningNavigationSource) &&
+    !/\bmonth(?:Label)?\b/i.test(warningNavigationSource),
+  'warning navigation never serializes resident identifiers or month context into the URL',
+)
+assert(
+  !/\bmcr\b/i.test(warningContextSource) &&
+    !/\bmonth(?:Label)?\b/i.test(warningContextSource),
+  'multi-posting rules never restore resident identifiers or month context from the URL',
+)
+assert(
+  multiPostingSource.includes('Resolving an unmatched multi-posting warning.'),
+  'warning navigation retains a non-sensitive resolution cue',
 )

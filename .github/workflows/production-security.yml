@@ -1,0 +1,213 @@
+name: Production Security
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  repository-source-security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Test security scanners and report sanitization
+        run: python -m unittest discover -s .github/scripts -p "test_*.py"
+
+      - name: Scan browser auth and frontend secret boundaries
+        run: python .github/scripts/security_source_scan.py --frontend
+
+      - name: Scan added diff for likely secrets without echoing values
+        env:
+          SECURITY_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python .github/scripts/security_source_scan.py --diff-base "$SECURITY_DIFF_BASE"
+
+  backend-production-security:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend and scanner dependencies
+        run: pip install -r backend/requirements.txt pip-audit
+
+      - name: Provision exact disposable PostgreSQL database
+        uses: ./.github/actions/setup-security-postgres
+        with:
+          container-id: ${{ job.services.postgres.id }}
+
+      - name: Compile backend application and tests
+        working-directory: backend
+        run: python -B -m compileall app tests
+
+      - name: Verify the exact single Alembic head
+        shell: bash
+        working-directory: backend
+        run: |
+          heads="$(python -B -m alembic heads)"
+          test "$(printf '%s\n' "$heads" | wc -l)" -eq 1
+          test "$heads" = "20260728_000028 (head)"
+
+      - name: Apply clean baseline-to-head migration
+        working-directory: backend
+        run: python -B -m alembic upgrade head
+
+      - name: Verify the disposable database is at every Alembic head
+        working-directory: backend
+        run: python -B -m alembic current --check-heads
+
+      - name: Run full backend regression suite
+        working-directory: backend
+        env:
+          RATE_LIMIT_STORE: memory
+        run: >-
+          python -B -m tests.run_rls_restricted_pytest
+          -q --tb=short -p no:cacheprovider tests
+
+      - name: Run focused security tests
+        working-directory: backend
+        env:
+          RATE_LIMIT_STORE: memory
+        run: >-
+          python -B -m tests.run_rls_restricted_pytest
+          -q --tb=short -p no:cacheprovider
+          tests/test_app_sessions.py
+          tests/test_cookie_session_transport.py
+          tests/test_auth_modes.py
+          tests/test_auth_resident.py
+          tests/test_external_auth.py
+          tests/test_auth_postgres.py
+          tests/test_auth_supabase.py
+          tests/test_admin_staff_accounts.py
+          tests/test_security_postgres_integration.py
+          tests/test_persistent_rate_limits.py
+          tests/test_request_body_limits.py
+          tests/test_upload_multipart_limits.py
+          tests/test_settings.py
+          tests/test_workbook_security.py
+          tests/test_security_redaction.py
+          tests/test_error_responses.py
+          tests/test_grant_hardening_migration.py
+
+      - name: Run PostgreSQL rate-limit security integration
+        working-directory: backend
+        run: >-
+          python -B -m tests.run_rls_restricted_pytest
+          -q --tb=short -p no:cacheprovider
+          tests/test_security_postgres_integration.py
+
+      - name: Audit Python runtime dependencies
+        id: pip_audit
+        shell: bash
+        run: |
+          set +e
+          pip-audit -r backend/requirements.txt --format json > "$RUNNER_TEMP/pip-audit.json"
+          audit_status=$?
+          python .github/scripts/sanitize_dependency_audit.py --pip "$RUNNER_TEMP/pip-audit.json" --output security-reports/backend.json
+          sanitizer_status=$?
+          rm -f "$RUNNER_TEMP/pip-audit.json"
+          set -e
+          if [ "$sanitizer_status" -ne 0 ]; then
+            exit "$sanitizer_status"
+          fi
+          exit "$audit_status"
+
+      - name: Upload sanitized backend security report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backend-security-advisories
+          path: security-reports/backend.json
+          if-no-files-found: warn
+
+  frontend-production-security:
+    runs-on: ubuntu-latest
+    env:
+      VITE_APP_ENV: production
+      VITE_AUTH_MODE: supabase
+      VITE_API_BASE_URL: /api/v1
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Python for sanitized audit reports
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run frontend tests
+        run: npm test
+
+      - name: Lint frontend
+        run: npm run lint
+
+      - name: Type-check frontend
+        run: npm run typecheck
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Audit frontend production dependencies
+        shell: bash
+        run: |
+          set +e
+          npm audit --omit=dev --audit-level=high --json > "$RUNNER_TEMP/npm-audit.json"
+          audit_status=$?
+          python ../.github/scripts/sanitize_dependency_audit.py --npm "$RUNNER_TEMP/npm-audit.json" --npm-lock package-lock.json --output ../security-reports/frontend.json
+          sanitizer_status=$?
+          rm -f "$RUNNER_TEMP/npm-audit.json"
+          set -e
+          if [ "$sanitizer_status" -ne 0 ]; then
+            exit "$sanitizer_status"
+          fi
+          exit "$audit_status"
+
+      - name: Upload sanitized frontend security report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: frontend-security-advisories
+          path: security-reports/frontend.json
+          if-no-files-found: warn

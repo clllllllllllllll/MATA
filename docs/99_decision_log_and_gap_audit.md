@@ -2,7 +2,7 @@
 
 > **Purpose:** This is the exhaustive safety and audit document for the MATA project. It is not meant to be read linearly — it is a reference and audit trail for decisions, TBDs, rejected approaches, risks, and blind spots.
 >
-> **Authority:** This document is an audit trail. If it conflicts with `schema.md`, `api.md`, `business-logic.md`, `parsing.md`, or `AGENTS.md`, trust the domain-specific source-of-truth file and flag this document for update.
+> **Authority:** This document is the current decision and gap audit trail. If it conflicts with `schema.md`, `api.md`, `business-logic.md`, `parsing.md`, `auth-account-contract.md`, `security.md`, or `AGENTS.md`, trust the domain-specific source-of-truth file and flag this document for update. `security.md` is the current cross-cutting security contract; archived Phase 5B records are supporting historical evidence only.
 >
 > **Status markers:** ❓ unresolved, ⚠️ high-risk, ✅ confirmed, 🔧 partially implemented, ❌ deprecated
 
@@ -47,7 +47,7 @@ These entries supersede any earlier contradictory current-state entry in this au
 ---
 
 #### Decision: Vercel stakeholder UAT requires a deployment security cut before Phase 6 compliance
-- **Status:** Confirmed roadmap sequencing
+- **Status:** Confirmed historical H-A/B/C protected-UAT sequencing
 - **Decision:** Stakeholder UAT needs a protected Vercel/Supabase deployment before Phase 6 compliance starts. Vercel deployment must not be treated as safe just because the frontend uses Supabase Auth.
 - **Deployment access control:** The UAT deployment should be protected from public access where possible, for example Vercel Deployment Protection, Vercel Authentication, or password protection depending on project plan availability.
 - **Backend runtime requirement:** Backend must run with `ENV=production` and `AUTH_MODE=supabase` for stakeholder deployment. Raw `X-User-*` identity headers must remain rejected in production/Supabase mode.
@@ -63,8 +63,37 @@ These entries supersede any earlier contradictory current-state entry in this au
 - **Phase boundary:** Full RLS enablement and policy SQL remain deferred to a dedicated RLS phase. Cookie/BFF/CSRF/session hardening remains part of 5B-H, with the deployment-safe cut first.
 - **Compliance sequencing:** Phase 6 compliance should not begin until the protected deployment/security baseline is acceptable.
 - **Non-NHG invariant:** Non-NHG data remains separate and must not enter NHG compliance later.
-- **Reference file and section:** `docs/5b_h_vercel_uat_security_plan.md`; `docs/auth-account-contract.md` 5B-H roadmap alignment; `docs/5b_g_rls_grants_matrix.md`
+- **Reference file and section:** `docs/archive/security/phase-5b/5b_h_vercel_uat_security_plan.md`; `docs/auth-account-contract.md` 5B-H roadmap alignment; `docs/archive/security/phase-5b/5b_g_rls_grants_matrix.md`
 - **Do not change without PM/stakeholder approval:** Yes
+
+---
+
+#### Decision: 5B-H-D backend-owned session transport and intentionally public authentication boundary
+- **Status:** Implemented in code and locally verified; deployment evidence pending
+- **Decision:** Normal production browser transport uses backend-owned opaque PostgreSQL sessions. Staff credentials are submitted to the backend, which mediates Supabase authentication and does not return upstream access or refresh tokens. NHG and Non-NHG Resident MCR login use the same opaque application-session envelope while preserving separate identity tables.
+- **Public boundary:** Staff login, Resident login, registration options, and Non-NHG registration are intentionally public application entry points. They do not require a Vercel outer gate. Exact production Origin validation where applicable, JSON-only public mutations, generic errors, persistent PostgreSQL rate limits, and application authorization remain mandatory.
+- **Browser boundary:** Production uses relative `/api/v1`, credentialed cookie requests, memory-only identity/CSRF state, and no routine bearer persistence or injection.
+- **Session boundary:** `__Host-mata_session` is host-only, `Secure`, `HttpOnly`, `SameSite=Strict`, and `Path=/`. Raw session and CSRF values are 256-bit and only keyed digests persist. One-winner family rotation, family logout, expiry, generation fencing, and password-reset issuance blocking fail closed.
+- **Database boundary:** `20260722_000023` adds application sessions and subject generations. `20260722_000024` revokes application-object privileges from `PUBLIC` and optional browser roles. This is not full RLS; Phase 5B-H-E owns the restricted runtime role, trusted transaction context, policies, and full-table verification.
+- **Dependency disposition:** The final sanitized `pip-audit`, npm runtime audit, and npm full-tree audit reported zero findings. Exact advisory history and version changes are recorded in `docs/archive/security/phase-5b/5b_h_d_production_security_implementation.md`.
+- **Verification:** Complete backend `1104 passed, 7 warnings`; focused H-D security `230 passed, 1 warning`; PostgreSQL security integration `13 passed`; 20/20 process-isolated concurrent-rotation repeats; frontend `78 passed` plus lint, typecheck, and production/Supabase build.
+- **Evidence boundary:** Code completion and local verification do not prove deployed security.
+
+Resident identity assurance remains separately governed product debt. Reopen
+only under an approved product scope.
+
+---
+
+#### Decision: 5B-H-E full PostgreSQL RLS and restricted database roles
+- **Status:** Implemented in code and verified against the named local disposable PostgreSQL database; deployment evidence pending
+- **Decision:** Normal application SQL runs through a distinct credentialed login that inherits only the non-owner, `NOBYPASSRLS` `mata_app_runtime` capability. Intentionally unauthenticated auth/registration/session infrastructure uses a second login that inherits only `mata_auth_internal`. Alembic and ownership use a third credential that is never an application credential.
+- **Trusted context:** PostgreSQL reloads the current application session and subject and installs signed transaction-local subject type/id, app role, explicit admin level, normalized programme scope, posting code, application-session id, and authorization fingerprint. Browser claims, request JSON, raw identity headers, frontend state, and Supabase `user_metadata` cannot seed it. Every new root transaction revalidates context, including after mid-request commit or rollback.
+- **Policy and grant boundary:** Revision `20260726_000026` enables RLS on all 34 application tables and creates 84 policies targeted only to `mata_app_runtime`. Six tables remain helper-only with no direct runtime table privilege. `mata_auth_internal` has no direct application-table or sequence privilege. PUBLIC and optional `anon`, `authenticated`, and `service_role` roles have no application-object, H-E helper, or schema-creation authority.
+- **Application boundary:** FastAPI authorization remains mandatory. RLS is defense in depth and must not broaden or replace current route/service role, programme, posting, resident, external-resident, period, or workflow checks.
+- **Identity separation:** Native and Non-NHG Resident rows, schedules, attendance, and compliance eligibility remain separate. Migration `20260726_000025` adds serialized database-level normalized MCR uniqueness across the two identity tables.
+- **Evidence boundary:** Local tests and catalogue inspection do not prove deployed Supabase revision, roles, ownership, policies, grants, environment, or runtime behavior.
+- **Reference files:** `docs/archive/security/phase-5b/5b_h_e_full_rls_implementation.md`; `docs/archive/security/phase-5b/5b_g_rls_grants_matrix.md`; `docs/schema.md`
+- **Do not change without PM/security-owner approval:** Yes
 
 ---
 
@@ -73,7 +102,7 @@ These entries supersede any earlier contradictory current-state entry in this au
 - **Decision:** Admin/PC accounts use `users.programme_scope TEXT[]` to restrict access to specific programmes. `NULL` = no access (not all-access).
 - **Reasoning:** PCs manage specific programmes — they should not see data for programmes they don't own. Multiple programmes per account supported for PCs who manage several.
 - **Alternatives considered:** (1) Single global admin role — rejected, violates least-privilege. (2) Separate admin table — rejected, unnecessary complexity.
-- **Consequences for codebase:** Every admin endpoint must filter by `programme_scope`. Admin report queries include `WHERE r.programme_code = :programme_code` with programme_code validated against JWT claims.
+- **Consequences for codebase:** Every admin endpoint must filter by `programme_scope`. Admin report queries include `WHERE r.programme_code = :programme_code`, with programme scope validated from the current database-owned staff subject loaded through the opaque app session.
 - **Reference file and section:** `schema.md` § `users` table; `api.md` § Authentication Model
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -656,18 +685,18 @@ These entries supersede any earlier contradictory current-state entry in this au
 - **Decision:** PostgreSQL for local dev; Supabase-hosted PostgreSQL for production.
 - **Reasoning:** [Not explicitly documented — likely organisation infrastructure preference.]
 - **Alternatives considered:** [Not documented.]
-- **Consequences for codebase:** Supabase Auth integration planned for Phase 2. RLS policies defined in `AGENTS.md`. Service role key server-only.
+- **Consequences for codebase:** Supabase staff password authentication is backend-mediated and wrapped in opaque MATA application sessions. H-E locally implements the restricted runtime/auth-helper role architecture and full application-table RLS. Service-role credentials remain server-only and are not the normal application runtime.
 - **Reference file and section:** `AGENTS.md` § Tech Stack
 - **Do not change without PM/stakeholder approval:** No (infra choice, not business rule)
 
 ---
 
 #### Decision: Auth stub Phase 1; Supabase Auth Phase 2
-- **Status:** ✅ Confirmed
-- **Decision:** Phase 1 uses stub middleware reading role and identity from request headers. Phase 2 swaps to Supabase Auth with JWT. Only middleware changes — rest of the app unchanged.
+- **Status:** Confirmed historical sequencing; production transport superseded by H-D
+- **Decision:** Local/demo may use stub middleware. In production, Supabase remains the staff credential verifier, while MATA owns the browser application session, cookie/CSRF transport, subject reload, and generation checks. H-D proved that production requires more than a middleware-only swap.
 - **Reasoning:** Allows rapid development without auth infrastructure. The header-based stub is simple to swap.
 - **Alternatives considered:** Full auth from day 1 — rejected, slows initial development.
-- **Consequences for codebase:** Middleware reads `X-User-Role`, `X-User-Id`, `X-User-Programme`, `X-User-Site`. All endpoints check these for authorization. Middleware swap is the only change for Phase 2.
+- **Consequences for codebase:** Synthetic `X-User-*` headers remain local/demo-only. Production rejects them as identity sources and uses `app_sessions` plus current database-owned role/scope.
 - **Reference file and section:** `AGENTS.md` § Auth Stub; `api.md` § Authentication Model
 - **Do not change without PM/stakeholder approval:** Yes (for Phase 2 timing)
 
@@ -679,6 +708,11 @@ These entries supersede any earlier contradictory current-state entry in this au
 - **Reasoning:** Residents are medical professionals with controlled MCR numbers. The system tracks attendance, not patient data. Low-friction login maximises adoption.
 - **Alternatives considered:** Password-based auth — rejected for UX friction.
 - **Consequences for codebase:** `POST /auth/login` with `role: 'resident'` is the neutral shared resident request. It checks `residents` and `external_residents` in one backend resolution, relies on global MCR uniqueness, validates the resolved row is active, returns the resolved `resident | external_resident` role, and rejects cross-table duplicates without issuing a token. The frontend makes exactly one request and never probes the tables sequentially.
+- **Assurance boundary:** MCR-only remains the implemented and approved resident credential path. This decision is not evidence that resident production authentication assurance is sufficient, and H-D does not invent an unapproved factor.
+
+- **Product-debt status:** Resident identity assurance remains separately
+  governed. Do not invent a second factor or claim workflow outside an approved
+  product scope.
 - **Reference file and section:** `api.md` § POST `/auth/login`; `AGENTS.md` § Security Rules
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -759,12 +793,12 @@ These entries supersede any earlier contradictory current-state entry in this au
 
 ---
 
-#### Decision: Security — server-side enforcement, RLS at Phase 9
-- **Status:** ✅ Confirmed
-- **Decision:** All security checks enforced server-side. Frontend checks are UX only. RLS enabled on sensitive tables when Supabase Auth is integrated (Phase 9).
+#### Decision: Security — server-side enforcement and Phase 5B-H-E full RLS
+- **Status:** Confirmed; H-D transport/grant hardening and H-E RLS are locally implemented, deployed verification pending
+- **Decision:** All security checks are enforced server-side. Frontend checks are UX only. Protected requests use opaque application sessions, current subject-row reloads, and H-E database-revalidated transaction-local identity.
 - **Reasoning:** Frontend code is client-controlled and cannot be trusted for security.
 - **Alternatives considered:** None — standard security practice.
-- **Consequences for codebase:** Every endpoint validates JWT and checks role + scope before DB operations. RLS policies defined in `AGENTS.md`. Admin operations spanning multiple residents use Supabase service role key.
+- **Consequences for codebase:** Every endpoint validates the app session and checks current role/scope before DB operations. Migration `20260722_000024` revokes browser-role grants but is not RLS. Revisions `20260726_000025` and `20260726_000026` implement the non-owner `NOBYPASSRLS` runtime, separate auth-helper capability, transaction-local trusted context, exact policies/grants, and startup attestation. Ordinary application queries do not use `service_role`, ownership, or `BYPASSRLS`.
 - **Reference file and section:** `AGENTS.md` § Security Rules
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -995,9 +1029,9 @@ Status: ✅ Resolved
 |---|---|---|---|
 | FormSG CSV column detection via regex (`FORMSG01`–`FORMSG08` patterns) | Detected response columns by pattern because FormSG didn't guarantee stable positions | New system uses structured POST bodies | Pydantic request schemas |
 | Date/timestamp format normalisation (dd-MMM-yy, dd/MM/yy, dd/MM/YYYY, etc.) | Parsed 6+ date formats from free-text submissions | Portal submits ISO-8601 | ISO-8601 `DATE` type in Pydantic |
-| MCR extraction from free-text name string | Extracted MCR from "Name (MCR)" free-text format | Session-authenticated identity provides MCR directly | JWT `sub` → `residents.id` |
-| Non-resident filtering via 'I am a' column | Filtered out non-resident FormSG submissions | Portal enforces auth role at login | `X-User-Role` middleware check |
-| Consecutive teaching row duplication (`_consec2`, `_consec3` suffixes) | Duplicated rows for consecutive identical teachings in the same FormSG response | Each teaching event is a discrete DB record with its own `teaching_events.id` | `UNIQUE(resident_id, teaching_event_id)` constraint |
+| MCR extraction from free-text name string | Extracted MCR from "Name (MCR)" free-text format | Session-authenticated identity provides MCR directly | Validated app session → current `residents.id` |
+| Non-resident filtering via 'I am a' column | Filtered out non-resident FormSG submissions | Portal enforces current database-owned role at login/request time | App-session subject and server-side role reload |
+| Consecutive teaching row duplication (`_consec2`, `_consec3` suffixes) | Duplicated rows for consecutive identical teachings in the same FormSG response | Each teaching event is a discrete DB record with its own `teaching_events.id` | Submitted-only unique `(resident_id, teaching_event_id)` index; removed cycles remain immutable history |
 | `responseIDwithproblemALL` error-code feedback loop | Tagged submissions with error codes for manual review | Real-time 422 validation at submission time | `status` field on `attendance_records` |
 
 ### String Matching and Posting Resolution (Scripts A, B, C)
@@ -1056,8 +1090,11 @@ Status: ✅ Resolved
 
 | # | Question | Why It Matters | Who Answers | Can Dev Proceed? |
 |---|----------|---------------|-------------|-----------------|
-| 9 | What is the Supabase project URL and configuration? | Required for Phase 2 auth integration | DevOps / PM | Yes — not needed until Phase 2 |
+| 9 | What approved Supabase deployment target and configuration will be used? | Required for deployed backend-mediated staff auth and H-D post-deployment verification | DevOps / PM | Local implementation can proceed; deployment evidence remains separate |
 | 10 | What is the Vercel deployment configuration for the frontend? | Required for production deployment | DevOps | Yes — not needed until deployment |
+| 10A | What approved resident second factor, if any, will satisfy production assurance? | MCR-only remains the implemented path but assurance approval is unresolved | PM / Security owner / Programme leadership | H-D may complete; do not invent a factor |
+| 10B | Has deployed cookie, Origin, migration, grant, and session behavior passed the H-D smoke contract? | Local verification does not prove deployed controls | DevOps / Security owner | Deployment approval remains separate |
+| 10C | Has the approved database passed the H-E revision, three-credential, ownership, role, policy, helper, grant, default-ACL, PUBLIC/browser, startup-attestation, and five-role workflow checks? | Local disposable-PostgreSQL evidence does not establish the deployed RLS boundary | DevOps / Security owner | Deployment approval remains separate |
 
 ### Testing
 
@@ -1109,7 +1146,8 @@ Status: ✅ Resolved
 |---|----------------|---------------|--------------------------|-------------------------------|
 | 2 | TBD-MIGRATION option selection | Determines historical data availability | No code exists — placeholder TODO only | New migration script(s) when option confirmed |
 | 3 | Complete clawback financial/final-close contract | Required only for deferred clawback | No implementation-ready placeholder; legacy evidence is non-authoritative | Source-of-truth documents after stakeholder confirmation |
-| 6 | Actual implementation status of codebase | Source-of-truth files are design specs | This document marks all components as 📋 Planned | Verify against actual codebase and update Section 3 of `00_project_context.md` |
+| 7 | Approved resident identity-assurance change, if any | Separately governed product debt; not a stop condition for the final security review | No factor is invented or implemented by H-D | Auth contract and deployment approval records after stakeholder decision |
+| 8 | Deployed H-D/H-E verification | Required to distinguish local code evidence from live cookie/session and RLS behavior | H-D and H-E implementation reports contain local evidence only | Deployment smoke/evidence document |
 
 > **⚠️ Most likely LLM mistake:** Treating legacy clawback evidence as an implementation-ready formula. The entire financial/final-close contract is deferred; ordinary compliance remains independently specified.
 
@@ -1120,6 +1158,20 @@ Status: ✅ Resolved
 These are implementation errors that would fail silently — no exception thrown, wrong data produced.
 
 ---
+
+#### Security blind spots added by 5B-H-D
+
+- Mistaking `20260722_000024` browser-role privilege revocation alone for the H-E role/context/policy implementation.
+- Treating passing local tests and audits as proof of deployed Vercel/Supabase security.
+- Enabling `bearer_compat` as routine production transport instead of a time-bounded emergency rollback.
+
+#### Security blind spots added by 5B-H-E
+
+- Using the migration/ownership credential, `service_role`, a superuser, or any `BYPASSRLS` role for ordinary application queries.
+- Installing transaction context from browser claims or request fields instead of the current database-owned application session and subject.
+- Losing transaction-local context after an in-request commit/rollback or retaining stale identity-map authority across a pooled connection.
+- Broadening an exact helper grant or adding direct privileges to helper-only tables to fix a workflow.
+- Treating the local 34-table/84-policy catalogue as proof that the approved Supabase target has revision `20260726_000026` or the same roles, owners, grants, policies, and default ACLs.
 
 #### ⚠️ Blind Spot 1: Using `residents.r_year` instead of `resident_postings.r_year`
 - **Where:** `compliance.py` — any join to `teaching_targets`
@@ -1269,6 +1321,9 @@ These are implementation errors that would fail silently — no exception thrown
 | 37 | Native programme to TTSH teaching-posting visibility requires explicit mapping, not string inference | Avoids accidental cross-department event exposure | PM / Programme Director | `programmes.native_teaching_posting_code` or `programme_teaching_posting_map` |
 | 38 | Non-NHG programme/institution mapping used a pending Stage 1 baseline followed by a validated Stage 2 state of 24 active and 4 inactive/null TTSH mappings, with no runtime exceptions or cross-domain fallback | Prevents guessed posting identity and accidental Secretary/native/compliance coupling while allowing mapping-scoped unavailability | PM / Programme Director | `programme_institution_posting_map` and trusted resolver |
 | 39 | Master Admin force deletion is an explicit, audited, transactional exception for Secretary/PC scheduled events only | Prevents silent partial deletion or privilege expansion while allowing destructive operational correction | PM / Security owner | Dedicated `/admin/secretary-events/{id}/force-delete` action and audit service |
+| 40 | Backend-owned opaque cookie/CSRF transport is the normal production path | Prevents reintroduction of browser-visible application credentials | PM / Security owner | H-D implementation and auth contract |
+| 41 | Subject → family advisory lock → fresh locked-row rotation order and unique one-child invariant | Prevents concurrent session resurrection or double rotation | Security owner | `app_sessions` service and PostgreSQL race tests |
+| 42 | No resident second factor may be invented without approval | Authentication policy and clinical-user workflow require stakeholder authority | PM / Security owner / Programme leadership | Separately governed product-debt record and auth contract |
 
 > **⚠️ Most likely LLM mistake:** Changing the 70% threshold to 75% or 65% because it "seems more reasonable." The threshold is a regulatory requirement. The silent consequence is every compliance calculation being wrong for every resident.
 

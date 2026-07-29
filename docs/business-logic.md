@@ -634,10 +634,14 @@ Residents can submit ad-hoc teachings not pre-created by secretaries via `POST /
    - Non-NHG Resident: from `external_resident_postings` for the date after forecast posting schedule support is implemented.
 3. Resident selects the attended TTSH department/programme from an additional dropdown backed by validated `posting_codes` / explicit config. This supports cases where residents attend teaching outside both their assigned posting and native programme. Do not create posting codes by string concatenation or regex.
 4. System returns teaching/session names from TTF Column K / `teaching_name_catalogue`, filtered by selected attended TTSH department posting, resident native programme where applicable, selected date, r_year/reporting-period context, and normal catalogue rules.
-5. Resident selects a catalogue-backed teaching option and provides `start_time`. Optional planned `details_of_session` may be captured as display/audit-only text.
+5. Resident selects a catalogue-backed teaching option and provides `start_time`. Optional `details_of_session` may be captured as display/audit-only text.
 6. System validates the selected teaching option still exists in the same catalogue context at submit time. Arbitrary free-text teaching names must not drive compliance mapping.
-7. System creates a `teaching_events` row with `is_adhoc = true`, `posting_code = assigned/compliance posting for NHG Resident ad-hoc`, `created_by_role = 'resident'` or `'external_resident'`, `cme_points_awarded = false`, `smc_event_code = null`, and planned `details_of_session` if provided.
-8. System creates an `attendance_records` row for NHG Residents, or an `external_attendance_records` row for Non-NHG Residents, in the same transaction.
+7. System creates a `teaching_events` row with `is_adhoc = true`, `posting_code = assigned/compliance posting for NHG Resident ad-hoc`, `created_by_role = 'resident'` or `'external_resident'`, the matching immutable typed creator foreign key, `cme_points_awarded = false`, `smc_event_code = null`, and `details_of_session` if provided.
+8. A narrow PostgreSQL function derives the trusted subject and storage family
+   from the verified transaction-local context and creates that event plus an
+   `attendance_records` row for an NHG Resident, or an
+   `external_attendance_records` row for a Non-NHG Resident. The function does
+   not commit; the service commits the complete operation once.
 9. For countable NHG ad-hoc compliance attribution, `end_time`/duration is fixed to `Department/Programme Teaching [1h]` semantics; the attended teaching's original session type does not drive compliance attribution.
 
 **UI helper copy:** `Please ensure your current submission is not an already scheduled event. There are no CME Pts tagged to adhoc teachings.`
@@ -656,7 +660,33 @@ This supersedes any interpretation that ad-hoc compliance session type is resolv
 - Required assigned-posting `Department/Programme Teaching [1h]` target must exist for countable NHG ad-hoc compliance; otherwise return unavailable/not-countable
 - Duplicate detection (BL-5) applies
 
-**Planned schema note:** `details_of_session` is not currently present in models/migrations. Preferred storage is `teaching_events.details_of_session` because both NHG and Non-NHG ad-hoc submissions create an event row. It has no operational or compliance use. `attended_posting_code` may need a dedicated audit/display column or table; do not overload `teaching_events.posting_code`, which remains the assigned/compliance posting for NHG ad-hoc.
+**Ownership, history, and concurrency:** PostgreSQL permits an ad-hoc event to
+belong to exactly one native or external creator and rejects the other storage
+family and every other Resident. Creator evidence and attendance
+subject/event identifiers are immutable. Native and external submissions use
+the same family-specific subject/date advisory-lock protocol. Removing
+attendance transitions one submitted row to `removed`; resubmission inserts a
+new submitted row and preserves the old identifier, so a stale removal request
+cannot remove a newer resubmission.
+
+The complete `event_ids` list in one `POST /resident/attendance` request is the
+scheduled-attendance atomic unit. Every item is validated before DML, then the
+batch commits once. Any validation, insert, or commit failure rolls back the
+entire request. Attendance submit/remove and staff event mutation share a
+transaction-scoped advisory key derived from the trusted event UUID. Staff
+edit/delete then takes `FOR UPDATE`; batch and series event keys are sorted.
+This avoids granting Residents an event UPDATE policy solely for locking and
+serializes attendance against event changes. Any linked attendance status is a
+dependency; ordinary mutation returns `409` rather than bypassing
+removed/flagged history. The Master Admin force-delete operation remains the
+only reviewed all-status hard-delete exception.
+
+**Schema note:** `details_of_session` is stored on
+`teaching_events` because both NHG and Non-NHG ad-hoc submissions create an
+event row; it has no operational or compliance use. `attended_posting_code`
+still has no dedicated persisted field and may need a future audit/display
+column or table. Do not overload `teaching_events.posting_code`, which remains
+the assigned/compliance posting for NHG ad-hoc.
 
 ---
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Annotated, Any, AsyncIterator, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, Header, Query, Request, UploadFile
@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.database import get_db_session, get_exclusive_db_session
 from app.dependencies.auth import is_master_admin
 from app.dependencies.persistent_rate_limit import enforce_upload_persistent_rate_limit
 from app.dependencies.staff_actor import (
@@ -21,6 +22,10 @@ from app.dependencies.staff_actor import (
 )
 from app.errors import ApiError, ErrorCode, UploadValidationApiError
 from app.middleware.auth_stub import AuthIdentity
+from app.routers.upload_multipart import (
+    BoundedAdminUploadRoute,
+    bounded_admin_upload,
+)
 from app.schemas import (
     AcademicMonthBoundaryResponse,
     AdminExternalAttendanceDetailResponse,
@@ -146,6 +151,7 @@ from app.services.parser_common import (
     ParserResult,
     UploadValidationError,
     normalise_scope_values,
+    read_upload_bytes_limited,
     validate_upload_payload,
     write_upload_log,
 )
@@ -155,16 +161,12 @@ from app.services.public_holiday_parser import parse_public_holiday_upload
 from app.services.ttf_parser import TTFUploadLockError, parse_ttf_upload
 
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(
+    prefix="/admin",
+    tags=["admin"],
+    route_class=BoundedAdminUploadRoute,
+)
 RDB_RAW_MULTI_POSTING_FRAGMENT_RESPONSE_LIMIT = 50
-
-
-try:
-    from app.database import get_db_session
-except Exception:
-
-    async def get_db_session() -> AsyncIterator[AsyncSession | None]:
-        yield None
 
 
 @dataclass(slots=True)
@@ -1046,7 +1048,7 @@ async def create_staff_account(
 async def update_staff_account(
     user_id: UUID,
     payload: StaffAccountUpdateRequest,
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_exclusive_db_session),
     admin_context: AdminContext = Depends(require_admin_context),
     actor: StaffActorContext = Depends(require_staff_actor),
 ) -> dict:
@@ -1063,7 +1065,7 @@ async def update_staff_account(
 async def reset_staff_account_password(
     user_id: UUID,
     payload: StaffAccountResetPasswordRequest,
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_exclusive_db_session),
     admin_context: AdminContext = Depends(require_admin_context),
     actor: StaffActorContext = Depends(require_staff_actor),
     settings: Settings = Depends(get_settings),
@@ -1079,6 +1081,7 @@ async def reset_staff_account_password(
 
 
 @router.post("/upload/rdb")
+@bounded_admin_upload("/admin/upload/rdb")
 async def upload_rdb(
     file: UploadFile = File(...),
     reporting_period_id: UUID = Form(...),
@@ -1087,8 +1090,11 @@ async def upload_rdb(
     db: AsyncSession | None = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
-    file_bytes = await file.read()
     try:
+        file_bytes = await read_upload_bytes_limited(
+            file,
+            max_size_bytes=settings.max_upload_size_bytes,
+        )
         validated = validate_upload_payload(
             upload_type="rdb",
             filename=file.filename,
@@ -1147,6 +1153,7 @@ async def upload_rdb(
 
 
 @router.post("/upload/ttf")
+@bounded_admin_upload("/admin/upload/ttf")
 async def upload_ttf(
     file: UploadFile = File(...),
     reporting_period_id: UUID = Form(...),
@@ -1159,8 +1166,11 @@ async def upload_ttf(
     programme_code = programme_code.strip().upper()
     _require_programme_in_scope(admin_context, programme_code)
 
-    file_bytes = await file.read()
     try:
+        file_bytes = await read_upload_bytes_limited(
+            file,
+            max_size_bytes=settings.max_upload_size_bytes,
+        )
         validated = validate_upload_payload(
             upload_type="ttf",
             filename=file.filename,
@@ -1219,6 +1229,7 @@ async def upload_ttf(
 
 
 @router.post("/upload/form-f1")
+@bounded_admin_upload("/admin/upload/form-f1")
 async def upload_formf1(
     file: UploadFile = File(...),
     reporting_period_id: UUID = Form(...),
@@ -1227,8 +1238,11 @@ async def upload_formf1(
     db: AsyncSession | None = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
-    file_bytes = await file.read()
     try:
+        file_bytes = await read_upload_bytes_limited(
+            file,
+            max_size_bytes=settings.max_upload_size_bytes,
+        )
         validated = validate_upload_payload(
             upload_type="form_f1",
             filename=file.filename,
@@ -1275,6 +1289,7 @@ async def upload_formf1(
 
 
 @router.post("/upload/public-holidays")
+@bounded_admin_upload("/admin/upload/public-holidays")
 async def upload_public_holidays(
     file: UploadFile = File(...),
     admin_context: AdminContext = Depends(require_master_admin_context),
@@ -1282,8 +1297,11 @@ async def upload_public_holidays(
     db: AsyncSession | None = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
-    file_bytes = await file.read()
     try:
+        file_bytes = await read_upload_bytes_limited(
+            file,
+            max_size_bytes=settings.max_upload_size_bytes,
+        )
         validated = validate_upload_payload(
             upload_type="public_holidays",
             filename=file.filename,

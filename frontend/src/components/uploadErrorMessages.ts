@@ -1,3 +1,5 @@
+import { UPLOAD_REQUEST_SIZE_ERROR_MESSAGE } from '../config/uploadLimits.ts'
+
 export const GENERIC_UPLOAD_VALIDATION_MESSAGE =
   'Upload failed validation or parser checks. Check the workbook type, required fields, and reporting period.'
 
@@ -80,6 +82,9 @@ export const resolveUploadErrorMessage = (error: UploadErrorLike) => {
   }
   if (error.status === 409) {
     return 'Another upload is already running for this scope. Try again shortly.'
+  }
+  if (error.status === 413) {
+    return UPLOAD_REQUEST_SIZE_ERROR_MESSAGE
   }
   if (error.status && error.status >= 500) {
     return 'The server hit an error while processing this upload.'

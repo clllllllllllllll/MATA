@@ -1,6 +1,11 @@
 # Database Schema
 
-All tables use UUID primary keys (`id UUID DEFAULT gen_random_uuid()`), `created_at TIMESTAMPTZ DEFAULT now()`, and `updated_at TIMESTAMPTZ DEFAULT now()` unless noted otherwise.
+`security.md` is authoritative for cross-cutting database roles, RLS, grants,
+helper ownership, default ACLs, credential separation, and local-versus-deployed
+security evidence. This file remains authoritative for schema objects and
+persistence behavior.
+
+All tables use UUID primary keys (`id UUID DEFAULT gen_random_uuid()`), `created_at TIMESTAMPTZ DEFAULT now()`, and `updated_at TIMESTAMPTZ DEFAULT now()` unless noted otherwise. `app_sessions` is an explicit exception: it has `created_at` and `last_seen_at`, but no `updated_at`.
 
 ## Entity Relationship Summary
 
@@ -22,9 +27,11 @@ posting_codes ─1:N─ posting_groups
 residents ─1:N─ resident_postings
 residents ─1:N─ attendance_records
 residents ─1:N─ surplus_ledger
+residents ─logical 1:N─ app_sessions (subject_type = resident)
 
 external_residents ─1:N─ external_attendance_records
 external_residents ─1:N─ external_resident_postings
+external_residents ─logical 1:N─ app_sessions (subject_type = external_resident)
 teaching_events ─1:N─ external_attendance_records
 
 teaching_events ─1:N─ attendance_records
@@ -44,7 +51,10 @@ posting_codes ─1:N─ teaching_name_catalogue
 programmes ─1:N─ teaching_name_catalogue
 
 users ─1:N─ upload_logs
+users ─logical 1:N─ app_sessions (subject_type = staff)
 upload_logs ─1:N─ academic_month_boundaries
+
+rate_limit_buckets (standalone security infrastructure)
 ```
 
 ---
@@ -193,7 +203,7 @@ Six-month reporting windows.
 
 ## Table: `residents`
 
-One row per resident. Created from RDB upload. Also serves as the **identity source for resident authentication** — MCR is the login credential and `programme_code` is embedded in the JWT at login time to scope all compliance lookups to the resident's native residency programme.
+One row per resident. Created from RDB upload. Also serves as the **identity source for resident authentication**: MCR is the login credential, while `programme_code` is reloaded from this row for cookie-session identity and compliance scope. Only emergency `bearer_compat` embeds it in a MATA JWT.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
@@ -210,6 +220,7 @@ One row per resident. Created from RDB upload. Also serves as the **identity sou
 | phone | VARCHAR(20) | | |
 | status | VARCHAR(20) | DEFAULT 'active' | `active`, `inactive`, `loa`, `employed` |
 | employer_tag | VARCHAR(20) | | NULL for normal residents, "SAF", "SCDF", "KTPH" etc. |
+| session_generation | BIGINT | NOT NULL, DEFAULT 0, CHECK >= 0 | Subject-wide application-session invalidation generation |
 
 ---
 
@@ -360,7 +371,7 @@ Teaching sessions created by secretaries, Programme PC CRUD, or ad-hoc submissio
 | posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Posting/site context for the event. Secretary-created events are posting-owned; PC-created events also carry explicit programme ownership in `created_for_programme_code`. For NHG Resident ad-hoc submissions, this is the assigned/compliance posting for the selected date, not necessarily the attended TTSH department. |
 | created_for_programme_code | VARCHAR(20) | FK → programmes.code, nullable | Explicit programme ownership for PC-created scheduled events. Required for PC-created programme-owned events. Null for secretary-created posting-owned/programme-neutral events unless explicitly set by a future workflow. |
 | teaching_name | VARCHAR(200) | NOT NULL | Stored teaching keyword/name. Secretary and PC scheduled events use approved dropdown options; planned ad-hoc rework requires NHG/Non-NHG Resident selections to come from catalogue-backed options, not arbitrary free text for compliance mapping. |
-| details_of_session | TEXT | nullable | **Planned, not yet in current models/migrations.** Display/audit-only free text for ad-hoc session context. No operational use and no compliance use. Preferred storage is on `teaching_events` because ad-hoc submission creates an event row for both NHG and Non-NHG Residents. |
+| details_of_session | TEXT | nullable | Display/audit-only free text for ad-hoc session context. It has no operational or compliance use and is stored on the shared event row for both NHG and Non-NHG Residents. |
 | event_date | DATE | NOT NULL | |
 | start_time | TIME | NOT NULL | |
 | end_time | TIME | | Server-computed from start_time + session_type.duration_hours at creation |
@@ -371,6 +382,17 @@ Teaching sessions created by secretaries, Programme PC CRUD, or ad-hoc submissio
 | smc_event_code | VARCHAR(50) | | |
 | is_adhoc | BOOLEAN | DEFAULT false | True for resident-submitted ad-hoc events, false for secretary-created events |
 | created_by_role | VARCHAR(20) | | `secretary`, `programme_pc`, `resident`, or `external_resident` depending on creator/source role. This is role/source metadata only, not an actor-name field. |
+| created_by_resident_id | UUID | FK → residents.id, nullable | Immutable native creator identity for `is_adhoc = true AND created_by_role = 'resident'`; null for every other event family. |
+| created_by_external_resident_id | UUID | FK → external_residents.id, nullable | Immutable Non-NHG creator identity for `is_adhoc = true AND created_by_role = 'external_resident'`; null for every other event family. |
+
+**Ad-hoc ownership constraint:** Scheduled events carry neither creator foreign
+key. A Resident-created ad-hoc event carries exactly one creator foreign key,
+and the populated family must agree with `created_by_role`. Ad-hoc rows cannot
+carry scheduled programme/series ownership. The event kind, creator role, and
+both creator foreign keys are immutable. Migration `20260728_000028` backfills
+only a role-consistent event with exactly one distinct same-family attendance
+subject across all statuses and no opposite-family subject; an ambiguous,
+orphaned, mixed-family, or role-mismatched event aborts the upgrade.
 
 **Programme ownership visibility rule:**
 - `created_for_programme_code IS NULL` → treat the event as normal posting-owned/programme-neutral secretary/ad-hoc visibility. For NHG Residents, secretary-created events may qualify through assigned posting visibility or through the resident's explicit native-programme TTSH department posting mapping. Resident visibility still requires date/catalogue checks.
@@ -380,7 +402,7 @@ Teaching sessions created by secretaries, Programme PC CRUD, or ad-hoc submissio
 
 **Master Admin transactional hard-delete exception:** No schema migration, cascade constraint, soft-delete column, or deletion-history table is required for the **Secretary/PC Events** operational override. The dedicated Master Admin service locks the selected scheduled `teaching_events` row, verifies that linked native/external counts still match the confirmed impact, explicitly deletes every linked native `attendance_records` row and every linked `external_attendance_records` row, deletes only that event occurrence, and writes the immutable audit record before the single transaction commits. Foreign keys retain their existing non-cascade behaviour and remain the final integrity guard. Ad-hoc events are not eligible; series siblings and the `event_series` row are preserved.
 
-**Ad-hoc detail contract (planned):** `details_of_session` is optional context text only. It must not participate in event visibility, session type resolution, denominator/numerator calculation, surplus, snapshots, or clawback.
+**Ad-hoc detail contract:** `details_of_session` is optional context text only. It must not participate in event visibility, session type resolution, denominator/numerator calculation, surplus, snapshots, or clawback.
 
 **Ad-hoc attended posting metadata (planned / pending schema choice):** Phase 5B ad-hoc UX captures the attended TTSH department/programme separately from the assigned/compliance posting. If audit/display requires persistence, add a dedicated field such as `attended_posting_code` FK → `posting_codes.code` or an equivalent audit table. Until then, selected attended posting is API/request context for option filtering and export/audit display only. It must not replace `posting_code` for NHG compliance attribution.
 
@@ -407,7 +429,8 @@ TODO: If Programme PC recurrence support is added later, decide whether `event_s
 
 ## Table: `attendance_records`
 
-One row per (resident, teaching_event) submission.
+One immutable row per native attendance submission cycle. A removed cycle is
+retained and a later resubmission receives a new row.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
@@ -418,7 +441,13 @@ One row per (resident, teaching_event) submission.
 | status | VARCHAR(20) | DEFAULT 'submitted' | `submitted`, `flagged`, `removed` |
 | posting_code | VARCHAR(50) | | Audit copy of event posting at submission time. **Never used for compliance attribution** — compliance always uses teaching_events.posting_code. |
 
-**Unique constraint:** `UNIQUE(resident_id, teaching_event_id)` — DB-level duplicate prevention.
+**Active uniqueness and history:** A submitted-only unique index on
+`(resident_id, teaching_event_id)` prevents two active submissions while
+allowing each removed row to remain immutable history. Resubmission inserts a
+new row with a new identifier; it does not restore or overwrite the removed
+row. `status` is constrained to `submitted`, `flagged`, or `removed`, subject
+and event identifiers cannot be retargeted, and a removed row cannot be
+resurrected in place.
 
 **Distinct-event overlap invariant:** Before inserting a later submission, the attendance service rejects it if its event interval overlaps an already accepted distinct event for the same resident. The earlier accepted attendance is preserved unchanged. This submission-time rule is separate from same-event uniqueness and requires no additional stored session-type field.
 
@@ -439,8 +468,9 @@ One row per Non-NHG/cross-cluster resident who self-registers to submit attendan
 | home_cluster | VARCHAR(20) | NOT NULL, CHECK IN (`NUH`, `SingHealth`) | External home cluster only. No other values accepted. |
 | current_nhg_posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Current/cache/backward-compatibility pointer derived by the backend from the trusted programme/institution mapping. It is never client-selected and is not derived from native `resident_postings`. |
 | status | VARCHAR(20) | DEFAULT 'active' | `active`, `inactive` |
+| session_generation | BIGINT | NOT NULL, DEFAULT 0, CHECK >= 0 | Subject-wide application-session invalidation generation |
 
-**Global MCR uniqueness:** MCR is a unique identifier for every doctor. Because native and external identities live in separate tables, enforce cross-table uniqueness in the service layer: registration must reject if the MCR exists in either `residents.mcr` or `external_residents.mcr`.
+**Global MCR uniqueness:** MCR is a unique identifier for every doctor. Migration `20260726_000025` normalizes existing native and external MCR values, rejects blank or cross-table duplicate values before cutover, and installs `BEFORE INSERT OR UPDATE OF mcr` triggers on both identity tables. The triggers serialize equal normalized MCR writes with a transaction-scoped advisory lock and reject a value already present in the other identity table. Global-identity writes require `READ COMMITTED` and fail closed at stronger snapshot isolation. Service checks remain for controlled API errors, but they are not the race boundary.
 
 **Compliance exclusion:** Non-NHG Residents are excluded from NHG compliance, NHG numerator/denominator, surplus, period snapshots, and clawback. Do not join this table into native compliance queries.
 
@@ -477,7 +507,10 @@ Confirmed Phase 5B source for Non-NHG forecasted/date-specific posting derivatio
 
 ## Table: `external_attendance_records`
 
-One row per Non-NHG Resident attendance submission. Stored separately from native `attendance_records` so external attendance cannot enter NHG compliance joins accidentally.
+One immutable row per Non-NHG Resident attendance submission cycle. Removed
+cycles are retained and a later resubmission receives a new row. Storage stays
+separate from native `attendance_records` so external attendance cannot enter
+NHG compliance joins accidentally.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
@@ -488,7 +521,11 @@ One row per Non-NHG Resident attendance submission. Stored separately from nativ
 | status | VARCHAR(20) | DEFAULT 'submitted' | `submitted`, `flagged`, `removed` |
 | posting_code | VARCHAR(50) | | Audit copy of event posting at submission time. Not used for NHG compliance. |
 
-**Unique constraint:** `UNIQUE(external_resident_id, teaching_event_id)`
+**Active uniqueness and history:** A submitted-only unique index on
+`(external_resident_id, teaching_event_id)` prevents two active submissions
+while preserving removed rows. The same immutable-history and no-resurrection
+rules used for native attendance apply here. `status` is constrained to
+`submitted`, `flagged`, or `removed`.
 
 **Session type is NOT stored here.** External attendance can be viewed/exported for the resident's home-cluster PC, but it does not participate in NHG PTT compliance.
 
@@ -721,12 +758,116 @@ For admin and secretary authentication **only**. Residents are **not** stored he
 | current_staff_actor_name | TEXT | nullable | Self-declared current human using this shared staff role account. Audit/display metadata only; never an authorization source. |
 | staff_actor_name_updated_at | TIMESTAMPTZ | nullable | Last time the saved staff actor name was changed. |
 | staff_actor_name_updated_by_user_id | UUID | FK -> users.id, nullable | Staff account that last updated the saved actor name. Usually the same role account. |
+| session_generation | BIGINT | NOT NULL, DEFAULT 0, CHECK >= 0 | Subject-wide application-session invalidation generation |
+| session_issuance_blocked | BOOLEAN | NOT NULL, DEFAULT false | Fail-closed staff login/session-creation fence during password reset |
 
 **Secretary provisioning:** At launch, one account per TTSH posting code (e.g. TTSHAnaes, TTSHGerMed, TTSHCardio). Architecture is flexible — when other institutions onboard, provision new secretary accounts scoped to their posting codes (e.g. KTPHAnaes, SGHGerMed) with no schema change required.
 
 **Admin/PC provisioning:** Account count is flexible. `programme_scope TEXT[]` supports multiple programmes per account, allowing PCs who manage several programmes to use a single login.
 
 **5B-E role-account note:** Staff accounts are generic pass-down role accounts. `users.name` remains the generic account display name (for example `Programme PC - DR`), while `current_staff_actor_name` stores the current human's self-declared name for audit context. Password reset/handover clears the saved actor name. Master Admin is explicit via `admin_level = 'master'`; Programme PC access requires `admin_level = 'programme'` and non-empty `programme_scope`; Secretary access requires `posting_code`.
+
+**Self authorization mutation ordering:** A self role/admin-level/scope/posting/deactivation change is allowed when the last-active-Master-Admin guard permits it. The service writes an audit of the planned final state before mutating `users`, then performs subject-wide generation/session invalidation as the final protected statement in the same transaction. The self-change audit marks `revoked_session_count` as null/non-exact because the invalidated signed context cannot perform a follow-up count read; non-self changes continue to record the exact count.
+
+---
+
+## Table: `app_sessions`
+
+Backend-owned opaque browser-session state added by migration `20260722_000023`. `subject_id` is deliberately polymorphic and has no database foreign key; the session service validates it against the table selected by `subject_type`. Raw session and CSRF tokens are never stored.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| id | UUID | PK | |
+| token_digest | BYTEA(32) | UNIQUE, NOT NULL, exact 32-byte check | Keyed digest only |
+| subject_type | VARCHAR(30) | NOT NULL, CHECK | `staff`, `resident`, or `external_resident` |
+| subject_id | UUID | NOT NULL | Logical identity reference |
+| subject_session_generation | BIGINT | NOT NULL, CHECK >= 0 | Generation snapshot at issuance |
+| session_family_id | UUID | NOT NULL | Root identifier for the rotation/device family |
+| auth_source | VARCHAR(30) | NOT NULL, CHECK | `supabase_staff` or `mata_resident`, constrained to subject type |
+| csrf_token_digest | BYTEA(32) | NOT NULL, exact 32-byte check | Keyed digest only |
+| created_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Session-child creation time |
+| last_seen_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Last qualifying successful protected mutation recorded after the configured touch interval |
+| idle_expires_at | TIMESTAMPTZ | NOT NULL, <= absolute expiry | Sliding idle bound |
+| absolute_expires_at | TIMESTAMPTZ | NOT NULL | Preserved across rotation |
+| revoked_at | TIMESTAMPTZ | nullable | |
+| revoked_reason | TEXT | nullable | |
+| rotated_from_session_id | UUID | nullable, UNIQUE | At most one child per parent |
+| user_agent_hash | BYTEA(32) | nullable, exact 32-byte check | Optional keyed digest; no raw user agent |
+
+Root rows satisfy `session_family_id = id`; child rows have `rotated_from_session_id`. Rotation locks in global order: subject row, transaction-scoped family advisory lock, then fresh `SELECT ... FOR UPDATE` session reload. Under the H-E restricted-role path, `app_sessions` has no direct runtime table privilege and reviewed `mata_rls` helpers perform the authoritative fresh database lookup. The non-RLS ORM fallback retains `populate_existing=True`, so an existing SQLAlchemy identity-map object cannot bypass the locked row. Transaction-scoped advisory locks disappear on commit, rollback, cancellation, or connection loss, so pooled connections cannot retain them.
+
+The effective expiry is `min(idle_expires_at, absolute_expires_at)`, and
+equality is invalid. Touch uses PostgreSQL time, is interval-gated, and caps
+idle expiry at the immutable family absolute deadline. Rotation initializes a
+new row but preserves or tightens the parent's idle deadline as well as the
+family absolute deadline and carries forward `last_seen_at`; refresh is not an
+idle-expiry extension and cannot postpone eligibility for a later qualifying
+touch. Revision `20260727_000027` makes restricted lifecycle helpers return
+minimum identity/context material rather than full rows; stored token/CSRF
+digests, expiry fields, and derived client lifetimes remain private. The HTTP
+layer issues an intentional browser-session cookie with no `Max-Age` or
+`Expires`; signed RLS context ceases to validate when the backing session is
+revoked or reaches either deadline.
+
+Logout does not hydrate a session through this table. The auth-only
+`revoke_app_session_family_for_logout(bytea,bytea,text)` helper accepts keyed
+token and CSRF digests and derives the subject/family from the matching row.
+Active proof must be before both deadlines. A parent revoked specifically as
+`rotated` remains termination-only proof until the immutable family absolute
+deadline even when its superseded idle deadline has passed. The helper grants
+no identity/context/refresh authority and lets a logout that started first
+revoke a child when refresh commits first.
+
+Cleanup preserves a `rotated` parent as termination proof until
+`absolute_expires_at`, regardless of its superseded idle deadline or a shorter
+retention interval. Once that immutable family absolute deadline is reached,
+normal bounded retention rules apply. An unrevoked child with both deadlines
+still in the future is never selected by that proof-row exception.
+
+---
+
+## Table: `rate_limit_buckets`
+
+Persistent atomic fixed-window counters added by migration `20260709_000016`.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| id | UUID | PK | |
+| scope | TEXT | NOT NULL | Route/policy group |
+| key_hash | TEXT | NOT NULL | HMAC-SHA256 hex digest; never a raw identifier |
+| window_start | TIMESTAMPTZ | NOT NULL | Fixed-window boundary |
+| window_seconds | INTEGER | NOT NULL, CHECK > 0 | |
+| request_count | INTEGER | NOT NULL, CHECK >= 1 | |
+| expires_at | TIMESTAMPTZ | NOT NULL | Cleanup boundary |
+| created_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | |
+| updated_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | |
+
+The unique constraint is `(scope, key_hash, window_start, window_seconds)`. Atomic `INSERT ... ON CONFLICT DO UPDATE` prevents concurrent lost updates. This table is helper-only under H-E: `mata_app_runtime` and `mata_auth_internal` have no direct table privilege, and the reviewed `mata_rls.consume_rate_limit` function is the only application access path.
+
+---
+
+## Table: `audit_logs`
+
+Append-only application audit events for staff and administrative workflows.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| id | UUID | PK, DEFAULT `gen_random_uuid()` | |
+| actor_user_id | UUID | FK → users.id, nullable | Current database-owned staff subject where available |
+| actor_role | VARCHAR(30) | NOT NULL | |
+| actor_name | VARCHAR(120) | NOT NULL | Audit/display value, never an authorization source |
+| actor_site | VARCHAR(50) | nullable | |
+| actor_programme | VARCHAR(50) | nullable | |
+| actor_admin_level | VARCHAR(30) | nullable | |
+| action | VARCHAR(80) | NOT NULL | Stable action identifier |
+| entity_type | VARCHAR(80) | NOT NULL | Stable entity family |
+| entity_id | TEXT | nullable | UUID text or another stable application identifier, such as a programme code |
+| before_json | JSONB | nullable | Sanitized pre-mutation snapshot |
+| after_json | JSONB | nullable | Sanitized post-mutation snapshot |
+| metadata_json | JSONB | nullable | Sanitized action metadata |
+| created_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | |
+
+Migration `20260726_000025` changes `entity_id` from UUID to text so audited configuration entities with non-UUID stable keys can use the same append path. Its downgrade checks every populated value before removing H-E helpers and fails without partial downgrade if any value cannot be losslessly restored to UUID. Under H-E, normal runtime reads are RLS-scoped and writes use the reviewed `mata_rls.append_audit_log` helper.
 
 ---
 
@@ -969,6 +1110,33 @@ Visibility follows the same rule as all other events. A global session type does
 
 ---
 
+## Browser/Data API Privilege Boundary
+
+Migration `20260722_000024` revokes all existing table, sequence, and function privileges in `public` from `PUBLIC` and, when present, Supabase browser roles `anon` and `authenticated`. It also revokes corresponding default privileges for future objects created by the migration owner. Its downgrade intentionally does not recreate unknowable broad grants.
+
+Migrations `20260726_000025` and `20260726_000026` add the separate full-RLS layer. The capability groups `mata_app_runtime` and `mata_auth_internal` are `NOLOGIN`, `NOINHERIT`, non-owner, `NOSUPERUSER`, and `NOBYPASSRLS`; credentialed runtime, auth-helper, and migration/ownership logins must be distinct. H-E enables RLS on all 34 application tables, installs 84 policies targeted only to `mata_app_runtime`, and keeps all application tables without `FORCE ROW LEVEL SECURITY` because normal application traffic is required to use a non-owner role.
+
+Normal runtime access is explicit: 27 tables receive reviewed table actions, `users` additionally receives `INSERT`/`UPDATE` and column-limited `SELECT` that excludes `password_hash`, and six tables remain helper-only with no direct runtime table privilege: `app_sessions`, `clawback_records`, `period_snapshots`, `programme_institution_posting_map`, `rate_limit_buckets`, and `surplus_ledger`. `mata_auth_internal` has no direct application-table or sequence privileges.
+
+`PUBLIC` and optional `anon`, `authenticated`, and `service_role` roles receive no application relation, H-E helper, or schema-creation authority. Default privileges do not grant future tables, sequences, or functions to runtime, auth, browser, or PUBLIC roles. A future application table is therefore inaccessible by default and still requires explicit RLS, policy, grant, helper, ownership, and test review.
+
+Revision `20260727_000027` preserves the 34-table/84-policy posture and changes
+only session helper functions/grants plus signed-context validation. The
+superseded full-row resolve/issue/rotate functions are no longer executable by
+either restricted application capability.
+
+That revision owns exactly eight minimal lifecycle helpers: three auth-only
+issuance wrappers; shared resolve, touch, and CSRF helpers; one runtime-only
+rotation helper; and one auth-only logout termination helper. Runtime cannot
+execute `revoke_app_session_family_for_logout(bytea,bytea,text)`.
+
+These statements describe the local source and disposable-PostgreSQL implementation. They do not establish the revision, role catalogue, grants, policies, or behavior of a deployed Supabase project.
+
+Resident identity assurance remains separately governed product debt. Do not
+invent a second factor or claim workflow outside an approved product scope.
+
+---
+
 ## Index Requirements
 
 Indexes are part of the schema contract. Implement them in SQLAlchemy models and Alembic migrations, and keep index names stable so migrations remain readable.
@@ -1122,7 +1290,8 @@ ON event_series(posting_code);
 #### `attendance_records`
 
 ```sql
--- UNIQUE(resident_id, teaching_event_id) already prevents duplicate submission.
+-- The submitted-only unique index prevents duplicate active submissions while
+-- preserving removed history.
 CREATE INDEX idx_attendance_records_resident_status
 ON attendance_records(resident_id, status);
 
@@ -1268,6 +1437,38 @@ WHERE posting_code IS NOT NULL;
 
 CREATE INDEX idx_users_programme_scope_gin
 ON users USING GIN(programme_scope);
+```
+
+#### `app_sessions`
+
+```sql
+CREATE INDEX idx_app_sessions_active_expiry
+ON app_sessions(revoked_at, idle_expires_at, absolute_expires_at);
+
+CREATE INDEX idx_app_sessions_subject
+ON app_sessions(subject_type, subject_id);
+
+CREATE INDEX idx_app_sessions_family_revoked
+ON app_sessions(session_family_id, revoked_at);
+
+CREATE INDEX idx_app_sessions_revoked_at
+ON app_sessions(revoked_at);
+
+CREATE INDEX idx_app_sessions_absolute_expires_at
+ON app_sessions(absolute_expires_at);
+
+CREATE INDEX idx_app_sessions_idle_expires_at
+ON app_sessions(idle_expires_at);
+```
+
+#### `rate_limit_buckets`
+
+```sql
+CREATE INDEX idx_rate_limit_buckets_scope_key_window
+ON rate_limit_buckets(scope, key_hash, window_start);
+
+CREATE INDEX idx_rate_limit_buckets_expires_at
+ON rate_limit_buckets(expires_at);
 ```
 
 #### `upload_logs`

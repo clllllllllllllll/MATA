@@ -8,6 +8,10 @@ from app.config import Settings, get_settings
 from app.dependencies.staff_actor import StaffActorContext, require_staff_actor
 from app.middleware import install_error_handlers
 from app.middleware.auth_stub import AuthStubMiddleware
+from app.services.session_transport import (
+    AUTH_COOKIE_COORDINATION_HEADER_NAME,
+    AUTH_COOKIE_COORDINATION_PROTOCOL,
+)
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.routers.admin import AdminContext, require_admin_context
 from app.services import auth as auth_service
@@ -81,12 +85,24 @@ def test_supabase_mode_rejects_mock_identity_headers() -> None:
     assert response.json()["error_code"] == "UNAUTHORIZED"
 
 
-def test_production_rejects_raw_identity_headers_even_if_auth_mode_is_stub() -> None:
+def test_production_rejects_raw_identity_headers() -> None:
     client = _protected_client(
         Settings(
             environment="production",
-            auth_mode="stub",
+            auth_mode="supabase",
+            auth_transport="cookie",
             supabase_url="https://mata-test.supabase.co",
+            supabase_publishable_key="sb_publishable_test_key",
+            database_url="postgresql+asyncpg://runtime@db.example.invalid:5432/mata",
+            auth_database_url="postgresql+asyncpg://auth@db.example.invalid:5432/mata",
+            sync_database_url="postgresql+psycopg2://migration@db.example.invalid:5432/mata",
+            database_rls_enabled=True,
+            mata_session_hash_key="test-session-key-that-is-at-least-32-characters",
+            rate_limit_store="postgres",
+            rate_limit_hash_secret="test-rate-limit-key-that-is-at-least-32-characters",
+            cors_origins=["https://mata.example.com"],
+            allowed_hosts=["mata.example.com"],
+            _env_file=None,
         ),
     )
 
@@ -97,6 +113,9 @@ def test_production_rejects_raw_identity_headers_even_if_auth_mode_is_stub() -> 
             "X-User-Id": "00000000-0000-0000-0000-000000000001",
             "X-User-Programme": "DR,GERI",
             "X-Admin-Level": "master",
+            AUTH_COOKIE_COORDINATION_HEADER_NAME: (
+                AUTH_COOKIE_COORDINATION_PROTOCOL
+            ),
         },
     )
 

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
 from app.services.cache import cache
+from app.services.database_context import session_uses_rls
 from app.services.reporting_period_status import (
     REPORTING_PERIOD_ACTIVE,
     REPORTING_PERIOD_INACTIVE,
@@ -21,6 +22,19 @@ from app.services.reporting_period_status import (
 
 
 ALLOWED_MULTI_POSTING_RULE_TYPES = {"main_posting", "combine", "half_month"}
+_REPORTING_PERIOD_DEPENDENCY_NAMES = frozenset(
+    {
+        "upload_logs",
+        "resident_postings",
+        "teaching_targets",
+        "teaching_name_catalogue",
+        "form_f1_records",
+        "academic_month_boundaries",
+        "period_snapshots",
+        "clawback_records",
+        "surplus_ledger",
+    }
+)
 
 
 def _invalidate_admin_config_cache() -> None:
@@ -1485,6 +1499,44 @@ async def _reporting_period_dependency_counts(
     *,
     reporting_period_id: UUID,
 ) -> dict[str, int]:
+    if session_uses_rls(db):
+        result = await db.execute(
+            text(
+                """
+                SELECT dependency_name, dependency_count
+                FROM mata_rls.reporting_period_dependency_counts(
+                    CAST(:reporting_period_id AS uuid)
+                )
+                """
+            ),
+            {"reporting_period_id": reporting_period_id},
+        )
+        dependencies: dict[str, int] = {}
+        for row in result.mappings().all():
+            if set(row.keys()) != {"dependency_name", "dependency_count"}:
+                raise RuntimeError(
+                    "Invalid reporting-period dependency helper result"
+                )
+            name = row["dependency_name"]
+            count = row["dependency_count"]
+            if (
+                not isinstance(name, str)
+                or name not in _REPORTING_PERIOD_DEPENDENCY_NAMES
+                or name in dependencies
+                or not isinstance(count, int)
+                or isinstance(count, bool)
+                or count < 0
+            ):
+                raise RuntimeError(
+                    "Invalid reporting-period dependency helper result"
+                )
+            dependencies[name] = count
+        if set(dependencies) != _REPORTING_PERIOD_DEPENDENCY_NAMES:
+            raise RuntimeError(
+                "Incomplete reporting-period dependency helper result"
+            )
+        return dependencies
+
     checks = {
         "upload_logs": """
             SELECT COUNT(*) AS count

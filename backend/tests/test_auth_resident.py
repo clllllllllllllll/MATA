@@ -34,8 +34,12 @@ def _client(
         yield fake_db
 
     app.dependency_overrides[auth.get_db_session] = _db_override
-    if settings is not None:
-        app.dependency_overrides[auth.get_settings] = lambda: settings
+    app.dependency_overrides[auth.get_auth_db_session] = _db_override
+    transport_settings = settings or Settings(
+        auth_transport="bearer_compat",
+        database_rls_enabled=False,
+    )
+    app.dependency_overrides[auth.get_settings] = lambda: transport_settings
     app.include_router(auth.router)
     return TestClient(app)
 
@@ -43,6 +47,8 @@ def _client(
 def _supabase_settings(*, secret: str | None = RESIDENT_SECRET) -> Settings:
     return Settings(
         auth_mode="supabase",
+        auth_transport="bearer_compat",
+        database_rls_enabled=False,
         supabase_url="https://mata-test.supabase.co",
         mata_resident_session_secret=secret,
     )
@@ -106,6 +112,17 @@ def test_supabase_mode_resident_login_issues_backend_signed_mata_token() -> None
     assert "admin_level" not in claims
     assert "programme_scope" not in claims
     assert "current_staff_actor_name" not in claims
+
+
+def test_supabase_mode_resident_login_rejects_undersized_session_secret() -> None:
+    fake_db = FakeResidentSession()
+    client = _client(fake_db, settings=_supabase_settings(secret="too-short"))
+
+    response = client.post("/auth/login", json={"role": "resident", "mcr": "M12345A"})
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Resident session configuration is missing"
+    assert "access_token" not in response.json()
 
 
 def test_supabase_mode_resident_login_rejects_unknown_mcr() -> None:

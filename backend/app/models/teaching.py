@@ -4,7 +4,19 @@ from datetime import date, time
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Boolean, CheckConstraint, Date, ForeignKey, Index, Numeric, String, Text, Time, UniqueConstraint, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    Text,
+    Time,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -171,6 +183,32 @@ class EventSeries(UUIDTimestampMixin, Base):
 class TeachingEvent(UUIDTimestampMixin, Base):
     __tablename__ = "teaching_events"
     __table_args__ = (
+        CheckConstraint(
+            "("
+            "NOT is_adhoc "
+            "AND ("
+            "created_by_role IS NULL "
+            "OR created_by_role IN ('secretary', 'programme_pc')"
+            ") "
+            "AND created_by_resident_id IS NULL "
+            "AND created_by_external_resident_id IS NULL"
+            ") OR ("
+            "is_adhoc "
+            "AND created_by_role = 'resident' "
+            "AND created_for_programme_code IS NULL "
+            "AND series_id IS NULL "
+            "AND created_by_resident_id IS NOT NULL "
+            "AND created_by_external_resident_id IS NULL"
+            ") OR ("
+            "is_adhoc "
+            "AND created_by_role = 'external_resident' "
+            "AND created_for_programme_code IS NULL "
+            "AND series_id IS NULL "
+            "AND created_by_resident_id IS NULL "
+            "AND created_by_external_resident_id IS NOT NULL"
+            ")",
+            name="ck_teaching_events_adhoc_creator_family",
+        ),
         Index(
             "idx_teaching_events_posting_date",
             "posting_code",
@@ -197,6 +235,16 @@ class TeachingEvent(UUIDTimestampMixin, Base):
             "created_for_programme_code",
             "event_date",
             postgresql_where=text("created_for_programme_code IS NOT NULL"),
+        ),
+        Index(
+            "idx_teaching_events_created_by_resident",
+            "created_by_resident_id",
+            postgresql_where=text("created_by_resident_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_teaching_events_created_by_external_resident",
+            "created_by_external_resident_id",
+            postgresql_where=text("created_by_external_resident_id IS NOT NULL"),
         ),
     )
 
@@ -236,6 +284,14 @@ class TeachingEvent(UUIDTimestampMixin, Base):
         server_default=text("false"),
     )
     created_by_role: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_by_resident_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("residents.id"),
+        nullable=True,
+    )
+    created_by_external_resident_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("external_residents.id"),
+        nullable=True,
+    )
 
 
 class GlobalSessionType(UUIDTimestampMixin, Base):

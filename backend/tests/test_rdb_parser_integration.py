@@ -281,11 +281,14 @@ class FakeRDBSession:
             resident_id = uuid4()
             row = dict(params)
             row["id"] = resident_id
+            row["session_generation"] = 0
             self.residents[row["mcr"]] = row
             return _FakeScalarResult(resident_id)
 
         if "UPDATE residents" in sql:
             resident = self.residents[params["mcr"]]
+            if resident["programme_code"] != params["programme_code"]:
+                resident["session_generation"] += 1
             resident.update(params)
             return _FakeScalarResult(resident["id"])
 
@@ -761,6 +764,58 @@ def test_sample_upload_creates_residents_postings_posting_codes_and_upload_log()
         json.loads(session.upload_logs[-1]["summary"])["original_filename"]
         == "audit-name.xlsx"
     )
+    assert session.residents["M12345A"]["session_generation"] == 0
+
+
+def test_rdb_programme_change_fences_existing_resident_session_generation() -> None:
+    session = FakeRDBSession()
+    period_id = uuid4()
+    first_file = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One",
+                mcr="M12345A",
+                r_year="R2",
+                programme="DR",
+                jul="TTSHAnaes",
+            )
+        ]
+    )
+    changed_file = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Resident One",
+                mcr="M12345A",
+                r_year="R2",
+                programme="GERI",
+                jul="TTSHGerMed",
+            )
+        ]
+    )
+
+    first = _run(
+        parse_rdb_upload(
+            file_bytes=first_file,
+            original_filename="before-programme-change.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+    changed = _run(
+        parse_rdb_upload(
+            file_bytes=changed_file,
+            original_filename="after-programme-change.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert first.errors == []
+    assert changed.errors == []
+    assert session.residents["M12345A"]["programme_code"] == "GERI"
+    assert session.residents["M12345A"]["session_generation"] == 1
 
 
 def test_rdb_persistence_exception_is_sanitized_and_logged(caplog) -> None:
@@ -795,7 +850,11 @@ def test_rdb_persistence_exception_is_sanitized_and_logged(caplog) -> None:
 
     assert result.errors == ["Upload failed. Please contact administrator."]
     assert "SQLSTATE 23505" not in str(result.to_summary())
-    assert "SQLSTATE 23505" in caplog.text
+    assert "SQLSTATE 23505" not in caplog.text
+    assert "private/database.sql" not in caplog.text
+    assert "rdb_upload_processing_failed" in caplog.text
+    assert "exception_class=RuntimeError" in caplog.text
+    assert "Traceback" not in caplog.text
 
 
 def test_blank_rdb_resident_month_cell_emits_info_warning_without_posting_row() -> None:

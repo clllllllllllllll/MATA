@@ -13,6 +13,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.security import log_safe_exception
 from app.services.parser_common import ParserResult
 
 
@@ -500,7 +501,12 @@ async def parse_public_holiday_upload(
 
         workbook = load_workbook(filename=BytesIO(file_bytes), data_only=True)
     except Exception as exc:
-        logger.exception("Unable to read public holiday workbook")
+        log_safe_exception(
+            logger,
+            "public_holiday_workbook_read_failed",
+            exc,
+            category="workbook_read",
+        )
         metadata["validation_failed"] = True
         return ParserResult(
             upload_type="public_holidays",
@@ -580,7 +586,12 @@ async def parse_public_holiday_upload(
         )
     except Exception as exc:
         await db_session.rollback()
-        logger.exception("Unexpected public holiday upload processing failure")
+        log_safe_exception(
+            logger,
+            "public_holiday_upload_processing_failed",
+            exc,
+            category="upload_processing",
+        )
         return ParserResult(
             upload_type="public_holidays",
             errors=[UNEXPECTED_UPLOAD_FAILURE_MESSAGE],

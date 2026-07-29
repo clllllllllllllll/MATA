@@ -1,9 +1,54 @@
-import type { StoredAuthSession } from '../types/auth'
+import type { AuthIdentity, StoredAuthSession } from '../types/auth'
 
-const AUTH_SESSION_KEY = 'mata.auth.session.v1'
 const AUTH_SESSION_CHANGED_EVENT = 'mata-auth-session-change'
+const AUTH_SESSION_REVALIDATION_EVENT = 'mata-auth-session-revalidation'
+const AUTH_SESSION_ESTABLISHED_EVENT = 'mata-auth-session-established'
+const AUTH_SESSION_CHANNEL_NAME = 'mata-auth-session-lifecycle'
+let memoryAuthSession: StoredAuthSession | null = null
+let memoryAuthSessionRevision = 0
+let memoryAuthSessionEpoch: string | null = null
+
+export type AuthSessionLossReason = 'logout' | 'unauthorized'
+
+export type AuthSessionEstablishedEventDetail = Readonly<{
+  clearedLogoutRequestId: string | null
+}>
+
+export type AuthSessionFence = {
+  revision: number
+  subjectId: string
+  role: StoredAuthSession['identity']['role']
+  sessionEpoch: string | null
+}
+
+export type ClearAuthSessionOptions = {
+  broadcast?: AuthSessionLossReason
+  sessionEpoch?: string | null
+}
+
+export type AuthSessionRevalidationCoordinator = {
+  request: (force: boolean) => void
+  dispose: () => void
+}
+
+type AuthSessionChannelMessage =
+  | {
+      type: 'session-cleared'
+      reason: AuthSessionLossReason
+      sessionEpoch: string | null
+    }
+  | {
+      type: 'session-established'
+      sessionEpoch: string
+      clearedLogoutRequestId: string | null
+    }
+  | {
+      type: 'session-rotated'
+      sessionEpoch: string
+    }
 
 const isBrowser = () => typeof window !== 'undefined'
+const logoutRequestIdPattern = /^[A-Za-z0-9._:-]{1,128}$/
 
 const notifySessionChanged = () => {
   if (isBrowser()) {
@@ -11,37 +56,370 @@ const notifySessionChanged = () => {
   }
 }
 
-export const authSessionChangedEvent = AUTH_SESSION_CHANGED_EVENT
+const notifySessionRevalidationRequired = () => {
+  if (isBrowser()) {
+    window.dispatchEvent(new Event(AUTH_SESSION_REVALIDATION_EVENT))
+  }
+}
 
-export const readStoredAuthSession = (): StoredAuthSession | null => {
-  if (!isBrowser()) {
+const notifyCrossTabSessionEstablished = (
+  clearedLogoutRequestId: string | null,
+) => {
+  if (isBrowser()) {
+    window.dispatchEvent(new CustomEvent<AuthSessionEstablishedEventDetail>(
+      AUTH_SESSION_ESTABLISHED_EVENT,
+      {
+        detail: { clearedLogoutRequestId },
+      },
+    ))
+  }
+}
+
+const isAuthSessionLossReason = (value: unknown): value is AuthSessionLossReason =>
+  value === 'logout' || value === 'unauthorized'
+
+const parseAuthSessionChannelMessage = (value: unknown): AuthSessionChannelMessage | null => {
+  if (!value || typeof value !== 'object') {
     return null
   }
-  const rawValue = window.sessionStorage.getItem(AUTH_SESSION_KEY)
-  if (!rawValue) {
+  const candidate = value as Record<string, unknown>
+  if (
+    candidate.type === 'session-cleared'
+    && isAuthSessionLossReason(candidate.reason)
+    && (typeof candidate.sessionEpoch === 'string' || candidate.sessionEpoch === null)
+  ) {
+    return {
+      type: candidate.type,
+      reason: candidate.reason,
+      sessionEpoch: candidate.sessionEpoch,
+    }
+  }
+  if (
+    candidate.type === 'session-established'
+    && typeof candidate.sessionEpoch === 'string'
+    && candidate.sessionEpoch.length > 0
+    && (
+      candidate.clearedLogoutRequestId === null
+      || (
+        typeof candidate.clearedLogoutRequestId === 'string'
+        && logoutRequestIdPattern.test(candidate.clearedLogoutRequestId)
+      )
+    )
+  ) {
+    return {
+      type: candidate.type,
+      sessionEpoch: candidate.sessionEpoch,
+      clearedLogoutRequestId: candidate.clearedLogoutRequestId,
+    }
+  }
+  if (
+    candidate.type === 'session-rotated'
+    && typeof candidate.sessionEpoch === 'string'
+    && candidate.sessionEpoch.length > 0
+  ) {
+    return {
+      type: candidate.type,
+      sessionEpoch: candidate.sessionEpoch,
+    }
+  }
+  return null
+}
+
+const createSessionEpoch = (): string => {
+  const currentTimestamp = Number(memoryAuthSessionEpoch?.split('-', 1)[0])
+  const timestamp = Math.max(
+    Date.now(),
+    Number.isFinite(currentTimestamp) ? currentTimestamp + 1 : 0,
+  )
+  const entropy = typeof globalThis.crypto?.randomUUID === 'function'
+    ? globalThis.crypto.randomUUID()
+    : Math.random().toString(16).slice(2)
+  return `${timestamp}-${entropy}`
+}
+
+const stableAuthValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(stableAuthValue)
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, item]) => item !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, stableAuthValue(item)]),
+    )
+  }
+  return value
+}
+
+const authSessionFingerprint = (session: StoredAuthSession): string => {
+  const identity = session.identity.role === 'master_admin'
+    || session.identity.role === 'programme_pc'
+    ? {
+        ...session.identity,
+        programmeScope: [...session.identity.programmeScope].sort(),
+      }
+    : session.identity
+  return JSON.stringify(stableAuthValue({
+    identity,
+    csrfToken: session.csrfToken,
+    sessionRefreshRequired: session.sessionRefreshRequired === true,
+  }))
+}
+
+const writeAuthSession = (session: StoredAuthSession | null) => {
+  memoryAuthSession = session
+  memoryAuthSessionRevision += 1
+  notifySessionChanged()
+}
+
+export const shouldAcceptCrossTabSessionLoss = (
+  currentSessionEpoch: string | null,
+  incomingSessionEpoch: string | null,
+): boolean =>
+  currentSessionEpoch === null || currentSessionEpoch === incomingSessionEpoch
+
+export const shouldAcceptCrossTabSessionEstablished = (
+  currentSessionEpoch: string | null,
+  incomingSessionEpoch: string,
+): boolean => {
+  if (currentSessionEpoch === null) {
+    return true
+  }
+  const currentTimestamp = Number(currentSessionEpoch.split('-', 1)[0])
+  const incomingTimestamp = Number(incomingSessionEpoch.split('-', 1)[0])
+  if (
+    Number.isFinite(currentTimestamp)
+    && Number.isFinite(incomingTimestamp)
+    && currentTimestamp !== incomingTimestamp
+  ) {
+    return incomingTimestamp > currentTimestamp
+  }
+  return incomingSessionEpoch.localeCompare(currentSessionEpoch) > 0
+}
+
+export const shouldAcceptCrossTabSessionRotation = (
+  currentSessionEpoch: string | null,
+  incomingSessionEpoch: string,
+): boolean =>
+  currentSessionEpoch !== null && currentSessionEpoch === incomingSessionEpoch
+
+export const createAuthSessionRevalidationCoordinator = (
+  revalidateSession: () => Promise<void>,
+  hasStoredSession: () => boolean,
+): AuthSessionRevalidationCoordinator => {
+  let active = true
+  let revalidationInFlight = false
+  let forcedRevalidationQueued = false
+
+  const request = (force: boolean) => {
+    if (!active) {
+      return
+    }
+    if (revalidationInFlight) {
+      forcedRevalidationQueued ||= force
+      return
+    }
+    if (!force && !hasStoredSession()) {
+      return
+    }
+
+    revalidationInFlight = true
+    void revalidateSession().finally(() => {
+      revalidationInFlight = false
+      if (!active || !forcedRevalidationQueued) {
+        return
+      }
+      forcedRevalidationQueued = false
+      request(true)
+    })
+  }
+
+  return {
+    request,
+    dispose: () => {
+      active = false
+      forcedRevalidationQueued = false
+    },
+  }
+}
+
+const authSessionChannel = (() => {
+  if (!isBrowser() || typeof BroadcastChannel === 'undefined') {
     return null
   }
   try {
-    const parsed = JSON.parse(rawValue) as StoredAuthSession
-    if (!parsed?.identity?.role || !parsed.accessToken) {
-      return null
-    }
-    return parsed
+    const channel = new BroadcastChannel(AUTH_SESSION_CHANNEL_NAME)
+    channel.addEventListener('message', (event: MessageEvent<unknown>) => {
+      const message = parseAuthSessionChannelMessage(event.data)
+      if (!message) {
+        return
+      }
+      if (message.type === 'session-established') {
+        if (!shouldAcceptCrossTabSessionEstablished(
+          memoryAuthSessionEpoch,
+          message.sessionEpoch,
+        )) {
+          return
+        }
+        memoryAuthSessionEpoch = message.sessionEpoch
+        writeAuthSession(null)
+        notifyCrossTabSessionEstablished(message.clearedLogoutRequestId)
+        notifySessionRevalidationRequired()
+        return
+      }
+      if (message.type === 'session-rotated') {
+        if (!shouldAcceptCrossTabSessionRotation(
+          memoryAuthSessionEpoch,
+          message.sessionEpoch,
+        )) {
+          return
+        }
+        if (memoryAuthSession) {
+          writeAuthSession(null)
+        }
+        notifySessionRevalidationRequired()
+        return
+      }
+      if (!shouldAcceptCrossTabSessionLoss(memoryAuthSessionEpoch, message.sessionEpoch)) {
+        return
+      }
+      memoryAuthSessionEpoch = message.sessionEpoch
+      writeAuthSession(null)
+    })
+    return channel
   } catch {
     return null
   }
+})()
+
+const broadcastAuthSessionMessage = (message: AuthSessionChannelMessage) => {
+  try {
+    authSessionChannel?.postMessage(message)
+  } catch {
+    // Cross-tab synchronization is best effort; server authorization stays authoritative.
+  }
+}
+
+export const authSessionChangedEvent = AUTH_SESSION_CHANGED_EVENT
+export const authSessionRevalidationEvent = AUTH_SESSION_REVALIDATION_EVENT
+export const authSessionEstablishedEvent = AUTH_SESSION_ESTABLISHED_EVENT
+
+export const readAuthSessionEstablishedLogoutRequestId = (
+  event: Event,
+): string | null => {
+  const detail = (event as CustomEvent<unknown>).detail
+  if (!detail || typeof detail !== 'object') {
+    return null
+  }
+  const requestId = (detail as Record<string, unknown>).clearedLogoutRequestId
+  return typeof requestId === 'string' && logoutRequestIdPattern.test(requestId)
+    ? requestId
+    : null
+}
+
+export const readStoredAuthSession = (): StoredAuthSession | null => memoryAuthSession
+export const readAuthSessionRevision = (): number => memoryAuthSessionRevision
+export const readAuthSessionEpoch = (): string | null => memoryAuthSessionEpoch
+
+export const captureAuthSessionFence = (): AuthSessionFence | null => {
+  if (!memoryAuthSession) {
+    return null
+  }
+  return {
+    revision: memoryAuthSessionRevision,
+    subjectId: memoryAuthSession.identity.subjectId,
+    role: memoryAuthSession.identity.role,
+    sessionEpoch: memoryAuthSessionEpoch,
+  }
+}
+
+export const isAuthSessionFenceCurrent = (fence: AuthSessionFence): boolean => {
+  const currentSession = memoryAuthSession
+  return Boolean(currentSession)
+    && fence.revision === memoryAuthSessionRevision
+    && fence.subjectId === currentSession?.identity.subjectId
+    && fence.role === currentSession?.identity.role
+    && fence.sessionEpoch === memoryAuthSessionEpoch
+}
+
+export const isAuthSessionUpdateCompletionCurrent = (
+  fence: AuthSessionFence,
+  updatedIdentity: AuthIdentity,
+): boolean => {
+  const currentSession = memoryAuthSession
+  return Boolean(currentSession)
+    && memoryAuthSessionRevision === fence.revision + 1
+    && fence.subjectId === currentSession?.identity.subjectId
+    && fence.role === currentSession?.identity.role
+    && fence.sessionEpoch === memoryAuthSessionEpoch
+    && currentSession?.identity === updatedIdentity
+}
+
+export const announceAuthSessionEstablished = (
+  clearedLogoutRequestId: string | null = null,
+): string => {
+  if (
+    clearedLogoutRequestId !== null
+    && !logoutRequestIdPattern.test(clearedLogoutRequestId)
+  ) {
+    throw new Error('Invalid cleared logout request id.')
+  }
+  const sessionEpoch = createSessionEpoch()
+  memoryAuthSessionEpoch = sessionEpoch
+  broadcastAuthSessionMessage({
+    type: 'session-established',
+    sessionEpoch,
+    clearedLogoutRequestId,
+  })
+  return sessionEpoch
+}
+
+export const announceAuthSessionRotated = (): boolean => {
+  if (memoryAuthSessionEpoch === null) {
+    return false
+  }
+  broadcastAuthSessionMessage({
+    type: 'session-rotated',
+    sessionEpoch: memoryAuthSessionEpoch,
+  })
+  return true
 }
 
 export const saveAuthSession = (session: StoredAuthSession) => {
-  if (isBrowser()) {
-    window.sessionStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(session))
-  }
-  notifySessionChanged()
+  writeAuthSession(session)
 }
 
-export const clearAuthSession = () => {
-  if (isBrowser()) {
-    window.sessionStorage.removeItem(AUTH_SESSION_KEY)
+export const saveHydratedAuthSession = (session: StoredAuthSession): boolean => {
+  if (
+    memoryAuthSession
+    && authSessionFingerprint(memoryAuthSession) === authSessionFingerprint(session)
+  ) {
+    return false
   }
-  notifySessionChanged()
+  writeAuthSession(session)
+  return true
+}
+
+export const clearAuthSession = (options: ClearAuthSessionOptions = {}) => {
+  const sessionEpoch =
+    options.sessionEpoch === undefined ? memoryAuthSessionEpoch : options.sessionEpoch
+  writeAuthSession(null)
+  if (options.broadcast) {
+    broadcastAuthSessionMessage({
+      type: 'session-cleared',
+      reason: options.broadcast,
+      sessionEpoch,
+    })
+  }
+}
+
+export const clearAuthSessionIfPresent = (
+  options: ClearAuthSessionOptions = {},
+): boolean => {
+  if (!memoryAuthSession) {
+    return false
+  }
+  clearAuthSession(options)
+  return true
 }

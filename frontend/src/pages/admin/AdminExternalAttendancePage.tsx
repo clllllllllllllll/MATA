@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   downloadAdminExternalAttendanceXlsx,
   listAdminExternalAttendance,
@@ -9,6 +9,10 @@ import { ApiRequestError } from '../../api/http'
 import { IconDownload, IconRefresh, IconX } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
 import { StatusBadge } from '../../components/StatusBadge'
+import {
+  captureProtectedAsyncRequestFence,
+  isProtectedAsyncRequestFenceCurrent,
+} from '../../utils/protectedAsyncFence'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 
 const pageSize = 50
@@ -86,6 +90,7 @@ export const AdminExternalAttendancePage = () => {
   const [exporting, setExporting] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [exportError, setExportError] = useState<string | null>(null)
+  const exportRequestRef = useRef(0)
 
   const loadRows = useCallback(async () => {
     setLoading(true)
@@ -113,6 +118,10 @@ export const AdminExternalAttendancePage = () => {
     }
   }, [loadRows])
 
+  useEffect(() => () => {
+    exportRequestRef.current += 1
+  }, [])
+
   const postingOptions = useMemo(
     () => Array.from(new Set(rows.map((row) => row.postingCode).filter(Boolean))).sort(),
     [rows],
@@ -132,15 +141,33 @@ export const AdminExternalAttendancePage = () => {
   }
 
   const handleExport = async () => {
+    const requestId = exportRequestRef.current + 1
+    exportRequestRef.current = requestId
+    const requestFence = captureProtectedAsyncRequestFence(
+      'admin.external-attendance.export',
+      requestId,
+    )
+    const isCurrentRequest = () => isProtectedAsyncRequestFenceCurrent(
+      requestFence,
+      'admin.external-attendance.export',
+      exportRequestRef.current,
+    )
     setExporting(true)
     setExportError(null)
     try {
       const blob = await downloadAdminExternalAttendanceXlsx(filters)
+      if (!isCurrentRequest()) {
+        return
+      }
       downloadBlob(blob)
     } catch (error) {
-      setExportError(normaliseError(error))
+      if (isCurrentRequest()) {
+        setExportError(normaliseError(error))
+      }
     } finally {
-      setExporting(false)
+      if (isCurrentRequest()) {
+        setExporting(false)
+      }
     }
   }
 

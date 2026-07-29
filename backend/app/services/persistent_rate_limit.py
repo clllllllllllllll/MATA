@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
+from app.services.database_context import session_uses_rls_helpers
 
 
 LOCAL_DEV_HASH_SECRET = "mata-local-dev-rate-limit-hash-secret"
@@ -79,18 +80,32 @@ def _cleanup_due(key_hash: str) -> bool:
 async def cleanup_expired_buckets(
     db: AsyncSession,
     *,
+    settings: Settings,
     now: datetime | None = None,
 ) -> None:
     current_time = now or datetime.now(UTC)
-    cutoff = current_time - timedelta(days=1)
+    cutoff = current_time - timedelta(
+        seconds=settings.rate_limit_cleanup_retention_seconds,
+    )
     await db.execute(
         text(
             """
-            DELETE FROM rate_limit_buckets
-            WHERE expires_at < :cutoff
+            WITH expired AS (
+                SELECT id
+                FROM rate_limit_buckets
+                WHERE expires_at < :cutoff
+                ORDER BY expires_at ASC, id ASC
+                LIMIT :batch_size
+            )
+            DELETE FROM rate_limit_buckets AS buckets
+            USING expired
+            WHERE buckets.id = expired.id
             """
         ),
-        {"cutoff": cutoff},
+        {
+            "cutoff": cutoff,
+            "batch_size": settings.rate_limit_cleanup_batch_size,
+        },
     )
 
 
@@ -103,6 +118,8 @@ async def check_rate_limit(
     now: datetime | None = None,
 ) -> RateLimitResult:
     current_time = now or datetime.now(UTC)
+    if policy.limit <= 0 or policy.window_seconds <= 0:
+        raise PersistentRateLimitConfigurationError("Invalid rate-limit policy")
     window_start = fixed_window_start(current_time, policy.window_seconds)
     expires_at = window_start + timedelta(seconds=policy.window_seconds)
     key_hash = hash_rate_limit_key(
@@ -110,6 +127,45 @@ async def check_rate_limit(
         scope=policy.scope,
         identifier=identifier,
     )
+
+    if session_uses_rls_helpers(db):
+        result = await db.execute(
+            text(
+                """
+                SELECT
+                    allowed,
+                    request_count,
+                    retry_after_seconds,
+                    cleaned_count
+                FROM mata_rls.consume_rate_limit(
+                    CAST(:scope AS text),
+                    CAST(:key_hash AS text),
+                    CAST(:request_limit AS integer),
+                    CAST(:window_seconds AS integer),
+                    CAST(:cleanup_retention_seconds AS integer),
+                    CAST(:cleanup_batch_size AS integer)
+                )
+                """
+            ),
+            {
+                "scope": policy.scope,
+                "key_hash": key_hash,
+                "request_limit": policy.limit,
+                "window_seconds": policy.window_seconds,
+                "cleanup_retention_seconds": (
+                    settings.rate_limit_cleanup_retention_seconds
+                ),
+                "cleanup_batch_size": settings.rate_limit_cleanup_batch_size,
+            },
+        )
+        row = result.mappings().one()
+        await db.commit()
+        return RateLimitResult(
+            allowed=bool(row["allowed"]),
+            request_count=int(row["request_count"]),
+            limit=policy.limit,
+            retry_after_seconds=int(row["retry_after_seconds"]),
+        )
 
     result = await db.execute(
         text(
@@ -150,7 +206,11 @@ async def check_rate_limit(
     request_count = int(row["request_count"])
 
     if _cleanup_due(key_hash):
-        await cleanup_expired_buckets(db, now=current_time)
+        await cleanup_expired_buckets(
+            db,
+            settings=settings,
+            now=current_time,
+        )
     await db.commit()
 
     return RateLimitResult(

@@ -87,8 +87,12 @@ def _client(
         yield fake_db
 
     app.dependency_overrides[auth.get_db_session] = _db_override
-    if settings is not None:
-        app.dependency_overrides[auth.get_settings] = lambda: settings
+    app.dependency_overrides[auth.get_auth_db_session] = _db_override
+    transport_settings = settings or Settings(
+        auth_transport="bearer_compat",
+        database_rls_enabled=False,
+    )
+    app.dependency_overrides[auth.get_settings] = lambda: transport_settings
     app.include_router(auth.router)
     return TestClient(app)
 
@@ -96,6 +100,8 @@ def _client(
 def _supabase_settings(*, secret: str | None = RESIDENT_SECRET) -> Settings:
     return Settings(
         auth_mode="supabase",
+        auth_transport="bearer_compat",
+        database_rls_enabled=False,
         supabase_url="https://mata-test.supabase.co",
         mata_resident_session_secret=secret,
     )

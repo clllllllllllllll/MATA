@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from uuid import uuid4
 
 import httpx
@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.config import Settings
@@ -22,6 +22,7 @@ from app.routers import external_residents
 from app.schemas.external_resident import ExternalResidentPostingScheduleRow
 from app.services import external_residents as external_resident_service
 from app.services import programme_institution_posting
+from app.services.database_context import AUTH_BOUNDARY_INFO_KEY
 
 
 APPROVED_TTSH_MAPPINGS = (
@@ -51,6 +52,8 @@ APPROVED_TTSH_MAPPINGS = (
     ("MICROB", "TTSHLabMed"),
 )
 INACTIVE_TTSH_PROGRAMMES = ("FM", "PATH", "SPORTSMED", "PALLMED")
+DISPOSABLE_DATABASE_NAME = "mata_phase5b_final_security_review"
+EXPECTED_ALEMBIC_REVISION = "20260728_000028"
 
 
 class RollbackOnlyAsyncSession(AsyncSession):
@@ -62,36 +65,91 @@ class RollbackOnlyAsyncSession(AsyncSession):
 class PostgresExternalRegistrationHarness:
     client: httpx.AsyncClient
     db: AsyncSession
+    owner_engine: AsyncEngine
+    fixture_started_at: datetime
 
 
 def _assert_local_postgres(database_url: str) -> None:
     url = make_url(database_url)
     if (
         url.drivername != "postgresql+asyncpg"
-        or url.host not in {"localhost", "127.0.0.1"}
-        or not (
-            url.database == "mata_db"
-            or (url.database or "").startswith("mata_phase5b_verify_")
-        )
+        or url.host not in {"localhost", "127.0.0.1", "::1"}
+        or url.database != DISPOSABLE_DATABASE_NAME
+        or bool(url.query)
     ):
         pytest.fail(
-            "PostgreSQL external-registration tests require a local MATA test database",
+            "PostgreSQL external-registration tests require the explicitly "
+            f"named local disposable database {DISPOSABLE_DATABASE_NAME}",
             pytrace=False,
         )
+
+
+def _owner_async_database_url(settings: Settings) -> str:
+    owner_url = make_url(settings.sync_database_url).set(
+        drivername="postgresql+asyncpg"
+    )
+    _assert_local_postgres(owner_url.render_as_string(hide_password=False))
+    return owner_url.render_as_string(hide_password=False)
 
 
 @pytest_asyncio.fixture
 async def postgres_external_registration_harness(
 ) -> AsyncIterator[PostgresExternalRegistrationHarness]:
     settings = Settings(_env_file=None)
+    assert settings.database_rls_enabled is True
+    assert settings.auth_database_url is not None
     _assert_local_postgres(settings.database_url)
-    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    _assert_local_postgres(settings.auth_database_url)
+    owner_engine = create_async_engine(
+        _owner_async_database_url(settings),
+        poolclass=NullPool,
+    )
+    auth_engine = create_async_engine(
+        settings.auth_database_url,
+        poolclass=NullPool,
+    )
+    fixture_started_at = None
 
     try:
-        async with engine.connect() as connection:
+        async with owner_engine.connect() as connection:
             transaction = await connection.begin()
             db = RollbackOnlyAsyncSession(bind=connection, expire_on_commit=False)
+            auth_db = AsyncSession(
+                auth_engine,
+                expire_on_commit=False,
+                info={AUTH_BOUNDARY_INFO_KEY: True},
+            )
             try:
+                revision = await db.scalar(
+                    text("SELECT version_num FROM alembic_version")
+                )
+                assert revision == EXPECTED_ALEMBIC_REVISION
+                fixture_started_at = await db.scalar(
+                    text("SELECT clock_timestamp()")
+                )
+                assert fixture_started_at is not None
+                assert await auth_db.scalar(
+                    text(
+                        """
+                        SELECT pg_has_role(
+                            current_user,
+                            'mata_auth_internal',
+                            'MEMBER'
+                        )
+                        """
+                    )
+                ) is True
+                assert await auth_db.scalar(
+                    text(
+                        """
+                        SELECT has_table_privilege(
+                            current_user,
+                            'public.external_residents',
+                            'SELECT,INSERT,UPDATE,DELETE'
+                        )
+                        """
+                    )
+                ) is False
                 mapping_rows = await db.execute(
                     text(
                         """
@@ -137,13 +195,15 @@ async def postgres_external_registration_harness(
                 app = FastAPI()
                 install_error_handlers(app)
 
-                async def _db_override() -> AsyncIterator[AsyncSession]:
-                    yield db
+                async def _auth_db_override() -> AsyncIterator[AsyncSession]:
+                    yield auth_db
 
                 async def _rate_limit_override() -> None:
                     return None
 
-                app.dependency_overrides[external_residents.get_db_session] = _db_override
+                app.dependency_overrides[
+                    external_residents.get_auth_db_session
+                ] = _auth_db_override
                 app.dependency_overrides[
                     external_residents._persistent_registration_rate_limit
                 ] = _rate_limit_override
@@ -154,13 +214,57 @@ async def postgres_external_registration_harness(
                     transport=transport,
                     base_url="http://testserver",
                 ) as client:
-                    yield PostgresExternalRegistrationHarness(client=client, db=db)
+                    yield PostgresExternalRegistrationHarness(
+                        client=client,
+                        db=db,
+                        owner_engine=owner_engine,
+                        fixture_started_at=fixture_started_at,
+                    )
             finally:
+                await auth_db.rollback()
+                await auth_db.close()
                 if transaction.is_active:
                     await transaction.rollback()
                 await db.close()
     finally:
-        await engine.dispose()
+        if fixture_started_at is not None:
+            async with AsyncSession(owner_engine) as cleanup_db:
+                await cleanup_db.execute(
+                    text(
+                        """
+                        DELETE FROM external_resident_postings
+                        WHERE external_resident_id IN (
+                            SELECT id
+                            FROM external_residents
+                            WHERE mcr LIKE 'TST%'
+                              AND created_at >= :fixture_started_at
+                        )
+                        """
+                    ),
+                    {"fixture_started_at": fixture_started_at},
+                )
+                await cleanup_db.execute(
+                    text(
+                        """
+                        DELETE FROM external_residents
+                        WHERE mcr LIKE 'TST%'
+                          AND created_at >= :fixture_started_at
+                        """
+                    ),
+                    {"fixture_started_at": fixture_started_at},
+                )
+                await cleanup_db.execute(
+                    text(
+                        """
+                        DELETE FROM programme_institution_posting_map
+                        WHERE programme_code = 'GERI'
+                          AND institution_code = 'KTPH'
+                        """
+                    )
+                )
+                await cleanup_db.commit()
+        await auth_engine.dispose()
+        await owner_engine.dispose()
 
 
 async def _add_native_occupancy(
@@ -956,9 +1060,7 @@ async def test_inactive_registration_is_transactional_on_postgres(
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == (
-        "Posting configuration for this programme is unavailable."
-    )
+    assert response.json()["detail"] == "Registration details are invalid"
     assert await harness.db.scalar(
         text("SELECT count(*) FROM external_residents")
     ) == residents_before
@@ -1047,35 +1149,49 @@ async def test_future_institution_discovery_is_data_driven_on_postgres(
     postgres_external_registration_harness: PostgresExternalRegistrationHarness,
 ) -> None:
     harness = postgres_external_registration_harness
-    await harness.db.execute(
-        text(
-            """
-            INSERT INTO programme_institution_posting_map (
-                programme_code,
-                institution_code,
-                posting_code,
-                status,
-                display_order
-            ) VALUES ('GERI', 'KTPH', 'KTPHGerMed', 'active', 11)
-            """
+    async with AsyncSession(harness.owner_engine) as seed_db:
+        await seed_db.execute(
+            text(
+                """
+                INSERT INTO programme_institution_posting_map (
+                    programme_code,
+                    institution_code,
+                    posting_code,
+                    status,
+                    display_order
+                ) VALUES ('GERI', 'KTPH', 'KTPHGerMed', 'active', 11)
+                """
+            )
         )
-    )
+        await seed_db.commit()
+    try:
+        response = await harness.client.get(
+            "/external-residents/registration-options"
+        )
 
-    response = await harness.client.get(
-        "/external-residents/registration-options"
-    )
-
-    assert response.status_code == 200
-    assert {row["code"] for row in response.json()["institutions"]} == {
-        "TTSH",
-        "KTPH",
-    }
-    geri = next(
-        row
-        for row in response.json()["programmes"]
-        if row["programme_code"] == "GERI"
-    )
-    assert any(
-        row["institution_code"] == "KTPH" and row["available"] is True
-        for row in geri["institutions"]
-    )
+        assert response.status_code == 200
+        assert {row["code"] for row in response.json()["institutions"]} == {
+            "TTSH",
+            "KTPH",
+        }
+        geri = next(
+            row
+            for row in response.json()["programmes"]
+            if row["programme_code"] == "GERI"
+        )
+        assert any(
+            row["institution_code"] == "KTPH" and row["available"] is True
+            for row in geri["institutions"]
+        )
+    finally:
+        async with AsyncSession(harness.owner_engine) as cleanup_db:
+            await cleanup_db.execute(
+                text(
+                    """
+                    DELETE FROM programme_institution_posting_map
+                    WHERE programme_code = 'GERI'
+                      AND institution_code = 'KTPH'
+                    """
+                )
+            )
+            await cleanup_db.commit()

@@ -15,6 +15,25 @@ All admin file uploads are routed through **dedicated upload slots** on the admi
 
 The TTF slot additionally requires the admin to select a **programme** (e.g. DR, GRM) from a dropdown before uploading, as a single TTF covers one programme at a time.
 
+### Request and multipart resource limits
+
+Before Starlette parses a supported upload, the pure ASGI perimeter enforces a
+4 MiB aggregate upload-request cap and counts actual streamed bytes. The global
+cap for non-upload request bodies is also 4 MiB. The parser reader then
+enforces a 3 MiB per-file cap, leaving framing headroom for a valid maximum-size
+file.
+
+Each upload request accepts exactly one file. RDB and Form F1 accept one
+non-file field, TTF accepts two, and public holidays accepts none. A non-file
+part is limited to 4 KiB and a decoded filename to 255 UTF-8 bytes. Starlette's
+`max_part_size` does not cap file content; the aggregate and per-file limits do.
+Known oversized `Content-Length` requests are rejected before parsing. Missing
+or false-small lengths can consume/spool data only until the streaming counter
+crosses the cap. `docs/security.md` Sections 8, 13, and 17 define current
+ingress limits and deployed constraints;
+`docs/archive/security/phase-5b/5b_h_m05_upload_preparser_limits.md` preserves
+the historical implementation evidence.
+
 ---
 
 ## RDB Parser

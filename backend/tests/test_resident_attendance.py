@@ -13,17 +13,30 @@ from tests.auth_identity_test_helpers import install_stub_header_identity_middle
 from tests.resident_fakes import FakeResidentSession
 
 
-def _client(fake_db: FakeResidentSession) -> TestClient:
+def _client(
+    fake_db: FakeResidentSession,
+    *,
+    raise_server_exceptions: bool = True,
+    rollback_on_error: bool = False,
+) -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
     install_stub_header_identity_middleware(app)
 
     async def _db_override():
-        yield fake_db
+        try:
+            yield fake_db
+        except Exception:
+            if rollback_on_error:
+                await fake_db.rollback()
+            raise
 
     app.dependency_overrides[resident.get_db_session] = _db_override
     app.include_router(resident.router)
-    return TestClient(app)
+    return TestClient(
+        app,
+        raise_server_exceptions=raise_server_exceptions,
+    )
 
 
 def _headers(fake_db: FakeResidentSession) -> dict[str, str]:
@@ -79,6 +92,50 @@ def test_attendance_submission_creates_attendance_record() -> None:
     assert "session_type_id" not in inserted
 
 
+def test_scheduled_attendance_commit_failure_rolls_back_full_batch_and_returns_no_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_db = FakeResidentSession()
+    first = _add_scheduled_event(
+        fake_db,
+        event_date=fake_db.today - timedelta(days=3),
+        start_time=time(8, 0),
+        end_time=time(9, 0),
+    )
+    second = _add_scheduled_event(
+        fake_db,
+        event_date=fake_db.today - timedelta(days=4),
+        start_time=time(14, 0),
+        end_time=time(15, 0),
+    )
+    initial = fake_db.transaction_state()
+    fake_db.fail_next_commit()
+    cache_calls: list[dict] = []
+    monkeypatch.setattr(
+        "app.services.resident_submission.invalidate_resident_caches",
+        lambda **scope: cache_calls.append(scope),
+    )
+    client = _client(
+        fake_db,
+        raise_server_exceptions=False,
+        rollback_on_error=True,
+    )
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [first["id"], second["id"]]},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Internal server error"
+    assert "submitted" not in response.json()
+    assert fake_db.commits == 1
+    assert fake_db.rollbacks == 1
+    assert fake_db.transaction_state() == initial
+    assert cache_calls == []
+
+
 def test_attendance_submission_invalidates_resident_and_report_caches(monkeypatch) -> None:
     fake_db = FakeResidentSession()
     client = _client(fake_db)
@@ -102,6 +159,34 @@ def test_attendance_submission_invalidates_resident_and_report_caches(monkeypatc
     assert {"resident_events", "resident_attendance", "resident_dashboard", "admin_reports"} <= domains
     assert str(scope["resident_id"]) == fake_db.resident_id
     assert "TTSHCardio" in scope["posting_code"]
+
+
+def test_attendance_cache_failure_after_commit_is_best_effort(
+    monkeypatch,
+    caplog,
+) -> None:
+    fake_db = FakeResidentSession()
+    client = _client(fake_db)
+
+    def _fail_cache_invalidation(*_args, **_kwargs) -> None:
+        raise RuntimeError("cache backend unavailable")
+
+    monkeypatch.setattr(
+        "app.services.cache_invalidation.invalidate_cache",
+        _fail_cache_invalidation,
+    )
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [fake_db.event_id]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["submitted"] == 1
+    assert fake_db.commits == 1
+    assert "resident_attendance_cache_invalidation_failed" in caplog.text
+    assert "cache backend unavailable" not in caplog.text
 
 
 def test_submitted_event_no_longer_appears_in_available_events() -> None:
@@ -443,6 +528,8 @@ def test_non_overlapping_batch_preserves_request_order() -> None:
     assert [
         row["teaching_event_id"] for row in fake_db.attendance[attendance_count_before:]
     ] == requested_ids
+    assert fake_db.teaching_event_lock_calls == sorted(requested_ids)
+    assert len(fake_db.native_attendance_lock_calls) == 1
 
 
 def test_attendance_outside_posting_window_is_rejected() -> None:
@@ -687,7 +774,8 @@ def test_attendance_accepts_valid_secretary_event_even_when_supports_flag_is_fal
 
 
 def test_weekend_non_exception_attendance_is_stored_with_warning() -> None:
-    fake_db = FakeResidentSession()
+    # Keep the derived Saturday distinct from the pre-existing ``today - 2`` event.
+    fake_db = FakeResidentSession(today=date(2026, 7, 29))
     client = _client(fake_db)
 
     response = client.post(
@@ -731,6 +819,37 @@ def test_deleted_attendance_no_longer_excludes_event_visibility() -> None:
     assert fake_db.second_event_id in ids
 
 
+def test_native_attendance_removal_commit_failure_rolls_back_and_returns_no_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_db = FakeResidentSession()
+    initial = fake_db.transaction_state()
+    fake_db.fail_next_commit()
+    cache_calls: list[dict] = []
+    monkeypatch.setattr(
+        "app.services.resident_submission.invalidate_resident_caches",
+        lambda **scope: cache_calls.append(scope),
+    )
+    client = _client(
+        fake_db,
+        raise_server_exceptions=False,
+        rollback_on_error=True,
+    )
+
+    response = client.delete(
+        f"/resident/attendance/{fake_db.existing_attendance_id}",
+        headers=_headers(fake_db),
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Internal server error"
+    assert "removed_count" not in response.json()
+    assert fake_db.commits == 1
+    assert fake_db.rollbacks == 1
+    assert fake_db.transaction_state() == initial
+    assert cache_calls == []
+
+
 def test_delete_attendance_is_idempotent_for_already_removed_row() -> None:
     fake_db = FakeResidentSession()
     fake_db.attendance[0]["status"] = "removed"
@@ -746,9 +865,10 @@ def test_delete_attendance_is_idempotent_for_already_removed_row() -> None:
     assert len(fake_db.attendance) == 2
 
 
-def test_removed_scheduled_attendance_can_be_resubmitted_without_duplicate_row() -> None:
+def test_removed_scheduled_attendance_resubmission_creates_new_history_row() -> None:
     fake_db = FakeResidentSession()
     fake_db.attendance[0]["status"] = "removed"
+    removed_id = fake_db.attendance[0]["id"]
     before_count = len(fake_db.attendance)
     client = _client(fake_db)
 
@@ -760,9 +880,49 @@ def test_removed_scheduled_attendance_can_be_resubmitted_without_duplicate_row()
 
     assert response.status_code == 200
     assert response.json()["submitted"] == 1
-    assert len(fake_db.attendance) == before_count
-    row = next(row for row in fake_db.attendance if row["id"] == fake_db.existing_attendance_id)
-    assert row["status"] == "submitted"
+    assert len(fake_db.attendance) == before_count + 1
+    removed = next(row for row in fake_db.attendance if row["id"] == removed_id)
+    submitted = [
+        row
+        for row in fake_db.attendance
+        if row["resident_id"] == fake_db.resident_id
+        and row["teaching_event_id"] == fake_db.second_event_id
+        and row["status"] == "submitted"
+    ]
+    assert removed["status"] == "removed"
+    assert len(submitted) == 1
+    assert submitted[0]["id"] != removed_id
+
+
+def test_stale_removed_attendance_id_cannot_remove_new_resubmission() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.attendance[0]["status"] = "removed"
+    removed_id = fake_db.attendance[0]["id"]
+    client = _client(fake_db)
+
+    submitted_response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [fake_db.second_event_id]},
+    )
+    active = next(
+        row
+        for row in fake_db.attendance
+        if row["resident_id"] == fake_db.resident_id
+        and row["teaching_event_id"] == fake_db.second_event_id
+        and row["status"] == "submitted"
+    )
+    removal_response = client.delete(
+        f"/resident/attendance/{removed_id}",
+        headers=_headers(fake_db),
+    )
+
+    assert submitted_response.status_code == 200
+    assert active["id"] != removed_id
+    assert removal_response.status_code == 200
+    assert removal_response.json()["removed_count"] == 0
+    assert active["status"] == "submitted"
+    assert fake_db.native_attendance_removal_lock_calls == [removed_id]
 
 
 def test_adhoc_delete_leaves_teaching_event_row_intact() -> None:

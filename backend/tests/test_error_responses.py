@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.errors import ApiError, ErrorCode
 from app.middleware.errors import install_error_handlers
+
+
+class _SecretPayload(BaseModel):
+    password: int
+    mcr: int
 
 
 def _build_test_app() -> FastAPI:
@@ -45,6 +54,30 @@ def _build_test_app() -> FastAPI:
     @app.get("/unexpected")
     async def unexpected_route() -> None:
         raise RuntimeError("boom /var/private/path secret-value")
+
+    @app.get("/database-error")
+    async def database_error_route() -> None:
+        raise SQLAlchemyError(
+            "SELECT password FROM users; postgresql://admin:secret@db/private"
+        )
+
+    @app.post("/request-validation-body")
+    async def request_validation_body_route(payload: _SecretPayload) -> dict[str, int]:
+        return payload.model_dump()
+
+    @app.get("/sensitive-api-error")
+    async def sensitive_api_error_route() -> None:
+        raise ApiError(
+            status_code=422,
+            detail="Invalid MCR=M12345A",
+            errors=[
+                {
+                    "mcr": "M12345A",
+                    "password": "do-not-return",
+                    "database_url": "postgresql://admin:secret@db/private",
+                }
+            ],
+        )
 
     return app
 
@@ -98,12 +131,63 @@ def test_request_validation_error_uses_standard_envelope() -> None:
     assert "validation_errors" in body["metadata"]
 
 
-def test_unexpected_exception_returns_safe_generic_500() -> None:
+def test_validation_error_never_echoes_rejected_input() -> None:
+    client = TestClient(_build_test_app())
+    response = client.post(
+        "/request-validation-body",
+        json={"password": "do-not-echo", "mcr": "M12345A"},
+    )
+
+    assert response.status_code == 422
+    body_text = response.text
+    assert "do-not-echo" not in body_text
+    assert "M12345A" not in body_text
+    for item in response.json()["metadata"]["validation_errors"]:
+        assert set(item) == {"loc", "type", "msg"}
+        assert item["msg"] == "Invalid value"
+
+
+def test_api_errors_are_recursively_redacted() -> None:
+    client = TestClient(_build_test_app())
+    response = client.get("/sensitive-api-error")
+
+    assert response.status_code == 422
+    response_text = response.text
+    assert "M12345A" not in response_text
+    assert "do-not-return" not in response_text
+    assert "admin:secret" not in response_text
+    assert "[REDACTED]" in response_text
+
+
+def test_unexpected_exception_returns_safe_generic_500(caplog) -> None:
     client = TestClient(_build_test_app(), raise_server_exceptions=False)
-    response = client.get("/unexpected")
+    with caplog.at_level(logging.ERROR, logger="app.middleware.errors"):
+        response = client.get("/unexpected")
     assert response.status_code == 500
     body = response.json()
     assert body["detail"] == "Internal server error"
     assert body["error_code"] == "INTERNAL_ERROR"
     assert "secret-value" not in str(body)
     assert "/var/private/path" not in str(body)
+    correlation_id = body["metadata"]["correlation_id"]
+    assert response.headers["X-Correlation-ID"] == correlation_id
+    assert correlation_id in caplog.text
+    assert "category=unhandled" in caplog.text
+    assert "exception_class=RuntimeError" in caplog.text
+    assert "secret-value" not in caplog.text
+    assert "/var/private/path" not in caplog.text
+    assert "Traceback" not in caplog.text
+
+
+def test_database_exception_does_not_log_sql_or_connection_details(caplog) -> None:
+    client = TestClient(_build_test_app(), raise_server_exceptions=False)
+    with caplog.at_level(logging.ERROR, logger="app.middleware.errors"):
+        response = client.get("/database-error")
+
+    assert response.status_code == 500
+    assert "SELECT password" not in response.text
+    assert "admin:secret" not in response.text
+    assert "SELECT password" not in caplog.text
+    assert "admin:secret" not in caplog.text
+    assert "category=database" in caplog.text
+    assert "exception_class=SQLAlchemyError" in caplog.text

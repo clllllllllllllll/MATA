@@ -3,7 +3,16 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, UUIDTimestampMixin
@@ -12,10 +21,9 @@ from app.models.base import Base, UUIDTimestampMixin
 class AttendanceRecord(UUIDTimestampMixin, Base):
     __tablename__ = "attendance_records"
     __table_args__ = (
-        UniqueConstraint(
-            "resident_id",
-            "teaching_event_id",
-            name="uq_attendance_records_resident_event",
+        CheckConstraint(
+            "status IN ('submitted', 'flagged', 'removed')",
+            name="ck_attendance_records_status",
         ),
         Index(
             "idx_attendance_records_resident_status",
@@ -32,6 +40,7 @@ class AttendanceRecord(UUIDTimestampMixin, Base):
             "idx_attendance_records_submitted_resident_event",
             "resident_id",
             "teaching_event_id",
+            unique=True,
             postgresql_where=text("status = 'submitted'"),
         ),
     )
@@ -57,6 +66,10 @@ class AttendanceRecord(UUIDTimestampMixin, Base):
 class ExternalAttendanceRecord(UUIDTimestampMixin, Base):
     __tablename__ = "external_attendance_records"
     __table_args__ = (
+        CheckConstraint(
+            "status IN ('submitted', 'flagged', 'removed')",
+            name="ck_external_attendance_records_status",
+        ),
         Index(
             "idx_external_attendance_external_status",
             "external_resident_id",
