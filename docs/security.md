@@ -283,6 +283,34 @@ At revision `20260728_000028`:
 logins inherit only the required group. Migrations and application objects use
 a distinct owner.
 
+Revision `20260726_000025` normalizes the reviewed `pgcrypto` dependency
+before it creates any H-E helper. It accepts the extension only in `public` or
+Supabase's standard `extensions` schema, requires the migration user to own
+the extension, verifies the exact four C-language extension-member functions
+and requires relocation support when needed. An installation in `extensions`
+is moved transactionally to `public`, after which the exact `public.*`
+functions and their ACLs are revalidated. Execution on every `pgcrypto`
+extension-member routine is revoked from `PUBLIC`, the application
+capabilities, and optional Supabase browser/service roles before any reviewed
+grant is installed. This is a bounded Supabase-baseline normalization, not a
+dynamic search-path or arbitrary-schema fallback.
+
+Revision `20260726_000026` likewise enables RLS on `public.users`
+idempotently before asserting the reviewed pre-cutover inventory. This
+converges a clean local database and the approved Supabase baseline, where
+`users` was already protected, on the same 15 pre-existing and 19 newly
+enabled RLS tables. It does not accept an arbitrary policy or grant inventory;
+the final 34-table, 84-policy and exact-ACL assertions remain unchanged.
+
+Production `SYNC_DATABASE_URL` must use `postgresql://` or
+`postgresql+psycopg2://`; the backend packages psycopg2 and rejects the
+unbundled psycopg 3 scheme `postgresql+psycopg://` at settings validation.
+`get_settings()` converts Pydantic validation failures to a startup-safe
+configuration exception built without the validation input or context. The
+message may identify the failed configuration contract, but must never render
+environment values, URLs, passwords, tokens, or key material in function
+logs.
+
 Security-definer helpers have reviewed owners, fixed `pg_catalog,pg_temp`
 search paths, exact signatures and ACLs, and no ambient `PUBLIC` execution.
 The narrow definer used for database-owned context has a separately attested
@@ -420,8 +448,8 @@ build.
 Backend CI starts PostgreSQL on its maintenance database, then a shared local
 workflow action creates and attests exactly
 `mata_phase5b_final_security_review`. The workflow owns that provisioning and
-applies the single Alembic head before tests. The eight
-`migration_mutation` cases run first in one serial direct-owner pytest process;
+applies the single Alembic head before tests. The `migration_mutation` cases
+run first in one serial direct-owner pytest process;
 their fail-closed fixtures require the exact local database, direct owner, and
 zero competing sessions before every mutation. CI then verifies that the
 database returned to head and uses a bounded direct-owner attestation to require
@@ -487,6 +515,14 @@ ownership revisions requires:
 3. coordinated application rollback;
 4. post-migration role/grant/policy/helper attestation; and
 5. forced reauthentication before traffic resumes.
+
+The `pgcrypto` move to `public` and the pre-existing classification of
+`public.users` RLS are retained hardening. Downgrade does not move the
+extension back to `extensions` or disable RLS on `users`, and operators must
+not attempt either action as an ad-hoc rollback. A rollback therefore does not
+recreate the byte-for-byte pre-cutover Supabase catalogue; it requires the
+same drained, coordinated review and attestation as the other retained role,
+ACL, and browser-denial hardening.
 
 Disposable verification must use an exact explicitly approved local database,
 print and assert its name and local host before mutation, set synchronous and

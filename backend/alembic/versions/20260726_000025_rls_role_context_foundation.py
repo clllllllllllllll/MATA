@@ -95,6 +95,230 @@ def _execute(statement: str) -> None:
     op.get_bind().execution_options(no_parameters=True).exec_driver_sql(statement)
 
 
+def _normalize_reviewed_pgcrypto_schema() -> None:
+    _execute(
+        r"""
+DO $migration$
+DECLARE
+    extension_oid oid;
+    extension_schema text;
+    extension_owner text;
+    extension_relocatable boolean;
+    unsafe_function text;
+    extension_routine record;
+    denied_role text;
+BEGIN
+    SELECT
+        extension.oid,
+        namespace.nspname,
+        owner_role.rolname,
+        extension.extrelocatable
+    INTO
+        extension_oid,
+        extension_schema,
+        extension_owner,
+        extension_relocatable
+    FROM pg_catalog.pg_extension AS extension
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = extension.extnamespace
+    JOIN pg_catalog.pg_roles AS owner_role
+      ON owner_role.oid = extension.extowner
+    WHERE extension.extname = 'pgcrypto';
+
+    IF extension_oid IS NULL THEN
+        RAISE EXCEPTION 'Required pgcrypto extension is missing'
+            USING ERRCODE = '0A000';
+    END IF;
+
+    IF extension_schema NOT IN ('public', 'extensions') THEN
+        RAISE EXCEPTION
+            'Unsupported pgcrypto extension schema: %',
+            extension_schema
+            USING ERRCODE = '0A000';
+    END IF;
+
+    IF extension_owner <> CURRENT_USER THEN
+        RAISE EXCEPTION
+            'Migration owner must own the pgcrypto extension'
+            USING ERRCODE = '42501';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_namespace
+        WHERE nspname = 'public'
+    )
+       OR NOT COALESCE(
+           pg_catalog.has_schema_privilege(
+               CURRENT_USER,
+               'public',
+               'CREATE'
+           ),
+           false
+       )
+    THEN
+        RAISE EXCEPTION
+            'Migration owner must be able to create in public'
+            USING ERRCODE = '42501';
+    END IF;
+
+    SELECT required.signature
+    INTO unsafe_function
+    FROM (
+        VALUES
+            ('digest(bytea,text)'),
+            ('hmac(bytea,bytea,text)'),
+            ('gen_random_bytes(integer)'),
+            ('gen_random_uuid()')
+    ) AS required(signature)
+    LEFT JOIN pg_catalog.pg_proc AS procedure
+      ON procedure.oid = pg_catalog.to_regprocedure(
+          pg_catalog.format(
+              '%I.%s',
+              extension_schema,
+              required.signature
+          )
+      )
+    LEFT JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = procedure.pronamespace
+    LEFT JOIN pg_catalog.pg_roles AS owner_role
+      ON owner_role.oid = procedure.proowner
+    LEFT JOIN pg_catalog.pg_language AS language
+      ON language.oid = procedure.prolang
+    LEFT JOIN pg_catalog.pg_depend AS dependency
+      ON dependency.classid =
+          'pg_catalog.pg_proc'::pg_catalog.regclass
+     AND dependency.refclassid =
+          'pg_catalog.pg_extension'::pg_catalog.regclass
+     AND dependency.objid = procedure.oid
+     AND dependency.refobjid = extension_oid
+     AND dependency.deptype = 'e'
+    WHERE procedure.oid IS NULL
+       OR namespace.nspname <> extension_schema
+       OR dependency.objid IS NULL
+       OR language.lanname IS DISTINCT FROM 'c'
+       OR procedure.prosecdef
+       OR owner_role.rolname IN (
+           'mata_app_runtime',
+           'mata_auth_internal',
+           'anon',
+           'authenticated',
+           'service_role'
+       )
+    ORDER BY required.signature
+    LIMIT 1;
+
+    IF unsafe_function IS NOT NULL THEN
+        RAISE EXCEPTION
+            'Missing or unsafe reviewed pgcrypto function: %',
+            unsafe_function
+            USING ERRCODE = '0A000';
+    END IF;
+
+    IF extension_schema = 'extensions' THEN
+        IF NOT extension_relocatable THEN
+            RAISE EXCEPTION
+                'The pgcrypto extension is not relocatable'
+                USING ERRCODE = '0A000';
+        END IF;
+        EXECUTE 'ALTER EXTENSION pgcrypto SET SCHEMA public';
+    END IF;
+
+    -- Revision 000024 revoked PUBLIC/browser execution only from routines that
+    -- were already in public.  A Supabase pgcrypto installation moves into
+    -- public after that revision, so deny every extension-member routine here
+    -- before granting the separately reviewed four-function contract below.
+    FOR extension_routine IN
+        SELECT
+            CASE procedure.prokind
+                WHEN 'p' THEN 'PROCEDURE'
+                ELSE 'FUNCTION'
+            END AS object_kind,
+            pg_catalog.format(
+                '%I.%I(%s)',
+                namespace.nspname,
+                procedure.proname,
+                pg_catalog.pg_get_function_identity_arguments(procedure.oid)
+            ) AS object_identity
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        JOIN pg_catalog.pg_depend AS dependency
+          ON dependency.classid =
+              'pg_catalog.pg_proc'::pg_catalog.regclass
+         AND dependency.refclassid =
+              'pg_catalog.pg_extension'::pg_catalog.regclass
+         AND dependency.objid = procedure.oid
+         AND dependency.refobjid = extension_oid
+         AND dependency.deptype = 'e'
+        ORDER BY namespace.nspname, procedure.proname, procedure.oid
+    LOOP
+        EXECUTE pg_catalog.format(
+            'REVOKE ALL PRIVILEGES ON %s %s FROM PUBLIC',
+            extension_routine.object_kind,
+            extension_routine.object_identity
+        );
+
+        FOREACH denied_role IN ARRAY ARRAY[
+            'mata_app_runtime',
+            'mata_auth_internal',
+            'anon',
+            'authenticated',
+            'service_role'
+        ]
+        LOOP
+            IF pg_catalog.to_regrole(denied_role) IS NOT NULL THEN
+                EXECUTE pg_catalog.format(
+                    'REVOKE ALL PRIVILEGES ON %s %s FROM %I',
+                    extension_routine.object_kind,
+                    extension_routine.object_identity,
+                    denied_role
+                );
+            END IF;
+        END LOOP;
+    END LOOP;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_depend AS dependency
+          ON dependency.classid =
+              'pg_catalog.pg_proc'::pg_catalog.regclass
+         AND dependency.refclassid =
+              'pg_catalog.pg_extension'::pg_catalog.regclass
+         AND dependency.objid = procedure.oid
+         AND dependency.refobjid = extension_oid
+         AND dependency.deptype = 'e'
+        CROSS JOIN LATERAL pg_catalog.aclexplode(
+            COALESCE(
+                procedure.proacl,
+                pg_catalog.acldefault('f', procedure.proowner)
+            )
+        ) AS privilege
+        LEFT JOIN pg_catalog.pg_roles AS grantee_role
+          ON grantee_role.oid = privilege.grantee
+        WHERE privilege.privilege_type = 'EXECUTE'
+          AND (
+              privilege.grantee = 0
+              OR grantee_role.rolname IN (
+                  'mata_app_runtime',
+                  'mata_auth_internal',
+                  'anon',
+                  'authenticated',
+                  'service_role'
+              )
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'Unsafe pgcrypto extension-member EXECUTE privilege remains'
+            USING ERRCODE = '42501';
+    END IF;
+END
+$migration$;
+"""
+    )
+
+
 def _create_roles_and_schemas() -> None:
     _execute(
         r"""
@@ -241,6 +465,33 @@ $migration$;
         "public.gen_random_bytes(integer), "
         "public.gen_random_uuid() "
         "FROM PUBLIC, mata_app_runtime, mata_auth_internal"
+    )
+    _execute(
+        r"""
+DO $migration$
+DECLARE
+    optional_role text;
+BEGIN
+    FOREACH optional_role IN ARRAY ARRAY[
+        'anon',
+        'authenticated',
+        'service_role'
+    ]
+    LOOP
+        IF pg_catalog.to_regrole(optional_role) IS NOT NULL THEN
+            EXECUTE pg_catalog.format(
+                'REVOKE ALL PRIVILEGES ON FUNCTION '
+                'public.digest(bytea,text), '
+                'public.hmac(bytea,bytea,text), '
+                'public.gen_random_bytes(integer), '
+                'public.gen_random_uuid() FROM %I',
+                optional_role
+            );
+        END IF;
+    END LOOP;
+END
+$migration$;
+"""
     )
     _execute(
         r"""
@@ -3924,6 +4175,7 @@ $migration$;
 
 
 def upgrade() -> None:
+    _normalize_reviewed_pgcrypto_schema()
     _create_roles_and_schemas()
     _create_private_context_foundation()
     _create_private_session_hydrator()

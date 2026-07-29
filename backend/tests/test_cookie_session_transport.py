@@ -151,6 +151,12 @@ def test_production_configuration_rejects_insecure_transport_and_origin_shortcut
                 "postgresql+psycopg2://migration@other.example.invalid:5432/mata"
             )
         )
+    with pytest.raises(ValueError, match="SYNC_DATABASE_URL"):
+        _production_settings(
+            sync_database_url=(
+                "postgresql+psycopg://migration@db.example.invalid:5432/mata"
+            )
+        )
     with pytest.raises(ValueError, match="distinct credentialed roles"):
         _production_settings(
             sync_database_url=(
