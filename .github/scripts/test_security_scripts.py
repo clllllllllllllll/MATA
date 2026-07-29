@@ -223,6 +223,100 @@ class SecuritySourceScanTests(unittest.TestCase):
                 findings = scan.scan_frontend()
         self.assertIn("frontend-backend-secret-name", str(findings))
 
+    def test_frontend_dist_scan_accepts_hardened_cookie_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            dist = root / "frontend" / "dist"
+            assets = dist / "assets"
+            assets.mkdir(parents=True)
+            (dist / "index.html").write_text(
+                '<script type="module" src="/assets/app.js"></script>',
+                encoding="utf-8",
+            )
+            (assets / "app.js").write_text(
+                'fetch("/api/v1/auth/login",{credentials:"include"})',
+                encoding="utf-8",
+            )
+            with mock.patch.object(scan, "ROOT", root):
+                findings = scan.scan_frontend_dist()
+        self.assertEqual([], findings)
+
+    def test_frontend_dist_scan_rejects_legacy_supabase_bearer_bundle(self):
+        legacy_bundle = (
+            "client.auth.signInWithPassword(input);"
+            "fetch('https://project.supabase.co/auth/v1/token?grant_type=password');"
+            "headers.Authorization='Bearer '+session.access_token;"
+            "const refresh=session.refresh_token;"
+            "const service='eyJaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbb."
+            "ccccccccccccccccccccc';"
+            "const key='sb_secret_synthetic_not_a_real_key';"
+            "fetch('https://mata-backend.vercel.app/api/v1/auth/me');"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            dist = root / "frontend" / "dist"
+            assets = dist / "assets"
+            assets.mkdir(parents=True)
+            (dist / "index.html").write_text(
+                '<script type="module" src="/assets/app.js"></script>',
+                encoding="utf-8",
+            )
+            (assets / "app.js").write_text(legacy_bundle, encoding="utf-8")
+            with mock.patch.object(scan, "ROOT", root):
+                findings = scan.scan_frontend_dist()
+        finding_text = str(findings)
+        for rule_id in (
+            "frontend-dist-upstream-token-field",
+            "frontend-dist-password-grant",
+            "frontend-dist-supabase-auth",
+            "frontend-dist-supabase-origin",
+            "frontend-dist-bearer",
+            "frontend-dist-absolute-api-origin",
+            "frontend-dist-known-backend-origin",
+            "frontend-dist-jwt-value",
+            "frontend-dist-supabase-key-value",
+        ):
+            self.assertIn(rule_id, finding_text)
+        self.assertNotIn("Bearer '+session", finding_text)
+
+    def test_frontend_dist_scan_rejects_bare_backend_origin_in_text_asset(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            dist = root / "frontend" / "dist"
+            assets = dist / "assets"
+            assets.mkdir(parents=True)
+            (dist / "index.html").write_text(
+                '<script type="module" src="/assets/app.js"></script>',
+                encoding="utf-8",
+            )
+            (assets / "app.js").write_text("app", encoding="utf-8")
+            (dist / "runtime.txt").write_text(
+                "https://mata-backend.vercel.app",
+                encoding="utf-8",
+            )
+            with mock.patch.object(scan, "ROOT", root):
+                findings = scan.scan_frontend_dist()
+        self.assertIn("frontend-dist-known-backend-origin", str(findings))
+
+    def test_frontend_dist_scan_fails_closed_for_missing_build_or_source_maps(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            with mock.patch.object(scan, "ROOT", root):
+                self.assertEqual(
+                    ["frontend-dist-missing"],
+                    scan.scan_frontend_dist(),
+                )
+
+            dist = root / "frontend" / "dist"
+            assets = dist / "assets"
+            assets.mkdir(parents=True)
+            (dist / "index.html").write_text("app", encoding="utf-8")
+            (assets / "app.js").write_text("app", encoding="utf-8")
+            (assets / "app.js.map").write_text("{}", encoding="utf-8")
+            with mock.patch.object(scan, "ROOT", root):
+                findings = scan.scan_frontend_dist()
+        self.assertIn("frontend-dist-source-map", str(findings))
+
     def test_worktree_scan_covers_tracked_added_lines_without_echoing_values(self):
         secret_name = "_".join(("MATA", "SESSION", "HASH", "KEY"))
         sentinel = "sentinel-sensitive-value"
@@ -317,6 +411,73 @@ class SecuritySourceScanTests(unittest.TestCase):
 
 
 class WorkflowSecurityTests(unittest.TestCase):
+    def test_backend_workflows_partition_direct_owner_migration_tests(self):
+        for workflow_name in ("backend-ci.yml", "production-security.yml"):
+            source = (WORKFLOW_ROOT / workflow_name).read_text(encoding="utf-8")
+            dedicated_start = source.index(
+                "- name: Run serial direct-owner migration lifecycle tests"
+            )
+            broad_name = (
+                "- name: Run backend tests through restricted PostgreSQL roles"
+                if workflow_name == "backend-ci.yml"
+                else "- name: Run full backend regression suite"
+            )
+            self.assertEqual(
+                source.count(
+                    "- name: Run serial direct-owner migration lifecycle tests"
+                ),
+                1,
+            )
+            self.assertEqual(source.count(broad_name), 1)
+            broad_start = source.index(broad_name)
+            next_step_start = source.find("\n      - name:", broad_start + 1)
+            self.assertNotEqual(next_step_start, -1)
+            dedicated_block = source[dedicated_start:broad_start]
+            broad_block = source[broad_start:next_step_start]
+
+            self.assertLess(dedicated_start, broad_start)
+            self.assertIn("python -B -m pytest", dedicated_block)
+            self.assertNotIn(
+                "python -B -m tests.run_rls_restricted_pytest",
+                dedicated_block,
+            )
+            self.assertIn(
+                "--strict-markers -m migration_mutation tests",
+                dedicated_block,
+            )
+            self.assertIn(
+                "Verify the lifecycle gate restored the database head",
+                dedicated_block,
+            )
+            self.assertIn(
+                "python -B -m alembic current --check-heads",
+                dedicated_block,
+            )
+            self.assertIn(
+                "Attest lifecycle cleanup before restricted reuse",
+                dedicated_block,
+            )
+            self.assertIn(
+                "python -B -m tests.attest_migration_database",
+                dedicated_block,
+            )
+            self.assertIn(
+                "python -B -m tests.run_rls_restricted_pytest",
+                broad_block,
+            )
+            self.assertIn(
+                '--strict-markers -m "not migration_mutation" tests',
+                broad_block,
+            )
+            self.assertNotIn(
+                "tests/test_external_registration_migrations_postgres.py",
+                source,
+            )
+            self.assertNotIn(
+                "tests/test_adhoc_creator_migration_inplace_postgres.py",
+                source,
+            )
+
     def test_external_actions_are_pinned_to_full_commit_shas(self):
         for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
             source = workflow.read_text(encoding="utf-8")

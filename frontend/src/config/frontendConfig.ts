@@ -36,18 +36,18 @@ const defaultSecretaryScopeLabel =
 const defaultResidentScopeLabel =
   import.meta.env.VITE_DEMO_RESIDENT_SCOPE_LABEL ?? 'Resident account'
 
-const { appEnv, authMode } = validateFrontendEnvironment({
+const { appEnv, authMode, apiBaseUrl } = validateFrontendEnvironment({
   appEnv: import.meta.env.VITE_APP_ENV,
   authMode: import.meta.env.VITE_AUTH_MODE,
+  apiBaseUrl:
+    import.meta.env.VITE_API_BASE_URL ??
+    (import.meta.env.DEV ? 'http://localhost:8000/api/v1' : undefined),
 })
 
 export const frontendConfig = {
   appEnv,
   authMode,
-  apiBaseUrl:
-    appEnv === 'production' || authMode === 'supabase'
-      ? '/api/v1'
-      : import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1',
+  apiBaseUrl,
   defaultRole: 'master_admin' as const,
   defaultProgrammeCode,
   demoAdminId: defaultAdminId,

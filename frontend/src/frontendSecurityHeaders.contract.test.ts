@@ -56,6 +56,17 @@ test('proxied API responses opt out of browser and CDN caching', () => {
   )
   assert.equal(headerValue(apiRouteHeaders, 'CDN-Cache-Control'), 'no-store')
   assert.equal(headerValue(apiRouteHeaders, 'Vercel-CDN-Cache-Control'), 'no-store')
+  assert.equal(headerValue(apiRouteHeaders, 'x-vercel-enable-rewrite-caching'), '0')
+})
+
+test('the external API route is a path-preserving rewrite without credential synthesis', () => {
+  const source = read('../vercel.json')
+  assert.equal('redirects' in vercelConfig, false)
+  assert.match(
+    vercelConfig.rewrites[0].destination,
+    /\/api\/v1\/:path\*$/,
+  )
+  assert.doesNotMatch(source, /Authorization|Bearer/)
 })
 
 test('the frontend applies the complete transport and browser header contract', () => {
@@ -137,4 +148,15 @@ test('Nginx bounds request bodies before proxying upload streams', () => {
 
 test('the standard security contact file remains published', () => {
   assert.equal(existsSync(securityTxtPath), true)
+})
+
+test('production CI scans the emitted bundle after building it', () => {
+  const workflow = read('../../.github/workflows/production-security.yml')
+  const buildIndex = workflow.indexOf('- name: Build frontend')
+  const artifactScanIndex = workflow.indexOf(
+    'security_source_scan.py --frontend-dist',
+  )
+
+  assert.notEqual(buildIndex, -1)
+  assert.ok(artifactScanIndex > buildIndex)
 })

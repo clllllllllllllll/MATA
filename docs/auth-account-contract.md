@@ -162,6 +162,12 @@ Frontend:
 - `frontend/src/types/auth.ts` defines the implemented typed frontend auth/session identity contract.
 - As of 5B-C, the frontend has a universal `/login`, frontend auth/session provider, role-aware route guards, logout/session clearing, and Non-NHG Resident registration plus confirmation UI.
 - In `VITE_AUTH_MODE=supabase`, the frontend uses backend cookie-session APIs only. It has no Supabase browser client, bearer persistence, or routine bearer injection.
+- On startup, the frontend removes only the exact superseded
+  `mata.auth.session.v1` key from Local/Session Storage without reading values
+  or clearing unrelated origin data. The repository has no trustworthy exact
+  legacy Supabase project reference, so it must not wildcard-delete `sb-*`
+  entries. Affected users clear site data once after remediation. This is
+  residue cleanup, not an authentication path.
 - AUD-M-06 clears authenticated local state immediately but does not present
   server revocation as complete until the machine-readable logout response
   returns `server_logout_confirmed = true`. Pending state blocks hydration and
@@ -404,6 +410,7 @@ SUPABASE_URL=https://<project-ref>.supabase.co
 SUPABASE_JWT_AUDIENCE=authenticated
 VITE_APP_ENV=preview
 VITE_AUTH_MODE=supabase
+VITE_API_BASE_URL=/api/v1
 ```
 
 `preview:supabase` uses the same fixed-name cookie response coordination as
@@ -462,6 +469,9 @@ VITE_API_BASE_URL=/api/v1
 ```
 
 `SUPABASE_SERVICE_ROLE_KEY`, database URLs, session/rate-limit keys, and rollback secrets are server-only. Server-only variables must not use the `VITE_` prefix.
+All three production frontend variables are mandatory. The build accepts only
+the exact relative `/api/v1` API base in production or Supabase mode; it does
+not silently replace an absolute or missing value.
 
 ## Frontend Auth State Contract
 
@@ -488,6 +498,11 @@ Reliable logout has three distinct lifecycle meanings:
 
 The tombstone is not an auth session and contains no credential or identity
 material.
+
+The legacy-key startup cleanup is deliberately outside this state contract.
+After it runs, the current application writes no identity, CSRF value,
+Supabase token, or opaque session credential to Local Storage, Session Storage,
+or IndexedDB.
 
 Responsibilities:
 - Stub/demo mode derives frontend identity from `/auth/login` and `/auth/me`; local header emission is based on the stored session identity.
@@ -540,6 +555,11 @@ Phase 5B programme/institution mapping rollout:
 - External-registration mapping remains isolated from native teaching visibility, Secretary capabilities, event creation, and compliance attribution.
 
 ## Historical Implementation Timeline and Current Follow-up
+
+The entries through 5B-F below preserve superseded implementation history.
+They are not the current transport contract and must not be used to configure a
+deployment. In particular, every historical browser Supabase or bearer path
+was removed by 5B-H-D.
 
 5B-B1 implemented:
 - Added `users.admin_level` as a non-null explicit master marker.
@@ -624,6 +644,21 @@ Phase 5B programme/institution mapping rollout:
 - Removed the normal frontend Supabase session and bearer-token paths.
 - Verified migrations through `20260722_000024`, dependency audits, backend/frontend suites, PostgreSQL races, and source scans locally.
 - Deployment remains unverified. See `docs/archive/security/phase-5b/5b_h_d_production_security_implementation.md`.
+
+Deployed-auth transport remediation audit:
+
+- A browser-observed Supabase password grant followed by a cross-origin
+  bearer-authenticated `/auth/me` request exactly matches the superseded
+  5B-D2/5B-E frontend and cannot be produced by the current merged source.
+- The current production build contract is
+  `VITE_APP_ENV=production`, `VITE_AUTH_MODE=supabase`, and
+  `VITE_API_BASE_URL=/api/v1`; emitted artifacts are scanned after build.
+- The current backend performs the Supabase password exchange server-side,
+  reloads authority from the database, discards upstream tokens, and issues
+  only `__Host-mata_session` plus memory-only CSRF/identity state.
+- Current deployed commit/configuration and the backend startup exception still
+  require separate read-only Vercel evidence. See
+  `docs/deployed_auth_transport_uat.md`.
 
 5B-H-E locally implemented:
 

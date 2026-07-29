@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 import importlib.util
 import os
 from dataclasses import dataclass
@@ -7,6 +8,7 @@ from datetime import date
 from pathlib import Path
 import subprocess
 import sys
+from time import sleep
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -29,6 +31,8 @@ _LOCAL_POSTGRES_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _SYNC_POSTGRES_DRIVERS = frozenset(
     {"postgresql", "postgresql+psycopg", "postgresql+psycopg2"}
 )
+_MUTATION_EXCLUSIVITY_ATTEMPTS = 20
+_MUTATION_EXCLUSIVITY_INTERVAL_SECONDS = 0.1
 
 EXPECTED_POSTING_CODE_ROWS = (
     ("752081a5-51ce-5d5a-8049-b77f1a98a160", "NSCDermat"),
@@ -223,6 +227,14 @@ class MigrationHarness:
     database_name: str
     engine: Engine
     environment: dict[str, str]
+    request_node: pytest.Item
+
+    def _assert_marker_authorized(self) -> None:
+        if self.request_node.get_closest_marker("migration_mutation") is None:
+            pytest.fail(
+                "Alembic mutation requires the migration_mutation marker",
+                pytrace=False,
+            )
 
     def _attest_mutation_target(self) -> None:
         source_url = make_url(self.environment["SYNC_DATABASE_URL"])
@@ -233,31 +245,28 @@ class MigrationHarness:
                 pytrace=False,
             )
 
-        with self.engine.connect() as connection:
-            identity = _h_e_database_identity(connection)
-            other_connections = connection.scalar(
-                text(
-                    """
-                    SELECT count(*)
-                    FROM pg_catalog.pg_stat_activity
-                    WHERE datname = current_database()
-                      AND pid <> pg_catalog.pg_backend_pid()
-                    """
+        def sample() -> tuple[Mapping[str, Any], int]:
+            with self.engine.connect() as connection:
+                identity = _h_e_database_identity(connection)
+                other_connections = int(
+                    connection.scalar(
+                        text(
+                            """
+                            SELECT count(*)
+                            FROM pg_catalog.pg_stat_activity
+                            WHERE datname = current_database()
+                              AND pid <> pg_catalog.pg_backend_pid()
+                            """
+                        )
+                    )
+                    or 0
                 )
-            )
-        if (
-            identity["database_name"] != H_E_DISPOSABLE_DATABASE_NAME
-            or identity["current_role"] != identity["session_role"]
-            or identity["session_role"] != identity["database_owner"]
-            or identity["session_role"] != source_url.username
-            or not identity["login_is_superuser"]
-            or other_connections != 0
-        ):
-            pytest.fail(
-                "Migration mutation requires the exclusive exact named local "
-                "disposable database through its direct owner",
-                pytrace=False,
-            )
+            return identity, other_connections
+
+        identity = _wait_for_exclusive_mutation_target(
+            source_url,
+            sample,
+        )
         print(
             "PostgreSQL mutation target: "
             f"database={identity['database_name']} "
@@ -266,6 +275,7 @@ class MigrationHarness:
         )
 
     def alembic(self, action: str, revision: str) -> subprocess.CompletedProcess[str]:
+        self._assert_marker_authorized()
         if action not in {"upgrade", "downgrade"}:
             raise ValueError("Migration harness permits only upgrade or downgrade")
         self._attest_mutation_target()
@@ -287,6 +297,37 @@ class MigrationHarness:
             timeout=120,
             check=False,
         )
+
+
+def _wait_for_exclusive_mutation_target(
+    source_url: URL,
+    sample: Callable[[], tuple[Mapping[str, Any], int]],
+    *,
+    pause: Callable[[float], None] = sleep,
+) -> Mapping[str, Any]:
+    for attempt in range(_MUTATION_EXCLUSIVITY_ATTEMPTS):
+        identity, other_connections = sample()
+        if (
+            identity["database_name"] != H_E_DISPOSABLE_DATABASE_NAME
+            or identity["current_role"] != identity["session_role"]
+            or identity["session_role"] != identity["database_owner"]
+            or identity["session_role"] != source_url.username
+            or not identity["login_is_superuser"]
+        ):
+            pytest.fail(
+                "Migration mutation requires the exclusive exact named local "
+                "disposable database through its direct owner",
+                pytrace=False,
+            )
+        if other_connections == 0:
+            return identity
+        if attempt < _MUTATION_EXCLUSIVITY_ATTEMPTS - 1:
+            pause(_MUTATION_EXCLUSIVITY_INTERVAL_SECONDS)
+    pytest.fail(
+        "Migration mutation requires the exclusive exact named local "
+        "disposable database through its direct owner",
+        pytrace=False,
+    )
 
 
 def _migration_environment(source_url: URL) -> dict[str, str]:
@@ -365,7 +406,14 @@ def test_migration_harness_never_manages_a_database_container() -> None:
 
 
 @pytest.fixture
-def clean_migration_database() -> MigrationHarness:
+def clean_migration_database(
+    request: pytest.FixtureRequest,
+) -> MigrationHarness:
+    if request.node.get_closest_marker("migration_mutation") is None:
+        pytest.fail(
+            "Direct-owner migration fixtures require the migration_mutation marker",
+            pytrace=False,
+        )
     settings = Settings(_env_file=None)
     source_url = make_url(settings.sync_database_url)
     _assert_local_postgres_source(source_url)
@@ -375,6 +423,7 @@ def clean_migration_database() -> MigrationHarness:
         database_name=H_E_DISPOSABLE_DATABASE_NAME,
         engine=target_engine,
         environment=_migration_environment(source_url),
+        request_node=request.node,
     )
     mutation_authorized = False
     try:
@@ -957,6 +1006,7 @@ def _cutover_data_snapshot(
     }
 
 
+@pytest.mark.migration_mutation
 def test_full_rls_cutover_clean_populated_downgrade_and_reupgrade_lifecycle(
     clean_migration_database: MigrationHarness,
 ) -> None:
@@ -1218,6 +1268,7 @@ def test_full_rls_cutover_clean_populated_downgrade_and_reupgrade_lifecycle(
         ) == session_snapshot
 
 
+@pytest.mark.migration_mutation
 def test_adhoc_creator_backfill_populated_downgrade_and_reupgrade(
     clean_migration_database: MigrationHarness,
 ) -> None:
@@ -1410,6 +1461,7 @@ def test_adhoc_creator_backfill_populated_downgrade_and_reupgrade(
 
 
 @pytest.mark.parametrize("case", ["orphaned", "ambiguous", "mixed"])
+@pytest.mark.migration_mutation
 def test_adhoc_creator_backfill_rejects_non_deterministic_history(
     clean_migration_database: MigrationHarness,
     case: str,
@@ -1429,6 +1481,7 @@ def test_adhoc_creator_backfill_rejects_non_deterministic_history(
         assert _adhoc_creator_columns(connection) == set()
 
 
+@pytest.mark.migration_mutation
 def test_external_registration_migration_lifecycle_on_clean_postgres(
     clean_migration_database: MigrationHarness,
 ) -> None:
@@ -1666,6 +1719,7 @@ def _assert_posting_programme_schema(connection: Connection) -> None:
     )
 
 
+@pytest.mark.migration_mutation
 def test_external_posting_programme_migration_backfills_only_unique_mappings(
     clean_migration_database: MigrationHarness,
     request: pytest.FixtureRequest,

@@ -551,6 +551,7 @@ async def authenticate_for_app_session(
                 SELECT
                     id,
                     email,
+                    supabase_user_id,
                     role,
                     name,
                     posting_code,

@@ -85,13 +85,29 @@ jobs:
         working-directory: backend
         run: python -B -m alembic current --check-heads
 
+      - name: Run serial direct-owner migration lifecycle tests
+        working-directory: backend
+        run: >-
+          python -B -m pytest
+          -q --tb=short -p no:cacheprovider
+          --strict-markers -m migration_mutation tests
+
+      - name: Verify the lifecycle gate restored the database head
+        working-directory: backend
+        run: python -B -m alembic current --check-heads
+
+      - name: Attest lifecycle cleanup before restricted reuse
+        working-directory: backend
+        run: python -B -m tests.attest_migration_database
+
       - name: Run full backend regression suite
         working-directory: backend
         env:
           RATE_LIMIT_STORE: memory
         run: >-
           python -B -m tests.run_rls_restricted_pytest
-          -q --tb=short -p no:cacheprovider tests
+          -q --tb=short -p no:cacheprovider
+          --strict-markers -m "not migration_mutation" tests
 
       - name: Run focused security tests
         working-directory: backend
@@ -188,6 +204,9 @@ jobs:
 
       - name: Build frontend
         run: npm run build
+
+      - name: Scan emitted frontend artifact
+        run: python ../.github/scripts/security_source_scan.py --frontend-dist
 
       - name: Audit frontend production dependencies
         shell: bash

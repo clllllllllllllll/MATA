@@ -40,9 +40,16 @@ Notes:
   - `X-User-Programme: <VITE_DEMO_ADMIN_PROGRAMME_SCOPE>`
 - TTF upload requires the selected `programme_code` to be inside `X-User-Programme`.
 - Production uses `VITE_AUTH_MODE=supabase`, but the browser has no Supabase client configuration. Staff credentials are submitted to the MATA backend, which mediates Supabase Auth server-side.
-- Production always uses the relative `/api/v1` browser API path, even if a different `VITE_API_BASE_URL` is supplied at build time.
+- Production and Supabase-mode builds require the relative
+  `VITE_API_BASE_URL=/api/v1` value exactly. Missing, absolute,
+  scheme-relative, credentialed, or differently rooted values fail the build.
 - All roles use the backend-owned `HttpOnly` application-session cookie. The frontend keeps only the current identity and synchronizer CSRF token in module memory, includes credentials on API requests, and sends `X-CSRF-Token` only on `POST`, `PUT`, `PATCH`, and `DELETE`.
 - No authentication credential is retained in `localStorage` or `sessionStorage`.
+- Startup removes only the exact superseded `mata.auth.session.v1` entry and
+  never reads stored values or clears unrelated keys. The repository does not
+  contain a trustworthy exact legacy Supabase project reference, so the app
+  does not wildcard-delete `sb-*` keys. Users of an older deployment must
+  clear site data once after the corrected release.
 - Do not add backend secrets or database credentials to frontend env vars. No Supabase URL or publishable/anonymous key is required by the frontend.
 - Backward-compatible fallbacks still supported:
   - `VITE_DEMO_ADMIN_ID`
@@ -63,6 +70,12 @@ Production frontend values:
 VITE_APP_ENV=production
 VITE_AUTH_MODE=supabase
 VITE_API_BASE_URL=/api/v1
+```
+
+After the production build, run:
+
+```bash
+python ../.github/scripts/security_source_scan.py --frontend-dist
 ```
 
 ### Docker full-stack startup

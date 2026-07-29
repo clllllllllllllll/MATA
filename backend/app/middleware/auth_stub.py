@@ -93,6 +93,19 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             return self._forbidden_response()
 
         if path in {login_path, registration_path} and request.method == "POST":
+            if (
+                self._settings.auth_transport == "cookie"
+                and not self._stub_header_auth_allowed()
+                and request.headers.get("Authorization")
+            ):
+                return self._unauthorized_response()
+            fetch_site = (request.headers.get("Sec-Fetch-Site") or "").strip().lower()
+            if (
+                self._settings.environment == "production"
+                and fetch_site
+                and fetch_site != "same-origin"
+            ):
+                return self._forbidden_response()
             if not self._public_json_request_allowed(request):
                 return build_error_response(
                     status_code=415,

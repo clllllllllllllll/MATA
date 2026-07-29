@@ -153,7 +153,18 @@ All `VITE_*` variables are public browser-exposed values. The production browser
 
 Every CI production build explicitly uses `VITE_APP_ENV=production`,
 `VITE_AUTH_MODE=supabase`, and `VITE_API_BASE_URL=/api/v1`. The build remains
-fail-closed when the environment/mode pair is absent or unapproved.
+fail-closed when any value is missing, the environment/mode pair is
+unapproved, or the API base is not exactly `/api/v1`. CI scans the emitted
+bundle and rejects source maps, browser Supabase/password-grant or bearer
+markers, upstream tokens, privileged configuration, database URLs, and an
+absolute backend API origin.
+
+GitHub Actions environment blocks do not configure Vercel. The `mata-aine`
+project must define the same three public values in both its Preview and
+Production scopes; its Preview scope deliberately builds the production
+application contract. Branch-specific Preview entries must not override that
+contract. A Vercel environment-variable change applies only to a new or
+redeployed build.
 
 ---
 
@@ -201,6 +212,7 @@ All technical specifications live in `docs/`:
 | `docs/parsing.md` | RDB and TTF Excel upload parsing rules and edge cases |
 | `docs/auth-account-contract.md` | Current identity, account, and session-lifecycle contract |
 | `docs/security.md` | Current cross-cutting security contract, locally verified controls, deployment assumptions, and deferred debt |
+| `docs/deployed_auth_transport_uat.md` | Current deployed-auth root-cause record, Vercel configuration plan, and post-deployment verification checklist |
 | `docs/99_decision_log_and_gap_audit.md` | Architectural decisions, accepted trade-offs, unresolved gaps, and superseded history |
 | `docs/archive/security/phase-5b/README.md` | Historical Phase 5B security, migration, UAT, and verification records |
 | `AGENTS.md` | Architectural rules, TBD items, confirmed decisions — read before coding |
@@ -253,6 +265,17 @@ removal identifiers cannot affect newer evidence.
 
 Staff login, Resident login, registration options, and Non-NHG registration are intentionally public entry points. Application authentication, authorization, rate limiting, CSRF, and session controls protect them; a Vercel outer gate is not required by the H-D design.
 
+Production staff credentials are posted only to the frontend-origin
+`/api/v1/auth/login`. The backend alone performs Supabase password
+authentication, discards upstream access/refresh tokens, creates an opaque
+PostgreSQL session, and issues `__Host-mata_session`. Normal browser requests
+use that cookie plus memory-only CSRF for unsafe methods; they do not send a
+bearer credential or call the backend/Supabase origins directly. A bounded
+startup cleanup removes only the exact historical `mata.auth.session.v1` key.
+Because the repository does not contain a trustworthy exact legacy Supabase
+project reference, the app does not wildcard-delete other origin storage;
+affected users must clear site data once after the corrected deployment.
+
 Resident identity assurance remains separately governed product debt. Do not
 invent a second factor or claim workflow outside an approved product scope.
 
@@ -298,6 +321,12 @@ approved ingress and is not implemented here. Phase 6 compliance remains
 separate. Local code completion is not proof that migrations, roles, policies,
 grants, lifecycle settings, request limits, or configuration are deployed to
 Vercel/Supabase.
+
+The July 2026 deployed-auth audit found that the observed browser password
+grant and bearer `/auth/me` chain matches the superseded pre-5B-H-D frontend,
+not the current merged source. The public backend also returned
+`FUNCTION_INVOCATION_FAILED` for `/health`, so the active deployment
+commit/configuration and startup logs must be verified before redeployment.
 
 ---
 
