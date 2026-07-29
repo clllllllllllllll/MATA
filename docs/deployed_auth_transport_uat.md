@@ -105,12 +105,18 @@ public/server classification, and contract consistency.
 - Node runtime: the reviewed supported version used by CI.
 - Production alias: `mata-aine.vercel.app`.
 - Deployment source: the reviewed remediation commit.
-- Production-scoped public build variables:
-  - `VITE_APP_ENV` — present, public, exact production contract;
-  - `VITE_AUTH_MODE` — present, public, exact Supabase-mode contract;
-  - `VITE_API_BASE_URL` — present, public, exact same-origin path contract.
+- Preview- and Production-scoped public build variables:
+  - `VITE_APP_ENV` — present in both scopes; exact production contract;
+  - `VITE_AUTH_MODE` — present in both scopes; exact Supabase-mode contract;
+  - `VITE_API_BASE_URL` — present in both scopes; exact same-origin path
+    contract.
 - Obsolete `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`,
   `VITE_SUPABASE_ANON_KEY`, or any other `VITE_SUPABASE_*` name — absent.
+
+GitHub Actions variables do not populate Vercel project settings. Inspect
+general and branch-specific Preview entries because a branch-specific value
+overrides the general Preview scope. Vercel environment changes require a new
+or redeployed build; they do not repair an existing deployment in place.
 
 Preview auth UAT must not be run against production data. The checked-in
 external rewrite has one production backend destination; use a separately

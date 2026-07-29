@@ -806,7 +806,14 @@ def _recover_head(harness: InPlaceHarness) -> None:
 
 
 @pytest.fixture
-def in_place_migration_database() -> Iterator[InPlaceHarness]:
+def in_place_migration_database(
+    request: pytest.FixtureRequest,
+) -> Iterator[InPlaceHarness]:
+    if request.node.get_closest_marker("migration_mutation") is None:
+        pytest.fail(
+            "Direct-owner migration fixtures require the migration_mutation marker",
+            pytrace=False,
+        )
     settings = Settings(_env_file=None)
     source_url = make_url(settings.sync_database_url)
     _assert_local_postgres_source(source_url)
@@ -827,6 +834,7 @@ def in_place_migration_database() -> Iterator[InPlaceHarness]:
             database_name=H_E_DISPOSABLE_DATABASE_NAME,
             engine=engine,
             environment=environment,
+            request_node=request.node,
         )
         yield InPlaceHarness(
             migration=migration,
@@ -836,6 +844,7 @@ def in_place_migration_database() -> Iterator[InPlaceHarness]:
         engine.dispose()
 
 
+@pytest.mark.migration_mutation
 def test_adhoc_creator_migration_lifecycle_in_place(
     in_place_migration_database: InPlaceHarness,
 ) -> None:

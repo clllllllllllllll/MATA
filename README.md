@@ -159,6 +159,13 @@ bundle and rejects source maps, browser Supabase/password-grant or bearer
 markers, upstream tokens, privileged configuration, database URLs, and an
 absolute backend API origin.
 
+GitHub Actions environment blocks do not configure Vercel. The `mata-aine`
+project must define the same three public values in both its Preview and
+Production scopes; its Preview scope deliberately builds the production
+application contract. Branch-specific Preview entries must not override that
+contract. A Vercel environment-variable change applies only to a new or
+redeployed build.
+
 ---
 
 ## System Roles

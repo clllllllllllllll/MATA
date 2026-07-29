@@ -411,20 +411,38 @@ contract `VITE_APP_ENV=production`, `VITE_AUTH_MODE=supabase`, and
 fail-closed for all three variables and rejects every other production API
 base; no browser Supabase URL or key is needed.
 
+GitHub Actions variables do not populate Vercel project settings. The frontend
+Vercel Preview and Production scopes must each supply the same three-value
+contract. Branch-specific Preview overrides must remain consistent, and any
+Vercel environment change requires a new deployment before it can affect a
+build.
+
 Backend CI starts PostgreSQL on its maintenance database, then a shared local
 workflow action creates and attests exactly
 `mata_phase5b_final_security_review`. The workflow owns that provisioning and
-applies the single Alembic head before tests. Complete and PostgreSQL-containing
-focused suites must run through `tests.run_rls_restricted_pytest`, which derives
-distinct ephemeral runtime/auth logins, enables RLS, retains cookie transport,
-and removes every generated `mata_test_*` role. A dedicated restricted
-integration step exercises `RATE_LIMIT_STORE=postgres`; broad regression steps
-override only that setting to `memory` because their unit fixtures explicitly
-test the in-memory middleware. The RLS, database-role, and cookie contracts stay
+applies the single Alembic head before tests. The eight
+`migration_mutation` cases run first in one serial direct-owner pytest process;
+their fail-closed fixtures require the exact local database, direct owner, and
+zero competing sessions before every mutation. CI then verifies that the
+database returned to head and uses a bounded direct-owner attestation to require
+zero competing sessions and zero residual `mata_test_*` roles before reuse. The
+later complete restricted suite selects the complementary
+`not migration_mutation` partition, so it does not repeat those schema lifecycle
+cases. A collection invariant requires every test using a reviewed mutation
+fixture to carry the marker and forbids the marker elsewhere; the Alembic
+primitive independently refuses an unmarked caller.
+
+Complete and PostgreSQL-containing focused suites run through
+`tests.run_rls_restricted_pytest`, which derives distinct ephemeral
+runtime/auth logins, enables RLS, retains cookie transport, and removes every
+generated `mata_test_*` role. A dedicated restricted integration step
+exercises `RATE_LIMIT_STORE=postgres`; broad regression steps override only
+that setting to `memory` because their unit fixtures explicitly test the
+in-memory middleware. The RLS, database-role, and cookie contracts stay
 enabled in both modes. The local harness deliberately uses `ENV=test` and stub
 application identities; production Settings reject localhost. Session and
-rate-limit secrets are synthetic CI-only placeholders, and the jobs contain no
-live Supabase configuration.
+rate-limit secrets are synthetic CI-only placeholders, and the jobs contain
+no live Supabase configuration.
 
 Dependency lockfiles and exact Python requirement versions are committed.
 Saved advisory artifacts contain only approved package/advisory metadata; raw

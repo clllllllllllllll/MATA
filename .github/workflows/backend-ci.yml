@@ -62,12 +62,28 @@ jobs:
         run: python -B -m alembic current --check-heads
         working-directory: backend
 
+      - name: Run serial direct-owner migration lifecycle tests
+        run: >-
+          python -B -m pytest
+          -q --tb=short -p no:cacheprovider
+          --strict-markers -m migration_mutation tests
+        working-directory: backend
+
+      - name: Verify the lifecycle gate restored the database head
+        run: python -B -m alembic current --check-heads
+        working-directory: backend
+
+      - name: Attest lifecycle cleanup before restricted reuse
+        run: python -B -m tests.attest_migration_database
+        working-directory: backend
+
       - name: Run backend tests through restricted PostgreSQL roles
         env:
           RATE_LIMIT_STORE: memory
         run: >-
           python -B -m tests.run_rls_restricted_pytest
-          -q --tb=short -p no:cacheprovider tests
+          -q --tb=short -p no:cacheprovider
+          --strict-markers -m "not migration_mutation" tests
         working-directory: backend
 
       - name: Run PostgreSQL rate-limit security integration

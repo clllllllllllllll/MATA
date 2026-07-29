@@ -411,6 +411,73 @@ class SecuritySourceScanTests(unittest.TestCase):
 
 
 class WorkflowSecurityTests(unittest.TestCase):
+    def test_backend_workflows_partition_direct_owner_migration_tests(self):
+        for workflow_name in ("backend-ci.yml", "production-security.yml"):
+            source = (WORKFLOW_ROOT / workflow_name).read_text(encoding="utf-8")
+            dedicated_start = source.index(
+                "- name: Run serial direct-owner migration lifecycle tests"
+            )
+            broad_name = (
+                "- name: Run backend tests through restricted PostgreSQL roles"
+                if workflow_name == "backend-ci.yml"
+                else "- name: Run full backend regression suite"
+            )
+            self.assertEqual(
+                source.count(
+                    "- name: Run serial direct-owner migration lifecycle tests"
+                ),
+                1,
+            )
+            self.assertEqual(source.count(broad_name), 1)
+            broad_start = source.index(broad_name)
+            next_step_start = source.find("\n      - name:", broad_start + 1)
+            self.assertNotEqual(next_step_start, -1)
+            dedicated_block = source[dedicated_start:broad_start]
+            broad_block = source[broad_start:next_step_start]
+
+            self.assertLess(dedicated_start, broad_start)
+            self.assertIn("python -B -m pytest", dedicated_block)
+            self.assertNotIn(
+                "python -B -m tests.run_rls_restricted_pytest",
+                dedicated_block,
+            )
+            self.assertIn(
+                "--strict-markers -m migration_mutation tests",
+                dedicated_block,
+            )
+            self.assertIn(
+                "Verify the lifecycle gate restored the database head",
+                dedicated_block,
+            )
+            self.assertIn(
+                "python -B -m alembic current --check-heads",
+                dedicated_block,
+            )
+            self.assertIn(
+                "Attest lifecycle cleanup before restricted reuse",
+                dedicated_block,
+            )
+            self.assertIn(
+                "python -B -m tests.attest_migration_database",
+                dedicated_block,
+            )
+            self.assertIn(
+                "python -B -m tests.run_rls_restricted_pytest",
+                broad_block,
+            )
+            self.assertIn(
+                '--strict-markers -m "not migration_mutation" tests',
+                broad_block,
+            )
+            self.assertNotIn(
+                "tests/test_external_registration_migrations_postgres.py",
+                source,
+            )
+            self.assertNotIn(
+                "tests/test_adhoc_creator_migration_inplace_postgres.py",
+                source,
+            )
+
     def test_external_actions_are_pinned_to_full_commit_shas(self):
         for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
             source = workflow.read_text(encoding="utf-8")
