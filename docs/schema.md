@@ -1158,6 +1158,19 @@ issuance wrappers; shared resolve, touch, and CSRF helpers; one runtime-only
 rotation helper; and one auth-only logout termination helper. Runtime cannot
 execute `revoke_app_session_family_for_logout(bytea,bytea,text)`.
 
+Revision `20260728_000028` creates the dedicated
+`mata_adhoc_attendance_definer` role for its narrow atomic helper. On
+PostgreSQL 16, a hosted Supabase migration owner that is a non-superuser with
+`CREATEROLE` automatically receives a `pg_auth_members` creator edge for a
+role it creates. The accepted catalogue is therefore either zero edges or
+exactly one row in which the definer is the granted role, the member is the
+`mata_rls` schema owner with `CREATEROLE` and `BYPASSRLS`, the grantor is a
+superuser, `admin_option` is true, and `inherit_option` and `set_option` are
+false. An outgoing definer membership, an additional or foreign member, a
+non-superuser grantor, or any edge with `inherit_option` or `set_option` is
+forbidden. Migration and startup attestations enforce the same bounded
+alternative.
+
 These statements describe the local source and disposable-PostgreSQL implementation. They do not establish the revision, role catalogue, grants, policies, or behavior of a deployed Supabase project.
 
 Resident identity assurance remains separately governed product debt. Do not

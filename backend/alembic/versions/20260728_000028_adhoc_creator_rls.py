@@ -68,24 +68,16 @@ def _execute(statement: str) -> None:
     op.get_bind().execution_options(no_parameters=True).exec_driver_sql(statement)
 
 
-def _prepare_atomic_helper_definer() -> None:
+def _assert_atomic_helper_definer_is_hardened() -> None:
     _execute(
         rf"""
 DO $migration$
 DECLARE
     role_row record;
+    helper_schema_owner oid;
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_catalog.pg_roles
-        WHERE rolname = '{DEFINER_ROLE}'
-    ) THEN
-        CREATE ROLE {DEFINER_ROLE}
-            NOLOGIN NOINHERIT NOSUPERUSER BYPASSRLS
-            NOCREATEDB NOCREATEROLE NOREPLICATION;
-    END IF;
-
     SELECT
+        oid,
         rolcanlogin,
         rolinherit,
         rolsuper,
@@ -97,6 +89,11 @@ BEGIN
     FROM pg_catalog.pg_roles
     WHERE rolname = '{DEFINER_ROLE}';
 
+    SELECT nspowner
+    INTO STRICT helper_schema_owner
+    FROM pg_catalog.pg_namespace
+    WHERE nspname = 'mata_rls';
+
     IF role_row.rolcanlogin
        OR role_row.rolinherit
        OR role_row.rolsuper
@@ -107,10 +104,29 @@ BEGIN
        OR EXISTS (
            SELECT 1
            FROM pg_catalog.pg_auth_members AS membership
-           WHERE membership.member
-               = pg_catalog.to_regrole('{DEFINER_ROLE}')
-              OR membership.roleid
-               = pg_catalog.to_regrole('{DEFINER_ROLE}')
+           WHERE membership.member = role_row.oid
+       )
+       OR NOT (
+           SELECT
+               count(*) = 0
+               OR (
+                   count(*) = 1
+                   AND count(*) FILTER (
+                       WHERE member_role.oid = helper_schema_owner
+                         AND member_role.rolcreaterole
+                         AND member_role.rolbypassrls
+                         AND grantor_role.rolsuper
+                         AND membership.admin_option
+                         AND NOT membership.inherit_option
+                         AND NOT membership.set_option
+                   ) = 1
+               )
+           FROM pg_catalog.pg_auth_members AS membership
+           LEFT JOIN pg_catalog.pg_roles AS member_role
+             ON member_role.oid = membership.member
+           LEFT JOIN pg_catalog.pg_roles AS grantor_role
+             ON grantor_role.oid = membership.grantor
+           WHERE membership.roleid = role_row.oid
        )
     THEN
         RAISE EXCEPTION
@@ -121,6 +137,27 @@ END
 $migration$
 """
     )
+
+
+def _prepare_atomic_helper_definer() -> None:
+    _execute(
+        rf"""
+DO $migration$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_roles
+        WHERE rolname = '{DEFINER_ROLE}'
+    ) THEN
+        CREATE ROLE {DEFINER_ROLE}
+            NOLOGIN NOINHERIT NOSUPERUSER BYPASSRLS
+            NOCREATEDB NOCREATEROLE NOREPLICATION;
+    END IF;
+END
+$migration$
+"""
+    )
+    _assert_atomic_helper_definer_is_hardened()
     _execute(
         f"REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public "
         f"FROM {DEFINER_ROLE}"
@@ -174,6 +211,91 @@ $migration$
         "GRANT EXECUTE ON FUNCTION public.gen_random_uuid() "
         f"TO {DEFINER_ROLE}"
     )
+
+
+def _grant_atomic_helper_definer_for_ownership() -> None:
+    _execute(
+        rf"""
+DO $migration$
+DECLARE
+    migration_role_is_superuser boolean;
+BEGIN
+    IF CURRENT_USER <> SESSION_USER THEN
+        RAISE EXCEPTION
+            'Migration role must be the direct session role'
+            USING ERRCODE = '42501';
+    END IF;
+
+    SELECT rolsuper
+    INTO STRICT migration_role_is_superuser
+    FROM pg_catalog.pg_roles
+    WHERE rolname = SESSION_USER;
+
+    IF NOT migration_role_is_superuser THEN
+        EXECUTE pg_catalog.format(
+            'GRANT %I TO %I WITH INHERIT FALSE GRANTED BY %I',
+            '{DEFINER_ROLE}',
+            SESSION_USER,
+            SESSION_USER
+        );
+        EXECUTE pg_catalog.format(
+            'GRANT %I TO %I WITH SET TRUE GRANTED BY %I',
+            '{DEFINER_ROLE}',
+            SESSION_USER,
+            SESSION_USER
+        );
+        EXECUTE pg_catalog.format(
+            'GRANT %I TO %I WITH ADMIN FALSE GRANTED BY %I',
+            '{DEFINER_ROLE}',
+            SESSION_USER,
+            SESSION_USER
+        );
+    END IF;
+END
+$migration$
+"""
+    )
+
+
+def _drop_atomic_helper_as_definer() -> None:
+    _execute(f"SET LOCAL ROLE {DEFINER_ROLE}")
+    _execute(
+        f"DROP FUNCTION mata_rls.{ATOMIC_HELPER_SIGNATURE} RESTRICT"
+    )
+    _execute("SET LOCAL ROLE NONE")
+
+
+def _revoke_atomic_helper_definer_ownership() -> None:
+    _execute(
+        rf"""
+DO $migration$
+DECLARE
+    migration_role_is_superuser boolean;
+BEGIN
+    IF CURRENT_USER <> SESSION_USER THEN
+        RAISE EXCEPTION
+            'Migration role must be the direct session role'
+            USING ERRCODE = '42501';
+    END IF;
+
+    SELECT rolsuper
+    INTO STRICT migration_role_is_superuser
+    FROM pg_catalog.pg_roles
+    WHERE rolname = SESSION_USER;
+
+    IF NOT migration_role_is_superuser THEN
+        EXECUTE pg_catalog.format(
+            'REVOKE %I FROM %I GRANTED BY %I RESTRICT',
+            '{DEFINER_ROLE}',
+            SESSION_USER,
+            SESSION_USER
+        );
+    END IF;
+END
+$migration$
+"""
+    )
+    _assert_atomic_helper_definer_is_hardened()
 
 
 def _add_creator_schema_and_backfill() -> None:
@@ -1397,19 +1519,7 @@ $migration$
     _execute(
         f"GRANT CREATE ON SCHEMA mata_rls TO {DEFINER_ROLE}"
     )
-    _execute(
-        rf"""
-DO $migration$
-BEGIN
-    EXECUTE pg_catalog.format(
-        'GRANT %I TO %I',
-        '{DEFINER_ROLE}',
-        CURRENT_USER
-    );
-END
-$migration$
-"""
-    )
+    _grant_atomic_helper_definer_for_ownership()
     _execute(
         f"ALTER FUNCTION mata_rls.{ATOMIC_HELPER_SIGNATURE} "
         f"OWNER TO {DEFINER_ROLE}"
@@ -1417,19 +1527,7 @@ $migration$
     _execute(
         f"REVOKE CREATE ON SCHEMA mata_rls FROM {DEFINER_ROLE}"
     )
-    _execute(
-        rf"""
-DO $migration$
-BEGIN
-    EXECUTE pg_catalog.format(
-        'REVOKE %I FROM %I',
-        '{DEFINER_ROLE}',
-        CURRENT_USER
-    );
-END
-$migration$
-"""
-    )
+    _revoke_atomic_helper_definer_ownership()
 
 
 def _restore_old_policy_helpers() -> None:
@@ -1580,35 +1678,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    _execute(
-        rf"""
-DO $migration$
-BEGIN
-    EXECUTE pg_catalog.format(
-        'GRANT %I TO %I',
-        '{DEFINER_ROLE}',
-        CURRENT_USER
-    );
-END
-$migration$
-"""
-    )
-    _execute(
-        f"DROP FUNCTION mata_rls.{ATOMIC_HELPER_SIGNATURE}"
-    )
-    _execute(
-        rf"""
-DO $migration$
-BEGIN
-    EXECUTE pg_catalog.format(
-        'REVOKE %I FROM %I',
-        '{DEFINER_ROLE}',
-        CURRENT_USER
-    );
-END
-$migration$
-"""
-    )
+    _grant_atomic_helper_definer_for_ownership()
+    _drop_atomic_helper_as_definer()
+    _revoke_atomic_helper_definer_ownership()
     _execute(
         "REVOKE ALL PRIVILEGES ON FUNCTION "
         "mata_rls.current_subject_type(), "

@@ -319,6 +319,21 @@ The database does not yet have an effective owner-scoped default ACL overriding
 PostgreSQL's built-in `PUBLIC` execute default for future functions, so every
 new function must continue to revoke it explicitly until that debt is closed.
 
+PostgreSQL 16 automatically records a creator membership when a hosted
+Supabase migration owner that is not a superuser but has `CREATEROLE` creates
+the narrow `mata_adhoc_attendance_definer` role. In
+`pg_catalog.pg_auth_members`, the new definer is the granted role, the
+`mata_rls` schema owner is the member, the grantor is a superuser, and the edge
+has `ADMIN OPTION` but has both `INHERIT OPTION` and `SET OPTION` disabled.
+Revision `20260728_000028` therefore accepts either no membership edge or
+exactly that bounded PostgreSQL 16 creator edge, and only when the member owns
+`mata_rls` and has both `CREATEROLE` and `BYPASSRLS`. It rejects any membership
+where the definer is the member, any additional or foreign member, any
+non-superuser grantor, and any edge with `INHERIT OPTION` or `SET OPTION`.
+Startup attestation applies the same exact alternatives; this compatibility
+does not permit an application login or capability group to inherit, set, or
+administer the definer.
+
 Signed transaction-local context is bound to the transaction, backend PID,
 database, session user, application session and authorization fingerprint.
 Lifecycle-sensitive statements revalidate expiry/revocation. Root transaction
@@ -504,6 +519,16 @@ migration smoke sequence is:
 An ambiguous target, missing backup/recovery owner, catalogue mismatch, or
 failed startup attestation is a stop condition. Historical Phase 5B migration
 plans remain evidence of earlier rehearsals and do not replace this sequence.
+
+A Supabase upgrade attempt that began at revision `20260721_000022` exposed the
+PostgreSQL 16 creator edge above. The former revision-`000028` assertion
+rejected every membership edge, so the assertion failed and the migration
+transaction rolled back atomically to `000022`. Before retrying, operators must
+rerun the full rollback preflight, including the exact target and revision,
+recovery point and authorized recovery owner/window, and complete pre-upgrade
+catalogue checks without displaying connection values or credentials. That
+failed attempt is not evidence that revision `000028` or its startup
+attestation has succeeded on the deployed target.
 
 Security migrations may restore historically compatible but weaker behavior
 during downgrade. A generic `alembic downgrade -1` is not an online production

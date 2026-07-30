@@ -1,9 +1,11 @@
 # Deployed Authentication Transport Remediation and UAT
 
 Status: local remediation prepared and initial read-only Vercel deployment/log
-inspection completed; remaining project configuration inspection, live
-configuration changes, deployment, and post-deployment verification require
-separate authorization.
+inspection completed. A Supabase upgrade attempt from revision
+`20260721_000022` failed and rolled back transactionally. The corrected
+migration has not been shown to succeed on the deployed target; remaining
+project configuration inspection, live configuration changes, deployment, and
+post-deployment verification require separate authorization.
 
 This is the current deployment record for the authentication transport. It
 does not amend or reuse verdicts from archived Phase 5B evidence.
@@ -52,6 +54,24 @@ transactionally and retain the exact function, policy, grant, and startup
 attestations. These database mismatches are separate from the stale frontend
 deployment that produced the browser bearer path. No speculative fallback or
 weakened startup check is approved.
+
+A subsequent upgrade attempt from revision `20260721_000022` exposed a third
+bounded compatibility mismatch. When the hosted PostgreSQL 16 migration owner
+is a non-superuser with `CREATEROLE`, creating
+`mata_adhoc_attendance_definer` automatically adds one creator row to
+`pg_auth_members`: the definer is the granted role, the member is the
+`mata_rls` schema owner, the grantor is a superuser, `admin_option` is true,
+and `inherit_option` and `set_option` are false. The former revision-`000028`
+assertion rejected every membership row. It therefore failed, and the
+migration transaction rolled back atomically to `000022`.
+
+The corrected contract accepts zero rows or exactly that creator row, and only
+when the schema-owning member has both `CREATEROLE` and `BYPASSRLS`. Migration
+and startup attestation continue to reject an outgoing definer membership, an
+additional or foreign member, a non-superuser grantor, or any row with
+`inherit_option` or `set_option`. This records a failed attempt and a local
+compatibility correction; it is not evidence of a successful deployed
+migration or startup attestation.
 
 ## Required architecture
 
@@ -213,20 +233,28 @@ The approved production baseline is revision `20260721_000022`, with a
 verified recovery point and an authorized recovery owner/maintenance window.
 Before setting `MATA_DATABASE_RLS_ENABLED=true` or deploying the backend:
 
-1. use only the reviewed migration-owner `SYNC_DATABASE_URL` against the
+1. rerun the full rollback preflight after the failed attempt: reverify the
+   exact approved target, current revision `20260721_000022`, recovery point,
+   authorized recovery owner/window, and complete pre-upgrade catalogue without
+   displaying any connection value or credential; stop on any mismatch and do
+   not rely on the earlier preflight;
+2. use only the reviewed migration-owner `SYNC_DATABASE_URL` against the
    approved database and reviewed remediation commit; its scheme must be
    `postgresql://` or `postgresql+psycopg2://` because the production package
    does not include psycopg 3 and rejects `postgresql+psycopg://`;
-2. run the Alembic upgrade to the single head `20260728_000028`;
-3. allow revision `000025` to move an owned, relocatable `pgcrypto` extension
+3. run the Alembic upgrade to the single head `20260728_000028`;
+4. allow revision `000025` to move an owned, relocatable `pgcrypto` extension
    from `extensions` to `public` inside the migration transaction; do not run a
    separate manual `ALTER EXTENSION`;
-4. allow revision `000026` to normalize `users` RLS before it asserts the exact
+5. allow revision `000026` to normalize `users` RLS before it asserts the exact
    15-pre-existing/19-new table inventory; do not disable `users` RLS;
-5. verify the final extension members, 34 RLS tables, 84 policies, roles,
+6. allow revision `000028` and startup attestation to accept only zero definer
+   membership rows or the exact PostgreSQL 16 creator row described above; do
+   not delete, recreate, or broaden role membership manually;
+7. verify the final extension members, 34 RLS tables, 84 policies, roles,
    grants, helper ownership, default ACLs, browser-role denial, and Alembic
    head;
-6. create two distinct credentialed PostgreSQL login roles outside Alembic:
+8. create two distinct credentialed PostgreSQL login roles outside Alembic:
    the runtime login must be `LOGIN INHERIT NOSUPERUSER NOBYPASSRLS
    NOCREATEDB NOCREATEROLE NOREPLICATION` and inherit only
    `mata_app_runtime`; the auth-helper login must have the same restricted
@@ -237,7 +265,7 @@ Before setting `MATA_DATABASE_RLS_ENABLED=true` or deploying the backend:
    and `MATA_AUTH_DATABASE_URL` with those two logins and retain the owner only
    in `SYNC_DATABASE_URL`; all three URLs must identify the same host, port,
    and database with three distinct usernames; and
-7. run startup attestation with the reviewed restricted credentials before
+9. run startup attestation with the reviewed restricted credentials before
    serving traffic.
 
 Downgrade retains the `pgcrypto` `public` namespace and `users` RLS, just as it

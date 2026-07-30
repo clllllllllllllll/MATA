@@ -350,6 +350,62 @@ class _BorrowedConnectionEngine:
         yield self.connection
 
 
+async def _assert_adhoc_definer_creator_test_role(
+    connection: AsyncConnection,
+) -> None:
+    creator = (
+        await connection.execute(
+            text(
+                """
+                SELECT
+                    schema_owner.rolname = current_user
+                        AS current_user_owns_schema,
+                    schema_owner.rolcreaterole AS owner_can_create_role,
+                    schema_owner.rolbypassrls AS owner_bypasses_rls,
+                    grantor.rolsuper AS current_user_is_superuser
+                FROM pg_catalog.pg_namespace AS namespace
+                JOIN pg_catalog.pg_roles AS schema_owner
+                  ON schema_owner.oid = namespace.nspowner
+                JOIN pg_catalog.pg_roles AS grantor
+                  ON grantor.rolname = current_user
+                WHERE namespace.nspname = 'mata_rls'
+                """
+            )
+        )
+    ).mappings().one()
+    assert dict(creator) == {
+        "current_user_owns_schema": True,
+        "owner_can_create_role": True,
+        "owner_bypasses_rls": True,
+        "current_user_is_superuser": True,
+    }
+
+
+async def _grant_adhoc_definer_membership(
+    connection: AsyncConnection,
+    *,
+    member_role: str | None = None,
+    set_enabled: bool = False,
+) -> None:
+    member_sql = (
+        "CURRENT_USER"
+        if member_role is None
+        else _quoted_test_role(member_role)
+    )
+    await connection.exec_driver_sql(
+        "GRANT mata_adhoc_attendance_definer "
+        f"TO {member_sql} WITH ADMIN TRUE"
+    )
+    await connection.exec_driver_sql(
+        "GRANT mata_adhoc_attendance_definer "
+        f"TO {member_sql} WITH INHERIT FALSE"
+    )
+    await connection.exec_driver_sql(
+        "GRANT mata_adhoc_attendance_definer "
+        f"TO {member_sql} WITH SET {'TRUE' if set_enabled else 'FALSE'}"
+    )
+
+
 def _sqlstate(error: DBAPIError) -> str | None:
     original = error.orig
     return getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
@@ -725,6 +781,79 @@ async def test_policy_cutover_denies_public_schema_create_exactly(
 
 
 @pytest.mark.asyncio
+async def test_startup_attestation_accepts_bounded_adhoc_definer_creator_edge(
+    rls_postgres_harness: RlsPostgresHarness,
+) -> None:
+    harness = rls_postgres_harness
+    if harness.revision != "20260728_000028":
+        pytest.skip("Ad-hoc definer requires revision 000028")
+
+    async with harness.owner_engine.connect() as connection:
+        transaction = await connection.begin()
+        try:
+            await _assert_adhoc_definer_creator_test_role(connection)
+            await _grant_adhoc_definer_membership(connection)
+            memberships = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT
+                            member_role.oid = namespace.nspowner
+                                AS member_is_schema_owner,
+                            member_role.rolcreaterole
+                                AS member_can_create_role,
+                            member_role.rolbypassrls
+                                AS member_bypasses_rls,
+                            grantor_role.rolsuper AS grantor_is_superuser,
+                            membership.admin_option,
+                            membership.inherit_option,
+                            membership.set_option
+                        FROM pg_catalog.pg_auth_members AS membership
+                        JOIN pg_catalog.pg_roles AS definer_role
+                          ON definer_role.oid = membership.roleid
+                        JOIN pg_catalog.pg_roles AS member_role
+                          ON member_role.oid = membership.member
+                        JOIN pg_catalog.pg_roles AS grantor_role
+                          ON grantor_role.oid = membership.grantor
+                        JOIN pg_catalog.pg_namespace AS namespace
+                          ON namespace.nspname = 'mata_rls'
+                        WHERE definer_role.rolname
+                            = 'mata_adhoc_attendance_definer'
+                        ORDER BY member_role.rolname, grantor_role.rolname
+                        """
+                    )
+                )
+            ).mappings().all()
+            assert [dict(row) for row in memberships] == [
+                {
+                    "member_is_schema_owner": True,
+                    "member_can_create_role": True,
+                    "member_bypasses_rls": True,
+                    "grantor_is_superuser": True,
+                    "admin_option": True,
+                    "inherit_option": False,
+                    "set_option": False,
+                }
+            ]
+
+            await connection.exec_driver_sql(
+                "SET LOCAL SESSION AUTHORIZATION "
+                f'"{harness.runtime_role}"'
+            )
+            attestation = await attest_database_role(
+                _BorrowedConnectionEngine(connection),  # type: ignore[arg-type]
+                capability_group=RUNTIME_GROUP,
+                forbidden_capability_group=AUTH_GROUP,
+                require_context_installer=True,
+                require_policy_cutover=True,
+            )
+            assert attestation.login_role == harness.runtime_role
+            assert attestation.capability_group == RUNTIME_GROUP
+        finally:
+            await transaction.rollback()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mutation_kind",
     [
@@ -743,6 +872,9 @@ async def test_policy_cutover_denies_public_schema_create_exactly(
         "helper_security_invoker",
         "helper_search_path",
         "adhoc_definer_membership",
+        "adhoc_definer_set_membership",
+        "adhoc_definer_foreign_membership",
+        "adhoc_definer_additional_membership",
         "adhoc_definer_schema_grant",
         "adhoc_definer_table_grant",
         "adhoc_definer_function_grant",
@@ -788,6 +920,15 @@ async def test_startup_attestation_rejects_transactional_privilege_injection(
         "helper_security_invoker": "executable_rls_helpers_are_hardened",
         "helper_search_path": "executable_rls_helpers_are_hardened",
         "adhoc_definer_membership": (
+            "executable_rls_helpers_are_hardened"
+        ),
+        "adhoc_definer_set_membership": (
+            "executable_rls_helpers_are_hardened"
+        ),
+        "adhoc_definer_foreign_membership": (
+            "executable_rls_helpers_are_hardened"
+        ),
+        "adhoc_definer_additional_membership": (
             "executable_rls_helpers_are_hardened"
         ),
         "adhoc_definer_schema_grant": (
@@ -911,22 +1052,61 @@ async def test_startup_attestation_rejects_transactional_privilege_injection(
                     "bytea,text,text,uuid,uuid,text) "
                     "SET search_path = public"
                 )
-            elif mutation_kind == "adhoc_definer_membership":
+            elif mutation_kind in {
+                "adhoc_definer_membership",
+                "adhoc_definer_set_membership",
+                "adhoc_definer_foreign_membership",
+                "adhoc_definer_additional_membership",
+            }:
                 if harness.revision != "20260728_000028":
                     pytest.skip(
                         "Ad-hoc definer requires revision 000028"
                     )
-                third_role = f"mata_test_auth_{uuid4().hex[:16]}"
-                quoted_third_role = _quoted_test_role(third_role)
-                await connection.exec_driver_sql(
-                    f"CREATE ROLE {quoted_third_role} "
-                    "NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS "
-                    "NOCREATEDB NOCREATEROLE NOREPLICATION"
-                )
-                await connection.exec_driver_sql(
-                    f"GRANT {quoted_third_role} "
-                    "TO mata_adhoc_attendance_definer"
-                )
+                if mutation_kind == "adhoc_definer_membership":
+                    third_role = f"mata_test_auth_{uuid4().hex[:16]}"
+                    quoted_third_role = _quoted_test_role(third_role)
+                    await connection.exec_driver_sql(
+                        f"CREATE ROLE {quoted_third_role} "
+                        "NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS "
+                        "NOCREATEDB NOCREATEROLE NOREPLICATION"
+                    )
+                    await connection.exec_driver_sql(
+                        f"GRANT {quoted_third_role} "
+                        "TO mata_adhoc_attendance_definer"
+                    )
+                else:
+                    await _assert_adhoc_definer_creator_test_role(connection)
+                    if mutation_kind == "adhoc_definer_set_membership":
+                        await _grant_adhoc_definer_membership(
+                            connection,
+                            set_enabled=True,
+                        )
+                    else:
+                        third_role = f"mata_test_auth_{uuid4().hex[:16]}"
+                        quoted_third_role = _quoted_test_role(third_role)
+                        await connection.exec_driver_sql(
+                            f"CREATE ROLE {quoted_third_role} "
+                            "NOLOGIN NOINHERIT NOSUPERUSER BYPASSRLS "
+                            "NOCREATEDB CREATEROLE NOREPLICATION"
+                        )
+                        if mutation_kind == (
+                            "adhoc_definer_foreign_membership"
+                        ):
+                            await connection.exec_driver_sql(
+                                "REVOKE mata_adhoc_attendance_definer "
+                                "FROM CURRENT_USER"
+                            )
+                        else:
+                            assert mutation_kind == (
+                                "adhoc_definer_additional_membership"
+                            )
+                            await _grant_adhoc_definer_membership(
+                                connection
+                            )
+                        await _grant_adhoc_definer_membership(
+                            connection,
+                            member_role=third_role,
+                        )
             elif mutation_kind.startswith("adhoc_definer_"):
                 if harness.revision != "20260728_000028":
                     pytest.skip(
