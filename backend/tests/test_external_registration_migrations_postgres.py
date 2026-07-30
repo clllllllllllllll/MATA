@@ -27,6 +27,12 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
 VERSIONS_DIR = BACKEND_ROOT / "alembic" / "versions"
 H_E_DISPOSABLE_DATABASE_NAME = "mata_phase5b_final_security_review"
+ADHOC_DEFINER_ROLE = "mata_adhoc_attendance_definer"
+ADHOC_HELPER_SIGNATURE = (
+    "mata_rls.create_adhoc_attendance("
+    "text,text,text,text,text,date,time without time zone,"
+    "time without time zone,numeric,uuid)"
+)
 _LOCAL_POSTGRES_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _SYNC_POSTGRES_DRIVERS = frozenset(
     {"postgresql", "postgresql+psycopg", "postgresql+psycopg2"}
@@ -134,6 +140,29 @@ def test_external_registration_migration_chain_and_constants() -> None:
     assert "LIMIT 1" not in provenance_source.upper()
 
 
+def test_adhoc_definer_ownership_transfer_is_grantor_scoped() -> None:
+    source = (
+        VERSIONS_DIR / "20260728_000028_adhoc_creator_rls.py"
+    ).read_text(encoding="utf-8")
+
+    for statement in (
+        "'GRANT %I TO %I WITH INHERIT FALSE GRANTED BY %I'",
+        "'GRANT %I TO %I WITH SET TRUE GRANTED BY %I'",
+        "'GRANT %I TO %I WITH ADMIN FALSE GRANTED BY %I'",
+        "'REVOKE %I FROM %I GRANTED BY %I RESTRICT'",
+    ):
+        assert source.count(statement) == 1
+    assert "'GRANT %I TO %I'," not in source
+    assert "'REVOKE %I FROM %I'," not in source
+    assert source.count("_grant_atomic_helper_definer_for_ownership()") == 3
+    assert source.count("_revoke_atomic_helper_definer_ownership()") == 3
+    assert source.count("_drop_atomic_helper_as_definer()") == 2
+    assert source.count(f"SET LOCAL ROLE {{DEFINER_ROLE}}") == 1
+    assert source.count('DROP FUNCTION mata_rls.{ATOMIC_HELPER_SIGNATURE} RESTRICT') == 1
+    assert source.count('SET LOCAL ROLE NONE') == 1
+    assert source.count("CURRENT_USER <> SESSION_USER") == 2
+
+
 def _assert_local_postgres_source(
     url: URL,
 ) -> None:
@@ -232,6 +261,7 @@ class MigrationHarness:
     engine: Engine
     environment: dict[str, str]
     request_node: pytest.Item
+    expected_login_is_superuser: bool = True
 
     def _assert_marker_authorized(self) -> None:
         if self.request_node.get_closest_marker("migration_mutation") is None:
@@ -270,6 +300,7 @@ class MigrationHarness:
         identity = _wait_for_exclusive_mutation_target(
             source_url,
             sample,
+            expected_login_is_superuser=self.expected_login_is_superuser,
         )
         print(
             "PostgreSQL mutation target: "
@@ -307,6 +338,7 @@ def _wait_for_exclusive_mutation_target(
     source_url: URL,
     sample: Callable[[], tuple[Mapping[str, Any], int]],
     *,
+    expected_login_is_superuser: bool = True,
     pause: Callable[[float], None] = sleep,
 ) -> Mapping[str, Any]:
     for attempt in range(_MUTATION_EXCLUSIVITY_ATTEMPTS):
@@ -316,7 +348,8 @@ def _wait_for_exclusive_mutation_target(
             or identity["current_role"] != identity["session_role"]
             or identity["session_role"] != identity["database_owner"]
             or identity["session_role"] != source_url.username
-            or not identity["login_is_superuser"]
+            or bool(identity["login_is_superuser"])
+            != expected_login_is_superuser
         ):
             pytest.fail(
                 "Migration mutation requires the exclusive exact named local "
@@ -907,6 +940,151 @@ def _adhoc_creator_columns(connection: Connection) -> set[str]:
             )
         )
     }
+
+
+def _adhoc_definer_memberships(
+    connection: Connection,
+) -> tuple[tuple[Any, ...], ...]:
+    return tuple(
+        tuple(row)
+        for row in connection.execute(
+            text(
+                """
+                SELECT
+                    granted_role.rolname AS granted_role,
+                    member_role.rolname AS member_role,
+                    grantor_role.rolname AS grantor_role,
+                    membership.member = helper_schema.nspowner
+                        AS member_owns_helper_schema,
+                    member_role.rolcreaterole AS member_can_create_role,
+                    member_role.rolbypassrls AS member_bypasses_rls,
+                    grantor_role.rolsuper AS grantor_is_superuser,
+                    membership.admin_option,
+                    membership.inherit_option,
+                    membership.set_option
+                FROM pg_catalog.pg_auth_members AS membership
+                JOIN pg_catalog.pg_roles AS granted_role
+                  ON granted_role.oid = membership.roleid
+                JOIN pg_catalog.pg_roles AS member_role
+                  ON member_role.oid = membership.member
+                JOIN pg_catalog.pg_roles AS grantor_role
+                  ON grantor_role.oid = membership.grantor
+                JOIN pg_catalog.pg_namespace AS helper_schema
+                  ON helper_schema.nspname = 'mata_rls'
+                WHERE membership.roleid = pg_catalog.to_regrole(
+                          :definer_role
+                      )
+                   OR membership.member = pg_catalog.to_regrole(
+                          :definer_role
+                      )
+                ORDER BY granted_role.rolname, member_role.rolname,
+                         grantor_role.rolname
+                """
+            ),
+            {"definer_role": ADHOC_DEFINER_ROLE},
+        )
+    )
+
+
+def _quote_identifier(connection: Connection, identifier: str) -> str:
+    return connection.dialect.identifier_preparer.quote(identifier)
+
+
+def _mata_rls_schema_owner(connection: Connection) -> str:
+    return str(
+        connection.scalar(
+            text(
+                """
+                SELECT owner.rolname
+                FROM pg_catalog.pg_namespace AS namespace
+                JOIN pg_catalog.pg_roles AS owner
+                  ON owner.oid = namespace.nspowner
+                WHERE namespace.nspname = 'mata_rls'
+                """
+            )
+        )
+    )
+
+
+def _create_adhoc_membership_test_role(
+    connection: Connection,
+    role_name: str,
+) -> None:
+    quoted_role = _quote_identifier(connection, role_name)
+    connection.exec_driver_sql(
+        f"CREATE ROLE {quoted_role} "
+        "NOLOGIN NOINHERIT NOSUPERUSER BYPASSRLS "
+        "NOCREATEDB CREATEROLE NOREPLICATION"
+    )
+
+
+def _grant_adhoc_definer_membership(
+    connection: Connection,
+    member_role: str,
+    *,
+    set_option: bool,
+) -> None:
+    quoted_definer = _quote_identifier(connection, ADHOC_DEFINER_ROLE)
+    quoted_member = _quote_identifier(connection, member_role)
+    connection.exec_driver_sql(
+        f"GRANT {quoted_definer} TO {quoted_member} WITH ADMIN TRUE"
+    )
+    connection.exec_driver_sql(
+        f"GRANT {quoted_definer} TO {quoted_member} WITH INHERIT FALSE"
+    )
+    connection.exec_driver_sql(
+        f"GRANT {quoted_definer} TO {quoted_member} "
+        f"WITH SET {'TRUE' if set_option else 'FALSE'}"
+    )
+
+
+def _remove_adhoc_membership_test_state(
+    engine: Engine,
+    *,
+    member_roles: tuple[str, ...],
+    role_names: tuple[str, ...],
+) -> None:
+    with engine.begin() as connection:
+        quoted_definer = _quote_identifier(connection, ADHOC_DEFINER_ROLE)
+        for member_role in reversed(member_roles):
+            grantors = tuple(
+                str(grantor)
+                for grantor in connection.scalars(
+                    text(
+                        """
+                        SELECT grantor_role.rolname
+                        FROM pg_catalog.pg_auth_members AS membership
+                        JOIN pg_catalog.pg_roles AS grantor_role
+                          ON grantor_role.oid = membership.grantor
+                        WHERE membership.roleid = pg_catalog.to_regrole(
+                                  :definer_role
+                              )
+                          AND membership.member = pg_catalog.to_regrole(
+                                  :member_role
+                              )
+                        ORDER BY grantor_role.rolname
+                        """
+                    ),
+                    {
+                        "definer_role": ADHOC_DEFINER_ROLE,
+                        "member_role": member_role,
+                    },
+                )
+            )
+            quoted_member = _quote_identifier(connection, member_role)
+            for grantor_role in grantors:
+                quoted_grantor = _quote_identifier(connection, grantor_role)
+                connection.exec_driver_sql(
+                    f"REVOKE {quoted_definer} FROM {quoted_member} "
+                    f"GRANTED BY {quoted_grantor} RESTRICT"
+                )
+        for role_name in reversed(role_names):
+            if connection.scalar(
+                text("SELECT pg_catalog.to_regrole(:role_name)"),
+                {"role_name": role_name},
+            ) is not None:
+                quoted_role = _quote_identifier(connection, role_name)
+                connection.exec_driver_sql(f"DROP ROLE {quoted_role}")
 
 
 def _cutover_relation_state(
@@ -1850,6 +2028,368 @@ def test_full_rls_cutover_clean_populated_downgrade_and_reupgrade_lifecycle(
                 {"session_id": session_id},
             ).one()
         ) == session_snapshot
+
+
+@pytest.mark.migration_mutation
+def test_adhoc_definer_accepts_exact_pg16_creator_membership(
+    clean_migration_database: MigrationHarness,
+) -> None:
+    harness = clean_migration_database
+    schema_owner: str | None = None
+
+    _run_success(harness, "upgrade", "20260727_000027")
+    try:
+        with harness.engine.begin() as connection:
+            assert int(connection.scalar(text("SHOW server_version_num"))) >= 160000
+            schema_owner = _mata_rls_schema_owner(connection)
+            assert tuple(
+                connection.execute(
+                    text(
+                        """
+                        SELECT CURRENT_USER::text, role.rolsuper,
+                               role.rolcreaterole, role.rolbypassrls
+                        FROM pg_catalog.pg_roles AS role
+                        WHERE role.rolname = CURRENT_USER
+                        """
+                    )
+                ).one()
+            ) == (schema_owner, True, True, True)
+            _grant_adhoc_definer_membership(
+                connection,
+                schema_owner,
+                set_option=False,
+            )
+            creator_membership = _adhoc_definer_memberships(connection)
+
+        assert len(creator_membership) == 1
+        membership_row = creator_membership[0]
+        assert membership_row[0:2] == (ADHOC_DEFINER_ROLE, schema_owner)
+        assert membership_row[2]
+        assert membership_row[3:] == (
+            True,
+            True,
+            True,
+            True,
+            True,
+            False,
+            False,
+        )
+
+        _run_success(harness, "upgrade", "20260728_000028")
+        with harness.engine.connect() as connection:
+            assert _revision(connection) == "20260728_000028"
+            assert _adhoc_definer_memberships(connection) == creator_membership
+            assert connection.scalar(
+                text(
+                    """
+                    SELECT owner.rolname
+                    FROM pg_catalog.pg_proc AS helper
+                    JOIN pg_catalog.pg_roles AS owner
+                      ON owner.oid = helper.proowner
+                    WHERE helper.oid = pg_catalog.to_regprocedure(
+                        :helper_signature
+                    )
+                    """
+                ),
+                {"helper_signature": ADHOC_HELPER_SIGNATURE},
+            ) == ADHOC_DEFINER_ROLE
+
+        _run_success(harness, "downgrade", "20260727_000027")
+        with harness.engine.connect() as connection:
+            assert _revision(connection) == "20260727_000027"
+            assert _adhoc_definer_memberships(connection) == creator_membership
+            assert connection.scalar(
+                text("SELECT pg_catalog.to_regprocedure(:helper_signature)"),
+                {"helper_signature": ADHOC_HELPER_SIGNATURE},
+            ) is None
+    finally:
+        _remove_adhoc_membership_test_state(
+            harness.engine,
+            member_roles=(() if schema_owner is None else (schema_owner,)),
+            role_names=(),
+        )
+
+
+@pytest.mark.migration_mutation
+def test_adhoc_definer_non_superuser_creator_can_downgrade(
+    clean_migration_database: MigrationHarness,
+) -> None:
+    harness = clean_migration_database
+    migration_role = f"mata_test_migration_{uuid4().hex[:16]}"
+    saved_definer_role = f"mata_test_saved_definer_{uuid4().hex[:12]}"
+    migration_password = f"MataTest{uuid4().hex}"
+    original_owner: str | None = None
+    database_name: str | None = None
+    migration_engine: Engine | None = None
+
+    _run_success(harness, "upgrade", "20260727_000027")
+    try:
+        with harness.engine.begin() as connection:
+            assert int(connection.scalar(text("SHOW server_version_num"))) >= 160000
+            original_owner = str(connection.scalar(text("SELECT CURRENT_USER")))
+            database_name = str(
+                connection.scalar(text("SELECT current_database()"))
+            )
+            quoted_definer = _quote_identifier(connection, ADHOC_DEFINER_ROLE)
+            quoted_migration = _quote_identifier(connection, migration_role)
+            quoted_owner = _quote_identifier(connection, original_owner)
+            quoted_database = _quote_identifier(connection, database_name)
+            quoted_saved_definer = _quote_identifier(
+                connection,
+                saved_definer_role,
+            )
+
+            connection.exec_driver_sql(
+                f"ALTER ROLE {quoted_definer} RENAME TO {quoted_saved_definer}"
+            )
+            connection.exec_driver_sql(
+                f"CREATE ROLE {quoted_migration} "
+                "LOGIN NOINHERIT NOSUPERUSER BYPASSRLS "
+                "NOCREATEDB CREATEROLE NOREPLICATION "
+                f"PASSWORD '{migration_password}'"
+            )
+            connection.exec_driver_sql(
+                f"GRANT {quoted_owner} TO {quoted_migration} "
+                "WITH INHERIT TRUE, SET FALSE, ADMIN FALSE"
+            )
+            connection.exec_driver_sql(
+                f"ALTER SCHEMA mata_rls OWNER TO {quoted_migration}"
+            )
+            connection.exec_driver_sql(
+                f"ALTER DATABASE {quoted_database} OWNER TO {quoted_migration}"
+            )
+
+        owner_url = make_url(harness.environment["SYNC_DATABASE_URL"])
+        migration_url = owner_url.set(
+            username=migration_role,
+            password=migration_password,
+        )
+        migration_engine = create_engine(migration_url, poolclass=NullPool)
+        migration_harness = MigrationHarness(
+            database_name=H_E_DISPOSABLE_DATABASE_NAME,
+            engine=migration_engine,
+            environment=_migration_environment(migration_url),
+            request_node=harness.request_node,
+            expected_login_is_superuser=False,
+        )
+
+        with migration_engine.connect() as connection:
+            identity = _h_e_database_identity(connection)
+            assert identity["current_role"] == migration_role
+            assert identity["session_role"] == migration_role
+            assert identity["database_owner"] == migration_role
+            assert identity["login_is_superuser"] is False
+            assert tuple(
+                connection.execute(
+                    text(
+                        """
+                        SELECT role.rolcreaterole, role.rolbypassrls
+                        FROM pg_catalog.pg_roles AS role
+                        WHERE role.rolname = CURRENT_USER
+                        """
+                    )
+                ).one()
+            ) == (True, True)
+            assert connection.scalar(
+                text("SELECT pg_catalog.to_regrole(:definer_role)"),
+                {"definer_role": ADHOC_DEFINER_ROLE},
+            ) is None
+
+        _run_success(migration_harness, "upgrade", "20260728_000028")
+        with migration_engine.connect() as connection:
+            assert _revision(connection) == "20260728_000028"
+            creator_membership = _adhoc_definer_memberships(connection)
+            assert len(creator_membership) == 1
+            assert creator_membership[0][0:2] == (
+                ADHOC_DEFINER_ROLE,
+                migration_role,
+            )
+            assert creator_membership[0][3:] == (
+                True,
+                True,
+                True,
+                True,
+                True,
+                False,
+                False,
+            )
+
+        _run_success(migration_harness, "downgrade", "20260727_000027")
+        with migration_engine.connect() as connection:
+            assert _revision(connection) == "20260727_000027"
+            assert _adhoc_definer_memberships(connection) == creator_membership
+            assert connection.scalar(
+                text("SELECT pg_catalog.to_regprocedure(:helper_signature)"),
+                {"helper_signature": ADHOC_HELPER_SIGNATURE},
+            ) is None
+    finally:
+        if migration_engine is not None:
+            migration_engine.dispose()
+
+        if original_owner is not None and database_name is not None:
+            with harness.engine.begin() as connection:
+                if connection.scalar(
+                    text("SELECT pg_catalog.to_regrole(:migration_role)"),
+                    {"migration_role": migration_role},
+                ) is not None:
+                    quoted_migration = _quote_identifier(
+                        connection,
+                        migration_role,
+                    )
+                    quoted_owner = _quote_identifier(connection, original_owner)
+                    quoted_database = _quote_identifier(
+                        connection,
+                        database_name,
+                    )
+                    connection.exec_driver_sql(
+                        f"ALTER DATABASE {quoted_database} OWNER TO {quoted_owner}"
+                    )
+
+            with harness.engine.connect() as connection:
+                revision = _revision(connection)
+            if revision == "20260728_000028":
+                _run_success(harness, "downgrade", "20260727_000027")
+
+            with harness.engine.begin() as connection:
+                if connection.scalar(
+                    text("SELECT pg_catalog.to_regrole(:migration_role)"),
+                    {"migration_role": migration_role},
+                ) is not None:
+                    quoted_migration = _quote_identifier(
+                        connection,
+                        migration_role,
+                    )
+                    quoted_owner = _quote_identifier(connection, original_owner)
+                    connection.exec_driver_sql(
+                        f"ALTER SCHEMA mata_rls OWNER TO {quoted_owner}"
+                    )
+                    connection.exec_driver_sql(
+                        f"REVOKE {quoted_owner} FROM {quoted_migration} "
+                        f"GRANTED BY {quoted_owner} RESTRICT"
+                    )
+
+            _remove_adhoc_membership_test_state(
+                harness.engine,
+                member_roles=(migration_role,),
+                role_names=(migration_role,),
+            )
+
+            with harness.engine.begin() as connection:
+                saved_definer_exists = connection.scalar(
+                    text("SELECT pg_catalog.to_regrole(:saved_definer_role)"),
+                    {"saved_definer_role": saved_definer_role},
+                ) is not None
+                if saved_definer_exists:
+                    quoted_definer = _quote_identifier(
+                        connection,
+                        ADHOC_DEFINER_ROLE,
+                    )
+                    if connection.scalar(
+                        text("SELECT pg_catalog.to_regrole(:definer_role)"),
+                        {"definer_role": ADHOC_DEFINER_ROLE},
+                    ) is not None:
+                        connection.exec_driver_sql(
+                            f"DROP ROLE {quoted_definer}"
+                        )
+
+                    quoted_saved_definer = _quote_identifier(
+                        connection,
+                        saved_definer_role,
+                    )
+                    connection.exec_driver_sql(
+                        f"ALTER ROLE {quoted_saved_definer} "
+                        f"RENAME TO {quoted_definer}"
+                    )
+
+
+@pytest.mark.parametrize(
+    "membership_case",
+    ("set_enabled", "foreign_member", "extra_member"),
+)
+@pytest.mark.migration_mutation
+def test_adhoc_definer_rejects_unbounded_membership_atomically(
+    clean_migration_database: MigrationHarness,
+    membership_case: str,
+) -> None:
+    harness = clean_migration_database
+    foreign_role = f"mata_test_adhoc_foreign_{uuid4().hex[:12]}"
+    schema_owner: str | None = None
+    foreign_role_created = False
+
+    _run_success(harness, "upgrade", "20260727_000027")
+    try:
+        with harness.engine.begin() as connection:
+            assert int(connection.scalar(text("SHOW server_version_num"))) >= 160000
+            schema_owner = _mata_rls_schema_owner(connection)
+            assert tuple(
+                connection.execute(
+                    text(
+                        """
+                        SELECT CURRENT_USER::text, role.rolsuper,
+                               role.rolcreaterole, role.rolbypassrls
+                        FROM pg_catalog.pg_roles AS role
+                        WHERE role.rolname = CURRENT_USER
+                        """
+                    )
+                ).one()
+            ) == (schema_owner, True, True, True)
+            if membership_case in {"foreign_member", "extra_member"}:
+                _create_adhoc_membership_test_role(connection, foreign_role)
+                foreign_role_created = True
+
+            if membership_case == "set_enabled":
+                _grant_adhoc_definer_membership(
+                    connection,
+                    schema_owner,
+                    set_option=True,
+                )
+            elif membership_case == "foreign_member":
+                _grant_adhoc_definer_membership(
+                    connection,
+                    foreign_role,
+                    set_option=False,
+                )
+            else:
+                _grant_adhoc_definer_membership(
+                    connection,
+                    schema_owner,
+                    set_option=False,
+                )
+                _grant_adhoc_definer_membership(
+                    connection,
+                    foreign_role,
+                    set_option=False,
+                )
+            rejected_memberships = _adhoc_definer_memberships(connection)
+
+        result = harness.alembic("upgrade", "20260728_000028")
+        assert result.returncode != 0
+        assert "Unsafe ad-hoc attendance definer role" in (
+            result.stdout + result.stderr
+        )
+        with harness.engine.connect() as connection:
+            assert _revision(connection) == "20260727_000027"
+            assert _adhoc_creator_columns(connection) == set()
+            assert _adhoc_definer_memberships(connection) == rejected_memberships
+            assert connection.scalar(
+                text("SELECT pg_catalog.to_regprocedure(:helper_signature)"),
+                {"helper_signature": ADHOC_HELPER_SIGNATURE},
+            ) is None
+    finally:
+        cleanup_members = (
+            ()
+            if schema_owner is None
+            else (
+                (schema_owner, foreign_role)
+                if foreign_role_created
+                else (schema_owner,)
+            )
+        )
+        _remove_adhoc_membership_test_state(
+            harness.engine,
+            member_roles=cleanup_members,
+            role_names=((foreign_role,) if foreign_role_created else ()),
+        )
 
 
 @pytest.mark.migration_mutation

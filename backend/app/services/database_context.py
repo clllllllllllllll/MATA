@@ -666,8 +666,30 @@ _ROLE_ATTESTATION_SQL = text(
                                   AS owner_membership
                               WHERE owner_membership.member
                                   = owner_role.oid
-                                 OR owner_membership.roleid
-                                  = owner_role.oid
+                          )
+                          AND (
+                              SELECT
+                                  count(*) = 0
+                                  OR (
+                                      count(*) = 1
+                                      AND count(*) FILTER (
+                                          WHERE member_role.oid
+                                              = namespace.nspowner
+                                            AND member_role.rolcreaterole
+                                            AND member_role.rolbypassrls
+                                            AND grantor_role.rolsuper
+                                            AND owner_membership.admin_option
+                                            AND NOT owner_membership.inherit_option
+                                            AND NOT owner_membership.set_option
+                                      ) = 1
+                                  )
+                              FROM pg_catalog.pg_auth_members
+                                  AS owner_membership
+                              LEFT JOIN pg_catalog.pg_roles AS member_role
+                                ON member_role.oid = owner_membership.member
+                              LEFT JOIN pg_catalog.pg_roles AS grantor_role
+                                ON grantor_role.oid = owner_membership.grantor
+                              WHERE owner_membership.roleid = owner_role.oid
                           )
                       )
                   )
