@@ -53,6 +53,15 @@ References checked:
   cookie. Missing/wrong protocol requests fail without `Set-Cookie`; generic
   authentication failures also leave the shared cookie untouched. Logout
   clears it only when the presented token/CSRF proof revokes that family.
+- Application startup probes `GET /auth/me` once because browser JavaScript
+  cannot inspect the HttpOnly session cookie. After startup resolves as
+  conclusively unauthenticated with `401`, ordinary focus and visibility events
+  do not repeat that probe. Inconclusive network and server failures remain
+  eligible for a later focus retry, including across a failed login that does
+  not clear the browser cookie. When an in-memory session exists, those events
+  revalidate in the background without replacing the current route with the
+  auth loading screen; cross-tab session lifecycle signals may still force a
+  probe.
 - Logout clears local identity, CSRF, protected read/upload state, and
   user-facing authenticated state immediately, then enters an explicit
   logout-pending/unconfirmed state. A successful HTTP status alone is not
