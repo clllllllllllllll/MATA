@@ -652,7 +652,9 @@ was removed by 5B-H-D.
 - Added backend-owned opaque PostgreSQL sessions, strict cookie/CSRF transport, rotation-family locking, generation fencing, logout/revocation, persistent rate limiting, upload/archive hardening, error redaction, same-origin frontend transport, and browser-role privilege revocation.
 - Removed the normal frontend Supabase session and bearer-token paths.
 - Verified migrations through `20260722_000024`, dependency audits, backend/frontend suites, PostgreSQL races, and source scans locally.
-- Deployment remains unverified. See `docs/archive/security/phase-5b/5b_h_d_production_security_implementation.md`.
+- The cookie transport is deployed; current deployment evidence and remaining
+  timed/manual rows are recorded in `docs/deployed_auth_transport_uat.md`.
+  The archived 5B-D report remains historical evidence only.
 
 Deployed-auth transport remediation audit:
 
@@ -665,8 +667,9 @@ Deployed-auth transport remediation audit:
 - The current backend performs the Supabase password exchange server-side,
   reloads authority from the database, discards upstream tokens, and issues
   only `__Host-mata_session` plus memory-only CSRF/identity state.
-- Current deployed commit/configuration and the backend startup exception still
-  require separate read-only Vercel evidence. See
+- Read-only Vercel evidence confirms both current projects are READY on the same
+  reviewed `main` commit and the backend startup exception is resolved. The
+  current-commit credentialed browser/timed rows remain in
   `docs/deployed_auth_transport_uat.md`.
 
 5B-H-E locally implemented:
@@ -674,7 +677,10 @@ Deployed-auth transport remediation audit:
 - Added the `mata_app_runtime` and `mata_auth_internal` capability groups, distinct runtime/auth database session factories, signed transaction-local identity context, startup catalogue attestation, and database-enforced global MCR uniqueness.
 - Enabled RLS on all 34 application tables and installed 84 policies plus exact table, column, helper, schema, sequence, PUBLIC, browser-role, ownership, and default-ACL boundaries.
 - Preserved FastAPI authorization and native/Non-NHG identity separation. Privileged infrastructure tables remain helper-only rather than receiving broad direct runtime grants.
-- Verified the policy matrix and migration lifecycle only against the named local disposable PostgreSQL database. Deployment remains unverified. See `docs/archive/security/phase-5b/5b_h_e_full_rls_implementation.md`.
+- The deployed database reached `20260728_000028`; live catalogue evidence
+  confirmed 34 RLS tables, 84 valid policies, restricted runtime/auth logins,
+  and successful startup attestation. Current role-workflow UAT remains
+  separate. The archived 5B-H-E report remains historical evidence only.
 
 AUD-M-06 descendant locally implemented:
 
@@ -701,7 +707,9 @@ AUD-M-06 descendant locally implemented:
 5B-H sequencing:
 - `5B-H-A`, `5B-H-B`, and `5B-H-C` are required before stakeholder UAT.
 - Browser-visible bearer transport is removed from the normal production path.
-- Full RLS enablement, runtime-role separation, trusted transaction context, and policy SQL are locally implemented in Phase 5B-H-E; deployed catalogue and workflow verification remain separate.
+- Full RLS enablement, runtime-role separation, trusted transaction context,
+  and policy SQL are deployed and catalogue-verified; current synthetic-account
+  workflow isolation remains separate manual UAT.
 - Phase 6 compliance starts only after the protected deployment/security baseline is acceptable.
 
 Still deferred beyond this auth/account roadmap alignment:

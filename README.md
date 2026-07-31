@@ -324,9 +324,13 @@ Vercel/Supabase.
 
 The July 2026 deployed-auth audit found that the observed browser password
 grant and bearer `/auth/me` chain matches the superseded pre-5B-H-D frontend,
-not the current merged source. The public backend also returned
-`FUNCTION_INVOCATION_FAILED` for `/health`, so the active deployment
-commit/configuration and startup logs must be verified before redeployment.
+not the current merged source. The historical backend also returned
+`FUNCTION_INVOCATION_FAILED` for `/health`. The corrected database and
+configuration cutover is now deployed: both Vercel projects are READY on the
+same reviewed `main` commit, the database is at `20260728_000028`, and the
+current backend returns controlled health/auth responses without a current
+startup failure. See `docs/deployed_auth_transport_uat.md` for the deployed
+evidence and remaining timed/manual UAT rows.
 
 ---
 
