@@ -527,8 +527,10 @@ transaction rolled back atomically to `000022`. Before retrying, operators must
 rerun the full rollback preflight, including the exact target and revision,
 recovery point and authorized recovery owner/window, and complete pre-upgrade
 catalogue checks without displaying connection values or credentials. That
-failed attempt is not evidence that revision `000028` or its startup
-attestation has succeeded on the deployed target.
+failed attempt remains historical evidence only. The corrected retry later
+reached `20260728_000028`, and the deployed catalogue and startup attestation
+were separately verified as recorded in
+`docs/deployed_auth_transport_uat.md`.
 
 Security migrations may restore historically compatible but weaker behavior
 during downgrade. A generic `alembic downgrade -1` is not an online production
@@ -576,39 +578,52 @@ The final-review handoff records the exact commands, counts, durations,
 failures, and reruns for this evidence. Historical report totals are not
 silently reused.
 
-## 17. Deployed checks still required
+## 17. Deployed evidence and remaining UAT
 
-Before UAT or production approval, verify against the explicitly approved
-target:
+Read-only evidence reconciled on 2026-07-31 verifies:
 
-- the frontend and backend aliases resolve to the same reviewed remediation
-  commit and expected project roots;
-- browser staff login contacts only the frontend-origin
-  `/api/v1/auth/login`; no browser request reaches a Supabase Auth endpoint or
-  the backend origin directly;
-- `/auth/me`, refresh, logout, and protected API traffic remain same-origin,
-  carry no `Authorization` header, and cause no authentication-related CORS
-  preflight;
-- `__Host-mata_session` is host-only, `Secure`, `HttpOnly`,
-  `SameSite=Strict`, `Path=/`, and has no `Domain`, `Max-Age`, or `Expires`;
-- no Supabase access/refresh token exists in browser storage, IndexedDB, URL,
-  log, source map, or application state;
-- `/health` and controlled auth errors are application responses rather than
-  `FUNCTION_INVOCATION_FAILED`;
-- exact environment configuration without disclosing values;
-- reviewed Supabase origin, issuer, JWKS and service-role destination;
-- TLS, HSTS, CORS, Host, cookie, CSRF, proxy-IP and cache behavior;
-- deployed Alembic revision and the complete role/RLS/grant/helper/default-ACL
-  catalogue;
-- absence of browser/Data API and `PUBLIC` application privileges;
-- session rotation, expiry, revocation, password-reset, authority-change and
-  reliable-logout behavior under real network/browser conditions;
-- rate-limit threshold, concurrency, persistence and cleanup behavior across
-  deployed workers;
-- request and upload limits at every ingress;
+- frontend `mata-aine` and backend `mata-backend` are READY from the same
+  reviewed `main` commit,
+  `c6f51ac0e9f27608280abd1d5f51a293042c5ea9`;
+- the backend runs as a Python 3.12 function in `hnd1`, returns controlled
+  no-store `/health`, and no current-deployment 5xx, import, startup, RLS,
+  database-boundary, session, or rate-limit failure signature was present;
+- the database reached Alembic head `20260728_000028`, with 34/34 application
+  tables under RLS, 84 valid policies, and separate restricted runtime and
+  auth-helper logins accepted by startup attestation;
+- signed-out auth fails in controlled application responses, approved
+  cookie-mode CORS remains explicit, bearer preflight is rejected, and an
+  unapproved origin is not reflected;
+- the frontend route keeps `/api/v1` ahead of the SPA fallback, disables
+  authenticated response caching, uses the external rewrite rather than a
+  redirect, and does not synthesize `Authorization`;
+- a current browser bootstrap contacted same-origin `/api/v1/auth/me` and no
+  Supabase or backend-origin resource; and
+- operator dashboard evidence records the approved frontend/backend
+  environment names and scopes without values. Vercel MCP does not expose an
+  environment-variable inventory, so this evidence source remains explicit.
+
+Credentialed same-origin login, the reviewed cookie/CSRF attributes, absence of
+browser tokens, and reliable logout passed during the cutover deployment at
+`2d6e7b0`. They are historical live evidence and are not silently relabeled as
+a current-commit run. The merge to `c6f51ac` changed frontend focus/visibility
+revalidation behavior only.
+
+The remaining current-deployment manual observations are:
+
+- repeat the credentialed login/cookie/CSRF/storage/logout batch on
+  `c6f51ac`, including logged-out and authenticated focus behavior;
+- session rotation, idle expiry, absolute expiry, revocation, password reset,
+  authority change, and two-tab/offline reliable logout under real network
+  conditions;
+- bounded rate-limit threshold/persistence/cleanup and the 3 MiB per-file /
+  4 MiB aggregate and global ingress boundaries using harmless synthetic data;
+- deployed JS/CSS content hashing and the emitted-artifact signature scan,
+  because non-browser retrieval is currently intercepted by Vercel Security
+  Checkpoint;
 - access-log/query-string redaction and protected export handling; and
-- Master Admin, Programme PC, Secretary, native Resident, and Non-NHG Resident
-  workflow isolation.
+- Master Admin, Programme PC, Secretary, native Resident, and registered
+  Non-NHG Resident workflow isolation using approved synthetic accounts.
 
 For each deployed check, record the reviewed target label, application commit,
 database revision, time, operator/reviewer, safe command or observation, and
