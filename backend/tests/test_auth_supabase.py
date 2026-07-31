@@ -141,12 +141,13 @@ def _external_resident_token(
     )
 
 
-def _settings() -> Settings:
+def _settings(*, supabase_publishable_key: str | None = None) -> Settings:
     return Settings(
         auth_mode="supabase",
         auth_transport="bearer_compat",
         database_rls_enabled=False,
         supabase_url="https://mata-test.supabase.co",
+        supabase_publishable_key=supabase_publishable_key,
         mata_resident_session_secret=RESIDENT_SECRET,
         _env_file=None,
     )
@@ -430,6 +431,65 @@ async def test_supabase_jwt_verifier_allows_small_iat_clock_skew(
     ))
 
     assert claims["sub"] == "00000000-0000-0000-0000-000000000001"
+
+
+@pytest.mark.asyncio
+async def test_legacy_hs256_uses_trusted_auth_user_without_unverified_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subject = str(uuid4())
+    token = jwt.encode(
+        {
+            "iss": ISSUER,
+            "aud": AUDIENCE,
+            "sub": subject,
+            "iat": datetime.now(UTC),
+            "exp": datetime.now(UTC) + timedelta(minutes=15),
+        },
+        "legacy-project-secret-with-at-least-32-bytes",
+        algorithm="HS256",
+    )
+    captured_request: dict[str, object] = {}
+
+    class _AuthUserResponse:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {"id": subject}
+
+    class _AuthUserClient:
+        def __init__(self, *, timeout: float) -> None:
+            assert timeout == 5.0
+
+        async def __aenter__(self) -> "_AuthUserClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, url: str, *, headers: dict[str, str]) -> _AuthUserResponse:
+            captured_request.update({"url": url, "headers": headers})
+            return _AuthUserResponse()
+
+    def _unexpected_unverified_decode(*args: object, **kwargs: object) -> None:
+        raise AssertionError("legacy token payload must not be decoded locally")
+
+    monkeypatch.setattr("app.services.supabase_jwt.httpx.AsyncClient", _AuthUserClient)
+    monkeypatch.setattr("app.services.supabase_jwt.jwt.decode", _unexpected_unverified_decode)
+
+    claims = await SupabaseJwtVerifier(
+        _settings(supabase_publishable_key="sb_publishable_test_key")
+    ).verify(token)
+
+    assert claims == {"iss": ISSUER, "aud": AUDIENCE, "sub": subject}
+    assert captured_request == {
+        "url": f"{ISSUER}/user",
+        "headers": {
+            "apikey": "sb_publishable_test_key",
+            "Authorization": f"Bearer {token}",
+        },
+    }
 
 
 @pytest.mark.asyncio
@@ -929,6 +989,33 @@ def test_mata_resident_token_wrong_issuer_or_audience_is_rejected(
 
     assert wrong_issuer.status_code == 401
     assert wrong_audience.status_code == 401
+
+
+def test_mata_resident_token_with_forged_signature_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _private_key()
+    fake_db = FakeResidentSession()
+    client = _scope_guard_client(
+        monkeypatch,
+        jwks=_jwks_for_key(private_key),
+        middleware_user=None,
+        middleware_resident=_resident(fake_db),
+    )
+
+    response = client.get(
+        "/api/v1/resident-only",
+        headers={
+            "Authorization": "Bearer "
+            + _resident_token(
+                fake_db,
+                secret="attacker-controlled-secret-with-32-bytes",
+            ),
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error_code"] == "UNAUTHORIZED"
 
 
 def test_mata_external_resident_token_with_posting_claim_is_rejected(

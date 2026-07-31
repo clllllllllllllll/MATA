@@ -503,6 +503,55 @@ class WorkflowSecurityTests(unittest.TestCase):
                 workflow.name,
             )
 
+    def test_checkout_does_not_persist_git_credentials(self):
+        checkout_count = 0
+        for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
+            lines = workflow.read_text(encoding="utf-8").splitlines()
+            for index, line in enumerate(lines):
+                if not re.match(r"^\s*uses:\s*actions/checkout@", line):
+                    continue
+                checkout_count += 1
+                uses_indent = len(line) - len(line.lstrip())
+                block = []
+                for following_line in lines[index + 1 :]:
+                    if following_line.strip():
+                        following_indent = len(following_line) - len(
+                            following_line.lstrip()
+                        )
+                        if following_indent < uses_indent:
+                            break
+                    block.append(following_line.strip())
+                self.assertIn("with:", block, workflow.name)
+                self.assertIn(
+                    "persist-credentials: false",
+                    block,
+                    workflow.name,
+                )
+        self.assertGreater(checkout_count, 0)
+
+
+class ContainerSecurityTests(unittest.TestCase):
+    def test_backend_runtime_uses_a_non_root_user(self):
+        dockerfile = (SCRIPT_ROOT.parent.parent / "backend" / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(dockerfile, r"(?m)^USER mata$")
+        self.assertRegex(dockerfile, r"(?m)^EXPOSE 8000$")
+        self.assertNotRegex(dockerfile, r"(?m)^USER root$")
+
+    def test_frontend_runtime_uses_a_non_root_user_and_unprivileged_port(self):
+        root = SCRIPT_ROOT.parent.parent
+        dockerfile = (root / "frontend" / "Dockerfile").read_text(encoding="utf-8")
+        runtime = dockerfile[dockerfile.rindex("FROM ") :]
+        nginx = (root / "frontend" / "nginx.conf").read_text(encoding="utf-8")
+        compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+
+        self.assertRegex(runtime, r"(?m)^USER nginx$")
+        self.assertRegex(runtime, r"(?m)^EXPOSE 8080$")
+        self.assertNotRegex(runtime, r"(?m)^USER root$")
+        self.assertRegex(nginx, r"(?m)^\s*listen 8080;$")
+        self.assertIn('- "8080:8080"', compose)
+
 
 class DependencySanitizerTests(unittest.TestCase):
     def test_reports_contain_only_approved_dependency_and_advisory_metadata(self):

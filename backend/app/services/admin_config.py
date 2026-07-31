@@ -22,6 +22,13 @@ from app.services.reporting_period_status import (
 
 
 ALLOWED_MULTI_POSTING_RULE_TYPES = {"main_posting", "combine", "half_month"}
+_ALLOWED_SCOPE_FIELD_NAMES = frozenset(
+    {
+        "code",
+        "programme_code",
+        "r.programme_code",
+    }
+)
 _REPORTING_PERIOD_DEPENDENCY_NAMES = frozenset(
     {
         "upload_logs",
@@ -99,6 +106,10 @@ def _scope_or_clause(
     params: dict[str, Any],
     param_prefix: str,
 ) -> str:
+    if field_name not in _ALLOWED_SCOPE_FIELD_NAMES:
+        raise ValueError("Untrusted admin configuration scope field")
+    if param_prefix != "programme_code":
+        raise ValueError("Untrusted admin configuration parameter prefix")
     fragments: list[str] = []
     for idx, value in enumerate(values):
         key = f"{param_prefix}_{idx}"

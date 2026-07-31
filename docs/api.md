@@ -195,6 +195,10 @@ retains or restores a stale session cookie.
 - Use SQLAlchemy ORM/query builder or parameterised raw SQL only.
 - Never interpolate user input into SQL strings, including identifiers, sort fields, filters, search terms, or `ORDER BY` clauses.
 - For dynamic sorting/filtering, map accepted public field names to hardcoded model columns.
+- Private raw-SQL composition helpers must enforce explicit table, field, and
+  column allowlists at their sinks; regression tests must keep structural query
+  arguments as source literals and prove adversarial values remain bind
+  parameters.
 - PostgreSQL advisory-lock keys must be derived from validated internal IDs or deterministic hashes, not raw concatenated user strings.
 
 ### XSS and response safety

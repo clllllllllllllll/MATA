@@ -29,7 +29,6 @@ from app.services.app_sessions import (
 from app.services.mata_resident_token import (
     MataResidentTokenError,
     extract_bearer_token,
-    is_mata_resident_token,
     verify_mata_resident_token,
 )
 from app.services.supabase_jwt import SupabaseJwtError, SupabaseJwtVerifier
@@ -460,12 +459,11 @@ class AuthStubMiddleware(BaseHTTPMiddleware):
             reason = "missing_authorization" if not authorization else "malformed_bearer"
             return self._supabase_unauthorized_response(request, reason)
 
-        if is_mata_resident_token(bearer_token, settings=self._settings):
-            try:
-                claims = verify_mata_resident_token(bearer_token, settings=self._settings)
-            except MataResidentTokenError:
-                return self._supabase_unauthorized_response(request, "mata_token_invalid")
-
+        try:
+            claims = verify_mata_resident_token(bearer_token, settings=self._settings)
+        except MataResidentTokenError:
+            claims = None
+        if claims is not None:
             raw_subject = claims.get("sub")
             if not isinstance(raw_subject, str):
                 return self._supabase_unauthorized_response(request, "mata_claims_missing_sub")

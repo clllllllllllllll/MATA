@@ -644,8 +644,8 @@ async def force_delete_event(
         await db.rollback()
         raise
 
-    assert event_snapshot is not None
-    assert result_payload is not None
+    if event_snapshot is None or result_payload is None:
+        raise RuntimeError("Force-delete result invariant was not established")
     try:
         cache_invalidation.invalidate_after_admin_event_force_delete(
             event_id=event_id,

@@ -236,6 +236,56 @@ def test_unsafe_or_malformed_xml_is_rejected(xml_payload: bytes) -> None:
         preflight_xlsx_archive(payload, limits=_limits())
 
 
+@pytest.mark.parametrize(
+    ("codec", "declared_encoding"),
+    [
+        ("utf-16", "UTF-16"),
+        ("utf-16-be", "UTF-16BE"),
+        ("utf-32", "UTF-32"),
+    ],
+)
+def test_encoded_entity_declarations_are_rejected(
+    codec: str,
+    declared_encoding: str,
+) -> None:
+    xml_payload = (
+        f'<?xml version="1.0" encoding="{declared_encoding}"?>'
+        '<!DOCTYPE workbook [<!ENTITY secret SYSTEM "file:///etc/passwd">]>'
+        "<workbook>&secret;</workbook>"
+    ).encode(codec)
+    payload = _zip_bytes([("xl/workbook.xml", xml_payload)])
+
+    with pytest.raises(WorkbookSecurityError):
+        preflight_xlsx_archive(payload, limits=_limits())
+
+
+@pytest.mark.parametrize(
+    "xml_payload",
+    [
+        b"<!DOCTYPE workbook><workbook/>",
+        (
+            b"<!DOCTYPE workbook ["
+            b'<!ENTITY a "1234567890">'
+            b'<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">'
+            b'<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">'
+            b"]><workbook>&c;</workbook>"
+        ),
+    ],
+)
+def test_hardened_parser_rejects_declarations_if_fast_scan_misses(
+    monkeypatch: pytest.MonkeyPatch,
+    xml_payload: bytes,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.workbook_security._contains_dtd_or_entity",
+        lambda _xml_bytes: False,
+    )
+    payload = _zip_bytes([("xl/workbook.xml", xml_payload)])
+
+    with pytest.raises(WorkbookSecurityError):
+        preflight_xlsx_archive(payload, limits=_limits())
+
+
 def test_external_relationship_is_rejected() -> None:
     relationships = b"""
     <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
@@ -245,6 +295,25 @@ def test_external_relationship_is_rejected() -> None:
     payload = _zip_bytes([("xl/_rels/workbook.xml.rels", relationships)])
 
     with pytest.raises(WorkbookSecurityError):
+        preflight_xlsx_archive(payload, limits=_limits())
+
+
+def test_deeply_nested_external_relationship_is_rejected() -> None:
+    depth = 1_500
+    relationships = (
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        + ("<wrapper>" * depth)
+        + '<Relationship Id="rId1" Type="example" '
+        'Target="file:///private/data" TargetMode="External"/>'
+        + ("</wrapper>" * depth)
+        + "</Relationships>"
+    ).encode()
+    payload = _zip_bytes([("xl/_rels/workbook.xml.rels", relationships)])
+
+    with pytest.raises(
+        WorkbookSecurityError,
+        match="external workbook relationship",
+    ):
         preflight_xlsx_archive(payload, limits=_limits())
 
 

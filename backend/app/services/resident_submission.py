@@ -1420,7 +1420,8 @@ async def list_available_events(
         }
 
     if role == "external_resident":
-        assert external_resident_id is not None
+        if external_resident_id is None:
+            raise RuntimeError("External resident identity invariant was not established")
         all_contexts: list[dict[str, Any]] = []
         all_capability_codes: set[str] = set()
         supported_anywhere = False
@@ -1562,8 +1563,8 @@ async def list_available_events(
             "active_reporting_periods": active_period_rows,
         }
 
-    assert resident_id is not None
-    assert resident is not None
+    if resident_id is None or resident is None:
+        raise RuntimeError("Resident identity invariant was not established")
     has_posting_context = False
     eligible_posting_codes: set[str] = set()
     posting_option_codes: set[str] = set()
@@ -2407,7 +2408,8 @@ async def submit_attendance(
         for _, event, lookup_error in event_lookups:
             if lookup_error is not None:
                 break
-            assert event is not None
+            if event is None:
+                raise RuntimeError("Teaching event lookup returned no result or error")
             lock_dates.add(event["event_date"])
         await _acquire_external_attendance_locks(
             db,
@@ -2421,7 +2423,8 @@ async def submit_attendance(
         for event_id, event, lookup_error in event_lookups:
             if lookup_error is not None:
                 raise lookup_error
-            assert event is not None
+            if event is None:
+                raise RuntimeError("Teaching event lookup returned no result or error")
             period = await _active_reporting_period(
                 db,
                 relevant_date=event["event_date"],
@@ -2563,7 +2566,8 @@ async def submit_attendance(
     for _, event, lookup_error in event_lookups:
         if lookup_error is not None:
             break
-        assert event is not None
+        if event is None:
+            raise RuntimeError("Teaching event lookup returned no result or error")
         lock_dates.add(event["event_date"])
     await _acquire_native_attendance_locks(
         db,
@@ -2577,7 +2581,8 @@ async def submit_attendance(
     for event_id, event, lookup_error in event_lookups:
         if lookup_error is not None:
             raise lookup_error
-        assert event is not None
+        if event is None:
+            raise RuntimeError("Teaching event lookup returned no result or error")
         if event["event_date"] > today:
             raise ApiError(
                 status_code=422,

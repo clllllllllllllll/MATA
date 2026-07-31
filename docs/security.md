@@ -155,6 +155,14 @@ configuration must use HTTPS, contain no userinfo/query/fragment, and resolve
 to the same explicitly reviewed project origin and expected Auth paths.
 Service-role operations use only that reviewed origin.
 
+Asymmetric Supabase JWTs are verified locally against the reviewed JWKS and
+algorithm allowlist. For legacy HS256 compatibility, Supabase validates the
+exact bearer token at the reviewed Auth user endpoint and MATA uses only the
+returned authoritative user ID; it does not decode an unverified payload to
+establish identity. MATA resident compatibility tokens are attempted only
+through the exact HS256 signature, issuer, audience, expiry, issued-at, role,
+and subject verifier before any resident identity is used.
+
 Resident authentication assurance remains separately governed product debt.
 This security contract does not invent or imply an unapproved second factor.
 
@@ -254,9 +262,11 @@ safely. Nginx mirrors the 4 MiB boundary and disables upload request buffering.
 Workbook preflight rejects unsupported extensions, invalid ZIP signatures,
 ZIP64, traversal, duplicate members, symlinks, encrypted entries, external
 relationships, DTD/entity declarations, oversized members/archives, excessive
-entry counts, and suspicious compression ratios. Parser-specific structural
-and cell limits remain authoritative after preflight. Spreadsheet exports
-sanitize formula-leading cells.
+entry counts, and suspicious compression ratios. Every XML and relationship
+member is additionally parsed with `defusedxml` configured to forbid DTDs,
+entities, and external references before `openpyxl` runs. Parser-specific
+structural and cell limits remain authoritative after preflight. Spreadsheet
+exports sanitize formula-leading cells.
 
 Upload business rows, upload evidence, warnings, and audit rows currently have
 separate transaction boundaries. Their unification is deferred because it
@@ -447,6 +457,12 @@ CI runs:
 - frontend browser-auth/secret-boundary scans; and
 - post-build frontend artifact and source-map scans; and
 - redacted added-diff secret scanning.
+
+Checkout credentials are not persisted after repository fetches. Static
+workflow contracts require every checkout invocation to opt out explicitly.
+Container contracts require the backend and frontend runtime stages to select
+fixed non-root users; the Docker frontend listens on an unprivileged internal
+port while Compose preserves the documented host port.
 
 Every CI production frontend build explicitly supplies the public, non-secret
 contract `VITE_APP_ENV=production`, `VITE_AUTH_MODE=supabase`, and
@@ -649,7 +665,7 @@ configuration and verification record.
 | Low | RLS policy attestation checks exact inventory but not a canonical hash of every predicate. | Add normalized expression/hash attestation and a negative drift test. |
 | Low | Current function ACLs are safe, but the attempted schema-scoped default-privilege revoke did not override PostgreSQL's built-in `PUBLIC` execute default for future functions. | Add global owner-scoped default-ACL revokes for every permitted function creator, then attest exact `pg_default_acl` entries and add a negative future-function test. |
 | Low | A stub/demo login helper can expose a password verifier to the narrow auth capability. | Remove or narrow the production helper output while retaining local demo behavior. |
-| Low | Containers use mutable base-image tags and the backend runtime user is root. | Review digest pinning and non-root runtime images as bounded operations work. |
+| Low | Containers use mutable base-image tags. | Review digest pinning as a bounded operations change. |
 | Low | Python requirements are exact-version pinned but do not use hashes. | Adopt reviewed hash-locked production dependencies when the packaging workflow is approved. |
 
 Resident identity assurance is tracked as separate product debt and is not

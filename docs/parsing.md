@@ -34,6 +34,11 @@ ingress limits and deployed constraints;
 `docs/archive/security/phase-5b/5b_h_m05_upload_preparser_limits.md` preserves
 the historical implementation evidence.
 
+Before `openpyxl` sees an OOXML archive, every XML and relationship member is
+parsed with `defusedxml` configured to forbid DTDs, entities, and external
+references. The existing declaration scan, external-relationship rejection,
+and archive/member resource limits remain independent fail-closed layers.
+
 ---
 
 ## RDB Parser
