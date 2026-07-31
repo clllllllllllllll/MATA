@@ -206,7 +206,7 @@ export const shouldAcceptCrossTabSessionRotation = (
 
 export const createAuthSessionRevalidationCoordinator = (
   revalidateSession: () => Promise<void>,
-  hasStoredSession: () => boolean,
+  shouldRevalidate: () => boolean,
 ): AuthSessionRevalidationCoordinator => {
   let active = true
   let revalidationInFlight = false
@@ -220,7 +220,7 @@ export const createAuthSessionRevalidationCoordinator = (
       forcedRevalidationQueued ||= force
       return
     }
-    if (!force && !hasStoredSession()) {
+    if (!force && !shouldRevalidate()) {
       return
     }
 

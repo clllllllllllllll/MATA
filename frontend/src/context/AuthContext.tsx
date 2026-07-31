@@ -40,6 +40,7 @@ import {
   type LogoutRetryCoordinator,
   type LogoutRetrySnapshot,
 } from '../api/logoutReliability'
+import { ApiRequestError } from '../api/http'
 import { frontendConfig } from '../config/frontendConfig'
 import type { AuthIdentity, AuthSessionState, StoredAuthSession } from '../types/auth'
 import { clearMemoryCache } from '../utils/memoryReadCache'
@@ -76,6 +77,9 @@ const createLogoutRequestId = (): string => {
   return `${Date.now()}-${entropy}`
 }
 
+const isConclusiveUnauthenticatedHydrationError = (error: unknown): boolean =>
+  error instanceof ApiRequestError && error.status === 401
+
 export const AuthProvider = ({ children }: PropsWithChildren) => {
   const { setRole } = useAppState()
   const initialLogoutPendingSnapshot = logoutPendingStore.read()
@@ -97,11 +101,18 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
   const loginAttemptRef = useRef<{
     generation: number
     pendingSnapshot: LogoutPendingSnapshot
+    knownAbsentBeforeAttempt: boolean
   } | null>(null)
   const deferredAuthRevalidationRef = useRef(false)
   const loginCommitInProgressRef = useRef(false)
   const crossTabLoginCommitInProgressRef = useRef(false)
   const logoutConfirmationInProgressRef = useRef<string | null>(null)
+  const authSessionKnownAbsentRef = useRef(
+    isLogoutPendingBlocked(initialLogoutPendingSnapshot),
+  )
+  const initialAuthHydrationPendingRef = useRef(
+    !isLogoutPendingBlocked(initialLogoutPendingSnapshot),
+  )
 
   const nextAuthRequestGeneration = useCallback(() => {
     loginAttemptRef.current = null
@@ -117,6 +128,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
   const clearLocalAuthState = useCallback((
     options?: ClearAuthSessionOptions,
   ) => {
+    authSessionKnownAbsentRef.current = true
     clearAuthSessionIfPresent(options)
     setSession(null)
     setRole(frontendConfig.defaultRole)
@@ -125,6 +137,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
   }, [setRole])
 
   const commitSession = useCallback((nextSession: StoredAuthSession) => {
+    authSessionKnownAbsentRef.current = false
     saveAuthSession(nextSession)
     setSession(nextSession)
     setRole(nextSession.identity.role)
@@ -133,6 +146,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
   }, [setRole])
 
   const commitHydratedSession = useCallback((nextSession: StoredAuthSession) => {
+    authSessionKnownAbsentRef.current = false
     if (saveHydratedAuthSession(nextSession)) {
       setSession(nextSession)
       setRole(nextSession.identity.role)
@@ -160,6 +174,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
   }, [])
 
   const beginLoginAttempt = useCallback(() => {
+    const knownAbsentBeforeAttempt = authSessionKnownAbsentRef.current
     const generation = nextAuthRequestGeneration()
     const pendingSnapshot = logoutPendingStore.read()
     const activeLogoutRequestId = logoutRetryCoordinatorRef.current
@@ -167,7 +182,11 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     if (activeLogoutRequestId) {
       logoutRetryCoordinatorRef.current?.cancel(activeLogoutRequestId, 'cancelled')
     }
-    loginAttemptRef.current = { generation, pendingSnapshot }
+    loginAttemptRef.current = {
+      generation,
+      pendingSnapshot,
+      knownAbsentBeforeAttempt,
+    }
     clearLocalAuthState()
     return generation
   }, [clearLocalAuthState, nextAuthRequestGeneration])
@@ -177,10 +196,16 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
       if (!isCurrentAuthRequest(generation)) {
         return false
       }
-      if (loginAttemptRef.current?.generation === generation) {
+      const loginAttempt = loginAttemptRef.current?.generation === generation
+        ? loginAttemptRef.current
+        : null
+      if (loginAttempt) {
         loginAttemptRef.current = null
       }
       clearLocalAuthState()
+      if (loginAttempt) {
+        authSessionKnownAbsentRef.current = loginAttempt.knownAbsentBeforeAttempt
+      }
       replayDeferredAuthRevalidation()
       return true
     },
@@ -234,7 +259,10 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     }
     const generation = nextAuthRequestGeneration()
     const sessionRevision = readAuthSessionRevision()
-    setIsLoading(true)
+    const shouldShowLoading = readStoredAuthSession() === null
+    if (shouldShowLoading) {
+      setIsLoading(true)
+    }
     try {
       const hydratedResult = await loadHydratedSession(generation, sessionRevision)
       if (hydratedResult && isCurrentAuthRequest(generation)) {
@@ -243,9 +271,11 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
           announceAuthSessionRotated()
         }
       }
-    } catch {
+    } catch (error) {
       if (isCurrentAuthRequest(generation)) {
         clearLocalAuthState()
+        authSessionKnownAbsentRef.current =
+          isConclusiveUnauthenticatedHydrationError(error)
       }
     } finally {
       if (isCurrentAuthRequest(generation)) {
@@ -294,11 +324,14 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
             announceAuthSessionRotated()
           }
         }
-      } catch {
+      } catch (error) {
         if (active && isCurrentAuthRequest(generation)) {
           clearLocalAuthState()
+          authSessionKnownAbsentRef.current =
+            isConclusiveUnauthenticatedHydrationError(error)
         }
       } finally {
+        initialAuthHydrationPendingRef.current = false
         if (active && isCurrentAuthRequest(generation)) {
           setIsLoading(false)
         }
@@ -329,6 +362,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
         return
       }
       const nextSession = readStoredAuthSession()
+      authSessionKnownAbsentRef.current = nextSession === null
       setSession(nextSession)
       setRole(nextSession?.identity.role ?? frontendConfig.defaultRole)
       if (!nextSession) {
@@ -519,12 +553,17 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
   useEffect(() => {
     const revalidation = createAuthSessionRevalidationCoordinator(
       hydrateSession,
-      () => Boolean(readStoredAuthSession()),
+      () =>
+        !initialAuthHydrationPendingRef.current
+        && (
+          Boolean(readStoredAuthSession())
+          || !authSessionKnownAbsentRef.current
+        ),
     )
-    const onFocus = () => revalidation.request(true)
+    const onFocus = () => revalidation.request(false)
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        revalidation.request(true)
+        revalidation.request(false)
       }
     }
     const onCrossTabSessionEstablished = (event: Event) => {

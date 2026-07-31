@@ -448,7 +448,7 @@ test('pending logout blocks hydration and protected dispatch while preserving ex
   )
   assert.match(
     contextSource,
-    /onFocus = \(\) => revalidation\.request\(true\)[\s\S]*onVisibilityChange/,
+    /onFocus = \(\) => revalidation\.request\(false\)[\s\S]*onVisibilityChange/,
   )
   assert.ok(loginCommitBody.indexOf('commitSession(nextSession)')
     < loginCommitBody.indexOf('clearAfterSuccessfulLogin'))
@@ -867,7 +867,7 @@ test('cross-tab rotation is accepted only inside the current family epoch', () =
   assert.equal(readAuthSessionEpoch(), establishedEpoch)
 })
 
-test('cross-tab and focus revalidation reuse hydration without refresh loops', () => {
+test('cross-tab and focus revalidation reuse background hydration without refresh loops', () => {
   const storeSource = read('src/api/authSessionStore.ts')
   const contextSource = read('src/context/AuthContext.tsx')
   assert.match(storeSource, /new BroadcastChannel\(AUTH_SESSION_CHANNEL_NAME\)/)
@@ -879,17 +879,76 @@ test('cross-tab and focus revalidation reuse hydration without refresh loops', (
   assert.match(contextSource, /announceAuthSessionRotated\(\)/)
   assert.match(contextSource, /window\.addEventListener\('focus', onFocus\)/)
   assert.match(contextSource, /document\.addEventListener\('visibilitychange', onVisibilityChange\)/)
-  assert.match(contextSource, /createAuthSessionRevalidationCoordinator\(/)
-  assert.match(contextSource, /onFocus = \(\) => revalidation\.request\(true\)/)
   assert.match(
     contextSource,
-    /document\.visibilityState === 'visible'[\s\S]*revalidation\.request\(true\)/,
+    /shouldShowLoading = readStoredAuthSession\(\) === null[\s\S]*if \(shouldShowLoading\) \{[\s\S]*setIsLoading\(true\)/,
+  )
+  assert.match(
+    contextSource,
+    /isConclusiveUnauthenticatedHydrationError = \(error: unknown\): boolean =>\s*error instanceof ApiRequestError && error\.status === 401/,
+  )
+  assert.equal(
+    contextSource.match(
+      /authSessionKnownAbsentRef\.current\s*=\s*isConclusiveUnauthenticatedHydrationError\(error\)/g,
+    )?.length,
+    2,
+  )
+  assert.match(
+    contextSource,
+    /!initialAuthHydrationPendingRef\.current\s*&&\s*\(\s*Boolean\(readStoredAuthSession\(\)\)\s*\|\|\s*!authSessionKnownAbsentRef\.current/,
+  )
+  assert.match(
+    contextSource,
+    /initialAuthHydrationPendingRef = useRef\([\s\S]*initialAuthHydrationPendingRef\.current = false[\s\S]*setIsLoading\(false\)/,
+  )
+  assert.match(
+    contextSource,
+    /knownAbsentBeforeAttempt = authSessionKnownAbsentRef\.current[\s\S]*loginAttemptRef\.current = \{[\s\S]*knownAbsentBeforeAttempt/,
+  )
+  assert.match(
+    contextSource,
+    /const clearCurrentAuthRequest = useCallback[\s\S]*clearLocalAuthState\(\)[\s\S]*authSessionKnownAbsentRef\.current = loginAttempt\.knownAbsentBeforeAttempt/,
+  )
+  assert.match(contextSource, /onFocus = \(\) => revalidation\.request\(false\)/)
+  assert.match(
+    contextSource,
+    /document\.visibilityState === 'visible'[\s\S]*revalidation\.request\(false\)/,
   )
   assert.match(
     contextSource,
     /onCrossTabRevalidation = \(\) => \{[\s\S]*loginAttemptRef\.current[\s\S]*deferredAuthRevalidationRef\.current = true[\s\S]*revalidation\.request\(true\)/,
   )
   assert.doesNotMatch(contextSource, /setInterval/)
+})
+
+test('ordinary focus revalidation skips pending or conclusive hydration and coalesces retries', async () => {
+  let revalidationEligible = false
+  let hydrationCalls = 1
+  let resolveHydration: () => void = () => undefined
+  const hydration = new Promise<void>((resolve) => {
+    resolveHydration = resolve
+  })
+  const revalidation = createAuthSessionRevalidationCoordinator(
+    () => {
+      hydrationCalls += 1
+      return hydration
+    },
+    () => revalidationEligible,
+  )
+
+  revalidation.request(false)
+  assert.equal(hydrationCalls, 1)
+
+  revalidationEligible = true
+  revalidation.request(false)
+  revalidation.request(false)
+  assert.equal(hydrationCalls, 2)
+
+  resolveHydration()
+  await hydration
+  await Promise.resolve()
+  assert.equal(hydrationCalls, 2)
+  revalidation.dispose()
 })
 
 test('cross-tab establishment queues one forced retry during hydration', async () => {
