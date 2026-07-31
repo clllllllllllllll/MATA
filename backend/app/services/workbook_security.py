@@ -7,7 +7,9 @@ from io import BytesIO
 from pathlib import PurePosixPath
 from typing import Protocol
 from unicodedata import normalize as unicode_normalize
-from xml.etree import ElementTree
+
+from defusedxml import ElementTree as DefusedElementTree
+from defusedxml.common import DefusedXmlException
 
 
 WORKBOOK_READ_ERROR = (
@@ -232,8 +234,18 @@ def _validate_xml(xml_bytes: bytes, *, relationship_part: bool) -> None:
     if _contains_dtd_or_entity(xml_bytes):
         raise WorkbookSecurityError("DTD or entity declaration is not permitted")
     try:
-        root = ElementTree.fromstring(xml_bytes)
-    except (ElementTree.ParseError, LookupError, ValueError) as exc:
+        root = DefusedElementTree.fromstring(
+            xml_bytes,
+            forbid_dtd=True,
+            forbid_entities=True,
+            forbid_external=True,
+        )
+    except (
+        DefusedXmlException,
+        DefusedElementTree.ParseError,
+        LookupError,
+        ValueError,
+    ) as exc:
         raise WorkbookSecurityError("malformed workbook XML") from exc
 
     if not relationship_part:

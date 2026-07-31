@@ -159,54 +159,24 @@ class SupabaseJwtVerifier:
         if response.status_code != 200:
             raise SupabaseJwtError("Invalid legacy Supabase JWT")
 
-        return self._decode_unverified_claims_after_auth_server_validation(token)
-
-    def _decode_unverified_claims_after_auth_server_validation(self, token: str) -> dict[str, Any]:
         try:
-            claims = jwt.decode(
-                token,
-                options={
-                    "verify_signature": False,
-                    "verify_exp": False,
-                    "verify_aud": False,
-                    "verify_iss": False,
-                    "verify_iat": False,
-                },
-            )
-        except InvalidTokenError as exc:
-            raise SupabaseJwtError("Invalid JWT claims") from exc
+            auth_user = response.json()
+        except ValueError as exc:
+            raise SupabaseJwtError("Invalid legacy Supabase user response") from exc
+        if not isinstance(auth_user, dict):
+            raise SupabaseJwtError("Invalid legacy Supabase user response")
 
-        if not isinstance(claims, dict):
-            raise SupabaseJwtError("Invalid JWT claims")
-
-        self._validate_claims_without_signature(claims)
-        return claims
-
-    def _validate_claims_without_signature(self, claims: Mapping[str, Any]) -> None:
-        if claims.get("iss") != self._config.issuer:
-            raise SupabaseJwtError("Invalid JWT issuer")
-
-        audience = claims.get("aud")
-        if isinstance(audience, str):
-            valid_audience = audience == self._config.audience
-        elif isinstance(audience, list):
-            valid_audience = self._config.audience in audience
-        else:
-            valid_audience = False
-        if not valid_audience:
-            raise SupabaseJwtError("Invalid JWT audience")
-
-        if not claims.get("sub"):
-            raise SupabaseJwtError("Missing JWT subject")
-
-        now = int(time.time())
-        exp = claims.get("exp")
-        if not isinstance(exp, int) or exp <= now:
-            raise SupabaseJwtError("Expired JWT")
-
-        iat = claims.get("iat")
-        if not isinstance(iat, int) or iat > now + 60:
-            raise SupabaseJwtError("Invalid JWT issued-at")
+        # Supabase has validated the exact bearer token before returning this
+        # user. Build the minimal trusted identity from that authoritative
+        # response instead of decoding the legacy HS256 token without a key.
+        subject = auth_user.get("id")
+        if not isinstance(subject, str) or not subject.strip():
+            raise SupabaseJwtError("Invalid legacy Supabase user response")
+        return {
+            "iss": self._config.issuer,
+            "aud": self._config.audience,
+            "sub": subject.strip(),
+        }
 
     @staticmethod
     def _find_jwk(

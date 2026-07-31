@@ -439,7 +439,8 @@ Rules:
 The compliance engine runs **JIT (just-in-time)** — recalculated on read, not stored as a materialised value.
 
 **Identity inputs to every compliance calculation:**
-- `programme_code` — from the resident's JWT claim
+- `programme_code` — from the backend-hydrated resident record; never from a
+  browser-supplied token claim
 - `ay_date_category` — from `programmes.ay_date_category` for the resident programme
 - `posting_code` — derived at request time from `resident_postings`
 - `r_year` — from the `resident_postings` row for each phase (not `residents.r_year`)

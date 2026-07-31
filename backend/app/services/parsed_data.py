@@ -30,6 +30,67 @@ from app.services.rdb_parser import (
 from app.services.ttf_parser import split_keywords
 
 
+_ALLOWED_SCOPE_COLUMN_SQL = frozenset(
+    {
+        "al.metadata_json ->> 'programme_code'",
+        "programme_code",
+        "r.programme_code",
+        "tnc.programme_code",
+        "tt.programme_code",
+        "wi.programme_code",
+    }
+)
+_ALLOWED_SEARCH_COLUMN_SQL = frozenset(
+    {
+        "CAST(amb.end_date AS TEXT)",
+        "CAST(amb.start_date AS TEXT)",
+        "CAST(COALESCE(ph.year, EXTRACT(YEAR FROM ph.holiday_date)::int) AS TEXT)",
+        "CAST(ph.holiday_date AS TEXT)",
+        "amb.academic_year_label",
+        "amb.ay_date_category",
+        "amb.month_label",
+        "f.mcr",
+        "f.month_label",
+        "f.status_raw",
+        "ph.day_of_week",
+        "ph.name",
+        "r.base_institution",
+        "r.classification",
+        "r.employee_code",
+        "r.mcr",
+        "r.name",
+        "r.programme_code",
+        "r.r_year",
+        "rp.month_label",
+        "rp.posting_code",
+        "st.name",
+        "tnc.keyword",
+        "tnc.posting_code",
+        "tnc.programme_code",
+        "tnc.r_year",
+        "tt.details_of_training",
+        "tt.posting_code",
+        "tt.programme_code",
+        "tt.r_year",
+        "tt.tag",
+    }
+)
+_ALLOWED_PARTIAL_TEXT_COLUMNS_BY_KEY = {
+    "academic_year_label": frozenset({"amb.academic_year_label"}),
+    "mcr": frozenset({"f.mcr", "r.mcr"}),
+    "month_label": frozenset({"amb.month_label", "f.month_label", "rp.month_label"}),
+    "posting_code": frozenset(
+        {
+            "rp.posting_code",
+            "tnc.posting_code",
+            "tt.posting_code",
+        }
+    ),
+    "programme_code": _ALLOWED_SCOPE_COLUMN_SQL,
+    "r_year": frozenset({"tnc.r_year", "tt.r_year"}),
+}
+
+
 def _validate_programme_filter(
     *,
     programme_scope: set[str],
@@ -53,6 +114,8 @@ def _scope_or_clause(
     values: list[str],
     params: dict[str, Any],
 ) -> str:
+    if column_sql not in _ALLOWED_SCOPE_COLUMN_SQL:
+        raise ValueError("Untrusted parsed-data scope column")
     fragments: list[str] = []
     for idx, value in enumerate(values):
         key = f"scope_programme_code_{idx}"
@@ -125,6 +188,10 @@ def _add_search_filter(
 ) -> None:
     if not search or not search.strip():
         return
+    if not columns_sql or any(
+        column not in _ALLOWED_SEARCH_COLUMN_SQL for column in columns_sql
+    ):
+        raise ValueError("Untrusted parsed-data search column")
     params["search"] = f"%{search.strip().lower()}%"
     where_clauses.append(
         "(" + " OR ".join(f"LOWER(COALESCE({column}, '')) LIKE :search" for column in columns_sql) + ")"
@@ -141,6 +208,9 @@ def _add_partial_text_filter(
 ) -> None:
     if not value or not value.strip():
         return
+    allowed_columns = _ALLOWED_PARTIAL_TEXT_COLUMNS_BY_KEY.get(key)
+    if allowed_columns is None or column_sql not in allowed_columns:
+        raise ValueError("Untrusted parsed-data partial-text filter")
     params[key] = f"%{value.strip().lower()}%"
     where_clauses.append(f"LOWER(COALESCE({column_sql}, '')) LIKE :{key}")
 
@@ -791,6 +861,14 @@ _ACADEMIC_MONTH_BOUNDARY_ALLOWED_FIELDS = {
     "month_label",
     "start_date",
     "end_date",
+}
+
+_UPDATE_ALLOWED_FIELDS_BY_TABLE = {
+    "academic_month_boundaries": frozenset(_ACADEMIC_MONTH_BOUNDARY_ALLOWED_FIELDS),
+    "form_f1_records": frozenset(_FORM_F1_ALLOWED_FIELDS),
+    "resident_postings": frozenset(_RESIDENT_POSTING_ALLOWED_FIELDS),
+    "residents": frozenset(_RESIDENT_ALLOWED_FIELDS),
+    "teaching_targets": frozenset(_TEACHING_TARGET_ALLOWED_FIELDS),
 }
 
 _DATE_FIELDS = {
@@ -1634,6 +1712,13 @@ async def _apply_update(
     row_id: UUID,
     changed: dict[str, Any],
 ) -> None:
+    allowed_fields = _UPDATE_ALLOWED_FIELDS_BY_TABLE.get(table_name)
+    if (
+        allowed_fields is None
+        or not changed
+        or not set(changed).issubset(allowed_fields)
+    ):
+        raise ValueError("Untrusted parsed-data update specification")
     assignments = ",\n                ".join(
         f"{field} = :{field}" for field in sorted(changed)
     )
@@ -3566,6 +3651,8 @@ async def list_correction_history(
     where_clauses = ["al.action LIKE 'admin.parsed_data.%'"]
 
     def source_filter_sql(field: str) -> str:
+        if field not in {"cell_ref", "row_number", "sheet_name", "upload_log_id"}:
+            raise ValueError("Untrusted correction-history source field")
         return (
             "COALESCE("
             f"al.metadata_json #>> '{{source,{field}}}', "

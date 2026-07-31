@@ -168,34 +168,3 @@ def verify_mata_resident_token(
         if any(claim in claims for claim in EXTERNAL_FORBIDDEN_CLAIMS):
             raise MataResidentTokenError("Invalid MATA external resident claims")
     return claims
-
-
-def is_mata_resident_token(token: str, *, settings: Settings) -> bool:
-    try:
-        claims = jwt.decode(
-            token,
-            options={
-                "verify_signature": False,
-                "verify_exp": False,
-                "verify_aud": False,
-                "verify_iss": False,
-                "verify_iat": False,
-            },
-        )
-    except InvalidTokenError:
-        return False
-
-    if not isinstance(claims, dict):
-        return False
-    audience = claims.get("aud")
-    if isinstance(audience, str):
-        has_audience = audience == settings.mata_resident_session_audience
-    elif isinstance(audience, list):
-        has_audience = settings.mata_resident_session_audience in audience
-    else:
-        has_audience = False
-    return (
-        claims.get("iss") == settings.mata_resident_session_issuer
-        and has_audience
-        and claims.get("app_role") in MATA_RESIDENT_SESSION_ROLES
-    )
