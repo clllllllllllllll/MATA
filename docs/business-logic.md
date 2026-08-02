@@ -901,9 +901,13 @@ Both are handled automatically via FormF1 values. No special-case code needed.
 
 ---
 
-## TBD-MIGRATION: Historical Data Migration Strategy
+## TBD-MIGRATION: Historical Data Migration Strategy (superseded — settled)
 
-**Status:** Awaiting stakeholder decision before the future final close/freeze workflow.
+**Status:** **Settled — no historical data migration.** The 2026-08-02 evolved TTF transition contract supersedes this former TBD. The alternatives below are retained only as audit history.
+
+**Settled rule:** Do not import, backfill, or migrate historical data. Retain legacy workbooks as legacy structural references only; do not build migration tooling.
+
+**Historical options (superseded; not actionable):**
 
 **Option A — Archive only (recommended default):**
 Legacy Excel files remain accessible. New system holds data from cutover period onwards. Zero migration effort.
@@ -914,7 +918,7 @@ One-time script reads legacy Programme Reporting View Excel files and inserts su
 **Option C — Full migration:**
 Parse original FormSG CSVs and legacy `.rds` snapshot files. Highest fidelity, highest effort.
 
-**Developer instruction:** Do not build any migration tooling until the option is confirmed.
+**Developer instruction:** Do not build migration tooling. No option remains to be confirmed.
 
 ---
 

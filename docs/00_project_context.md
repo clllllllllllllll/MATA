@@ -29,7 +29,7 @@ Residents submit attendance via FormSG / Google Forms
   → Output Excel files distributed manually to Programme Coordinators
 ```
 
-**Why it is being replaced:** The legacy system relies on free-text form submissions requiring extensive string matching, manual CSV export, and batch R script processing. It is fragile, error-prone, and cannot scale. The new system eliminates free-text input via structured web forms, processes compliance in real time, and persists all data in a relational database.
+**Why it is being replaced:** The legacy system relies on free-text form submissions requiring extensive string matching, manual CSV export, and batch R script processing. It is fragile, error-prone, and cannot scale. The new system eliminates free-text input via structured web forms and persists data in a relational database; its full/JIT Phase 6 compliance engine is specified for a later phase and is not currently implemented.
 
 ### The New Architecture
 
@@ -183,7 +183,7 @@ The source-of-truth files began as build specifications, but substantial pre-com
 4. **Posting codes come from trusted database configuration only.** They are not derivable by regex or string pattern. Non-NHG registration resolves exact programme/institution pairs through `programme_institution_posting_map`; it must not reuse native teaching, Secretary, target, or posting metadata as a fallback.
 5. **R scripts A–F are legacy reference only.** Do not port their logic unless explicitly listed in Section 4A of `99_decision_log_and_gap_audit.md`. Logic in Section 4B must not be re-implemented.
 6. **Active/inactive source is resolved.** FormF1 is final. The AY bucket label selects the stored calendar-month FormF1 row that gates both numerator and denominator for the whole bucket; do not use an event's raw calendar month or split/prorate the bucket.
-7. **TBD-MIGRATION (Historical data migration strategy) is open.** Do not build migration tooling until the option is confirmed.
+7. **TBD-MIGRATION is superseded and settled: no historical data migration.** Retain legacy workbooks as structural references only; do not import, backfill, or build migration tooling.
 8. **For full detail on any rule, go to the authoritative source-of-truth file.** Do not rely on this navigation document alone.
 9. **Database performance, caching, and rate limiting are explicit implementation concerns.** Implement indexes from `schema.md`, cache only scoped derived/reference reads, invalidate caches on writes/uploads, and rate-limit auth/upload/mutation/report endpoints.
 10. **Percentage is the canonical status predicate.** Use the unrounded posting percentage for `met_70pct` and colour. `target_70 = ceil(target_100 × 0.70)` is a displayed whole-session target.
@@ -239,12 +239,12 @@ This file is navigation only. Detailed contracts live in `99_decision_log_and_ga
 - Programme PC NHG Resident Attendance is implemented as a pre-compliance, read-only overview plus a dedicated resident history page. Backend scope is `residents.programme_code IN users.programme_scope`; reads use native `attendance_records` only. Non-NHG Attendance remains separate, and no attendance mutation or compliance/target-progress UI is part of this feature.
 - Phase 6 compliance remains the next major feature phase after the protected deployment/security baseline is acceptable. Phase 6 compliance must read native `attendance_records` only and never join `external_attendance_records`.
 
-### Open TBDs
+### Current TBD Status
 
 | TBD | Status | Summary |
 |-----|--------|---------|
 | TBD-7 | ✅ Resolved | FormF1 is the final authoritative active/inactive source for compliance. |
-| TBD-MIGRATION | ❓ Open | Historical data migration strategy: archive only / summary / full migration |
+| TBD-MIGRATION | ✅ Settled / superseded | No historical data migration; legacy workbooks remain structural references only. |
 
 ### Resolved TBDs
 
@@ -600,12 +600,12 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 
 ## Section 9 — TBD Register Summary
 
-### Open TBDs — Do NOT Resolve in Code
+### Previously Open Decisions — Do NOT Reopen in Code
 
 | TBD | Title | Summary | Instruction |
 |-----|-------|---------|-------------|
 | TBD-7 | Active/inactive source (resolved) | FormF1 is the final authoritative source for active/inactive status. `Active` and `Extension` are active; `Inactive` is inactive. The status selected by the AY bucket label gates both numerator and denominator for the whole bucket. | Keep FormF1 parser/upload + AY-label selection of `form_f1_records.is_active` as the final path. Do not implement RDB-derived denominator logic. |
-| TBD-MIGRATION | Historical data migration strategy | Three options: archive only / summary migration / full migration. decision needed before future final close/freeze. | Do NOT build migration tooling until option is confirmed. Add TODO: `# TBD-MIGRATION: awaiting stakeholder decision` |
+| TBD-MIGRATION (superseded) | Historical data migration strategy | Settled 2026-08-02: no historical data migration; legacy workbooks remain structural references only. | Do not import, backfill, or build migration tooling. |
 
 ### Resolved TBDs — Do NOT Reopen
 
@@ -1070,7 +1070,7 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 | Active/inactive source resolved | FormF1 is final; no RDB pivot for denominator logic | Gate on `form_f1_records.is_active`; keep RDB LOA/refresher/employed fields as parser/audit/display data only |
-| TBD-MIGRATION open | No historical data migration plan | Do not build tooling until decision confirmed |
+| TBD-MIGRATION settled | No historical data migration | Retain legacy workbooks as structural references only; do not import, backfill, or build migration tooling |
 | Posting code patterns | Regex-based code generation silently produces wrong codes | Always query `posting_codes` table |
 | `r_year = 'ALL'` sentinel | 20 programmes affected; lookup with actual r_year returns zero results | TTF matcher handles `ALL`; SPORTSMED/PALLMED preserve R4–R6 |
 | TTF mid-period correction | Warn-on-reupload, not 422 | CRUD endpoint for corrections |
@@ -1119,7 +1119,7 @@ MCR, programme coordinator, admin, secretary, resident portal,
 submission portal, duplicate detection, weekend_exceptions, public_holidays,
 advisory lock, programme_scope, dual posting, multi_posting_rules,
 dormant posting code, LOA, LOA types, employed, refresher training,
-TBD-1, TBD-MIGRATION, placeholder logic,
+TBD-1, TBD-MIGRATION (settled; no historical migration),
 X-User-Role, X-User-Id, X-User-Programme, X-User-MCR, X-User-Site,
 KEEP PORT discard legacy R script, Codex specification, implementation status,
 ORTHO mutation, mutates_to_session_type_id, adjusted_duration_hours,

@@ -898,15 +898,16 @@ Status: ✅ Resolved
 
 ---
 
-#### TBD-MIGRATION: Historical Data Migration Strategy
-- **Status:** ❓ Open — awaiting stakeholder decision
-- **Description:** Three options for handling data from before the cutover period: (A) Archive only — legacy Excel files remain accessible, new system holds cutover-onwards only. (B) Summary migration — one-time script inserts summary-level compliance from legacy Excel. (C) Full migration — parse original FormSG CSVs and legacy `.rds` snapshots.
-- **Why it matters:** Determines whether historical compliance reports are available in the new system.
-- **Current placeholder logic:** None — no migration tooling exists.
+#### TBD-MIGRATION: Historical Data Migration Strategy (superseded — settled)
+- **Status:** ✅ Settled — **no historical data migration.** The 2026-08-02 evolved TTF transition contract supersedes the previous option-selection question.
+- **Settled decision:** Do not import, backfill, or migrate historical data. Retain legacy workbooks only as legacy structural references; do not build migration tooling.
+- **Historical record:** The previous alternatives were (A) archive only — legacy Excel files remain accessible, new system holds cutover-onwards only; (B) summary migration — one-time script inserts summary-level compliance from legacy Excel; and (C) full migration — parse original FormSG CSVs and legacy `.rds` snapshots.
+- **Why it mattered (historical):** It would have determined whether historical compliance reports were available in the new system.
+- **Current behavior:** No migration tooling exists or is to be built.
 - **File and section:** `business-logic.md` § TBD-MIGRATION
-- **Who should answer:** PM / Programme Director / Senior Management
-- **Can development proceed?** Yes — decision needed before the future final close/freeze workflow, not before development.
-- **Mandatory instruction:** **Do NOT build migration tooling until option is confirmed. Add TODO: `# TBD-MIGRATION: awaiting stakeholder decision — archive/summary/full`**
+- **Historical owner:** PM / Programme Director / Senior Management
+- **Can development proceed?** Yes — the decision is settled; no migration or backfill is permitted.
+- **Mandatory instruction:** **Do NOT build migration tooling or add an option-selection TODO.**
 
 ---
 
@@ -1127,14 +1128,14 @@ Status: ✅ Resolved
 
 ---
 
-## Section 5 — Open Questions
+## Section 5 — Open Questions and Settled Historical Records
 
 ### Business Rules
 
 | # | Question | Why It Matters | Who Answers | Can Dev Proceed? |
 |---|----------|---------------|-------------|-----------------|
 | 1 | Active/inactive source (TBD-7 closed) | Gates compliance denominator for every resident | PM / Programme Director | Resolved — FormF1 is final authoritative source |
-| 2 | TBD-MIGRATION: Archive only, summary, or full migration for historical data? | Determines whether historical reports available in new system | PM / Senior Management | Yes — decision needed before future final close/freeze |
+| 2 | TBD-MIGRATION (historical; settled): earlier archive-only, summary, or full-migration options | Formerly determined whether historical reports would be available in the new system | N/A — settled 2026-08-02 | Yes — no historical migration, backfill, or tooling |
 | 3 | Clawback financial/final-close contract: rates/effective dating, funding R-year, classification, suppressions, grouped identity, billing, missing rates, rounding, and rerun/idempotency | Required before any clawback implementation | PM / Finance / Programme Director | No for clawback; ordinary compliance can proceed |
 | 4 | Are there any additional programmes beyond the 28 seeded in `programmes`? | Missing programmes would cause parse failures on RDB upload | PM | Yes — new programmes can be added via admin CRUD |
 
@@ -1206,11 +1207,11 @@ Status: ✅ Resolved
 
 ---
 
-## Section 7 — Missing Context Audit
+## Section 7 — Missing Context and Settled-History Audit
 
 | # | What Is Missing | Why It Matters | Where Placeholder Is Used | Where to Update When Provided |
 |---|----------------|---------------|--------------------------|-------------------------------|
-| 2 | TBD-MIGRATION option selection | Determines historical data availability | No code exists — placeholder TODO only | New migration script(s) when option confirmed |
+| 2 | TBD-MIGRATION option selection (historical; settled) | Former question of historical data availability | No migration code or placeholder TODO; migration is prohibited | No action — settled: no historical data migration |
 | 3 | Complete clawback financial/final-close contract | Required only for deferred clawback | No implementation-ready placeholder; legacy evidence is non-authoritative | Source-of-truth documents after stakeholder confirmation |
 | 7 | Approved resident identity-assurance change, if any | Separately governed product debt; not a stop condition for the final security review | No factor is invented or implemented by H-D | Auth contract and deployment approval records after stakeholder decision |
 | 8 | Deployed H-D/H-E verification | Required to distinguish local code evidence from live cookie/session and RLS behavior | H-D and H-E implementation reports contain local evidence only | Deployment smoke/evidence document |
