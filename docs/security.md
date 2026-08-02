@@ -166,6 +166,40 @@ and subject verifier before any resident identity is used.
 Resident authentication assurance remains separately governed product debt.
 This security contract does not invent or imply an unapproved second factor.
 
+### Future evolved TTF mutations (Phase A contract only)
+
+Teaching Name and mapping mutations are not enabled by this documentation
+change. Before a future endpoint is enabled, it must use the existing protected
+mutation boundary and the additive B1 database boundary must be extended with
+reviewed RLS policies, grants, ownership, and startup-attestation inventory for
+the new objects.
+
+- Authenticate through the opaque application session; reload current staff
+  role, active state, programme scope, Secretary posting, and explicit
+  Secretary-to-programme management capability from trusted database state.
+  Do not infer authority from native teaching-posting visibility, request
+  fields, browser state, or display strings.
+- Require the current CSRF synchronizer and exact approved Origin for every
+  unsafe mutation, apply the applicable persistent rate limit, validate all
+  scope/identity/revision fields server-side, and return controlled `403`,
+  `409`, or `422` without a partial write as appropriate.
+- Require revision fencing for existing name and mapping mutations. A mapping
+  preview/apply flow must bind its short-lived opaque token to the actor,
+  mapping/name revision, exact target selection, and target-scope fingerprint;
+  an expired or changed input requires a new preview.
+- Write the domain mutation and audit record atomically. Invalidate only the
+  affected scoped event, attendance, mapping, and future compliance read caches
+  after commit. Failed, unauthorized, stale, or preview-fenced requests do not
+  invalidate caches or record a successful mutation.
+- Pool-backed events must carry a stable Teaching Name identity and global
+  events a stable global-session identity, never both. Legacy transition rows
+  may have neither. Do not expose raw audit/preview tokens in browser storage,
+  URLs, logs, or error details.
+
+Phase A adds no schema, migration, policy, grant, cache, or route. The current
+A-K catalogue authorization path remains intact through B1; final E2/B2 is the
+only planned destructive cutover.
+
 ## 5. Opaque sessions, expiry, rotation, and logout
 
 The production cookie is host-only, named `__Host-mata_session`, `Secure`,

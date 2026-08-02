@@ -2,6 +2,32 @@
 
 This document covers the compliance engine, surplus chain, tag-based reallocation, and exception handling. All logic operates on **session counts, not hours**.
 
+## Phase 6 and evolved TTF status
+
+BL-1 through BL-12 are the future non-clawback compliance specification. They
+do not establish that `compliance.py`, `surplus.py`, or a full Phase 6 engine is
+implemented today. Clawback and final close remain separately deferred. Current
+upload, event, and attendance behavior remains the legacy A-K catalogue path
+through additive B1; Phase A changes documentation only.
+
+The future evolved TTF uses `teaching_name` pools scoped by reporting period and
+programme. A name's exact `(posting_code, r_year)` mapping is pending until it
+selects an exact target in that programme's TTF. Pending names remain eligible
+for Secretary/PC event creation, resident visibility, attendance, and audit,
+but contribute neither numerator nor denominator until mapped. A mapping is
+read on demand, so a successful map is effective on the next JIT calculation
+without rewriting raw event or attendance records. There is no manually
+excluded mapping state.
+
+Global session types stay Admin-managed and are considered before ordinary
+Teaching Name mapping. Resident ad-hoc teaching remains fixed to
+`Department/Programme Teaching [1h]`; Non-NHG attendance is excluded from NHG
+compliance. The final A-J TTF removes Column K. The current A-K parser,
+`teaching_name_catalogue`, and `details_of_training` stay in place during B1;
+only final E2/B2 may remove them. A populated legacy Column K in a future-format
+upload must return `422`, with no dual-format fallback, backfill, or historical
+migration.
+
 ---
 
 ## BL-1: Session Count Capping
@@ -634,7 +660,7 @@ Residents can submit ad-hoc teachings not pre-created by secretaries via `POST /
    - NHG Resident: from `resident_postings` for the date (`status IN ('active', 'loa_working')`).
    - Non-NHG Resident: from `external_resident_postings` for the date after forecast posting schedule support is implemented.
 3. Resident selects the attended TTSH department/programme from an additional dropdown backed by validated `posting_codes` / explicit config. This supports cases where residents attend teaching outside both their assigned posting and native programme. Do not create posting codes by string concatenation or regex.
-4. System returns teaching/session names from TTF Column K / `teaching_name_catalogue`, filtered by selected attended TTSH department posting, resident native programme where applicable, selected date, r_year/reporting-period context, and normal catalogue rules.
+4. In the current legacy A-K transition, the system returns teaching/session names from TTF Column K / `teaching_name_catalogue`, filtered by selected attended TTSH department posting, resident native programme where applicable, selected date, r_year/reporting-period context, and normal catalogue rules.
 5. Resident selects a catalogue-backed teaching option and provides `start_time`. Optional `details_of_session` may be captured as display/audit-only text.
 6. System validates the selected teaching option still exists in the same catalogue context at submit time. Arbitrary free-text teaching names must not drive compliance mapping.
 7. System creates a `teaching_events` row with `is_adhoc = true`, `posting_code = assigned/compliance posting for NHG Resident ad-hoc`, `created_by_role = 'resident'` or `'external_resident'`, the matching immutable typed creator foreign key, `cme_points_awarded = false`, `smc_event_code = null`, and `details_of_session` if provided.
@@ -875,9 +901,13 @@ Both are handled automatically via FormF1 values. No special-case code needed.
 
 ---
 
-## TBD-MIGRATION: Historical Data Migration Strategy
+## TBD-MIGRATION: Historical Data Migration Strategy (superseded — settled)
 
-**Status:** Awaiting stakeholder decision before the future final close/freeze workflow.
+**Status:** **Settled — no historical data migration.** The 2026-08-02 evolved TTF transition contract supersedes this former TBD. The alternatives below are retained only as audit history.
+
+**Settled rule:** Do not import, backfill, or migrate historical data. Retain legacy workbooks as legacy structural references only; do not build migration tooling.
+
+**Historical options (superseded; not actionable):**
 
 **Option A — Archive only (recommended default):**
 Legacy Excel files remain accessible. New system holds data from cutover period onwards. Zero migration effort.
@@ -888,7 +918,7 @@ One-time script reads legacy Programme Reporting View Excel files and inserts su
 **Option C — Full migration:**
 Parse original FormSG CSVs and legacy `.rds` snapshot files. Highest fidelity, highest effort.
 
-**Developer instruction:** Do not build any migration tooling until the option is confirmed.
+**Developer instruction:** Do not build migration tooling. No option remains to be confirmed.
 
 ---
 

@@ -470,7 +470,36 @@ The SSR (Sub-Specialty Registrar) sheet has a different structure: MCR, Name, SI
 
 ---
 
-## TTF Parser
+## Evolved TTF format transition (future; no parser change in Phase A)
+
+The parser section below defines the **current legacy A-K** upload path. It
+remains the active behavior through additive B1, including
+`teaching_name_catalogue` seeding from `teaching_targets.details_of_training`.
+B1 does not introduce a dual parser, change the current upload contract, or
+backfill Column K data. Only final E2/B2 may remove that legacy path.
+
+The future evolved TTF has exactly these A-J fields:
+
+| Column | Future field |
+|---|---|
+| A | reporting period |
+| B | programme |
+| C | R-year |
+| D | posting |
+| E | dashboard posting / posting group |
+| F | session type |
+| G | monthly target |
+| H | tracked |
+| I | reallocatable |
+| J | tag |
+
+Column K is removed in that future format. A future-format upload containing a
+populated legacy Column K must return a controlled `422`. There is no A-K/A-J
+dual-format compatibility, Column K backfill, or historical-data migration.
+Supplied workbooks remain legacy structural references only; they do not expand
+the future parser contract.
+
+## TTF Parser (current legacy A-K behavior)
 
 **Upload slot:** Admin uploads via the dedicated **Teaching Target File (TTF)** file input on the admin upload page. The upload form also requires a **programme selector** (e.g. DR, GRM) — this is a required parameter alongside the file. The filename is not used for parsing.
 **Accepted format:** `.xlsx` only
@@ -653,7 +682,7 @@ The TTF upload is always a **full replace** within `(reporting_period_id, progra
 3. `DELETE` all existing `teaching_targets` within scope
 4. `DELETE` all existing `teaching_name_catalogue` rows within scope
 5. `INSERT` into `teaching_targets`
-6. Parse column K keywords and `INSERT` into `teaching_name_catalogue` — one row per keyword per TTF row. Non-tracked rows (`is_tracked = false`) are still seeded into `teaching_name_catalogue` for event visibility.
+6. Parse legacy Column K keywords and `INSERT` into `teaching_name_catalogue` — one row per keyword per TTF row. Non-tracked rows (`is_tracked = false`) are still seeded into `teaching_name_catalogue` for event visibility.
 7. `ON CONFLICT DO NOTHING` into `session_types`
 8. `ON CONFLICT DO UPDATE` into `posting_codes`
 9. Upsert `posting_groups` from column E (where non-empty)

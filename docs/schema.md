@@ -7,6 +7,78 @@ persistence behavior.
 
 All tables use UUID primary keys (`id UUID DEFAULT gen_random_uuid()`), `created_at TIMESTAMPTZ DEFAULT now()`, and `updated_at TIMESTAMPTZ DEFAULT now()` unless noted otherwise. `app_sessions` is an explicit exception: it has `created_at` and `last_seen_at`, but no `updated_at`.
 
+Unless a section explicitly describes an independently implemented
+pre-compliance workflow, references below to compliance calculation, surplus,
+or a compliance engine are future Phase 6 specification. They do not claim that
+a full `compliance.py` or surplus engine is currently implemented.
+
+## Evolved TTF transition contract (future architecture; no Phase A schema change)
+
+Phase A records this contract only. The current legacy A-K parser,
+`teaching_name_catalogue`, `teaching_targets.details_of_training`, event and
+attendance services, catalogue policies/grants, and frontend remain current
+through additive B1. B1 may add foundations beside them, but does not remove,
+backfill, or cut over any legacy data or workflow. Only the later E2/B2 cutover
+may remove the catalogue-dependent path and replace it with the A-J format.
+
+The planned final model uses `teaching_name` as the canonical term:
+
+- A planned `teaching_names` relation is scoped by
+  `(reporting_period_id, programme_code)`, has a display name, a server-owned
+  normalized name, active/deactivated state, revision, and normal actor/time
+  audit fields. A new reporting period starts with an empty pool; there is no
+  copy-forward, while prior-period names remain historical.
+- Normalization uses Unicode canonical normalization, trims outer whitespace,
+  collapses repeated internal whitespace, and enforces case-insensitive
+  uniqueness within that pool. It preserves punctuation and wording; it does
+  not apply fuzzy matching, abbreviation expansion, synonyms, or semantic
+  matching.
+- A planned `teaching_name_mappings` relation has exactly one identity per
+  `(teaching_name_id, reporting_period_id, programme_code, posting_code,
+  r_year)`. It may select only the exact `teaching_targets` row from that same
+  scope. A null target is **pending** and a non-null target is **mapped**; no
+  duplicate status column or manual `excluded` state is permitted.
+- Both an explicitly authorized Department Secretary and Programme PC may
+  create, rename, deactivate, and reactivate names in their shared pool. Only
+  the Programme PC may map a name to a target. Master Admin may hard-delete a
+  name only when it is unused; any name referenced by an event cannot be
+  hard-deleted. Secretary management authority is a separate explicit
+  Secretary-to-programme capability (the pilot is TTSH GERI), never an
+  inference from `programmes.native_teaching_posting_code` or event visibility.
+- Mapping-scope provisioning is deterministic: name creation creates pending
+  mappings for existing posting/R-year scopes; reactivation reconciles scopes
+  introduced while inactive; a new TTF scope provisions missing pending rows;
+  adding a session type to an existing scope never duplicates a mapping; and a
+  removed scope remains pending or is reconciled under the final target-cutover
+  rules.
+- A planned pool-backed `teaching_events` row has `teaching_name_id` populated
+  and `global_session_type_id` null. A global row has the reverse. Transitional
+  legacy rows may have neither, but no row may have both. Source identity is
+  never inferred from display text. Pool-backed events belong to exactly one
+  programme through their Teaching Name; PC event programme must match it, and
+  snapshot-text fan-out across programme pools is forbidden.
+- Every pool-backed scheduled event is exactly one hour. The client supplies
+  `start_time` only, the server computes `end_time`, and a start later than
+  23:00 is a controlled `422`. A later mapping change never alters stored
+  timing.
+
+Pending names remain selectable, event- and attendance-capable, visible to
+eligible residents, and auditable. They are excluded from compliance until an
+exact mapping exists; the next JIT read resolves a newly mapped name without
+rewriting raw events or attendance. `global_session_types` remain
+Admin-managed, outside this queue, and are handled before ordinary Teaching
+Name mapping. Resident ad-hoc teaching remains fixed to
+`Department/Programme Teaching [1h]`; Non-NHG attendance remains outside NHG
+compliance.
+
+The final TTF is A-J only: reporting period, programme, R-year, posting,
+dashboard posting/posting group, session type, monthly target, tracked,
+reallocatable, and tag. Column K is removed. A future-format upload with a
+populated legacy Column K must return controlled `422`; there is no dual-format
+support, Column K backfill, or historical-data migration. Supplied workbooks
+are legacy structural references only. Phase A creates none of these objects or
+constraints.
+
 ## Entity Relationship Summary
 
 ```
@@ -314,6 +386,13 @@ Catalogue of all session types. Seeded from TTF upload.
 **Note:** Duration is embedded in the session type name as `[Xh]`. There is no separate duration column in the TTF — duration is extracted from the name via regex at upload time for display and validation. Reallocation order is the alphabetical tag label, not duration. Compliance transfers and counts sessions one-for-one; duration is never a multiplier.
 
 ---
+
+## Current legacy A-K TTF catalogue path (retained through B1)
+
+The following target, catalogue, and event fields are the current transition
+schema. References to `details_of_training` or Column K in this section are
+legacy A-K behavior, not the final evolved TTF contract. They remain unchanged
+until the later E2/B2 cutover.
 
 ## Table: `teaching_targets`
 

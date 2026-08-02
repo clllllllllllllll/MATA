@@ -305,6 +305,29 @@ Secretary derived application identity:
 }
 ```
 
+### Future evolved Teaching Name management authority (specified; not enabled)
+
+This is a future authorization contract. Phase A adds no account field, policy,
+or endpoint, and B1 must preserve the current catalogue-backed workflows until
+the later E2/B2 cutover.
+
+- Teaching Name pool access is scoped by `(reporting_period_id, programme_code)`.
+  Both a Programme PC with the programme in current scope and a Secretary with
+  the explicit `can_manage_teaching_names` capability for that programme may
+  create, rename, deactivate, and reactivate names.
+- The Secretary capability is independent of
+  `programmes.native_teaching_posting_code`, ordinary secretary-event
+  visibility, and a posting-name convention. The initial approved pilot is the
+  exact TTSH GERI Secretary-to-programme relationship; no other capability is
+  inferred from visibility or a first matching row.
+- Only the Programme PC may map a Teaching Name to an exact TTF target. Master
+  Admin may hard-delete only an unused name; an event-used name cannot be
+  hard-deleted. Global session types remain Admin-managed and outside the pool.
+- Every protected mutation still uses the current opaque session, reloaded
+  subject, CSRF, exact-Origin, authorization, rate-limit, audit, and
+  post-commit cache-invalidation contracts. A stale revision, lost capability,
+  out-of-scope request, or stale impact preview fails without a write.
+
 ### Master Admin
 
 Source: backend-created or seeded staff account.
