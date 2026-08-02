@@ -44,6 +44,24 @@ Residents log in via React frontend (MCR-only auth in Phase 1)
   → Future Admin/PC compliance dashboard requirements remain a separate phase
 ```
 
+### Evolved TTF transition (approved future contract; Phase A documentation only)
+
+The current product remains on the legacy **A-K** TTF and
+`teaching_name_catalogue` workflow through the additive B1 foundation. That
+legacy behavior, including `teaching_targets.details_of_training` and Column K
+catalogue seeding, is transitional and remains in force until the later final
+E2/B2 cutover. Phase A does not add a model, migration, parser, route, service,
+or UI.
+
+The final evolved TTF is **A-J only**: reporting period, programme, R-year,
+posting, dashboard posting/posting group, session type, monthly target,
+tracked, reallocatable, and tag. Its canonical domain term is
+`teaching_name`. Column K is removed: a future-format upload with a populated
+legacy Column K must receive a controlled `422`; there is no dual-format
+support, Column K backfill, or historical-data migration. Supplied workbooks
+remain legacy structural references only. `parsing.md`, `schema.md`, `api.md`,
+and `business-logic.md` define the future contract in their respective domains.
+
 **5B-H-D current state (2026-07-26):** Production/Supabase mode uses backend-owned opaque PostgreSQL sessions. The browser receives the `HttpOnly`, `Secure`, `SameSite=Strict`, host-only `__Host-mata_session` cookie and retains only identity plus the non-secret CSRF synchronizer value in memory. Unsafe methods require `X-CSRF-Token` and an approved `Origin`; production frontend API traffic uses same-origin relative `/api/v1` requests with credentials.
 
 Staff password authentication is backend-mediated through Supabase, and no Supabase access/refresh token is returned to or persisted by the browser. Login, Non-NHG registration, and registration-options routes are intentionally public application entry points; a Vercel outer gate is not an application-auth requirement.
@@ -98,17 +116,21 @@ Six-month windows (H1: Jan–June, H2: Jul–Dec) stored in the `reporting_perio
 | File | Uploaded By | What It Contains | Tables Written |
 |------|------------|-----------------|----------------|
 | **RDB** (Resident Database / Posting Schedule) | Master Admin | Which resident is at which posting site by month | `residents`, `resident_postings`, `posting_codes` |
-| **TTF** (Teaching Target File) | Master Admin, or Programme PC for a normalized programme in scope (PC creates from STP) | Compliance targets: session types, monthly targets, keywords, tags | `teaching_targets`, `session_types`, `teaching_name_catalogue`, `posting_codes`, `posting_groups` |
+| **TTF** (Teaching Target File) | Master Admin, or Programme PC for a normalized programme in scope (PC creates from STP) | **Current legacy A-K transition:** compliance targets, session types, keywords, tags | `teaching_targets`, `session_types`, `teaching_name_catalogue`, `posting_codes`, `posting_groups` |
 | **FormF1** | Master Admin | Active/inactive status per resident per calendar month | `form_f1_records` |
 | **Academic Calendar / Public Holidays** | Master Admin | Public holiday dates plus AY date boundaries (`Public Holidays` + `AY Dates` sheets; `Fr RMT` ignored) | `public_holidays`, `academic_month_boundaries` |
 
 **STP (Structured Teaching Plan):** Created by Secretary. A planning document only. **STP is never uploaded to the system.** The PC manually converts STP to TTF before a Master Admin or Programme PC for that normalized in-scope programme uploads it. Column K (Details of Training / tag info) is absent from STP and must be added manually by PC — this is why conversion cannot be automated.
 
+**TTF transition clarification:** The preceding STP-to-TTF conversion and its
+Column K requirement describe only the current legacy A-K workflow. They remain
+in force through B1 and are replaced only by the final A-J/E2/B2 cutover.
+
 ### Legacy Cutover
 
 Hard cutover at a period boundary. FormSG and Google Forms submission channels are closed at that date. No hybrid operation — all attendance flows through this system only after cutover.
 
-> **⚠️ Most likely LLM mistake:** Assuming STP is uploaded to the system, or that an STP parser exists. STP is never uploaded. TTF is the compliance input. If an LLM builds an STP upload endpoint, it wastes effort and creates confusion. The silent consequence is that column K (Details of Training) — which is mandatory for `teaching_name_catalogue` seeding — would be missing, breaking event visibility and session type resolution for all residents.
+> **⚠️ Most likely LLM mistake:** Assuming STP is uploaded to the system, or that an STP parser exists. STP is never uploaded. In the current legacy A-K transition, TTF is the compliance input and Column K (Details of Training) is mandatory for `teaching_name_catalogue` seeding. The final A-J/E2/B2 architecture removes that dependency.
 
 ---
 
@@ -191,8 +213,8 @@ The source-of-truth files began as build specifications, but substantial pre-com
 | **RDB parser** (`rdb_parser.py`) | ✅ Implemented | Contract and edge cases remain governed by `parsing.md` |
 | **TTF parser** (`ttf_parser.py`) | ✅ Implemented | Contract and edge cases remain governed by `parsing.md` |
 | **FormF1 parser** (`formf1_parser.py`) | ✅ Implemented | Contract and edge cases remain governed by `parsing.md` |
-| **Compliance engine** (`compliance.py`) | ✅ Implemented | BL-1 through BL-11, grouping, global exclusions, ORTHO mutation, and FormF1 gate |
-| **Surplus chain + reallocation** (`surplus.py`) | ✅ Implemented | BL-3 and BL-4 |
+| **Compliance engine** (`compliance.py`) | 📋 Specified, not implemented | BL-1 through BL-11 are the future non-clawback contract; no full Phase 6 engine currently exists |
+| **Surplus chain + reallocation** (`surplus.py`) | 📋 Specified, not implemented | BL-3 and BL-4 are future Phase 6 specification, not current application code |
 | **Clawback engine** (`clawback.py`) | ⏸ Deferred | Financial and final-close rules are not implementation-ready |
 | **Validation service** (`validation.py`) | ✅ Implemented | Duplicate and later-distinct-event overlap rejection |
 | **Frontend (React/Vite/TypeScript)** | ✅ Implemented pre-compliance surfaces | Cookie/CSRF transport and all current role workflows |
@@ -288,8 +310,8 @@ RDB Excel upload
   → rdb_parser.py (uses programmes.rdb_alias and r_year_required; no SS remapping)
   → residents, resident_postings, posting_codes tables
 
-TTF Excel upload
-  → ttf_parser.py (seeds teaching_name_catalogue from col K, posting_groups from col E)
+Current legacy A-K TTF Excel upload (until final E2/B2 cutover)
+  → ttf_parser.py (seeds teaching_name_catalogue from legacy col K, posting_groups from col E)
   → teaching_targets, session_types, teaching_name_catalogue, posting_codes tables
 
 FormF1 Excel upload
@@ -309,8 +331,8 @@ NHG Resident logs in (MCR only) → sees assigned posting secretary events, nati
     [PH dates hard-blocked (422); countable ad-hoc maps to Department/Programme Teaching [1h] under assigned posting]
   → attendance_records table (session_type_id is NOT stored)
 
-Compliance read (GET /resident/dashboard, GET /admin/reports/*)
-  → compliance.py BL-6 steps:
+Future Phase 6 compliance read (specified only; no current compliance.py engine)
+  → intended BL-6 steps:
     1. Resolve physical posting, phase R-year, AY bucket label, and that label's FormF1 gate
     2. Project approved out-of-posting native-programme events to one assigned-posting Department/Programme Teaching [1h] session
     3. global_session_types check → exclude before catalogue lookup (PRIORITY)
@@ -375,8 +397,8 @@ mata/
 │   │   │   ├── resident.py    # Submission portal, dashboard, attendance, ad-hoc teaching
 │   │   │   └── auth.py        # Backend-owned app-session auth and local/demo compatibility
 │   │   ├── services/          # Business logic (no HTTP concerns)
-│   │   │   ├── compliance.py  # BL-1 through BL-11, posting_groups, global_session_types
-│   │   │   ├── surplus.py     # Surplus chain, tag-based reallocation, hibernation
+│   │   │   ├── compliance.py  # Future Phase 6 specification module; not an implemented engine
+│   │   │   ├── surplus.py     # Future Phase 6 specification module; not implemented application behavior
 │   │   │   ├── clawback.py    # Deferred Phase 10 placeholder; BL-10 has no financial contract yet
 │   │   │   ├── rdb_parser.py  # RDB Excel upload parser
 │   │   │   ├── ttf_parser.py  # TTF Excel upload parser
@@ -412,7 +434,7 @@ mata/
 |------|--------|----------------------|-------------|----------------------------|
 | `schema.md` | Current schema contract plus explicitly deferred tables | Implemented contract; verify current migrations/models | Any model, migration, or database query | `session_type_id` is NOT stored on `attendance_records` — it is resolved at compliance read time. If stored, compliance becomes stale when TTF is re-uploaded. |
 | `api.md` | Current FastAPI endpoints, request/response shapes, auth model, error codes | Implemented pre-compliance contract with explicit future items | Any router, endpoint, or Pydantic schema | Three separate server-owned identity tables converge on one opaque application-session envelope; role/scope is reloaded from the current subject row. |
-| `business-logic.md` | Non-clawback engine (BL-1–BL-11), surplus, raw-count reallocation, exceptions, FM rules, and deferred clawback register | Implemented non-clawback rules plus explicit deferrals | Compliance engine, surplus chain, reallocation, any calculation | Reallocation sorts alphabetically by tag and transfers raw session counts before final capping; duration never drives the arithmetic. |
+| `business-logic.md` | Future non-clawback specification (BL-1–BL-11), surplus, raw-count reallocation, exceptions, FM rules, and deferred clawback register | Specified, not implemented | Compliance engine, surplus chain, reallocation, any calculation | Reallocation sorts alphabetically by tag and transfers raw session counts before final capping; duration never drives the arithmetic. |
 | `parsing.md` | RDB, TTF, FormF1, and Academic Calendar / PH upload parsing rules, cell format variants, edge cases, validation rules | Implemented parser contract | Any upload endpoint or Excel parsing work | RDB posting columns are NOT at a fixed column range (I–T). The parser must detect them dynamically by scanning row 2 for date-range headers. Hardcoding column positions silently misses months. |
 | `security.md` | Current cross-cutting security contract, local/deployed evidence boundary, and deferred debt | Implemented local contract; deployed verification remains separate | Any authentication, authorization, session, CSRF, RLS, privacy, deployment, CI, or rollback change | Local passing tests do not prove the deployed database, proxy, cookie, environment, or role catalogue. |
 | `AGENTS.md` | Coding-agent behaviour, repo structure, tech stack, roles, initialisation order, key architectural rules, confirmed decisions, security rules | Current project instructions and architecture authority | Every coding task (alongside this document) | Multi-posting cell with explicit date ranges applies to ALL RDB sheets, not FM only. Assuming it's FM-only causes silent parsing failures for non-FM programmes. |
@@ -459,16 +481,16 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 7. Writes `upload_logs` row with `upload_type = 'rdb'`
 8. Re-upload: safe — treats upload as complete snapshot and replaces all `resident_postings` within the selected `reporting_period_id` after successful parse/validation
 
-**TTF Upload Flow:**
+**TTF Upload Flow (current legacy A-K behavior until final E2/B2 cutover):**
 1. Master Admin selects any programme, or a Programme PC selects a normalized programme in their scope, then uploads `.xlsx` via `POST /admin/upload/ttf`
 2. Acquires scope-level PostgreSQL advisory lock (returns 409 if contended)
 3. `ttf_parser.py` validates all rows before any writes
 4. Full replace within `(reporting_period_id, programme_code)` scope: deletes existing `teaching_targets` and `teaching_name_catalogue` rows, then inserts new ones
-5. Seeds `teaching_name_catalogue` from column K (Details of Training) — one row per keyword per TTF row
+5. Seeds `teaching_name_catalogue` from legacy Column K (Details of Training) — one row per keyword per TTF row
 6. Seeds `posting_groups` from column E when non-empty
 7. Non-tracked rows (`is_tracked = false`) are still seeded into `teaching_name_catalogue` for event visibility
 8. **No 422 attendance guard on re-upload.** If existing attendance records reference teaching names that no longer map to a catalogue row, they are returned as warnings — upload still returns 200
-9. Admin uses `PUT /admin/teaching-targets/{id}` CRUD for mid-period corrections (updates `details_of_training` and re-seeds catalogue rows for that specific target)
+9. Admin uses `PUT /admin/teaching-targets/{id}` CRUD for mid-period corrections (updates legacy `details_of_training` and re-seeds catalogue rows for that specific target)
 
 **FormF1 Upload Flow:**
 1. Master Admin selects reporting period and uploads `.xlsx` via `POST /admin/upload/form-f1`
@@ -516,14 +538,14 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 
 **Teaching Event CRUD:**
 - Create events via `POST /secretary/teaching-events`
-- Teaching name picked from unified dropdown populated by `GET /secretary/teaching-name-options` — combines `teaching_name_catalogue` keywords (TTF-derived) AND active `global_session_types` entries
+- Teaching name picked from unified dropdown populated by `GET /secretary/teaching-name-options` — current legacy A-K behavior combines `teaching_name_catalogue` keywords (TTF-derived) AND active `global_session_types` entries
 - `session_type_id` auto-resolved from `teaching_name_catalogue` at event creation (display/prototype only — never used for compliance)
 - `end_time` = `start_time + session_type.duration_hours` (server-computed — NOT a request field)
 - Event creation on public holiday dates is hard-blocked (422)
 - Recurrence: `POST /secretary/teaching-events/series` materialises individual event rows. PH occurrences skipped with warning. Three edit granularities: "this event only", "this and all following", "all events in the series"
 - Cannot delete events that have attendance records (409)
 
-**STP Ownership:** Secretary creates STP as a planning document. STP is never uploaded to the system. PC manually converts STP → TTF before a Master Admin or Programme PC for that normalized in-scope programme uploads it. Column K (Details of Training) must be added manually.
+**STP Ownership:** Secretary creates STP as a planning document. STP is never uploaded to the system. During the current legacy A-K transition, the PC manually converts STP → TTF before a Master Admin or Programme PC for that normalized in-scope programme uploads it, including legacy Column K (Details of Training). This does not define the future A-J flow.
 
 **Provisioning:** TTSH-only at launch — 1 account per TTSH posting code. No schema change needed for other institutions.
 
@@ -555,7 +577,7 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
   resubmission receives a new row.
 
 **Ad-hoc Teaching:**
-- Date-first dropdown flow: resident selects teaching date, backend derives assigned posting, resident selects attended TTSH department/programme, then selects catalogue-backed teaching evidence from TTF Column K / `teaching_name_catalogue`
+- Date-first dropdown flow: resident selects teaching date, backend derives assigned posting, resident selects attended TTSH department/programme, then selects catalogue-backed teaching evidence from the current legacy A-K TTF Column K / `teaching_name_catalogue`
 - `POST /resident/adhoc-teaching` — resident submits selected teaching not pre-created by secretary
 - A narrow database function derives the authenticated creator/family and
   creates the immutable-owned `teaching_events` row plus matching attendance
@@ -589,7 +611,7 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 
 | TBD | Resolution | Reference |
 |-----|-----------|-----------|
-| TBD-1 (mechanism) | `teaching_name_catalogue` seeded from TTF col K. Session type resolved at compliance read time via `(keyword, r_year, posting_code, programme_code)`. Keyword data comes from TTF upload. | `business-logic.md` BL-6, BL-11; `schema.md` `teaching_name_catalogue` |
+| TBD-1 (current legacy mechanism) | `teaching_name_catalogue` is seeded from TTF Column K through the final E2/B2 cutover. Session type is specified to resolve at compliance read time via `(keyword, r_year, posting_code, programme_code)`. | `business-logic.md` BL-6, BL-11; `schema.md` `teaching_name_catalogue` |
 | TBD-2 | LOA types: 14 confirmed. Parser warns on unknown. Dormant posting codes: accepted with `display_name = NULL`. | `parsing.md` § LOA Type Validation; `schema.md` `loa_types` |
 | TBD-3 | Admin scope: `users.programme_scope TEXT[]` | `schema.md` `users` table |
 | TBD-4/PH | PH event creation hard-blocked (422) for secretary and resident. | `business-logic.md` BL-5 |
@@ -684,12 +706,12 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 - **Writes to:** `residents`, `resident_postings`, `posting_codes`
 - **Re-upload:** complete snapshot full replace within selected `reporting_period_id` after successful parse/validation
 
-### TTF (Teaching Target File)
+### TTF (Teaching Target File) - current legacy A-K transition
 
 - **Owner:** Master Admin uploads for any programme; Programme PC uploads only for a normalized programme in scope and manually creates it from STP
 - **Format:** `.xlsx`
-- **Columns:** A (reporting_period), B (programme_code), C (r_year — may be comma-separated), D (posting_code), E (dashboard_posting → seeds `posting_groups`), F (session_type with `[Xh]` duration), G (monthly_target), H (is_tracked), I (is_reallocatable), J (tag), K (details_of_training — comma-separated keywords, **mandatory**)
-- **Column K is mandatory.** Absent from STP — PC adds manually. Without it, `teaching_name_catalogue` is empty and residents see zero events.
+- **Columns:** A (reporting_period), B (programme_code), C (r_year — may be comma-separated), D (posting_code), E (dashboard_posting → seeds `posting_groups`), F (session_type with `[Xh]` duration), G (monthly_target), H (is_tracked), I (is_reallocatable), J (tag), K (legacy details_of_training — comma-separated keywords, **mandatory for this transition only**)
+- **Legacy Column K is mandatory in this current transition.** Absent from STP — PC adds manually. Without it, `teaching_name_catalogue` is empty and residents see zero events. The final A-J format removes it at E2/B2.
 - **Duration:** Embedded in session type name as `[Xh]`. No separate column. Secretary picks `start_time` only; `end_time` server-computed.
 - **Multi-year rows:** "R1,R2,R3" exploded into separate `teaching_targets` rows. `r_year = 'ALL'` for 20 programmes; SPORTSMED/PALLMED use R4–R6 unchanged.
 - **Column E → `posting_groups`:** When non-empty, upserts a `posting_groups` row linking the posting code to the group.
@@ -713,11 +735,11 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 - **promotion_date capture:** Parsed/stored when possible for future R3→R4/senior-promotion logic; not used by compliance yet
 - **Year suffix in `month_label`:** [Needs verification] — sample parser hardcodes `'25'`/`'26'`; should be dynamic based on reporting period dates
 
-### STP (Structured Teaching Plan)
+### STP (Structured Teaching Plan) - current legacy A-K transition
 
 - **Owner:** Secretary creates
 - **Never uploaded to the system** — no STP parser exists
-- PC manually converts STP → TTF. Column K absent from STP; must be added before upload. Conversion cannot be automated.
+- PC manually converts STP → TTF. Legacy Column K is absent from STP and must be added before upload for the current A-K parser. This does not apply to the final A-J format.
 
 > **⚠️ Most likely LLM mistake:** Building a TTF parser that hardcodes column positions without accounting for the dynamic sheet detection and the multi-year row explosion. The silent consequence is missing target rows for specific r_years, causing zero compliance targets for affected residents.
 
@@ -936,7 +958,7 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 - API client functions: `src/api/`
 - Auth state: local/demo may use synthetic headers; production uses backend-owned opaque cookies, memory-only identity/CSRF state, and backend-mediated Supabase staff authentication
 
-> **⚠️ Most likely LLM mistake:** Building the resident ad-hoc teaching form with teaching name first and date second, or allowing arbitrary free-text teaching names to drive mapping. The confirmed UX flow is date-first, then assigned/date-matched posting derivation, attended TTSH department dropdown, and catalogue-backed teaching option dropdown. For NHG Residents, compliance attribution is fixed to `Department/Programme Teaching [1h]` under the assigned posting. The silent consequence is a broken dropdown, wrong attribution, or bypassed TTF Column K evidence.
+> **⚠️ Most likely LLM mistake:** Building the resident ad-hoc teaching form with teaching name first and date second, or allowing arbitrary free-text teaching names to drive mapping. The current legacy A-K UX is date-first, then assigned/date-matched posting derivation, attended TTSH department dropdown, and catalogue-backed teaching option dropdown. For NHG Residents, compliance attribution is fixed to `Department/Programme Teaching [1h]` under the assigned posting. The silent consequence is a broken dropdown, wrong attribution, or bypassed legacy TTF Column K evidence.
 
 ---
 

@@ -450,6 +450,30 @@ Fields (top to bottom):
 
 ---
 
+### Evolved Teaching Name management (future UX; not implemented in Phase A)
+
+The current schedule, TTF upload, and catalogue-backed controls remain the
+legacy A-K transition UI through B1. Phase A introduces no page, route, or
+component. The later evolved UI uses these exact labels:
+
+- The schedule/table domain column is **Name of Teaching**.
+- The Secretary management page is **Update Names of Teaching** and its primary
+  action is **Update Name of Teaching**. It supports create, rename,
+  deactivate, and reactivate only for pools the Secretary is explicitly
+  authorized to manage.
+- Programme PC navigation is **Session Types**. Its management page is **Map
+  Names of Teaching to Session Types**. PCs share name maintenance with the
+  authorized Secretary, but only PCs may map a name to an exact TTF target.
+- The mapping surface shows only **Pending** and **Mapped**. A pending name
+  remains selectable and visible for eligible event/attendance workflows, with
+  a clear compliance-pending explanation; it is not manually excluded. Mapping
+  changes show an impact preview and require a fresh confirmation if the
+  underlying revision changes.
+- Pool-backed event creation selects a Name of Teaching and only `start_time`.
+  The UI displays the server-computed one-hour end time, rejects starts later
+  than 23:00 through the controlled validation state, and never changes stored
+  timing when a mapping changes.
+
 ### S8 — NHG Resident Submission Portal
 
 Closest to the original draft screenshot, modernised.
@@ -505,7 +529,7 @@ Modal (640px wide). Three-step flow.
 
 - Two-column row: Start time + fixed compliance type readout.
 - TTSH department/programme dropdown appears after the date-derived assigned posting is available.
-- Teaching/session dropdown is disabled until a TTSH department/programme is selected; options are catalogue-backed from TTF Column K / `teaching_name_catalogue`.
+- Teaching/session dropdown is disabled until a TTSH department/programme is selected; current legacy A-K options are catalogue-backed from TTF Column K / `teaching_name_catalogue`.
 - Optional details text area for display/audit notes only.
 - Reminder card shows assigned posting for compliance and selected attended TTSH department for audit/display.
 - Inline copy: *"Ad-hoc teachings count as Department/Programme Teaching [1h] under your assigned posting."*

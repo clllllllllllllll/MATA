@@ -12,6 +12,72 @@
 
 Every important decision made during the project, with reasoning and consequences.
 
+### Decision: Evolved TTF transition contract (2026-08-02)
+
+- **Status:** Confirmed future architecture; Phase A documentation only.
+- **Current versus future boundary:** The current A-K parser,
+  `teaching_name_catalogue`, `teaching_targets.details_of_training`, catalogue
+  helpers/policies, event and attendance workflows, and frontend stay current
+  through additive B1. B1 may add foundations beside them only. Final E2/B2 is
+  the later destructive cutover; it may remove the legacy path. Phase A creates
+  no code, migration, parser, API route, policy, or UI.
+- **Future file format:** A-J only: reporting period, programme, R-year,
+  posting, dashboard posting/posting group, session type, monthly target,
+  tracked, reallocatable, and tag. Column K is removed. A future-format upload
+  with populated legacy Column K returns controlled `422`; no dual format,
+  backfill, or historical-data migration is authorized. Supplied workbooks are
+  legacy structural references only.
+- **Terms and ownership:** The canonical term is `teaching_name`. The schedule
+  column is **Name of Teaching**; the Secretary page/button are **Update Names
+  of Teaching** / **Update Name of Teaching**; Programme PC navigation/page are
+  **Session Types** / **Map Names of Teaching to Session Types**. Pools are
+  scoped by `(reporting_period_id, programme_code)`, begin empty for each new
+  period, do not copy forward, and preserve prior periods as history. Explicitly
+  authorized Secretaries and Programme PCs may create, rename, deactivate, and
+  reactivate names; only PCs may map names to targets; Master Admin may
+  hard-delete only an unused name.
+- **Normalization and mappings:** Normalize Unicode canonically, trim outer
+  whitespace, collapse internal whitespace, and enforce case-insensitive
+  uniqueness while preserving punctuation/wording. No fuzzy, abbreviation,
+  synonym, or semantic matching. An exact mapping is scoped by period,
+  programme, posting, R-year, and Teaching Name to one exact target. Null target
+  is pending; non-null is mapped; no excluded state exists. Pending names remain
+  selectable, visible, attendance-capable, and auditable, but are excluded from
+  compliance until a mapping resolves on the next JIT read without raw-data
+  rewrite.
+- **Provisioning and fencing:** Name creation provisions pending rows for
+  existing posting/R-year scopes; reactivation reconciles scopes added while
+  inactive; TTF scope creation provisions missing rows; a session type added to
+  an existing scope does not duplicate a mapping; removed scopes remain pending
+  or are reconciled under final target-cutover rules. Existing name/mapping
+  mutations are revision-fenced. Mapping apply requires a fresh impact preview
+  bound to actor, revisions, selected target, and scope fingerprint.
+- **Event, authority, and security:** Pool events carry `teaching_name_id` and
+  no global ID; global events carry `global_session_type_id` and no Teaching
+  Name ID; legacy rows may have neither but never both. Pool events belong to
+  exactly one programme through their name; PC programme must match and text
+  fan-out is forbidden. Pool events are exactly one hour, accept start only,
+  compute end server-side, and reject starts after 23:00. Secretary write
+  authority is an explicit Secretary-to-programme capability (TTSH GERI pilot),
+  not native-teaching-posting visibility. Mutations use current CSRF,
+  authorization, rate-limit, audit, and post-commit cache-invalidation
+  contracts. Globals remain Admin-managed/outside the queue; ad-hoc remains
+  fixed to `Department/Programme Teaching [1h]`; Non-NHG remains outside NHG
+  compliance.
+- **Historical module labels:** Later historical entries that refer to
+  `compliance.py` or `surplus.py` in a consequence, blind-spot, or planned
+  module column describe the future specification only. They are not evidence
+  that either full engine exists in current application code.
+- **Phase 6 boundary:** Non-clawback Phase 6 logic is specified, not
+  implemented; no full `compliance.py` engine is currently implemented.
+
+This decision supersedes historical entries only as the **final future TTF
+target**. Their documented Column K/catalogue behavior remains the current
+legacy transition rule until E2/B2. Preserve those entries as historical audit
+evidence; do not erase or reinterpret them as Phase A implementation.
+
+---
+
 ### Phase 6-A confirmed non-clawback decisions (2026-07-20)
 
 These entries supersede any earlier contradictory current-state entry in this audit log. They resolve the ordinary compliance specification only; they do not claim that Phase 6 application code or tests are implemented.
@@ -153,7 +219,7 @@ only under an approved product scope.
 - **Ownership model:** PC-created teaching events are scheduled teaching events, not ad-hoc submissions. They carry explicit programme ownership/scope via nullable field `teaching_events.created_for_programme_code`: required for PC-created programme-owned events and null for normal secretary-created posting-owned/programme-neutral events unless an explicit future use case sets it.
 - **Scope and auth:** Backend authorization is mandatory: `role = admin`, requested `programme_code IN programme_scope`, and null/empty `programme_scope` means no programme access. Master admin is rejected from Programme PC teaching event CRUD.
 - **Visibility:** Secretary-created events remain posting-owned and programme-neutral. PC-created events must not be visible to other programmes unless explicitly intended. Resident event discovery must treat `created_for_programme_code IS NULL` as normal posting-owned visibility, and a set value as programme-owned visibility requiring resident `programme_code` match plus normal posting/date/catalogue checks.
-- **Options source:** PC-created teaching options come from that programme's TTF Column K via `teaching_name_catalogue`.
+- **Options source:** Current legacy A-K PC-created teaching options come from that programme's TTF Column K via `teaching_name_catalogue`.
 - **Validation:** Public holiday hard-block applies. Edit/delete is blocked if any native or external attendance exists. `created_by_role` is source-role metadata only and uses `programme_pc` for PC-created rows.
 - **Implementation status:** Implemented with `teaching_events.created_for_programme_code`, Programme PC CRUD endpoints, secretary shared schedule visibility, and resident programme-owned visibility filtering.
 - **Implemented reference:** `schema.md` table `teaching_events`; `api.md` section `4B` Programme PC Teaching Event CRUD endpoints; `business-logic.md` PC-created teaching event visibility.
@@ -377,9 +443,9 @@ only under an approved product scope.
 
 #### Decision: STP never uploaded — TTF is the compliance input
 - **Status:** ✅ Confirmed
-- **Decision:** STP is a planning document created by secretaries. It is never uploaded to the system. No STP parser exists. PC manually converts STP to TTF before a Master Admin or Programme PC for that normalized in-scope programme uploads it. Column K (Details of Training) is absent from STP and must be added manually.
-- **Reasoning:** STP lacks the structured data needed for compliance (column K keywords, tags, reallocation flags). The PC adds this data during manual conversion. Automating the conversion is not possible without column K.
-- **Alternatives considered:** STP upload with auto-conversion — rejected because column K data does not exist in STP.
+- **Decision:** STP is a planning document created by secretaries. It is never uploaded to the system. In the current legacy A-K transition, no STP parser exists and the PC manually converts STP to TTF before a Master Admin or Programme PC for that normalized in-scope programme uploads it. Legacy Column K (Details of Training) is absent from STP and must be added manually.
+- **Reasoning:** The current legacy A-K TTF needs Column K keywords, tags, and reallocation flags. The PC adds this data during manual conversion. This historical conversion rule does not apply to final A-J/E2/B2.
+- **Alternatives considered:** STP upload with auto-conversion — rejected for the current legacy A-K parser because Column K data does not exist in STP.
 - **Consequences for codebase:** No `stp_parser.py`. No STP upload endpoint. TTF is the only teaching target upload path.
 - **Reference file and section:** `AGENTS.md` § "No STP in the system"
 - **Do not change without PM/stakeholder approval:** Yes
@@ -539,7 +605,7 @@ only under an approved product scope.
 #### Decision: Ad-hoc teaching submission uses catalogue-backed dropdown
 - **Status:** ✅ Confirmed
 - **Decision:** NHG Residents and Non-NHG Residents submit ad-hoc teachings through a date-first, catalogue-backed dropdown flow. Free-text teaching names must not drive compliance mapping.
-- **NHG Resident flow:** Resident selects teaching date first. Backend derives the assigned posting from `resident_postings` for that date, then the resident selects the attended TTSH department/programme from a controlled posting-code-backed dropdown. Teaching-name options come from TTF Column K / `teaching_name_catalogue` for that attended department and resident native programme where applicable.
+- **NHG Resident flow:** Resident selects teaching date first. Backend derives the assigned posting from `resident_postings` for that date, then the resident selects the attended TTSH department/programme from a controlled posting-code-backed dropdown. In the current legacy A-K transition, teaching-name options come from TTF Column K / `teaching_name_catalogue` for that attended department and resident native programme where applicable.
 - **Non-NHG Resident flow:** Resident selects teaching date first. Backend derives the host NHG posting from `external_resident_postings` for that date once the forecast posting schedule is implemented. A selected attended TTSH department/programme is used only for option filtering/export context.
 - **Submission fields:** `POST /resident/adhoc-teaching` creates `teaching_events` row (`is_adhoc = true`) and the relevant attendance row in the same transaction. It also stores planned `details_of_session` as display/audit-only free text with no operational or compliance use.
 - **Ad-hoc event flags:** Ad-hoc teaching records must have `is_adhoc = true`, `cme_points_awarded = false`, and `smc_event_code = null`.
@@ -605,7 +671,7 @@ only under an approved product scope.
 - **Status:** ✅ Confirmed Phase 5B requirement
 - **Decision:** Ad-hoc teaching is date-first, requires an attended TTSH department/programme dropdown, uses catalogue-backed teaching-name evidence, and has fixed NHG compliance attribution to `Department/Programme Teaching [1h]` under the assigned posting.
 - **Flow:** Resident selects teaching date; backend derives assigned posting for that date (`resident_postings` for NHG Residents, `external_resident_postings` for Non-NHG Residents after forecast schedule implementation); resident selects attended TTSH department/programme; resident selects a teaching/session name from catalogue-backed options. `details_of_session` remains display/audit-only if provided.
-- **No arbitrary free-text mapping:** Selected teaching name is controlled catalogue/display evidence from TTF Column K / `teaching_name_catalogue`. Arbitrary free text must not drive compliance.
+- **No arbitrary free-text mapping:** In the current legacy A-K transition, selected teaching name is controlled catalogue/display evidence from TTF Column K / `teaching_name_catalogue`. Arbitrary free text must not drive compliance.
 - **NHG compliance attribution:** All countable NHG Resident ad-hoc teachings map to `Department/Programme Teaching [1h]`. Count is attributed to the resident's assigned posting for the selected date, not the attended TTSH department unless that is also the assigned posting. The fixed session type must resolve against a tracked target for assigned posting, resident native programme, `resident_postings.r_year`, and `reporting_period_id`.
 - **Unavailable target handling:** If the required assigned-posting `Department/Programme Teaching [1h]` target cannot be resolved, the API returns a clear unavailable/not-countable state rather than guessing.
 - **Non-NHG treatment:** Same UI concept may be used for recording. Attendance writes `external_attendance_records`; no NHG compliance attribution, surplus, or clawback applies. Host programme/department selection is option-filtering/export context only.
@@ -850,10 +916,10 @@ Status: ✅ Resolved
 
 #### TBD-1: Details of Training Keyword Matching (Mechanism)
 - **Original question:** How should teaching events be matched to session types for compliance? The STP/Details of Training keywords were not available in the original system design.
-- **Final decision:** `teaching_name_catalogue` table is the single source of truth. Seeded from TTF column K at upload time. One row per `(keyword, posting_code, programme_code, r_year, reporting_period_id)`. Session type resolved at compliance read time — never stored on `attendance_records`.
-- **Consequences for codebase:** `ttf_parser.py` seeds `teaching_name_catalogue`. `compliance.py` joins via `keyword = teaching_event.teaching_name`. `PUT /admin/teaching-targets/{id}` re-seeds catalogue rows when `details_of_training` is updated.
+- **Final decision:** In the current legacy A-K transition, `teaching_name_catalogue` is the source of truth. It is seeded from TTF Column K at upload time, with one row per `(keyword, posting_code, programme_code, r_year, reporting_period_id)`. Session type is specified to resolve at compliance read time and is never stored on `attendance_records`.
+- **Consequences for codebase:** The current parser seeds `teaching_name_catalogue`; the future Phase 6 specification resolves it via `keyword = teaching_event.teaching_name`; `PUT /admin/teaching-targets/{id}` re-seeds catalogue rows when legacy `details_of_training` is updated.
 - **File and section:** `business-logic.md` § BL-6; `schema.md` § `teaching_name_catalogue`; `parsing.md` § TTF Parser
-- **Mandatory instruction:** Do NOT reopen. The mechanism is settled. Keyword data itself comes from TTF column K which the PC prepares.
+- **Mandatory instruction:** Do NOT reopen the current legacy mechanism before E2/B2. Its keyword data comes from TTF Column K prepared by the PC; the final evolved A-J target is governed by the 2026-08-02 transition decision above.
 
 ---
 
@@ -944,8 +1010,8 @@ Status: ✅ Resolved
 
 #### ❌ STP upload / STP parser
 - **What it was:** An endpoint and parser for uploading STP files directly to the system.
-- **Why rejected:** STP lacks column K (Details of Training / keywords) which is mandatory for `teaching_name_catalogue` seeding. PC must manually add column K during STP→TTF conversion. Automating this conversion is not possible.
-- **When it might become valid:** Only if the STP format is extended to include column K data — no current plans.
+- **Why rejected:** For the current legacy A-K path, STP lacks Column K (Details of Training / keywords), which is mandatory for `teaching_name_catalogue` seeding. PC must manually add it during STP→TTF conversion.
+- **When it might become valid:** The historical A-K rationale is superseded at final A-J/E2/B2 cutover; no STP parser is authorized by this decision.
 - **What replaced it:** TTF upload is the only teaching target upload path. PC manually converts STP → TTF.
 
 ---

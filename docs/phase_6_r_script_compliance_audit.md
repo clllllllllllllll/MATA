@@ -11,6 +11,17 @@ The Phase 6-A ordinary compliance business logic is resolved at specification le
 
 This verdict makes **no claim that Phase 6 application code or tests are implemented**. Implementation and verification remain future work. The legacy evidence and defect descriptions below are retained so known legacy defects—especially reusable donor supply, duplicated R-year months, formatted clawback triggering, and temporary in-memory transfer behavior—are not reproduced.
 
+### Evolved TTF transition notice (2026-08-02)
+
+The Column K/catalogue references in this audit describe the current legacy A-K
+transition path or preserved historical evidence. They do not define the final
+evolved TTF. The final contract is A-J only and uses Teaching Name pools and
+exact mappings; a populated legacy Column K in a future-format upload receives
+controlled `422`, with no dual format, backfill, or historical-data migration.
+Additive B1 retains the current catalogue, `details_of_training`, parser,
+event/attendance helpers, policies, and frontend. Only later E2/B2 may remove
+them. This notice adds no code, migration, or Phase 6 implementation claim.
+
 Clawback remains explicitly **DEFERRED** and separate from ordinary compliance readiness. Norm rates/effective dating, funding R-year, financial programme classification, Extension/R7/SAF/SCDF suppression granularity/precedence, grouped-posting identity, billing attribution, missing-rate behavior, rounding/precision, and final-close transaction/rerun/idempotency are unresolved and must not be inferred from legacy scripts.
 
 ## 2. Scope and Sources Reviewed
@@ -766,8 +777,8 @@ These differences must **not** be “corrected back” to legacy behavior.
 | Phase-specific active-month targets at an R-year change | C computes posting-wide active months without R year, then applies that count to each R-year row (`286-295`, `380-395`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Weight target and cap separately per physical-posting/session-type/R-year context, then sum; do not duplicate months. |
 | Generic `multi_posting_rules` and `active_months_weight` | A hardcodes/replays workbook string replacements; C has brittle GASTRO branch | `ARCHITECTURAL_TRANSLATION` | DB configuration replaces spreadsheet code. Half-month applies 0.5 through the weight once and leaves TTF target unchanged. |
 | Posting groups seeded from TTF Column E | C uses `Posting Site(Dashboard)` labels | `ARCHITECTURAL_TRANSLATION` | Preserves grouping outcome while keeping member targets explicit. Do not conflate with multi-posting rules. |
-| Exact TTF Column K catalogue, read-time session resolution, full scoped replace | Legacy TTF has only A–J and FormSG session type is matched directly | `DOCUMENTED_NEW_BEHAVIOR` | Confirmed architecture enabling current TTF corrections without rewriting attendance. |
-| STP is not a system input | Legacy attendance/session matching depends on FormSG/TTF strings; no current STP ingestion is authorized | `LEGACY_DISCARD_CONFIRMED` | PCs place Details of Training keywords in mandatory TTF Column K; do not add an STP parser or hidden dependency. |
+| Current legacy A-K Column K catalogue, read-time session resolution, full scoped replace | Legacy TTF has only A–J and FormSG session type is matched directly | `DOCUMENTED_NEW_BEHAVIOR` | Transitional architecture for current TTF corrections without rewriting attendance; final A-J/E2/B2 supersedes Column K as the target format. |
+| STP is not a system input | Legacy attendance/session matching depends on FormSG/TTF strings; no current STP ingestion is authorized | `LEGACY_DISCARD_CONFIRMED` | In the current legacy A-K transition, PCs place Details of Training keywords in mandatory TTF Column K; do not add an STP parser or hidden dependency. |
 | Zero targets remain visible/auditable but are compliance-inapplicable | Legacy C can retain numeric zero rows and produce undefined `0/0` displays | `INTENTIONAL_OVERRIDE_RESOLVED` | Explicit current guardrail prevents false met/surplus/shortage/clawback. |
 | Global session types excluded before catalogue | No exact R equivalent | `DOCUMENTED_NEW_BEHAVIOR` | Explicit confirmed rule; trackable attendance is not necessarily PTT compliance. |
 | PH event/ad-hoc creation hard-blocked | B accepts/rejects PH rows after submission, including emergency subsets (`896-925`, `1014-1017`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Confirmed current product decision. Do not recreate PH exception ingestion. |

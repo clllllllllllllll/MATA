@@ -7,6 +7,11 @@ authorization, session, CSRF, rate-limit, privacy, deployment, and RLS
 requirements. This file remains authoritative for route and request/response
 contracts.
 
+Phase 6 dashboard/report and calculation references in this document are future
+API specification unless independently marked as implemented pre-compliance
+workflow. They do not claim that a full `compliance.py` engine is currently
+implemented.
+
 ---
 
 ## Phase 5B-H-D Authentication and Browser Transport
@@ -403,6 +408,74 @@ No push/live-update channel is implied in the current backend. After successful 
 - After uploads: refetch upload logs, warning lists, parsed data, and affected config/reference views.
 
 ---
+
+## Future evolved Teaching Name API contract (specified; no routes implemented)
+
+This section defines the post-B1 API behavior only. It does not add endpoints,
+schemas, or services in Phase A or B1. The current catalogue-backed endpoints
+and A-K TTF upload behavior remain the active transition path until final
+E2/B2 cutover.
+
+### Logical operations and authorization
+
+- `teaching_name` operations are scoped to one
+  `(reporting_period_id, programme_code)` pool. An explicitly authorized
+  Secretary and a Programme PC with that programme in current scope may create,
+  rename, deactivate, and reactivate names. Secretary authority requires the
+  explicit Secretary-to-programme management capability; native teaching-posting
+  visibility and ordinary event visibility never confer it. The initial pilot is
+  TTSH GERI.
+- Only the Programme PC may create, change, or clear a Teaching Name mapping.
+  The selected target must exactly match `(reporting period, programme, posting,
+  R-year)`. Master Admin may hard-delete only an unused name; a name referenced
+  by an event returns `409` rather than being deleted.
+- Name normalization is server-owned: Unicode canonical normalization, trim,
+  collapsed internal whitespace, and case-insensitive uniqueness. Preserve
+  punctuation and wording; do not fuzzy-match, expand abbreviations, or use
+  synonyms.
+- Mapping state is derived, not user-set: a null target is `pending`, and a
+  non-null exact target is `mapped`. There is no `excluded` state. Pending names
+  remain selectable for Secretary/PC events, visible to eligible residents, and
+  attendance-capable/auditable; they are excluded from compliance until mapped.
+  Mapping takes effect on the next JIT read and never rewrites events or
+  attendance.
+
+### Concurrency and impact fencing
+
+- Rename, deactivate/reactivate, and existing mapping mutations require the
+  caller's `expected_revision`; stale values return controlled `409` with no
+  partial write. A new name or newly provisioned pending mapping has no
+  caller-supplied prior revision.
+- Mapping or unmapping is a two-step preview/apply operation. The preview
+  returns an opaque, short-lived impact token bound to the actor, name/mapping
+  revision, proposed exact target (or null), and the current target-scope
+  fingerprint. Apply must present that token and the same expected revision.
+  Any changed name, mapping, target scope, actor authority, or expired token
+  returns `409` and requires a new preview.
+- Provisioning is server-owned: creation creates pending rows for existing
+  posting/R-year scopes; reactivation reconciles scopes introduced while
+  inactive; TTF scope creation provisions missing rows; adding a session type
+  inside an existing scope never creates a duplicate mapping; removed scopes
+  remain pending or are reconciled only under final target-cutover rules.
+
+### Future event and mutation behavior
+
+- A pool-backed scheduled-event request identifies `teaching_name_id`, belongs
+  to that name's single programme, accepts `start_time` only, and receives a
+  server-computed one-hour `end_time`. A start after 23:00 returns `422`.
+  Mapping changes never change stored timing. A global event instead identifies
+  `global_session_type_id`; global types remain Admin-managed and outside the
+  ordinary mapping queue. No event may carry both identities; transitional
+  legacy rows may carry neither.
+- Every future Teaching Name mutation uses the current protected-mutation
+  contract: opaque-session authentication, current server-side authorization,
+  CSRF and exact-Origin validation, applicable rate limiting, transactional
+  audit logging, and cache invalidation only after commit. Failed, stale,
+  unauthorized, out-of-scope, or preview-fenced requests neither write an audit
+  success record nor invalidate caches.
+- B1 must add and attest the exact RLS/grant/policy boundary before enabling
+  these operations. Phase A makes no database, policy, grant, cache, or route
+  change.
 
 ## Admin Endpoints
 
@@ -1296,7 +1369,7 @@ Return teaching-name options for PC event creation.
 - **Auth:** admin/PC only
 - **Query params:** `programme_code` required; `reporting_period_id` or `event_date` optional. An explicit period must be effectively active. When both are supplied, `event_date` must belong to the explicit period or the API returns `422`. With neither option, the backend resolves the single effectively active period containing today. TTF-derived options are scoped to that resolved period.
 - **Scope:** `programme_code IN programme_scope`.
-- **Source:** TTF Column K via `teaching_name_catalogue` for the selected programme, plus active `global_session_types`.
+- **Source:** Current legacy A-K TTF Column K via `teaching_name_catalogue` for the selected programme, plus active `global_session_types`.
 
 ### POST `/admin/programme-teaching-events`
 
@@ -1713,7 +1786,7 @@ Return assigned-posting context, attended TTSH department options, and catalogue
   1. Derives `assigned_posting_code` from `resident_postings` for `teaching_date` with `status IN ('active', 'loa_working')`.
   2. Uses resident native `programme_code` from `residents.programme_code`.
   3. Builds `attended_posting_options[]` from validated TTSH department/programme posting codes backed by `posting_codes` and configured mapping. Do not generate posting codes by string concatenation or regex.
-  4. Returns `options[]` from TTF Column K / `teaching_name_catalogue` for the selected attended department posting, scoped to the resident's native programme and `r_year`.
+  4. Returns `options[]` from current legacy A-K TTF Column K / `teaching_name_catalogue` for the selected attended department posting, scoped to the resident's native programme and `r_year`.
   5. Returns the assigned posting as `posting_code`/`posting_label`; the selected attended posting remains separate.
   6. If no posting matches, multiple postings match, or no attended-posting/catalogue options exist, returns `available = false` with the corresponding controlled `reason`/`message`; it does not guess.
   7. Fixed NHG compliance attribution is resolved and enforced by `POST /resident/adhoc-teaching`, not by this options response.
