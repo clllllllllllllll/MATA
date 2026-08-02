@@ -208,6 +208,7 @@ PRIVATE_FUNCTIONS = frozenset(
             "mata_private."
             "enforce_teaching_event_creator_immutability()"
         ),
+        "mata_private.enforce_teaching_name_scope_immutability()",
         "mata_private.enforce_attendance_integrity()",
     }
 )
@@ -276,10 +277,11 @@ POLICY_CUTOVER_REVISIONS = frozenset(
         "20260726_000026",
         "20260727_000027",
         "20260728_000028",
+        "20260802_000029",
     }
 )
 SESSION_LIFECYCLE_REVISIONS = frozenset(
-    {"20260727_000027", "20260728_000028"}
+    {"20260727_000027", "20260728_000028", "20260802_000029"}
 )
 
 ISSUE_LIFECYCLE_RESULT_COLUMNS = frozenset(
@@ -785,8 +787,8 @@ async def test_startup_attestation_accepts_bounded_adhoc_definer_creator_edge(
     rls_postgres_harness: RlsPostgresHarness,
 ) -> None:
     harness = rls_postgres_harness
-    if harness.revision != "20260728_000028":
-        pytest.skip("Ad-hoc definer requires revision 000028")
+    if harness.revision not in SESSION_LIFECYCLE_REVISIONS:
+        pytest.skip("Ad-hoc definer requires a session-lifecycle revision")
 
     async with harness.owner_engine.connect() as connection:
         transaction = await connection.begin()
@@ -1058,9 +1060,9 @@ async def test_startup_attestation_rejects_transactional_privilege_injection(
                 "adhoc_definer_foreign_membership",
                 "adhoc_definer_additional_membership",
             }:
-                if harness.revision != "20260728_000028":
+                if harness.revision not in SESSION_LIFECYCLE_REVISIONS:
                     pytest.skip(
-                        "Ad-hoc definer requires revision 000028"
+                        "Ad-hoc definer requires a session-lifecycle revision"
                     )
                 if mutation_kind == "adhoc_definer_membership":
                     third_role = f"mata_test_auth_{uuid4().hex[:16]}"
@@ -1108,9 +1110,9 @@ async def test_startup_attestation_rejects_transactional_privilege_injection(
                             member_role=third_role,
                         )
             elif mutation_kind.startswith("adhoc_definer_"):
-                if harness.revision != "20260728_000028":
+                if harness.revision not in SESSION_LIFECYCLE_REVISIONS:
                     pytest.skip(
-                        "Ad-hoc definer requires revision 000028"
+                        "Ad-hoc definer requires a session-lifecycle revision"
                     )
                 if mutation_kind == "adhoc_definer_schema_grant":
                     statement = (

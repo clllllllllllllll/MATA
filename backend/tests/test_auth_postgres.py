@@ -26,7 +26,7 @@ from app.services.reporting_period_status import (
 from app.services.session_transport import session_cookie_name
 
 DISPOSABLE_DATABASE_NAME = "mata_phase5b_final_security_review"
-EXPECTED_ALEMBIC_REVISION = "20260728_000028"
+EXPECTED_ALEMBIC_REVISION = "20260802_000029"
 
 
 @dataclass

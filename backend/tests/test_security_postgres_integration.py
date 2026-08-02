@@ -65,7 +65,7 @@ from app.services.staff_accounts import (
 SESSION_KEY = "postgres-session-integration-key-at-least-32-characters"
 RATE_KEY = "postgres-rate-integration-key-at-least-32-characters"
 DISPOSABLE_DATABASE_NAME = "mata_phase5b_final_security_review"
-EXPECTED_ALEMBIC_REVISION = "20260728_000028"
+EXPECTED_ALEMBIC_REVISION = "20260802_000029"
 CONCURRENCY_TIMEOUT_SECONDS = 10
 
 

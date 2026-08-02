@@ -52,6 +52,8 @@ APPLICATION_TABLES = (
     "session_types",
     "surplus_ledger",
     "teaching_events",
+    "teaching_name_mappings",
+    "teaching_names",
     "teaching_name_catalogue",
     "teaching_targets",
     "upload_logs",
@@ -345,7 +347,7 @@ async def _issue_context(
 async def policy_harness(
     rls_postgres_harness: RlsPostgresHarness,
 ) -> AsyncIterator[RlsPostgresHarness]:
-    assert rls_postgres_harness.revision == "20260728_000028"
+    assert rls_postgres_harness.revision == "20260802_000029"
     yield rls_postgres_harness
 
 
@@ -398,6 +400,13 @@ async def policy_seed(
         "catalogue_cross_id",
         "target_a_id",
         "target_b_id",
+        "teaching_name_a_id",
+        "teaching_name_b_id",
+        "mapping_a_id",
+        "mapping_b_id",
+        "pc_teaching_name_id",
+        "pc_mapping_id",
+        "secretary_teaching_name_id",
         "pool_a_id",
         "rule_a_id",
         "rule_b_id",
@@ -700,6 +709,46 @@ async def policy_seed(
         await db.execute(
             text(
                 """
+                INSERT INTO teaching_names (
+                    id, reporting_period_id, programme_code, display_name,
+                    normalized_name
+                )
+                VALUES
+                    (
+                        :teaching_name_a_id, :period_id, :programme_a,
+                        'RLS Teaching Name A', 'rls teaching name a'
+                    ),
+                    (
+                        :teaching_name_b_id, :period_id, :programme_b,
+                        'RLS Teaching Name B', 'rls teaching name b'
+                    )
+                """
+            ),
+            values,
+        )
+        await db.execute(
+            text(
+                """
+                INSERT INTO teaching_name_mappings (
+                    id, teaching_name_id, reporting_period_id, programme_code,
+                    posting_code, r_year, teaching_target_id
+                )
+                VALUES
+                    (
+                        :mapping_a_id, :teaching_name_a_id, :period_id,
+                        :programme_a, :posting_a, 'R1', :target_a_id
+                    ),
+                    (
+                        :mapping_b_id, :teaching_name_b_id, :period_id,
+                        :programme_b, :posting_b, 'R1', :target_b_id
+                    )
+                """
+            ),
+            values,
+        )
+        await db.execute(
+            text(
+                """
                 INSERT INTO multi_posting_rules (
                     id, programme_code, posting_code_1, posting_code_2,
                     rule_type, combined_label
@@ -891,8 +940,21 @@ async def policy_seed(
                 ),
                 ("event_series", ("series_a_id", "series_b_id")),
                 (
+                    "teaching_name_mappings",
+                    ("mapping_a_id", "mapping_b_id", "pc_mapping_id"),
+                ),
+                (
                     "teaching_name_catalogue",
                     ("catalogue_a_id", "catalogue_b_id", "catalogue_cross_id"),
+                ),
+                (
+                    "teaching_names",
+                    (
+                        "teaching_name_a_id",
+                        "teaching_name_b_id",
+                        "pc_teaching_name_id",
+                        "secretary_teaching_name_id",
+                    ),
                 ),
                 ("teaching_targets", ("target_a_id", "target_b_id")),
                 ("secretary_programme_pools", ("pool_a_id",)),
@@ -1002,7 +1064,7 @@ async def test_policy_catalogue_covers_every_application_table_without_force(
             )
         ).mappings().all()
 
-    assert len(policy_rows) == 84
+    assert len(policy_rows) == 92
     assert {row["relname"] for row in policy_rows} == set(DIRECT_TABLES)
     assert all(tuple(row["polroles"]) == (runtime_oid,) for row in policy_rows)
 
@@ -1246,6 +1308,324 @@ async def test_programme_coordinator_scope_and_safe_rule_crud(
             {"id": values["rule_b_id"]},
         )
         assert hidden_delete.rowcount == 0
+
+
+@pytest.mark.asyncio
+async def test_evolved_teaching_name_pools_and_mappings_stay_role_scoped(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+) -> None:
+    values = policy_seed.values
+
+    async with _runtime_context(
+        policy_harness,
+        policy_seed.contexts["master"],
+    ) as db:
+        assert await _scalar_set(
+            db,
+            "SELECT id FROM teaching_names WHERE id IN (:a, :b)",
+            {
+                "a": values["teaching_name_a_id"],
+                "b": values["teaching_name_b_id"],
+            },
+        ) == {values["teaching_name_a_id"], values["teaching_name_b_id"]}
+        assert await _scalar_set(
+            db,
+            "SELECT id FROM teaching_name_mappings WHERE id IN (:a, :b)",
+            {"a": values["mapping_a_id"], "b": values["mapping_b_id"]},
+        ) == {values["mapping_a_id"], values["mapping_b_id"]}
+        locked_mapping = await db.execute(
+            text(
+                """
+                UPDATE teaching_name_mappings
+                SET revision = 2
+                WHERE id = :id
+                """
+            ),
+            {"id": values["mapping_a_id"]},
+        )
+        assert locked_mapping.rowcount == 0
+
+    pc_name_id = values["pc_teaching_name_id"]
+    pc_mapping_id = values["pc_mapping_id"]
+    async with _runtime_context(
+        policy_harness,
+        policy_seed.contexts["pc"],
+    ) as db:
+        assert await _scalar_set(
+            db,
+            "SELECT id FROM teaching_names WHERE id IN (:a, :b)",
+            {
+                "a": values["teaching_name_a_id"],
+                "b": values["teaching_name_b_id"],
+            },
+        ) == {values["teaching_name_a_id"]}
+        assert await _scalar_set(
+            db,
+            "SELECT id FROM teaching_name_mappings WHERE id IN (:a, :b)",
+            {"a": values["mapping_a_id"], "b": values["mapping_b_id"]},
+        ) == {values["mapping_a_id"]}
+
+        assert await db.scalar(
+            text(
+                """
+                INSERT INTO teaching_names (
+                    id, reporting_period_id, programme_code, display_name,
+                    normalized_name
+                )
+                VALUES (
+                    :id, :period_id, :programme_code, 'PC Teaching Name',
+                    'pc teaching name'
+                )
+                RETURNING id
+                """
+            ),
+            {
+                "id": pc_name_id,
+                "period_id": values["period_id"],
+                "programme_code": values["programme_a"],
+            },
+        ) == pc_name_id
+        assert await db.scalar(
+            text(
+                """
+                UPDATE teaching_names
+                SET is_active = false
+                WHERE id = :id
+                RETURNING is_active
+                """
+            ),
+            {"id": pc_name_id},
+        ) is False
+        assert await db.scalar(
+            text(
+                """
+                INSERT INTO teaching_name_mappings (
+                    id, teaching_name_id, reporting_period_id, programme_code,
+                    posting_code, r_year, teaching_target_id
+                )
+                VALUES (
+                    :id, :teaching_name_id, :period_id, :programme_code,
+                    :posting_code, 'R1', :teaching_target_id
+                )
+                RETURNING id
+                """
+            ),
+            {
+                "id": pc_mapping_id,
+                "teaching_name_id": pc_name_id,
+                "period_id": values["period_id"],
+                "programme_code": values["programme_a"],
+                "posting_code": values["posting_a"],
+                "teaching_target_id": values["target_a_id"],
+            },
+        ) == pc_mapping_id
+        assert await db.scalar(
+            text(
+                """
+                UPDATE teaching_name_mappings
+                SET revision = 2
+                WHERE id = :id
+                RETURNING revision
+                """
+            ),
+            {"id": pc_mapping_id},
+        ) == 2
+        await _assert_permission_denied(
+            db,
+            """
+            INSERT INTO teaching_names (
+                id, reporting_period_id, programme_code, display_name,
+                normalized_name
+            )
+            VALUES (
+                :id, :period_id, :programme_code, 'Out of scope',
+                'out of scope'
+            )
+            """,
+            {
+                "id": uuid4(),
+                "period_id": values["period_id"],
+                "programme_code": values["programme_b"],
+            },
+        )
+        await _assert_permission_denied(
+            db,
+            """
+            INSERT INTO teaching_name_mappings (
+                id, teaching_name_id, reporting_period_id, programme_code,
+                posting_code, r_year, teaching_target_id
+            )
+            VALUES (
+                :id, :teaching_name_id, :period_id, :programme_code,
+                :posting_code, 'R1', :teaching_target_id
+            )
+            """,
+            {
+                "id": uuid4(),
+                "teaching_name_id": values["teaching_name_b_id"],
+                "period_id": values["period_id"],
+                "programme_code": values["programme_b"],
+                "posting_code": values["posting_b"],
+                "teaching_target_id": values["target_b_id"],
+            },
+        )
+        hidden_mapping = await db.execute(
+            text(
+                """
+                UPDATE teaching_name_mappings
+                SET revision = 3
+                WHERE id = :id
+                """
+            ),
+            {"id": values["mapping_b_id"]},
+        )
+        assert hidden_mapping.rowcount == 0
+        locked_delete = await db.execute(
+            text("DELETE FROM teaching_names WHERE id = :id"),
+            {"id": pc_name_id},
+        )
+        assert locked_delete.rowcount == 0
+
+    for context_name in ("pc_null", "pc_empty", "resident"):
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts[context_name],
+        ) as db:
+            assert await _scalar_set(
+                db,
+                "SELECT id FROM teaching_names WHERE id IN (:a, :b)",
+                {
+                    "a": values["teaching_name_a_id"],
+                    "b": values["teaching_name_b_id"],
+                },
+            ) == set()
+            assert await _scalar_set(
+                db,
+                "SELECT id FROM teaching_name_mappings WHERE id IN (:a, :b)",
+                {"a": values["mapping_a_id"], "b": values["mapping_b_id"]},
+            ) == set()
+
+    secretary_name_id = values["secretary_teaching_name_id"]
+    async with _runtime_context(
+        policy_harness,
+        policy_seed.contexts["secretary"],
+    ) as db:
+        assert await _scalar_set(
+            db,
+            "SELECT id FROM teaching_names WHERE id IN (:a, :b)",
+            {
+                "a": values["teaching_name_a_id"],
+                "b": values["teaching_name_b_id"],
+            },
+        ) == set()
+        assert await _scalar_set(
+            db,
+            "SELECT id FROM teaching_name_mappings WHERE id IN (:a, :b)",
+            {"a": values["mapping_a_id"], "b": values["mapping_b_id"]},
+        ) == set()
+        await _assert_permission_denied(
+            db,
+            """
+            INSERT INTO teaching_names (
+                id, reporting_period_id, programme_code, display_name,
+                normalized_name
+            )
+            VALUES (
+                :id, :period_id, :programme_code, 'Blocked secretary name',
+                'blocked secretary name'
+            )
+            """,
+            {
+                "id": secretary_name_id,
+                "period_id": values["period_id"],
+                "programme_code": values["programme_a"],
+            },
+        )
+
+    async with policy_harness.owner_session() as db:
+        assert await db.scalar(
+            text(
+                """
+                UPDATE secretary_programme_pools
+                SET can_manage_teaching_names = true
+                WHERE id = :id
+                RETURNING can_manage_teaching_names
+                """
+            ),
+            {"id": values["pool_a_id"]},
+        ) is True
+        await db.commit()
+
+    async with _runtime_context(
+        policy_harness,
+        policy_seed.contexts["secretary"],
+    ) as db:
+        assert await _scalar_set(
+            db,
+            "SELECT id FROM teaching_names WHERE id IN (:a, :b)",
+            {
+                "a": values["teaching_name_a_id"],
+                "b": values["teaching_name_b_id"],
+            },
+        ) == {values["teaching_name_a_id"]}
+        assert await _scalar_set(
+            db,
+            "SELECT id FROM teaching_name_mappings WHERE id IN (:a, :b)",
+            {"a": values["mapping_a_id"], "b": values["mapping_b_id"]},
+        ) == set()
+        assert await db.scalar(
+            text(
+                """
+                INSERT INTO teaching_names (
+                    id, reporting_period_id, programme_code, display_name,
+                    normalized_name
+                )
+                VALUES (
+                    :id, :period_id, :programme_code, 'Secretary Teaching Name',
+                    'secretary teaching name'
+                )
+                RETURNING id
+                """
+            ),
+            {
+                "id": secretary_name_id,
+                "period_id": values["period_id"],
+                "programme_code": values["programme_a"],
+            },
+        ) == secretary_name_id
+        assert await db.scalar(
+            text(
+                """
+                UPDATE teaching_names
+                SET is_active = false
+                WHERE id = :id
+                RETURNING is_active
+                """
+            ),
+            {"id": secretary_name_id},
+        ) is False
+        await _assert_permission_denied(
+            db,
+            """
+            INSERT INTO teaching_name_mappings (
+                id, teaching_name_id, reporting_period_id, programme_code,
+                posting_code, r_year, teaching_target_id
+            )
+            VALUES (
+                :id, :teaching_name_id, :period_id, :programme_code,
+                :posting_code, 'R1', :teaching_target_id
+            )
+            """,
+            {
+                "id": uuid4(),
+                "teaching_name_id": secretary_name_id,
+                "period_id": values["period_id"],
+                "programme_code": values["programme_a"],
+                "posting_code": values["posting_a"],
+                "teaching_target_id": values["target_a_id"],
+            },
+        )
 
 
 @pytest.mark.asyncio

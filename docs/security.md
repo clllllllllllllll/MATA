@@ -1,7 +1,7 @@
 # Security Contract
 
 Status: current repository security source of truth. This document describes
-the implemented local contract at Alembic revision `20260728_000028`. Local
+the implemented local contract at Alembic revision `20260802_000029`. Local
 source, test, and disposable-database evidence is not proof of a deployed
 Vercel or Supabase environment.
 
@@ -166,13 +166,32 @@ and subject verifier before any resident identity is used.
 Resident authentication assurance remains separately governed product debt.
 This security contract does not invent or imply an unapproved second factor.
 
-### Future evolved TTF mutations (Phase A contract only)
+### Evolved TTF mutations (B1 database foundation; no route)
 
-Teaching Name and mapping mutations are not enabled by this documentation
-change. Before a future endpoint is enabled, it must use the existing protected
-mutation boundary and the additive B1 database boundary must be extended with
-reviewed RLS policies, grants, ownership, and startup-attestation inventory for
-the new objects.
+Revision `20260802_000029` adds the reviewed additive database boundary for
+Teaching Names and mappings, but it enables no new endpoint, service, parser,
+UI, cache, or compliance behavior. The legacy A-K catalogue authorization path
+remains the active workflow.
+
+The B1 RLS/grant boundary is intentionally narrow:
+
+- Master Admin may read Teaching Names and hard-delete only unused names;
+- a Programme PC may read and mutate only its programme's Teaching Names and
+  mappings;
+- a Department Secretary may read and mutate Teaching Names only when their
+  active `secretary_programme_pools` row has the explicit
+  `can_manage_teaching_names` capability; the B1 migration enables only the
+  active `TTSHGerMed`/`GERI` pilot pool; and
+- a Secretary has no mapping access, while a native resident has no Teaching
+  Name or mapping authority.
+
+The immutable Teaching Name pool trigger, non-owner `NOBYPASSRLS` runtime role,
+explicit grants, browser-role revocations, migration assertion, and startup
+attestation inventory are part of this database boundary. They do not replace
+the existing FastAPI authorization boundary.
+
+Before a future endpoint is enabled, it must use the existing protected
+mutation boundary:
 
 - Authenticate through the opaque application session; reload current staff
   role, active state, programme scope, Secretary posting, and explicit
@@ -196,9 +215,8 @@ the new objects.
   may have neither. Do not expose raw audit/preview tokens in browser storage,
   URLs, logs, or error details.
 
-Phase A adds no schema, migration, policy, grant, cache, or route. The current
-A-K catalogue authorization path remains intact through B1; final E2/B2 is the
-only planned destructive cutover.
+B1 is additive only. It does not remove, backfill, or cut over the current A-K
+catalogue path; final E2/B2 remains the only planned destructive cutover.
 
 ## 5. Opaque sessions, expiry, rotation, and logout
 
@@ -308,10 +326,10 @@ requires a coordinated workflow redesign and failure-evidence decision.
 
 ## 9. PostgreSQL roles, RLS, grants, and helpers
 
-At revision `20260728_000028`:
+At revision `20260802_000029`:
 
-- 34 application tables have RLS enabled;
-- 84 action policies target only `mata_app_runtime`;
+- 36 application tables have RLS enabled;
+- 92 action policies target only `mata_app_runtime`;
 - application policies do not target `PUBLIC`, `anon`, `authenticated`, or a
   service role;
 - application login roles are non-owner and `NOBYPASSRLS`;
@@ -592,6 +610,22 @@ ownership revisions requires:
 3. coordinated application rollback;
 4. post-migration role/grant/policy/helper attestation; and
 5. forced reauthentication before traffic resumes.
+
+For the additive B1 Teaching Name foundation at revision `20260802_000029`,
+those generic drained-traffic controls are necessary but not sufficient. Its
+downgrade to `20260728_000028` is permitted only when all of the following are
+true before the migration starts:
+
+1. `teaching_names` and `teaching_name_mappings` are empty;
+2. every `teaching_events` row has both `teaching_name_id` and
+   `global_session_type_id` set to `NULL`; and
+3. no `secretary_programme_pools` row outside the approved
+   `TTSHGerMed`/`GERI` pilot has `can_manage_teaching_names` enabled.
+
+The B1 downgrade guard enforces these data-state prerequisites so that it can
+remove only additive objects without discarding future-state rows, references,
+or a non-pilot capability expansion. They supplement, rather than replace, the
+generic drained, coordinated rollback and attestation procedure above.
 
 The `pgcrypto` move to `public` and the pre-existing classification of
 `public.users` RLS are retained hardening. Downgrade does not move the
