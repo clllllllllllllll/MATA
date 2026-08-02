@@ -113,7 +113,7 @@ Never substitute `mata_db`, the earlier H-D/H-E database, or a remote target.
 
 For the final cumulative security contract, the current restricted harness is
 pinned to exactly `mata_phase5b_final_security_review` at head
-`20260728_000028`. Both database
+`20260802_000029`. Both database
 URLs must name that local database in a fresh process; the runner derives
 separate temporary runtime/auth URLs and removes its `mata_test_*` roles:
 

@@ -31,7 +31,8 @@ from tests.test_external_registration_migrations_postgres import (
 
 
 PREVIOUS_REVISION = "20260727_000027"
-HEAD_REVISION = "20260728_000028"
+ADHOC_REVISION = "20260728_000028"
+REPOSITORY_HEAD_REVISION = "20260802_000029"
 RUNTIME_ROLE = "mata_app_runtime"
 AUTH_ROLE = "mata_auth_internal"
 DEFINER_ROLE = "mata_adhoc_attendance_definer"
@@ -176,7 +177,7 @@ def _expected_restricted_runner_roles() -> set[str]:
 
 
 def _assert_seed_only_head(connection: Connection) -> None:
-    assert _revision(connection) == HEAD_REVISION
+    assert _revision(connection) == REPOSITORY_HEAD_REVISION
     model_tables = {table.name for table in Base.metadata.tables.values()}
     assert _public_tables(connection) == {*model_tables, "alembic_version"}
     for table_name in sorted(model_tables):
@@ -502,7 +503,7 @@ def _assert_000027(connection: Connection) -> None:
 
 
 def _assert_000028(connection: Connection, *, owner: str) -> None:
-    assert _revision(connection) == HEAD_REVISION
+    assert _revision(connection) == ADHOC_REVISION
     assert _adhoc_creator_columns(connection) == {
         "created_by_resident_id",
         "created_by_external_resident_id",
@@ -802,7 +803,6 @@ def _recover_head(harness: InPlaceHarness) -> None:
     _cleanup(harness.engine)
     with harness.engine.connect() as connection:
         _assert_seed_only_head(connection)
-        _assert_000028(connection, owner=harness.owner)
 
 
 @pytest.fixture
@@ -817,7 +817,7 @@ def in_place_migration_database(
     settings = Settings(_env_file=None)
     source_url = make_url(settings.sync_database_url)
     _assert_local_postgres_source(source_url)
-    assert _repository_head_revision() == HEAD_REVISION
+    assert _repository_head_revision() == REPOSITORY_HEAD_REVISION
     environment = _migration_environment(source_url)
     engine = create_engine(source_url, poolclass=NullPool)
     try:
@@ -853,9 +853,8 @@ def test_adhoc_creator_migration_lifecycle_in_place(
         _migrate(harness, "downgrade", "base")
         with harness.engine.connect() as connection:
             _assert_base(connection)
-        _migrate(harness, "upgrade", "head")
+        _migrate(harness, "upgrade", ADHOC_REVISION)
         with harness.engine.connect() as connection:
-            _assert_seed_only_head(connection)
             _assert_000028(connection, owner=harness.owner)
             head_catalogue = _catalogue(connection)
 
@@ -867,14 +866,14 @@ def test_adhoc_creator_migration_lifecycle_in_place(
             previous_catalogue = _catalogue(connection)
 
         for action, revision in (
-            ("upgrade", HEAD_REVISION),
+            ("upgrade", ADHOC_REVISION),
             ("downgrade", PREVIOUS_REVISION),
-            ("upgrade", HEAD_REVISION),
+            ("upgrade", ADHOC_REVISION),
         ):
             _migrate(harness, action, revision)
             with harness.engine.connect() as connection:
                 assert _data_snapshot(connection) == valid_data
-                if revision == HEAD_REVISION:
+                if revision == ADHOC_REVISION:
                     _assert_000028(connection, owner=harness.owner)
                     assert _catalogue(connection) == head_catalogue
                     _assert_creators(connection)
@@ -893,7 +892,7 @@ def test_adhoc_creator_migration_lifecycle_in_place(
         output = _migrate(
             harness,
             "upgrade",
-            HEAD_REVISION,
+            ADHOC_REVISION,
             succeeds=False,
         )
         assert "Cannot infer immutable ad-hoc creator" in output

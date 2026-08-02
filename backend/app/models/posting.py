@@ -243,6 +243,11 @@ class SecretaryProgrammePool(UUIDTimestampMixin, Base):
         nullable=False,
         server_default=text("true"),
     )
+    can_manage_teaching_names: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    )
 
 
 class WeekendException(UUIDTimestampMixin, Base):

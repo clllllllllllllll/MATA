@@ -21,6 +21,12 @@ through additive B1. B1 may add foundations beside them, but does not remove,
 backfill, or cut over any legacy data or workflow. Only the later E2/B2 cutover
 may remove the catalogue-dependent path and replace it with the A-J format.
 
+Revision `20260802_000029` implements only the additive B1 persistence
+foundation described below: the empty Teaching Name pool and mapping tables,
+stable optional event identities, an explicit Secretary capability flag, and
+their database access boundary. It does not activate a new parser, service,
+route, UI, provisioning/reconciliation workflow, or compliance resolution.
+
 The planned final model uses `teaching_name` as the canonical term:
 
 - A planned `teaching_names` relation is scoped by
@@ -116,11 +122,21 @@ session_types ─1:N─ teaching_name_catalogue
 reporting_periods ─1:N─ teaching_targets
 reporting_periods ─1:N─ resident_postings
 reporting_periods ─1:N─ period_snapshots
+reporting_periods ─1:N─ teaching_names
+reporting_periods ─1:N─ teaching_name_mappings
 reporting_periods ─1:N─ teaching_name_catalogue
 reporting_periods ─1:N─ form_f1_records
 
 posting_codes ─1:N─ teaching_name_catalogue
+posting_codes ─1:N─ teaching_name_mappings
 programmes ─1:N─ teaching_name_catalogue
+programmes ─1:N─ teaching_names
+programmes ─1:N─ teaching_name_mappings
+
+teaching_names ─1:N─ teaching_name_mappings
+teaching_names ─1:N─ teaching_events (nullable B1 identity)
+teaching_targets ─1:N─ teaching_name_mappings (nullable exact-scope target)
+global_session_types ─1:N─ teaching_events (nullable B1 identity)
 
 users ─1:N─ upload_logs
 users ─logical 1:N─ app_sessions (subject_type = staff)
@@ -387,6 +403,69 @@ Catalogue of all session types. Seeded from TTF upload.
 
 ---
 
+## B1 additive Teaching Name foundation (no behavior cutover)
+
+Revision `20260802_000029` creates the following empty, additive objects. They
+are not seeded from legacy Column K, do not replace `teaching_name_catalogue`,
+and are not yet read or written by the current parser, event, attendance, or
+compliance workflows.
+
+### Table: `teaching_names`
+
+Canonical Teaching Name pool, scoped to one reporting period and programme.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| id | UUID | PK | |
+| reporting_period_id | UUID | FK → reporting_periods.id, NOT NULL | Immutable pool scope. |
+| programme_code | VARCHAR(20) | FK → programmes.code, NOT NULL | Immutable pool scope. |
+| display_name | VARCHAR(200) | NOT NULL, trimmed value cannot be blank | Display/audit form. |
+| normalized_name | VARCHAR(200) | NOT NULL, trimmed value cannot be blank | Stored canonical key for the later mutation boundary. |
+| is_active | BOOLEAN | NOT NULL, DEFAULT true | Deactivation is additive state, not deletion. |
+| revision | INTEGER | NOT NULL, DEFAULT 1, CHECK (`revision > 0`) | Future mutation fencing. |
+| created_by_user_id / updated_by_user_id / deactivated_by_user_id | UUID | nullable FK → users.id | Actor audit fields. |
+| deactivated_at | TIMESTAMPTZ | nullable | Deactivation audit time. |
+
+**Unique constraints:** `UNIQUE(reporting_period_id, programme_code,
+normalized_name)` and the candidate key `UNIQUE(id, reporting_period_id,
+programme_code)` used by mappings. A trigger rejects later changes to the
+reporting-period/programme scope.
+
+### Table: `teaching_name_mappings`
+
+One optional exact-target mapping for a Teaching Name and posting/R-year scope.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| id | UUID | PK | |
+| teaching_name_id | UUID | NOT NULL; composite FK to its Teaching Name pool | Keeps the mapping in the name's reporting-period/programme pool. |
+| reporting_period_id | UUID | NOT NULL | Pool scope, checked by the composite Teaching Name FK. |
+| programme_code | VARCHAR(20) | NOT NULL | Pool scope, checked by the composite Teaching Name FK. |
+| posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Mapping scope. |
+| r_year | VARCHAR(10) | NOT NULL | Mapping scope. |
+| teaching_target_id | UUID | nullable; composite FK to teaching_targets | Null is pending; a value must be a target in the same period/programme/posting/R-year scope. |
+| revision | INTEGER | NOT NULL, DEFAULT 1, CHECK (`revision > 0`) | Future mutation fencing. |
+| created_by_user_id / updated_by_user_id | UUID | nullable FK → users.id | Actor audit fields. |
+
+**Unique constraint:** `UNIQUE(teaching_name_id, posting_code, r_year)`. The
+target foreign key uses the additive candidate key `(id, reporting_period_id,
+programme_code, posting_code, r_year)`. It deliberately does **not** make that
+four-part target scope globally unique: retained A-K targets may have several
+session types in the same scope.
+
+### Related B1 additions
+
+- `teaching_events.teaching_name_id` and
+  `teaching_events.global_session_type_id` are nullable, `RESTRICT`-referenced
+  stable identities. The database permits legacy rows with neither but rejects
+  rows with both; B1 neither backfills nor changes the legacy `teaching_name`
+  text workflow.
+- `secretary_programme_pools.can_manage_teaching_names` is non-null and defaults
+  to false. Migration preflight enables it only for the single active approved
+  `TTSHGerMed`/`GERI` pilot pool.
+
+---
+
 ## Current legacy A-K TTF catalogue path (retained through B1)
 
 The following target, catalogue, and event fields are the current transition
@@ -456,6 +535,8 @@ Teaching sessions created by secretaries, Programme PC CRUD, or ad-hoc submissio
 | end_time | TIME | | Server-computed from start_time + session_type.duration_hours at creation |
 | duration_hours | DECIMAL(4,2) | | Copied from the selected event option for display/time computation only. Never used as a compliance multiplier or catalogue tiebreaker. |
 | session_type_id | UUID | FK → session_types.id, nullable | **Display/prototype only.** Resolved at event creation from teaching_name_catalogue for the secretary's native programme. NEVER used for compliance — compliance always re-resolves per resident at read time. |
+| teaching_name_id | UUID | FK → teaching_names.id, nullable, `RESTRICT` | Additive B1 stable pool identity. Legacy rows remain null until a later cutover. Cannot coexist with `global_session_type_id`. |
+| global_session_type_id | UUID | FK → global_session_types.id, nullable, `RESTRICT` | Additive B1 stable global identity. Legacy rows remain null until a later cutover. Cannot coexist with `teaching_name_id`. |
 | series_id | UUID | FK → event_series.id, nullable | Set if this event is part of a recurring series |
 | cme_points_awarded | BOOLEAN | DEFAULT false | |
 | smc_event_code | VARCHAR(50) | | |
@@ -1378,6 +1459,25 @@ CREATE INDEX idx_teaching_name_catalogue_tracked
 ON teaching_name_catalogue(reporting_period_id, programme_code, posting_code, r_year, is_tracked);
 ```
 
+#### `teaching_names` and `teaching_name_mappings`
+
+```sql
+CREATE INDEX idx_teaching_names_active_pool
+ON teaching_names(reporting_period_id, programme_code, display_name)
+WHERE is_active = true;
+
+CREATE INDEX idx_teaching_names_normalized_lookup
+ON teaching_names(reporting_period_id, programme_code, normalized_name);
+
+CREATE INDEX idx_teaching_name_mappings_pending_scope
+ON teaching_name_mappings(reporting_period_id, programme_code, posting_code, r_year)
+WHERE teaching_target_id IS NULL;
+
+CREATE INDEX idx_teaching_name_mappings_mapped_scope
+ON teaching_name_mappings(reporting_period_id, programme_code, posting_code, r_year, teaching_target_id)
+WHERE teaching_target_id IS NOT NULL;
+```
+
 #### `teaching_events`
 
 ```sql
@@ -1398,6 +1498,14 @@ WHERE is_adhoc = true;
 CREATE INDEX idx_teaching_events_programme_date
 ON teaching_events(created_for_programme_code, event_date)
 WHERE created_for_programme_code IS NOT NULL;
+
+CREATE INDEX idx_teaching_events_teaching_name
+ON teaching_events(teaching_name_id)
+WHERE teaching_name_id IS NOT NULL;
+
+CREATE INDEX idx_teaching_events_global_session_type
+ON teaching_events(global_session_type_id)
+WHERE global_session_type_id IS NOT NULL;
 ```
 
 #### `event_series`
