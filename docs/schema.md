@@ -50,7 +50,10 @@ The planned final model uses `teaching_name` as the canonical term:
   duplicate status column or manual `excluded` state is permitted.
 - Both an explicitly authorized Department Secretary and Programme PC may
   create, rename, deactivate, and reactivate names in their shared pool. Phase
-  C exposes no mapping API. A Secretary/PC may delete only an unused name;
+  D exposes a separate Programme-PC mapping queue and mutation API: a PC may
+  assign, change, or explicitly clear only an in-scope mapping, while a Master
+  Admin is read-only and a Secretary has no mapping route. A Secretary/PC may
+  delete only an unused name;
   Master Admin may delete a used name only with current revision, explicit
   force flag, nonblank reason, and `DELETE` confirmation. Secretary management
   authority is a separate explicit

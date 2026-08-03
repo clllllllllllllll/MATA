@@ -42,6 +42,7 @@ class DataRevalidationChangedEntity(str, Enum):
     WEEKEND_EXCEPTION = "weekend_exception"
     GLOBAL_SESSION_TYPE = "global_session_type"
     TEACHING_NAME = "teaching_name"
+    TEACHING_NAME_MAPPING = "teaching_name_mapping"
     UNKNOWN = "unknown"
 
 

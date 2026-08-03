@@ -8,17 +8,20 @@ BL-1 through BL-12 are the future non-clawback compliance specification. They
 do not establish that `compliance.py`, `surplus.py`, or a full Phase 6 engine is
 implemented today. Clawback and final close remain separately deferred. Current
 upload, event, and attendance behavior remains the legacy A-K catalogue path
-through Phase C. Phase C activates only shared Teaching Name configuration
-lifecycle and its pending-mapping reconciliation; it performs no compliance,
-surplus, warning, or attendance revalidation.
+through Phase D. Phase C activates shared Teaching Name configuration lifecycle
+and pending-mapping reconciliation; Phase D adds only guarded Programme-PC
+mapping configuration. Neither phase performs compliance, surplus, warning, or
+attendance revalidation.
 
 The evolved TTF foundation uses `teaching_name` pools scoped by reporting
 period and programme. Phase C creates pending configuration rows for each
 distinct existing `(posting_code, r_year)` target scope and preserves them on
-rename/deactivation; it exposes no mapping mutation or pool-backed event path.
-The planned later model treats a null target as pending and a non-null exact
-target as mapped, with no manual excluded state. Its future JIT calculation
-must not rewrite raw event or attendance records.
+rename/deactivation. Phase D lets only an in-scope Programme PC assign, change,
+or clear one existing mapping to an exact target using its persisted revision;
+Master Admin oversight is read-only. A null target is pending and a non-null
+exact target is mapped, with no manual excluded state. The later JIT calculation
+must not rewrite raw event or attendance records, and a Phase D mapping change
+does not activate that calculation.
 
 Global session types stay Admin-managed and are considered before ordinary
 Teaching Name mapping. Resident ad-hoc teaching remains fixed to

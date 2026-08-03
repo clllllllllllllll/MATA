@@ -466,9 +466,10 @@ component. The later evolved UI uses these exact labels:
   authorized Secretary, but only PCs may map a name to an exact TTF target.
 - The mapping surface shows only **Pending** and **Mapped**. A pending name
   remains selectable and visible for eligible event/attendance workflows, with
-  a clear compliance-pending explanation; it is not manually excluded. Mapping
-  changes show an impact preview and require a fresh confirmation if the
-  underlying revision changes.
+  a clear compliance-pending explanation; it is not manually excluded. Phase D
+  supplies count-only impact preview and uses the mapping revision plus explicit
+  confirmation on nonzero impact; it has no client-held confirmation token or
+  scope fingerprint. A changed revision requires refresh before confirmation.
 - Pool-backed event creation selects a Name of Teaching and only `start_time`.
   The UI displays the server-computed one-hour end time, rejects starts later
   than 23:00 through the controlled validation state, and never changes stored

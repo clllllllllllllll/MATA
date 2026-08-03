@@ -57,8 +57,10 @@ Every important decision made during the project, with reasoning and consequence
   inactive; TTF scope creation provisions missing rows; a session type added to
   an existing scope does not duplicate a mapping; removed scopes remain pending
   or are reconciled under final target-cutover rules. Existing name/mapping
-  mutations are revision-fenced. Mapping apply requires a fresh impact preview
-  bound to actor, revisions, selected target, and scope fingerprint.
+  mutations are revision-fenced. Phase D mapping apply validates the current
+  mapping revision and exact selected-target scope, returns count-only impact,
+  and requires an explicit retry confirmation only when current impact is
+  nonzero. It uses no confirmation token or client-supplied scope fingerprint.
 - **Event, authority, and security:** Pool events carry `teaching_name_id` and
   no global ID; global events carry `global_session_type_id` and no Teaching
   Name ID; legacy rows may have neither but never both. Pool events belong to

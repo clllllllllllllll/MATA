@@ -23,8 +23,10 @@ from app.schemas.data_revalidation import (
     DataRevalidationChangedEntity,
     DataRevalidationOutcome,
 )
-from app.services import resident_submission, teaching_name_pool
+from app.schemas.teaching_name_mappings import TeachingNameMappingBulkItemRequest
+from app.services import resident_submission, teaching_name_mappings, teaching_name_pool
 from app.services.database_context import configure_request_context
+from app.services.ttf_scope_lock import acquire_ttf_scope_lock
 from tests.rls_postgres_harness import (
     RUNTIME_GROUP,
     RlsPostgresHarness,
@@ -4279,6 +4281,801 @@ async def test_teaching_name_pool_shared_service_used_delete_requires_master_and
             policy_harness,
             teaching_name_ids=teaching_name_ids,
         )
+
+
+@pytest.mark.asyncio
+async def test_phase_d_mapping_service_uses_exact_identity_and_preserves_evidence(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+) -> None:
+    values = policy_seed.values
+    new_session_type_id = uuid4()
+    new_target_id = uuid4()
+    wrong_r_year_target_id = uuid4()
+    proposed_target_event_id = uuid4()
+    sibling_r_year_mapping_id = uuid4()
+    zero_impact_name_id = uuid4()
+    zero_impact_mapping_id = uuid4()
+    mapping_id = values["mapping_a_id"]
+    actor = _pc_teaching_name_actor(values)
+
+    try:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO session_types (id, name, duration_hours, duration_label)
+                    VALUES (:id, :name, 1.00, '1h')
+                    """
+                ),
+                {
+                    "id": new_session_type_id,
+                    "name": f"Phase D mapping target {new_session_type_id.hex}",
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_targets (
+                        id, reporting_period_id, programme_code, r_year,
+                        posting_code, session_type_id, monthly_target, is_tracked
+                    )
+                    VALUES (
+                        :id, :reporting_period_id, :programme_code, 'R1',
+                        :posting_code, :session_type_id, 1, true
+                    )
+                    """
+                ),
+                {
+                    "id": new_target_id,
+                    "reporting_period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                    "posting_code": values["posting_a"],
+                    "session_type_id": new_session_type_id,
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_targets (
+                        id, reporting_period_id, programme_code, r_year,
+                        posting_code, session_type_id, monthly_target, is_tracked
+                    )
+                    VALUES (
+                        :id, :reporting_period_id, :programme_code, 'R2',
+                        :posting_code, :session_type_id, 1, true
+                    )
+                    """
+                ),
+                {
+                    "id": wrong_r_year_target_id,
+                    "reporting_period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                    "posting_code": values["posting_a"],
+                    "session_type_id": new_session_type_id,
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_mappings (
+                        id, teaching_name_id, reporting_period_id, programme_code,
+                        posting_code, r_year, teaching_target_id
+                    )
+                    VALUES (
+                        :id, :teaching_name_id, :reporting_period_id,
+                        :programme_code, :posting_code, 'R2', :teaching_target_id
+                    )
+                    """
+                ),
+                {
+                    "id": sibling_r_year_mapping_id,
+                    "teaching_name_id": values["teaching_name_a_id"],
+                    "reporting_period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                    "posting_code": values["posting_a"],
+                    "teaching_target_id": wrong_r_year_target_id,
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_names (
+                        id, reporting_period_id, programme_code, display_name,
+                        normalized_name, is_active
+                    )
+                    VALUES (
+                        :id, :reporting_period_id, :programme_code,
+                        'Phase D zero impact name', 'phase d zero impact name', false
+                    )
+                    """
+                ),
+                {
+                    "id": zero_impact_name_id,
+                    "reporting_period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_mappings (
+                        id, teaching_name_id, reporting_period_id, programme_code,
+                        posting_code, r_year, teaching_target_id
+                    )
+                    VALUES (
+                        :id, :teaching_name_id, :reporting_period_id,
+                        :programme_code, :posting_code, 'R1', :teaching_target_id
+                    )
+                    """
+                ),
+                {
+                    "id": zero_impact_mapping_id,
+                    "teaching_name_id": zero_impact_name_id,
+                    "reporting_period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                    "posting_code": values["posting_a"],
+                    "teaching_target_id": values["target_a_id"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_events (
+                        id, posting_code, teaching_name, event_date, start_time,
+                        end_time, duration_hours, session_type_id, series_id,
+                        is_adhoc, created_by_role, teaching_name_id
+                    )
+                    VALUES (
+                        :id, :posting_code, 'Phase D proposed target evidence',
+                        DATE '2035-03-07', TIME '09:00', TIME '10:00', 1.00,
+                        :session_type_id, :series_id, false, 'secretary',
+                        :teaching_name_id
+                    )
+                    """
+                ),
+                {
+                    "id": proposed_target_event_id,
+                    "posting_code": values["posting_a"],
+                    "session_type_id": new_session_type_id,
+                    "series_id": values["series_a_id"],
+                    "teaching_name_id": values["teaching_name_a_id"],
+                },
+            )
+            await db.commit()
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            queue = await teaching_name_mappings.list_mappings(
+                db,
+                actor=actor,
+                reporting_period_id=values["period_id"],
+                programme_code=values["programme_a"],
+            )
+            mapping = next(item for item in queue["items"] if item["id"] == mapping_id)
+            option_ids = {option["id"] for option in mapping["available_target_options"]}
+            assert option_ids == {values["target_a_id"], new_target_id}
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            with pytest.raises(ApiError) as wrong_r_year:
+                await teaching_name_mappings.apply_mapping_change(
+                    db,
+                    actor=actor,
+                    mapping_id=mapping_id,
+                    expected_revision=1,
+                    teaching_target_id=wrong_r_year_target_id,
+                    confirm_impact=True,
+            )
+            assert wrong_r_year.value.status_code == 422
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            zero_impact_change = await teaching_name_mappings.apply_mapping_change(
+                db,
+                actor=actor,
+                mapping_id=zero_impact_mapping_id,
+                expected_revision=1,
+                teaching_target_id=new_target_id,
+                confirm_impact=False,
+            )
+            assert zero_impact_change["revision"] == 2
+            assert zero_impact_change["impact"] == {
+                "affected_event_count": 0,
+                "affected_attendance_count": 0,
+            }
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            with pytest.raises(ApiError) as confirmation_required:
+                await teaching_name_mappings.apply_mapping_change(
+                    db,
+                    actor=actor,
+                    mapping_id=mapping_id,
+                    expected_revision=1,
+                    teaching_target_id=new_target_id,
+                    confirm_impact=False,
+                )
+            assert confirmation_required.value.status_code == 409
+            assert confirmation_required.value.metadata == {
+                "impact": {
+                    "affected_event_count": 2,
+                    "affected_attendance_count": 2,
+                },
+                "confirmation_required": True,
+            }
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            changed = await teaching_name_mappings.apply_mapping_change(
+                db,
+                actor=actor,
+                mapping_id=mapping_id,
+                expected_revision=1,
+                teaching_target_id=new_target_id,
+                confirm_impact=True,
+            )
+            assert changed["id"] == mapping_id
+            assert changed["teaching_target_id"] == new_target_id
+            assert changed["revision"] == 2
+            assert changed["impact"] == {
+                "affected_event_count": 2,
+                "affected_attendance_count": 2,
+            }
+            assert (
+                changed["data_revalidation"].changed_entity
+                == DataRevalidationChangedEntity.TEACHING_NAME_MAPPING
+            )
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            with pytest.raises(ApiError) as stale:
+                await teaching_name_mappings.apply_mapping_change(
+                    db,
+                    actor=actor,
+                    mapping_id=mapping_id,
+                    expected_revision=1,
+                    teaching_target_id=values["target_a_id"],
+                    confirm_impact=True,
+                )
+            assert stale.value.status_code == 409
+
+        async with policy_harness.owner_session() as db:
+            assert await db.scalar(
+                text(
+                    "SELECT teaching_target_id FROM teaching_name_mappings WHERE id = :id"
+                ),
+                {"id": mapping_id},
+            ) == new_target_id
+            assert await db.scalar(
+                text("SELECT teaching_name_id FROM teaching_events WHERE id = :id"),
+                {"id": values["event_seed_a_id"]},
+            ) == values["teaching_name_a_id"]
+            assert await db.scalar(
+                text("SELECT teaching_name_id FROM teaching_events WHERE id = :id"),
+                {"id": proposed_target_event_id},
+            ) == values["teaching_name_a_id"]
+            assert await db.scalar(
+                text(
+                    "SELECT COUNT(*) FROM attendance_records WHERE teaching_event_id = :id"
+                ),
+                {"id": values["event_seed_a_id"]},
+            ) == 1
+            assert await db.scalar(
+                text(
+                    "SELECT COUNT(*) FROM external_attendance_records WHERE teaching_event_id = :id"
+                ),
+                {"id": values["event_seed_a_id"]},
+            ) == 1
+            audit = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT before_json, after_json, metadata_json
+                        FROM audit_logs
+                        WHERE entity_type = 'teaching_name_mapping'
+                          AND entity_id = :mapping_id
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"mapping_id": str(mapping_id)},
+                )
+            ).mappings().one()
+            assert audit["before_json"]["revision"] == 1
+            assert audit["after_json"]["revision"] == 2
+            assert "attendance_id" not in str(audit["metadata_json"])
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            cleared = await teaching_name_mappings.apply_mapping_change(
+                db,
+                actor=actor,
+                mapping_id=mapping_id,
+                expected_revision=2,
+                teaching_target_id=None,
+                confirm_impact=True,
+            )
+            assert cleared["id"] == mapping_id
+            assert cleared["teaching_target_id"] is None
+            assert cleared["state"] == "pending"
+            assert cleared["revision"] == 3
+            assert cleared["impact"] == {
+                "affected_event_count": 2,
+                "affected_attendance_count": 2,
+            }
+    finally:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    DELETE FROM audit_logs
+                    WHERE action = 'programme_pc.teaching_name_mapping.update'
+                      AND entity_type = 'teaching_name_mapping'
+                      AND entity_id = ANY(CAST(:mapping_ids AS text[]))
+                    """
+                ),
+                {
+                    "mapping_ids": [
+                        str(mapping_id),
+                        str(zero_impact_mapping_id),
+                    ]
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    UPDATE teaching_name_mappings
+                    SET teaching_target_id = :target_id
+                        , revision = 1
+                        , updated_by_user_id = NULL
+                    WHERE id = :mapping_id
+                    """
+                ),
+                {"target_id": values["target_a_id"], "mapping_id": mapping_id},
+            )
+            await db.execute(
+                text("DELETE FROM teaching_events WHERE id = :id"),
+                {"id": proposed_target_event_id},
+            )
+            await db.execute(
+                text("DELETE FROM teaching_names WHERE id = :id"),
+                {"id": zero_impact_name_id},
+            )
+            await db.execute(
+                text("DELETE FROM teaching_name_mappings WHERE id = :id"),
+                {"id": sibling_r_year_mapping_id},
+            )
+            await db.execute(
+                text("DELETE FROM teaching_targets WHERE id = :id"),
+                {"id": new_target_id},
+            )
+            await db.execute(
+                text("DELETE FROM teaching_targets WHERE id = :id"),
+                {"id": wrong_r_year_target_id},
+            )
+            await db.execute(
+                text("DELETE FROM session_types WHERE id = :id"),
+                {"id": new_session_type_id},
+            )
+            await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_phase_d_mapping_shares_ttf_scope_lock_but_other_scopes_proceed(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+) -> None:
+    values = policy_seed.values
+    other_period_id = uuid4()
+    other_target_id = uuid4()
+    other_name_id = uuid4()
+    other_mapping_id = uuid4()
+    actor = _pc_teaching_name_actor(values)
+
+    try:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO reporting_periods (
+                        id, label, start_date, end_date, status
+                    )
+                    VALUES (
+                        :id, :label, DATE '2036-01-01', DATE '2036-12-31', 'active'
+                    )
+                    """
+                ),
+                {
+                    "id": other_period_id,
+            "label": f"DLock{other_period_id.hex[:20]}",
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_targets (
+                        id, reporting_period_id, programme_code, r_year,
+                        posting_code, session_type_id, monthly_target, is_tracked
+                    )
+                    VALUES (
+                        :id, :reporting_period_id, :programme_code, 'R1',
+                        :posting_code, :session_type_id, 1, true
+                    )
+                    """
+                ),
+                {
+                    "id": other_target_id,
+                    "reporting_period_id": other_period_id,
+                    "programme_code": values["programme_a"],
+                    "posting_code": values["posting_a"],
+                    "session_type_id": values["session_type_id"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_names (
+                        id, reporting_period_id, programme_code, display_name,
+                        normalized_name, is_active
+                    )
+                    VALUES (
+                        :id, :reporting_period_id, :programme_code,
+                        'Phase D lock independence', 'phase d lock independence', false
+                    )
+                    """
+                ),
+                {
+                    "id": other_name_id,
+                    "reporting_period_id": other_period_id,
+                    "programme_code": values["programme_a"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_mappings (
+                        id, teaching_name_id, reporting_period_id, programme_code,
+                        posting_code, r_year, teaching_target_id
+                    )
+                    VALUES (
+                        :id, :teaching_name_id, :reporting_period_id,
+                        :programme_code, :posting_code, 'R1', NULL
+                    )
+                    """
+                ),
+                {
+                    "id": other_mapping_id,
+                    "teaching_name_id": other_name_id,
+                    "reporting_period_id": other_period_id,
+                    "programme_code": values["programme_a"],
+                    "posting_code": values["posting_a"],
+                },
+            )
+            await db.commit()
+
+        async with policy_harness.owner_session() as ttf_holder:
+            try:
+                assert await acquire_ttf_scope_lock(
+                    ttf_holder,
+                    reporting_period_id=values["period_id"],
+                    programme_code=values["programme_a"],
+                )
+
+                async with _service_runtime_context(
+                    policy_harness,
+                    policy_seed.contexts["pc"],
+                ) as db:
+                    with pytest.raises(ApiError) as held_scope:
+                        await teaching_name_mappings.apply_mapping_change(
+                            db,
+                            actor=actor,
+                            mapping_id=values["mapping_a_id"],
+                            expected_revision=1,
+                            teaching_target_id=None,
+                            confirm_impact=True,
+                        )
+                    assert held_scope.value.status_code == 409
+
+                async with _service_runtime_context(
+                    policy_harness,
+                    policy_seed.contexts["pc"],
+                ) as db:
+                    different_scope = await teaching_name_mappings.apply_mapping_change(
+                        db,
+                        actor=actor,
+                        mapping_id=other_mapping_id,
+                        expected_revision=1,
+                        teaching_target_id=other_target_id,
+                        confirm_impact=False,
+                    )
+                    assert different_scope["id"] == other_mapping_id
+                    assert different_scope["teaching_target_id"] == other_target_id
+                    assert different_scope["revision"] == 2
+            finally:
+                await ttf_holder.rollback()
+
+        async with policy_harness.owner_session() as db:
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT teaching_target_id
+                    FROM teaching_name_mappings
+                    WHERE id = :mapping_id
+                    """
+                ),
+                {"mapping_id": values["mapping_a_id"]},
+            ) == values["target_a_id"]
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT teaching_target_id
+                    FROM teaching_name_mappings
+                    WHERE id = :mapping_id
+                    """
+                ),
+                {"mapping_id": other_mapping_id},
+            ) == other_target_id
+    finally:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    DELETE FROM audit_logs
+                    WHERE entity_type = 'teaching_name_mapping'
+                      AND entity_id = :mapping_id
+                    """
+                ),
+                {"mapping_id": str(other_mapping_id)},
+            )
+            await db.execute(
+                text("DELETE FROM teaching_names WHERE id = :id"),
+                {"id": other_name_id},
+            )
+            await db.execute(
+                text("DELETE FROM teaching_targets WHERE id = :id"),
+                {"id": other_target_id},
+            )
+            await db.execute(
+                text("DELETE FROM reporting_periods WHERE id = :id"),
+                {"id": other_period_id},
+            )
+            await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_phase_d_bulk_mapping_service_is_atomic_and_audited(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+) -> None:
+    values = policy_seed.values
+    extra_name_id = uuid4()
+    extra_mapping_id = uuid4()
+    mapping_ids = [values["mapping_a_id"], extra_mapping_id]
+    actor = _pc_teaching_name_actor(values)
+
+    try:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_names (
+                        id, reporting_period_id, programme_code, display_name,
+                        normalized_name, is_active
+                    )
+                    VALUES (
+                        :id, :reporting_period_id, :programme_code,
+                        'Phase D bulk evidence name', 'phase d bulk evidence name', false
+                    )
+                    """
+                ),
+                {
+                    "id": extra_name_id,
+                    "reporting_period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_mappings (
+                        id, teaching_name_id, reporting_period_id, programme_code,
+                        posting_code, r_year, teaching_target_id
+                    )
+                    VALUES (
+                        :id, :teaching_name_id, :reporting_period_id,
+                        :programme_code, :posting_code, 'R1', :teaching_target_id
+                    )
+                    """
+                ),
+                {
+                    "id": extra_mapping_id,
+                    "teaching_name_id": extra_name_id,
+                    "reporting_period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                    "posting_code": values["posting_a"],
+                    "teaching_target_id": None,
+                },
+            )
+            await db.commit()
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            with pytest.raises(ApiError) as stale_batch:
+                await teaching_name_mappings.apply_bulk_mapping_changes(
+                    db,
+                    actor=actor,
+                    items=[
+                        TeachingNameMappingBulkItemRequest(
+                            mapping_id=extra_mapping_id,
+                            expected_revision=2,
+                            teaching_target_id=values["target_a_id"],
+                        ),
+                        TeachingNameMappingBulkItemRequest(
+                            mapping_id=values["mapping_a_id"],
+                            expected_revision=1,
+                            teaching_target_id=None,
+                            confirm_impact=True,
+                        ),
+                    ],
+                )
+            assert stale_batch.value.status_code == 409
+
+        async with policy_harness.owner_session() as db:
+            rows = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT id, teaching_target_id, revision
+                        FROM teaching_name_mappings
+                        WHERE id = ANY(CAST(:mapping_ids AS uuid[]))
+                        ORDER BY id
+                        """
+                    ),
+                    {"mapping_ids": mapping_ids},
+                )
+            ).mappings().all()
+            row_by_id = {row["id"]: row for row in rows}
+            assert row_by_id[values["mapping_a_id"]]["teaching_target_id"] == values[
+                "target_a_id"
+            ]
+            assert row_by_id[values["mapping_a_id"]]["revision"] == 1
+            assert row_by_id[extra_mapping_id]["teaching_target_id"] is None
+            assert row_by_id[extra_mapping_id]["revision"] == 1
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM audit_logs
+                    WHERE entity_type = 'teaching_name_mapping'
+                      AND entity_id = ANY(CAST(:mapping_ids AS text[]))
+                    """
+                ),
+                {"mapping_ids": [str(mapping_id) for mapping_id in mapping_ids]},
+            ) == 0
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            changed = await teaching_name_mappings.apply_bulk_mapping_changes(
+                db,
+                actor=actor,
+                items=[
+                    TeachingNameMappingBulkItemRequest(
+                        mapping_id=extra_mapping_id,
+                        expected_revision=1,
+                        teaching_target_id=values["target_a_id"],
+                    ),
+                    TeachingNameMappingBulkItemRequest(
+                        mapping_id=values["mapping_a_id"],
+                        expected_revision=1,
+                        teaching_target_id=None,
+                        confirm_impact=True,
+                    ),
+                ],
+            )
+            assert changed == {
+                "requested_count": 2,
+                "updated_count": 2,
+                "mapped_count": 1,
+                "pending_count": 1,
+                "affected_event_count": 1,
+                "affected_attendance_count": 2,
+            }
+
+        async with policy_harness.owner_session() as db:
+            rows = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT id, teaching_target_id, revision
+                        FROM teaching_name_mappings
+                        WHERE id = ANY(CAST(:mapping_ids AS uuid[]))
+                        ORDER BY id
+                        """
+                    ),
+                    {"mapping_ids": mapping_ids},
+                )
+            ).mappings().all()
+            row_by_id = {row["id"]: row for row in rows}
+            assert row_by_id[values["mapping_a_id"]]["teaching_target_id"] is None
+            assert row_by_id[values["mapping_a_id"]]["revision"] == 2
+            assert row_by_id[extra_mapping_id]["teaching_target_id"] == values[
+                "target_a_id"
+            ]
+            assert row_by_id[extra_mapping_id]["revision"] == 2
+            audits = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT entity_id, metadata_json
+                        FROM audit_logs
+                        WHERE entity_type = 'teaching_name_mapping'
+                          AND entity_id = ANY(CAST(:mapping_ids AS text[]))
+                        ORDER BY entity_id
+                        """
+                    ),
+                    {"mapping_ids": [str(mapping_id) for mapping_id in mapping_ids]},
+                )
+            ).mappings().all()
+            assert {row["entity_id"] for row in audits} == {
+                str(mapping_id) for mapping_id in mapping_ids
+            }
+            bulk_operation_ids = {
+                row["metadata_json"]["bulk_operation_id"] for row in audits
+            }
+            assert len(bulk_operation_ids) == 1
+            assert None not in bulk_operation_ids
+
+    finally:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    DELETE FROM audit_logs
+                    WHERE entity_type = 'teaching_name_mapping'
+                      AND entity_id = ANY(CAST(:mapping_ids AS text[]))
+                    """
+                ),
+                {"mapping_ids": [str(mapping_id) for mapping_id in mapping_ids]},
+            )
+            await db.execute(
+                text(
+                    """
+                    UPDATE teaching_name_mappings
+                    SET teaching_target_id = :target_id,
+                        revision = 1,
+                        updated_by_user_id = NULL
+                    WHERE id = :mapping_id
+                    """
+                ),
+                {
+                    "target_id": values["target_a_id"],
+                    "mapping_id": values["mapping_a_id"],
+                },
+            )
+            await db.execute(
+                text("DELETE FROM teaching_names WHERE id = :id"),
+                {"id": extra_name_id},
+            )
+            await db.commit()
 
 
 @pytest.mark.asyncio
