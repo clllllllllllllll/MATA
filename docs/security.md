@@ -166,7 +166,7 @@ and subject verifier before any resident identity is used.
 Resident authentication assurance remains separately governed product debt.
 This security contract does not invent or imply an unapproved second factor.
 
-### Shared Teaching Name lifecycle (Phase C)
+### Shared Teaching Name lifecycle (Phase C) and E1 TTF reconciliation
 
 Revisions `20260802_000029` through `20260803_000031` establish the reviewed
 database boundary and activate only the shared Teaching Name lifecycle routes.
@@ -197,6 +197,15 @@ the Master Admin context, returns no row data, and holds only the requested
 name's row lock before a used-name delete counts references. Mapping rows
 cascade with their name; event identity is `SET NULL`, so event snapshots and
 attendance remain. These database controls do not replace FastAPI authorization.
+
+E1 adds only the runtime-only
+`mata_rls.reconcile_ttf_teaching_name_mappings(uuid,text,uuid[],text[],text[])`
+helper at revision `20260803_000032`. It independently verifies a signed Master
+Admin or in-scope Programme PC context, exact period/programme/target scope, and
+bounded reconciliation inputs before it can clear stale in-scope target links or
+create in-scope pending mappings. It does not widen ordinary mapping DML:
+Secretary and resident contexts remain denied, and the auth capability has no
+execute privilege.
 
 The lifecycle endpoints use the existing protected mutation boundary:
 
@@ -326,9 +335,13 @@ entities, and external references before `openpyxl` runs. Parser-specific
 structural and cell limits remain authoritative after preflight. Spreadsheet
 exports sanitize formula-leading cells.
 
-Upload business rows, upload evidence, warnings, and audit rows currently have
-separate transaction boundaries. Their unification is deferred because it
-requires a coordinated workflow redesign and failure-evidence decision.
+For a successful TTF upload, reconciled targets, Teaching Name mapping state,
+legacy catalogue/posting-group rows, upload evidence, derived warnings, audit
+evidence, and the Data Revalidation outcome share one transaction. Scoped cache
+invalidation occurs only after that commit. Cache-invalidation failure is safely
+logged and cannot turn an already committed TTF upload or teaching-target
+correction into an error response. A validation-failed workbook writes no TTF
+business rows; bounded failure evidence may still be recorded.
 
 ## 9. PostgreSQL roles, RLS, grants, and helpers
 

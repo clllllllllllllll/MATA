@@ -23,7 +23,7 @@ from app.security import log_safe_exception
 from app.services import cache_invalidation, data_revalidation_service
 from app.services.audit import write_audit_log
 from app.services.teaching_event_locks import acquire_teaching_event_locks
-from app.services.ttf_parser import acquire_ttf_scope_lock
+from app.services.ttf_scope_lock import acquire_ttf_scope_lock
 
 
 logger = logging.getLogger(__name__)

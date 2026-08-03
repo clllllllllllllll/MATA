@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import json
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.staff_actor import StaffActorContext
 from app.errors import ApiError, ErrorCode
+from app.security import log_safe_exception
 from app.schemas.data_revalidation import (
     DataRevalidationAction,
     DataRevalidationChangedEntity,
@@ -28,6 +30,11 @@ from app.services.rdb_parser import (
     resolve_r_year,
 )
 from app.services.ttf_parser import split_keywords
+from app.services.teaching_target_impacts import stable_target_mapping_impact_counts
+from app.services.ttf_scope_lock import acquire_ttf_scope_lock
+
+
+logger = logging.getLogger(__name__)
 
 
 _ALLOWED_SCOPE_COLUMN_SQL = frozenset(
@@ -2062,77 +2069,147 @@ async def correct_teaching_target(
     programme_scope: set[str],
     master_admin: bool,
 ) -> dict[str, Any]:
-    before = await _snapshot_teaching_target(
+    scope_row = await _snapshot_teaching_target(
         db,
         row_id=row_id,
         programme_scope=programme_scope,
         master_admin=master_admin,
     )
-    _validate_last_seen(before, last_seen_updated_at)
-    coerced = _allowlisted_changes(changes, allowed_fields=_TEACHING_TARGET_ALLOWED_FIELDS)
-    changed = _changed_values(before, coerced)
-    if not changed:
-        _raise_validation("changes do not modify the teaching target row")
-    merged = _merged_row(before, changed)
-    keywords = await _validate_teaching_target_changes(db, merged=merged, changed=changed)
-    await _apply_update(
-        db,
-        table_name="teaching_targets",
-        row_id=row_id,
-        changed=changed,
-    )
-    after = await _snapshot_teaching_target(
-        db,
-        row_id=row_id,
-        programme_scope=programme_scope,
-        master_admin=master_admin,
-    )
-    if keywords is not None:
-        await _regenerate_target_catalogue(
+    try:
+        if not await acquire_ttf_scope_lock(
             db,
-            target_id=row_id,
-            before_target=before,
-            target=after,
-            keywords=keywords,
+            reporting_period_id=scope_row["reporting_period_id"],
+            programme_code=str(scope_row["programme_code"]),
+        ):
+            _raise_validation(
+                "A TTF target change for this reporting period and programme is already in progress",
+                status_code=409,
+            )
+
+        # Re-read under the shared lock so an upload or another correction that
+        # completed while this request was waiting cannot be overwritten from a
+        # stale snapshot.
+        before = await _snapshot_teaching_target(
+            db,
+            row_id=row_id,
+            programme_scope=programme_scope,
+            master_admin=master_admin,
         )
-    updated_fields = sorted(changed)
-    data_revalidation = await _revalidate_live_data_correction(
-        db,
-        actor=actor,
-        changed_entity=DataRevalidationChangedEntity.TEACHING_TARGET,
-        action=DataRevalidationAction.UPDATE,
-        scope=DataRevalidationScope.PROGRAMME_REPORTING_PERIOD,
-        entity_id=row_id,
-        programme_code=after.get("programme_code"),
-        reporting_period_id=after.get("reporting_period_id"),
-        changed_fields=updated_fields,
-        correction_reason=correction_reason,
-    )
-    audit = await _write_correction_audit(
-        db,
-        actor=actor,
-        action="admin.parsed_data.teaching_target.update",
-        entity_type="teaching_target",
-        entity_id=row_id,
-        before=before,
-        after=after,
-        metadata={
-            "correction_reason": correction_reason,
-            "updated_fields": updated_fields,
-            "programme_code": after.get("programme_code"),
-            "reporting_period_id": str(after.get("reporting_period_id")),
-            "catalogue_keywords": keywords,
-            "data_revalidation": data_revalidation,
-        },
-    )
-    await db.commit()
-    cache_invalidation.invalidate_after_live_data_correction(
-        entity_type="teaching_target",
-        entity_id=row_id,
-        reporting_period_id=after.get("reporting_period_id"),
-        programme_code=after.get("programme_code"),
-        posting_code=after.get("posting_code"),
-    )
+        _validate_last_seen(before, last_seen_updated_at)
+        coerced = _allowlisted_changes(changes, allowed_fields=_TEACHING_TARGET_ALLOWED_FIELDS)
+        changed = _changed_values(before, coerced)
+        if not changed:
+            _raise_validation("changes do not modify the teaching target row")
+        merged = _merged_row(before, changed)
+        keywords = await _validate_teaching_target_changes(
+            db,
+            merged=merged,
+            changed=changed,
+        )
+        semantic_changed_fields = sorted(
+            {
+                "monthly_target",
+                "is_tracked",
+                "is_reallocatable",
+                "tag",
+            }
+            & set(changed)
+        )
+        target_semantic_impact = {
+            "mappings_with_target_semantics_changed": 0,
+            "affected_event_count": 0,
+            "affected_attendance_count": 0,
+        }
+        if semantic_changed_fields:
+            raw_target_impact = await stable_target_mapping_impact_counts(
+                db,
+                target_ids=[row_id],
+            )
+            target_semantic_impact = {
+                "mappings_with_target_semantics_changed": raw_target_impact[
+                    "mapped_target_count"
+                ],
+                "affected_event_count": raw_target_impact["affected_event_count"],
+                "affected_attendance_count": raw_target_impact[
+                    "affected_attendance_count"
+                ],
+            }
+        await _apply_update(
+            db,
+            table_name="teaching_targets",
+            row_id=row_id,
+            changed=changed,
+        )
+        after = await _snapshot_teaching_target(
+            db,
+            row_id=row_id,
+            programme_scope=programme_scope,
+            master_admin=master_admin,
+        )
+        if keywords is not None:
+            await _regenerate_target_catalogue(
+                db,
+                target_id=row_id,
+                before_target=before,
+                target=after,
+                keywords=keywords,
+            )
+        updated_fields = sorted(changed)
+        data_revalidation = await _revalidate_live_data_correction(
+            db,
+            actor=actor,
+            changed_entity=DataRevalidationChangedEntity.TEACHING_TARGET,
+            action=DataRevalidationAction.UPDATE,
+            scope=DataRevalidationScope.PROGRAMME_REPORTING_PERIOD,
+            entity_id=row_id,
+            programme_code=after.get("programme_code"),
+            reporting_period_id=after.get("reporting_period_id"),
+            changed_fields=updated_fields,
+            correction_reason=correction_reason,
+            source_metadata={
+                "target_semantic_changed_fields": semantic_changed_fields,
+                "target_semantic_impact": target_semantic_impact,
+            },
+        )
+        audit = await _write_correction_audit(
+            db,
+            actor=actor,
+            action="admin.parsed_data.teaching_target.update",
+            entity_type="teaching_target",
+            entity_id=row_id,
+            before=before,
+            after=after,
+            metadata={
+                "correction_reason": correction_reason,
+                "updated_fields": updated_fields,
+                "programme_code": after.get("programme_code"),
+                "reporting_period_id": str(after.get("reporting_period_id")),
+                "catalogue_keywords": keywords,
+                "target_semantic_changed_fields": semantic_changed_fields,
+                "target_semantic_impact": target_semantic_impact,
+                "data_revalidation": data_revalidation,
+            },
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+
+    try:
+        cache_invalidation.invalidate_after_live_data_correction(
+            entity_type="teaching_target",
+            entity_id=row_id,
+            reporting_period_id=after.get("reporting_period_id"),
+            programme_code=after.get("programme_code"),
+            posting_code=after.get("posting_code"),
+        )
+    except Exception as exc:
+        log_safe_exception(
+            logger,
+            "teaching_target_correction_cache_invalidation_failed",
+            exc,
+            category="cache_invalidation",
+        )
     return {
         "item": _row_dict(after),
         "audit_log_id": audit["id"],

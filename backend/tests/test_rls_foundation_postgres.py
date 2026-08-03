@@ -77,6 +77,7 @@ RUNTIME_ONLY_FUNCTIONS = frozenset(
         "mata_rls.set_external_resident_current_posting(uuid,text,text)",
         "mata_rls.resolve_ttf_session_type(text,numeric,text,text)",
         "mata_rls.ensure_ttf_posting_code(text,text)",
+        "mata_rls.reconcile_ttf_teaching_name_mappings(uuid,text,uuid[],text[],text[])",
         "mata_rls.lock_master_teaching_name_delete(uuid)",
         "mata_rls.append_audit_log(text,text,text,jsonb,jsonb,jsonb)",
         (
@@ -283,6 +284,7 @@ POLICY_CUTOVER_REVISIONS = frozenset(
         "20260802_000029",
         "20260803_000030",
         "20260803_000031",
+        "20260803_000032",
     }
 )
 SESSION_LIFECYCLE_REVISIONS = frozenset(
@@ -292,6 +294,7 @@ SESSION_LIFECYCLE_REVISIONS = frozenset(
         "20260802_000029",
         "20260803_000030",
         "20260803_000031",
+        "20260803_000032",
     }
 )
 

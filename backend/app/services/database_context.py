@@ -51,6 +51,7 @@ _RUNTIME_ONLY_HELPERS = frozenset(
         "set_external_resident_current_posting(uuid,text,text)",
         "resolve_ttf_session_type(text,numeric,text,text)",
         "ensure_ttf_posting_code(text,text)",
+        "reconcile_ttf_teaching_name_mappings(uuid,text,uuid[],text[],text[])",
         "lock_master_teaching_name_delete(uuid)",
         "append_audit_log(text,text,text,jsonb,jsonb,jsonb)",
         (

@@ -533,7 +533,7 @@ def detect_ttf_sheet(workbook) -> str | None:
 | B | programme_code | e.g. `DR`, `GERI` |
 | C | r_year | Single (`R2`) or multi (`R4, R5, R6`) — must be exploded. Set to `'ALL'` for programmes with `r_year_required = false`. SPORTSMED/PALLMED accept R4–R6 unchanged. |
 | D | posting_code | Bare code (e.g. `KTPHDiagRd`) or legacy bracket format |
-| E | dashboard_posting | Ordinary-compliance grouping key. When non-empty, this value seeds `posting_groups.group_code`; the resolved Column D posting code becomes `posting_groups.posting_code`. Group members aggregate only after physical-posting reallocation/capping. When empty, no posting group row is created and the posting remains standalone. Grouped-posting clawback identity remains deferred. |
+| E | dashboard_posting | Ordinary-compliance grouping key. When non-empty, this value seeds `posting_groups.group_code`; the resolved Column D posting code becomes `posting_groups.posting_code`. Group members aggregate only after physical-posting reallocation/capping. Each successful TTF replaces the programme's posting-group configuration, so an empty or omitted Column E membership removes the prior group row and leaves the posting standalone. Grouped-posting clawback identity remains deferred. |
 | F | session_type | Full name with duration, e.g. `Department/Programme Teaching [1h]` |
 | G | monthly_target | Non-negative integer frequency target at 100%; `0` is valid |
 | H | is_tracked | `Yes` → true, anything else → false |
@@ -545,14 +545,20 @@ def detect_ttf_sheet(workbook) -> str | None:
 
 Column E is not display-only. It is the source of `posting_groups`.
 
-For each TTF row:
+Each successful TTF is a full replacement of `posting_groups` for the requested
+programme, performed in the same transaction as target reconciliation. Before
+the non-empty Column E rows are upserted, the existing programme rows are
+deleted. Therefore a blank Column E row, or a posting omitted from the upload,
+removes any previous group membership for that posting.
+
+For each non-empty Column E row:
 - Column D remains the posting code used by `teaching_targets` and `teaching_name_catalogue`.
 - Column G remains the monthly target for that specific Column D row.
 - If Column E is non-empty, create/upsert a `posting_groups` row:
   - `group_code = Column E`
   - `posting_code = resolved Column D`
   - `programme_code = TTF programme`
-- If Column E is empty, do not create a `posting_groups` row.
+- Empty Column E creates no replacement row after the programme-scoped delete.
 
 Compliance impact:
 - Events/attendance still match through the actual posting code from Column D.
@@ -669,25 +675,32 @@ def seed_posting_groups(ttf_row: dict, db_session):
 
 ### Upload Behaviour
 
-The TTF upload is always a **full replace** within `(reporting_period_id, programme_code)` scope — regardless of whether attendance records exist. There is no attendance guard blocking re-uploads.
+The TTF upload reconciles targets within `(reporting_period_id, programme_code)` scope — regardless of whether attendance records exist. There is no attendance guard blocking re-uploads. A target's stable identity is `(reporting_period_id, programme_code, r_year, posting_code, session_type_id)`: matching rows retain their UUID and update only mutable target values; new rows are inserted; absent rows are made stale.
 
-**Orphan detection (post-write):** After the delete-and-reinsert cycle, query for attendance records whose resolved session_type will no longer match any catalogue row. These are returned as warnings in the upload response — the upload still returns `200`.
+When a stale target has Teaching Name mappings, each mapping retains its UUID and becomes pending (`teaching_target_id = NULL`) before the target is deleted. Matching targets never redirect mappings. A change to `monthly_target`, `is_tracked`, `is_reallocatable`, or `tag` preserves mapped links and is reported as a target-semantic change; a `details_of_training`-only change is not semantic for mapping purposes.
+
+For a newly introduced `(posting_code, r_year)` target scope, every active Teaching Name in the programme/period receives at most one pending mapping. Inactive names receive none, and re-upload is idempotent.
+
+Mapping, event, and attendance impact counters are aggregate only. They count
+direct stable Teaching Name target links and unambiguous structured event
+evidence; no fuzzy text matching is used, and transitional text-only or
+unresolved evidence is excluded.
+
+**Orphan detection (post-write):** After catalogue regeneration, query for attendance records whose resolved session_type will no longer match any catalogue row. These are returned as warnings in the upload response — the upload still returns `200`.
 
 **Concurrency:** A scope-level PostgreSQL advisory lock is acquired at the start of the transaction. A second upload for the same scope returns `409`.
 
 #### Step order
 
-1. Acquire scope-level advisory lock (409 if contended)
-2. Validate all rows — abort before any writes if errors
-3. `DELETE` all existing `teaching_targets` within scope
-4. `DELETE` all existing `teaching_name_catalogue` rows within scope
-5. `INSERT` into `teaching_targets`
-6. Parse legacy Column K keywords and `INSERT` into `teaching_name_catalogue` — one row per keyword per TTF row. Non-tracked rows (`is_tracked = false`) are still seeded into `teaching_name_catalogue` for event visibility.
-7. `ON CONFLICT DO NOTHING` into `session_types`
-8. `ON CONFLICT DO UPDATE` into `posting_codes`
-9. Upsert `posting_groups` from column E (where non-empty)
-10. Commit
-11. Run orphan detection — include results in response `warnings`
+1. Validate all rows — abort before any business writes if errors
+2. Acquire the shared scope-level advisory lock (409 if contended)
+3. Upsert session types and posting codes, then load/lock existing target rows
+4. Reconcile targets by their stable natural identity; clear stale mapping links before deleting only stale targets
+5. Provision missing pending mappings for newly introduced target scopes and preserve existing matching links
+6. Delete and reseed the legacy Column K `teaching_name_catalogue` rows — one row per keyword per TTF row. Non-tracked rows (`is_tracked = false`) are still seeded for event visibility.
+7. Replace the programme's `posting_groups`: delete current programme rows, then upsert non-empty Column E rows, then run orphan detection
+8. Record the successful upload log, warnings, audit evidence, and Data Revalidation outcome in the same transaction as the reconciliation
+9. Commit once, then invalidate scoped caches
 
 #### `ON CONFLICT` upserts
 

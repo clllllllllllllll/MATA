@@ -521,6 +521,9 @@ async def derive_upload_warnings_from_summary(
     upload_log: Mapping[str, Any],
     summary: Mapping[str, Any] | str | None,
     actor_id: UUID | str | None = None,
+    *,
+    commit: bool = True,
+    invalidate_cache: bool = True,
 ) -> DerivationResult:
     await _ensure_warning_tables(session)
     summary_payload: Any = summary
@@ -567,12 +570,14 @@ async def derive_upload_warnings_from_summary(
         else:
             result.occurrences_skipped += 1
 
-    await session.commit()
-    cache_invalidation.invalidate_after_warning_derivation(
-        upload_log_id=normalized_upload_log.get("id"),
-        reporting_period_id=normalized_upload_log.get("reporting_period_id"),
-        programme_code=normalized_upload_log.get("programme_code"),
-    )
+    if commit:
+        await session.commit()
+    if invalidate_cache:
+        cache_invalidation.invalidate_after_warning_derivation(
+            upload_log_id=normalized_upload_log.get("id"),
+            reporting_period_id=normalized_upload_log.get("reporting_period_id"),
+            programme_code=normalized_upload_log.get("programme_code"),
+        )
     return result
 
 

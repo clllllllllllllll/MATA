@@ -564,15 +564,25 @@ Upload Teaching Target File Excel.
 - **Content-Type:** multipart/form-data
 - **Body:** `file` (xlsx), `reporting_period_id` (UUID), `programme_code` (string)
 - **Processing:** See `docs/parsing.md` § TTF Parser
-- **Behaviour:** Full replace within `(reporting_period_id, programme_code)` scope. Re-upload always allowed regardless of existing attendance.
+- **Behaviour:** Stable target reconciliation within `(reporting_period_id, programme_code)` scope. Re-upload remains allowed regardless of existing attendance. Matching `(r_year, posting_code, session_type_id)` targets retain their UUID; stale mapped targets leave their mapping rows pending rather than deleting or redirecting them. The TTF is also the explicit programme-scoped replacement for posting-group configuration: blank or omitted Column E membership removes the prior group row for that posting.
 - **Target validation:** `monthly_target` must be a non-negative whole number. `0` is accepted and remains catalogue-seeded, event-visible, and attendance-capable, but is excluded from compliance aggregation.
-- **Orphan detection:** After replace, checks for attendance records whose `teaching_name` no longer has a `teaching_name_catalogue` row. These are returned as warnings — upload still returns `200`.
+- **Orphan detection:** After catalogue regeneration, checks for attendance records whose `teaching_name` no longer has a `teaching_name_catalogue` row. These are returned as warnings — upload still returns `200`.
 - **Concurrency:** Scope-level PostgreSQL advisory lock. A second upload for the same scope returns `409`.
 - **Audit log:** Writes `upload_logs` row with `upload_type = 'ttf'`
 - **Response:**
 ```json
 {
   "targets_created": 29,
+  "targets_inserted": 4,
+  "targets_updated": 17,
+  "targets_removed": 2,
+  "targets_unchanged": 6,
+  "mappings_preserved": 11,
+  "mappings_invalidated": 2,
+  "mappings_with_target_semantics_changed": 3,
+  "pending_mappings_created": 4,
+  "affected_event_count": 3,
+  "affected_attendance_count": 7,
   "session_types_upserted": 5,
   "posting_codes_added": ["AICAIC", "DPPallia"],
   "catalogue_rows_seeded": 84,
@@ -589,6 +599,7 @@ Upload Teaching Target File Excel.
   "errors": []
 }
 ```
+- **Counter compatibility:** `targets_created` retains the legacy processed-target-row count (as does the generic upload `created_count`). `targets_inserted`, `targets_updated`, `targets_removed`, and `targets_unchanged` are the reconciliation deltas for the current upload.
 - **Error responses:**
   - `409` — concurrent upload for same scope (advisory lock)
   - `422` — file validation errors (returned before any writes)
