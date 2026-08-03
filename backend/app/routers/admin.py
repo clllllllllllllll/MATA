@@ -430,6 +430,8 @@ def _format_ttf_response(result: ParserResult) -> dict[str, Any]:
         "session_types_upserted": metadata.get("session_types_upserted", result.updated_count),
         "posting_codes_added": metadata.get("posting_codes_added", []),
         "catalogue_rows_seeded": metadata.get("catalogue_rows_seeded", 0),
+        "posting_groups_upserted": metadata.get("posting_groups_upserted", 0),
+        "posting_groups_removed": metadata.get("posting_groups_removed", 0),
         "rows_exploded": metadata.get("rows_exploded", 0),
         "warnings": result.warnings,
         "errors": result.errors,

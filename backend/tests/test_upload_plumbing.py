@@ -1441,6 +1441,8 @@ def test_ttf_response_keeps_legacy_created_count_separate_from_insert_delta() ->
                 "targets_inserted": 4,
                 "targets_updated": 17,
                 "session_types_upserted": 5,
+                "posting_groups_upserted": 5,
+                "posting_groups_removed": 2,
             },
         )
     )
@@ -1449,6 +1451,43 @@ def test_ttf_response_keeps_legacy_created_count_separate_from_insert_delta() ->
     assert response["targets_inserted"] == 4
     assert response["targets_updated"] == 17
     assert response["session_types_upserted"] == 5
+    assert response["posting_groups_upserted"] == 5
+    assert response["posting_groups_removed"] == 2
+
+
+def test_ttf_response_includes_zero_posting_group_deltas() -> None:
+    response = admin._format_ttf_response(ParserResult(upload_type="ttf"))
+
+    assert response["posting_groups_upserted"] == 0
+    assert response["posting_groups_removed"] == 0
+
+
+def test_ttf_upload_response_includes_posting_group_deltas(monkeypatch) -> None:
+    async def _fake_ttf_parser(**kwargs):  # noqa: ARG001
+        return ParserResult(
+            upload_type="ttf",
+            created_count=29,
+            updated_count=5,
+            metadata={
+                "targets_created": 29,
+                "targets_inserted": 4,
+                "session_types_upserted": 5,
+                "posting_groups_upserted": 5,
+                "posting_groups_removed": 2,
+            },
+        )
+
+    monkeypatch.setattr("app.routers.admin.parse_ttf_upload", _fake_ttf_parser)
+
+    response = _ttf_upload_response(_build_client(), headers=_admin_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["posting_groups_upserted"] == 5
+    assert body["posting_groups_removed"] == 2
+    assert body["targets_created"] == 29
+    assert body["targets_inserted"] == 4
+    assert body["session_types_upserted"] == 5
 
 
 def test_parser_signatures_importable() -> None:
