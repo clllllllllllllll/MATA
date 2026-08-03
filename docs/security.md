@@ -554,7 +554,7 @@ build.
 
 Backend CI starts PostgreSQL on its maintenance database, then a shared local
 workflow action creates and attests exactly
-`mata_phase5b_final_security_review`. The workflow owns that provisioning and
+`mata_evolved_ttf_pre_d_fix_verify`. The workflow owns that provisioning and
 applies the single Alembic head before tests. The `migration_mutation` cases
 run first in one serial direct-owner pytest process;
 their fail-closed fixtures require the exact local database, direct owner, and
