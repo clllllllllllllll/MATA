@@ -4,7 +4,6 @@ import re
 import logging
 import math
 from decimal import Decimal
-from hashlib import blake2b
 from dataclasses import asdict, dataclass
 from io import BytesIO
 from typing import Any, Mapping
@@ -15,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.security import log_safe_exception
 from app.services.parser_common import ParserResult
+from app.services.teaching_target_impacts import stable_target_mapping_impact_counts
+from app.services.ttf_scope_lock import acquire_ttf_scope_lock
 
 logger = logging.getLogger(__name__)
 
@@ -355,32 +356,6 @@ def _mata_rls_enabled(db_session: AsyncSession) -> bool:
     return bool(getattr(db_session, "info", {}).get("mata_rls_enabled", False))
 
 
-def _advisory_lock_keys(reporting_period_id: UUID, programme_code: str) -> tuple[int, int]:
-    scope_key = f"{reporting_period_id}:{programme_code}".encode("utf-8")
-    digest = blake2b(scope_key, digest_size=8).digest()
-    signed = int.from_bytes(digest, byteorder="big", signed=True)
-    key1 = signed >> 32
-    key2 = signed & 0xFFFFFFFF
-    if key2 >= 2**31:
-        key2 -= 2**32
-    return key1, key2
-
-
-async def acquire_ttf_scope_lock(
-    db_session: AsyncSession,
-    *,
-    reporting_period_id: UUID,
-    programme_code: str,
-) -> bool:
-    key1, key2 = _advisory_lock_keys(reporting_period_id, programme_code)
-    result = await db_session.execute(
-        text("SELECT pg_try_advisory_xact_lock(:key1, :key2) AS acquired"),
-        {"key1": key1, "key2": key2},
-    )
-    acquired = result.scalar()
-    return bool(acquired)
-
-
 async def _persist_ttf_rows(
     *,
     db_session: AsyncSession,
@@ -486,6 +461,298 @@ async def _persist_ttf_rows(
             )
         posting_codes_added = sorted(set(posting_codes) - existing_codes)
 
+    scope_params = {
+        "reporting_period_id": str(reporting_period_id),
+        "programme_code": programme_code,
+    }
+    existing_result = await db_session.execute(
+        text(
+            """
+            /* ttf_e1:existing_targets */
+            SELECT
+                id,
+                r_year,
+                posting_code,
+                session_type_id,
+                monthly_target,
+                is_tracked,
+                is_reallocatable,
+                tag,
+                details_of_training
+            FROM teaching_targets
+            WHERE reporting_period_id = :reporting_period_id
+              AND programme_code = :programme_code
+            FOR UPDATE
+            """
+        ),
+        scope_params,
+    )
+    existing_targets = [dict(row) for row in existing_result.mappings().all()]
+    existing_by_identity = {
+        (
+            str(row["r_year"]),
+            str(row["posting_code"]),
+            str(row["session_type_id"]),
+        ): row
+        for row in existing_targets
+    }
+
+    incoming_rows: list[tuple[ParsedTeachingTargetRow, dict[str, Any], tuple[str, str, str]]] = []
+    for row in teaching_targets:
+        session_type_id = session_type_id_by_name[row.session_type]
+        identity = (row.r_year, row.posting_code, str(session_type_id))
+        incoming_rows.append(
+            (
+                row,
+                {
+                    "reporting_period_id": row.reporting_period_id,
+                    "programme_code": row.programme_code,
+                    "r_year": row.r_year,
+                    "posting_code": row.posting_code,
+                    "session_type_id": session_type_id,
+                    "monthly_target": int(row.monthly_target),
+                    "is_tracked": row.is_tracked,
+                    "is_reallocatable": row.is_reallocatable,
+                    "tag": row.tag,
+                    "details_of_training": row.details_of_training,
+                },
+                identity,
+            )
+        )
+
+    incoming_identities = {identity for _, _, identity in incoming_rows}
+    stale_targets = [
+        row
+        for identity, row in existing_by_identity.items()
+        if identity not in incoming_identities
+    ]
+    semantic_fields = (
+        "monthly_target",
+        "is_tracked",
+        "is_reallocatable",
+        "tag",
+    )
+    mutable_fields = (*semantic_fields, "details_of_training")
+    semantic_target_ids: list[str] = []
+    targets_inserted = 0
+    targets_updated = 0
+    targets_unchanged = 0
+
+    for _, payload, identity in incoming_rows:
+        existing = existing_by_identity.get(identity)
+        if existing is None:
+            targets_inserted += 1
+            continue
+        changed_fields = [
+            field
+            for field in mutable_fields
+            if existing.get(field) != payload[field]
+        ]
+        if not changed_fields:
+            targets_unchanged += 1
+            continue
+        targets_updated += 1
+        if any(field in semantic_fields for field in changed_fields):
+            semantic_target_ids.append(str(existing["id"]))
+
+    stale_target_ids = [str(row["id"]) for row in stale_targets]
+    affected_target_ids = sorted(set(stale_target_ids + semantic_target_ids))
+    semantic_impact = await stable_target_mapping_impact_counts(
+        db_session,
+        target_ids=semantic_target_ids,
+        include_events=False,
+    )
+    affected_impact = await stable_target_mapping_impact_counts(
+        db_session,
+        target_ids=affected_target_ids,
+    )
+    mappings_with_target_semantics_changed = semantic_impact[
+        "mapped_target_count"
+    ]
+    affected_event_count = affected_impact["affected_event_count"]
+    affected_attendance_count = affected_impact["affected_attendance_count"]
+
+    for _, payload, identity in incoming_rows:
+        existing = existing_by_identity.get(identity)
+        if existing is None:
+            await db_session.execute(
+                text(
+                    """
+                    /* ttf_e1:insert_target */
+                    INSERT INTO teaching_targets (
+                        reporting_period_id,
+                        programme_code,
+                        r_year,
+                        posting_code,
+                        session_type_id,
+                        monthly_target,
+                        is_tracked,
+                        is_reallocatable,
+                        tag,
+                        details_of_training
+                    )
+                    VALUES (
+                        :reporting_period_id,
+                        :programme_code,
+                        :r_year,
+                        :posting_code,
+                        :session_type_id,
+                        :monthly_target,
+                        :is_tracked,
+                        :is_reallocatable,
+                        :tag,
+                        :details_of_training
+                    )
+                    """
+                ),
+                payload,
+            )
+            continue
+        if any(existing.get(field) != payload[field] for field in mutable_fields):
+            await db_session.execute(
+                text(
+                    """
+                    /* ttf_e1:update_target */
+                    UPDATE teaching_targets
+                    SET monthly_target = :monthly_target,
+                        is_tracked = :is_tracked,
+                        is_reallocatable = :is_reallocatable,
+                        tag = :tag,
+                        details_of_training = :details_of_training,
+                        updated_at = now()
+                    WHERE id = :id
+                    """
+                ),
+                {
+                    **payload,
+                    "id": str(existing["id"]),
+                },
+            )
+
+    existing_scopes = {
+        (str(row["posting_code"]), str(row["r_year"]))
+        for row in existing_targets
+    }
+    incoming_scopes = {
+        (row.posting_code, row.r_year)
+        for row in teaching_targets
+    }
+    introduced_scopes = sorted(incoming_scopes - existing_scopes)
+
+    mappings_invalidated = 0
+    pending_mappings_created = 0
+    if rls_enabled:
+        reconciliation_result = await db_session.execute(
+            text(
+                """
+                /* ttf_e1:reconcile_mappings_rls */
+                SELECT *
+                FROM mata_rls.reconcile_ttf_teaching_name_mappings(
+                    CAST(:reporting_period_id AS uuid),
+                    CAST(:programme_code AS text),
+                    CAST(:stale_target_ids AS uuid[]),
+                    CAST(:introduced_posting_codes AS text[]),
+                    CAST(:introduced_r_years AS text[])
+                )
+                """
+            ),
+            {
+                **scope_params,
+                "stale_target_ids": stale_target_ids,
+                "introduced_posting_codes": [
+                    posting_code for posting_code, _ in introduced_scopes
+                ],
+                "introduced_r_years": [r_year for _, r_year in introduced_scopes],
+            },
+        )
+        reconciliation_counts = reconciliation_result.mappings().one()
+        mappings_invalidated = max(
+            int(reconciliation_counts["mappings_invalidated"] or 0),
+            0,
+        )
+        pending_mappings_created = max(
+            int(reconciliation_counts["pending_mappings_created"] or 0),
+            0,
+        )
+    else:
+        if stale_target_ids:
+            invalidated_result = await db_session.execute(
+                text(
+                    """
+                    /* ttf_e1:invalidate_stale_mappings */
+                    UPDATE teaching_name_mappings
+                    SET teaching_target_id = NULL,
+                        revision = revision + 1,
+                        updated_at = now()
+                    WHERE teaching_target_id = ANY(CAST(:target_ids AS uuid[]))
+                    """
+                ),
+                {"target_ids": stale_target_ids},
+            )
+            mappings_invalidated = max(int(invalidated_result.rowcount or 0), 0)
+
+        for posting_code, r_year in introduced_scopes:
+            pending_result = await db_session.execute(
+                text(
+                    """
+                    /* ttf_e1:provision_pending_mappings */
+                    INSERT INTO teaching_name_mappings (
+                        teaching_name_id,
+                        reporting_period_id,
+                        programme_code,
+                        posting_code,
+                        r_year,
+                        teaching_target_id
+                    )
+                    SELECT
+                        teaching_name.id,
+                        teaching_name.reporting_period_id,
+                        teaching_name.programme_code,
+                        :posting_code,
+                        :r_year,
+                        NULL
+                    FROM teaching_names AS teaching_name
+                    WHERE teaching_name.reporting_period_id = :reporting_period_id
+                      AND teaching_name.programme_code = :programme_code
+                      AND teaching_name.is_active
+                    ON CONFLICT (teaching_name_id, posting_code, r_year) DO NOTHING
+                    """
+                ),
+                {
+                    **scope_params,
+                    "posting_code": posting_code,
+                    "r_year": r_year,
+                },
+            )
+            pending_mappings_created += max(int(pending_result.rowcount or 0), 0)
+
+    if stale_target_ids:
+        await db_session.execute(
+            text(
+                """
+                /* ttf_e1:delete_stale_targets */
+                DELETE FROM teaching_targets
+                WHERE id = ANY(CAST(:target_ids AS uuid[]))
+                """
+            ),
+            {"target_ids": stale_target_ids},
+        )
+
+    preserved_result = await db_session.execute(
+        text(
+            """
+            /* ttf_e1:preserved_mapping_count */
+            SELECT COUNT(*)
+            FROM teaching_name_mappings
+            WHERE reporting_period_id = :reporting_period_id
+              AND programme_code = :programme_code
+              AND teaching_target_id IS NOT NULL
+            """
+        ),
+        scope_params,
+    )
+    mappings_preserved = int(preserved_result.scalar() or 0)
+
     await db_session.execute(
         text(
             """
@@ -494,68 +761,8 @@ async def _persist_ttf_rows(
               AND programme_code = :programme_code
             """
         ),
-        {
-            "reporting_period_id": str(reporting_period_id),
-            "programme_code": programme_code,
-        },
+        scope_params,
     )
-    await db_session.execute(
-        text(
-            """
-            DELETE FROM teaching_targets
-            WHERE reporting_period_id = :reporting_period_id
-              AND programme_code = :programme_code
-            """
-        ),
-        {
-            "reporting_period_id": str(reporting_period_id),
-            "programme_code": programme_code,
-        },
-    )
-
-    for row in teaching_targets:
-        await db_session.execute(
-            text(
-                """
-                INSERT INTO teaching_targets (
-                    reporting_period_id,
-                    programme_code,
-                    r_year,
-                    posting_code,
-                    session_type_id,
-                    monthly_target,
-                    is_tracked,
-                    is_reallocatable,
-                    tag,
-                    details_of_training
-                )
-                VALUES (
-                    :reporting_period_id,
-                    :programme_code,
-                    :r_year,
-                    :posting_code,
-                    :session_type_id,
-                    :monthly_target,
-                    :is_tracked,
-                    :is_reallocatable,
-                    :tag,
-                    :details_of_training
-                )
-                """
-            ),
-            {
-                "reporting_period_id": row.reporting_period_id,
-                "programme_code": row.programme_code,
-                "r_year": row.r_year,
-                "posting_code": row.posting_code,
-                "session_type_id": session_type_id_by_name[row.session_type],
-                "monthly_target": int(row.monthly_target),
-                "is_tracked": row.is_tracked,
-                "is_reallocatable": row.is_reallocatable,
-                "tag": row.tag,
-                "details_of_training": row.details_of_training,
-            },
-        )
 
     for row in catalogue_rows:
         await db_session.execute(
@@ -595,6 +802,20 @@ async def _persist_ttf_rows(
             },
         )
 
+    posting_groups_removed_result = await db_session.execute(
+        text(
+            """
+            /* ttf_e1:replace_posting_groups */
+            DELETE FROM posting_groups
+            WHERE programme_code = :programme_code
+            """
+        ),
+        {"programme_code": programme_code},
+    )
+    posting_groups_removed = max(
+        int(posting_groups_removed_result.rowcount or 0),
+        0,
+    )
     for row in posting_group_rows:
         await db_session.execute(
             text(
@@ -637,11 +858,24 @@ async def _persist_ttf_rows(
     orphan_count = int(orphan_result.scalar() or 0)
 
     return {
+        # The generic parser summary predates reconciliation and means target
+        # rows processed by this upload, not only newly inserted rows.
         "targets_created": len(teaching_targets),
+        "targets_inserted": targets_inserted,
+        "targets_updated": targets_updated,
+        "targets_removed": len(stale_target_ids),
+        "targets_unchanged": targets_unchanged,
+        "mappings_preserved": mappings_preserved,
+        "mappings_invalidated": mappings_invalidated,
+        "mappings_with_target_semantics_changed": mappings_with_target_semantics_changed,
+        "pending_mappings_created": pending_mappings_created,
+        "affected_event_count": affected_event_count,
+        "affected_attendance_count": affected_attendance_count,
         "session_types_upserted": len(session_type_rows),
         "posting_codes_added": posting_codes_added,
         "catalogue_rows_seeded": len(catalogue_rows),
         "posting_groups_upserted": len(posting_group_rows),
+        "posting_groups_removed": posting_groups_removed,
         "rows_exploded": len(teaching_targets),
         "orphaned_attendance_count": orphan_count,
     }
@@ -656,6 +890,7 @@ async def parse_ttf_upload(
     known_programmes: set[str] | None = None,
     programme_configs: Mapping[str, ProgrammeConfig | Mapping[str, Any]] | None = None,
     db_session: AsyncSession | None = None,
+    manage_transaction: bool = True,
 ) -> ParserResult:
     metadata: dict[str, Any] = {
         "original_filename": original_filename,
@@ -1008,9 +1243,11 @@ async def parse_ttf_upload(
                 catalogue_rows=catalogue_rows,
                 posting_group_rows=deduped_posting_group_rows,
             )
-            await db_session.commit()
+            if manage_transaction:
+                await db_session.commit()
         except Exception:
-            await db_session.rollback()
+            if manage_transaction:
+                await db_session.rollback()
             raise
         orphan_count = persistence_counts.get("orphaned_attendance_count", 0)
         if orphan_count > 0:
@@ -1040,9 +1277,25 @@ async def parse_ttf_upload(
                 "posting_groups": len(deduped_posting_group_rows),
             },
             "targets_created": persistence_counts.get("targets_created", 0),
+            "targets_inserted": persistence_counts.get("targets_inserted", 0),
+            "targets_updated": persistence_counts.get("targets_updated", 0),
+            "targets_removed": persistence_counts.get("targets_removed", 0),
+            "targets_unchanged": persistence_counts.get("targets_unchanged", 0),
+            "mappings_preserved": persistence_counts.get("mappings_preserved", 0),
+            "mappings_invalidated": persistence_counts.get("mappings_invalidated", 0),
+            "mappings_with_target_semantics_changed": persistence_counts.get(
+                "mappings_with_target_semantics_changed", 0
+            ),
+            "pending_mappings_created": persistence_counts.get("pending_mappings_created", 0),
+            "affected_event_count": persistence_counts.get("affected_event_count", 0),
+            "affected_attendance_count": persistence_counts.get(
+                "affected_attendance_count", 0
+            ),
             "session_types_upserted": persistence_counts.get("session_types_upserted", 0),
             "posting_codes_added": persistence_counts.get("posting_codes_added", []),
             "catalogue_rows_seeded": persistence_counts.get("catalogue_rows_seeded", 0),
+            "posting_groups_upserted": persistence_counts.get("posting_groups_upserted", 0),
+            "posting_groups_removed": persistence_counts.get("posting_groups_removed", 0),
             "rows_exploded": persistence_counts.get("rows_exploded", len(teaching_targets)),
         }
     )

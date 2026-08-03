@@ -53,6 +53,9 @@ class _FakeResult:
     def scalar_one_or_none(self) -> object | None:
         return self._scalar
 
+    def scalar(self) -> object | None:
+        return self._scalar
+
 
 class FakeParsedDataCorrectionSession:
     def __init__(self) -> None:
@@ -68,6 +71,7 @@ class FakeParsedDataCorrectionSession:
         self.form_f1_id = str(uuid4())
         self.boundary_id = str(uuid4())
         self.new_posting_ids: list[str] = []
+        self.lock_available = True
         self.commits = 0
         self.audit_logs: list[dict] = []
         self.programme_codes = {"GERI", "DR"}
@@ -253,6 +257,23 @@ class FakeParsedDataCorrectionSession:
     async def execute(self, statement, params=None):  # noqa: C901, PLR0912, PLR0915
         sql = str(statement)
         payload = dict(params or {})
+
+        if "pg_try_advisory_xact_lock" in sql:
+            return _FakeResult(scalar=self.lock_available)
+
+        if "/* teaching_target_impacts:mapped_count */" in sql:
+            return _FakeResult(scalar=0)
+
+        if "/* teaching_target_impacts:stable_events */" in sql:
+            return _FakeResult(
+                rows=[
+                    {
+                        "affected_event_count": 0,
+                        "native_attendance_count": 0,
+                        "external_attendance_count": 0,
+                    }
+                ]
+            )
 
         if "INSERT INTO audit_logs" in sql:
             row = {"id": payload["id"], "created_at": self.after_now, **payload}
@@ -1245,6 +1266,68 @@ def test_teaching_target_correction_regenerates_catalogue_from_details_of_traini
     assert _audit_json(audit_row, "metadata_json")["catalogue_keywords"] == ["Journal Club", "Grand Round"]
 
 
+def test_teaching_target_correction_cache_failure_keeps_committed_success(monkeypatch) -> None:
+    session = FakeParsedDataCorrectionSession()
+    client = _build_client_with_session(session)
+    cache_calls: list[int] = []
+    safe_logs: list[tuple[str, str, str | None]] = []
+
+    def _failing_cache(**kwargs):  # noqa: ANN003
+        cache_calls.append(session.commits)
+        raise RuntimeError("cache backend unavailable")
+
+    def _safe_log(_logger, event, exc, *, category=None):  # noqa: ANN001
+        safe_logs.append((event, type(exc).__name__, category))
+
+    monkeypatch.setattr(
+        "app.services.parsed_data.cache_invalidation.invalidate_after_live_data_correction",
+        _failing_cache,
+    )
+    monkeypatch.setattr("app.services.parsed_data.log_safe_exception", _safe_log)
+
+    response = client.patch(
+        f"/admin/parsed-data/teaching-targets/{session.target_id}",
+        headers=_headers(),
+        json={
+            "correction_reason": "Adjust target despite transient cache failure",
+            "last_seen_updated_at": session.now.isoformat(),
+            "changes": {"monthly_target": 0},
+        },
+    )
+
+    assert response.status_code == 200
+    assert session.teaching_targets[0]["monthly_target"] == 0
+    assert len(session.audit_logs) == 1
+    assert cache_calls == [1]
+    assert safe_logs == [
+        (
+            "teaching_target_correction_cache_invalidation_failed",
+            "RuntimeError",
+            "cache_invalidation",
+        )
+    ]
+
+
+def test_teaching_target_correction_uses_shared_ttf_scope_lock() -> None:
+    session = FakeParsedDataCorrectionSession()
+    session.lock_available = False
+    client = _build_client_with_session(session)
+
+    response = client.patch(
+        f"/admin/parsed-data/teaching-targets/{session.target_id}",
+        headers=_headers(),
+        json={
+            "correction_reason": "TTF reconciliation is in progress",
+            "last_seen_updated_at": session.now.isoformat(),
+            "changes": {"monthly_target": 8},
+        },
+    )
+
+    assert response.status_code == 409
+    assert session.teaching_targets[0]["monthly_target"] == 4
+    assert session.audit_logs == []
+
+
 def test_teaching_target_correction_accepts_zero_and_rejects_fractional_or_negative_values() -> None:
     session = FakeParsedDataCorrectionSession()
     client = _build_client_with_session(session)
@@ -1261,6 +1344,13 @@ def test_teaching_target_correction_accepts_zero_and_rejects_fractional_or_negat
 
     assert zero.status_code == 200
     assert session.teaching_targets[0]["monthly_target"] == 0
+    zero_audit_metadata = _audit_json(session.audit_logs[-1], "metadata_json")
+    assert zero_audit_metadata["target_semantic_changed_fields"] == ["monthly_target"]
+    assert zero_audit_metadata["target_semantic_impact"] == {
+        "mappings_with_target_semantics_changed": 0,
+        "affected_event_count": 0,
+        "affected_attendance_count": 0,
+    }
 
     for invalid_target in (None, 1.5, -1, -0.5):
         session = FakeParsedDataCorrectionSession()

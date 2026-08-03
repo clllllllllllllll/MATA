@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import json
 from io import BytesIO
 from uuid import UUID, uuid4
@@ -8,6 +9,7 @@ from uuid import UUID, uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
+import pytest
 
 from app.middleware.errors import install_error_handlers
 from app.routers import admin
@@ -15,8 +17,9 @@ from app.services.ttf_parser import parse_ttf_upload
 
 
 class _FakeScalarResult:
-    def __init__(self, value=None):
+    def __init__(self, value=None, *, rowcount: int = 0):
         self._value = value
+        self.rowcount = rowcount
 
     def scalar(self):
         return self._value
@@ -29,6 +32,9 @@ class _FakeScalarResult:
 
     def all(self):
         return []
+
+    def one_or_none(self):
+        return self._value
 
 
 class _FakeMappingResult:
@@ -43,6 +49,9 @@ class _FakeMappingResult:
 
     def one_or_none(self):
         return self._rows[0] if self._rows else None
+
+    def one(self):
+        return self._rows[0]
 
 
 class FakeTTFSession:
@@ -73,16 +82,32 @@ class FakeTTFSession:
         self.session_types: dict[str, dict] = {}
         self.posting_codes: dict[str, dict] = {}
         self.teaching_targets: list[dict] = []
+        self.teaching_names: list[dict] = []
+        self.teaching_name_mappings: list[dict] = []
         self.catalogue_rows: list[dict] = []
         self.posting_groups: dict[tuple[str, str], dict] = {}
         self.teaching_events: dict[str, dict] = {}
         self.attendance_records: list[dict] = []
+        self.external_attendance_records: list[dict] = []
         self.upload_logs: list[dict] = []
         self.audit_logs: list[dict] = []
         self.reporting_periods: dict[str, dict] = {}
         self.rate_limit_buckets: dict[tuple[str, str, object, int], int] = {}
+        self.info: dict[str, object] = {}
         self.commits = 0
         self.rollbacks = 0
+        self.fail_after_posting_group_replacement = False
+        self._rollback_snapshot: dict[str, object] | None = None
+
+    def capture_transaction_snapshot(self) -> None:
+        self._rollback_snapshot = {
+            "session_types": deepcopy(self.session_types),
+            "posting_codes": deepcopy(self.posting_codes),
+            "teaching_targets": deepcopy(self.teaching_targets),
+            "teaching_name_mappings": deepcopy(self.teaching_name_mappings),
+            "catalogue_rows": deepcopy(self.catalogue_rows),
+            "posting_groups": deepcopy(self.posting_groups),
+        }
 
     async def execute(self, statement, params: dict | None = None):
         sql = str(statement)
@@ -138,6 +163,205 @@ class FakeTTFSession:
                 [{"code": code} for code in self.posting_codes if code in codes]
             )
 
+        if "/* ttf_e1:existing_targets */" in sql:
+            return _FakeMappingResult(
+                [
+                    dict(row)
+                    for row in self.teaching_targets
+                    if row["reporting_period_id"] == str(params["reporting_period_id"])
+                    and row["programme_code"] == params["programme_code"]
+                ]
+            )
+
+        if "/* teaching_target_impacts:mapped_count */" in sql:
+            target_ids = set(params["target_ids"])
+            return _FakeScalarResult(
+                sum(
+                    1
+                    for mapping in self.teaching_name_mappings
+                    if mapping.get("teaching_target_id") in target_ids
+                )
+            )
+
+        if "/* teaching_target_impacts:stable_events */" in sql:
+            target_ids = set(params["target_ids"])
+            target_by_id = {row["id"]: row for row in self.teaching_targets}
+            event_ids: set[str] = set()
+            for mapping in self.teaching_name_mappings:
+                target_id = mapping.get("teaching_target_id")
+                target = target_by_id.get(target_id)
+                if target_id not in target_ids or target is None:
+                    continue
+                for event_id, event in self.teaching_events.items():
+                    if (
+                        event.get("teaching_name_id") == mapping["teaching_name_id"]
+                        and event.get("posting_code") == mapping["posting_code"]
+                        and str(event.get("session_type_id")) == str(target["session_type_id"])
+                    ):
+                        event_ids.add(event_id)
+            native_count = sum(
+                1
+                for attendance in self.attendance_records
+                if attendance["teaching_event_id"] in event_ids
+                and attendance.get("status", "submitted") == "submitted"
+            )
+            external_count = sum(
+                1
+                for attendance in self.external_attendance_records
+                if attendance["teaching_event_id"] in event_ids
+                and attendance.get("status", "submitted") == "submitted"
+            )
+            return _FakeMappingResult(
+                [
+                    {
+                        "affected_event_count": len(event_ids),
+                        "native_attendance_count": native_count,
+                        "external_attendance_count": external_count,
+                    }
+                ]
+            )
+
+        if "/* ttf_e1:insert_target */" in sql:
+            self.teaching_targets.append(
+                {
+                    "id": str(uuid4()),
+                    "reporting_period_id": str(params["reporting_period_id"]),
+                    "programme_code": params["programme_code"],
+                    "r_year": params["r_year"],
+                    "posting_code": params["posting_code"],
+                    "session_type_id": str(params["session_type_id"]),
+                    "monthly_target": params["monthly_target"],
+                    "is_tracked": params["is_tracked"],
+                    "is_reallocatable": params["is_reallocatable"],
+                    "tag": params["tag"],
+                    "details_of_training": params["details_of_training"],
+                }
+            )
+            return _FakeScalarResult(rowcount=1)
+
+        if "/* ttf_e1:update_target */" in sql:
+            target = next(row for row in self.teaching_targets if row["id"] == params["id"])
+            for key in (
+                "monthly_target",
+                "is_tracked",
+                "is_reallocatable",
+                "tag",
+                "details_of_training",
+            ):
+                target[key] = params[key]
+            return _FakeScalarResult(rowcount=1)
+
+        if "/* ttf_e1:invalidate_stale_mappings */" in sql:
+            target_ids = set(params["target_ids"])
+            changed = 0
+            for mapping in self.teaching_name_mappings:
+                if mapping.get("teaching_target_id") in target_ids:
+                    mapping["teaching_target_id"] = None
+                    mapping["revision"] = mapping.get("revision", 1) + 1
+                    changed += 1
+            return _FakeScalarResult(rowcount=changed)
+
+        if "/* ttf_e1:reconcile_mappings_rls */" in sql:
+            stale_target_ids = set(params["stale_target_ids"])
+            mappings_invalidated = 0
+            for mapping in self.teaching_name_mappings:
+                if mapping.get("teaching_target_id") in stale_target_ids:
+                    mapping["teaching_target_id"] = None
+                    mapping["revision"] = mapping.get("revision", 1) + 1
+                    mappings_invalidated += 1
+
+            pending_mappings_created = 0
+            for posting_code, r_year in zip(
+                params["introduced_posting_codes"],
+                params["introduced_r_years"],
+                strict=True,
+            ):
+                for teaching_name in self.teaching_names:
+                    if not (
+                        teaching_name["reporting_period_id"]
+                        == str(params["reporting_period_id"])
+                        and teaching_name["programme_code"] == params["programme_code"]
+                        and teaching_name.get("is_active", True)
+                    ):
+                        continue
+                    if any(
+                        mapping["teaching_name_id"] == teaching_name["id"]
+                        and mapping["posting_code"] == posting_code
+                        and mapping["r_year"] == r_year
+                        for mapping in self.teaching_name_mappings
+                    ):
+                        continue
+                    self.teaching_name_mappings.append(
+                        {
+                            "id": str(uuid4()),
+                            "teaching_name_id": teaching_name["id"],
+                            "reporting_period_id": teaching_name["reporting_period_id"],
+                            "programme_code": teaching_name["programme_code"],
+                            "posting_code": posting_code,
+                            "r_year": r_year,
+                            "teaching_target_id": None,
+                            "revision": 1,
+                        }
+                    )
+                    pending_mappings_created += 1
+            return _FakeMappingResult(
+                [
+                    {
+                        "mappings_invalidated": mappings_invalidated,
+                        "pending_mappings_created": pending_mappings_created,
+                    }
+                ]
+            )
+
+        if "/* ttf_e1:delete_stale_targets */" in sql:
+            target_ids = set(params["target_ids"])
+            self.teaching_targets = [
+                row for row in self.teaching_targets if row["id"] not in target_ids
+            ]
+            return _FakeScalarResult()
+
+        if "/* ttf_e1:provision_pending_mappings */" in sql:
+            created = 0
+            for teaching_name in self.teaching_names:
+                if not (
+                    teaching_name["reporting_period_id"] == str(params["reporting_period_id"])
+                    and teaching_name["programme_code"] == params["programme_code"]
+                    and teaching_name.get("is_active", True)
+                ):
+                    continue
+                if any(
+                    mapping["teaching_name_id"] == teaching_name["id"]
+                    and mapping["posting_code"] == params["posting_code"]
+                    and mapping["r_year"] == params["r_year"]
+                    for mapping in self.teaching_name_mappings
+                ):
+                    continue
+                self.teaching_name_mappings.append(
+                    {
+                        "id": str(uuid4()),
+                        "teaching_name_id": teaching_name["id"],
+                        "reporting_period_id": teaching_name["reporting_period_id"],
+                        "programme_code": teaching_name["programme_code"],
+                        "posting_code": params["posting_code"],
+                        "r_year": params["r_year"],
+                        "teaching_target_id": None,
+                        "revision": 1,
+                    }
+                )
+                created += 1
+            return _FakeScalarResult(rowcount=created)
+
+        if "/* ttf_e1:preserved_mapping_count */" in sql:
+            return _FakeScalarResult(
+                sum(
+                    1
+                    for mapping in self.teaching_name_mappings
+                    if mapping["reporting_period_id"] == str(params["reporting_period_id"])
+                    and mapping["programme_code"] == params["programme_code"]
+                    and mapping.get("teaching_target_id") is not None
+                )
+            )
+
         if "INSERT INTO posting_codes" in sql:
             code = params["code"]
             self.posting_codes.setdefault(code, {"code": code, "display_name": None})
@@ -166,6 +390,7 @@ class FakeTTFSession:
         if "INSERT INTO teaching_targets" in sql:
             self.teaching_targets.append(
                 {
+                    "id": str(uuid4()),
                     "reporting_period_id": str(params["reporting_period_id"]),
                     "programme_code": params["programme_code"],
                     "r_year": params["r_year"],
@@ -204,7 +429,19 @@ class FakeTTFSession:
             }
             return _FakeScalarResult()
 
+        if "/* ttf_e1:replace_posting_groups */" in sql:
+            removed = [
+                key
+                for key, group in self.posting_groups.items()
+                if group["programme_code"] == params["programme_code"]
+            ]
+            for key in removed:
+                del self.posting_groups[key]
+            return _FakeScalarResult(rowcount=len(removed))
+
         if "SELECT COUNT(*) AS orphan_count" in sql:
+            if self.fail_after_posting_group_replacement:
+                raise RuntimeError("injected orphan check failure")
             rp = str(params["reporting_period_id"])
             prog = params["programme_code"]
             catalogue_pairs = {
@@ -237,6 +474,15 @@ class FakeTTFSession:
 
     async def rollback(self) -> None:
         self.rollbacks += 1
+        if self._rollback_snapshot is not None:
+            self.session_types = deepcopy(self._rollback_snapshot["session_types"])
+            self.posting_codes = deepcopy(self._rollback_snapshot["posting_codes"])
+            self.teaching_targets = deepcopy(self._rollback_snapshot["teaching_targets"])
+            self.teaching_name_mappings = deepcopy(
+                self._rollback_snapshot["teaching_name_mappings"]
+            )
+            self.catalogue_rows = deepcopy(self._rollback_snapshot["catalogue_rows"])
+            self.posting_groups = deepcopy(self._rollback_snapshot["posting_groups"])
 
 
 def _run(coro):
@@ -341,6 +587,24 @@ def test_valid_sample_persists_targets_session_types_posting_codes_and_catalogue
     assert "DormantCode123" in result.metadata["posting_codes_added"]
 
 
+def test_transaction_owner_mode_leaves_ttf_writes_uncommitted() -> None:
+    session = FakeTTFSession()
+    result = _run(
+        parse_ttf_upload(
+            file_bytes=_ttf_bytes([_base_row()]),
+            original_filename="ttf.xlsx",
+            reporting_period_id=uuid4(),
+            programme_code="DR",
+            db_session=session,
+            manage_transaction=False,
+        )
+    )
+
+    assert result.errors == []
+    assert session.teaching_targets
+    assert session.commits == 0
+
+
 def test_db_programme_config_drives_all_and_subspecialty_years_for_custom_programmes() -> None:
     session = FakeTTFSession()
     period_id = uuid4()
@@ -431,6 +695,175 @@ def test_reupload_replaces_only_selected_programme_period_scope() -> None:
     )
     assert any(row["programme_code"] == "GERI" for row in session.teaching_targets)
     assert any(row["reporting_period_id"] == str(p2) and row["programme_code"] == "DR" for row in session.teaching_targets)
+
+
+def test_reupload_preserves_matching_target_identity_and_mapped_link() -> None:
+    session = FakeTTFSession()
+    period_id = uuid4()
+    _run(
+        parse_ttf_upload(
+            file_bytes=_ttf_bytes([_base_row(posting="P1", monthly_target=7)]),
+            original_filename="initial.xlsx",
+            reporting_period_id=period_id,
+            programme_code="DR",
+            db_session=session,
+        )
+    )
+    target_id = session.teaching_targets[0]["id"]
+    teaching_name_id = str(uuid4())
+    mapping_id = str(uuid4())
+    session.teaching_name_mappings.append(
+        {
+            "id": mapping_id,
+            "teaching_name_id": teaching_name_id,
+            "reporting_period_id": str(period_id),
+            "programme_code": "DR",
+            "posting_code": "P1",
+            "r_year": "R2",
+            "teaching_target_id": target_id,
+            "revision": 1,
+        }
+    )
+
+    result = _run(
+        parse_ttf_upload(
+            file_bytes=_ttf_bytes(
+                [_base_row(posting="P1", monthly_target=8, details="Updated Topic")]
+            ),
+            original_filename="reupload.xlsx",
+            reporting_period_id=period_id,
+            programme_code="DR",
+            db_session=session,
+        )
+    )
+
+    assert session.teaching_targets[0]["id"] == target_id
+    assert session.teaching_targets[0]["monthly_target"] == 8
+    assert session.teaching_name_mappings == [
+        {
+            "id": mapping_id,
+            "teaching_name_id": teaching_name_id,
+            "reporting_period_id": str(period_id),
+            "programme_code": "DR",
+            "posting_code": "P1",
+            "r_year": "R2",
+            "teaching_target_id": target_id,
+            "revision": 1,
+        }
+    ]
+    assert result.metadata["targets_inserted"] == 0
+    assert result.metadata["targets_updated"] == 1
+    assert result.metadata["mappings_preserved"] == 1
+    assert result.metadata["mappings_with_target_semantics_changed"] == 1
+
+
+def test_unchanged_reupload_preserves_legacy_summary_counts_and_reports_deltas() -> None:
+    session = FakeTTFSession()
+    period_id = uuid4()
+    payload = _ttf_bytes([_base_row(posting="P1")])
+
+    _run(
+        parse_ttf_upload(
+            file_bytes=payload,
+            original_filename="initial.xlsx",
+            reporting_period_id=period_id,
+            programme_code="DR",
+            db_session=session,
+        )
+    )
+    result = _run(
+        parse_ttf_upload(
+            file_bytes=payload,
+            original_filename="unchanged.xlsx",
+            reporting_period_id=period_id,
+            programme_code="DR",
+            db_session=session,
+        )
+    )
+
+    assert result.metadata["targets_created"] == 1
+    assert result.created_count == 1
+    assert result.updated_count == 1
+    assert result.metadata["targets_inserted"] == 0
+    assert result.metadata["targets_updated"] == 0
+    assert result.metadata["targets_unchanged"] == 1
+
+
+def test_reupload_invalidates_only_stale_mapping_and_provisions_new_scope() -> None:
+    session = FakeTTFSession()
+    period_id = uuid4()
+    active_name_id = str(uuid4())
+    inactive_name_id = str(uuid4())
+    session.teaching_names.extend(
+        [
+            {
+                "id": active_name_id,
+                "reporting_period_id": str(period_id),
+                "programme_code": "DR",
+                "is_active": True,
+            },
+            {
+                "id": inactive_name_id,
+                "reporting_period_id": str(period_id),
+                "programme_code": "DR",
+                "is_active": False,
+            },
+        ]
+    )
+    _run(
+        parse_ttf_upload(
+            file_bytes=_ttf_bytes([_base_row(posting="P1")]),
+            original_filename="initial.xlsx",
+            reporting_period_id=period_id,
+            programme_code="DR",
+            db_session=session,
+        )
+    )
+    prior_target_id = session.teaching_targets[0]["id"]
+    stale_mapping = session.teaching_name_mappings[0]
+    stale_mapping["teaching_target_id"] = prior_target_id
+    stale_mapping_id = stale_mapping["id"]
+
+    result = _run(
+        parse_ttf_upload(
+            file_bytes=_ttf_bytes([_base_row(posting="P2")]),
+            original_filename="changed-scope.xlsx",
+            reporting_period_id=period_id,
+            programme_code="DR",
+            db_session=session,
+        )
+    )
+
+    stale_after = next(
+        mapping
+        for mapping in session.teaching_name_mappings
+        if mapping["id"] == stale_mapping_id
+    )
+    new_scope_mappings = [
+        mapping
+        for mapping in session.teaching_name_mappings
+        if mapping["posting_code"] == "P2" and mapping["r_year"] == "R2"
+    ]
+    assert stale_after["teaching_target_id"] is None
+    assert stale_after["revision"] == 2
+    assert len(new_scope_mappings) == 1
+    assert {key: value for key, value in new_scope_mappings[0].items() if key != "id"} == {
+        "teaching_name_id": active_name_id,
+        "reporting_period_id": str(period_id),
+        "programme_code": "DR",
+        "posting_code": "P2",
+        "r_year": "R2",
+        "teaching_target_id": None,
+        "revision": 1,
+    }
+    assert all(
+        mapping["teaching_name_id"] != inactive_name_id
+        for mapping in new_scope_mappings
+    )
+    assert result.metadata["targets_inserted"] == 1
+    assert result.metadata["targets_removed"] == 1
+    assert result.metadata["mappings_invalidated"] == 1
+    assert result.metadata["pending_mappings_created"] == 1
 
 
 def test_existing_attendance_does_not_block_and_orphan_warning_returned() -> None:
@@ -547,6 +980,74 @@ def test_posting_groups_seed_and_update_from_column_e() -> None:
         )
     )
     assert session.posting_groups[("TTSHDiagRd", "DR")]["group_code"] == "GROUP_B"
+
+
+def test_ttf_reupload_replaces_programme_posting_groups_for_blank_and_omitted_rows() -> None:
+    session = FakeTTFSession()
+    period_id = uuid4()
+    _run(
+        parse_ttf_upload(
+            file_bytes=_ttf_bytes(
+                [
+                    _base_row(posting="P1", group="GROUP_A"),
+                    _base_row(posting="P2", group="GROUP_B"),
+                ]
+            ),
+            original_filename="initial.xlsx",
+            reporting_period_id=period_id,
+            programme_code="DR",
+            db_session=session,
+        )
+    )
+
+    result = _run(
+        parse_ttf_upload(
+            file_bytes=_ttf_bytes([_base_row(posting="P1", group="")]),
+            original_filename="replacement.xlsx",
+            reporting_period_id=period_id,
+            programme_code="DR",
+            db_session=session,
+        )
+    )
+
+    assert session.posting_groups == {}
+    assert result.metadata["posting_groups_removed"] == 2
+
+
+def test_ttf_posting_group_replacement_rolls_back_with_the_upload() -> None:
+    session = FakeTTFSession()
+    period_id = uuid4()
+    _run(
+        parse_ttf_upload(
+            file_bytes=_ttf_bytes([_base_row(posting="P1", group="GROUP_A")]),
+            original_filename="initial.xlsx",
+            reporting_period_id=period_id,
+            programme_code="DR",
+            db_session=session,
+        )
+    )
+    session.capture_transaction_snapshot()
+    session.fail_after_posting_group_replacement = True
+
+    with pytest.raises(RuntimeError, match="injected orphan check failure"):
+        _run(
+            parse_ttf_upload(
+                file_bytes=_ttf_bytes([_base_row(posting="P1", group="")]),
+                original_filename="replacement.xlsx",
+                reporting_period_id=period_id,
+                programme_code="DR",
+                db_session=session,
+            )
+        )
+
+    assert session.rollbacks == 1
+    assert session.posting_groups == {
+        ("P1", "DR"): {
+            "group_code": "GROUP_A",
+            "posting_code": "P1",
+            "programme_code": "DR",
+        }
+    }
 
 
 def test_validation_error_prevents_any_db_writes_even_with_db_session() -> None:

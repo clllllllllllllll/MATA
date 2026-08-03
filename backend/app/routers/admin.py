@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from dataclasses import dataclass
 from decimal import Decimal
@@ -22,6 +23,7 @@ from app.dependencies.staff_actor import (
 )
 from app.errors import ApiError, ErrorCode, UploadValidationApiError
 from app.middleware.auth_stub import AuthIdentity
+from app.security import log_safe_exception
 from app.routers.upload_multipart import (
     BoundedAdminUploadRoute,
     bounded_admin_upload,
@@ -169,6 +171,9 @@ from app.services.reporting_period_status import REPORTING_PERIOD_ACTIVE
 from app.services.formf1_parser import parse_formf1_upload
 from app.services.public_holiday_parser import parse_public_holiday_upload
 from app.services.ttf_parser import TTFUploadLockError, parse_ttf_upload
+
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(
@@ -410,6 +415,18 @@ def _format_ttf_response(result: ParserResult) -> dict[str, Any]:
     metadata = result.metadata or {}
     return {
         "targets_created": metadata.get("targets_created", result.created_count),
+        "targets_inserted": metadata.get("targets_inserted", 0),
+        "targets_updated": metadata.get("targets_updated", 0),
+        "targets_removed": metadata.get("targets_removed", 0),
+        "targets_unchanged": metadata.get("targets_unchanged", 0),
+        "mappings_preserved": metadata.get("mappings_preserved", 0),
+        "mappings_invalidated": metadata.get("mappings_invalidated", 0),
+        "mappings_with_target_semantics_changed": metadata.get(
+            "mappings_with_target_semantics_changed", 0
+        ),
+        "pending_mappings_created": metadata.get("pending_mappings_created", 0),
+        "affected_event_count": metadata.get("affected_event_count", 0),
+        "affected_attendance_count": metadata.get("affected_attendance_count", 0),
         "session_types_upserted": metadata.get("session_types_upserted", result.updated_count),
         "posting_codes_added": metadata.get("posting_codes_added", []),
         "catalogue_rows_seeded": metadata.get("catalogue_rows_seeded", 0),
@@ -718,9 +735,11 @@ async def _write_upload_log_and_audit(
     actor: StaffActorContext,
     reporting_period_id: UUID | None = None,
     programme_code: str | None = None,
-) -> None:
+    commit: bool = True,
+    invalidate_cache: bool = True,
+) -> dict[str, Any] | None:
     if db is None:
-        return
+        return None
 
     upload_log = await write_upload_log(
         db,
@@ -731,6 +750,7 @@ async def _write_upload_log_and_audit(
         uploaded_by=uploaded_by,
         reporting_period_id=reporting_period_id,
         programme_code=programme_code,
+        commit=commit,
     )
     try:
         await derive_upload_warnings_from_summary(
@@ -738,6 +758,8 @@ async def _write_upload_log_and_audit(
             upload_log,
             parser_result.to_summary(),
             actor_id=uploaded_by,
+            commit=commit,
+            invalidate_cache=invalidate_cache,
         )
     except DurableWarningStoreUnavailable:
         pass
@@ -758,13 +780,16 @@ async def _write_upload_log_and_audit(
         after=after,
         metadata=metadata,
     )
-    await db.commit()
-    cache_invalidation.invalidate_after_upload(
-        upload_type=parser_result.upload_type,
-        upload_log_id=upload_log.get("id"),
-        reporting_period_id=reporting_period_id or upload_log.get("reporting_period_id"),
-        programme_code=programme_code or upload_log.get("programme_code"),
-    )
+    if commit:
+        await db.commit()
+    if invalidate_cache:
+        cache_invalidation.invalidate_after_upload(
+            upload_type=parser_result.upload_type,
+            upload_log_id=upload_log.get("id"),
+            reporting_period_id=reporting_period_id or upload_log.get("reporting_period_id"),
+            programme_code=programme_code or upload_log.get("programme_code"),
+        )
+    return upload_log
 
 
 def _compact_snapshot(row: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1223,28 +1248,114 @@ async def upload_ttf(
             reporting_period_id=reporting_period_id,
             programme_code=programme_code,
             db_session=db,
+            manage_transaction=False,
         )
     except TTFUploadLockError as exc:
+        if db is not None:
+            await db.rollback()
         raise ApiError(
             status_code=409,
             detail="Another TTF upload for this scope is in progress",
             error_code=ErrorCode.CONFLICT.value,
             errors=[str(exc)],
         ) from exc
+    except Exception:
+        if db is not None:
+            await db.rollback()
+        raise
 
-    await _write_upload_log_and_audit(
-        db=db,
-        parser_result=parser_result,
-        original_filename=validated.original_filename,
-        uploaded_by=admin_context.user_id,
-        actor=staff_actor,
-        reporting_period_id=reporting_period_id,
-        programme_code=programme_code,
-    )
-    _raise_upload_validation_error_if_needed(
-        upload_label="TTF",
-        parser_result=parser_result,
-    )
+    # Parsing is fully validated before the parser opens the scope-locked
+    # persistence path.  A failed workbook therefore has no target/catalogue
+    # mutations, but still retains the established bounded failure evidence.
+    if parser_result.errors:
+        await _write_upload_log_and_audit(
+            db=db,
+            parser_result=parser_result,
+            original_filename=validated.original_filename,
+            uploaded_by=admin_context.user_id,
+            actor=staff_actor,
+            reporting_period_id=reporting_period_id,
+            programme_code=programme_code,
+        )
+        _raise_upload_validation_error_if_needed(
+            upload_label="TTF",
+            parser_result=parser_result,
+        )
+
+    if parser_result.metadata is None:
+        parser_result.metadata = {}
+
+    try:
+        data_revalidation = await data_revalidation_service.revalidate_after_upload(
+            context=DataRevalidationContext(
+                trigger_source=DataRevalidationTriggerSource.UPLOAD,
+                changed_entity=DataRevalidationChangedEntity.TEACHING_TARGET,
+                action=DataRevalidationAction.UPLOAD,
+                scope=DataRevalidationScope.PROGRAMME_REPORTING_PERIOD,
+                programme_code=programme_code,
+                reporting_period_id=str(reporting_period_id),
+                changed_fields=[
+                    "monthly_target",
+                    "is_tracked",
+                    "is_reallocatable",
+                    "tag",
+                    "details_of_training",
+                ],
+                source_metadata={
+                    key: parser_result.metadata.get(key, 0)
+                    for key in (
+                        "targets_inserted",
+                        "targets_updated",
+                        "targets_removed",
+                        "targets_unchanged",
+                        "mappings_preserved",
+                        "mappings_invalidated",
+                        "mappings_with_target_semantics_changed",
+                        "pending_mappings_created",
+                        "affected_event_count",
+                        "affected_attendance_count",
+                    )
+                },
+                actor_user_id=str(admin_context.user_id),
+                actor_role=staff_actor.actor_role,
+            ),
+            db_session=db,
+        )
+        parser_result.metadata["data_revalidation"] = data_revalidation.model_dump(
+            mode="json"
+        )
+        upload_log = await _write_upload_log_and_audit(
+            db=db,
+            parser_result=parser_result,
+            original_filename=validated.original_filename,
+            uploaded_by=admin_context.user_id,
+            actor=staff_actor,
+            reporting_period_id=reporting_period_id,
+            programme_code=programme_code,
+            commit=False,
+            invalidate_cache=False,
+        )
+        if db is not None:
+            await db.commit()
+    except Exception:
+        if db is not None:
+            await db.rollback()
+        raise
+
+    try:
+        cache_invalidation.invalidate_after_upload(
+            upload_type=parser_result.upload_type,
+            upload_log_id=upload_log.get("id") if upload_log else None,
+            reporting_period_id=reporting_period_id,
+            programme_code=programme_code,
+        )
+    except Exception as exc:
+        log_safe_exception(
+            logger,
+            "ttf_upload_cache_invalidation_failed",
+            exc,
+            category="cache_invalidation",
+        )
 
     return _format_ttf_response(parser_result)
 

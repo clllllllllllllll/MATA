@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
@@ -7,7 +8,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.errors import ApiError
+from app.dependencies.staff_actor import StaffActorContext
+from app.errors import ApiError, ErrorCode
 from app.middleware.errors import install_error_handlers
 from app.routers import admin, secretary
 from app.schemas.data_revalidation import (
@@ -24,6 +26,40 @@ from tests.auth_identity_test_helpers import install_stub_header_identity_middle
 
 class _NoopSession:
     pass
+
+
+class _HeldTTFScopeLockSession:
+    """Fails if a lifecycle mutation reaches SQL after the held shared lock."""
+
+    def __init__(self) -> None:
+        self.statements: list[object] = []
+        self.commits = 0
+        self.rollbacks = 0
+
+    async def execute(self, statement, *args, **kwargs):  # noqa: ANN001, ARG002
+        self.statements.append(statement)
+        raise AssertionError("Held TTF scope lock must prevent lifecycle SQL writes")
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+def _programme_pc_actor(user_id: UUID) -> teaching_name_pool.TeachingNamePoolActor:
+    return teaching_name_pool.TeachingNamePoolActor(
+        kind="programme_pc",
+        user_id=user_id,
+        programme_scope=frozenset({"DR"}),
+        staff_actor=StaffActorContext(
+            actor_user_id=user_id,
+            actor_role="admin",
+            actor_name="TTF lock regression PC",
+            actor_programme="DR",
+            raw_scope_metadata={"programme_scope": ["DR"]},
+        ),
+    )
 
 
 def _client() -> TestClient:
@@ -124,6 +160,96 @@ def test_normalise_teaching_name_rejects_blank_control_and_overlong_values(value
         teaching_name_pool.normalise_teaching_name(value)
 
     assert caught.value.status_code == 422
+
+
+def test_create_teaching_name_uses_shared_ttf_lock_and_held_lock_prevents_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_reporting_period_id = uuid4()
+    session = _HeldTTFScopeLockSession()
+    actor = _programme_pc_actor(uuid4())
+    lock_calls: list[tuple[object, UUID, str]] = []
+
+    async def _scope_exists(_db, *, reporting_period_id, programme_code):  # noqa: ANN001
+        assert reporting_period_id == expected_reporting_period_id
+        assert programme_code == "DR"
+
+    async def _actor_scope(_db, *, actor, programme_code):  # noqa: ANN001
+        assert actor.kind == "programme_pc"
+        assert programme_code == "DR"
+
+    async def _held_lock(db, *, reporting_period_id, programme_code):  # noqa: ANN001
+        lock_calls.append((db, reporting_period_id, programme_code))
+        return False
+
+    monkeypatch.setattr(teaching_name_pool, "_require_scope_exists", _scope_exists)
+    monkeypatch.setattr(teaching_name_pool, "_require_actor_scope", _actor_scope)
+    monkeypatch.setattr(teaching_name_pool, "acquire_ttf_scope_lock", _held_lock)
+
+    async def _exercise() -> None:
+        with pytest.raises(ApiError) as caught:
+            await teaching_name_pool.create_teaching_name(
+                session,  # type: ignore[arg-type]
+                actor=actor,
+                reporting_period_id=expected_reporting_period_id,
+                programme_code="  dr  ",
+                teaching_name="Journal Club",
+            )
+        assert caught.value.status_code == 409
+        assert caught.value.error_code == ErrorCode.CONFLICT.value
+
+    asyncio.run(_exercise())
+
+    assert lock_calls == [(session, expected_reporting_period_id, "DR")]
+    assert session.statements == []
+    assert session.commits == 0
+    assert session.rollbacks == 1
+
+
+def test_reactivate_teaching_name_uses_shared_ttf_lock_and_held_lock_prevents_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_reporting_period_id = uuid4()
+    expected_teaching_name_id = uuid4()
+    session = _HeldTTFScopeLockSession()
+    actor = _programme_pc_actor(uuid4())
+    lock_calls: list[tuple[object, UUID, str]] = []
+
+    async def _locked_name(_db, *, teaching_name_id, actor):  # noqa: ANN001
+        assert teaching_name_id == expected_teaching_name_id
+        assert actor.kind == "programme_pc"
+        return {
+            "id": expected_teaching_name_id,
+            "reporting_period_id": expected_reporting_period_id,
+            "programme_code": "DR",
+            "is_active": False,
+            "revision": 7,
+        }
+
+    async def _held_lock(db, *, reporting_period_id, programme_code):  # noqa: ANN001
+        lock_calls.append((db, reporting_period_id, programme_code))
+        return False
+
+    monkeypatch.setattr(teaching_name_pool, "_locked_name", _locked_name)
+    monkeypatch.setattr(teaching_name_pool, "acquire_ttf_scope_lock", _held_lock)
+
+    async def _exercise() -> None:
+        with pytest.raises(ApiError) as caught:
+            await teaching_name_pool.reactivate_teaching_name(
+                session,  # type: ignore[arg-type]
+                actor=actor,
+                teaching_name_id=expected_teaching_name_id,
+                expected_revision=7,
+            )
+        assert caught.value.status_code == 409
+        assert caught.value.error_code == ErrorCode.CONFLICT.value
+
+    asyncio.run(_exercise())
+
+    assert lock_calls == [(session, expected_reporting_period_id, "DR")]
+    assert session.statements == []
+    assert session.commits == 0
+    assert session.rollbacks == 1
 
 
 def test_phase_c_routes_are_exposed_at_the_exact_contract_paths() -> None:

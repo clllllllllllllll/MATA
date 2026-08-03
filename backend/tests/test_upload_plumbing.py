@@ -791,6 +791,17 @@ def test_upload_logs_helper_can_write_row() -> None:
         assert summary["original_filename"] == "rdb.xlsx"
         assert UUID(str(row["id"]))
 
+        non_committing_session = _FakeAsyncSession()
+        await write_upload_log(
+            non_committing_session,
+            upload_type="ttf",
+            original_filename="ttf.xlsx",
+            status="success",
+            summary={"created_count": 0, "updated_count": 0},
+            commit=False,
+        )
+        assert non_committing_session.committed is False
+
     asyncio.run(_exercise())
 
 
@@ -918,6 +929,7 @@ class _UploadAuditSession:
         self.reporting_periods: dict[str, dict] = {}
         self.rate_limit_buckets: dict[tuple[str, str, object, int], int] = {}
         self.commits = 0
+        self.rollbacks = 0
 
     async def execute(self, statement, params):
         sql = str(statement)
@@ -953,8 +965,15 @@ class _UploadAuditSession:
     async def commit(self):
         self.commits += 1
 
+    async def rollback(self):
+        self.rollbacks += 1
 
-def _build_upload_audit_client(session: _UploadAuditSession) -> TestClient:
+
+def _build_upload_audit_client(
+    session: _UploadAuditSession,
+    *,
+    raise_server_exceptions: bool = True,
+) -> TestClient:
     app = FastAPI()
     install_error_handlers(app)
     app.include_router(admin.router)
@@ -964,7 +983,7 @@ def _build_upload_audit_client(session: _UploadAuditSession) -> TestClient:
 
     app.dependency_overrides[admin.get_db_session] = _db_override
     app.dependency_overrides[admin.get_settings] = _settings_override
-    return TestClient(app)
+    return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
 
 def test_successful_admin_uploads_write_audit_logs_linked_to_upload_logs(monkeypatch) -> None:
@@ -1180,20 +1199,30 @@ def test_successful_admin_uploads_derive_warning_issues_after_upload_log(monkeyp
         return ParserResult(upload_type="public_holidays", warnings=[{"type": "public_holiday_day_mismatch"}])
 
     calls: list[dict] = []
-    invalidation_calls: list[tuple[set[str], dict]] = []
+    invalidation_calls: list[tuple[set[str], dict, int]] = []
 
-    async def _fake_derivation(db, upload_log, summary, actor_id=None):
+    async def _fake_derivation(
+        db,
+        upload_log,
+        summary,
+        actor_id=None,
+        *,
+        commit=True,
+        invalidate_cache=True,
+    ):
         calls.append(
             {
                 "upload_log_id": upload_log["id"],
                 "upload_type": upload_log["upload_type"],
                 "summary_upload_type": summary["upload_type"],
                 "actor_id": actor_id,
+                "commit": commit,
+                "invalidate_cache": invalidate_cache,
             }
         )
 
     def _invalidate_spy(domains, **scope):  # noqa: ANN001
-        invalidation_calls.append((set(domains), scope))
+        invalidation_calls.append((set(domains), scope, session.commits))
         return []
 
     monkeypatch.setattr("app.services.rdb_parser.parse_rdb_upload", _fake_rdb_parser)
@@ -1227,12 +1256,199 @@ def test_successful_admin_uploads_derive_warning_issues_after_upload_log(monkeyp
     assert [call["upload_type"] for call in calls] == ["rdb", "ttf", "form_f1", "public_holidays"]
     assert [call["summary_upload_type"] for call in calls] == ["rdb", "ttf", "form_f1", "public_holidays"]
     assert all(str(call["actor_id"]) == actor_id for call in calls)
+    assert next(call for call in calls if call["upload_type"] == "ttf")["commit"] is False
+    assert next(call for call in calls if call["upload_type"] == "ttf")["invalidate_cache"] is False
     assert [call["upload_log_id"] for call in calls] == [row["id"] for row in session.upload_logs]
-    upload_domains = [domains for domains, _scope in invalidation_calls]
+    upload_domains = [domains for domains, _scope, _commits in invalidation_calls]
     assert any({"upload_logs", "upload_warnings", "parsed_data"} <= domains for domains in upload_domains)
-    assert any({"teaching_targets", "teaching_name_catalogue"} <= domains for domains in upload_domains)
+    ttf_invalidation = next(
+        (domains, commits)
+        for domains, _scope, commits in invalidation_calls
+        if "teaching_targets" in domains
+    )
+    assert {"config", "parsed_data", "teaching_targets", "teaching_name_catalogue"} <= ttf_invalidation[0]
+    assert ttf_invalidation[1] > 0
     assert any({"form_f1", "resident_dashboard", "admin_reports"} <= domains for domains in upload_domains)
     assert any({"public_holidays", "academic_month_boundaries"} <= domains for domains in upload_domains)
+
+
+def test_ttf_upload_cache_failure_does_not_misreport_committed_success(monkeypatch) -> None:
+    async def _fake_ttf_parser(**kwargs):
+        return ParserResult(
+            upload_type="ttf",
+            created_count=1,
+            updated_count=1,
+            metadata={
+                "targets_created": 1,
+                "targets_inserted": 1,
+                "session_types_upserted": 1,
+            },
+        )
+
+    cache_calls: list[int] = []
+    safe_logs: list[tuple[str, str, str | None]] = []
+
+    def _failing_cache(**kwargs):  # noqa: ANN003
+        cache_calls.append(session.commits)
+        raise RuntimeError("cache backend unavailable")
+
+    def _safe_log(_logger, event, exc, *, category=None):  # noqa: ANN001
+        safe_logs.append((event, type(exc).__name__, category))
+
+    monkeypatch.setattr("app.routers.admin.parse_ttf_upload", _fake_ttf_parser)
+    monkeypatch.setattr(
+        "app.routers.admin.cache_invalidation.invalidate_after_upload",
+        _failing_cache,
+    )
+    monkeypatch.setattr("app.routers.admin.log_safe_exception", _safe_log)
+
+    session = _UploadAuditSession()
+    client = _build_upload_audit_client(session)
+    period_id = str(uuid4())
+    response = client.post(
+        "/admin/upload/ttf",
+        headers=_admin_headers(),
+        data={"reporting_period_id": period_id, "programme_code": "DR"},
+        files={
+            "file": (
+                "ttf.xlsx",
+                _make_valid_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert session.upload_logs and session.audit_logs
+    assert cache_calls and cache_calls[0] > 0
+    assert safe_logs == [
+        ("ttf_upload_cache_invalidation_failed", "RuntimeError", "cache_invalidation")
+    ]
+
+
+def test_ttf_outer_transaction_rolls_back_all_e1_evidence_on_post_parser_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure after parser/revalidation evidence cannot leave a partial TTF."""
+
+    class _TransactionalTTFSession(_UploadAuditSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.e1_rows = {
+                "targets": [],
+                "mappings": [],
+                "catalogue": [],
+                "posting_groups": [],
+                "upload_logs": [],
+                "warnings": [],
+                "audit": [],
+                "revalidation": [],
+            }
+
+        def persist(self, *kinds: str) -> None:
+            for kind in kinds:
+                self.e1_rows[kind].append(str(uuid4()))
+
+        async def rollback(self) -> None:
+            await super().rollback()
+            # The rate-limit bucket intentionally predates the outer upload
+            # transaction. Everything below belongs to the TTF transaction.
+            for rows in self.e1_rows.values():
+                rows.clear()
+            self.upload_logs.clear()
+            self.audit_logs.clear()
+
+    class _RevalidationOutcome:
+        def model_dump(self, *, mode: str) -> dict[str, object]:  # noqa: ARG002
+            return {"status": "revalidated"}
+
+    async def _fake_ttf_parser(**kwargs):
+        db_session = kwargs["db_session"]
+        assert kwargs["manage_transaction"] is False
+        db_session.persist("targets", "mappings", "catalogue", "posting_groups")
+        return ParserResult(
+            upload_type="ttf",
+            created_count=2,
+            metadata={
+                "targets_created": 2,
+                "targets_inserted": 1,
+                "targets_updated": 1,
+            },
+        )
+
+    async def _fake_revalidation(*, db_session, **kwargs):  # noqa: ANN001, ARG001
+        db_session.persist("revalidation")
+        return _RevalidationOutcome()
+
+    async def _fail_after_upload_evidence(*, db, **kwargs):  # noqa: ANN001, ARG001
+        db.persist("upload_logs", "warnings", "audit")
+        db.upload_logs.append({"id": str(uuid4()), "upload_type": "ttf"})
+        db.audit_logs.append({"id": str(uuid4()), "action": "admin.upload.ttf"})
+        raise RuntimeError("injected upload-log/audit failure")
+
+    cache_calls: list[object] = []
+
+    def _cache_spy(**kwargs):  # noqa: ANN003, ARG001
+        cache_calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr("app.routers.admin.parse_ttf_upload", _fake_ttf_parser)
+    monkeypatch.setattr(
+        "app.routers.admin.data_revalidation_service.revalidate_after_upload",
+        _fake_revalidation,
+    )
+    monkeypatch.setattr(
+        "app.routers.admin._write_upload_log_and_audit",
+        _fail_after_upload_evidence,
+    )
+    monkeypatch.setattr(
+        "app.routers.admin.cache_invalidation.invalidate_after_upload",
+        _cache_spy,
+    )
+
+    session = _TransactionalTTFSession()
+    client = _build_upload_audit_client(session, raise_server_exceptions=False)
+    response = client.post(
+        "/admin/upload/ttf",
+        headers=_admin_headers(),
+        data={"reporting_period_id": str(uuid4()), "programme_code": "DR"},
+        files={
+            "file": (
+                "ttf.xlsx",
+                _make_valid_xlsx_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 500
+    assert session.rollbacks == 1
+    assert all(rows == [] for rows in session.e1_rows.values())
+    assert session.upload_logs == []
+    assert session.audit_logs == []
+    assert session.rate_limit_buckets  # pre-transaction limiter is intentionally retained
+    assert cache_calls == []
+
+
+def test_ttf_response_keeps_legacy_created_count_separate_from_insert_delta() -> None:
+    response = admin._format_ttf_response(
+        ParserResult(
+            upload_type="ttf",
+            created_count=29,
+            updated_count=5,
+            metadata={
+                "targets_created": 29,
+                "targets_inserted": 4,
+                "targets_updated": 17,
+                "session_types_upserted": 5,
+            },
+        )
+    )
+
+    assert response["targets_created"] == 29
+    assert response["targets_inserted"] == 4
+    assert response["targets_updated"] == 17
+    assert response["session_types_upserted"] == 5
 
 
 def test_parser_signatures_importable() -> None:
