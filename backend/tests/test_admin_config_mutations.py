@@ -16,7 +16,7 @@ from app.schemas.data_revalidation import (
     DataRevalidationImpactSummary,
     DataRevalidationOutcome,
 )
-from app.services import data_revalidation_service
+from app.services import admin_config, data_revalidation_service
 
 
 class _FakeMutationResult:
@@ -47,6 +47,9 @@ class _FakeMutationResult:
         return self._rows[0] if self._rows else None
 
     def scalar_one_or_none(self):
+        return self._scalar
+
+    def scalar(self):
         return self._scalar
 
 
@@ -134,6 +137,9 @@ class FakeMutationSession:
     async def execute(self, statement, params=None):  # noqa: C901, PLR0912, PLR0915
         sql = str(statement)
         payload = dict(params or {})
+
+        if "pg_try_advisory_xact_lock" in sql:
+            return _FakeMutationResult(scalar=True)
 
         if "/* data_revalidation:warning_candidates */" in sql:
             statuses = set(payload.get("statuses") or [])
@@ -1696,7 +1702,16 @@ def test_null_scope_cannot_mutate_scoped_resources() -> None:
     assert response.status_code == 403
 
 
-def test_master_admin_can_mutate_posting_groups_without_programme_scope() -> None:
+def test_master_admin_can_mutate_posting_groups_without_programme_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    locked_programmes: list[str] = []
+
+    async def record_programme_lock(_db, *, programme_code: str):  # noqa: ANN001
+        locked_programmes.append(programme_code)
+        return True
+
+    monkeypatch.setattr(admin_config, "acquire_ttf_programme_lock", record_programme_lock)
     client = _build_client_with_session(FakeMutationSession())
     created = client.post(
         "/admin/posting-groups",
@@ -1716,7 +1731,7 @@ def test_master_admin_can_mutate_posting_groups_without_programme_scope() -> Non
         json={
             "group_code": "DR-GROUP-UPDATED",
             "posting_code": "TTSHRespi(MICU)",
-            "programme_code": "DR",
+            "programme_code": "GRM",
         },
     )
     assert updated.status_code == 200
@@ -1729,6 +1744,7 @@ def test_master_admin_can_mutate_posting_groups_without_programme_scope() -> Non
     )
     assert deleted.status_code == 200
     assert deleted.json()["deleted"] is True
+    assert locked_programmes == ["DR", "DR", "GRM", "GRM"]
 
 
 def test_null_scope_cannot_mutate_reporting_periods() -> None:

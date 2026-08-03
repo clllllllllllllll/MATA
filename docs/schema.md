@@ -28,6 +28,8 @@ Revision `20260803_000031` activates the shared-pool name lifecycle: it
 reconciles pending mapping rows through private owner triggers and exposes the
 name-only API. These revisions do not change the parser, create pool-backed
 events, expose mapping DML, or activate compliance resolution.
+Revision `20260803_000032` adds only the narrow E1 TTF mapping-reconciliation
+helper used by the existing upload transaction.
 
 The planned final model uses `teaching_name` as the canonical term:
 
@@ -531,7 +533,7 @@ First-class keyword→session_type mapping table. Seeded from TTF column K at up
 
 **Unique constraint:** `UNIQUE(keyword, posting_code, programme_code, r_year, reporting_period_id)`
 
-**Usage:** Seeded at TTF upload time. Deleted and re-seeded on each TTF upload within scope. Also deleted and re-seeded for the specific row when `PUT /admin/teaching-targets/{id}` updates `details_of_training`.
+**Usage:** Regenerated at TTF upload time within scope. Also regenerated for the specific target when `PATCH /admin/parsed-data/teaching-targets/{id}` updates transitional `details_of_training`.
 
 The same canonical `keyword` may legitimately appear at different postings and map to different session types. Runtime resolution is exact and scoped by reporting period, resident programme, assigned/compliance posting, phase R-year, and canonical name. Do not use fuzzy matching. Case/spacing duplicate cleanup within one TTF scope is upload/event-option data quality, not a separate compliance matching rule.
 
@@ -866,8 +868,8 @@ Groups multiple RDB posting codes under a single compliance aggregate. Seeded pr
 Posting-group membership is not a reallocation boundary override. Tag transfers remain inside one physical posting and R-year context and may never cross between group members or R-year contexts.
 
 **Seeding sources:**
-- **TTF upload (primary):** When TTF column E ("For Dashboard (RDB Posting/Subspeciality)") is non-empty for a posting code row, the parser automatically upserts a `posting_groups` row: `group_code = column_E_value`, `posting_code = column_D_value`, `programme_code = from TTF`
-- **Admin CRUD (secondary):** Manual addition for groupings not captured by TTF column E
+- **TTF upload (primary):** The parser replaces the complete `posting_groups` set for the uploaded programme (including rows omitted or blank in column E), then upserts every non-empty TTF column E ("For Dashboard (RDB Posting/Subspeciality)") value as `group_code = column_E_value`, `posting_code = column_D_value`, `programme_code = from TTF`.
+- **Admin CRUD (secondary):** Manual addition for groupings not captured by TTF column E. Every manual writer shares the same programme-level transaction advisory lock as TTF replacement and returns `409` on contention.
 
 **Admin CRUD UI:** All `posting_groups` rows are manageable via admin CRUD UI. Applies globally to all programmes.
 
@@ -1085,9 +1087,21 @@ Persistent audit trail of every RDB, TTF, FormF1, and Academic Calendar / Public
 ```json
 {
   "targets_created": 29,
+  "targets_inserted": 4,
+  "targets_updated": 17,
+  "targets_removed": 2,
+  "targets_unchanged": 6,
+  "mappings_preserved": 11,
+  "mappings_invalidated": 2,
+  "mappings_with_target_semantics_changed": 3,
+  "pending_mappings_created": 4,
+  "affected_event_count": 3,
+  "affected_attendance_count": 7,
   "session_types_upserted": 5,
   "posting_codes_added": ["AICAIC", "DPPallia"],
   "catalogue_rows_seeded": 84,
+  "posting_groups_upserted": 5,
+  "posting_groups_removed": 2,
   "rows_exploded": 3,
   "rows_skipped": 0,
   "skip_reasons": [],

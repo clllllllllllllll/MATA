@@ -22,6 +22,7 @@ from app.schemas.data_revalidation import (
 from app.security import log_safe_exception
 from app.services import cache_invalidation, data_revalidation_service
 from app.services.audit import write_audit_log
+from app.services.database_context import session_uses_rls
 from app.services.teaching_event_locks import acquire_teaching_event_locks
 from app.services.ttf_scope_lock import acquire_ttf_scope_lock
 
@@ -957,7 +958,8 @@ async def delete_teaching_name(
     confirmation: str | None,
 ) -> dict[str, Any]:
     try:
-        if actor.kind == "master_admin":
+        uses_master_delete_lock = actor.kind == "master_admin" and session_uses_rls(db)
+        if uses_master_delete_lock:
             await _lock_master_teaching_name_for_delete(
                 db,
                 teaching_name_id=teaching_name_id,
@@ -966,7 +968,7 @@ async def delete_teaching_name(
             db,
             teaching_name_id=teaching_name_id,
             actor=actor,
-            lock=actor.kind != "master_admin",
+            lock=not uses_master_delete_lock,
         )
         _require_expected_revision(before, expected_revision)
         await _require_scope_lock(

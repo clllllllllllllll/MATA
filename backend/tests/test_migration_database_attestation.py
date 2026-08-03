@@ -24,7 +24,7 @@ def _snapshot(
     current_role: str = OWNER,
 ) -> DatabaseReuseSnapshot:
     return DatabaseReuseSnapshot(
-        database_name="mata_evolved_ttf_phase_c_verify",
+        database_name="mata_evolved_ttf_pre_d_fix_verify",
         current_role=current_role,
         session_role=OWNER,
         database_owner=OWNER,

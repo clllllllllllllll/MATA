@@ -1,20 +1,28 @@
 from __future__ import annotations
 
+from datetime import date, time
+from io import BytesIO
 import secrets
 from uuid import UUID, uuid4
 
+from openpyxl import Workbook
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from app.dependencies.staff_actor import StaffActorContext
+from app.errors import ApiError
 from app.services.database_context import configure_request_context, prime_request_context
+from app.services.teaching_name_pool import TeachingNamePoolActor, delete_teaching_name
 from app.services.ttf_parser import (
     ParsedCatalogueRow,
     ParsedTeachingTargetRow,
+    TTFUploadLockError,
     _persist_ttf_rows,
+    parse_ttf_upload,
 )
-from app.services.ttf_scope_lock import acquire_ttf_scope_lock
+from app.services.ttf_scope_lock import acquire_ttf_programme_lock, acquire_ttf_scope_lock
 from tests.ttf_e1_postgres_harness import (
     E1RestrictedRuntimeHarness,
     ttf_e1_postgres_engine,
@@ -232,6 +240,676 @@ def _catalogue_row(target: ParsedTeachingTargetRow) -> ParsedCatalogueRow:
     )
 
 
+def _ttf_workbook_bytes(rows: list[list[object]]) -> bytes:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "TTF"
+    headers = [
+        "reporting_period",
+        "programme_code",
+        "r_year",
+        "posting_code",
+        "dashboard_posting",
+        "session_type",
+        "monthly_target",
+        "is_tracked",
+        "is_reallocatable",
+        "tag",
+        "details_of_training",
+    ]
+    for column, header in enumerate(headers, start=1):
+        worksheet.cell(row=1, column=column, value=header)
+    for row_index, row in enumerate(rows, start=2):
+        for column, value in enumerate(row, start=1):
+            worksheet.cell(row=row_index, column=column, value=value)
+    payload = BytesIO()
+    workbook.save(payload)
+    workbook.close()
+    return payload.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_ttf_programme_lock_serializes_programme_wide_posting_group_replacement(
+    ttf_e1_postgres_engine: AsyncEngine,
+) -> None:
+    """A same-programme cross-period upload cannot leave mixed group rows."""
+
+    suffix = uuid4().hex[:12].upper()
+    first_period_id = uuid4()
+    second_period_id = uuid4()
+    other_period_id = uuid4()
+    programme_code = f"PG{suffix}"[:20]
+    other_programme_code = f"OP{suffix}"[:20]
+    programme_postings = [f"PGA{suffix}", f"PGB{suffix}"]
+    other_posting = f"OPC{suffix}"
+    session_names = [
+        f"PG A {suffix} [1h]",
+        f"PG B {suffix} [1h]",
+        f"OP C {suffix} [1h]",
+    ]
+
+    first_upload = _ttf_workbook_bytes(
+        [
+            [
+                f"PG first {suffix}",
+                programme_code,
+                "R1",
+                programme_postings[0],
+                "PG-GROUP-A",
+                session_names[0],
+                1,
+                "Yes",
+                "No",
+                "",
+                f"PG first topic {suffix}",
+            ],
+            [
+                f"PG first {suffix}",
+                programme_code,
+                "R1",
+                programme_postings[1],
+                "PG-GROUP-B",
+                session_names[1],
+                1,
+                "Yes",
+                "No",
+                "",
+                f"PG second topic {suffix}",
+            ],
+        ]
+    )
+    competing_upload = _ttf_workbook_bytes(
+        [
+            [
+                f"PG second {suffix}",
+                programme_code,
+                "R1",
+                f"PGC{suffix}",
+                "PG-COMPETING",
+                f"PG competing {suffix} [1h]",
+                1,
+                "Yes",
+                "No",
+                "",
+                f"PG competing topic {suffix}",
+            ]
+        ]
+    )
+    independent_upload = _ttf_workbook_bytes(
+        [
+            [
+                f"OP {suffix}",
+                other_programme_code,
+                "R1",
+                other_posting,
+                "OP-GROUP",
+                session_names[2],
+                1,
+                "Yes",
+                "No",
+                "",
+                f"OP topic {suffix}",
+            ]
+        ]
+    )
+
+    async with AsyncSession(ttf_e1_postgres_engine, expire_on_commit=False) as owner_db:
+        try:
+            await owner_db.execute(
+                text(
+                    """
+                    INSERT INTO reporting_periods (id, label, start_date, end_date, status)
+                    VALUES
+                        (:first_period_id, :first_label, DATE '2049-01-01', DATE '2049-06-30', 'active'),
+                        (:second_period_id, :second_label, DATE '2049-07-01', DATE '2049-12-31', 'active'),
+                        (:other_period_id, :other_label, DATE '2050-01-01', DATE '2050-06-30', 'active')
+                    """
+                ),
+                {
+                    "first_period_id": first_period_id,
+                    "first_label": f"PG first {suffix}",
+                    "second_period_id": second_period_id,
+                    "second_label": f"PG second {suffix}",
+                    "other_period_id": other_period_id,
+                    "other_label": f"OP {suffix}",
+                },
+            )
+            await owner_db.execute(
+                text(
+                    """
+                    INSERT INTO programmes (
+                        id, code, name, ay_date_category, r_year_required, is_subspecialty
+                    )
+                    VALUES
+                        (:programme_id, :programme_code, :programme_name,
+                         'non_im_subspec', true, false),
+                        (:other_programme_id, :other_programme_code, :other_programme_name,
+                         'non_im_subspec', true, false)
+                    """
+                ),
+                {
+                    "programme_id": uuid4(),
+                    "programme_code": programme_code,
+                    "programme_name": f"Programme groups {suffix}",
+                    "other_programme_id": uuid4(),
+                    "other_programme_code": other_programme_code,
+                    "other_programme_name": f"Other programme groups {suffix}",
+                },
+            )
+            await owner_db.commit()
+
+            async with AsyncSession(ttf_e1_postgres_engine, expire_on_commit=False) as first_db:
+                async with AsyncSession(
+                    ttf_e1_postgres_engine,
+                    expire_on_commit=False,
+                ) as competing_db:
+                    async with AsyncSession(
+                        ttf_e1_postgres_engine,
+                        expire_on_commit=False,
+                    ) as independent_db:
+                        first_db.info["mata_rls_enabled"] = False
+                        competing_db.info["mata_rls_enabled"] = False
+                        independent_db.info["mata_rls_enabled"] = False
+
+                        first_result = await parse_ttf_upload(
+                            file_bytes=first_upload,
+                            original_filename="first.xlsx",
+                            reporting_period_id=first_period_id,
+                            programme_code=programme_code,
+                            db_session=first_db,
+                            manage_transaction=False,
+                        )
+                        assert first_result.metadata["posting_groups_upserted"] == 2
+
+                        with pytest.raises(TTFUploadLockError, match="posting-group replacement"):
+                            await parse_ttf_upload(
+                                file_bytes=competing_upload,
+                                original_filename="competing.xlsx",
+                                reporting_period_id=second_period_id,
+                                programme_code=programme_code,
+                                db_session=competing_db,
+                                manage_transaction=False,
+                            )
+                        await competing_db.rollback()
+
+                        independent_result = await parse_ttf_upload(
+                            file_bytes=independent_upload,
+                            original_filename="independent.xlsx",
+                            reporting_period_id=other_period_id,
+                            programme_code=other_programme_code,
+                            db_session=independent_db,
+                            manage_transaction=False,
+                        )
+                        assert independent_result.metadata["posting_groups_upserted"] == 1
+                        await independent_db.commit()
+                        await first_db.commit()
+
+            programme_groups = (
+                await owner_db.execute(
+                    text(
+                        """
+                        SELECT posting_code, group_code
+                        FROM posting_groups
+                        WHERE programme_code = :programme_code
+                        ORDER BY posting_code
+                        """
+                    ),
+                    {"programme_code": programme_code},
+                )
+            ).all()
+            assert programme_groups == [
+                (programme_postings[0], "PG-GROUP-A"),
+                (programme_postings[1], "PG-GROUP-B"),
+            ]
+            other_programme_groups = (
+                await owner_db.execute(
+                    text(
+                        """
+                        SELECT posting_code, group_code
+                        FROM posting_groups
+                        WHERE programme_code = :programme_code
+                        ORDER BY posting_code
+                        """
+                    ),
+                    {"programme_code": other_programme_code},
+                )
+            ).all()
+            assert other_programme_groups == [(other_posting, "OP-GROUP")]
+        finally:
+            await owner_db.rollback()
+            await owner_db.execute(
+                text(
+                    """
+                    DELETE FROM teaching_name_catalogue
+                    WHERE reporting_period_id = ANY(CAST(:period_ids AS uuid[]))
+                    """
+                ),
+                {"period_ids": [first_period_id, second_period_id, other_period_id]},
+            )
+            await owner_db.execute(
+                text(
+                    """
+                    DELETE FROM teaching_targets
+                    WHERE reporting_period_id = ANY(CAST(:period_ids AS uuid[]))
+                    """
+                ),
+                {"period_ids": [first_period_id, second_period_id, other_period_id]},
+            )
+            await owner_db.execute(
+                text("DELETE FROM posting_groups WHERE programme_code = ANY(CAST(:codes AS text[]))"),
+                {"codes": [programme_code, other_programme_code]},
+            )
+            await owner_db.execute(
+                text("DELETE FROM session_types WHERE name = ANY(CAST(:names AS text[]))"),
+                {"names": session_names + [f"PG competing {suffix} [1h]"]},
+            )
+            await owner_db.execute(
+                text(
+                    """
+                    DELETE FROM posting_codes
+                    WHERE code = ANY(CAST(:codes AS text[]))
+                    """
+                ),
+                {"codes": [*programme_postings, other_posting, f"PGC{suffix}"]},
+            )
+            await owner_db.execute(
+                text("DELETE FROM programmes WHERE code = ANY(CAST(:codes AS text[]))"),
+                {"codes": [programme_code, other_programme_code]},
+            )
+            await owner_db.execute(
+                text("DELETE FROM reporting_periods WHERE id = ANY(CAST(:period_ids AS uuid[]))"),
+                {"period_ids": [first_period_id, second_period_id, other_period_id]},
+            )
+            await owner_db.commit()
+
+
+@pytest.mark.asyncio
+async def test_non_rls_master_teaching_name_delete_preserves_used_evidence(
+    ttf_e1_postgres_engine: AsyncEngine,
+) -> None:
+    """The supported non-RLS runtime retains the guarded delete semantics."""
+
+    suffix = uuid4().hex[:12].upper()
+    period_id = uuid4()
+    programme_code = f"MD{suffix}"[:20]
+    posting_code = f"MDP{suffix}"
+    session_type_id = uuid4()
+    unused_name_id = uuid4()
+    used_name_id = uuid4()
+    event_id = uuid4()
+    resident_id = uuid4()
+    external_resident_id = uuid4()
+    native_attendance_id = uuid4()
+    external_attendance_id = uuid4()
+    unused_name = f"Unused master name {suffix}"
+    used_name = f"Used master name {suffix}"
+    event_details = f"Preserved event details {suffix}"
+    session_name = f"Master deletion {suffix} [1h]"
+    actor = TeachingNamePoolActor(
+        kind="master_admin",
+        user_id=uuid4(),
+        staff_actor=StaffActorContext(
+            actor_user_id=None,
+            actor_role="admin",
+            actor_name="Non-RLS Master deletion test",
+            actor_admin_level="master",
+        ),
+    )
+
+    async with AsyncSession(ttf_e1_postgres_engine, expire_on_commit=False) as db:
+        db.info["mata_rls_enabled"] = False
+        try:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO reporting_periods (id, label, start_date, end_date, status)
+                    VALUES (:id, :label, DATE '2051-01-01', DATE '2051-12-31', 'active')
+                    """
+                ),
+                {"id": period_id, "label": f"Master delete {suffix}"},
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO programmes (
+                        id, code, name, ay_date_category, r_year_required, is_subspecialty
+                    )
+                    VALUES (:id, :code, :name, 'non_im_subspec', true, false)
+                    """
+                ),
+                {
+                    "id": uuid4(),
+                    "code": programme_code,
+                    "name": f"Master delete programme {suffix}",
+                },
+            )
+            await db.execute(
+                text("INSERT INTO posting_codes (id, code, display_name) VALUES (:id, :code, :code)"),
+                {"id": uuid4(), "code": posting_code},
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO session_types (id, name, duration_hours, duration_label)
+                    VALUES (:id, :name, 1.00, '1h')
+                    """
+                ),
+                {"id": session_type_id, "name": session_name},
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO residents (id, name, mcr, programme_code, r_year, status)
+                    VALUES (:id, :name, :mcr, :programme_code, 'R1', 'active')
+                    """
+                ),
+                {
+                    "id": resident_id,
+                    "name": "Master delete resident",
+                    "mcr": f"MD{suffix}",
+                    "programme_code": programme_code,
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO external_residents (
+                        id, name, mcr, home_cluster, current_nhg_posting_code, status
+                    )
+                    VALUES (:id, :name, :mcr, 'NUH', :posting_code, 'active')
+                    """
+                ),
+                {
+                    "id": external_resident_id,
+                    "name": "Master delete external resident",
+                    "mcr": f"MX{suffix}",
+                    "posting_code": posting_code,
+                },
+            )
+            name_rows = (
+                await db.execute(
+                    text(
+                        """
+                        INSERT INTO teaching_names (
+                            id, reporting_period_id, programme_code, display_name,
+                            normalized_name, is_active
+                        )
+                        VALUES
+                            (:unused_name_id, :period_id, :programme_code, :unused_name,
+                             :unused_normalized_name, true),
+                            (:used_name_id, :period_id, :programme_code, :used_name,
+                             :used_normalized_name, true)
+                        RETURNING id, revision
+                        """
+                    ),
+                    {
+                        "unused_name_id": unused_name_id,
+                        "used_name_id": used_name_id,
+                        "period_id": period_id,
+                        "programme_code": programme_code,
+                        "unused_name": unused_name,
+                        "unused_normalized_name": unused_name.casefold(),
+                        "used_name": used_name,
+                        "used_normalized_name": used_name.casefold(),
+                    },
+                )
+            ).mappings().all()
+            revisions = {row["id"]: int(row["revision"]) for row in name_rows}
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_events (
+                        id, posting_code, created_for_programme_code, teaching_name,
+                        details_of_session, event_date, start_time, end_time,
+                        duration_hours, session_type_id, is_adhoc, created_by_role,
+                        teaching_name_id
+                    )
+                    VALUES (
+                        :event_id, :posting_code, :programme_code, :teaching_name,
+                        :details_of_session, DATE '2051-03-05', TIME '09:00', TIME '10:00',
+                        1.00, :session_type_id, false, 'programme_pc', :teaching_name_id
+                    )
+                    """
+                ),
+                {
+                    "event_id": event_id,
+                    "posting_code": posting_code,
+                    "programme_code": programme_code,
+                    "teaching_name": used_name,
+                    "details_of_session": event_details,
+                    "session_type_id": session_type_id,
+                    "teaching_name_id": used_name_id,
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO attendance_records (
+                        id, resident_id, teaching_event_id, submitted_at, status, posting_code
+                    )
+                    VALUES (
+                        :id, :resident_id, :event_id,
+                        TIMESTAMPTZ '2051-03-05 10:30:00+00', 'submitted', :posting_code
+                    )
+                    """
+                ),
+                {
+                    "id": native_attendance_id,
+                    "resident_id": resident_id,
+                    "event_id": event_id,
+                    "posting_code": posting_code,
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO external_attendance_records (
+                        id, external_resident_id, teaching_event_id, submitted_at,
+                        status, posting_code
+                    )
+                    VALUES (
+                        :id, :external_resident_id, :event_id,
+                        TIMESTAMPTZ '2051-03-05 10:35:00+00', 'submitted', :posting_code
+                    )
+                    """
+                ),
+                {
+                    "id": external_attendance_id,
+                    "external_resident_id": external_resident_id,
+                    "event_id": event_id,
+                    "posting_code": posting_code,
+                },
+            )
+            await db.commit()
+
+            unused_deleted = await delete_teaching_name(
+                db,
+                actor=actor,
+                teaching_name_id=unused_name_id,
+                expected_revision=revisions[unused_name_id],
+                force_delete=False,
+                reason=None,
+                confirmation=None,
+            )
+            assert unused_deleted["used_name"] is False
+            assert unused_deleted["event_reference_count"] == 0
+
+            with pytest.raises(ApiError) as missing_force:
+                await delete_teaching_name(
+                    db,
+                    actor=actor,
+                    teaching_name_id=used_name_id,
+                    expected_revision=revisions[used_name_id],
+                    force_delete=False,
+                    reason="Required correction",
+                    confirmation="DELETE",
+                )
+            assert missing_force.value.status_code == 409
+            with pytest.raises(ApiError) as missing_reason:
+                await delete_teaching_name(
+                    db,
+                    actor=actor,
+                    teaching_name_id=used_name_id,
+                    expected_revision=revisions[used_name_id],
+                    force_delete=True,
+                    reason="  ",
+                    confirmation="DELETE",
+                )
+            assert missing_reason.value.status_code == 422
+            with pytest.raises(ApiError) as stale_confirmation:
+                await delete_teaching_name(
+                    db,
+                    actor=actor,
+                    teaching_name_id=used_name_id,
+                    expected_revision=revisions[used_name_id],
+                    force_delete=True,
+                    reason="Required correction",
+                    confirmation="delete",
+                )
+            assert stale_confirmation.value.status_code == 409
+            with pytest.raises(ApiError) as stale_revision:
+                await delete_teaching_name(
+                    db,
+                    actor=actor,
+                    teaching_name_id=used_name_id,
+                    expected_revision=revisions[used_name_id] + 1,
+                    force_delete=True,
+                    reason="Required correction",
+                    confirmation="DELETE",
+                )
+            assert stale_revision.value.status_code == 409
+
+            used_deleted = await delete_teaching_name(
+                db,
+                actor=actor,
+                teaching_name_id=used_name_id,
+                expected_revision=revisions[used_name_id],
+                force_delete=True,
+                reason="Required correction",
+                confirmation="DELETE",
+            )
+            assert used_deleted["used_name"] is True
+            assert used_deleted["event_reference_count"] == 1
+            assert used_deleted["native_attendance_count"] == 1
+            assert used_deleted["non_nhg_attendance_count"] == 1
+
+            event = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT teaching_name_id, teaching_name, details_of_session,
+                               posting_code, created_for_programme_code, event_date,
+                               start_time, end_time, duration_hours, is_adhoc, created_by_role
+                        FROM teaching_events
+                        WHERE id = :event_id
+                        """
+                    ),
+                    {"event_id": event_id},
+                )
+            ).mappings().one()
+            assert dict(event) == {
+                "teaching_name_id": None,
+                "teaching_name": used_name,
+                "details_of_session": event_details,
+                "posting_code": posting_code,
+                "created_for_programme_code": programme_code,
+                "event_date": date(2051, 3, 5),
+                "start_time": time(9, 0),
+                "end_time": time(10, 0),
+                "duration_hours": 1,
+                "is_adhoc": False,
+                "created_by_role": "programme_pc",
+            }
+            native_attendance = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT resident_id, teaching_event_id, submitted_at, status, posting_code
+                        FROM attendance_records
+                        WHERE id = :attendance_id
+                        """
+                    ),
+                    {"attendance_id": native_attendance_id},
+                )
+            ).mappings().one()
+            assert native_attendance["resident_id"] == resident_id
+            assert native_attendance["teaching_event_id"] == event_id
+            assert native_attendance["status"] == "submitted"
+            assert native_attendance["posting_code"] == posting_code
+            assert native_attendance["submitted_at"] is not None
+            external_attendance = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT external_resident_id, teaching_event_id, submitted_at, status,
+                               posting_code
+                        FROM external_attendance_records
+                        WHERE id = :attendance_id
+                        """
+                    ),
+                    {"attendance_id": external_attendance_id},
+                )
+            ).mappings().one()
+            assert external_attendance["external_resident_id"] == external_resident_id
+            assert external_attendance["teaching_event_id"] == event_id
+            assert external_attendance["status"] == "submitted"
+            assert external_attendance["posting_code"] == posting_code
+            assert external_attendance["submitted_at"] is not None
+        finally:
+            await db.rollback()
+            await db.execute(
+                text(
+                    """
+                    DELETE FROM audit_logs
+                    WHERE entity_type = 'teaching_name'
+                      AND entity_id = ANY(CAST(:entity_ids AS text[]))
+                    """
+                ),
+                {"entity_ids": [str(unused_name_id), str(used_name_id)]},
+            )
+            await db.execute(
+                text("DELETE FROM attendance_records WHERE id = :id"),
+                {"id": native_attendance_id},
+            )
+            await db.execute(
+                text("DELETE FROM external_attendance_records WHERE id = :id"),
+                {"id": external_attendance_id},
+            )
+            await db.execute(
+                text("DELETE FROM teaching_events WHERE id = :id"),
+                {"id": event_id},
+            )
+            await db.execute(
+                text("DELETE FROM teaching_names WHERE id = ANY(CAST(:ids AS uuid[]))"),
+                {"ids": [unused_name_id, used_name_id]},
+            )
+            await db.execute(
+                text("DELETE FROM residents WHERE id = :id"),
+                {"id": resident_id},
+            )
+            await db.execute(
+                text("DELETE FROM external_residents WHERE id = :id"),
+                {"id": external_resident_id},
+            )
+            await db.execute(
+                text("DELETE FROM session_types WHERE id = :id"),
+                {"id": session_type_id},
+            )
+            await db.execute(
+                text("DELETE FROM posting_codes WHERE code = :code"),
+                {"code": posting_code},
+            )
+            await db.execute(
+                text("DELETE FROM programmes WHERE code = :code"),
+                {"code": programme_code},
+            )
+            await db.execute(
+                text("DELETE FROM reporting_periods WHERE id = :id"),
+                {"id": period_id},
+            )
+            await db.commit()
+
+
 @pytest.mark.asyncio
 async def test_e1_reconciliation_preserves_ids_invalidates_stale_mappings_and_is_idempotent(
     ttf_e1_postgres_engine: AsyncEngine,
@@ -423,6 +1101,10 @@ async def test_e1_reconciliation_preserves_ids_invalidates_stale_mappings_and_is
                 },
             )
 
+            assert await acquire_ttf_programme_lock(
+                db,
+                programme_code=programme_code,
+            ) is True
             assert await acquire_ttf_scope_lock(
                 db,
                 reporting_period_id=period_id,
@@ -433,6 +1115,14 @@ async def test_e1_reconciliation_preserves_ids_invalidates_stale_mappings_and_is
                 expire_on_commit=False,
             ) as competing_db:
                 try:
+                    assert await acquire_ttf_programme_lock(
+                        competing_db,
+                        programme_code=programme_code,
+                    ) is False
+                    assert await acquire_ttf_programme_lock(
+                        competing_db,
+                        programme_code=f"{programme_code}X"[:20],
+                    ) is True
                     assert await acquire_ttf_scope_lock(
                         competing_db,
                         reporting_period_id=period_id,

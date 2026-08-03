@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.security import log_safe_exception
 from app.services.parser_common import ParserResult
 from app.services.teaching_target_impacts import stable_target_mapping_impact_counts
-from app.services.ttf_scope_lock import acquire_ttf_scope_lock
+from app.services.ttf_scope_lock import acquire_ttf_programme_lock, acquire_ttf_scope_lock
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +156,7 @@ class ParsedPostingGroupRow:
 
 
 class TTFUploadLockError(RuntimeError):
-    """Raised when a same-scope TTF upload is already in progress."""
+    """Raised when a TTF upload conflicts with an active TTF write lock."""
 
 
 def _cell_text(value: Any) -> str:
@@ -1225,12 +1225,22 @@ async def parse_ttf_upload(
 
     persistence_counts: dict[str, Any] = {}
     if db_session is not None:
-        lock_acquired = await acquire_ttf_scope_lock(
+        # Posting groups are programme-global while targets remain period/programme
+        # scoped. Always take the programme lock before the existing scope lock.
+        programme_lock_acquired = await acquire_ttf_programme_lock(
+            db_session,
+            programme_code=programme_code or "",
+        )
+        if not programme_lock_acquired:
+            raise TTFUploadLockError(
+                "A TTF upload or posting-group replacement for this programme is already in progress."
+            )
+        scope_lock_acquired = await acquire_ttf_scope_lock(
             db_session,
             reporting_period_id=reporting_period_id,
             programme_code=programme_code or "",
         )
-        if not lock_acquired:
+        if not scope_lock_acquired:
             raise TTFUploadLockError(
                 "A TTF upload for this reporting_period_id and programme_code is already in progress."
             )

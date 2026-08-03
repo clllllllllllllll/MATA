@@ -1,7 +1,7 @@
 # Security Contract
 
 Status: current repository security source of truth. This document describes
-the implemented local contract at Alembic revision `20260802_000029`. Local
+the implemented local contract at Alembic revision `20260803_000032`. Local
 source, test, and disposable-database evidence is not proof of a deployed
 Vercel or Supabase environment.
 
@@ -170,8 +170,10 @@ This security contract does not invent or imply an unapproved second factor.
 
 Revisions `20260802_000029` through `20260803_000031` establish the reviewed
 database boundary and activate only the shared Teaching Name lifecycle routes.
-They do not add parser, pool-backed event, resident, mapping, UI, or compliance
-behavior. The legacy A-K catalogue authorization path remains active.
+Revision `20260803_000032` adds the narrow reconciliation required inside the
+existing TTF upload transaction; it does not add a mapping API, event, resident,
+UI, or compliance flow. The legacy A-K catalogue authorization path remains
+active.
 
 The B1/Phase C RLS/grant boundary is intentionally narrow:
 
@@ -197,6 +199,9 @@ the Master Admin context, returns no row data, and holds only the requested
 name's row lock before a used-name delete counts references. Mapping rows
 cascade with their name; event identity is `SET NULL`, so event snapshots and
 attendance remain. These database controls do not replace FastAPI authorization.
+The helper is used only by an RLS runtime session; the supported non-RLS runtime
+uses the ordinary service row lock and retains the same authorization, revision,
+force-confirmation, audit, and evidence-preservation rules.
 
 E1 adds only the runtime-only
 `mata_rls.reconcile_ttf_teaching_name_mappings(uuid,text,uuid[],text[],text[])`
@@ -345,7 +350,7 @@ business rows; bounded failure evidence may still be recorded.
 
 ## 9. PostgreSQL roles, RLS, grants, and helpers
 
-At revision `20260802_000029`:
+At current revision `20260803_000032`:
 
 - 36 application tables have RLS enabled;
 - 92 action policies target only `mata_app_runtime`;
@@ -746,7 +751,7 @@ configuration and verification record.
 |---|---|---|
 | Medium | Invalid session and CSRF failures occur before the current application route limiter. | Add a non-consuming RLS-safe outer precheck plus failure-recording helper, or prove an ingress limiter, without double-counting valid requests. |
 | Medium | Admin Logs keeps its MCR-capable free-text search and record identifiers out of SPA history, but the compatible GET API still places them in a request URL. | Introduce an authorized POST search contract or prove query omission/redaction at every access-log layer. |
-| Medium | Upload domain changes, upload logs, warnings, and audit rows commit separately. | Design one transaction owner and explicit failed-upload evidence semantics; add failure-injection tests for every upload family. |
+| Medium | Remaining upload families may still commit upload domain changes, upload logs, warnings, and audit rows separately. | The TTF upload already uses one transaction for business rows, upload evidence, warnings, audit, and Data Revalidation outcome; design one transaction owner and explicit failed-upload evidence semantics for every remaining upload family. |
 | Medium | Most audited configuration mutations commit before revalidation and audit evidence. | Extend the existing non-committing service pattern and prove rollback on audit/revalidation failure. |
 | Medium | Security migration downgrades can temporarily restore weaker historical authorization. | Design security-monotone compatibility or mandate the drained rollback procedure above. |
 | Low | RLS policy attestation checks exact inventory but not a canonical hash of every predicate. | Add normalized expression/hash attestation and a negative drift test. |

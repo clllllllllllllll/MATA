@@ -411,9 +411,10 @@ No push/live-update channel is implied in the current backend. After successful 
 
 ## Shared Teaching Name pool API (Phase C)
 
-Revision `20260803_000031` activates the shared-pool lifecycle only. It does
-not add a mapping API, change the TTF parser, create pool-backed events, alter
-resident flows, or cut over the retained A-K catalogue path.
+Revision `20260803_000031` activates the shared-pool lifecycle and
+`20260803_000032` adds only the narrow E1 TTF mapping-reconciliation helper. They
+do not add a mapping API, create pool-backed events, alter resident flows, or cut
+over the retained A-K catalogue path.
 
 ### Lifecycle routes
 
@@ -463,7 +464,9 @@ server-owned normalized key.
 - Rename, deactivate, reactivate, and delete require `expected_revision`; a
   stale value returns `409` with no partial write. Rename and deactivation
   preserve mappings, and each lifecycle change increments the name revision.
-- Master deletion locks the name before it counts references. A concurrent new
+- Master deletion locks the name before it counts references: the RLS runtime
+  uses its guarded definer helper, while the supported non-RLS runtime uses the
+  same ordinary `SELECT ... FOR UPDATE` path as other deletes. A concurrent new
   event reference therefore waits, then either appears in the guarded count or
   fails after the name is deleted; it cannot be omitted from a successful
   count-only force-delete response.
@@ -567,7 +570,7 @@ Upload Teaching Target File Excel.
 - **Behaviour:** Stable target reconciliation within `(reporting_period_id, programme_code)` scope. Re-upload remains allowed regardless of existing attendance. Matching `(r_year, posting_code, session_type_id)` targets retain their UUID; stale mapped targets leave their mapping rows pending rather than deleting or redirecting them. The TTF is also the explicit programme-scoped replacement for posting-group configuration: blank or omitted Column E membership removes the prior group row for that posting.
 - **Target validation:** `monthly_target` must be a non-negative whole number. `0` is accepted and remains catalogue-seeded, event-visible, and attendance-capable, but is excluded from compliance aggregation.
 - **Orphan detection:** After catalogue regeneration, checks for attendance records whose `teaching_name` no longer has a `teaching_name_catalogue` row. These are returned as warnings — upload still returns `200`.
-- **Concurrency:** Scope-level PostgreSQL advisory lock. A second upload for the same scope returns `409`.
+- **Concurrency:** The programme-global `posting_groups` advisory lock is acquired before the existing reporting-period/programme scope lock. A concurrent upload for the same programme, including one for a different reporting period, returns controlled `409`; different programmes remain independent.
 - **Audit log:** Writes `upload_logs` row with `upload_type = 'ttf'`
 - **Response:**
 ```json
@@ -586,6 +589,8 @@ Upload Teaching Target File Excel.
   "session_types_upserted": 5,
   "posting_codes_added": ["AICAIC", "DPPallia"],
   "catalogue_rows_seeded": 84,
+  "posting_groups_upserted": 5,
+  "posting_groups_removed": 2,
   "rows_exploded": 3,
   "warnings": [
     {
@@ -601,7 +606,7 @@ Upload Teaching Target File Excel.
 ```
 - **Counter compatibility:** `targets_created` retains the legacy processed-target-row count (as does the generic upload `created_count`). `targets_inserted`, `targets_updated`, `targets_removed`, and `targets_unchanged` are the reconciliation deltas for the current upload.
 - **Error responses:**
-  - `409` — concurrent upload for same scope (advisory lock)
+  - `409` — concurrent upload for the same programme posting-group replacement or the same target scope (advisory lock)
   - `422` — file validation errors (returned before any writes)
 
 ### POST `/admin/upload/form-f1`
@@ -867,40 +872,37 @@ The `data_revalidation` object below is abbreviated to the fields most relevant 
 }
 ```
 
-### GET `/admin/teaching-targets`
+### GET `/admin/parsed-data/teaching-targets`
 
-List all teaching targets with filters.
-
-- **Auth:** admin only
-- **Query params:** `reporting_period_id`, `programme_code`, `posting_code`, `r_year` (all optional)
-- **Response:** Array of teaching target objects
-
-### PUT `/admin/teaching-targets/{id}`
-
-Edit a single teaching target row (mid-period correction).
+List parsed teaching targets with filters.
 
 - **Auth:** admin only
-- **Editable fields:** `monthly_target`, `is_tracked`, `is_reallocatable`, `tag`, `details_of_training`
+- **Query params:** `reporting_period_id`, `programme_code`, `posting_code`, `r_year`, `session_type`, `is_tracked`, `search`, `limit`, and `offset` (all optional except bounded pagination defaults)
+- **Response:** paginated parsed teaching target objects
+
+### PATCH `/admin/parsed-data/teaching-targets/{id}`
+
+Correct a single parsed teaching target row (mid-period correction).
+
+- **Auth:** admin only
+- **Editable fields only:** `monthly_target`, `is_tracked`, `is_reallocatable`, `tag`, and transitional `details_of_training`
 - **Target validation:** `monthly_target` accepts non-negative whole numbers including `0`; negative and fractional values are rejected.
-- **Identity columns (locked):** `session_type_id`, `posting_code`, `programme_code`, `r_year` — cannot be changed via CRUD. Full TTF re-upload required for structural changes.
-- **Side effect:** When `details_of_training` is updated, the system deletes and re-inserts the corresponding `teaching_name_catalogue` rows for this `(reporting_period_id, programme_code, posting_code, session_type_id)` scope. Keyword changes take effect immediately for compliance and event visibility on the next read — no TTF re-upload needed.
+- **Identity columns (locked):** `session_type_id`, `posting_code`, `programme_code`, `r_year`, and reporting-period identity cannot be changed by this route. Full TTF re-upload is required for structural changes.
+- **Side effect:** When transitional `details_of_training` changes, the corresponding `teaching_name_catalogue` rows are regenerated for that target scope. Keyword changes take effect immediately for current catalogue/event visibility reads.
 - **Body:**
 ```json
 {
-  "monthly_target": 15,
-  "is_tracked": true,
-  "is_reallocatable": false,
-  "tag": "A",
-  "details_of_training": "Lectures, Journal Club, Tutorials"
+  "changes": {
+    "monthly_target": 15,
+    "is_tracked": true,
+    "is_reallocatable": false,
+    "tag": "A",
+    "details_of_training": "Lectures, Journal Club, Tutorials"
+  },
+  "correction_reason": "Corrected approved mid-period target",
+  "last_seen_updated_at": "2026-08-03T10:00:00Z"
 }
 ```
-
-### DELETE `/admin/teaching-targets/{id}`
-
-Delete a single teaching target row.
-
-- **Auth:** admin only
-- **Constraint:** Returns warning (not block) if attendance records reference this target's session type + posting.
 
 ### GET `/admin/multi-posting-rules`
 
@@ -979,19 +981,21 @@ Add a new posting group entry.
   "programme_code": "RESPI"
 }
 ```
-- **Notes:** `group_code` is the canonical aggregation key. Add one row per posting code that belongs to the group. A posting code may only belong to one group per programme.
+- **Notes:** `group_code` is the canonical aggregation key. Add one row per posting code that belongs to the group. A posting code may only belong to one group per programme. This writer takes the same programme-level posting-group transaction lock as TTF replacement; it returns `409` while another posting-group writer or TTF replacement for that programme is in progress.
 
 ### PUT `/admin/posting-groups/{id}`
 
 Update an existing posting group entry.
 
 - **Auth:** admin only
+- **Concurrency:** The update locks its original programme and, when moving the row, its replacement programme in deterministic code order before writing. It returns `409` if either programme is being replaced by TTF or changed by another posting-group writer.
 
 ### DELETE `/admin/posting-groups/{id}`
 
 Delete a posting group entry.
 
 - **Auth:** admin only
+- **Concurrency:** This writer takes the same programme-level posting-group transaction lock as TTF replacement and returns `409` on contention.
 - **Response:** `200` with `{ "entity_type": "posting_group", "entity_id": "...", "deleted": true, "data_revalidation": {...} }`.
 
 List all weekend exception rules.
@@ -2362,6 +2366,7 @@ Workbook columns and programme/r_year routing metadata remain implementation-own
 { "detail": "Cannot delete event with attendance" }                              // 409
 { "detail": "Duplicate attendance submission" }                                  // 409
 { "detail": "Attendance overlaps an earlier accepted event" }                    // 409
+{ "detail": "A TTF upload or posting-group replacement for this programme is in progress" } // 409
 { "detail": "Another TTF upload for this scope is in progress" }                 // 409
 { "detail": "Unsupported media type" }                                           // 415 public login/registration is not application/json
 { "detail": "No active reporting period is available" }                          // 422

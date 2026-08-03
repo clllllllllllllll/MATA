@@ -68,7 +68,7 @@ Staff password authentication is backend-mediated through Supabase, and no Supab
 
 Session rotation is serialized by subject, transaction-scoped family advisory lock, and locked/refreshed database row. Subject generation fencing invalidates sessions after authorization change, password reset, or deactivation. Revision `20260722_000024` revokes browser-role object privileges.
 
-**5B-H-E/B1 current lifecycle local state (2026-08-02):** Revisions `20260726_000025` and `20260726_000026` add separate non-owner runtime and auth-helper capabilities, database-revalidated signed transaction context, reviewed service helpers, database-enforced global MCR uniqueness, and the full policy/grant cutover. Revision `20260727_000027` narrows restricted session-helper results, adds interval-gated activity, and denies signed RLS context after session expiry/revocation. Revision `20260802_000029` then adds the additive Teaching Name pool/mapping foundation, stable optional event identities, and the explicit Secretary pilot capability without changing the legacy A-K workflow. All 36 application tables have RLS enabled locally; 92 policies target only `mata_app_runtime`. The runtime, auth-helper, and migration/ownership credentials must be distinct, and startup attestation fails closed on unsafe roles, ownership, grants, helpers, policies, schema access, sequences, PUBLIC, or browser-role state. FastAPI authorization remains mandatory.
+**5B-H-E/B1 current lifecycle local state (2026-08-03):** Revisions `20260726_000025` and `20260726_000026` add separate non-owner runtime and auth-helper capabilities, database-revalidated signed transaction context, reviewed service helpers, database-enforced global MCR uniqueness, and the full policy/grant cutover. Revision `20260727_000027` narrows restricted session-helper results, adds interval-gated activity, and denies signed RLS context after session expiry/revocation. Revisions `20260802_000029`, `20260803_000030`, and `20260803_000031` add the Teaching Name pool/mapping foundation, stable optional event identities, and the explicit Secretary pilot capability without changing the legacy A-K workflow. Revision `20260803_000032` adds the narrow E1 TTF mapping-reconciliation helper. All 36 application tables have RLS enabled locally; 92 policies target only `mata_app_runtime`. The runtime, auth-helper, and migration/ownership credentials must be distinct, and startup attestation fails closed on unsafe roles, ownership, grants, helpers, policies, schema access, sequences, PUBLIC, or browser-role state. FastAPI authorization remains mandatory.
 
 Local code and disposable-database verification are not proof of deployed Supabase behavior.
 
@@ -483,14 +483,14 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 
 **TTF Upload Flow (current legacy A-K behavior until final E2/B2 cutover):**
 1. Master Admin selects any programme, or a Programme PC selects a normalized programme in their scope, then uploads `.xlsx` via `POST /admin/upload/ttf`
-2. Acquires scope-level PostgreSQL advisory lock (returns 409 if contended)
+2. Acquires the programme-global `posting_groups` PostgreSQL advisory lock, then the reporting-period/programme scope lock (returns 409 if either is contended)
 3. `ttf_parser.py` validates all rows before any writes
-4. Full replace within `(reporting_period_id, programme_code)` scope: deletes existing `teaching_targets` and `teaching_name_catalogue` rows, then inserts new ones
-5. Seeds `teaching_name_catalogue` from legacy Column K (Details of Training) — one row per keyword per TTF row
-6. Seeds `posting_groups` from column E when non-empty
+4. Logically replaces the `(reporting_period_id, programme_code)` target scope through stable reconciliation: matching target UUIDs survive, mutable values update, and only stale targets are removed after their mappings become pending
+5. Regenerates `teaching_name_catalogue` from legacy Column K (Details of Training) — one row per keyword per TTF row
+6. Replaces the programme-wide `posting_groups` configuration from non-empty Column E rows
 7. Non-tracked rows (`is_tracked = false`) are still seeded into `teaching_name_catalogue` for event visibility
 8. **No 422 attendance guard on re-upload.** If existing attendance records reference teaching names that no longer map to a catalogue row, they are returned as warnings — upload still returns 200
-9. Admin uses `PUT /admin/teaching-targets/{id}` CRUD for mid-period corrections (updates legacy `details_of_training` and re-seeds catalogue rows for that specific target)
+9. Admin uses `PATCH /admin/parsed-data/teaching-targets/{id}` for permitted mid-period corrections; structural target identity changes require TTF re-upload
 
 **FormF1 Upload Flow:**
 1. Master Admin selects reporting period and uploads `.xlsx` via `POST /admin/upload/form-f1`
@@ -636,7 +636,7 @@ See `99_decision_log_and_gap_audit.md` for the full TBD register with placeholde
 | Reallocation scope | Raw session counts before final capping; one-for-one within physical posting/R-year context/tag prefix; alphabetical tag order; no duration or cross-posting transfer | PM approval |
 | Compliance unit | Session counts, never hours | PM approval |
 | Reallocation write | Read-time only via `reallocate_by_tag()`; never written to `surplus_ledger` | PM approval |
-| TTF upload behaviour | Full replace within `(reporting_period_id, programme_code)` scope; warn (not 422) if attendance exists | PM approval |
+| TTF upload behaviour | Logical replacement within `(reporting_period_id, programme_code)` via stable target reconciliation; warn (not 422) if attendance exists | PM approval |
 | RDB re-upload | Full replace within selected `reporting_period_id` after successful parse/validation | PM approval |
 | FormF1 re-upload | Full replace within `reporting_period_id` scope; allowed at any time | PM approval |
 | Posting code source | `posting_codes` table only; never derived by regex or string pattern | PM approval |
@@ -714,10 +714,10 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 - **Legacy Column K is mandatory in this current transition.** Absent from STP — PC adds manually. Without it, `teaching_name_catalogue` is empty and residents see zero events. The final A-J format removes it at E2/B2.
 - **Duration:** Embedded in session type name as `[Xh]`. No separate column. Secretary picks `start_time` only; `end_time` server-computed.
 - **Multi-year rows:** "R1,R2,R3" exploded into separate `teaching_targets` rows. `r_year = 'ALL'` for 20 programmes; SPORTSMED/PALLMED use R4–R6 unchanged.
-- **Column E → `posting_groups`:** When non-empty, upserts a `posting_groups` row linking the posting code to the group.
+- **Column E → `posting_groups`:** Non-empty rows form the programme-wide replacement configuration; each row upserts its posting/group membership and omitted membership is removed.
 - **Writes to:** `teaching_targets`, `session_types`, `teaching_name_catalogue`, `posting_codes`, `posting_groups`
-- **Upload:** Full replace within `(reporting_period_id, programme_code)`. No 422 re-upload guard — warns if attendance exists.
-- **Concurrency:** Scope-level advisory lock; 409 if contended.
+- **Upload:** Logical replacement within `(reporting_period_id, programme_code)` through stable target reconciliation. No 422 re-upload guard — warns if attendance exists.
+- **Concurrency:** Programme-global posting-group advisory lock first, then scope-level advisory lock; 409 if contended. Different programmes remain independent.
 
 ### FormF1
 
@@ -819,10 +819,10 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 | Endpoint | Purpose | Key Behaviour |
 |----------|---------|---------------|
 | `POST /admin/upload/rdb` | RDB upload | Calls `rdb_parser.py`; complete snapshot full-period replacement |
-| `POST /admin/upload/ttf` | TTF upload | Calls `ttf_parser.py`; 409 advisory lock; warns on existing attendance |
+| `POST /admin/upload/ttf` | TTF upload | Calls `ttf_parser.py`; programme then scope advisory locks; warns on existing attendance |
 | `POST /admin/upload/form-f1` | FormF1 upload | Calls `form_f1_parser.py`; full replace |
 | `POST /admin/upload/public-holidays` | Academic Calendar + PH upload | Upsert `public_holidays` and replace/seed `academic_month_boundaries` from AY Dates workbook content |
-| `PUT /admin/teaching-targets/{id}` | Mid-period TTF correction | Re-seeds `teaching_name_catalogue` for that specific target |
+| `PATCH /admin/parsed-data/teaching-targets/{id}` | Mid-period TTF correction | Allows only mutable target fields and regenerates catalogue rows when transitional `details_of_training` changes |
 | `GET/POST /admin/programme-teaching-events` | Implemented 4B PC event CRUD | Programme-owned scheduled events via `created_for_programme_code` |
 | `GET /admin/secretary-events` | Secretary/PC Events | Master Admin review of both scheduled event sources; stable legacy route |
 | `POST /admin/secretary-events/{id}/force-delete` | Force-delete one scheduled event | Explicit Master Admin only; atomically deletes linked native/Non-NHG attendance, event, and writes audit |

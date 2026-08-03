@@ -688,12 +688,12 @@ unresolved evidence is excluded.
 
 **Orphan detection (post-write):** After catalogue regeneration, query for attendance records whose resolved session_type will no longer match any catalogue row. These are returned as warnings in the upload response — the upload still returns `200`.
 
-**Concurrency:** A scope-level PostgreSQL advisory lock is acquired at the start of the transaction. A second upload for the same scope returns `409`.
+**Concurrency:** The programme-global `posting_groups` PostgreSQL advisory lock is acquired before the reporting-period/programme scope advisory lock. A second upload for the same programme returns `409`, including a different reporting period; different programmes remain independent.
 
 #### Step order
 
 1. Validate all rows — abort before any business writes if errors
-2. Acquire the shared scope-level advisory lock (409 if contended)
+2. Acquire the programme-global posting-group advisory lock, then the shared scope-level advisory lock (409 if either is contended)
 3. Upsert session types and posting codes, then load/lock existing target rows
 4. Reconcile targets by their stable natural identity; clear stale mapping links before deleting only stale targets
 5. Provision missing pending mappings for newly introduced target scopes and preserve existing matching links
