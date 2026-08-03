@@ -34,8 +34,15 @@ Every important decision made during the project, with reasoning and consequence
   scoped by `(reporting_period_id, programme_code)`, begin empty for each new
   period, do not copy forward, and preserve prior periods as history. Explicitly
   authorized Secretaries and Programme PCs may create, rename, deactivate, and
-  reactivate names; only PCs may map names to targets; Master Admin may
+  reactivate names; only PCs may map names to targets. **Historical deletion
+  rule (superseded by the current Phase C rule below):** Master Admin may
   hard-delete only an unused name.
+- **Current Phase C deletion rule:** Secretary and Programme PC may hard-delete
+  unused names only. Master Admin may also delete a used name through the
+  guarded destructive workflow with the current revision, explicit force intent,
+  a nonblank reason, and exact `DELETE` confirmation. The Teaching Name identity
+  is removed, while events, immutable event display text, and attendance remain
+  preserved.
 - **Normalization and mappings:** Normalize Unicode canonically, trim outer
   whitespace, collapse internal whitespace, and enforce case-insensitive
   uniqueness while preserving punctuation/wording. No fuzzy, abbreviation,
@@ -375,12 +382,12 @@ only under an approved product scope.
 
 ---
 
-#### Decision: TTF upload — full replace, warn not 422 on existing attendance
+#### Decision: TTF upload — logical scope replacement, warn not 422 on existing attendance
 - **Status:** ✅ Confirmed
-- **Decision:** TTF re-upload is always a full replace within `(reporting_period_id, programme_code)` scope, regardless of existing attendance. No 422 attendance guard. Orphaned attendance returned as warnings.
+- **Decision:** TTF re-upload always logically replaces the `(reporting_period_id, programme_code)` target scope, regardless of existing attendance. Physical persistence reconciles by stable target identity: matching targets retain UUIDs, mutable fields update, and only stale targets are removed. Mappings for removed targets remain as pending rows. No 422 attendance guard. Orphaned attendance returns as warnings.
 - **Reasoning:** PCs need to correct TTF errors mid-period. Blocking re-upload forces manual DB intervention. Orphaned attendance is silently excluded from compliance on next read — no data corruption, just compliance recalculation.
 - **Alternatives considered:** 422 guard blocking re-upload when attendance exists — rejected, too restrictive for PC workflow.
-- **Consequences for codebase:** `ttf_parser.py` deletes and re-inserts `teaching_targets` and `teaching_name_catalogue` within scope. Post-write orphan detection query checks for attendance records with no matching catalogue row. Results included in response `warnings` array.
+- **Consequences for codebase:** `ttf_parser.py` reconciles `teaching_targets` within scope, regenerates the legacy `teaching_name_catalogue`, and replaces programme-wide `posting_groups`. Post-write orphan detection queries attendance records with no matching catalogue row. Results are included in the response `warnings` array.
 - **Reference file and section:** `api.md` § POST `/admin/upload/ttf`; `parsing.md` § TTF Parser Upload Behaviour
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -918,7 +925,7 @@ Status: ✅ Resolved
 #### TBD-1: Details of Training Keyword Matching (Mechanism)
 - **Original question:** How should teaching events be matched to session types for compliance? The STP/Details of Training keywords were not available in the original system design.
 - **Final decision:** In the current legacy A-K transition, `teaching_name_catalogue` is the source of truth. It is seeded from TTF Column K at upload time, with one row per `(keyword, posting_code, programme_code, r_year, reporting_period_id)`. Session type is specified to resolve at compliance read time and is never stored on `attendance_records`.
-- **Consequences for codebase:** The current parser seeds `teaching_name_catalogue`; the future Phase 6 specification resolves it via `keyword = teaching_event.teaching_name`; `PUT /admin/teaching-targets/{id}` re-seeds catalogue rows when legacy `details_of_training` is updated.
+- **Consequences for codebase:** The current parser seeds `teaching_name_catalogue`; the future Phase 6 specification resolves it via `keyword = teaching_event.teaching_name`; `PATCH /admin/parsed-data/teaching-targets/{id}` regenerates catalogue rows when transitional `details_of_training` is updated.
 - **File and section:** `business-logic.md` § BL-6; `schema.md` § `teaching_name_catalogue`; `parsing.md` § TTF Parser
 - **Mandatory instruction:** Do NOT reopen the current legacy mechanism before E2/B2. Its keyword data comes from TTF Column K prepared by the PC; the final evolved A-J target is governed by the 2026-08-02 transition decision above.
 

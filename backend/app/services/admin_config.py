@@ -19,6 +19,7 @@ from app.services.reporting_period_status import (
     get_effective_reporting_period_status,
     normalise_reporting_period_status,
 )
+from app.services.ttf_scope_lock import acquire_ttf_programme_lock
 
 
 ALLOWED_MULTI_POSTING_RULE_TYPES = {"main_posting", "combine", "half_month"}
@@ -1112,6 +1113,34 @@ def _raise_conflict(detail: str) -> None:
         detail=detail,
         error_code=ErrorCode.CONFLICT.value,
     )
+
+
+async def _require_posting_group_programme_lock(
+    db: AsyncSession,
+    *,
+    programme_code: str,
+) -> None:
+    """Keep manual posting-group writes coherent with TTF replacement."""
+    if not await acquire_ttf_programme_lock(db, programme_code=programme_code):
+        _raise_conflict("A posting-group change for this programme is already in progress")
+
+
+async def _require_unchanged_posting_group_programme(
+    db: AsyncSession,
+    *,
+    posting_group_id: UUID,
+    programme_code: str,
+) -> None:
+    """Reject a row moved before its original programme lock was acquired."""
+    result = await db.execute(
+        text("SELECT id, programme_code FROM posting_groups WHERE id = :id FOR UPDATE"),
+        {"id": str(posting_group_id)},
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        _raise_not_found("Posting group not found")
+    if str(row["programme_code"]) != programme_code:
+        _raise_conflict("Posting group changed while its programme lock was acquired")
 
 
 def _raise_validation(detail: str) -> None:
@@ -2232,6 +2261,7 @@ async def create_posting_group(
         _raise_validation(f"Unknown programme code: {programme_code}")
     if not await _posting_code_exists(db, posting_code):
         _raise_validation(f"Unknown posting code: {posting_code}")
+    await _require_posting_group_programme_lock(db, programme_code=programme_code)
     try:
         result = await db.execute(
             text(
@@ -2285,6 +2315,18 @@ async def update_posting_group(
         _raise_validation(f"Unknown programme code: {programme_code}")
     if not await _posting_code_exists(db, posting_code):
         _raise_validation(f"Unknown posting code: {posting_code}")
+    # A cross-programme edit takes only its two relevant programme locks, in a
+    # stable order, so independent programmes remain concurrent.
+    for locked_programme_code in sorted({str(row["programme_code"]), programme_code}):
+        await _require_posting_group_programme_lock(
+            db,
+            programme_code=locked_programme_code,
+        )
+    await _require_unchanged_posting_group_programme(
+        db,
+        posting_group_id=posting_group_id,
+        programme_code=str(row["programme_code"]),
+    )
     try:
         result = await db.execute(
             text(
@@ -2333,6 +2375,15 @@ async def delete_posting_group(
             programme_scope=programme_scope,
             programme_code=row["programme_code"],
         )
+    await _require_posting_group_programme_lock(
+        db,
+        programme_code=str(row["programme_code"]),
+    )
+    await _require_unchanged_posting_group_programme(
+        db,
+        posting_group_id=posting_group_id,
+        programme_code=str(row["programme_code"]),
+    )
     await db.execute(
         text("DELETE FROM posting_groups WHERE id = :id"),
         {"id": str(posting_group_id)},

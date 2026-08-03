@@ -17,7 +17,7 @@ from app.config import Settings
 from app.services.database_context import MataSyncSession
 
 
-DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_phase_c_verify"
+DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_pre_d_fix_verify"
 RUNTIME_GROUP = "mata_app_runtime"
 AUTH_GROUP = "mata_auth_internal"
 REQUIRED_REVISION = "20260803_000032"

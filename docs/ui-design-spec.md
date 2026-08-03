@@ -446,7 +446,7 @@ Fields (top to bottom):
 - SMC event code (mono input, visible only when CME = *Yes*).
 - Footer: *Cancel* · *Add Teaching* / *Save*.
 
-**Delete confirmation modal.** *"Delete N teachings? This cannot be undone. Resident submissions linked to these teachings will be detached."*
+**Delete confirmation modal.** *"Delete N teachings? This cannot be undone. Deletion is unavailable for a teaching with linked attendance; no submission is detached."*
 
 ---
 
@@ -473,6 +473,11 @@ component. The later evolved UI uses these exact labels:
   The UI displays the server-computed one-hour end time, rejects starts later
   than 23:00 through the controlled validation state, and never changes stored
   timing when a mapping changes.
+- **Master Teaching Name deletion modal.** *"Remove this Teaching Name? This is
+  destructive. The Teaching Name identity is removed, while existing events,
+  their immutable display text, and native and Non-NHG attendance evidence are
+  preserved."* A used name additionally requires explicit force intent, a
+  reason, and exact `DELETE` confirmation.
 
 ### S8 — NHG Resident Submission Portal
 
