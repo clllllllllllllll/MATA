@@ -366,7 +366,7 @@ def _advisory_lock_keys(reporting_period_id: UUID, programme_code: str) -> tuple
     return key1, key2
 
 
-async def _acquire_ttf_scope_lock(
+async def acquire_ttf_scope_lock(
     db_session: AsyncSession,
     *,
     reporting_period_id: UUID,
@@ -990,7 +990,7 @@ async def parse_ttf_upload(
 
     persistence_counts: dict[str, Any] = {}
     if db_session is not None:
-        lock_acquired = await _acquire_ttf_scope_lock(
+        lock_acquired = await acquire_ttf_scope_lock(
             db_session,
             reporting_period_id=reporting_period_id,
             programme_code=programme_code or "",

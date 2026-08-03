@@ -115,6 +115,15 @@ from app.schemas.data_revalidation import (
     DataRevalidationScope,
     DataRevalidationTriggerSource,
 )
+from app.schemas.teaching_names import (
+    TeachingNameCreateRequest,
+    TeachingNameDeleteRequest,
+    TeachingNameDeleteResponse,
+    TeachingNameListResponse,
+    TeachingNameMutationResponse,
+    TeachingNameRevisionRequest,
+    TeachingNameUpdateRequest,
+)
 from app.services import (
     admin_config,
     admin_external_attendance,
@@ -126,6 +135,7 @@ from app.services import (
     parsed_data,
     programme_teaching_events,
     staff_accounts,
+    teaching_name_pool,
 )
 from app.services.admin_logs_service import (
     get_admin_log as get_admin_log_read_model,
@@ -195,6 +205,17 @@ def _admin_actor_context(admin_context: AdminContext) -> StaffActorContext:
         actor_programme=",".join(sorted(admin_context.programme_scope)) or None,
         actor_admin_level="master" if admin_context.is_master_admin else None,
         raw_scope_metadata=scope_metadata,
+    )
+
+
+def _teaching_name_pool_actor(
+    admin_context: AdminContext,
+) -> teaching_name_pool.TeachingNamePoolActor:
+    return teaching_name_pool.TeachingNamePoolActor(
+        kind="master_admin" if admin_context.is_master_admin else "programme_pc",
+        user_id=admin_context.user_id,
+        staff_actor=_admin_actor_context(admin_context),
+        programme_scope=frozenset(admin_context.programme_scope),
     )
 
 
@@ -2760,6 +2781,126 @@ async def delete_global_session_type(
             data_revalidation=data_revalidation,
         )
     )
+
+
+@router.get("/teaching-names", response_model=TeachingNameListResponse)
+async def list_teaching_names(
+    reporting_period_id: UUID = Query(...),
+    programme_code: str = Query(..., min_length=1, max_length=20),
+    is_active: bool | None = Query(default=None),
+    search: str | None = Query(default=None, max_length=200),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_db_session),
+) -> TeachingNameListResponse:
+    payload = await teaching_name_pool.list_teaching_names(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        is_active=is_active,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    return TeachingNameListResponse.model_validate(payload)
+
+
+@router.post("/teaching-names", response_model=TeachingNameMutationResponse)
+async def create_teaching_name(
+    request: TeachingNameCreateRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameMutationResponse:
+    _require_programme_pc_context(admin_context)
+    payload = await teaching_name_pool.create_teaching_name(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        **request.model_dump(mode="python"),
+    )
+    return TeachingNameMutationResponse.model_validate(payload)
+
+
+@router.patch(
+    "/teaching-names/{teaching_name_id}",
+    response_model=TeachingNameMutationResponse,
+)
+async def update_teaching_name(
+    teaching_name_id: UUID,
+    request: TeachingNameUpdateRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameMutationResponse:
+    _require_programme_pc_context(admin_context)
+    payload = await teaching_name_pool.update_teaching_name(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        teaching_name_id=teaching_name_id,
+        **request.model_dump(mode="python"),
+    )
+    return TeachingNameMutationResponse.model_validate(payload)
+
+
+@router.post(
+    "/teaching-names/{teaching_name_id}/deactivate",
+    response_model=TeachingNameMutationResponse,
+)
+async def deactivate_teaching_name(
+    teaching_name_id: UUID,
+    request: TeachingNameRevisionRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameMutationResponse:
+    _require_programme_pc_context(admin_context)
+    payload = await teaching_name_pool.deactivate_teaching_name(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        teaching_name_id=teaching_name_id,
+        expected_revision=request.expected_revision,
+    )
+    return TeachingNameMutationResponse.model_validate(payload)
+
+
+@router.post(
+    "/teaching-names/{teaching_name_id}/reactivate",
+    response_model=TeachingNameMutationResponse,
+)
+async def reactivate_teaching_name(
+    teaching_name_id: UUID,
+    request: TeachingNameRevisionRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameMutationResponse:
+    _require_programme_pc_context(admin_context)
+    payload = await teaching_name_pool.reactivate_teaching_name(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        teaching_name_id=teaching_name_id,
+        expected_revision=request.expected_revision,
+    )
+    return TeachingNameMutationResponse.model_validate(payload)
+
+
+@router.delete(
+    "/teaching-names/{teaching_name_id}",
+    response_model=TeachingNameDeleteResponse,
+)
+async def delete_teaching_name(
+    teaching_name_id: UUID,
+    request: TeachingNameDeleteRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameDeleteResponse:
+    if not admin_context.is_master_admin:
+        _require_programme_pc_context(admin_context)
+    payload = await teaching_name_pool.delete_teaching_name(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        teaching_name_id=teaching_name_id,
+        **request.model_dump(mode="python"),
+    )
+    return TeachingNameDeleteResponse.model_validate(payload)
 
 
 @router.get("/programme-teaching-events")

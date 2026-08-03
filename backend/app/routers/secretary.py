@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db_session
+from app.database import get_db_session, get_exclusive_db_session
 from app.dependencies.auth import require_secretary
 from app.dependencies.staff_actor import StaffActorContext, require_staff_actor
 from app.errors import ApiError, ErrorCode
@@ -23,8 +23,18 @@ from app.schemas.secretary import (
     SecretaryTeachingEventDuplicateRequest,
     SecretaryTeachingEventSeriesCreateRequest,
 )
+from app.schemas.teaching_names import (
+    TeachingNameCreateRequest,
+    TeachingNameDeleteRequest,
+    TeachingNameDeleteResponse,
+    TeachingNameListResponse,
+    TeachingNameMutationResponse,
+    TeachingNameProgrammeListResponse,
+    TeachingNameRevisionRequest,
+    TeachingNameUpdateRequest,
+)
 from app.services.audit import write_audit_log
-from app.services import secretary_events
+from app.services import secretary_events, teaching_name_pool
 from app.services.teaching_event_locks import acquire_teaching_event_locks
 
 
@@ -36,6 +46,18 @@ logger = logging.getLogger(__name__)
 class SecretaryContext:
     user_id: UUID
     posting_code: str
+
+
+def _teaching_name_pool_actor(
+    secretary_context: SecretaryContext,
+    staff_actor: StaffActorContext,
+) -> teaching_name_pool.TeachingNamePoolActor:
+    return teaching_name_pool.TeachingNamePoolActor(
+        kind="secretary",
+        user_id=secretary_context.user_id,
+        staff_actor=staff_actor,
+        posting_code=secretary_context.posting_code,
+    )
 
 
 _SECRETARY_AUDIT_ACTIONS = {
@@ -627,6 +649,141 @@ async def reporting_periods(
 ) -> list[dict[str, Any]]:
     del secretary_context
     return await secretary_events.list_reporting_periods(db)
+
+
+@router.get(
+    "/teaching-name-programmes",
+    response_model=TeachingNameProgrammeListResponse,
+)
+async def list_teaching_name_programmes(
+    secretary_context: SecretaryContext = Depends(require_secretary_context),
+    db: AsyncSession = Depends(get_db_session),
+) -> TeachingNameProgrammeListResponse:
+    payload = await teaching_name_pool.list_secretary_programmes(
+        db,
+        posting_code=secretary_context.posting_code,
+    )
+    return TeachingNameProgrammeListResponse.model_validate({"items": payload})
+
+
+@router.get("/teaching-names", response_model=TeachingNameListResponse)
+async def list_teaching_names(
+    reporting_period_id: UUID = Query(...),
+    programme_code: str = Query(..., min_length=1, max_length=20),
+    is_active: bool | None = Query(default=None),
+    search: str | None = Query(default=None, max_length=200),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    secretary_context: SecretaryContext = Depends(require_secretary_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
+    db: AsyncSession = Depends(get_db_session),
+) -> TeachingNameListResponse:
+    payload = await teaching_name_pool.list_teaching_names(
+        db,
+        actor=_teaching_name_pool_actor(secretary_context, staff_actor),
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        is_active=is_active,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    return TeachingNameListResponse.model_validate(payload)
+
+
+@router.post("/teaching-names", response_model=TeachingNameMutationResponse)
+async def create_teaching_name(
+    request: TeachingNameCreateRequest,
+    secretary_context: SecretaryContext = Depends(require_secretary_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameMutationResponse:
+    payload = await teaching_name_pool.create_teaching_name(
+        db,
+        actor=_teaching_name_pool_actor(secretary_context, staff_actor),
+        **request.model_dump(mode="python"),
+    )
+    return TeachingNameMutationResponse.model_validate(payload)
+
+
+@router.patch(
+    "/teaching-names/{teaching_name_id}",
+    response_model=TeachingNameMutationResponse,
+)
+async def update_teaching_name(
+    teaching_name_id: UUID,
+    request: TeachingNameUpdateRequest,
+    secretary_context: SecretaryContext = Depends(require_secretary_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameMutationResponse:
+    payload = await teaching_name_pool.update_teaching_name(
+        db,
+        actor=_teaching_name_pool_actor(secretary_context, staff_actor),
+        teaching_name_id=teaching_name_id,
+        **request.model_dump(mode="python"),
+    )
+    return TeachingNameMutationResponse.model_validate(payload)
+
+
+@router.post(
+    "/teaching-names/{teaching_name_id}/deactivate",
+    response_model=TeachingNameMutationResponse,
+)
+async def deactivate_teaching_name(
+    teaching_name_id: UUID,
+    request: TeachingNameRevisionRequest,
+    secretary_context: SecretaryContext = Depends(require_secretary_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameMutationResponse:
+    payload = await teaching_name_pool.deactivate_teaching_name(
+        db,
+        actor=_teaching_name_pool_actor(secretary_context, staff_actor),
+        teaching_name_id=teaching_name_id,
+        expected_revision=request.expected_revision,
+    )
+    return TeachingNameMutationResponse.model_validate(payload)
+
+
+@router.post(
+    "/teaching-names/{teaching_name_id}/reactivate",
+    response_model=TeachingNameMutationResponse,
+)
+async def reactivate_teaching_name(
+    teaching_name_id: UUID,
+    request: TeachingNameRevisionRequest,
+    secretary_context: SecretaryContext = Depends(require_secretary_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameMutationResponse:
+    payload = await teaching_name_pool.reactivate_teaching_name(
+        db,
+        actor=_teaching_name_pool_actor(secretary_context, staff_actor),
+        teaching_name_id=teaching_name_id,
+        expected_revision=request.expected_revision,
+    )
+    return TeachingNameMutationResponse.model_validate(payload)
+
+
+@router.delete(
+    "/teaching-names/{teaching_name_id}",
+    response_model=TeachingNameDeleteResponse,
+)
+async def delete_teaching_name(
+    teaching_name_id: UUID,
+    request: TeachingNameDeleteRequest,
+    secretary_context: SecretaryContext = Depends(require_secretary_context),
+    staff_actor: StaffActorContext = Depends(require_staff_actor),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameDeleteResponse:
+    payload = await teaching_name_pool.delete_teaching_name(
+        db,
+        actor=_teaching_name_pool_actor(secretary_context, staff_actor),
+        teaching_name_id=teaching_name_id,
+        **request.model_dump(mode="python"),
+    )
+    return TeachingNameDeleteResponse.model_validate(payload)
 
 
 @router.get("/teaching-name-options")

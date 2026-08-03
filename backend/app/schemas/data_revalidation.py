@@ -22,6 +22,7 @@ class DataRevalidationTriggerSource(str, Enum):
     LIVE_DATA_CORRECTION = "live_data_correction"
     ADMIN_CONFIG_CHANGE = "admin_config_change"
     PC_CONFIG_CHANGE = "pc_config_change"
+    SECRETARY_CONFIG_CHANGE = "secretary_config_change"
     MANUAL_REVALIDATION = "manual_revalidation"
 
 
@@ -40,6 +41,7 @@ class DataRevalidationChangedEntity(str, Enum):
     POSTING_GROUP = "posting_group"
     WEEKEND_EXCEPTION = "weekend_exception"
     GLOBAL_SESSION_TYPE = "global_session_type"
+    TEACHING_NAME = "teaching_name"
     UNKNOWN = "unknown"
 
 

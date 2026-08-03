@@ -206,7 +206,7 @@ class TeachingNameMapping(UUIDTimestampMixin, Base):
                 "teaching_names.programme_code",
             ],
             name="fk_teaching_name_mappings_name_pool",
-            ondelete="RESTRICT",
+            ondelete="CASCADE",
         ),
         ForeignKeyConstraint(
             [
@@ -470,7 +470,7 @@ class TeachingEvent(UUIDTimestampMixin, Base):
         nullable=True,
     )
     teaching_name_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("teaching_names.id", ondelete="RESTRICT"),
+        ForeignKey("teaching_names.id", ondelete="SET NULL"),
         nullable=True,
     )
     global_session_type_id: Mapped[UUID | None] = mapped_column(

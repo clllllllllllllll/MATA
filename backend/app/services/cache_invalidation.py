@@ -316,6 +316,35 @@ def invalidate_after_secretary_event_mutation(
     )
 
 
+def invalidate_after_teaching_name_pool_change(
+    *,
+    teaching_name_id: Any,
+    reporting_period_id: Any,
+    programme_code: Any,
+    event_references_cleared: bool = False,
+) -> list[CacheInvalidationCall]:
+    domains: tuple[str, ...] = (
+        "teaching_name_pool",
+        "teaching_name_mappings",
+        "teaching_name_options",
+        "programme_teaching_events",
+    )
+    if event_references_cleared:
+        domains += (
+            "teaching_events",
+            "secretary_events",
+            "resident_events",
+            "resident_dashboard",
+            "admin_reports",
+        )
+    return invalidate_cache(
+        domains,
+        teaching_name_id=teaching_name_id,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+    )
+
+
 def invalidate_after_admin_event_force_delete(
     *,
     event_id: Any,
