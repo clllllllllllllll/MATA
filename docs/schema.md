@@ -455,11 +455,13 @@ session types in the same scope.
 
 ### Related B1 additions
 
-- `teaching_events.teaching_name_id` and
-  `teaching_events.global_session_type_id` are nullable, `RESTRICT`-referenced
-  stable identities. The database permits legacy rows with neither but rejects
-  rows with both; B1 neither backfills nor changes the legacy `teaching_name`
-  text workflow.
+- `teaching_events.teaching_name_id` is a nullable `SET NULL`-referenced stable
+  identity, while `global_session_type_id` remains nullable and `RESTRICT`-
+  referenced. Deleting a Teaching Name clears only the optional identity; the
+  immutable event `teaching_name` snapshot, event metadata, and native and
+  Non-NHG attendance remain intact. The database permits legacy rows with
+  neither but rejects rows with both; B1 neither backfills nor changes the
+  legacy `teaching_name` text workflow.
 - `secretary_programme_pools.can_manage_teaching_names` is non-null and defaults
   to false. Migration preflight enables it only for the single active approved
   `TTSHGerMed`/`GERI` pilot pool.
@@ -535,7 +537,7 @@ Teaching sessions created by secretaries, Programme PC CRUD, or ad-hoc submissio
 | end_time | TIME | | Server-computed from start_time + session_type.duration_hours at creation |
 | duration_hours | DECIMAL(4,2) | | Copied from the selected event option for display/time computation only. Never used as a compliance multiplier or catalogue tiebreaker. |
 | session_type_id | UUID | FK → session_types.id, nullable | **Display/prototype only.** Resolved at event creation from teaching_name_catalogue for the secretary's native programme. NEVER used for compliance — compliance always re-resolves per resident at read time. |
-| teaching_name_id | UUID | FK → teaching_names.id, nullable, `RESTRICT` | Additive B1 stable pool identity. Legacy rows remain null until a later cutover. Cannot coexist with `global_session_type_id`. |
+| teaching_name_id | UUID | FK → teaching_names.id, nullable, `SET NULL` | Additive B1 stable pool identity. Deleting the referenced name clears this optional link only; the event snapshot and attendance remain. Legacy rows remain null until a later cutover. Cannot coexist with `global_session_type_id`. |
 | global_session_type_id | UUID | FK → global_session_types.id, nullable, `RESTRICT` | Additive B1 stable global identity. Legacy rows remain null until a later cutover. Cannot coexist with `teaching_name_id`. |
 | series_id | UUID | FK → event_series.id, nullable | Set if this event is part of a recurring series |
 | cme_points_awarded | BOOLEAN | DEFAULT false | |

@@ -21,16 +21,35 @@ from tests.test_external_registration_migrations_postgres import (
 
 PREVIOUS_REVISION = "20260728_000028"
 B1_REVISION = "20260802_000029"
+B1_1_REVISION = "20260803_000030"
 MIGRATION_PATH = (
     BACKEND_ROOT
     / "alembic"
     / "versions"
     / "20260802_000029_evolved_ttf_teaching_name_foundation.py"
 )
+B1_1_MIGRATION_PATH = (
+    BACKEND_ROOT
+    / "alembic"
+    / "versions"
+    / "20260803_000030_preserve_events_when_teaching_names_deleted.py"
+)
 
 
 def _load_b1_migration() -> object:
     spec = importlib.util.spec_from_file_location("evolved_ttf_b1_migration", MIGRATION_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_b1_1_migration() -> object:
+    spec = importlib.util.spec_from_file_location(
+        "evolved_ttf_b1_1_migration",
+        B1_1_MIGRATION_PATH,
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -413,6 +432,17 @@ def _assert_b1_schema_catalogue(connection: Connection) -> None:
                 "ON DELETE RESTRICT"
             ),
         ),
+        ("teaching_events", "fk_teaching_events_teaching_name"): (
+            "f",
+            ("teaching_name_id",),
+            "teaching_names",
+            ("id",),
+            "SET NULL",
+            (
+                "FOREIGN KEY (teaching_name_id) REFERENCES teaching_names(id) "
+                "ON DELETE SET NULL"
+            ),
+        ),
     }
     constraint_rows = {
         (str(row["table_name"]), str(row["constraint_name"])): (
@@ -469,10 +499,11 @@ def _assert_b1_schema_catalogue(connection: Connection) -> None:
                   AND (relation.relname, constraint_row.conname) IN (
                       ('teaching_names', 'uq_teaching_names_pool_normalized_name'),
                       ('teaching_names', 'uq_teaching_names_id_pool'),
-                      ('teaching_targets', 'uq_teaching_targets_id_mapping_scope'),
-                      ('teaching_name_mappings', 'uq_teaching_name_mappings_identity'),
-                      ('teaching_name_mappings', 'fk_teaching_name_mappings_name_pool'),
-                      ('teaching_name_mappings', 'fk_teaching_name_mappings_target_scope')
+                       ('teaching_targets', 'uq_teaching_targets_id_mapping_scope'),
+                       ('teaching_name_mappings', 'uq_teaching_name_mappings_identity'),
+                       ('teaching_name_mappings', 'fk_teaching_name_mappings_name_pool'),
+                       ('teaching_name_mappings', 'fk_teaching_name_mappings_target_scope'),
+                       ('teaching_events', 'fk_teaching_events_teaching_name')
                   )
                 """
             )
@@ -568,6 +599,24 @@ def _assert_b1_schema_catalogue(connection: Connection) -> None:
     assert index_rows == expected_indexes
 
 
+def _teaching_event_name_fk_delete_action(connection: Connection) -> str | None:
+    return connection.scalar(
+        text(
+            """
+            SELECT constraint_row.confdeltype
+            FROM pg_catalog.pg_constraint AS constraint_row
+            JOIN pg_catalog.pg_class AS relation
+              ON relation.oid = constraint_row.conrelid
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = 'public'
+              AND relation.relname = 'teaching_events'
+              AND constraint_row.conname = 'fk_teaching_events_teaching_name'
+            """
+        )
+    )
+
+
 def _assert_b1_catalogue(connection: Connection) -> None:
     _assert_b1_schema_catalogue(connection)
     table_rows = connection.execute(
@@ -646,7 +695,17 @@ def _cleanup_b1_fixture_rows(
     values: dict[str, object],
 ) -> None:
     for table_name, ids in (
-        ("attendance_records", [values["legacy_attendance_id"]]),
+        (
+            "attendance_records",
+            [
+                values["legacy_attendance_id"],
+                values["preservation_native_attendance_id"],
+            ],
+        ),
+        (
+            "external_attendance_records",
+            [values["preservation_external_attendance_id"]],
+        ),
         (
             "teaching_events",
             [
@@ -654,6 +713,7 @@ def _cleanup_b1_fixture_rows(
                 values["null_identity_event_id"],
                 values["name_event_id"],
                 values["global_event_id"],
+                values["preservation_event_id"],
             ],
         ),
         (
@@ -681,6 +741,7 @@ def _cleanup_b1_fixture_rows(
         ("secretary_programme_pools", [values["pool_a_id"]]),
         ("session_types", [values["session_a_id"], values["session_b_id"]]),
         ("residents", [values["legacy_resident_id"]]),
+        ("external_residents", [values["preservation_external_resident_id"]]),
         ("reporting_periods", [values["period_id"], values["period_b_id"]]),
         ("programmes", [values["programme_a_id"], values["programme_b_id"]]),
         ("posting_codes", [values["posting_a_id"], values["posting_b_id"]]),
@@ -705,6 +766,19 @@ def test_b1_migration_is_additive_and_linear() -> None:
     assert "can_manage_teaching_names" in source
     assert "TTSHGerMed" in source
     assert "GERI" in source
+
+
+def test_b1_1_migration_changes_only_event_identity_delete_action() -> None:
+    migration = _load_b1_1_migration()
+    source = B1_1_MIGRATION_PATH.read_text(encoding="utf-8")
+
+    assert migration.revision == B1_1_REVISION
+    assert migration.down_revision == B1_REVISION
+    assert source.count('"fk_teaching_events_teaching_name"') == 4
+    assert 'ondelete="SET NULL"' in source
+    assert 'ondelete="RESTRICT"' in source
+    assert "teaching_name_catalogue" not in source
+    assert "attendance_records" not in source
 
 
 def test_b1_models_expose_the_database_foundation() -> None:
@@ -737,10 +811,16 @@ def test_b1_models_expose_the_database_foundation() -> None:
         "teaching_name_id",
         "global_session_type_id",
     } <= set(TeachingEvent.__table__.columns.keys())
+    teaching_name_fk = next(
+        foreign_key
+        for foreign_key in TeachingEvent.__table__.c.teaching_name_id.foreign_keys
+        if foreign_key.target_fullname == "teaching_names.id"
+    )
+    assert teaching_name_fk.ondelete == "SET NULL"
 
 
 @pytest.mark.migration_mutation
-def test_b1_migration_preserves_legacy_ttf_and_enforces_foundation_constraints(
+def test_b1_1_migration_preserves_legacy_ttf_and_enforces_foundation_constraints(
     clean_migration_database: MigrationHarness,
 ) -> None:
     harness = clean_migration_database
@@ -759,7 +839,7 @@ def test_b1_migration_preserves_legacy_ttf_and_enforces_foundation_constraints(
             )
         )
 
-    rejected = harness.alembic("upgrade", B1_REVISION)
+    rejected = harness.alembic("upgrade", B1_1_REVISION)
     assert rejected.returncode != 0
     assert "Expected exactly one active approved Teaching Name pilot pool" in (
         rejected.stdout + rejected.stderr
@@ -781,8 +861,20 @@ def test_b1_migration_preserves_legacy_ttf_and_enforces_foundation_constraints(
             )
         )
 
-    upgraded = harness.alembic("upgrade", B1_REVISION)
+    upgraded = harness.alembic("upgrade", B1_1_REVISION)
     assert upgraded.returncode == 0, upgraded.stdout + upgraded.stderr
+    with harness.engine.connect() as connection:
+        assert _revision(connection) == B1_1_REVISION
+        assert _teaching_event_name_fk_delete_action(connection) == "n"
+
+    downgraded_to_b1 = harness.alembic("downgrade", B1_REVISION)
+    assert downgraded_to_b1.returncode == 0, downgraded_to_b1.stdout + downgraded_to_b1.stderr
+    with harness.engine.connect() as connection:
+        assert _revision(connection) == B1_REVISION
+        assert _teaching_event_name_fk_delete_action(connection) == "r"
+
+    restored_b1_1 = harness.alembic("upgrade", B1_1_REVISION)
+    assert restored_b1_1.returncode == 0, restored_b1_1.stdout + restored_b1_1.stderr
 
     values.update(
         {
@@ -795,11 +887,16 @@ def test_b1_migration_preserves_legacy_ttf_and_enforces_foundation_constraints(
             "null_identity_event_id": uuid4(),
             "name_event_id": uuid4(),
             "global_event_id": uuid4(),
+            "preservation_name_id": uuid4(),
+            "preservation_event_id": uuid4(),
+            "preservation_native_attendance_id": uuid4(),
+            "preservation_external_resident_id": uuid4(),
+            "preservation_external_attendance_id": uuid4(),
         }
     )
     try:
         with harness.engine.begin() as connection:
-            assert _revision(connection) == B1_REVISION
+            assert _revision(connection) == B1_1_REVISION
             assert _legacy_snapshot(connection, values) == before_snapshot
             assert connection.execute(
                 text(
@@ -877,6 +974,21 @@ def test_b1_migration_preserves_legacy_ttf_and_enforces_foundation_constraints(
                         normalized_name
                     )
                     VALUES (
+                        :preservation_name_id, :period_id, :programme_a,
+                        'Deleted name snapshot', 'deleted name snapshot'
+                    )
+                    """
+                ),
+                values,
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO teaching_names (
+                        id, reporting_period_id, programme_code, display_name,
+                        normalized_name
+                    )
+                    VALUES (
                         :teaching_name_other_pool_id, :period_b_id, :programme_b,
                         'B1 Teaching Name A Other Pool', 'b1 teaching name a'
                     )
@@ -884,6 +996,140 @@ def test_b1_migration_preserves_legacy_ttf_and_enforces_foundation_constraints(
                 ),
                 values,
             )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO teaching_events (
+                        id, posting_code, created_for_programme_code, teaching_name,
+                        details_of_session, event_date, start_time, end_time,
+                        duration_hours, session_type_id, cme_points_awarded,
+                        smc_event_code, is_adhoc, created_by_role, teaching_name_id
+                    )
+                    VALUES (
+                        :preservation_event_id, :posting_a, :programme_a,
+                        'Deleted name snapshot', 'preserved event metadata',
+                        DATE '2045-02-05', TIME '11:00', TIME '12:00', 1.00,
+                        :session_a_id, true, 'B1-PRESERVE', false, 'programme_pc',
+                        :preservation_name_id
+                    )
+                    """
+                ),
+                values,
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO attendance_records (
+                        id, resident_id, teaching_event_id, submitted_at, status,
+                        posting_code
+                    )
+                    VALUES (
+                        :preservation_native_attendance_id, :legacy_resident_id,
+                        :preservation_event_id, TIMESTAMPTZ '2045-02-05 12:30:00+00',
+                        'submitted', :posting_a
+                    )
+                    """
+                ),
+                values,
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO external_residents (
+                        id, name, mcr, home_cluster, current_nhg_posting_code, status
+                    )
+                    VALUES (
+                        :preservation_external_resident_id, 'B1 preservation external',
+                        :preservation_external_mcr, 'NUH', :posting_a, 'active'
+                    )
+                    """
+                ),
+                {
+                    **values,
+                    "preservation_external_mcr": f"B1E{uuid4().hex[:16].upper()}",
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO external_attendance_records (
+                        id, external_resident_id, teaching_event_id, submitted_at,
+                        status, posting_code
+                    )
+                    VALUES (
+                        :preservation_external_attendance_id,
+                        :preservation_external_resident_id, :preservation_event_id,
+                        TIMESTAMPTZ '2045-02-05 12:35:00+00', 'submitted', :posting_a
+                    )
+                    """
+                ),
+                values,
+            )
+            event_snapshot = connection.scalar(
+                text(
+                    """
+                    SELECT to_jsonb(event) - 'teaching_name_id'
+                    FROM teaching_events AS event
+                    WHERE id = :preservation_event_id
+                    """
+                ),
+                values,
+            )
+            native_attendance_snapshot = connection.scalar(
+                text(
+                    """
+                    SELECT to_jsonb(attendance)
+                    FROM attendance_records AS attendance
+                    WHERE id = :preservation_native_attendance_id
+                    """
+                ),
+                values,
+            )
+            external_attendance_snapshot = connection.scalar(
+                text(
+                    """
+                    SELECT to_jsonb(attendance)
+                    FROM external_attendance_records AS attendance
+                    WHERE id = :preservation_external_attendance_id
+                    """
+                ),
+                values,
+            )
+            connection.execute(
+                text("DELETE FROM teaching_names WHERE id = :preservation_name_id"),
+                values,
+            )
+            preserved_event = connection.execute(
+                text(
+                    """
+                    SELECT teaching_name_id, to_jsonb(event) - 'teaching_name_id'
+                    FROM teaching_events AS event
+                    WHERE id = :preservation_event_id
+                    """
+                ),
+                values,
+            ).one()
+            assert preserved_event == (None, event_snapshot)
+            assert connection.scalar(
+                text(
+                    """
+                    SELECT to_jsonb(attendance)
+                    FROM attendance_records AS attendance
+                    WHERE id = :preservation_native_attendance_id
+                    """
+                ),
+                values,
+            ) == native_attendance_snapshot
+            assert connection.scalar(
+                text(
+                    """
+                    SELECT to_jsonb(attendance)
+                    FROM external_attendance_records AS attendance
+                    WHERE id = :preservation_external_attendance_id
+                    """
+                ),
+                values,
+            ) == external_attendance_snapshot
             connection.execute(
                 text(
                     """
@@ -1120,8 +1366,9 @@ def test_b1_migration_preserves_legacy_ttf_and_enforces_foundation_constraints(
             )
         ) == 0
 
-    reupgraded = harness.alembic("upgrade", B1_REVISION)
+    reupgraded = harness.alembic("upgrade", B1_1_REVISION)
     assert reupgraded.returncode == 0, reupgraded.stdout + reupgraded.stderr
     with harness.engine.connect() as connection:
-        assert _revision(connection) == B1_REVISION
+        assert _revision(connection) == B1_1_REVISION
+        assert _teaching_event_name_fk_delete_action(connection) == "n"
         _assert_b1_catalogue(connection)

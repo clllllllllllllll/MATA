@@ -13,7 +13,7 @@ runs:
       shell: bash
       env:
         CI_POSTGRES_CONTAINER: ${{ inputs.container-id }}
-        CI_DATABASE_NAME: mata_phase5b_final_security_review
+        CI_DATABASE_NAME: mata_evolved_ttf_phase_c_verify
         CI_DATABASE_HOST: localhost
         CI_DATABASE_PORT: "5432"
         CI_DATABASE_OWNER: postgres
@@ -25,7 +25,7 @@ runs:
 
         test -n "$CI_POSTGRES_CONTAINER"
         test "$CI_DATABASE_HOST" = "localhost"
-        test "$CI_DATABASE_NAME" = "mata_phase5b_final_security_review"
+        test "$CI_DATABASE_NAME" = "mata_evolved_ttf_phase_c_verify"
 
         ready=false
         for attempt in $(seq 1 20); do

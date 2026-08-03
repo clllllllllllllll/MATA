@@ -26,7 +26,7 @@ from app.config import Settings
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
 VERSIONS_DIR = BACKEND_ROOT / "alembic" / "versions"
-H_E_DISPOSABLE_DATABASE_NAME = "mata_phase5b_final_security_review"
+H_E_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_phase_c_verify"
 ADHOC_DEFINER_ROLE = "mata_adhoc_attendance_definer"
 ADHOC_HELPER_SIGNATURE = (
     "mata_rls.create_adhoc_attendance("
