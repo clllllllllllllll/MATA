@@ -44,14 +44,15 @@ Residents log in via React frontend (MCR-only auth in Phase 1)
   → Future Admin/PC compliance dashboard requirements remain a separate phase
 ```
 
-### Evolved TTF transition (approved future contract; Phase A documentation only)
+### Evolved TTF transition (B1 foundation and Phase D mapping backend)
 
 The current product remains on the legacy **A-K** TTF and
-`teaching_name_catalogue` workflow through the additive B1 foundation. That
-legacy behavior, including `teaching_targets.details_of_training` and Column K
-catalogue seeding, is transitional and remains in force until the later final
-E2/B2 cutover. Phase A does not add a model, migration, parser, route, service,
-or UI.
+`teaching_name_catalogue` workflow through the additive B1 foundation and
+Phase D mapping backend. That legacy behavior, including
+`teaching_targets.details_of_training` and Column K catalogue seeding, is
+transitional and remains in force until the later final E2/B2 cutover. Phase D
+adds only a Programme-PC mapping work queue and guarded mapping mutations; it
+does not change the parser, scheduled events, resident flows, compliance, or UI.
 
 The final evolved TTF is **A-J only**: reporting period, programme, R-year,
 posting, dashboard posting/posting group, session type, monthly target,
@@ -68,7 +69,7 @@ Staff password authentication is backend-mediated through Supabase, and no Supab
 
 Session rotation is serialized by subject, transaction-scoped family advisory lock, and locked/refreshed database row. Subject generation fencing invalidates sessions after authorization change, password reset, or deactivation. Revision `20260722_000024` revokes browser-role object privileges.
 
-**5B-H-E/B1 current lifecycle local state (2026-08-03):** Revisions `20260726_000025` and `20260726_000026` add separate non-owner runtime and auth-helper capabilities, database-revalidated signed transaction context, reviewed service helpers, database-enforced global MCR uniqueness, and the full policy/grant cutover. Revision `20260727_000027` narrows restricted session-helper results, adds interval-gated activity, and denies signed RLS context after session expiry/revocation. Revisions `20260802_000029`, `20260803_000030`, and `20260803_000031` add the Teaching Name pool/mapping foundation, stable optional event identities, and the explicit Secretary pilot capability without changing the legacy A-K workflow. Revision `20260803_000032` adds the narrow E1 TTF mapping-reconciliation helper. All 36 application tables have RLS enabled locally; 92 policies target only `mata_app_runtime`. The runtime, auth-helper, and migration/ownership credentials must be distinct, and startup attestation fails closed on unsafe roles, ownership, grants, helpers, policies, schema access, sequences, PUBLIC, or browser-role state. FastAPI authorization remains mandatory.
+**5B-H-E/B1/Phase D current lifecycle local state (2026-08-03):** Revisions `20260726_000025` and `20260726_000026` add separate non-owner runtime and auth-helper capabilities, database-revalidated signed transaction context, reviewed service helpers, database-enforced global MCR uniqueness, and the full policy/grant cutover. Revision `20260727_000027` narrows restricted session-helper results, adds interval-gated activity, and denies signed RLS context after session expiry/revocation. Revisions `20260802_000029`, `20260803_000030`, and `20260803_000031` add the Teaching Name pool/mapping foundation, stable optional event identities, and the explicit Secretary pilot capability without changing the legacy A-K workflow. Revision `20260803_000032` adds the narrow E1 TTF mapping-reconciliation helper. Phase D adds no migration: it uses that existing RLS boundary for a PC-only mapping API, revision fencing, explicit count-only impact confirmation, atomic audit/Data Revalidation evidence, and post-commit scoped cache invalidation. All 36 application tables have RLS enabled locally; 92 policies target only `mata_app_runtime`. The runtime, auth-helper, and migration/ownership credentials must be distinct, and startup attestation fails closed on unsafe roles, ownership, grants, helpers, policies, schema access, sequences, PUBLIC, or browser-role state. FastAPI authorization remains mandatory.
 
 Local code and disposable-database verification are not proof of deployed Supabase behavior.
 

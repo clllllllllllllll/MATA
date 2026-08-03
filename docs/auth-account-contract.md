@@ -305,11 +305,11 @@ Secretary derived application identity:
 }
 ```
 
-### Shared Teaching Name management authority (Phase C)
+### Shared Teaching Name management authority (Phase C and Phase D)
 
-Phase C activates the name lifecycle routes while preserving the current
-catalogue-backed parser, event, attendance, resident, and compliance workflows
-until the later E2/B2 cutover.
+Phase C activates the name lifecycle routes and Phase D adds a PC-only mapping
+backend while preserving the current catalogue-backed parser, event, attendance,
+resident, and compliance workflows until the later E2/B2 cutover.
 
 - Teaching Name pool access is scoped by `(reporting_period_id, programme_code)`.
   Both a Programme PC with the programme in current scope and a Secretary with
@@ -320,9 +320,12 @@ until the later E2/B2 cutover.
   visibility, and a posting-name convention. The initial approved pilot is the
   exact TTSH GERI Secretary-to-programme relationship; no other capability is
   inferred from visibility or a first matching row.
-- Phase C exposes no mapping route. Existing direct database mapping authority
-  remains Programme-PC-only; Secretaries and Master Admins have no mapping DML
-  authority. Global session types remain Admin-managed and outside the pool.
+- Phase D exposes mapping reads to Master Admin and in-scope Programme PCs, and
+  mapping mutation only to in-scope Programme PCs. Mapping requests use the
+  persisted mapping revision and an explicit target ID or explicit `null` clear;
+  nonzero count-only impact requires `confirm_impact = true`. Secretaries and
+  Master Admins have no mapping DML authority. Global session types remain
+  Admin-managed and outside the pool.
 - A Secretary/PC may delete only an unused name. Master Admin has read,
   oversight, and guarded deletion authority only: an event-used name requires
   the current revision, `force_delete`, nonblank reason, and exact `DELETE`
@@ -331,8 +334,9 @@ until the later E2/B2 cutover.
 - Every protected mutation still uses the current opaque session, reloaded
   subject, CSRF, exact-Origin, authorization, rate-limit, audit, and
   post-commit cache-invalidation contracts. A stale revision, lost capability,
-  or out-of-scope request fails without a write; mapping impact preview/apply
-  remains deferred.
+  or out-of-scope request fails without a write. Phase D impact/read and apply
+  are revision-fenced; they use no browser-held confirmation token or scope
+  fingerprint.
 
 ### Master Admin
 

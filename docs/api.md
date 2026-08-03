@@ -409,12 +409,13 @@ No push/live-update channel is implied in the current backend. After successful 
 
 ---
 
-## Shared Teaching Name pool API (Phase C)
+## Shared Teaching Name pool and mapping API (Phase C and Phase D)
 
 Revision `20260803_000031` activates the shared-pool lifecycle and
-`20260803_000032` adds only the narrow E1 TTF mapping-reconciliation helper. They
-do not add a mapping API, create pool-backed events, alter resident flows, or cut
-over the retained A-K catalogue path.
+`20260803_000032` adds the narrow E1 TTF mapping-reconciliation helper. Phase D
+adds the guarded Programme-PC mapping API below. None of these changes creates
+pool-backed events, alters resident flows, or cuts over the retained A-K
+catalogue path.
 
 ### Lifecycle routes
 
@@ -451,8 +452,8 @@ server-owned normalized key.
   lock. The owner trigger creates one pending mapping for each distinct target
   `(posting_code, r_year)` scope and reactivation only fills missing rows. It
   preserves existing mapped rows and IDs. A scope with no targets is valid.
-- There is no mapping endpoint in Phase C. Pending/mapped state remains
-  configuration only and does not activate pool-backed event or compliance work.
+- Phase C itself adds no mapping endpoint. Phase D mapping mutations remain
+  configuration only and do not activate pool-backed event or compliance work.
 - A Secretary or PC may delete only an unused name. A Master Admin may delete a
   used name only with `force_delete = true`, a nonblank reason, confirmation
   exactly `"DELETE"`, and the current revision. The response exposes counts,
@@ -491,8 +492,48 @@ server-owned normalized key.
   unauthorized, out-of-scope, or preview-fenced requests neither write an audit
   success record nor invalidate caches.
 - The B1/Phase C RLS/grant/policy boundary is attested before these routes run.
-  Direct mapping DML remains unavailable to Secretaries and Master Admins; no
-  Phase C route exposes mapping DML.
+  Phase D uses that boundary for Programme-PC mapping DML only; Secretaries and
+  Master Admins have no mapping DML route.
+
+### Programme PC Teaching Name mapping routes (Phase D)
+
+| Route | Authority | Notes |
+|---|---|---|
+| `GET /admin/teaching-name-mappings` | Master Admin or Programme PC | Master Admin may read all queues; a PC sees only persisted programme scope. Supports `reporting_period_id`, `programme_code`, `posting_code`, `r_year`, `state` (`pending`/`mapped`), normalized display-name substring `search`, `limit`, and `offset`. |
+| `GET /admin/teaching-name-mappings/{mapping_id}/impact` | Master Admin or in-scope Programme PC | Requires `expected_revision`; optional `teaching_target_id` is validated against the exact mapping scope. Returns aggregate event/attendance counts only. |
+| `PATCH /admin/teaching-name-mappings/{mapping_id}` | In-scope Programme PC | Assigns, changes, or explicitly clears one existing mapping. |
+| `POST /admin/teaching-name-mappings/bulk` | In-scope Programme PC | Atomically applies at most 100 independently revision-fenced changes; duplicate mapping IDs and partial success are rejected. |
+
+A mapping queue row exposes the mapping/name IDs, mapping revision, display name,
+period/programme/posting/R-year scope, derived `pending`/`mapped` state, current
+target summary, and exact-scope target options. A target option is never inferred
+from display text and must match the mapping's period, programme, posting, and
+R-year exactly.
+
+Single and bulk mutation items require `expected_revision` and a
+`teaching_target_id` field. The field is an existing exact-scope target UUID to
+assign/change, or explicit JSON `null` to clear while retaining the mapping UUID.
+An omitted field is invalid. Successful changes update only the target link and
+increment the persisted mapping revision once. A stale revision returns `409`.
+
+For a change or clear of an already mapped row, the service counts only stable
+Teaching Name ID plus posting identity and submitted attendance. Because events
+do not carry R-year, the count is conservative across same-name/posting R-year
+mappings rather than silently treating potentially affected evidence as zero. It
+never returns event, attendance, resident, MCR, or external-resident identifiers.
+When either aggregate is nonzero, a first request without
+`confirm_impact: true` returns controlled `409` with count-only impact and no
+write; retrying with the same current revision and explicit confirmation applies
+the change. Pending assignment has no prior target impact and needs no
+confirmation. There is no confirmation token, generic confirmation framework, or
+client-supplied scope fingerprint.
+
+Each mutation uses the shared reporting-period/programme TTF advisory lock,
+locks mapping rows and requested target rows deterministically, validates all
+bulk items before writing, records mapping-specific audit and Data Revalidation
+evidence atomically, commits once, and invalidates only affected scoped mapping,
+name-option, target-resolution, and event-option caches after commit. Mapping
+changes never rewrite events, attendance, timing, or immutable display snapshots.
 
 ## Admin Endpoints
 

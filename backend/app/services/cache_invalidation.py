@@ -354,6 +354,33 @@ def invalidate_after_teaching_name_pool_change(
     )
 
 
+def invalidate_after_teaching_name_mapping_change(
+    *,
+    mapping_id: Any,
+    teaching_name_id: Any,
+    reporting_period_id: Any,
+    programme_code: Any,
+    posting_code: Any,
+) -> list[CacheInvalidationCall]:
+    """Invalidate only configuration reads affected by one mapping change."""
+
+    return invalidate_cache(
+        (
+            "teaching_name_mappings",
+            "teaching_name_pool",
+            "teaching_name_options",
+            "teaching_target_resolution",
+            "programme_teaching_events",
+            "secretary_events",
+        ),
+        mapping_id=mapping_id,
+        teaching_name_id=teaching_name_id,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        posting_code=posting_code,
+    )
+
+
 def invalidate_after_admin_event_force_delete(
     *,
     event_id: Any,

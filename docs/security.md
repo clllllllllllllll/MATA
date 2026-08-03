@@ -166,29 +166,30 @@ and subject verifier before any resident identity is used.
 Resident authentication assurance remains separately governed product debt.
 This security contract does not invent or imply an unapproved second factor.
 
-### Shared Teaching Name lifecycle (Phase C) and E1 TTF reconciliation
+### Shared Teaching Name lifecycle (Phase C), Phase D mapping, and E1 TTF reconciliation
 
 Revisions `20260802_000029` through `20260803_000031` establish the reviewed
-database boundary and activate only the shared Teaching Name lifecycle routes.
+database boundary and activate the shared Teaching Name lifecycle routes.
 Revision `20260803_000032` adds the narrow reconciliation required inside the
-existing TTF upload transaction; it does not add a mapping API, event, resident,
-UI, or compliance flow. The legacy A-K catalogue authorization path remains
-active.
+existing TTF upload transaction. Phase D adds a guarded application mapping API
+on that boundary only; it does not add a parser change, event, resident, UI, or
+compliance flow. The legacy A-K catalogue authorization path remains active.
 
 The B1/Phase C RLS/grant boundary is intentionally narrow:
 
 - Master Admin may read names and use only the guarded deletion route; ordinary
   create, rename, deactivate, and reactivate routes return `403`.
 - A Programme PC may read and use the normal lifecycle only for current
-  programme scope. Existing direct mapping authority remains database-only; no
-  Phase C route exposes mapping DML.
+  programme scope. Phase D additionally permits an in-scope PC to assign,
+  change, or explicitly clear an existing mapping through the guarded route;
+  no request field can expand persisted scope.
 - A Department Secretary may read and mutate names only through the current
   exact posting plus an active `secretary_programme_pools` row with explicit
   `can_manage_teaching_names`; no authority is inferred from a first match or
   ordinary event visibility. The B1 migration enables only the active
   `TTSHGerMed`/`GERI` pilot pool.
-- A Secretary and Master Admin have no direct mapping DML authority; native
-  residents have no Teaching Name or mapping authority.
+- A Master Admin may read mapping status for oversight but has no mapping DML
+  authority. A Secretary and resident have no mapping-management authority.
 
 The immutable Teaching Name pool trigger, private owner-only reconciliation and
 used-name-delete triggers, non-owner `NOBYPASSRLS` runtime role, explicit
@@ -223,8 +224,11 @@ The lifecycle endpoints use the existing protected mutation boundary:
   unsafe mutation, apply the applicable persistent rate limit, validate all
   scope/identity/revision fields server-side, and return controlled `403`,
   `409`, or `422` without a partial write as appropriate.
-- Require revision fencing for rename, deactivate, reactivate, and delete. A
-  stale name revision returns `409`; mapping preview/apply remains deferred.
+- Require revision fencing for rename, deactivate, reactivate, delete, and
+  Phase D mapping apply. A stale name or mapping revision returns `409`. A
+  mapped-row change with a nonzero count-only impact returns controlled `409`
+  until the PC retries with explicit confirmation; no confirmation token or
+  client-supplied scope fingerprint is accepted.
 - Write the domain mutation and audit record atomically. Invalidate only the
   affected scoped event, attendance, mapping, and future compliance read caches
   after commit. Failed, unauthorized, stale, or preview-fenced requests do not
@@ -235,8 +239,9 @@ The lifecycle endpoints use the existing protected mutation boundary:
   count-only audit response, and clears only the optional event identity. Do not expose raw audit values in browser
   storage, URLs, logs, or error details.
 
-Phase C is additive only. It does not remove, backfill, or cut over the current
-A-K catalogue path; final E2/B2 remains the only planned destructive cutover.
+Phase C and Phase D are additive only. They do not remove, backfill, or cut
+over the current A-K catalogue path; final E2/B2 remains the only planned
+destructive cutover.
 
 ## 5. Opaque sessions, expiry, rotation, and logout
 

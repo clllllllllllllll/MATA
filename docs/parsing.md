@@ -478,6 +478,11 @@ remains the active behavior through additive B1, including
 B1 does not introduce a dual parser, change the current upload contract, or
 backfill Column K data. Only final E2/B2 may remove that legacy path.
 
+Phase D mapping mutations are configuration-only and use the same scoped lock
+as TTF reconciliation. They do not change parsing, target reconciliation,
+workbook contents, legacy catalogue seeding, event timing, events, or
+attendance.
+
 The future evolved TTF has exactly these A-J fields:
 
 | Column | Future field |

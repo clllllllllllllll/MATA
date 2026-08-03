@@ -126,6 +126,14 @@ from app.schemas.teaching_names import (
     TeachingNameRevisionRequest,
     TeachingNameUpdateRequest,
 )
+from app.schemas.teaching_name_mappings import (
+    TeachingNameMappingBulkMutationRequest,
+    TeachingNameMappingBulkMutationResponse,
+    TeachingNameMappingImpactCounts,
+    TeachingNameMappingListResponse,
+    TeachingNameMappingMutationRequest,
+    TeachingNameMappingMutationResponse,
+)
 from app.services import (
     admin_config,
     admin_external_attendance,
@@ -137,6 +145,7 @@ from app.services import (
     parsed_data,
     programme_teaching_events,
     staff_accounts,
+    teaching_name_mappings,
     teaching_name_pool,
 )
 from app.services.admin_logs_service import (
@@ -3014,6 +3023,96 @@ async def delete_teaching_name(
         **request.model_dump(mode="python"),
     )
     return TeachingNameDeleteResponse.model_validate(payload)
+
+
+@router.get(
+    "/teaching-name-mappings",
+    response_model=TeachingNameMappingListResponse,
+)
+async def list_teaching_name_mappings(
+    reporting_period_id: UUID | None = Query(default=None),
+    programme_code: str | None = Query(default=None, min_length=1, max_length=20),
+    posting_code: str | None = Query(default=None, min_length=1, max_length=50),
+    r_year: str | None = Query(default=None, min_length=1, max_length=10),
+    state: str | None = Query(default=None, pattern="^(pending|mapped)$"),
+    search: str | None = Query(default=None, max_length=200),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_db_session),
+) -> TeachingNameMappingListResponse:
+    payload = await teaching_name_mappings.list_mappings(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        posting_code=posting_code,
+        r_year=r_year,
+        state=state,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    return TeachingNameMappingListResponse.model_validate(payload)
+
+
+@router.post(
+    "/teaching-name-mappings/bulk",
+    response_model=TeachingNameMappingBulkMutationResponse,
+)
+async def apply_bulk_teaching_name_mapping_changes(
+    request: TeachingNameMappingBulkMutationRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameMappingBulkMutationResponse:
+    _require_programme_pc_context(admin_context)
+    payload = await teaching_name_mappings.apply_bulk_mapping_changes(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        items=request.items,
+    )
+    return TeachingNameMappingBulkMutationResponse.model_validate(payload)
+
+
+@router.get(
+    "/teaching-name-mappings/{mapping_id}/impact",
+    response_model=TeachingNameMappingImpactCounts,
+)
+async def get_teaching_name_mapping_impact(
+    mapping_id: UUID,
+    expected_revision: int = Query(..., ge=1),
+    teaching_target_id: UUID | None = Query(default=None),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_db_session),
+) -> TeachingNameMappingImpactCounts:
+    payload = await teaching_name_mappings.get_mapping_impact(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        mapping_id=mapping_id,
+        expected_revision=expected_revision,
+        teaching_target_id=teaching_target_id,
+    )
+    return TeachingNameMappingImpactCounts.model_validate(payload)
+
+
+@router.patch(
+    "/teaching-name-mappings/{mapping_id}",
+    response_model=TeachingNameMappingMutationResponse,
+)
+async def apply_teaching_name_mapping_change(
+    mapping_id: UUID,
+    request: TeachingNameMappingMutationRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameMappingMutationResponse:
+    _require_programme_pc_context(admin_context)
+    payload = await teaching_name_mappings.apply_mapping_change(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        mapping_id=mapping_id,
+        **request.model_dump(mode="python"),
+    )
+    return TeachingNameMappingMutationResponse.model_validate(payload)
 
 
 @router.get("/programme-teaching-events")
