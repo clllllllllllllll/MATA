@@ -166,32 +166,39 @@ and subject verifier before any resident identity is used.
 Resident authentication assurance remains separately governed product debt.
 This security contract does not invent or imply an unapproved second factor.
 
-### Evolved TTF mutations (B1 database foundation; no route)
+### Shared Teaching Name lifecycle (Phase C)
 
-Revision `20260802_000029` adds the reviewed additive database boundary for
-Teaching Names and mappings, but it enables no new endpoint, service, parser,
-UI, cache, or compliance behavior. The legacy A-K catalogue authorization path
-remains the active workflow.
+Revisions `20260802_000029` through `20260803_000031` establish the reviewed
+database boundary and activate only the shared Teaching Name lifecycle routes.
+They do not add parser, pool-backed event, resident, mapping, UI, or compliance
+behavior. The legacy A-K catalogue authorization path remains active.
 
-The B1 RLS/grant boundary is intentionally narrow:
+The B1/Phase C RLS/grant boundary is intentionally narrow:
 
-- Master Admin may read Teaching Names and hard-delete only unused names;
-- a Programme PC may read and mutate only its programme's Teaching Names and
-  mappings;
-- a Department Secretary may read and mutate Teaching Names only when their
-  active `secretary_programme_pools` row has the explicit
-  `can_manage_teaching_names` capability; the B1 migration enables only the
-  active `TTSHGerMed`/`GERI` pilot pool; and
-- a Secretary has no mapping access, while a native resident has no Teaching
-  Name or mapping authority.
+- Master Admin may read names and use only the guarded deletion route; ordinary
+  create, rename, deactivate, and reactivate routes return `403`.
+- A Programme PC may read and use the normal lifecycle only for current
+  programme scope. Existing direct mapping authority remains database-only; no
+  Phase C route exposes mapping DML.
+- A Department Secretary may read and mutate names only through the current
+  exact posting plus an active `secretary_programme_pools` row with explicit
+  `can_manage_teaching_names`; no authority is inferred from a first match or
+  ordinary event visibility. The B1 migration enables only the active
+  `TTSHGerMed`/`GERI` pilot pool.
+- A Secretary and Master Admin have no direct mapping DML authority; native
+  residents have no Teaching Name or mapping authority.
 
-The immutable Teaching Name pool trigger, non-owner `NOBYPASSRLS` runtime role,
-explicit grants, browser-role revocations, migration assertion, and startup
-attestation inventory are part of this database boundary. They do not replace
-the existing FastAPI authorization boundary.
+The immutable Teaching Name pool trigger, private owner-only reconciliation and
+used-name-delete triggers, non-owner `NOBYPASSRLS` runtime role, explicit
+grants, browser-role revocations, migration assertions, and startup attestation
+inventory are part of this boundary. The runtime-only
+`mata_rls.lock_master_teaching_name_delete(uuid)` helper independently verifies
+the Master Admin context, returns no row data, and holds only the requested
+name's row lock before a used-name delete counts references. Mapping rows
+cascade with their name; event identity is `SET NULL`, so event snapshots and
+attendance remain. These database controls do not replace FastAPI authorization.
 
-Before a future endpoint is enabled, it must use the existing protected
-mutation boundary:
+The lifecycle endpoints use the existing protected mutation boundary:
 
 - Authenticate through the opaque application session; reload current staff
   role, active state, programme scope, Secretary posting, and explicit
@@ -202,21 +209,20 @@ mutation boundary:
   unsafe mutation, apply the applicable persistent rate limit, validate all
   scope/identity/revision fields server-side, and return controlled `403`,
   `409`, or `422` without a partial write as appropriate.
-- Require revision fencing for existing name and mapping mutations. A mapping
-  preview/apply flow must bind its short-lived opaque token to the actor,
-  mapping/name revision, exact target selection, and target-scope fingerprint;
-  an expired or changed input requires a new preview.
+- Require revision fencing for rename, deactivate, reactivate, and delete. A
+  stale name revision returns `409`; mapping preview/apply remains deferred.
 - Write the domain mutation and audit record atomically. Invalidate only the
   affected scoped event, attendance, mapping, and future compliance read caches
   after commit. Failed, unauthorized, stale, or preview-fenced requests do not
   invalidate caches or record a successful mutation.
-- Pool-backed events must carry a stable Teaching Name identity and global
-  events a stable global-session identity, never both. Legacy transition rows
-  may have neither. Do not expose raw audit/preview tokens in browser storage,
-  URLs, logs, or error details.
+- A Master Admin deletion of a used name requires the exact `DELETE`
+  confirmation, nonblank reason, current revision, and force flag. It locks the
+  name and referenced events before it counts linked attendance, writes a
+  count-only audit response, and clears only the optional event identity. Do not expose raw audit values in browser
+  storage, URLs, logs, or error details.
 
-B1 is additive only. It does not remove, backfill, or cut over the current A-K
-catalogue path; final E2/B2 remains the only planned destructive cutover.
+Phase C is additive only. It does not remove, backfill, or cut over the current
+A-K catalogue path; final E2/B2 remains the only planned destructive cutover.
 
 ## 5. Opaque sessions, expiry, rotation, and logout
 

@@ -17,19 +17,21 @@ a full `compliance.py` or surplus engine is currently implemented.
 Phase A records this contract only. The current legacy A-K parser,
 `teaching_name_catalogue`, `teaching_targets.details_of_training`, event and
 attendance services, catalogue policies/grants, and frontend remain current
-through additive B1. B1 may add foundations beside them, but does not remove,
-backfill, or cut over any legacy data or workflow. Only the later E2/B2 cutover
-may remove the catalogue-dependent path and replace it with the A-J format.
+through Phase C. Phase C adds only the shared name lifecycle beside them; it
+does not remove, backfill, or cut over any legacy data or workflow. Only the
+later E2/B2 cutover may remove the catalogue-dependent path and replace it with
+the A-J format.
 
-Revision `20260802_000029` implements only the additive B1 persistence
-foundation described below: the empty Teaching Name pool and mapping tables,
-stable optional event identities, an explicit Secretary capability flag, and
-their database access boundary. It does not activate a new parser, service,
-route, UI, provisioning/reconciliation workflow, or compliance resolution.
+Revision `20260802_000029` introduced the additive B1 persistence foundation.
+Revision `20260803_000030` changed the optional event identity FK to `SET NULL`.
+Revision `20260803_000031` activates the shared-pool name lifecycle: it
+reconciles pending mapping rows through private owner triggers and exposes the
+name-only API. These revisions do not change the parser, create pool-backed
+events, expose mapping DML, or activate compliance resolution.
 
 The planned final model uses `teaching_name` as the canonical term:
 
-- A planned `teaching_names` relation is scoped by
+- The `teaching_names` relation is scoped by
   `(reporting_period_id, programme_code)`, has a display name, a server-owned
   normalized name, active/deactivated state, revision, and normal actor/time
   audit fields. A new reporting period starts with an empty pool; there is no
@@ -39,24 +41,24 @@ The planned final model uses `teaching_name` as the canonical term:
   uniqueness within that pool. It preserves punctuation and wording; it does
   not apply fuzzy matching, abbreviation expansion, synonyms, or semantic
   matching.
-- A planned `teaching_name_mappings` relation has exactly one identity per
+- The `teaching_name_mappings` relation has exactly one identity per
   `(teaching_name_id, reporting_period_id, programme_code, posting_code,
   r_year)`. It may select only the exact `teaching_targets` row from that same
   scope. A null target is **pending** and a non-null target is **mapped**; no
   duplicate status column or manual `excluded` state is permitted.
 - Both an explicitly authorized Department Secretary and Programme PC may
-  create, rename, deactivate, and reactivate names in their shared pool. Only
-  the Programme PC may map a name to a target. Master Admin may hard-delete a
-  name only when it is unused; any name referenced by an event cannot be
-  hard-deleted. Secretary management authority is a separate explicit
+  create, rename, deactivate, and reactivate names in their shared pool. Phase
+  C exposes no mapping API. A Secretary/PC may delete only an unused name;
+  Master Admin may delete a used name only with current revision, explicit
+  force flag, nonblank reason, and `DELETE` confirmation. Secretary management
+  authority is a separate explicit
   Secretary-to-programme capability (the pilot is TTSH GERI), never an
   inference from `programmes.native_teaching_posting_code` or event visibility.
 - Mapping-scope provisioning is deterministic: name creation creates pending
-  mappings for existing posting/R-year scopes; reactivation reconciles scopes
-  introduced while inactive; a new TTF scope provisions missing pending rows;
-  adding a session type to an existing scope never duplicates a mapping; and a
-  removed scope remains pending or is reconciled under the final target-cutover
-  rules.
+  mappings for existing distinct posting/R-year scopes and reactivation fills
+  only missing rows introduced while inactive. Existing mapping IDs and mapped
+  targets are preserved; adding a session type to an existing scope never
+  duplicates a mapping.
 - A planned pool-backed `teaching_events` row has `teaching_name_id` populated
   and `global_session_type_id` null. A global row has the reverse. Transitional
   legacy rows may have neither, but no row may have both. Source identity is
@@ -68,10 +70,11 @@ The planned final model uses `teaching_name` as the canonical term:
   23:00 is a controlled `422`. A later mapping change never alters stored
   timing.
 
-Pending names remain selectable, event- and attendance-capable, visible to
-eligible residents, and auditable. They are excluded from compliance until an
-exact mapping exists; the next JIT read resolves a newly mapped name without
-rewriting raw events or attendance. `global_session_types` remain
+In that planned final model, pending names remain selectable, event- and
+attendance-capable, visible to eligible residents, and auditable. They are
+excluded from compliance until an exact mapping exists; the next JIT read
+resolves a newly mapped name without rewriting raw events or attendance.
+`global_session_types` remain
 Admin-managed, outside this queue, and are handled before ordinary Teaching
 Name mapping. Resident ad-hoc teaching remains fixed to
 `Department/Programme Teaching [1h]`; Non-NHG attendance remains outside NHG
@@ -403,12 +406,13 @@ Catalogue of all session types. Seeded from TTF upload.
 
 ---
 
-## B1 additive Teaching Name foundation (no behavior cutover)
+## B1 foundation and Phase C Teaching Name lifecycle
 
-Revision `20260802_000029` creates the following empty, additive objects. They
-are not seeded from legacy Column K, do not replace `teaching_name_catalogue`,
-and are not yet read or written by the current parser, event, attendance, or
-compliance workflows.
+Revision `20260802_000029` creates the additive objects below. Phase C now
+reads and writes the name pool through its dedicated lifecycle service, while
+the legacy parser, event creation, attendance, and compliance workflows remain
+catalogue-backed. The pool is not seeded from legacy Column K and does not
+replace `teaching_name_catalogue`.
 
 ### Table: `teaching_names`
 
@@ -438,7 +442,7 @@ One optional exact-target mapping for a Teaching Name and posting/R-year scope.
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
 | id | UUID | PK | |
-| teaching_name_id | UUID | NOT NULL; composite FK to its Teaching Name pool | Keeps the mapping in the name's reporting-period/programme pool. |
+| teaching_name_id | UUID | NOT NULL; composite FK to its Teaching Name pool, `ON DELETE CASCADE` | Keeps the mapping in the name's reporting-period/programme pool and removes configuration-only mappings with the name. |
 | reporting_period_id | UUID | NOT NULL | Pool scope, checked by the composite Teaching Name FK. |
 | programme_code | VARCHAR(20) | NOT NULL | Pool scope, checked by the composite Teaching Name FK. |
 | posting_code | VARCHAR(50) | FK → posting_codes.code, NOT NULL | Mapping scope. |
@@ -453,7 +457,7 @@ programme_code, posting_code, r_year)`. It deliberately does **not** make that
 four-part target scope globally unique: retained A-K targets may have several
 session types in the same scope.
 
-### Related B1 additions
+### Related B1 / Phase C additions
 
 - `teaching_events.teaching_name_id` is a nullable `SET NULL`-referenced stable
   identity, while `global_session_type_id` remains nullable and `RESTRICT`-
@@ -465,10 +469,22 @@ session types in the same scope.
 - `secretary_programme_pools.can_manage_teaching_names` is non-null and defaults
   to false. Migration preflight enables it only for the single active approved
   `TTSHGerMed`/`GERI` pilot pool.
+- The private owner-only `reconcile_teaching_name_pending_mappings` trigger
+  inserts one pending mapping per distinct existing target `(posting_code,
+  r_year)` scope on active-name creation and inactive-to-active reactivation.
+  It never replaces a mapped target or duplicates an existing mapping identity.
+- The private owner-only used-name delete guard prevents Secretary/PC direct SQL
+  from deleting a name referenced by an event, including where event RLS would
+  otherwise hide the reference. The application service supplies the separate
+  Master Admin force-delete confirmation, reason, audit, and count-only response.
+- The runtime-only, Master-checked `mata_rls.lock_master_teaching_name_delete`
+  helper returns no row data and locks one requested name before the service
+  counts used-name references. It does not grant Master Admin ordinary name
+  update authority.
 
 ---
 
-## Current legacy A-K TTF catalogue path (retained through B1)
+## Current legacy A-K TTF catalogue path (retained through Phase C)
 
 The following target, catalogue, and event fields are the current transition
 schema. References to `details_of_training` or Column K in this section are

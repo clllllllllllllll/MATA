@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Mapping
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import date, timedelta
+import json
 import secrets
 from typing import Any
 from uuid import UUID, uuid4
@@ -16,7 +17,14 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from app.services import resident_submission
+from app.dependencies.staff_actor import StaffActorContext
+from app.errors import ApiError
+from app.schemas.data_revalidation import (
+    DataRevalidationChangedEntity,
+    DataRevalidationOutcome,
+)
+from app.services import resident_submission, teaching_name_pool
+from app.services.database_context import configure_request_context
 from tests.rls_postgres_harness import (
     RUNTIME_GROUP,
     RlsPostgresHarness,
@@ -208,6 +216,39 @@ async def _wait_for_matching_advisory_lock(
     await asyncio.wait_for(_poll(), timeout=10)
 
 
+async def _wait_for_database_lock_wait(
+    harness: RlsPostgresHarness,
+    *,
+    waiter_pid: int,
+    blocked_task: asyncio.Task[Any],
+) -> None:
+    async def _poll() -> None:
+        async with harness.owner_session() as db:
+            while True:
+                waiting = await db.scalar(
+                    text(
+                        """
+                        SELECT wait_event_type = 'Lock'
+                        FROM pg_catalog.pg_stat_activity
+                        WHERE pid = :waiter_pid
+                        """
+                    ),
+                    {"waiter_pid": waiter_pid},
+                )
+                if waiting is True:
+                    return
+                if blocked_task.done():
+                    await blocked_task
+                    pytest.fail(
+                        "Scheduled event reference did not wait on the "
+                        "Master Teaching Name delete lock",
+                        pytrace=False,
+                    )
+                await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(_poll(), timeout=10)
+
+
 @asynccontextmanager
 async def _runtime_context(
     harness: RlsPostgresHarness,
@@ -232,6 +273,124 @@ async def _runtime_context(
             yield db
         finally:
             await db.rollback()
+
+
+@asynccontextmanager
+async def _service_runtime_context(
+    harness: RlsPostgresHarness,
+    context: PolicyContext,
+) -> AsyncIterator[AsyncSession]:
+    """Use the production context hook so service commits re-install RLS safely."""
+
+    async with harness.runtime_context_session() as db:
+        configure_request_context(
+            db,
+            token_digest=context.token_digest,
+            expected_subject_type="staff",
+            expected_subject_id=context.subject_id,
+            expected_app_session_id=context.app_session_id,
+            expected_authorization_fingerprint=context.authorization_fingerprint,
+            lock_mode="exclusive",
+        )
+        try:
+            yield db
+        finally:
+            await db.rollback()
+
+
+def _pc_teaching_name_actor(
+    values: Mapping[str, Any],
+    *,
+    programme_scope: frozenset[str] | None = None,
+) -> teaching_name_pool.TeachingNamePoolActor:
+    scope = programme_scope or frozenset({str(values["programme_a"])})
+    return teaching_name_pool.TeachingNamePoolActor(
+        kind="programme_pc",
+        user_id=values["pc_id"],
+        programme_scope=scope,
+        staff_actor=StaffActorContext(
+            actor_user_id=values["pc_id"],
+            actor_role="admin",
+            actor_name="RLS PC",
+            actor_programme=",".join(sorted(scope)),
+            raw_scope_metadata={"programme_scope": sorted(scope)},
+        ),
+    )
+
+
+def _secretary_teaching_name_actor(
+    values: Mapping[str, Any],
+) -> teaching_name_pool.TeachingNamePoolActor:
+    return teaching_name_pool.TeachingNamePoolActor(
+        kind="secretary",
+        user_id=values["secretary_id"],
+        posting_code=str(values["posting_a"]),
+        staff_actor=StaffActorContext(
+            actor_user_id=values["secretary_id"],
+            actor_role="secretary",
+            actor_name="RLS Secretary",
+            actor_site=str(values["posting_a"]),
+            actor_programme=str(values["programme_a"]),
+            raw_scope_metadata={"site": str(values["posting_a"])},
+        ),
+    )
+
+
+def _master_teaching_name_actor(
+    values: Mapping[str, Any],
+) -> teaching_name_pool.TeachingNamePoolActor:
+    return teaching_name_pool.TeachingNamePoolActor(
+        kind="master_admin",
+        user_id=values["master_id"],
+        staff_actor=StaffActorContext(
+            actor_user_id=values["master_id"],
+            actor_role="admin",
+            actor_name="RLS Master",
+            actor_admin_level="master",
+            raw_scope_metadata={"admin_level": "master"},
+        ),
+    )
+
+
+async def _cleanup_teaching_name_service_rows(
+    harness: RlsPostgresHarness,
+    *,
+    teaching_name_ids: list[UUID],
+    teaching_target_ids: list[UUID] | None = None,
+    programme_ids: list[UUID] | None = None,
+) -> None:
+    if not teaching_name_ids and not teaching_target_ids and not programme_ids:
+        return
+    async with harness.owner_session() as db:
+        if teaching_name_ids:
+            name_ids = [str(value) for value in teaching_name_ids]
+            await db.execute(
+                text(
+                    """
+                    DELETE FROM audit_logs
+                    WHERE entity_type = 'teaching_name'
+                      AND entity_id = ANY(CAST(:name_ids AS text[]))
+                    """
+                ),
+                {"name_ids": name_ids},
+            )
+            await db.execute(
+                text(
+                    "DELETE FROM teaching_names WHERE id = ANY(CAST(:name_ids AS uuid[]))"
+                ),
+                {"name_ids": name_ids},
+            )
+        if teaching_target_ids:
+            await db.execute(
+                text("DELETE FROM teaching_targets WHERE id = ANY(CAST(:ids AS uuid[]))"),
+                {"ids": teaching_target_ids},
+            )
+        if programme_ids:
+            await db.execute(
+                text("DELETE FROM programmes WHERE id = ANY(CAST(:ids AS uuid[]))"),
+                {"ids": programme_ids},
+            )
+        await db.commit()
 
 
 async def _issue_context(
@@ -347,7 +506,7 @@ async def _issue_context(
 async def policy_harness(
     rls_postgres_harness: RlsPostgresHarness,
 ) -> AsyncIterator[RlsPostgresHarness]:
-    assert rls_postgres_harness.revision == "20260803_000030"
+    assert rls_postgres_harness.revision == "20260803_000031"
     yield rls_postgres_harness
 
 
@@ -711,16 +870,16 @@ async def policy_seed(
                 """
                 INSERT INTO teaching_names (
                     id, reporting_period_id, programme_code, display_name,
-                    normalized_name
+                    normalized_name, is_active
                 )
                 VALUES
                     (
                         :teaching_name_a_id, :period_id, :programme_a,
-                        'RLS Teaching Name A', 'rls teaching name a'
+                        'RLS Teaching Name A', 'rls teaching name a', false
                     ),
                     (
                         :teaching_name_b_id, :period_id, :programme_b,
-                        'RLS Teaching Name B', 'rls teaching name b'
+                        'RLS Teaching Name B', 'rls teaching name b', false
                     )
                 """
             ),
@@ -786,26 +945,26 @@ async def policy_seed(
                 INSERT INTO teaching_events (
                     id, posting_code, teaching_name, event_date, start_time,
                     end_time, duration_hours, session_type_id, series_id,
-                    is_adhoc, created_by_role
+                    is_adhoc, created_by_role, teaching_name_id
                 )
                 VALUES
                     (
                         :event_seed_a_id, :posting_a, :keyword,
                         DATE '2035-03-05', TIME '09:00', TIME '10:00',
                         1.00, :session_type_id, :series_a_id, false,
-                        'secretary'
+                        'secretary', :teaching_name_a_id
                     ),
                     (
                         :event_action_a_id, :posting_a, :keyword,
                         DATE '2035-03-06', TIME '09:00', TIME '10:00',
                         1.00, :session_type_id, :series_a_id, false,
-                        'secretary'
+                        'secretary', NULL
                     ),
                     (
                         :event_b_id, :posting_b, :keyword,
                         DATE '2035-03-05', TIME '09:00', TIME '10:00',
                         1.00, :session_type_id, :series_b_id, false,
-                        'secretary'
+                        'secretary', NULL
                     )
                 """
             ),
@@ -1329,6 +1488,17 @@ async def test_evolved_teaching_name_pools_and_mappings_stay_role_scoped(
                 "b": values["teaching_name_b_id"],
             },
         ) == {values["teaching_name_a_id"], values["teaching_name_b_id"]}
+        locked_name = await db.execute(
+            text(
+                """
+                UPDATE teaching_names
+                SET revision = revision + 1
+                WHERE id = :id
+                """
+            ),
+            {"id": values["teaching_name_a_id"]},
+        )
+        assert locked_name.rowcount == 0
         assert await _scalar_set(
             db,
             "SELECT id FROM teaching_name_mappings WHERE id IN (:a, :b)",
@@ -1345,6 +1515,31 @@ async def test_evolved_teaching_name_pools_and_mappings_stay_role_scoped(
             {"id": values["mapping_a_id"]},
         )
         assert locked_mapping.rowcount == 0
+        await _assert_permission_denied(
+            db,
+            """
+            INSERT INTO teaching_name_mappings (
+                id, teaching_name_id, reporting_period_id, programme_code,
+                posting_code, r_year, teaching_target_id
+            )
+            VALUES (
+                :id, :teaching_name_id, :period_id, :programme_code,
+                :posting_code, 'R2', NULL
+            )
+            """,
+            {
+                "id": uuid4(),
+                "teaching_name_id": values["teaching_name_a_id"],
+                "period_id": values["period_id"],
+                "programme_code": values["programme_a"],
+                "posting_code": values["posting_a"],
+            },
+        )
+        locked_mapping_delete = await db.execute(
+            text("DELETE FROM teaching_name_mappings WHERE id = :id"),
+            {"id": values["mapping_a_id"]},
+        )
+        assert locked_mapping_delete.rowcount == 0
 
     pc_name_id = values["pc_teaching_name_id"]
     pc_mapping_id = values["pc_mapping_id"]
@@ -1371,11 +1566,11 @@ async def test_evolved_teaching_name_pools_and_mappings_stay_role_scoped(
                 """
                 INSERT INTO teaching_names (
                     id, reporting_period_id, programme_code, display_name,
-                    normalized_name
+                    normalized_name, is_active
                 )
                 VALUES (
                     :id, :period_id, :programme_code, 'PC Teaching Name',
-                    'pc teaching name'
+                    'pc teaching name', false
                 )
                 RETURNING id
                 """
@@ -1481,11 +1676,35 @@ async def test_evolved_teaching_name_pools_and_mappings_stay_role_scoped(
             {"id": values["mapping_b_id"]},
         )
         assert hidden_mapping.rowcount == 0
-        locked_delete = await db.execute(
-            text("DELETE FROM teaching_names WHERE id = :id"),
+        assert await db.scalar(
+            text(
+                """
+                DELETE FROM teaching_names
+                WHERE id = :id
+                RETURNING id
+                """
+            ),
             {"id": pc_name_id},
-        )
-        assert locked_delete.rowcount == 0
+        ) == pc_name_id
+        assert await db.scalar(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM teaching_name_mappings
+                WHERE id = :id
+                """
+            ),
+            {"id": pc_mapping_id},
+        ) == 0
+        try:
+            used_delete = await db.execute(
+                text("DELETE FROM teaching_names WHERE id = :id"),
+                {"id": values["teaching_name_a_id"]},
+            )
+        except DBAPIError as exc:
+            assert getattr(exc.orig, "sqlstate", None) == "42501"
+        else:
+            assert used_delete.rowcount == 0
 
     for context_name in ("pc_null", "pc_empty", "resident"):
         async with _runtime_context(
@@ -1594,17 +1813,6 @@ async def test_evolved_teaching_name_pools_and_mappings_stay_role_scoped(
                 "programme_code": values["programme_a"],
             },
         ) == secretary_name_id
-        assert await db.scalar(
-            text(
-                """
-                UPDATE teaching_names
-                SET is_active = false
-                WHERE id = :id
-                RETURNING is_active
-                """
-            ),
-            {"id": secretary_name_id},
-        ) is False
         await _assert_permission_denied(
             db,
             """
@@ -1614,7 +1822,7 @@ async def test_evolved_teaching_name_pools_and_mappings_stay_role_scoped(
             )
             VALUES (
                 :id, :teaching_name_id, :period_id, :programme_code,
-                :posting_code, 'R1', :teaching_target_id
+                :posting_code, 'R2', NULL
             )
             """,
             {
@@ -1623,9 +1831,43 @@ async def test_evolved_teaching_name_pools_and_mappings_stay_role_scoped(
                 "period_id": values["period_id"],
                 "programme_code": values["programme_a"],
                 "posting_code": values["posting_a"],
-                "teaching_target_id": values["target_a_id"],
             },
         )
+        secretary_mapping_update = await db.execute(
+            text(
+                """
+                UPDATE teaching_name_mappings
+                SET revision = 2
+                WHERE id = :id
+                """
+            ),
+            {"id": values["mapping_a_id"]},
+        )
+        assert secretary_mapping_update.rowcount == 0
+        secretary_mapping_delete = await db.execute(
+            text("DELETE FROM teaching_name_mappings WHERE id = :id"),
+            {"id": values["mapping_a_id"]},
+        )
+        assert secretary_mapping_delete.rowcount == 0
+        assert await db.scalar(
+            text(
+                """
+                DELETE FROM teaching_names
+                WHERE id = :id
+                RETURNING id
+                """
+            ),
+            {"id": secretary_name_id},
+        ) == secretary_name_id
+        try:
+            used_delete = await db.execute(
+                text("DELETE FROM teaching_names WHERE id = :id"),
+                {"id": values["teaching_name_a_id"]},
+            )
+        except DBAPIError as exc:
+            assert getattr(exc.orig, "sqlstate", None) == "42501"
+        else:
+            assert used_delete.rowcount == 0
 
 
 @pytest.mark.asyncio
@@ -3141,3 +3383,1268 @@ async def test_adhoc_creator_and_storage_family_are_database_owned(
                     {"event_ids": event_ids},
                 )
             await owner_db.commit()
+
+
+@pytest.mark.asyncio
+async def test_teaching_name_pool_shared_service_lifecycle_is_transactional_and_scoped(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = policy_seed.values
+    pc_actor = _pc_teaching_name_actor(values)
+    master_actor = _master_teaching_name_actor(values)
+    teaching_name_ids: list[UUID] = []
+    teaching_target_ids: list[UUID] = []
+    programme_ids: list[UUID] = []
+    cache_calls: list[dict[str, Any]] = []
+
+    def record_cache_change(**kwargs: Any) -> list[object]:
+        cache_calls.append(dict(kwargs))
+        return []
+
+    monkeypatch.setattr(
+        teaching_name_pool.cache_invalidation,
+        "invalidate_after_teaching_name_pool_change",
+        record_cache_change,
+    )
+
+    try:
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            created = await teaching_name_pool.create_teaching_name(
+                db,
+                actor=pc_actor,
+                reporting_period_id=values["period_id"],
+                programme_code=values["programme_a"],
+                teaching_name="  Service Café\tName  ",
+            )
+            created_id = created["id"]
+            teaching_name_ids.append(created_id)
+            assert created["teaching_name"] == "Service Café Name"
+            assert created["revision"] == 1
+            assert (
+                created["data_revalidation"].outcome
+                == DataRevalidationOutcome.FUTURE_COMPLIANCE_IMPACT
+            )
+            assert (
+                created["data_revalidation"].changed_entity
+                == DataRevalidationChangedEntity.TEACHING_NAME
+            )
+            assert created["data_revalidation"].affected_models == ["teaching_names"]
+
+            with pytest.raises(ApiError) as duplicate_active:
+                await teaching_name_pool.create_teaching_name(
+                    db,
+                    actor=pc_actor,
+                    reporting_period_id=values["period_id"],
+                    programme_code=values["programme_a"],
+                    teaching_name="service cafe\u0301 name",
+                )
+            assert duplicate_active.value.status_code == 409
+            assert duplicate_active.value.metadata == {
+                "existing_teaching_name_id": str(created_id),
+                "may_reactivate": False,
+            }
+
+            second = await teaching_name_pool.create_teaching_name(
+                db,
+                actor=pc_actor,
+                reporting_period_id=values["period_id"],
+                programme_code=values["programme_a"],
+                teaching_name="Independent Service Name",
+            )
+            second_id = second["id"]
+            teaching_name_ids.append(second_id)
+            with pytest.raises(ApiError) as duplicate_update:
+                await teaching_name_pool.update_teaching_name(
+                    db,
+                    actor=pc_actor,
+                    teaching_name_id=second_id,
+                    teaching_name="Service Café Name",
+                    expected_revision=1,
+                )
+            assert duplicate_update.value.status_code == 409
+            assert duplicate_update.value.metadata == {
+                "existing_teaching_name_id": str(created_id),
+                "may_reactivate": False,
+            }
+
+            renamed = await teaching_name_pool.update_teaching_name(
+                db,
+                actor=pc_actor,
+                teaching_name_id=created_id,
+                teaching_name="Renamed Service Name",
+                expected_revision=1,
+            )
+            assert renamed["revision"] == 2
+            cache_call_count_before_stale_delete = len(cache_calls)
+            with pytest.raises(ApiError) as stale_delete:
+                await teaching_name_pool.delete_teaching_name(
+                    db,
+                    actor=pc_actor,
+                    teaching_name_id=created_id,
+                    expected_revision=1,
+                    force_delete=False,
+                    reason=None,
+                    confirmation=None,
+            )
+            assert stale_delete.value.status_code == 409
+            assert len(cache_calls) == cache_call_count_before_stale_delete
+            async with policy_harness.owner_session() as owner_db:
+                assert await owner_db.scalar(
+                    text(
+                        """
+                        SELECT revision
+                        FROM teaching_names
+                        WHERE id = :teaching_name_id
+                        """
+                    ),
+                    {"teaching_name_id": created_id},
+                ) == 2
+                assert await owner_db.scalar(
+                    text(
+                        """
+                        SELECT COUNT(*)
+                        FROM teaching_name_mappings
+                        WHERE teaching_name_id = :teaching_name_id
+                        """
+                    ),
+                    {"teaching_name_id": created_id},
+                ) == 1
+                assert await owner_db.scalar(
+                    text(
+                        """
+                        SELECT COUNT(*)
+                        FROM audit_logs
+                        WHERE entity_type = 'teaching_name'
+                          AND entity_id = CAST(:teaching_name_id AS text)
+                          AND action = 'programme_pc.teaching_name.delete'
+                        """
+                    ),
+                    {"teaching_name_id": str(created_id)},
+                ) == 0
+            with pytest.raises(ApiError) as stale_update:
+                await teaching_name_pool.update_teaching_name(
+                    db,
+                    actor=pc_actor,
+                    teaching_name_id=created_id,
+                    teaching_name="Stale rename",
+                    expected_revision=1,
+                )
+            assert stale_update.value.status_code == 409
+            with pytest.raises(ApiError) as create_normalized_too_long:
+                await teaching_name_pool.create_teaching_name(
+                    db,
+                    actor=pc_actor,
+                    reporting_period_id=values["period_id"],
+                    programme_code=values["programme_a"],
+                    teaching_name="ß" * 200,
+                )
+            assert create_normalized_too_long.value.status_code == 422
+            with pytest.raises(ApiError) as update_normalized_too_long:
+                await teaching_name_pool.update_teaching_name(
+                    db,
+                    actor=pc_actor,
+                    teaching_name_id=created_id,
+                    teaching_name="ß" * 200,
+                    expected_revision=2,
+                )
+            assert update_normalized_too_long.value.status_code == 422
+
+            deactivated = await teaching_name_pool.deactivate_teaching_name(
+                db,
+                actor=pc_actor,
+                teaching_name_id=created_id,
+                expected_revision=2,
+            )
+            assert deactivated["revision"] == 3
+            with pytest.raises(ApiError) as duplicate_inactive:
+                await teaching_name_pool.create_teaching_name(
+                    db,
+                    actor=pc_actor,
+                    reporting_period_id=values["period_id"],
+                    programme_code=values["programme_a"],
+                    teaching_name="renamed service name",
+                )
+            assert duplicate_inactive.value.status_code == 409
+            assert duplicate_inactive.value.metadata == {
+                "existing_teaching_name_id": str(created_id),
+                "may_reactivate": True,
+            }
+
+        extra_target_id = uuid4()
+        teaching_target_ids.append(extra_target_id)
+        async with policy_harness.owner_session() as db:
+            assert await db.scalar(
+                text(
+                    """
+                    UPDATE teaching_name_mappings
+                    SET teaching_target_id = :target_a_id
+                    WHERE teaching_name_id = :teaching_name_id
+                      AND r_year = 'R1'
+                    RETURNING teaching_target_id
+                    """
+                ),
+                {"target_a_id": values["target_a_id"], "teaching_name_id": created_id},
+            ) == values["target_a_id"]
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_targets (
+                        id, reporting_period_id, programme_code, r_year,
+                        posting_code, session_type_id, monthly_target, is_tracked
+                    )
+                    VALUES (
+                        :id, :period_id, :programme_code, 'R2',
+                        :posting_code, :session_type_id, 1, true
+                    )
+                    """
+                ),
+                {
+                    "id": extra_target_id,
+                    "period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                    "posting_code": values["posting_a"],
+                    "session_type_id": values["session_type_id"],
+                },
+            )
+            await db.commit()
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            reactivated = await teaching_name_pool.reactivate_teaching_name(
+                db,
+                actor=pc_actor,
+                teaching_name_id=created_id,
+                expected_revision=3,
+            )
+            assert reactivated["revision"] == 4
+
+        async with policy_harness.owner_session() as db:
+            mappings = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT r_year, teaching_target_id
+                        FROM teaching_name_mappings
+                        WHERE teaching_name_id = :teaching_name_id
+                        ORDER BY r_year
+                        """
+                    ),
+                    {"teaching_name_id": created_id},
+                )
+            ).all()
+            assert mappings == [("R1", values["target_a_id"]), ("R2", None)]
+
+        async with policy_harness.owner_session() as holder:
+            assert await teaching_name_pool.acquire_ttf_scope_lock(
+                holder,
+                reporting_period_id=values["period_id"],
+                programme_code=values["programme_a"],
+            ) is True
+            async with _service_runtime_context(
+                policy_harness,
+                policy_seed.contexts["pc"],
+            ) as db:
+                with pytest.raises(ApiError) as locked_delete:
+                    await teaching_name_pool.delete_teaching_name(
+                        db,
+                        actor=pc_actor,
+                        teaching_name_id=created_id,
+                        expected_revision=4,
+                        force_delete=False,
+                        reason=None,
+                        confirmation=None,
+                    )
+                assert locked_delete.value.status_code == 409
+            await holder.rollback()
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            deleted = await teaching_name_pool.delete_teaching_name(
+                db,
+                actor=pc_actor,
+                teaching_name_id=created_id,
+                expected_revision=4,
+                force_delete=False,
+                reason=None,
+                confirmation=None,
+            )
+            assert deleted["used_name"] is False
+            assert deleted["event_reference_count"] == 0
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["master"],
+        ) as db:
+            master_visible = await teaching_name_pool.list_teaching_names(
+                db,
+                actor=master_actor,
+                reporting_period_id=values["period_id"],
+                programme_code=values["programme_a"],
+                is_active=None,
+                search=None,
+                limit=20,
+                offset=0,
+            )
+            assert second_id in {row["id"] for row in master_visible["items"]}
+            with pytest.raises(ApiError) as master_update:
+                await teaching_name_pool.update_teaching_name(
+                    db,
+                    actor=master_actor,
+                    teaching_name_id=second_id,
+                    teaching_name="Master Admin Must Not Rename",
+                    expected_revision=1,
+                )
+            assert master_update.value.status_code == 403
+            master_unused_delete = await teaching_name_pool.delete_teaching_name(
+                db,
+                actor=master_actor,
+                teaching_name_id=second_id,
+                expected_revision=1,
+                force_delete=False,
+                reason=None,
+                confirmation=None,
+            )
+            assert master_unused_delete["used_name"] is False
+            assert master_unused_delete["event_reference_count"] == 0
+
+        async with policy_harness.owner_session() as db:
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM teaching_name_mappings
+                    WHERE teaching_name_id = :teaching_name_id
+                    """
+                ),
+                {"teaching_name_id": created_id},
+            ) == 0
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM teaching_name_mappings
+                    WHERE teaching_name_id = :teaching_name_id
+                    """
+                ),
+                {"teaching_name_id": second_id},
+            ) == 0
+            audit_count_before_rollback = await db.scalar(
+                text("SELECT COUNT(*) FROM audit_logs WHERE entity_type = 'teaching_name'")
+            )
+
+        async def fail_audit(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise RuntimeError("test audit failure")
+
+        cache_call_count_before_rollback = len(cache_calls)
+        with monkeypatch.context() as rollback_patch:
+            rollback_patch.setattr(teaching_name_pool, "write_audit_log", fail_audit)
+            async with _service_runtime_context(
+                policy_harness,
+                policy_seed.contexts["pc"],
+            ) as db:
+                with pytest.raises(RuntimeError, match="test audit failure"):
+                    await teaching_name_pool.create_teaching_name(
+                        db,
+                        actor=pc_actor,
+                        reporting_period_id=values["period_id"],
+                        programme_code=values["programme_a"],
+                        teaching_name="Rollback Audit Name",
+                    )
+
+        no_target_programme_id = uuid4()
+        no_target_programme = f"RN{uuid4().hex[:10].upper()}"
+        programme_ids.append(no_target_programme_id)
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO programmes (
+                        id, code, name, ay_date_category, r_year_required,
+                        is_subspecialty
+                    )
+                    VALUES (
+                        :id, :programme_code, :programme_code,
+                        'non_im_subspec', true, false
+                    )
+                    """
+                ),
+                {"id": no_target_programme_id, "programme_code": no_target_programme},
+            )
+            await db.execute(
+                text(
+                    """
+                    UPDATE users
+                    SET programme_scope = ARRAY[:programme_a, :programme_b]::text[]
+                    WHERE id = :pc_id
+                    """
+                ),
+                {
+                    "programme_a": values["programme_a"],
+                    "programme_b": no_target_programme,
+                    "pc_id": values["pc_id"],
+                },
+            )
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM teaching_names
+                    WHERE reporting_period_id = :period_id
+                      AND programme_code = :programme_code
+                      AND normalized_name = 'rollback audit name'
+                    """
+                ),
+                {
+                    "period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                },
+            ) == 0
+            assert await db.scalar(
+                text("SELECT COUNT(*) FROM audit_logs WHERE entity_type = 'teaching_name'")
+            ) == audit_count_before_rollback
+            await db.commit()
+
+        no_target_context = await _issue_context(
+            policy_harness,
+            subject_type="staff",
+            subject_id=values["pc_id"],
+            supabase_user_id=values["pc_supabase_id"],
+            session_generation=0,
+        )
+        no_target_actor = _pc_teaching_name_actor(
+            values,
+            programme_scope=frozenset({no_target_programme}),
+        )
+        async with _service_runtime_context(policy_harness, no_target_context) as db:
+            no_target = await teaching_name_pool.create_teaching_name(
+                db,
+                actor=no_target_actor,
+                reporting_period_id=values["period_id"],
+                programme_code=no_target_programme,
+                teaching_name="No Target Service Name",
+            )
+            no_target_id = no_target["id"]
+            teaching_name_ids.append(no_target_id)
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM teaching_name_mappings
+                    WHERE teaching_name_id = :teaching_name_id
+                    """
+                ),
+                {"teaching_name_id": no_target_id},
+            ) == 0
+            await teaching_name_pool.delete_teaching_name(
+                db,
+                actor=no_target_actor,
+                teaching_name_id=no_target_id,
+                expected_revision=1,
+                force_delete=False,
+                reason=None,
+                confirmation=None,
+            )
+
+        async with policy_harness.owner_session() as db:
+            audit_rows = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT entity_id, action, COUNT(*) AS count
+                        FROM audit_logs
+                        WHERE entity_type = 'teaching_name'
+                          AND entity_id = ANY(CAST(:name_ids AS text[]))
+                        GROUP BY entity_id, action
+                        """
+                    ),
+                    {"name_ids": [str(value) for value in teaching_name_ids]},
+                )
+            ).mappings().all()
+            audit_counts = {
+                (str(row["entity_id"]), str(row["action"])): int(row["count"])
+                for row in audit_rows
+            }
+            expected_actions = {
+                (str(created_id), "programme_pc.teaching_name.create"),
+                (str(created_id), "programme_pc.teaching_name.rename"),
+                (str(created_id), "programme_pc.teaching_name.deactivate"),
+                (str(created_id), "programme_pc.teaching_name.reactivate"),
+                (str(created_id), "programme_pc.teaching_name.delete"),
+                (str(second_id), "programme_pc.teaching_name.create"),
+                (str(second_id), "admin.teaching_name.delete"),
+                (str(no_target_id), "programme_pc.teaching_name.create"),
+                (str(no_target_id), "programme_pc.teaching_name.delete"),
+            }
+            assert set(audit_counts) == expected_actions
+            assert set(audit_counts.values()) == {1}
+
+        assert len(cache_calls) == 9
+        assert len(cache_calls) > cache_call_count_before_rollback
+        assert {
+            call["reporting_period_id"] for call in cache_calls
+        } == {values["period_id"]}
+        assert {
+            call["programme_code"] for call in cache_calls
+        } == {values["programme_a"], no_target_programme}
+        assert all(call["event_references_cleared"] is False for call in cache_calls)
+    finally:
+        await _cleanup_teaching_name_service_rows(
+            policy_harness,
+            teaching_name_ids=teaching_name_ids,
+            teaching_target_ids=teaching_target_ids,
+            programme_ids=programme_ids,
+        )
+
+
+@pytest.mark.asyncio
+async def test_teaching_name_pool_shared_service_used_delete_requires_master_and_preserves_history(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = policy_seed.values
+    pc_actor = _pc_teaching_name_actor(values)
+    secretary_actor = _secretary_teaching_name_actor(values)
+    master_actor = _master_teaching_name_actor(values)
+    teaching_name_ids: list[UUID] = []
+    cache_calls: list[dict[str, Any]] = []
+
+    def record_cache_change(**kwargs: Any) -> list[object]:
+        cache_calls.append(dict(kwargs))
+        return []
+
+    monkeypatch.setattr(
+        teaching_name_pool.cache_invalidation,
+        "invalidate_after_teaching_name_pool_change",
+        record_cache_change,
+    )
+
+    try:
+        async with policy_harness.owner_session() as db:
+            assert await db.scalar(
+                text(
+                    """
+                    UPDATE secretary_programme_pools
+                    SET can_manage_teaching_names = true
+                    WHERE id = :pool_id
+                    RETURNING can_manage_teaching_names
+                    """
+                ),
+                {"pool_id": values["pool_a_id"]},
+            ) is True
+            await db.commit()
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["secretary"],
+        ) as db:
+            unused = await teaching_name_pool.create_teaching_name(
+                db,
+                actor=secretary_actor,
+                reporting_period_id=values["period_id"],
+                programme_code=values["programme_a"],
+                teaching_name="Secretary Unused Name",
+            )
+            unused_id = unused["id"]
+            teaching_name_ids.append(unused_id)
+
+        async with policy_harness.owner_session() as db:
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM teaching_name_mappings
+                    WHERE teaching_name_id = :teaching_name_id
+                    """
+                ),
+                {"teaching_name_id": unused_id},
+            ) == 1
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["secretary"],
+        ) as db:
+            unused_delete = await teaching_name_pool.delete_teaching_name(
+                db,
+                actor=secretary_actor,
+                teaching_name_id=unused_id,
+                expected_revision=1,
+                force_delete=False,
+                reason=None,
+                confirmation=None,
+            )
+            assert unused_delete["used_name"] is False
+            assert unused_delete["event_reference_count"] == 0
+
+        async with policy_harness.owner_session() as db:
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM teaching_name_mappings
+                    WHERE teaching_name_id = :teaching_name_id
+                    """
+                ),
+                {"teaching_name_id": unused_id},
+            ) == 0
+            unused_audits = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT action
+                        FROM audit_logs
+                        WHERE entity_type = 'teaching_name'
+                          AND entity_id = CAST(:teaching_name_id AS text)
+                        ORDER BY created_at
+                        """
+                    ),
+                    {"teaching_name_id": str(unused_id)},
+                )
+            ).scalars().all()
+            assert unused_audits == [
+                "secretary.teaching_name.create",
+                "secretary.teaching_name.delete",
+            ]
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["secretary"],
+        ) as db:
+            created = await teaching_name_pool.create_teaching_name(
+                db,
+                actor=secretary_actor,
+                reporting_period_id=values["period_id"],
+                programme_code=values["programme_a"],
+                teaching_name="Secretary Used Name",
+            )
+            teaching_name_id = created["id"]
+            teaching_name_ids.append(teaching_name_id)
+            assert (
+                created["data_revalidation"].trigger_source.value
+                == "secretary_config_change"
+            )
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["secretary"],
+        ) as db:
+            with pytest.raises(DBAPIError) as non_master_lock_attempt:
+                await db.execute(
+                    text(
+                        """
+                        SELECT mata_rls.lock_master_teaching_name_delete(
+                            CAST(:teaching_name_id AS uuid)
+                        )
+                        """
+                    ),
+                    {"teaching_name_id": str(teaching_name_id)},
+                )
+            assert _sqlstate(non_master_lock_attempt.value) == "42501"
+
+        async with policy_harness.owner_session() as db:
+            assert await db.scalar(
+                text(
+                    """
+                    UPDATE teaching_events
+                    SET teaching_name_id = :teaching_name_id
+                    WHERE id = :event_id
+                    RETURNING teaching_name_id
+                    """
+                ),
+                {
+                    "teaching_name_id": teaching_name_id,
+                    "event_id": values["event_seed_a_id"],
+                },
+            ) == teaching_name_id
+            event_snapshot = await db.scalar(
+                text(
+                    """
+                    SELECT to_jsonb(event) - 'teaching_name_id'
+                    FROM teaching_events AS event
+                    WHERE id = :event_id
+                    """
+                ),
+                {"event_id": values["event_seed_a_id"]},
+            )
+            native_snapshot = await db.scalar(
+                text(
+                    """
+                    SELECT to_jsonb(attendance)
+                    FROM attendance_records AS attendance
+                    WHERE id = :attendance_id
+                    """
+                ),
+                {"attendance_id": values["attendance_a_id"]},
+            )
+            external_snapshot = await db.scalar(
+                text(
+                    """
+                    SELECT to_jsonb(attendance)
+                    FROM external_attendance_records AS attendance
+                    WHERE id = :attendance_id
+                    """
+                ),
+                {"attendance_id": values["external_attendance_a_id"]},
+            )
+            await db.commit()
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            with pytest.raises(ApiError) as pc_used_delete:
+                await teaching_name_pool.delete_teaching_name(
+                    db,
+                    actor=pc_actor,
+                    teaching_name_id=teaching_name_id,
+                    expected_revision=1,
+                    force_delete=False,
+                    reason=None,
+                    confirmation=None,
+                )
+            assert pc_used_delete.value.status_code == 409
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["secretary"],
+        ) as db:
+            with pytest.raises(ApiError) as secretary_used_delete:
+                await teaching_name_pool.delete_teaching_name(
+                    db,
+                    actor=secretary_actor,
+                    teaching_name_id=teaching_name_id,
+                    expected_revision=1,
+                    force_delete=False,
+                    reason=None,
+                    confirmation=None,
+                )
+            assert secretary_used_delete.value.status_code == 409
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["master"],
+        ) as db:
+            with pytest.raises(ApiError) as missing_force_delete:
+                await teaching_name_pool.delete_teaching_name(
+                    db,
+                    actor=master_actor,
+                    teaching_name_id=teaching_name_id,
+                    expected_revision=1,
+                    force_delete=False,
+                    reason="Preserve recorded history",
+                    confirmation=None,
+                )
+            assert missing_force_delete.value.status_code == 409
+            with pytest.raises(ApiError) as incorrect_confirmation:
+                await teaching_name_pool.delete_teaching_name(
+                    db,
+                    actor=master_actor,
+                    teaching_name_id=teaching_name_id,
+                    expected_revision=1,
+                    force_delete=True,
+                    reason="Preserve recorded history",
+                    confirmation="delete",
+                )
+            assert incorrect_confirmation.value.status_code == 409
+            with pytest.raises(ApiError) as missing_reason:
+                await teaching_name_pool.delete_teaching_name(
+                    db,
+                    actor=master_actor,
+                    teaching_name_id=teaching_name_id,
+                    expected_revision=1,
+                    force_delete=True,
+                    reason="  ",
+                    confirmation="DELETE",
+                )
+            assert missing_reason.value.status_code == 422
+            deleted = await teaching_name_pool.delete_teaching_name(
+                db,
+                actor=master_actor,
+                teaching_name_id=teaching_name_id,
+                expected_revision=1,
+                force_delete=True,
+                reason="Preserve recorded history",
+                confirmation="DELETE",
+            )
+
+        assert deleted["used_name"] is True
+        assert deleted["event_reference_count"] == 1
+        assert deleted["native_attendance_count"] == 1
+        assert deleted["non_nhg_attendance_count"] == 1
+        assert set(deleted) == {
+            "teaching_name_id",
+            "deleted",
+            "used_name",
+            "event_reference_count",
+            "native_attendance_count",
+            "non_nhg_attendance_count",
+            "data_revalidation",
+        }
+
+        async with policy_harness.owner_session() as db:
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM teaching_name_mappings
+                    WHERE teaching_name_id = :teaching_name_id
+                    """
+                ),
+                {"teaching_name_id": teaching_name_id},
+            ) == 0
+            assert (
+                await db.execute(
+                    text(
+                        """
+                        SELECT teaching_name_id, to_jsonb(event) - 'teaching_name_id'
+                        FROM teaching_events AS event
+                        WHERE id = :event_id
+                        """
+                    ),
+                    {"event_id": values["event_seed_a_id"]},
+                )
+            ).one() == (None, event_snapshot)
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT to_jsonb(attendance)
+                    FROM attendance_records AS attendance
+                    WHERE id = :attendance_id
+                    """
+                ),
+                {"attendance_id": values["attendance_a_id"]},
+            ) == native_snapshot
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT to_jsonb(attendance)
+                    FROM external_attendance_records AS attendance
+                    WHERE id = :attendance_id
+                    """
+                ),
+                {"attendance_id": values["external_attendance_a_id"]},
+            ) == external_snapshot
+            audit_rows = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT action, metadata_json
+                        FROM audit_logs
+                        WHERE entity_type = 'teaching_name'
+                          AND entity_id = CAST(:teaching_name_id AS text)
+                        ORDER BY created_at
+                        """
+                    ),
+                    {"teaching_name_id": str(teaching_name_id)},
+                )
+            ).mappings().all()
+            assert [row["action"] for row in audit_rows] == [
+                "secretary.teaching_name.create",
+                "admin.teaching_name.force_delete",
+            ]
+            force_delete_metadata = audit_rows[-1]["metadata_json"]
+            if isinstance(force_delete_metadata, str):
+                force_delete_metadata = json.loads(force_delete_metadata)
+            assert force_delete_metadata["event_reference_count"] == 1
+            assert force_delete_metadata["native_attendance_count"] == 1
+            assert force_delete_metadata["non_nhg_attendance_count"] == 1
+            assert force_delete_metadata["event_identifiers_included"] is False
+            assert force_delete_metadata["attendance_identifiers_included"] is False
+            serialized_metadata = json.dumps(force_delete_metadata, sort_keys=True)
+            assert str(values["event_seed_a_id"]) not in serialized_metadata
+            assert str(values["attendance_a_id"]) not in serialized_metadata
+            assert str(values["external_attendance_a_id"]) not in serialized_metadata
+
+        assert len(cache_calls) == 4
+        assert [
+            call["event_references_cleared"] for call in cache_calls
+        ] == [False, False, False, True]
+        assert {
+            call["reporting_period_id"] for call in cache_calls
+        } == {values["period_id"]}
+        assert {call["programme_code"] for call in cache_calls} == {
+            values["programme_a"]
+        }
+    finally:
+        await _cleanup_teaching_name_service_rows(
+            policy_harness,
+            teaching_name_ids=teaching_name_ids,
+        )
+
+
+@pytest.mark.asyncio
+async def test_master_teaching_name_delete_lock_serializes_new_event_references(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = policy_seed.values
+    pc_actor = _pc_teaching_name_actor(values)
+    master_actor = _master_teaching_name_actor(values)
+    teaching_name_ids: list[UUID] = []
+    reference_counted = asyncio.Event()
+    release_delete = asyncio.Event()
+    reference_waiter_ready = asyncio.Event()
+    reference_waiter_pid: int | None = None
+    delete_task: asyncio.Task[dict[str, Any]] | None = None
+    reference_task: asyncio.Task[None] | None = None
+    original_locked_event_ids = teaching_name_pool._locked_event_ids
+
+    async def pause_after_reference_count(
+        db: AsyncSession,
+        *,
+        teaching_name_id: UUID,
+    ) -> list[UUID]:
+        event_ids = await original_locked_event_ids(
+            db,
+            teaching_name_id=teaching_name_id,
+        )
+        assert event_ids == []
+        reference_counted.set()
+        await release_delete.wait()
+        return event_ids
+
+    async def delete_as_master(teaching_name_id: UUID) -> dict[str, Any]:
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["master"],
+        ) as db:
+            return await teaching_name_pool.delete_teaching_name(
+                db,
+                actor=master_actor,
+                teaching_name_id=teaching_name_id,
+                expected_revision=1,
+                force_delete=False,
+                reason=None,
+                confirmation=None,
+            )
+
+    async def attach_reference(teaching_name_id: UUID) -> None:
+        nonlocal reference_waiter_pid
+        async with policy_harness.owner_session() as db:
+            reference_waiter_pid = int(
+                await db.scalar(text("SELECT pg_catalog.pg_backend_pid()"))
+            )
+            reference_waiter_ready.set()
+            await db.execute(
+                text(
+                    """
+                    UPDATE teaching_events
+                    SET teaching_name_id = :teaching_name_id
+                    WHERE id = :event_id
+                    """
+                ),
+                {
+                    "teaching_name_id": str(teaching_name_id),
+                    "event_id": values["event_action_a_id"],
+                },
+            )
+            await db.commit()
+
+    try:
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            created = await teaching_name_pool.create_teaching_name(
+                db,
+                actor=pc_actor,
+                reporting_period_id=values["period_id"],
+                programme_code=values["programme_a"],
+                teaching_name="Master Delete Reference Fence",
+            )
+            teaching_name_id = created["id"]
+            teaching_name_ids.append(teaching_name_id)
+
+        monkeypatch.setattr(
+            teaching_name_pool,
+            "_locked_event_ids",
+            pause_after_reference_count,
+        )
+        delete_task = asyncio.create_task(delete_as_master(teaching_name_id))
+        await asyncio.wait_for(reference_counted.wait(), timeout=10)
+
+        reference_task = asyncio.create_task(attach_reference(teaching_name_id))
+        await asyncio.wait_for(reference_waiter_ready.wait(), timeout=10)
+        assert reference_waiter_pid is not None
+        await _wait_for_database_lock_wait(
+            policy_harness,
+            waiter_pid=reference_waiter_pid,
+            blocked_task=reference_task,
+        )
+        assert not reference_task.done()
+
+        release_delete.set()
+        deleted = await asyncio.wait_for(delete_task, timeout=10)
+        assert deleted["used_name"] is False
+        assert deleted["event_reference_count"] == 0
+        with pytest.raises(DBAPIError) as rejected_reference:
+            await asyncio.wait_for(reference_task, timeout=10)
+        assert _sqlstate(rejected_reference.value) == "23503"
+
+        async with policy_harness.owner_session() as db:
+            assert await db.scalar(
+                text("SELECT COUNT(*) FROM teaching_names WHERE id = :teaching_name_id"),
+                {"teaching_name_id": teaching_name_id},
+            ) == 0
+            assert await db.scalar(
+                text(
+                    "SELECT teaching_name_id FROM teaching_events WHERE id = :event_id"
+                ),
+                {"event_id": values["event_action_a_id"]},
+            ) is None
+    finally:
+        release_delete.set()
+        for task in (delete_task, reference_task):
+            if task is not None and not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError, DBAPIError):
+                    await task
+        await _cleanup_teaching_name_service_rows(
+            policy_harness,
+            teaching_name_ids=teaching_name_ids,
+        )
+
+
+@pytest.mark.asyncio
+async def test_teaching_name_pool_shared_service_serializes_normalized_duplicate_creates(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+) -> None:
+    values = policy_seed.values
+    pc_actor = _pc_teaching_name_actor(values)
+    teaching_name_ids: list[UUID] = []
+    second_pc_context = await _issue_context(
+        policy_harness,
+        subject_type="staff",
+        subject_id=values["pc_id"],
+        supabase_user_id=values["pc_supabase_id"],
+        session_generation=0,
+    )
+
+    async def create_candidate(
+        context: PolicyContext,
+        teaching_name: str,
+    ) -> dict[str, Any]:
+        async with _service_runtime_context(policy_harness, context) as db:
+            return await teaching_name_pool.create_teaching_name(
+                db,
+                actor=pc_actor,
+                reporting_period_id=values["period_id"],
+                programme_code=values["programme_a"],
+                teaching_name=teaching_name,
+            )
+
+    try:
+        async with policy_harness.owner_session() as db:
+            mapping_count_before = await db.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM teaching_name_mappings
+                    WHERE reporting_period_id = :period_id
+                      AND programme_code = :programme_code
+                    """
+                ),
+                {
+                    "period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                },
+            )
+            audit_count_before = await db.scalar(
+                text("SELECT COUNT(*) FROM audit_logs WHERE entity_type = 'teaching_name'")
+            )
+
+        outcomes = await asyncio.gather(
+            create_candidate(policy_seed.contexts["pc"], "Concurrent ß"),
+            create_candidate(second_pc_context, "concurrent ss"),
+            return_exceptions=True,
+        )
+        created_rows = [outcome for outcome in outcomes if isinstance(outcome, dict)]
+        failed_rows = [outcome for outcome in outcomes if isinstance(outcome, Exception)]
+        assert len(created_rows) == 1
+        assert len(failed_rows) == 1
+        assert isinstance(failed_rows[0], ApiError)
+        assert failed_rows[0].status_code == 409
+        created_id = created_rows[0]["id"]
+        teaching_name_ids.append(created_id)
+
+        async with policy_harness.owner_session() as db:
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM teaching_names
+                    WHERE reporting_period_id = :period_id
+                      AND programme_code = :programme_code
+                      AND normalized_name = 'concurrent ss'
+                    """
+                ),
+                {
+                    "period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                },
+            ) == 1
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM teaching_name_mappings
+                    WHERE reporting_period_id = :period_id
+                      AND programme_code = :programme_code
+                    """
+                ),
+                {
+                    "period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                },
+            ) == mapping_count_before + 1
+            winner_mappings = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT posting_code, r_year, teaching_target_id
+                        FROM teaching_name_mappings
+                        WHERE teaching_name_id = :teaching_name_id
+                        """
+                    ),
+                    {"teaching_name_id": created_id},
+                )
+            ).all()
+            assert winner_mappings == [(values["posting_a"], "R1", None)]
+            audit_rows = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT entity_id, action
+                        FROM audit_logs
+                        WHERE entity_type = 'teaching_name'
+                        ORDER BY created_at
+                        """
+                    )
+                )
+            ).all()
+            assert len(audit_rows) == audit_count_before + 1
+            assert audit_rows[-1] == (
+                str(created_id),
+                "programme_pc.teaching_name.create",
+            )
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            await teaching_name_pool.delete_teaching_name(
+                db,
+                actor=pc_actor,
+                teaching_name_id=created_id,
+                expected_revision=1,
+                force_delete=False,
+                reason=None,
+                confirmation=None,
+            )
+    finally:
+        await _cleanup_teaching_name_service_rows(
+            policy_harness,
+            teaching_name_ids=teaching_name_ids,
+        )
+
+
+@pytest.mark.asyncio
+async def test_teaching_name_used_delete_guard_sees_hidden_event_references(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+) -> None:
+    values = policy_seed.values
+    secretary_actor = _secretary_teaching_name_actor(values)
+    teaching_name_ids: list[UUID] = []
+
+    try:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    UPDATE secretary_programme_pools
+                    SET can_manage_teaching_names = true
+                    WHERE id = :pool_id
+                    """
+                ),
+                {"pool_id": values["pool_a_id"]},
+            )
+            await db.commit()
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["secretary"],
+        ) as db:
+            created = await teaching_name_pool.create_teaching_name(
+                db,
+                actor=secretary_actor,
+                reporting_period_id=values["period_id"],
+                programme_code=values["programme_a"],
+                teaching_name="Secretary Hidden Event Guard",
+            )
+            teaching_name_id = created["id"]
+            teaching_name_ids.append(teaching_name_id)
+
+        async with policy_harness.owner_session() as db:
+            assert await db.scalar(
+                text(
+                    """
+                    UPDATE teaching_events
+                    SET teaching_name_id = :teaching_name_id
+                    WHERE id = :event_id
+                    RETURNING teaching_name_id
+                    """
+                ),
+                {
+                    "teaching_name_id": teaching_name_id,
+                    "event_id": values["event_b_id"],
+                },
+            ) == teaching_name_id
+            await db.commit()
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["secretary"],
+        ) as db:
+            assert await db.scalar(
+                text("SELECT COUNT(*) FROM teaching_events WHERE id = :event_id"),
+                {"event_id": values["event_b_id"]},
+            ) == 0
+            with pytest.raises(DBAPIError) as direct_delete:
+                await db.execute(
+                    text("DELETE FROM teaching_names WHERE id = :teaching_name_id"),
+                    {"teaching_name_id": teaching_name_id},
+                )
+            assert _sqlstate(direct_delete.value) == "42501"
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["secretary"],
+        ) as db:
+            with pytest.raises(ApiError) as guarded_service_delete:
+                await teaching_name_pool.delete_teaching_name(
+                    db,
+                    actor=secretary_actor,
+                    teaching_name_id=teaching_name_id,
+                    expected_revision=1,
+                    force_delete=False,
+                    reason=None,
+                    confirmation=None,
+                )
+            assert guarded_service_delete.value.status_code == 409
+    finally:
+        await _cleanup_teaching_name_service_rows(
+            policy_harness,
+            teaching_name_ids=teaching_name_ids,
+        )

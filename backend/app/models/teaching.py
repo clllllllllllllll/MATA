@@ -206,7 +206,7 @@ class TeachingNameMapping(UUIDTimestampMixin, Base):
                 "teaching_names.programme_code",
             ],
             name="fk_teaching_name_mappings_name_pool",
-            ondelete="RESTRICT",
+            ondelete="CASCADE",
         ),
         ForeignKeyConstraint(
             [

@@ -56,6 +56,7 @@ _AFFECTED_MODEL_BY_ENTITY = {
     DataRevalidationChangedEntity.POSTING_GROUP: "posting_groups",
     DataRevalidationChangedEntity.WEEKEND_EXCEPTION: "weekend_exceptions",
     DataRevalidationChangedEntity.GLOBAL_SESSION_TYPE: "global_session_types",
+    DataRevalidationChangedEntity.TEACHING_NAME: "teaching_names",
 }
 
 

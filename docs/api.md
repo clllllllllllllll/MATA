@@ -409,56 +409,70 @@ No push/live-update channel is implied in the current backend. After successful 
 
 ---
 
-## Future evolved Teaching Name API contract (specified; no routes implemented)
+## Shared Teaching Name pool API (Phase C)
 
-This section defines the post-B1 API behavior only. It does not add endpoints,
-schemas, or services in Phase A or B1. The current catalogue-backed endpoints
-and A-K TTF upload behavior remain the active transition path until final
-E2/B2 cutover.
+Revision `20260803_000031` activates the shared-pool lifecycle only. It does
+not add a mapping API, change the TTF parser, create pool-backed events, alter
+resident flows, or cut over the retained A-K catalogue path.
 
-### Logical operations and authorization
+### Lifecycle routes
+
+| Route | Authority | Notes |
+|---|---|---|
+| `GET /secretary/teaching-name-programmes` | Secretary | Returns only active, explicitly capable programme pools for the Secretary's current posting. |
+| `GET /secretary/teaching-names` | Secretary | Requires `reporting_period_id` and explicit `programme_code`. |
+| `POST /secretary/teaching-names` | Secretary | Creates a name in an explicitly selected eligible pool. |
+| `PATCH /secretary/teaching-names/{id}` | Secretary | Renames with `expected_revision`. |
+| `POST /secretary/teaching-names/{id}/deactivate` | Secretary | Requires `expected_revision`. |
+| `POST /secretary/teaching-names/{id}/reactivate` | Secretary | Requires `expected_revision`. |
+| `DELETE /secretary/teaching-names/{id}` | Secretary | Deletes only an unused name with `expected_revision`. |
+| `GET /admin/teaching-names` | Master Admin or Programme PC | Requires `reporting_period_id` and explicit `programme_code`. |
+| `POST`, `PATCH`, `POST .../deactivate`, `POST .../reactivate` under `/admin/teaching-names` | Programme PC only | A Master Admin receives `403` for ordinary lifecycle mutations. |
+| `DELETE /admin/teaching-names/{id}` | Master Admin or Programme PC | A PC may delete an unused in-scope name; Master Admin may perform the guarded used-name deletion below. |
+
+Both list routes support `is_active`, `search`, `limit`, and `offset`. Name
+responses expose the display value and lifecycle metadata, never the
+server-owned normalized key.
+
+### Authorization and lifecycle
 
 - `teaching_name` operations are scoped to one
-  `(reporting_period_id, programme_code)` pool. An explicitly authorized
-  Secretary and a Programme PC with that programme in current scope may create,
-  rename, deactivate, and reactivate names. Secretary authority requires the
-  explicit Secretary-to-programme management capability; native teaching-posting
-  visibility and ordinary event visibility never confer it. The initial pilot is
-  TTSH GERI.
-- Only the Programme PC may create, change, or clear a Teaching Name mapping.
-  The selected target must exactly match `(reporting period, programme, posting,
-  R-year)`. Master Admin may hard-delete only an unused name; a name referenced
-  by an event returns `409` rather than being deleted.
-- Name normalization is server-owned: Unicode canonical normalization, trim,
-  collapsed internal whitespace, and case-insensitive uniqueness. Preserve
-  punctuation and wording; do not fuzzy-match, expand abbreviations, or use
-  synonyms.
-- Mapping state is derived, not user-set: a null target is `pending`, and a
-  non-null exact target is `mapped`. There is no `excluded` state. Pending names
-  remain selectable for Secretary/PC events, visible to eligible residents, and
-  attendance-capable/auditable; they are excluded from compliance until mapped.
-  Mapping takes effect on the next JIT read and never rewrites events or
-  attendance.
+  `(reporting_period_id, programme_code)` pool. A Secretary needs the current
+  exact posting and active `can_manage_teaching_names` capability; a Programme
+  PC needs the programme in current scope. Native posting/event visibility and a
+  first matching row never confer authority.
+- Name normalization is server-owned: NFC, Unicode whitespace collapse,
+  casefolded NFC uniqueness, preserved punctuation and wording. Blank, values
+  retaining control characters after whitespace normalization, and
+  over-200-character display or normalized values return `422`; an active or
+  inactive duplicate returns `409` with its existing ID and reactivation hint.
+- Creation and reactivation acquire the TTF reporting-period/programme advisory
+  lock. The owner trigger creates one pending mapping for each distinct target
+  `(posting_code, r_year)` scope and reactivation only fills missing rows. It
+  preserves existing mapped rows and IDs. A scope with no targets is valid.
+- There is no mapping endpoint in Phase C. Pending/mapped state remains
+  configuration only and does not activate pool-backed event or compliance work.
+- A Secretary or PC may delete only an unused name. A Master Admin may delete a
+  used name only with `force_delete = true`, a nonblank reason, confirmation
+  exactly `"DELETE"`, and the current revision. The response exposes counts,
+  never affected IDs; the event identity becomes null while snapshot and
+  attendance records remain intact.
 
-### Concurrency and impact fencing
+### Concurrency and mutation effects
 
-- Rename, deactivate/reactivate, and existing mapping mutations require the
-  caller's `expected_revision`; stale values return controlled `409` with no
-  partial write. A new name or newly provisioned pending mapping has no
-  caller-supplied prior revision.
-- Mapping or unmapping is a two-step preview/apply operation. The preview
-  returns an opaque, short-lived impact token bound to the actor, name/mapping
-  revision, proposed exact target (or null), and the current target-scope
-  fingerprint. Apply must present that token and the same expected revision.
-  Any changed name, mapping, target scope, actor authority, or expired token
-  returns `409` and requires a new preview.
-- Provisioning is server-owned: creation creates pending rows for existing
-  posting/R-year scopes; reactivation reconciles scopes introduced while
-  inactive; TTF scope creation provisions missing rows; adding a session type
-  inside an existing scope never creates a duplicate mapping; removed scopes
-  remain pending or are reconciled only under final target-cutover rules.
+- Rename, deactivate, reactivate, and delete require `expected_revision`; a
+  stale value returns `409` with no partial write. Rename and deactivation
+  preserve mappings, and each lifecycle change increments the name revision.
+- Master deletion locks the name before it counts references. A concurrent new
+  event reference therefore waits, then either appears in the guarded count or
+  fails after the name is deleted; it cannot be omitted from a successful
+  count-only force-delete response.
+- Each successful mutation writes one audit record atomically and invalidates
+  only affected name/mapping/event option caches after commit. It returns a
+  `future_compliance_impact` summary only; no compliance, surplus, warning, or
+  attendance revalidation is performed.
 
-### Future event and mutation behavior
+### Deferred event and mapping work
 
 - A pool-backed scheduled-event request identifies `teaching_name_id`, belongs
   to that name's single programme, accepts `start_time` only, and receives a
@@ -467,15 +481,15 @@ E2/B2 cutover.
   `global_session_type_id`; global types remain Admin-managed and outside the
   ordinary mapping queue. No event may carry both identities; transitional
   legacy rows may carry neither.
-- Every future Teaching Name mutation uses the current protected-mutation
+- Every Teaching Name mutation uses the current protected-mutation
   contract: opaque-session authentication, current server-side authorization,
   CSRF and exact-Origin validation, applicable rate limiting, transactional
   audit logging, and cache invalidation only after commit. Failed, stale,
   unauthorized, out-of-scope, or preview-fenced requests neither write an audit
   success record nor invalidate caches.
-- B1 must add and attest the exact RLS/grant/policy boundary before enabling
-  these operations. Phase A makes no database, policy, grant, cache, or route
-  change.
+- The B1/Phase C RLS/grant/policy boundary is attested before these routes run.
+  Direct mapping DML remains unavailable to Secretaries and Master Admins; no
+  Phase C route exposes mapping DML.
 
 ## Admin Endpoints
 
