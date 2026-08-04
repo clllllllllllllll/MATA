@@ -112,13 +112,13 @@ python -B -m tests.run_rls_restricted_pytest -q --tb=short -p no:cacheprovider t
 Never substitute `mata_db`, the earlier H-D/H-E database, or a remote target.
 
 For the current cumulative restricted-harness verification, use exactly
-`mata_evolved_ttf_pre_d_fix_verify` at head `20260804_000034`. Both database
+`mata_evolved_ttf_dfg_fix_verify` at head `20260804_000035`. Both database
 URLs must name that local database in a fresh process; the runner derives
 separate temporary runtime/auth URLs and removes its `mata_test_*` roles:
 
 ```powershell
-Set-Item -Path Env:SYNC_DATABASE_URL -Value "postgresql://<local-owner>:<local-password>@localhost:5432/mata_evolved_ttf_pre_d_fix_verify"
-Set-Item -Path Env:DATABASE_URL -Value "postgresql+asyncpg://<local-owner>:<local-password>@localhost:5432/mata_evolved_ttf_pre_d_fix_verify"
+Set-Item -Path Env:SYNC_DATABASE_URL -Value "postgresql://<local-owner>:<local-password>@localhost:5432/mata_evolved_ttf_dfg_fix_verify"
+Set-Item -Path Env:DATABASE_URL -Value "postgresql+asyncpg://<local-owner>:<local-password>@localhost:5432/mata_evolved_ttf_dfg_fix_verify"
 cd backend
 python -B -m alembic current
 python -B -m pytest -q --tb=short -p no:cacheprovider --strict-markers -m migration_mutation tests
@@ -132,7 +132,7 @@ Do not drop the database without separate authorization.
 
 GitHub backend jobs start their PostgreSQL service on the maintenance database
 `postgres`. The shared local CI action then creates and attests exactly
-`mata_evolved_ttf_pre_d_fix_verify`, exports URLs that all name that local
+`mata_evolved_ttf_dfg_fix_verify`, exports URLs that all name that local
 database, and supplies only synthetic CI session/rate-limit secrets. The
 `migration_mutation` partition runs first and serially through the direct owner
 while its guards require zero competing sessions; CI then rechecks the head.

@@ -421,6 +421,12 @@ both retain an immutable `teaching_name` display snapshot. Revision
 discovery and attendance where present; both-null legacy rows retain
 deterministic persisted evidence only. The physical A-K parser/catalogue path
 remains until E2/B2.
+Revision `20260804_000035` adds immutable pool-source programme/period
+snapshots. Pool creation writes both values, used-name deletion preserves them,
+and list/manage/attendance authorization uses them without catalogue or display-
+text inference. Event owner and source programme must agree exactly. An inactive
+global type is excluded from new choices and new writes but does not hide or
+invalidate an existing event.
 
 ### Lifecycle routes
 
@@ -1435,7 +1441,7 @@ List scheduled teaching events visible to the Programme PC's programme scope.
 - **Auth:** admin/PC only
 - **Scope:** `programme_code IN programme_scope`. Null or empty `programme_scope` means no access. Master admin access is rejected on these PC CRUD endpoints.
 - **Query params:** `programme_code`, `reporting_period_id`, `date_from`, `date_to`, `posting_code` optional.
-- **Visibility contract:** Resolve the selected period, or the effectively active period containing today when none is selected. Return only events whose dates fall in that period. PC-created rows must be in scope. A pool-backed secretary-created/null-owner row is scoped by its `teaching_name_id` and the exact Teaching Name programme/period; a global row uses the existing posting/programme pool rule; a legacy both-null row retains the current compatibility rule. If an explicit period is supplied with `date_from` or `date_to`, each supplied date must fall inside it or the API returns `422`.
+- **Visibility contract:** Resolve the selected period, or the effectively active period containing today when none is selected. Return only events whose dates fall in that period. PC-created rows must be in scope. A pool-backed row is scoped by immutable source programme/period snapshots (and its exact Teaching Name ID while present); a global row uses the existing posting/programme pool rule without requiring its type to remain active; a true legacy both-null row uses deterministic owner/posting/creator evidence. Catalogue or display-text equality grants no listing or manageability. If an explicit period is supplied with `date_from` or `date_to`, each supplied date must fall inside it or the API returns `422`.
 
 ### GET `/admin/programme-teaching-name-options`
 
@@ -1465,7 +1471,7 @@ Create a programme-owned scheduled teaching event.
   "smc_event_code": null
 }
 ```
-- **Backend writes:** `teaching_events.created_for_programme_code = programme_code`, `created_by_role = 'programme_pc'`, `is_adhoc = false`, the selected source ID, and the immutable display snapshot. `created_by_role` is role/source metadata only; actor names are not stored on the event. Event and audit evidence commit atomically, then scoped caches are invalidated.
+- **Backend writes:** `teaching_events.created_for_programme_code = programme_code`, `created_by_role = 'programme_pc'`, `is_adhoc = false`, the selected source ID, and the immutable display snapshot. A pool write also persists exact immutable `source_programme_code` and `source_reporting_period_id`, and the owner must equal the source programme. `created_by_role` is role/source metadata only; actor names are not stored on the event. Event and audit evidence commit atomically, then scoped caches are invalidated.
 - **Resident visibility:** Residents can see the event only when their `programme_code` matches `created_for_programme_code` and the event also passes posting/date and persisted-source eligibility rules.
 
 ### PUT `/admin/programme-teaching-events/{id}`
@@ -1474,7 +1480,7 @@ Edit a programme-owned scheduled teaching event.
 
 - **Auth:** admin/PC only
 - **Scope:** request `programme_code IN programme_scope`, and event must be programme-owned for that programme or a secretary-created/null-owner scheduled row visible to that programme.
-- **Validation:** Public holiday, exact-source-ID, scope, source activity/period, and server-timing rules apply. A legacy event with both source IDs null returns `409` rather than receiving an inferred identity.
+- **Validation:** Public holiday, exact-source-ID, scope, source period, immutable owner/source equality, and server-timing rules apply. An existing global event may keep its same later-inactivated global ID; a new event may not select it. A legacy event with both source IDs null returns `409` rather than receiving an inferred identity.
 - **Constraint:** Returns `409` if any native `attendance_records` or `external_attendance_records` exist for the event. `created_by_role` is preserved.
 - **Concurrency:** The service locks and reloads the event before the
   all-status attendance guard and update, so a concurrent submission cannot
@@ -1763,6 +1769,12 @@ history only. The contract below governs current scheduled-event options.
   rows remains distinct. A pool option has `duration_hours: 1.0`; a global
   option has its configured duration. This selection endpoint does not query a
   catalogue mapping, `is_tracked`, or resident compliance.
+- **Phase F/G provenance contract:** A pool event also stores immutable
+  `source_programme_code` and `source_reporting_period_id`. The selected name
+  must match them exactly and the Secretary must hold capability for that exact
+  programme. Deleting the name later clears only its optional ID; snapshots,
+  event history, and attendance remain. Inactive global types are omitted here
+  but do not hide or invalidate existing global events.
 - **Resident visibility/attendance in Phase G:** event creation stores the
   source ID and immutable `teaching_name` snapshot. Runtime selection and
   attendance use the explicit pool identity with an exact reporting-period and
@@ -1963,6 +1975,9 @@ Submit an ad-hoc teaching not pre-created by a secretary.
   "details_of_session": "Case discussion after ward teaching"
 }
 ```
+- `teaching_date` is canonical. The compatibility-only `date` field is also
+  accepted temporarily. Supplying both with the same value is valid; conflicting
+  values or omitting both returns controlled `422`.
 - **Backend:**
   1. Validates `teaching_date` is not a public holiday → `422` if PH.
   2. Derives assigned posting for the selected date:
@@ -1972,10 +1987,12 @@ Submit an ad-hoc teaching not pre-created by a secretary.
      names and targets, return `422`.
   4. Uses only the derived posting. A supplied `attended_posting_code` must
      equal it; a second posting is not selectable.
-  5. Before either row is inserted, takes the native/external subject-date lock
-     and rejects an interval that overlaps an already submitted distinct event
-     for that Resident. It uses a controlled `409` and preserves the earlier
-     attendance.
+   5. Before either row is inserted, takes the native/external subject-date
+      locks for every spanned date and rejects a full-datetime interval that
+      overlaps an already submitted distinct event for that Resident. A one-hour
+      `23:00–00:00` interval is valid, the end belongs to the next date, and exact
+      boundary contact is allowed. A conflict uses controlled `409` and preserves
+      the earlier attendance.
   6. Calls the narrow PostgreSQL ad-hoc creation function. It derives trusted
      subject identity and family from the signed transaction-local context,
      creates `teaching_events` with the fixed display snapshot

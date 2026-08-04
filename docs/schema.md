@@ -38,6 +38,10 @@ and attendance authorization with explicit source identities where present,
 keeps deterministic both-null legacy evidence, exposes only authorised pool
 source scope to the runtime, and fixes atomic ad-hoc creation to the one-hour
 record without a catalogue or target lookup.
+Revision `20260804_000035` adds immutable pool-source programme/reporting-period
+snapshots, safely backfills only rows with an explicit Teaching Name ID, and
+replaces the affected event and attendance authorization with row-local,
+full-datetime rules.
 
 The planned final model uses `teaching_name` as the canonical term:
 
@@ -579,6 +583,8 @@ Teaching sessions created by secretaries, Programme PC CRUD, or ad-hoc submissio
 | session_type_id | UUID | FK → session_types.id, nullable | Legacy display/prototype field. It is null for Phase G ad-hoc rows and must not be used to infer a scheduled-event source, Resident/Non-NHG visibility, attendance eligibility, or ad-hoc classification. |
 | teaching_name_id | UUID | FK → teaching_names.id, nullable, `SET NULL` | Additive B1 stable pool identity. Deleting the referenced name clears this optional link only; the event snapshot and attendance remain. Legacy rows remain null until a later cutover. Cannot coexist with `global_session_type_id`. |
 | global_session_type_id | UUID | FK → global_session_types.id, nullable, `RESTRICT` | Additive B1 stable global identity. Legacy rows remain null until a later cutover. Cannot coexist with `teaching_name_id`. |
+| source_programme_code | VARCHAR(20) | FK → programmes.code, nullable, `RESTRICT` | Immutable programme snapshot for a pool-backed scheduled source. Paired with `source_reporting_period_id`; remains populated if `teaching_name_id` is later cleared. Null for global, true legacy, and ad-hoc rows. |
+| source_reporting_period_id | UUID | FK → reporting_periods.id, nullable, `RESTRICT` | Immutable reporting-period snapshot for a pool-backed scheduled source. Paired with `source_programme_code`. |
 | series_id | UUID | FK → event_series.id, nullable | Set if this event is part of a recurring series |
 | cme_points_awarded | BOOLEAN | DEFAULT false | |
 | smc_event_code | VARCHAR(50) | | |
@@ -592,7 +598,9 @@ has exactly one source identity: a pool-backed row has `teaching_name_id` and a
 global row has `global_session_type_id`. Both-null rows are transitional legacy
 data, remain readable, and are never resolved from their display text. A used
 Teaching Name deletion clears only the optional ID (`SET NULL`) and preserves
-the event snapshot and attendance. This invariant does not apply to ad-hoc
+the display snapshot, immutable source programme/period snapshots, and native
+or Non-NHG attendance. Source and programme-owner snapshots cannot be updated.
+This invariant does not apply to ad-hoc
 rows. Phase G ad-hoc rows use neither scheduled-event source ID and instead
 carry the fixed one-hour record under their typed creator/attendance family.
 
@@ -601,6 +609,12 @@ nullable legacy display field and is not resolved from
 `teaching_name_catalogue`. Phase G uses the persisted source IDs for discovery
 and attendance where present, with deterministic both-null legacy evidence and
 no display-text fallback.
+
+Pool snapshots are both null or both populated. A non-null `teaching_name_id`
+requires both snapshots and must resolve to that exact programme and period.
+Global and ad-hoc rows cannot carry pool snapshots. New global writes require an
+active type; later deactivation affects choices only and does not hide or
+invalidate an existing event or eligible attendance.
 
 **Ad-hoc ownership constraint:** Scheduled events carry neither creator foreign
 key. A Resident-created ad-hoc event carries exactly one creator foreign key,
@@ -670,7 +684,13 @@ row. `status` is constrained to `submitted`, `flagged`, or `removed`, subject
 and event identifiers cannot be retargeted, and a removed row cannot be
 resurrected in place.
 
-**Distinct-event overlap invariant:** Before inserting a later submission, the attendance service rejects it if its event interval overlaps an already accepted distinct event for the same resident. The earlier accepted attendance is preserved unchanged. This submission-time rule is separate from same-event uniqueness and requires no additional stored session-type field.
+**Distinct-event overlap invariant:** Before inserting a later submission, the
+attendance service and database reject it if its full datetime interval overlaps
+an already accepted distinct event for the same resident. An `end_time` less
+than or equal to `start_time` belongs to the following date, so `23:00–00:00`
+is valid and is compared against rows on both dates. Exact boundary contact is
+not overlap. The earlier accepted attendance is preserved unchanged. This rule
+is separate from same-event uniqueness and applies to native and Non-NHG rows.
 
 **Session type is NOT stored here.** The Phase 6 compliance resolver is deferred. When implemented, it must resolve through the event's persisted source identity and a scoped mapping for the resident/posting/r-year context; the immutable `teaching_name` display snapshot is never a matching input.
 
@@ -1588,6 +1608,10 @@ WHERE teaching_name_id IS NOT NULL;
 CREATE INDEX idx_teaching_events_global_session_type
 ON teaching_events(global_session_type_id)
 WHERE global_session_type_id IS NOT NULL;
+
+CREATE INDEX idx_teaching_events_source_scope
+ON teaching_events(source_reporting_period_id, source_programme_code)
+WHERE source_reporting_period_id IS NOT NULL;
 ```
 
 #### `event_series`

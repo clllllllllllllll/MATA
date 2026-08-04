@@ -42,7 +42,7 @@ class PostgresAdminEventHarness:
     suffix: str
 
 
-DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_pre_d_fix_verify"
+DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_dfg_fix_verify"
 _TEST_SESSION_HASH_KEY = "rls-admin-events-test-session-key-32-bytes"
 
 

@@ -15,6 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.errors import ApiError, ErrorCode
 from app.security import log_safe_exception
 from app.services import cache_invalidation
+from app.services.event_intervals import (
+    intervals_overlap,
+    overlap_candidate_dates,
+    spanned_dates,
+)
 from app.services.reporting_period_status import (
     list_effectively_active_reporting_periods,
     resolve_active_reporting_period_for_date,
@@ -115,15 +120,16 @@ def _resolve_scheduled_event_source(
 
     teaching_name_id = event.get("teaching_name_id")
     global_session_type_id = event.get("global_session_type_id")
+    source_programme_code = event.get("source_programme_code")
+    source_reporting_period_id = event.get("source_reporting_period_id")
     if teaching_name_id is not None and global_session_type_id is not None:
         return None
+    if (source_programme_code is None) != (source_reporting_period_id is None):
+        return None
 
-    if teaching_name_id is not None:
-        source_programme_code = event.get("source_programme_code")
-        source_reporting_period_id = event.get("source_reporting_period_id")
+    if source_programme_code is not None:
         if (
-            source_programme_code is None
-            or source_reporting_period_id is None
+            global_session_type_id is not None
             or programme_code is None
             or str(source_reporting_period_id) != str(reporting_period_id)
             or str(source_programme_code) != str(programme_code)
@@ -135,6 +141,9 @@ def _resolve_scheduled_event_source(
             "duration_hours": event.get("duration_hours"),
             "is_global": False,
         }
+
+    if teaching_name_id is not None:
+        return None
 
     if global_session_type_id is not None:
         return {
@@ -1029,6 +1038,9 @@ def _external_event_ineligibility_reason(
     if source is None:
         return "event_scope"
     owner = event.get("created_for_programme_code")
+    source_programme = event.get("source_programme_code")
+    if source_programme is not None and owner is not None and owner != source_programme:
+        return "event_scope"
     if owner is None:
         if not posting_capabilities.get(event["posting_code"], False):
             return "secretary_events_not_supported"
@@ -1697,16 +1709,21 @@ async def _duplicate_external_attendance_exists(
 
 def _event_intervals_overlap(
     *,
+    left_date: date,
     left_start: time,
     left_end: time | None,
+    right_date: date,
     right_start: time,
     right_end: time | None,
 ) -> bool:
-    if left_start == right_start:
-        return True
-    effective_left_end = left_end or left_start
-    effective_right_end = right_end or right_start
-    return left_start < effective_right_end and right_start < effective_left_end
+    return intervals_overlap(
+        left_date=left_date,
+        left_start=left_start,
+        left_end=left_end,
+        right_date=right_date,
+        right_start=right_start,
+        right_end=right_end,
+    )
 
 
 def _native_attendance_lock_keys(
@@ -1843,7 +1860,7 @@ async def _overlapping_native_attendance_exists(
         text(
             """
             /* native_attendance_overlap_candidates */
-            SELECT existing.start_time, existing.end_time
+            SELECT existing.event_date, existing.start_time, existing.end_time
             FROM attendance_records AS attendance
             JOIN teaching_events AS existing
               ON existing.id = attendance.teaching_event_id
@@ -1853,19 +1870,27 @@ async def _overlapping_native_attendance_exists(
                   CAST(:event_id AS uuid) IS NULL
                   OR existing.id <> CAST(:event_id AS uuid)
               )
-              AND existing.event_date = :event_date
+              AND existing.event_date = ANY(:candidate_dates)
             """
         ),
         {
             "resident_id": str(resident_id),
             "event_id": str(event["id"]) if event.get("id") is not None else None,
-            "event_date": event["event_date"],
+            "candidate_dates": sorted(
+                overlap_candidate_dates(
+                    event_date=event["event_date"],
+                    start_time=event["start_time"],
+                    end_time=event.get("end_time"),
+                )
+            ),
         },
     )
     return any(
         _event_intervals_overlap(
+            left_date=event["event_date"],
             left_start=event["start_time"],
             left_end=event.get("end_time"),
+            right_date=row["event_date"],
             right_start=row["start_time"],
             right_end=row.get("end_time"),
         )
@@ -1883,7 +1908,7 @@ async def _overlapping_external_attendance_exists(
         text(
             """
             /* external_attendance_overlap_candidates */
-            SELECT existing.start_time, existing.end_time
+            SELECT existing.event_date, existing.start_time, existing.end_time
             FROM external_attendance_records AS attendance
             JOIN teaching_events AS existing
               ON existing.id = attendance.teaching_event_id
@@ -1893,19 +1918,27 @@ async def _overlapping_external_attendance_exists(
                   CAST(:event_id AS uuid) IS NULL
                   OR existing.id <> CAST(:event_id AS uuid)
               )
-              AND existing.event_date = :event_date
+              AND existing.event_date = ANY(:candidate_dates)
             """
         ),
         {
             "external_resident_id": str(external_resident_id),
             "event_id": str(event["id"]) if event.get("id") is not None else None,
-            "event_date": event["event_date"],
+            "candidate_dates": sorted(
+                overlap_candidate_dates(
+                    event_date=event["event_date"],
+                    start_time=event["start_time"],
+                    end_time=event.get("end_time"),
+                )
+            ),
         },
     )
     return any(
         _event_intervals_overlap(
+            left_date=event["event_date"],
             left_start=event["start_time"],
             left_end=event.get("end_time"),
+            right_date=row["event_date"],
             right_start=row["start_time"],
             right_end=row.get("end_time"),
         )
@@ -2144,7 +2177,13 @@ async def submit_attendance(
                 break
             if event is None:
                 raise RuntimeError("Teaching event lookup returned no result or error")
-            lock_dates.add(event["event_date"])
+            lock_dates.update(
+                spanned_dates(
+                    event_date=event["event_date"],
+                    start_time=event["start_time"],
+                    end_time=event.get("end_time"),
+                )
+            )
         await _acquire_external_attendance_locks(
             db,
             external_resident_id=external_resident_id,
@@ -2208,10 +2247,11 @@ async def submit_attendance(
                 event=event,
             )
             overlaps_planned = any(
-                prior_event["event_date"] == event["event_date"]
-                and _event_intervals_overlap(
+                _event_intervals_overlap(
+                    left_date=event["event_date"],
                     left_start=event["start_time"],
                     left_end=event.get("end_time"),
+                    right_date=prior_event["event_date"],
                     right_start=prior_event["start_time"],
                     right_end=prior_event.get("end_time"),
                 )
@@ -2303,7 +2343,13 @@ async def submit_attendance(
             break
         if event is None:
             raise RuntimeError("Teaching event lookup returned no result or error")
-        lock_dates.add(event["event_date"])
+        lock_dates.update(
+            spanned_dates(
+                event_date=event["event_date"],
+                start_time=event["start_time"],
+                end_time=event.get("end_time"),
+            )
+        )
     await _acquire_native_attendance_locks(
         db,
         resident_id=resident_id,
@@ -2401,10 +2447,11 @@ async def submit_attendance(
             event=event,
         )
         overlaps_planned = any(
-            prior_event["event_date"] == event["event_date"]
-            and _event_intervals_overlap(
+            _event_intervals_overlap(
+                left_date=event["event_date"],
                 left_start=event["start_time"],
                 left_end=event.get("end_time"),
+                right_date=prior_event["event_date"],
                 right_start=prior_event["start_time"],
                 right_end=prior_event.get("end_time"),
             )
@@ -2531,7 +2578,11 @@ async def submit_adhoc_teaching(
         await _acquire_external_attendance_locks(
             db,
             external_resident_id=external_resident_id,
-            event_dates={event_date},
+            event_dates=spanned_dates(
+                event_date=event_date,
+                start_time=start_time,
+                end_time=end_time,
+            ),
         )
         if await _overlapping_external_attendance_exists(
             db,
@@ -2636,7 +2687,11 @@ async def submit_adhoc_teaching(
     await _acquire_native_attendance_locks(
         db,
         resident_id=resident_id,
-        event_dates={event_date},
+        event_dates=spanned_dates(
+            event_date=event_date,
+            start_time=start_time,
+            end_time=end_time,
+        ),
     )
     if await _overlapping_native_attendance_exists(
         db,

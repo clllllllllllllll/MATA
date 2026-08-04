@@ -25,6 +25,7 @@ class ScheduledEventSource:
     duration_hours: Decimal
     kind: ScheduledEventSourceKind
     programme_code: str | None = None
+    reporting_period_id: UUID | None = None
 
     @property
     def is_pool_backed(self) -> bool:
@@ -187,6 +188,7 @@ async def _resolve_teaching_name_source(
         duration_hours=POOL_EVENT_DURATION_HOURS,
         kind="teaching_name",
         programme_code=source_programme_code,
+        reporting_period_id=UUID(str(source["reporting_period_id"])),
     )
 
 
@@ -194,6 +196,7 @@ async def _resolve_global_session_type_source(
     db: AsyncSession,
     *,
     global_session_type_id: UUID,
+    allow_inactive: bool = False,
 ) -> ScheduledEventSource:
     result = await db.execute(
         text(
@@ -207,7 +210,7 @@ async def _resolve_global_session_type_source(
         {"global_session_type_id": str(global_session_type_id)},
     )
     row = result.mappings().one_or_none()
-    if row is None or not bool(row["is_active"]):
+    if row is None or (not allow_inactive and not bool(row["is_active"])):
         raise _validation_error("Selected Global Session Type is unavailable")
 
     source = dict(row)
@@ -228,6 +231,7 @@ async def resolve_scheduled_event_source(
     teaching_name_id: UUID | None,
     global_session_type_id: UUID | None,
     programme_code: str | None = None,
+    allow_inactive_global_session_type_id: UUID | None = None,
 ) -> ScheduledEventSource:
     """Resolve a write-time event source without matching display text."""
 
@@ -247,4 +251,9 @@ async def resolve_scheduled_event_source(
     return await _resolve_global_session_type_source(
         db,
         global_session_type_id=global_session_type_id,
+        allow_inactive=(
+            allow_inactive_global_session_type_id is not None
+            and str(global_session_type_id)
+            == str(allow_inactive_global_session_type_id)
+        ),
     )

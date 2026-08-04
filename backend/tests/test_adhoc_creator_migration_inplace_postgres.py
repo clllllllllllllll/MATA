@@ -7,7 +7,7 @@ import os
 import re
 from time import sleep
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -32,8 +32,9 @@ from tests.test_external_registration_migrations_postgres import (
 
 PREVIOUS_REVISION = "20260727_000027"
 ADHOC_REVISION = "20260728_000028"
-REPOSITORY_HEAD_REVISION = "20260804_000034"
+REPOSITORY_HEAD_REVISION = "20260804_000035"
 PHASE_G_PREVIOUS_REVISION = "20260804_000033"
+DFG_PREVIOUS_REVISION = "20260804_000034"
 RUNTIME_ROLE = "mata_app_runtime"
 AUTH_ROLE = "mata_auth_internal"
 DEFINER_ROLE = "mata_adhoc_attendance_definer"
@@ -44,6 +45,10 @@ ATOMIC_HELPER = (
 )
 SOURCE_SCOPE_HELPER = "mata_rls.scheduled_event_source_scope(uuid)"
 EXTERNAL_ACCESS_HELPER = "mata_rls.can_access_external_attendance(uuid,uuid)"
+DFG_SELECT_ROW_HELPER = (
+    "mata_rls.can_select_teaching_event_row("
+    "uuid,boolean,text,date,text,text,uuid,uuid,uuid,uuid,text,uuid)"
+)
 _SAFE_IDENTIFIER = re.compile(r"[a-z][a-z0-9_]*")
 _EPHEMERAL_ROLE = re.compile(r"mata_test_(?:runtime|auth)_[0-9a-f]{16}")
 
@@ -959,9 +964,11 @@ def test_phase_g_runtime_source_decoupling_migration_lifecycle_in_place(
                 )
             )
             assert phase_g_external_access != pre_phase_g_external_access
-            assert "current_app_role() = 'secretary'" in phase_g_external_access
-            assert "current_app_role() = 'admin'" in phase_g_external_access
-            assert "competing_posting" in phase_g_external_access
+            assert (
+                "current_app_role() IN ('admin', 'secretary')"
+                in phase_g_external_access
+            )
+            assert "external_resident_postings AS competing" in phase_g_external_access
 
         _migrate(harness, "downgrade", PHASE_G_PREVIOUS_REVISION)
         with harness.engine.connect() as connection:
@@ -984,6 +991,235 @@ def test_phase_g_runtime_source_decoupling_migration_lifecycle_in_place(
                     {"signature": EXTERNAL_ACCESS_HELPER},
                 )
             ) == pre_phase_g_external_access
+    finally:
+        _recover_head(harness)
+
+
+@pytest.mark.migration_mutation
+def test_dfg_source_provenance_migration_lifecycle_in_place(
+    in_place_migration_database: InPlaceHarness,
+) -> None:
+    harness = in_place_migration_database
+    suffix = uuid4().hex[:10]
+    programme_code = f"DFG{suffix}".upper()[:20]
+    posting_code = f"DFG{suffix}"
+    programme_id = uuid4()
+    posting_id = uuid4()
+    period_id = uuid4()
+    teaching_name_id = uuid4()
+    event_id = uuid4()
+    contradictory_event_id = uuid4()
+    try:
+        _migrate(harness, "downgrade", DFG_PREVIOUS_REVISION)
+        with harness.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO posting_codes (id, code, display_name)
+                    VALUES (:id, :code, :code)
+                    """
+                ),
+                {"id": posting_id, "code": posting_code},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO programmes (
+                        id, code, name, ay_date_category, r_year_required
+                    ) VALUES (
+                        :id, :code, :name, 'non_im_subspec', false
+                    )
+                    """
+                ),
+                {
+                    "id": programme_id,
+                    "code": programme_code,
+                    "name": f"DFG migration {suffix}",
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO reporting_periods (
+                        id, label, start_date, end_date, status
+                    ) VALUES (
+                        :id, :label, DATE '2088-01-01', DATE '2088-12-31',
+                        'active'
+                    )
+                    """
+                ),
+                {"id": period_id, "label": f"DFG migration {suffix}"},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO teaching_names (
+                        id, reporting_period_id, programme_code, display_name,
+                        normalized_name, is_active
+                    ) VALUES (
+                        :id, :period_id, :programme_code,
+                        'DFG explicit source', 'dfg explicit source', true
+                    )
+                    """
+                ),
+                {
+                    "id": teaching_name_id,
+                    "period_id": period_id,
+                    "programme_code": programme_code,
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO teaching_events (
+                        id, posting_code, created_for_programme_code,
+                        teaching_name, event_date, start_time, end_time,
+                        duration_hours, is_adhoc, created_by_role,
+                        teaching_name_id
+                    ) VALUES (
+                        :id, :posting_code, :programme_code,
+                        'DFG explicit source', DATE '2088-05-05',
+                        TIME '23:00', TIME '00:00', 1.00, false,
+                        'programme_pc', :teaching_name_id
+                    )
+                    """
+                ),
+                {
+                    "id": event_id,
+                    "posting_code": posting_code,
+                    "programme_code": programme_code,
+                    "teaching_name_id": teaching_name_id,
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO teaching_events (
+                        id, posting_code, created_for_programme_code,
+                        teaching_name, event_date, start_time, end_time,
+                        duration_hours, is_adhoc, created_by_role,
+                        teaching_name_id
+                    ) VALUES (
+                        :id, :posting_code, :programme_code,
+                        'DFG contradictory source', DATE '2089-05-05',
+                        TIME '10:00', TIME '11:00', 1.00, false,
+                        'programme_pc', :teaching_name_id
+                    )
+                    """
+                ),
+                {
+                    "id": contradictory_event_id,
+                    "posting_code": posting_code,
+                    "programme_code": programme_code,
+                    "teaching_name_id": teaching_name_id,
+                },
+            )
+
+        failed_upgrade = _migrate(
+            harness,
+            "upgrade",
+            REPOSITORY_HEAD_REVISION,
+            succeeds=False,
+        )
+        assert "Explicit Teaching Name event provenance is contradictory" in failed_upgrade
+        with harness.engine.begin() as connection:
+            assert _revision(connection) == DFG_PREVIOUS_REVISION
+            connection.execute(
+                text("DELETE FROM teaching_events WHERE id = :id"),
+                {"id": contradictory_event_id},
+            )
+        _migrate(harness, "upgrade", REPOSITORY_HEAD_REVISION)
+        with harness.engine.begin() as connection:
+            assert _revision(connection) == REPOSITORY_HEAD_REVISION
+            snapshot = (
+                connection.execute(
+                    text(
+                        """
+                        SELECT source_programme_code,
+                               source_reporting_period_id
+                        FROM teaching_events WHERE id = :id
+                        """
+                    ),
+                    {"id": event_id},
+                )
+            ).mappings().one()
+            assert snapshot["source_programme_code"] == programme_code
+            assert snapshot["source_reporting_period_id"] == period_id
+            assert connection.scalar(
+                text("SELECT pg_catalog.to_regprocedure(:signature)"),
+                {"signature": DFG_SELECT_ROW_HELPER},
+            ) is not None
+            assert "character varying" in str(
+                connection.scalar(
+                    text(
+                        "SELECT pg_catalog.pg_get_function_result("
+                        "pg_catalog.to_regprocedure(:signature))"
+                    ),
+                    {"signature": SOURCE_SCOPE_HELPER},
+                )
+            )
+            connection.execute(
+                text("DELETE FROM teaching_names WHERE id = :id"),
+                {"id": teaching_name_id},
+            )
+            preserved = (
+                connection.execute(
+                    text(
+                        """
+                        SELECT teaching_name_id, source_programme_code,
+                               source_reporting_period_id
+                        FROM teaching_events WHERE id = :id
+                        """
+                    ),
+                    {"id": event_id},
+                )
+            ).mappings().one()
+            assert preserved["teaching_name_id"] is None
+            assert preserved["source_programme_code"] == programme_code
+            assert preserved["source_reporting_period_id"] == period_id
+
+        _migrate(harness, "downgrade", DFG_PREVIOUS_REVISION)
+        with harness.engine.connect() as connection:
+            assert _revision(connection) == DFG_PREVIOUS_REVISION
+            assert connection.scalar(
+                text("SELECT pg_catalog.to_regprocedure(:signature)"),
+                {"signature": DFG_SELECT_ROW_HELPER},
+            ) is None
+            assert not connection.scalar(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_catalog.pg_attribute
+                        WHERE attrelid = 'public.teaching_events'::regclass
+                          AND attname IN (
+                              'source_programme_code',
+                              'source_reporting_period_id'
+                          )
+                          AND NOT attisdropped
+                    )
+                    """
+                )
+            )
+
+        _migrate(harness, "upgrade", REPOSITORY_HEAD_REVISION)
+        with harness.engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM teaching_events WHERE id = :id"),
+                {"id": event_id},
+            )
+            connection.execute(
+                text("DELETE FROM reporting_periods WHERE id = :id"),
+                {"id": period_id},
+            )
+            connection.execute(
+                text("DELETE FROM programmes WHERE id = :id"),
+                {"id": programme_id},
+            )
+            connection.execute(
+                text("DELETE FROM posting_codes WHERE id = :id"),
+                {"id": posting_id},
+            )
     finally:
         _recover_head(harness)
 

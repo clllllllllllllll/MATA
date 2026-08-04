@@ -296,6 +296,8 @@ class FakeSecretarySession:
                 "session_type_id": self.session_type_id,
                 "teaching_name_id": self.teaching_name_id_for("Journal Club", "CARD"),
                 "global_session_type_id": None,
+                "source_programme_code": "CARD",
+                "source_reporting_period_id": self.reporting_period_id,
                 "session_type": "Department Teaching [1h]",
                 "series_id": None,
                 "cme_points_awarded": False,
@@ -364,6 +366,14 @@ class FakeSecretarySession:
                 teaching_name,
                 posting_code,
             )
+        source_name = next(
+            (
+                row
+                for row in self.teaching_names
+                if row["id"] == str(teaching_name_id)
+            ),
+            None,
+        )
         return {
             "id": event_id,
             "posting_code": posting_code,
@@ -375,6 +385,12 @@ class FakeSecretarySession:
             "session_type_id": session_type_id or self.session_type_id,
             "teaching_name_id": teaching_name_id,
             "global_session_type_id": global_session_type_id,
+            "source_programme_code": (
+                source_name["programme_code"] if source_name is not None else None
+            ),
+            "source_reporting_period_id": (
+                source_name["reporting_period_id"] if source_name is not None else None
+            ),
             "session_type": "Department Teaching [1h]",
             "series_id": series_id,
             "cme_points_awarded": False,
@@ -881,6 +897,10 @@ class FakeSecretarySession:
                 teaching_name_id=payload.get("teaching_name_id"),
                 global_session_type_id=payload.get("global_session_type_id"),
                 series_id=str(payload["series_id"]) if payload.get("series_id") else None,
+            )
+            row["source_programme_code"] = payload.get("source_programme_code")
+            row["source_reporting_period_id"] = payload.get(
+                "source_reporting_period_id"
             )
             row["cme_points_awarded"] = payload["cme_points_awarded"]
             row["smc_event_code"] = payload.get("smc_event_code")
@@ -1401,6 +1421,34 @@ def test_create_event_rejects_client_posting_code_and_end_time() -> None:
 
     assert posting_response.status_code == 422
     assert end_time_response.status_code == 422
+
+
+def test_multi_capability_secretary_cannot_switch_event_source_programme() -> None:
+    fake_db = FakeSecretarySession()
+    fake_db.secretary_programme_pools.append(
+        {
+            "posting_code": "TTSHCardio",
+            "programme_code": "GERI",
+            "is_active": True,
+            "can_manage_teaching_names": True,
+        }
+    )
+    source_event = fake_db.events[1]
+    before = deepcopy(source_event)
+    client = _client(fake_db)
+
+    response = client.put(
+        f"/secretary/teaching-events/{source_event['id']}",
+        headers=_headers(fake_db),
+        json={
+            **_pool_source(fake_db, "GERI Demo Row 22", "GERI"),
+            "event_date": "2026-05-26",
+            "start_time": "11:00",
+        },
+    )
+
+    assert response.status_code == 409
+    assert source_event == before
 
 
 def test_create_event_on_public_holiday_returns_422() -> None:

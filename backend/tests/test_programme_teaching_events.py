@@ -200,6 +200,14 @@ class FakeProgrammeTeachingEventsSession:
         event_date: date = date(2026, 5, 18),
         start_time: time = time(10, 0),
     ) -> dict:
+        source_name = next(
+            (
+                row
+                for row in self.teaching_names
+                if row["id"] == str(teaching_name_id)
+            ),
+            None,
+        )
         return {
             "id": event_id,
             "posting_code": posting_code,
@@ -212,6 +220,12 @@ class FakeProgrammeTeachingEventsSession:
             "session_type_id": self.session_type_id,
             "teaching_name_id": teaching_name_id,
             "global_session_type_id": global_session_type_id,
+            "source_programme_code": (
+                source_name["programme_code"] if source_name is not None else None
+            ),
+            "source_reporting_period_id": (
+                source_name["reporting_period_id"] if source_name is not None else None
+            ),
             "session_type": f"{teaching_name} [1h]",
             "series_id": None,
             "cme_points_awarded": False,
@@ -302,12 +316,6 @@ class FakeProgrammeTeachingEventsSession:
                             )
                             & {payload["programme_code"]}
                             or self._secretary_programmes(row["posting_code"]) & {payload["programme_code"]}
-                            or self._catalogue_programmes(
-                                posting_code=row["posting_code"],
-                                teaching_name=row["teaching_name"],
-                                reporting_period_id=str(payload["reporting_period_id"]),
-                            )
-                            & {payload["programme_code"]}
                         )
                     )
                 ]
@@ -355,12 +363,6 @@ class FakeProgrammeTeachingEventsSession:
                 for row in self.secretary_programme_pools
                 if row["programme_code"] == programme_code and row["is_active"]
             }
-            codes.update(
-                row["posting_code"]
-                for row in self.catalogue
-                if row["programme_code"] == programme_code
-                and row["reporting_period_id"] == str(payload["reporting_period_id"])
-            )
             return _FakeResult(rows=[{"posting_code": code} for code in sorted(codes)])
 
         if "/* programme_teaching_events:public_holiday */" in sql:
@@ -373,11 +375,8 @@ class FakeProgrammeTeachingEventsSession:
         if "/* programme_teaching_events:posting_available */" in sql:
             posting_code = payload["posting_code"]
             programme_code = payload["programme_code"]
-            is_available = bool(self._secretary_programmes(posting_code) & {programme_code}) or any(
-                row["programme_code"] == programme_code
-                and row["posting_code"] == posting_code
-                and row["reporting_period_id"] == str(payload["reporting_period_id"])
-                for row in self.catalogue
+            is_available = bool(
+                self._secretary_programmes(posting_code) & {programme_code}
             )
             return _FakeResult(scalar=is_available)
 
@@ -396,6 +395,10 @@ class FakeProgrammeTeachingEventsSession:
             row["session_type_id"] = str(payload["session_type_id"]) if payload.get("session_type_id") else None
             row["teaching_name_id"] = payload.get("teaching_name_id")
             row["global_session_type_id"] = payload.get("global_session_type_id")
+            row["source_programme_code"] = payload.get("source_programme_code")
+            row["source_reporting_period_id"] = payload.get(
+                "source_reporting_period_id"
+            )
             row["cme_points_awarded"] = payload["cme_points_awarded"]
             row["smc_event_code"] = payload.get("smc_event_code")
             self.events.append(row)
@@ -410,13 +413,8 @@ class FakeProgrammeTeachingEventsSession:
         if "/* programme_teaching_events:event_programme_match */" in sql:
             posting_code = payload["posting_code"]
             programme_code = payload["programme_code"]
-            teaching_name = payload["teaching_name"]
-            is_match = bool(self._secretary_programmes(posting_code) & {programme_code}) or any(
-                row["programme_code"] == programme_code
-                and row["posting_code"] == posting_code
-                and row["keyword"] == teaching_name
-                and row["reporting_period_id"] == str(payload["reporting_period_id"])
-                for row in self.catalogue
+            is_match = bool(
+                self._secretary_programmes(posting_code) & {programme_code}
             )
             return _FakeResult(scalar=is_match)
 
@@ -512,15 +510,11 @@ class FakeProgrammeTeachingEventsSession:
         *,
         reporting_period_id: str,
     ) -> set[str]:
-        teaching_name_id = event.get("teaching_name_id")
-        if teaching_name_id is None:
+        source_programme = event.get("source_programme_code")
+        source_period = event.get("source_reporting_period_id")
+        if source_programme is None or str(source_period) != reporting_period_id:
             return set()
-        return {
-            row["programme_code"]
-            for row in self.teaching_names
-            if row["id"] == str(teaching_name_id)
-            and row["reporting_period_id"] == reporting_period_id
-        }
+        return {str(source_programme)}
 
     def _scope_events(self, programme_scope: list[str], *, reporting_period_id: str) -> list[dict]:
         scope = set(programme_scope)
@@ -538,12 +532,6 @@ class FakeProgrammeTeachingEventsSession:
                     )
                     & scope
                     or self._secretary_programmes(row["posting_code"]) & scope
-                    or self._catalogue_programmes(
-                        posting_code=row["posting_code"],
-                        teaching_name=row["teaching_name"],
-                        reporting_period_id=reporting_period_id,
-                    )
-                    & scope
                 )
             ):
                 rows.append(
@@ -1048,6 +1036,9 @@ def test_pc_event_list_and_management_are_isolated_by_reporting_period() -> None
     future_catalogue = session._catalogue("Future Test Teaching", "DR", "TTSHNeuro", session.session_type_id)
     future_catalogue["reporting_period_id"] = future_period_id
     session.catalogue.append(future_catalogue)
+    future_teaching_name = session._teaching_name("Future Test Teaching", "DR")
+    future_teaching_name["reporting_period_id"] = future_period_id
+    session.teaching_names.append(future_teaching_name)
     cross_period_event = session._event(
         event_id=str(uuid4()),
         posting_code="TTSHNeuro",
@@ -1059,6 +1050,7 @@ def test_pc_event_list_and_management_are_isolated_by_reporting_period() -> None
         event_id=str(uuid4()),
         posting_code="TTSHNeuro",
         teaching_name="Future Test Teaching",
+        teaching_name_id=future_teaching_name["id"],
         created_by_role="secretary",
         created_for_programme_code=None,
         event_date=date(2099, 2, 1),
@@ -1236,6 +1228,8 @@ def test_pc_pool_event_is_pending_mapping_independent_and_preserves_snapshot() -
     payload = created.json()
     assert payload["teaching_name_id"] == pending_name["id"]
     assert payload["global_session_type_id"] is None
+    assert session.events[-1]["source_programme_code"] == "DR"
+    assert session.events[-1]["source_reporting_period_id"] == session.period_id
     assert payload["teaching_name"] == "Pending Pool Event"
     assert payload["duration_hours"] == "1.00"
     assert payload["end_time"] == "11:00:00"
@@ -1243,6 +1237,130 @@ def test_pc_pool_event_is_pending_mapping_independent_and_preserves_snapshot() -
     pending_name["display_name"] = "Renamed Pending Pool Event"
     assert session.events[-1]["teaching_name"] == "Pending Pool Event"
     assert session.events[-1]["duration_hours"] == Decimal("1.0")
+
+
+def test_catalogue_text_alone_does_not_grant_pc_list_update_or_delete() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    catalogue_only_posting = "CatalogueOnlyPosting"
+    session.catalogue.append(
+        session._catalogue(
+            "Catalogue Only Teaching",
+            "DR",
+            catalogue_only_posting,
+            session.session_type_id,
+        )
+    )
+    event = session._event(
+        event_id=str(uuid4()),
+        posting_code=catalogue_only_posting,
+        teaching_name="Catalogue Only Teaching",
+        teaching_name_id=None,
+        created_by_role="secretary",
+        created_for_programme_code=None,
+    )
+    session.events.append(event)
+    client = _client(session)
+
+    listed = client.get(
+        "/admin/programme-teaching-events",
+        headers=_headers(scope="DR"),
+    )
+    updated = client.put(
+        f"/admin/programme-teaching-events/{event['id']}",
+        headers=_headers(scope="DR"),
+        json={
+            "programme_code": "DR",
+            "posting_code": catalogue_only_posting,
+            "teaching_name_id": session.teaching_name_id_for("Journal Club", "DR"),
+            "event_date": "2026-05-20",
+            "start_time": "10:00",
+        },
+    )
+    deleted = client.delete(
+        f"/admin/programme-teaching-events/{event['id']}",
+        headers=_headers(scope="DR"),
+        params={"programme_code": "DR"},
+    )
+
+    assert event["id"] not in {row["id"] for row in listed.json()["events"]}
+    assert updated.status_code in {403, 404}
+    assert deleted.status_code in {403, 404}
+    assert event in session.events
+
+
+def test_inactive_global_type_preserves_existing_event_but_blocks_new_creation() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    client = _client(session)
+    global_type_id = session.global_session_type_id_for("Department Meeting [1h]")
+    create_body = {
+        "programme_code": "GERI",
+        "posting_code": "TTSHGerMed",
+        "global_session_type_id": global_type_id,
+        "event_date": "2026-05-20",
+        "start_time": "10:00",
+    }
+    created = client.post(
+        "/admin/programme-teaching-events",
+        headers=_headers(scope="GERI"),
+        json=create_body,
+    )
+    assert created.status_code == 200
+    event_id = created.json()["id"]
+
+    next(row for row in session.global_session_types if row["id"] == global_type_id)[
+        "is_active"
+    ] = False
+    listed = client.get(
+        "/admin/programme-teaching-events",
+        headers=_headers(scope="GERI"),
+    )
+    options = client.get(
+        "/admin/programme-teaching-name-options",
+        headers=_headers(scope="GERI"),
+        params={"programme_code": "GERI"},
+    )
+    updated = client.put(
+        f"/admin/programme-teaching-events/{event_id}",
+        headers=_headers(scope="GERI"),
+        json={**create_body, "start_time": "11:00"},
+    )
+    rejected = client.post(
+        "/admin/programme-teaching-events",
+        headers=_headers(scope="GERI"),
+        json={**create_body, "event_date": "2026-05-21"},
+    )
+
+    assert event_id in {row["id"] for row in listed.json()["events"]}
+    assert global_type_id not in {
+        row["global_session_type_id"] for row in options.json()["options"]
+    }
+    assert updated.status_code == 200
+    assert rejected.status_code == 422
+
+
+def test_multi_scope_pc_cannot_switch_event_source_programme() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    client = _client(session)
+    original = deepcopy(
+        next(row for row in session.events if row["id"] == session.pc_dr_event_id)
+    )
+
+    response = client.put(
+        f"/admin/programme-teaching-events/{session.pc_dr_event_id}",
+        headers=_headers(scope="DR,GERI"),
+        json={
+            "programme_code": "DR",
+            "posting_code": "TTSHCardio",
+            "teaching_name_id": session.teaching_name_id_for("Geri Teaching", "GERI"),
+            "event_date": "2026-05-20",
+            "start_time": "10:00",
+        },
+    )
+
+    assert response.status_code == 422
+    assert next(
+        row for row in session.events if row["id"] == session.pc_dr_event_id
+    ) == original
 
 
 def test_pc_pool_source_enforces_scope_period_activity_and_time_boundary() -> None:

@@ -106,10 +106,22 @@ _POLICY_HELPERS = frozenset(
         "native_assignment_matches(text,text,uuid)",
         "can_access_teaching_catalogue(text,text,uuid)",
         "can_select_teaching_event(uuid)",
+        (
+            "can_select_teaching_event_row("
+            "uuid,boolean,text,date,text,text,uuid,uuid,uuid,uuid,text,uuid)"
+        ),
         "can_insert_teaching_event(text,text,text,date,boolean,text)",
         "can_insert_scheduled_event_source(text,text,uuid,uuid,date,boolean,text)",
+        (
+            "can_insert_scheduled_event_source("
+            "text,text,uuid,uuid,text,uuid,date,boolean,text)"
+        ),
         "can_manage_scheduled_event_source(text,uuid,uuid,date,boolean)",
         "can_manage_teaching_event(text,text,text,date,boolean,text)",
+        (
+            "can_manage_teaching_event_row("
+            "text,text,date,boolean,text,uuid,uuid,text,uuid)"
+        ),
         "can_submit_native_attendance(uuid,uuid)",
         "can_access_external_attendance(uuid,uuid)",
         "can_submit_external_attendance(uuid,uuid)",

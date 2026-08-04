@@ -3,7 +3,14 @@ from __future__ import annotations
 from datetime import date, time
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class ResidentAttendanceSubmitRequest(BaseModel):
@@ -26,6 +33,29 @@ class ResidentAdhocTeachingRequest(BaseModel):
         max_length=50,
     )
     details_of_session: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_teaching_date_aliases(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        teaching_date = value.get("teaching_date")
+        legacy_date = value.get("date")
+        if teaching_date is None and legacy_date is None:
+            raise ValueError("teaching_date is required")
+        if (
+            teaching_date is not None
+            and legacy_date is not None
+            and str(teaching_date) != str(legacy_date)
+        ):
+            raise ValueError(
+                "teaching_date and date must match when both are provided"
+            )
+        if teaching_date is not None and legacy_date is not None:
+            normalized = dict(value)
+            normalized.pop("date", None)
+            return normalized
+        return value
 
     @field_validator("attended_posting_code")
     @classmethod

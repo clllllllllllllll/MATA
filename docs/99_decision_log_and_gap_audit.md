@@ -14,17 +14,21 @@ Every important decision made during the project, with reasoning and consequence
 
 ### Decision: Evolved TTF transition contract (2026-08-02)
 
-- **Status:** Phase G Resident/Non-NHG runtime decoupling is implemented at
-  local revision `20260804_000034`; the final E2/B2 architecture remains future
+- **Status:** Phase G Resident/Non-NHG runtime decoupling and its D/F/G audit
+  corrections are implemented at local revision `20260804_000035`; the final E2/B2 architecture remains future
   work.
 - **Current versus future boundary:** The physical A-K parser,
   `teaching_name_catalogue`, and `teaching_targets.details_of_training` remain
   through additive Phase G, but Resident/Non-NHG discovery, attendance, and
   ad-hoc runtime no longer classify events through catalogue/target/Column K
   data. Phase F adds explicit source IDs and immutable display snapshots to new
-  scheduled events; Phase G uses those IDs where present, keeps both-null legacy
-  rows as deterministic persisted evidence, and does not backfill/rewrite
-  history. Final E2/B2 is the later destructive cutover; it may remove the
+  scheduled events. Revision `20260804_000035` adds immutable pool-source
+  programme/period snapshots, safely backfilled only from explicit IDs, so a
+  guarded Teaching Name deletion cannot erase provenance. Phase G uses persisted
+  source evidence where present, keeps both-null legacy rows as deterministic
+  persisted evidence, and never infers authorization from display/catalogue text.
+  Global type inactivity gates new choices only; full-datetime overlap treats a
+  wrapped end time as the next date. Final E2/B2 is the later destructive cutover; it may remove the
   legacy path. Phase A creates no code, migration, parser, API route, policy, or
   UI.
 - **Future file format:** A-J only: reporting period, programme, R-year,
@@ -623,7 +627,10 @@ only under an approved product scope.
 - **Decision:** NHG Residents and Non-NHG Residents submit ad-hoc teachings through a date-first fixed-record flow. The backend derives one posting from the selected date and exposes only `Department/Programme Teaching [1h]` at duration `1.00`; clients cannot select a Teaching Name, mapping, target, arbitrary text name, or alternate attended department/programme.
 - **NHG Resident flow:** `resident_postings` must yield exactly one active/LOA-working posting for the date. The optional supplied posting is only a confirmation of that value; a different value is rejected.
 - **Non-NHG Resident flow:** `external_resident_postings` must yield exactly one date-matched schedule posting. The optional supplied posting is only a confirmation of that value; a different value is rejected. Non-NHG attendance remains recording/export-only.
-- **Submission fields:** `POST /resident/adhoc-teaching` creates a fixed `teaching_events` row (`is_adhoc = true`) and the matching typed attendance-family row in one transaction. `details_of_session` remains display/audit-only free text with no operational or compliance use.
+- **Submission fields:** `POST /resident/adhoc-teaching` uses canonical
+  `teaching_date`; compatibility-only `date` is accepted when it is the sole
+  alias or equals `teaching_date`, while conflict or omission returns `422`. It
+  creates a fixed `teaching_events` row (`is_adhoc = true`) and the matching typed attendance-family row in one transaction. `details_of_session` remains display/audit-only free text with no operational or compliance use.
 - **Ad-hoc event flags:** Ad-hoc teaching records have `is_adhoc = true`, `cme_points_awarded = false`, `smc_event_code = null`, null `session_type_id`, fixed display snapshot, and exact one-hour end time.
 - **Frontend helper copy:** `Please ensure your current submission is not an already scheduled event. There are no CME Pts tagged to adhoc teachings.`
 - **Compliance attribution:** Any future countable NHG ad-hoc treatment remains under the derived assigned posting; Phase G does not consult or rewrite a mapped target.

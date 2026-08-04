@@ -515,7 +515,7 @@ async def _issue_context(
 async def policy_harness(
     rls_postgres_harness: RlsPostgresHarness,
 ) -> AsyncIterator[RlsPostgresHarness]:
-    assert rls_postgres_harness.revision == "20260804_000034"
+    assert rls_postgres_harness.revision == "20260804_000035"
     yield rls_postgres_harness
 
 
@@ -954,26 +954,28 @@ async def policy_seed(
                 INSERT INTO teaching_events (
                     id, posting_code, teaching_name, event_date, start_time,
                     end_time, duration_hours, session_type_id, series_id,
-                    is_adhoc, created_by_role, teaching_name_id
+                    is_adhoc, created_by_role, teaching_name_id,
+                    source_programme_code, source_reporting_period_id
                 )
                 VALUES
                     (
                         :event_seed_a_id, :posting_a, :keyword,
                         DATE '2035-03-05', TIME '09:00', TIME '10:00',
                         1.00, :session_type_id, :series_a_id, false,
-                        'secretary', :teaching_name_a_id
+                        'secretary', :teaching_name_a_id,
+                        :programme_a, :period_id
                     ),
                     (
                         :event_action_a_id, :posting_a, :keyword,
                         DATE '2035-03-06', TIME '09:00', TIME '10:00',
                         1.00, :session_type_id, :series_a_id, false,
-                        'secretary', NULL
+                        'secretary', NULL, NULL, NULL
                     ),
                     (
                         :event_b_id, :posting_b, :keyword,
                         DATE '2035-03-05', TIME '09:00', TIME '10:00',
                         1.00, :session_type_id, :series_b_id, false,
-                        'secretary', NULL
+                        'secretary', NULL, NULL, NULL
                     )
                 """
             ),
@@ -1979,6 +1981,15 @@ async def test_secretary_events_stay_posting_bound_and_catalogue_follows_pool(
     policy_seed: PolicyMatrixSeed,
 ) -> None:
     values = policy_seed.values
+    async with policy_harness.owner_session() as db:
+        await db.execute(
+            text(
+                "UPDATE secretary_programme_pools "
+                "SET can_manage_teaching_names = true WHERE id = :id"
+            ),
+            {"id": values["pool_a_id"]},
+        )
+        await db.commit()
     async with _runtime_context(
         policy_harness,
         policy_seed.contexts["secretary"],
@@ -2135,6 +2146,15 @@ async def test_secretary_own_posting_attendance_rows_are_visible(
     """Secretary event guards must retain linked Non-NHG attendance visibility."""
 
     values = policy_seed.values
+    async with policy_harness.owner_session() as db:
+        await db.execute(
+            text(
+                "UPDATE secretary_programme_pools "
+                "SET can_manage_teaching_names = true WHERE id = :id"
+            ),
+            {"id": values["pool_a_id"]},
+        )
+        await db.commit()
     external_only_event_id = uuid4()
     external_only_attendance_id = uuid4()
     try:
@@ -2145,12 +2165,14 @@ async def test_secretary_own_posting_attendance_rows_are_visible(
                     INSERT INTO teaching_events (
                         id, posting_code, teaching_name, event_date, start_time,
                         end_time, duration_hours, is_adhoc, created_by_role,
-                        teaching_name_id
+                        teaching_name_id, source_programme_code,
+                        source_reporting_period_id
                     )
                     VALUES (
                         :event_id, :posting_code, :teaching_name,
                         DATE '2035-03-10', TIME '09:00', TIME '10:00',
-                        1.00, false, 'secretary', :teaching_name_id
+                        1.00, false, 'secretary', :teaching_name_id,
+                        :source_programme_code, :source_reporting_period_id
                     )
                     """
                 ),
@@ -2159,6 +2181,8 @@ async def test_secretary_own_posting_attendance_rows_are_visible(
                     "posting_code": values["posting_a"],
                     "teaching_name": values["keyword"],
                     "teaching_name_id": values["teaching_name_a_id"],
+                    "source_programme_code": values["programme_a"],
+                    "source_reporting_period_id": values["period_id"],
                 },
             )
             await db.execute(
@@ -2608,20 +2632,23 @@ async def test_phase_g_persisted_source_rls_isolation_and_submission_matrix(
                         id, posting_code, teaching_name, event_date, start_time,
                         end_time, duration_hours, session_type_id, series_id,
                         is_adhoc, created_by_role, teaching_name_id,
-                        global_session_type_id
+                        global_session_type_id, source_programme_code,
+                        source_reporting_period_id
                     )
                     VALUES
                         (
                             :wrong_pool_event_id, :posting_a, :keyword,
                             DATE '2035-03-07', TIME '09:00', TIME '10:00',
                             1.00, :session_type_id, :series_a_id, false,
-                            'secretary', :teaching_name_b_id, NULL
+                            'secretary', :teaching_name_b_id, NULL,
+                            :programme_b, :period_id
                         ),
                         (
                             :global_event_id, :posting_a, 'Phase G global source',
                             DATE '2035-03-08', TIME '09:00', TIME '10:00',
                             1.00, NULL, :series_a_id, false,
-                            'secretary', NULL, :global_session_type_id
+                            'secretary', NULL, :global_session_type_id,
+                            NULL, NULL
                         )
                     """
                 ),
@@ -2651,13 +2678,16 @@ async def test_phase_g_persisted_source_rls_isolation_and_submission_matrix(
                                 id, posting_code, teaching_name, event_date,
                                 start_time, end_time, duration_hours,
                                 session_type_id, is_adhoc, created_by_role,
-                                teaching_name_id, global_session_type_id
+                                teaching_name_id, global_session_type_id,
+                                source_programme_code,
+                                source_reporting_period_id
                             )
                             VALUES (
                                 :id, :posting_a, :keyword, DATE '2035-03-09',
                                 TIME '09:00', TIME '10:00', 1.00,
                                 :session_type_id, false, 'secretary',
-                                :teaching_name_a_id, :global_session_type_id
+                                :teaching_name_a_id, :global_session_type_id,
+                                :programme_a, :period_id
                             )
                             """
                         ),
@@ -2668,6 +2698,7 @@ async def test_phase_g_persisted_source_rls_isolation_and_submission_matrix(
 
         scoped_event_parameters = {
             "allowed": values["event_seed_a_id"],
+            "legacy": values["event_action_a_id"],
             "wrong": wrong_pool_event_id,
             "global": global_event_id,
             "external_allowed": values["external_attendance_a_id"],
@@ -2712,6 +2743,13 @@ async def test_phase_g_persisted_source_rls_isolation_and_submission_matrix(
                     """
                 ),
                 {"wrong": wrong_pool_event_id},
+            ) is None
+            assert await db.scalar(
+                text(
+                    "SELECT programme_code "
+                    "FROM mata_rls.scheduled_event_source_scope(:legacy)"
+                ),
+                {"legacy": values["event_action_a_id"]},
             ) is None
 
         for context_name in ("resident", "external"):
@@ -2915,6 +2953,19 @@ async def test_atomic_adhoc_and_scheduled_submission_share_canonical_lock(
             )
 
     try:
+        async with policy_harness.owner_session() as owner_db:
+            await owner_db.execute(
+                text(
+                    """
+                    UPDATE teaching_events
+                    SET start_time = TIME '23:30', end_time = TIME '00:30'
+                    WHERE id = :event_id
+                    """
+                ),
+                {"event_id": values["event_action_a_id"]},
+            )
+            await owner_db.commit()
+
         async with _runtime_context(
             policy_harness,
             policy_seed.contexts["resident"],
@@ -2934,8 +2985,8 @@ async def test_atomic_adhoc_and_scheduled_submission_share_canonical_lock(
                             'Department/Programme Teaching [1h]',
                             NULL,
                             :event_date,
-                            TIME '10:00',
-                            TIME '11:00',
+                            TIME '23:00',
+                            TIME '00:00',
                             1.00,
                             NULL::uuid
                         )
@@ -2969,12 +3020,54 @@ async def test_atomic_adhoc_and_scheduled_submission_share_canonical_lock(
         assert str(outcome["submitted_events"][0]["id"]) == str(
             values["event_action_a_id"]
         )
+
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["resident"],
+        ) as helper_db:
+            with pytest.raises(DBAPIError) as caught:
+                await helper_db.execute(
+                    text(
+                        """
+                        SELECT event_id, attendance_id
+                        FROM mata_rls.create_adhoc_attendance(
+                            :posting_code,
+                            :attended_posting_code,
+                            'Department/Programme Teaching [1h]',
+                            'Department/Programme Teaching [1h]',
+                            NULL,
+                            :event_date,
+                            TIME '23:00',
+                            TIME '00:00',
+                            1.00,
+                            NULL::uuid
+                        )
+                        """
+                    ),
+                    {
+                        "posting_code": values["posting_a"],
+                        "attended_posting_code": values["posting_a"],
+                        "event_date": event_date,
+                    },
+                )
+            assert _sqlstate(caught.value) == "23P01"
+            await helper_db.rollback()
     finally:
         if scheduled_task is not None and not scheduled_task.done():
             scheduled_task.cancel()
             await asyncio.gather(scheduled_task, return_exceptions=True)
         await waiter_engine.dispose()
         async with policy_harness.owner_session() as owner_db:
+            await owner_db.execute(
+                text(
+                    """
+                    UPDATE teaching_events
+                    SET start_time = TIME '09:00', end_time = TIME '10:00'
+                    WHERE id = :event_id
+                    """
+                ),
+                {"event_id": values["event_action_a_id"]},
+            )
             await owner_db.execute(
                 text(
                     """
@@ -4911,13 +5004,15 @@ async def test_phase_d_mapping_service_uses_exact_identity_and_preserves_evidenc
                     INSERT INTO teaching_events (
                         id, posting_code, teaching_name, event_date, start_time,
                         end_time, duration_hours, session_type_id, series_id,
-                        is_adhoc, created_by_role, teaching_name_id
+                        is_adhoc, created_by_role, teaching_name_id,
+                        source_programme_code, source_reporting_period_id
                     )
                     VALUES (
                         :id, :posting_code, 'Phase D proposed target evidence',
                         DATE '2035-03-07', TIME '09:00', TIME '10:00', 1.00,
                         :session_type_id, :series_id, false, 'secretary',
-                        :teaching_name_id
+                        :teaching_name_id, :programme_code,
+                        :reporting_period_id
                     )
                     """
                 ),
@@ -4927,6 +5022,8 @@ async def test_phase_d_mapping_service_uses_exact_identity_and_preserves_evidenc
                     "session_type_id": new_session_type_id,
                     "series_id": values["series_a_id"],
                     "teaching_name_id": values["teaching_name_a_id"],
+                    "programme_code": values["programme_a"],
+                    "reporting_period_id": values["period_id"],
                 },
             )
             await db.commit()
@@ -5579,6 +5676,7 @@ async def test_master_teaching_name_delete_lock_serializes_new_event_references(
     release_delete = asyncio.Event()
     reference_waiter_ready = asyncio.Event()
     reference_waiter_pid: int | None = None
+    reference_event_id = uuid4()
     delete_task: asyncio.Task[dict[str, Any]] | None = None
     reference_task: asyncio.Task[None] | None = None
     original_locked_event_ids = teaching_name_pool._locked_event_ids
@@ -5622,14 +5720,25 @@ async def test_master_teaching_name_delete_lock_serializes_new_event_references(
             await db.execute(
                 text(
                     """
-                    UPDATE teaching_events
-                    SET teaching_name_id = :teaching_name_id
-                    WHERE id = :event_id
+                    INSERT INTO teaching_events (
+                        id, posting_code, teaching_name, event_date, start_time,
+                        end_time, duration_hours, is_adhoc, created_by_role,
+                        teaching_name_id, source_programme_code,
+                        source_reporting_period_id
+                    ) VALUES (
+                        :event_id, :posting_code, 'Delete-lock reference',
+                        DATE '2035-03-06', TIME '11:00', TIME '12:00', 1.00,
+                        false, 'programme_pc', :teaching_name_id,
+                        :source_programme_code, :source_reporting_period_id
+                    )
                     """
                 ),
                 {
                     "teaching_name_id": str(teaching_name_id),
-                    "event_id": values["event_action_a_id"],
+                    "event_id": reference_event_id,
+                    "posting_code": values["posting_a"],
+                    "source_programme_code": values["programme_a"],
+                    "source_reporting_period_id": values["period_id"],
                 },
             )
             await db.commit()
@@ -5681,11 +5790,9 @@ async def test_master_teaching_name_delete_lock_serializes_new_event_references(
                 {"teaching_name_id": teaching_name_id},
             ) == 0
             assert await db.scalar(
-                text(
-                    "SELECT teaching_name_id FROM teaching_events WHERE id = :event_id"
-                ),
-                {"event_id": values["event_action_a_id"]},
-            ) is None
+                text("SELECT COUNT(*) FROM teaching_events WHERE id = :event_id"),
+                {"event_id": reference_event_id},
+            ) == 0
     finally:
         release_delete.set()
         for task in (delete_task, reference_task):
@@ -5851,6 +5958,7 @@ async def test_teaching_name_used_delete_guard_sees_hidden_event_references(
     values = policy_seed.values
     secretary_actor = _secretary_teaching_name_actor(values)
     teaching_name_ids: list[UUID] = []
+    hidden_event_id = uuid4()
 
     try:
         async with policy_harness.owner_session() as db:
@@ -5884,15 +5992,26 @@ async def test_teaching_name_used_delete_guard_sees_hidden_event_references(
             assert await db.scalar(
                 text(
                     """
-                    UPDATE teaching_events
-                    SET teaching_name_id = :teaching_name_id
-                    WHERE id = :event_id
+                    INSERT INTO teaching_events (
+                        id, posting_code, teaching_name, event_date, start_time,
+                        end_time, duration_hours, is_adhoc, created_by_role,
+                        teaching_name_id, source_programme_code,
+                        source_reporting_period_id
+                    ) VALUES (
+                        :event_id, :posting_code, 'Hidden source reference',
+                        DATE '2035-03-05', TIME '11:00', TIME '12:00', 1.00,
+                        false, 'secretary', :teaching_name_id,
+                        :source_programme_code, :source_reporting_period_id
+                    )
                     RETURNING teaching_name_id
                     """
                 ),
                 {
                     "teaching_name_id": teaching_name_id,
-                    "event_id": values["event_b_id"],
+                    "event_id": hidden_event_id,
+                    "posting_code": values["posting_b"],
+                    "source_programme_code": values["programme_a"],
+                    "source_reporting_period_id": values["period_id"],
                 },
             ) == teaching_name_id
             await db.commit()
@@ -5903,7 +6022,7 @@ async def test_teaching_name_used_delete_guard_sees_hidden_event_references(
         ) as db:
             assert await db.scalar(
                 text("SELECT COUNT(*) FROM teaching_events WHERE id = :event_id"),
-                {"event_id": values["event_b_id"]},
+                {"event_id": hidden_event_id},
             ) == 0
             with pytest.raises(DBAPIError) as direct_delete:
                 await db.execute(
@@ -5928,6 +6047,12 @@ async def test_teaching_name_used_delete_guard_sees_hidden_event_references(
                 )
             assert guarded_service_delete.value.status_code == 409
     finally:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text("DELETE FROM teaching_events WHERE id = :event_id"),
+                {"event_id": hidden_event_id},
+            )
+            await db.commit()
         await _cleanup_teaching_name_service_rows(
             policy_harness,
             teaching_name_ids=teaching_name_ids,
@@ -5961,6 +6086,13 @@ async def test_scheduled_event_source_policy_accepts_pending_ids_and_enforces_sc
                     """
                 ),
                 {"pool_id": values["pool_a_id"]},
+            )
+            await db.execute(
+                text(
+                    "UPDATE teaching_names SET is_active = true "
+                    "WHERE id = :teaching_name_id"
+                ),
+                {"teaching_name_id": values["teaching_name_a_id"]},
             )
             await db.execute(
                 text(
@@ -6034,6 +6166,24 @@ async def test_scheduled_event_source_policy_accepts_pending_ids_and_enforces_sc
             assert pending_event["teaching_name"] == "F pending source"
             assert pending_event["duration_hours"] == Decimal("1.00")
             assert pending_event["end_time"] == time(0, 0)
+            assert pending_event["source_programme_code"] == values["programme_a"]
+            assert pending_event["source_reporting_period_id"] == values["period_id"]
+
+            mapped_pc_event = await programme_teaching_events.create_teaching_event(
+                db,
+                source_actor=pc_actor,
+                audit_actor=pc_actor.staff_actor,
+                programme_code=values["programme_a"],
+                posting_code=values["posting_a"],
+                teaching_name_id=values["teaching_name_a_id"],
+                global_session_type_id=None,
+                event_date=date(2035, 4, 6),
+                start_time=time(10, 0),
+                cme_points_awarded=False,
+                smc_event_code=None,
+            )
+            created_event_ids.append(mapped_pc_event["id"])
+            assert mapped_pc_event["teaching_name_id"] == values["teaching_name_a_id"]
 
             global_event = await programme_teaching_events.create_teaching_event(
                 db,
@@ -6064,7 +6214,7 @@ async def test_scheduled_event_source_policy_accepts_pending_ids_and_enforces_sc
                     """
                 ),
                 {"teaching_name_id": pending_name_id},
-            ) == 0
+            ) == 1
             persisted = (
                 await db.execute(
                     text(
@@ -6085,6 +6235,89 @@ async def test_scheduled_event_source_policy_accepts_pending_ids_and_enforces_sc
                 "duration_hours": Decimal("1.00"),
                 "end_time": time(0, 0),
             }
+            await db.execute(
+                text(
+                    "UPDATE global_session_types SET is_active = false WHERE id = :id"
+                ),
+                {"id": global_session_type_id},
+            )
+            await db.commit()
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            options = await programme_teaching_events.teaching_name_options(
+                db,
+                programme_code=values["programme_a"],
+                reporting_period_id=values["period_id"],
+            )
+            assert global_session_type_id not in {
+                row["global_session_type_id"] for row in options
+            }
+            updated_global = await programme_teaching_events.update_teaching_event(
+                db,
+                source_actor=pc_actor,
+                audit_actor=pc_actor.staff_actor,
+                event_id=global_event["id"],
+                programme_code=values["programme_a"],
+                posting_code=values["posting_a"],
+                teaching_name_id=None,
+                global_session_type_id=global_session_type_id,
+                event_date=date(2035, 4, 3),
+                start_time=time(11, 0),
+                cme_points_awarded=False,
+                smc_event_code=None,
+            )
+            assert updated_global["global_session_type_id"] == global_session_type_id
+            with pytest.raises(ApiError) as inactive_create:
+                await programme_teaching_events.create_teaching_event(
+                    db,
+                    source_actor=pc_actor,
+                    audit_actor=pc_actor.staff_actor,
+                    programme_code=values["programme_a"],
+                    posting_code=values["posting_a"],
+                    teaching_name_id=None,
+                    global_session_type_id=global_session_type_id,
+                    event_date=date(2035, 4, 8),
+                    start_time=time(10, 0),
+                    cme_points_awarded=False,
+                    smc_event_code=None,
+                )
+            assert inactive_create.value.status_code == 422
+
+        for context_name in ("resident", "external"):
+            async with _runtime_context(
+                policy_harness,
+                policy_seed.contexts[context_name],
+            ) as db:
+                assert await db.scalar(
+                    text("SELECT id FROM teaching_events WHERE id = :id"),
+                    {"id": global_event["id"]},
+                ) == global_event["id"]
+                if context_name == "resident":
+                    attendance_allowed = await db.scalar(
+                        text(
+                            "SELECT mata_rls.can_submit_native_attendance("
+                            ":subject_id, :event_id)"
+                        ),
+                        {
+                            "subject_id": values["resident_a_id"],
+                            "event_id": global_event["id"],
+                        },
+                    )
+                else:
+                    attendance_allowed = await db.scalar(
+                        text(
+                            "SELECT mata_rls.can_submit_external_attendance("
+                            ":subject_id, :event_id)"
+                        ),
+                        {
+                            "subject_id": values["external_a_id"],
+                            "event_id": global_event["id"],
+                        },
+                    )
+                assert attendance_allowed is True
 
         async with _service_runtime_context(
             policy_harness,
@@ -6105,10 +6338,60 @@ async def test_scheduled_event_source_policy_accepts_pending_ids_and_enforces_sc
             assert secretary_event["teaching_name_id"] == pending_name_id
             assert secretary_event["created_for_programme_code"] is None
 
+            mapped_secretary_event = await secretary_events.create_teaching_event(
+                db,
+                source_actor=secretary_actor,
+                posting_code=values["posting_a"],
+                teaching_name_id=values["teaching_name_a_id"],
+                global_session_type_id=None,
+                event_date=date(2035, 4, 7),
+                start_time=time(10, 0),
+                cme_points_awarded=False,
+                smc_event_code=None,
+            )
+            created_event_ids.append(mapped_secretary_event["id"])
+            assert mapped_secretary_event["teaching_name_id"] == values[
+                "teaching_name_a_id"
+            ]
+            await db.commit()
+
         async with _service_runtime_context(
             policy_harness,
             policy_seed.contexts["pc"],
         ) as db:
+            assert await db.scalar(
+                text("SELECT mata_rls.has_programme_scope(:programme_code)"),
+                {"programme_code": values["programme_a"]},
+            ) is True
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT mata_rls.can_select_teaching_event_row(
+                        :event_id, false, :posting_code, DATE '2035-04-04',
+                        NULL, 'secretary', NULL, NULL, :teaching_name_id, NULL,
+                        :source_programme_code, :source_reporting_period_id
+                    )
+                    """
+                ),
+                {
+                    "event_id": secretary_event["id"],
+                    "posting_code": values["posting_a"],
+                    "teaching_name_id": pending_name_id,
+                    "source_programme_code": values["programme_a"],
+                    "source_reporting_period_id": values["period_id"],
+                },
+            ) is True
+            assert await db.scalar(
+                text("SELECT mata_rls.can_select_teaching_event(:event_id)"),
+                {"event_id": secretary_event["id"]},
+            ) is True
+            assert await db.scalar(
+                text(
+                    "SELECT id FROM teaching_events "
+                    "WHERE id = :event_id FOR UPDATE"
+                ),
+                {"event_id": secretary_event["id"]},
+            ) == secretary_event["id"]
             pc_updated_secretary_event = (
                 await programme_teaching_events.update_teaching_event(
                     db,
@@ -6158,13 +6441,17 @@ async def test_scheduled_event_source_policy_accepts_pending_ids_and_enforces_sc
                                 posting_code, created_for_programme_code,
                                 teaching_name, event_date, start_time, end_time,
                                 duration_hours, is_adhoc, created_by_role,
-                                teaching_name_id, global_session_type_id
+                                teaching_name_id, global_session_type_id,
+                                source_programme_code,
+                                source_reporting_period_id
                             )
                             VALUES (
                                 :posting_code, :programme_a, 'F forbidden cross source',
                                 DATE '2035-04-05', TIME '10:00', TIME '11:00',
                                 1.00, false, 'programme_pc',
-                                :cross_programme_name_id, NULL
+                                :cross_programme_name_id, NULL,
+                                :source_programme_code,
+                                :source_reporting_period_id
                             )
                             """
                         ),
@@ -6172,6 +6459,8 @@ async def test_scheduled_event_source_policy_accepts_pending_ids_and_enforces_sc
                             "posting_code": values["posting_a"],
                             "programme_a": values["programme_a"],
                             "cross_programme_name_id": cross_programme_name_id,
+                            "source_programme_code": values["programme_b"],
+                            "source_reporting_period_id": values["period_id"],
                         },
                     )
             assert _sqlstate(denied_cross_programme.value) == "42501"
@@ -6193,6 +6482,121 @@ async def test_scheduled_event_source_policy_accepts_pending_ids_and_enforces_sc
                         },
                     )
             assert _sqlstate(denied_source_update.value) == "42501"
+
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["master"],
+        ) as db:
+            with pytest.raises(DBAPIError) as denied_master_owner_mismatch:
+                async with db.begin_nested():
+                    await db.execute(
+                        text(
+                            """
+                            INSERT INTO teaching_events (
+                                posting_code, created_for_programme_code,
+                                teaching_name, event_date, start_time, end_time,
+                                duration_hours, is_adhoc, created_by_role,
+                                teaching_name_id, global_session_type_id,
+                                source_programme_code,
+                                source_reporting_period_id
+                            )
+                            VALUES (
+                                :posting_code, :programme_b,
+                                'F master forbidden owner mismatch',
+                                DATE '2035-04-09', TIME '10:00', TIME '11:00',
+                                1.00, false, 'programme_pc',
+                                :teaching_name_id, NULL,
+                                :source_programme_code,
+                                :source_reporting_period_id
+                            )
+                            """
+                        ),
+                        {
+                            "posting_code": values["posting_a"],
+                            "programme_b": values["programme_b"],
+                            "teaching_name_id": values["teaching_name_a_id"],
+                            "source_programme_code": values["programme_a"],
+                            "source_reporting_period_id": values["period_id"],
+                        },
+                    )
+            assert _sqlstate(denied_master_owner_mismatch.value) == "42501"
+
+            with pytest.raises(DBAPIError) as denied_master_source_retarget:
+                async with db.begin_nested():
+                    await db.execute(
+                        text(
+                            """
+                            UPDATE teaching_events
+                            SET teaching_name_id = :cross_programme_name_id,
+                                global_session_type_id = NULL
+                            WHERE id = :event_id
+                            """
+                        ),
+                        {
+                            "cross_programme_name_id": cross_programme_name_id,
+                            "event_id": pending_event["id"],
+                        },
+                    )
+            assert _sqlstate(denied_master_source_retarget.value) == "42501"
+
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    "UPDATE teaching_names SET display_name = 'F renamed source' "
+                    "WHERE id = :id"
+                ),
+                {"id": pending_name_id},
+            )
+            await db.execute(
+                text("DELETE FROM teaching_names WHERE id = :id"),
+                {"id": pending_name_id},
+            )
+            preserved_rows = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT teaching_name_id, teaching_name,
+                               source_programme_code,
+                               source_reporting_period_id
+                        FROM teaching_events
+                        WHERE id IN (:pc_event_id, :secretary_event_id)
+                        ORDER BY id
+                        """
+                    ),
+                    {
+                        "pc_event_id": pending_event["id"],
+                        "secretary_event_id": secretary_event["id"],
+                    },
+                )
+            ).mappings().all()
+            assert len(preserved_rows) == 2
+            assert all(row["teaching_name_id"] is None for row in preserved_rows)
+            assert all(row["teaching_name"] == "F pending source" for row in preserved_rows)
+            assert all(
+                row["source_programme_code"] == values["programme_a"]
+                and row["source_reporting_period_id"] == values["period_id"]
+                for row in preserved_rows
+            )
+            await db.commit()
+
+        for context_name in ("pc", "resident", "external"):
+            async with _runtime_context(
+                policy_harness,
+                policy_seed.contexts[context_name],
+            ) as db:
+                source_scope = (
+                    await db.execute(
+                        text(
+                            """
+                            SELECT reporting_period_id, programme_code
+                            FROM mata_rls.scheduled_event_source_scope(:event_id)
+                            """
+                        ),
+                        {"event_id": pending_event["id"]},
+                    )
+                ).mappings().one()
+                assert source_scope["reporting_period_id"] == values["period_id"]
+                assert source_scope["programme_code"] == values["programme_a"]
     finally:
         async with policy_harness.owner_session() as db:
             if created_event_ids:
@@ -6241,4 +6645,11 @@ async def test_scheduled_event_source_policy_accepts_pending_ids_and_enforces_sc
                         "pool_id": values["pool_a_id"],
                     },
                 )
+            await db.execute(
+                text(
+                    "UPDATE teaching_names SET is_active = false "
+                    "WHERE id = :teaching_name_id"
+                ),
+                {"teaching_name_id": values["teaching_name_a_id"]},
+            )
             await db.commit()
