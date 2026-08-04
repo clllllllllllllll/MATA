@@ -116,6 +116,60 @@ def test_adhoc_teaching_derives_posting_from_submitted_date() -> None:
     }
 
 
+def test_adhoc_teaching_accepts_canonical_teaching_date() -> None:
+    fake_db = _fake_db()
+    response = _client(fake_db).post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={"teaching_date": "2026-05-18", "start_time": "12:00"},
+    )
+
+    assert response.status_code == 200
+
+
+def test_adhoc_teaching_accepts_equal_date_aliases() -> None:
+    fake_db = _fake_db()
+    response = _client(fake_db).post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "teaching_date": "2026-05-18",
+            "date": "2026-05-18",
+            "start_time": "12:00",
+        },
+    )
+
+    assert response.status_code == 200
+
+
+def test_adhoc_teaching_rejects_mismatched_date_aliases() -> None:
+    fake_db = _fake_db()
+    response = _client(fake_db).post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "teaching_date": "2026-05-18",
+            "date": "2026-05-19",
+            "start_time": "12:00",
+        },
+    )
+
+    assert response.status_code == 422
+    assert not fake_db.adhoc_helper_calls
+
+
+def test_adhoc_teaching_rejects_missing_date_aliases() -> None:
+    fake_db = _fake_db()
+    response = _client(fake_db).post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={"start_time": "12:00"},
+    )
+
+    assert response.status_code == 422
+    assert not fake_db.adhoc_helper_calls
+
+
 def test_native_adhoc_commit_failure_rolls_back_event_and_attendance_and_returns_no_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

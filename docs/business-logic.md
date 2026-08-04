@@ -438,13 +438,18 @@ URO accepts Saturday sessions under two independent conditions (OR logic). Since
 
 ```python
 def intervals_overlap(earlier_event: dict, later_event: dict) -> bool:
-    return (
-        later_event['start_time'] < earlier_event['end_time']
-        and earlier_event['start_time'] < later_event['end_time']
-    )
+    earlier_start, earlier_end = full_datetime_interval(earlier_event)
+    later_start, later_end = full_datetime_interval(later_event)
+    return later_start < earlier_end and earlier_start < later_end
 ```
 
-**Submission-time outcome for distinct events:** For the same resident, compare a later submission against already accepted distinct events. If the later interval overlaps an earlier accepted interval, reject the later submission and preserve the earlier attendance unchanged. Do not delete, replace, or retroactively flag the earlier record. This rule applies before compliance calculation and is separate from the database uniqueness rule for submitting the same `teaching_event_id` twice. Do not infer any additional overlap behavior beyond this confirmed rule.
+The interval combines `event_date` with `start_time` and `end_time`. An end less
+than or equal to the start is on the next calendar date; therefore
+`23:00–00:00` is a valid one-hour interval. Candidate searches and locks include
+every spanned date plus the prior date needed to detect a wrapped event. Exact
+boundary contact is not overlap.
+
+**Submission-time outcome for distinct events:** For the same resident, compare a later submission against already accepted distinct events. If the later interval overlaps an earlier accepted interval, reject the later submission and preserve the earlier attendance unchanged. Do not delete, replace, or retroactively flag the earlier record. This rule applies to native and Non-NHG sequential/concurrent submissions and atomic ad-hoc creation, before compliance calculation, and is separate from the database uniqueness rule for submitting the same `teaching_event_id` twice.
 
 ---
 
@@ -517,11 +522,22 @@ New reporting periods default `deactivate_on` to `end_date + 14 calendar days` u
 
 Secretary-created scheduled events remain posting-owned and programme-neutral: `teaching_events.created_for_programme_code IS NULL`. They are visible to eligible residents only after the normal posting/date/persisted-source checks pass.
 
+Pool-backed events persist immutable `source_programme_code` and
+`source_reporting_period_id` snapshots. A used Teaching Name may later be
+deleted and clear `teaching_name_id`, but those snapshots, the display snapshot,
+and all attendance remain. No rename or mapping change rewrites them. A PC-owned
+pool event requires exact owner/source programme equality; Secretary updates
+require capability for that exact immutable source programme.
+
 Programme PC-created scheduled events are programme-owned: `teaching_events.created_for_programme_code` is set to the PC's programme. Resident event discovery must show these events only to residents whose `resident.programme_code` equals `created_for_programme_code`, and only if the event also passes posting/date/persisted-source visibility checks.
 
 Null or empty admin `programme_scope` grants no programme access. Master admin all-programme access must be explicit; never infer master access from null programme scope.
 
 PC-created events are scheduled teaching events, not ad-hoc submissions. Public holiday hard-block and ordinary delete-with-attendance guardrails apply.
+
+Global type activity controls only new-event options and writes. Deactivating a
+type does not hide, rewrite, or invalidate existing global events or otherwise
+eligible native/Non-NHG attendance.
 
 ### Master Admin scheduled-event force-delete override
 
@@ -663,6 +679,10 @@ FM is not in the confirmed `weekend_exceptions` seed list. Saturday FM sessions 
 ## BL-9: Ad-hoc Teaching Submissions
 
 Residents can submit ad-hoc teachings not pre-created by secretaries via `POST /resident/adhoc-teaching`.
+
+The canonical request field is `teaching_date`. Legacy `date` is temporary
+compatibility input: either is accepted, both equal are accepted, both different
+or both absent return controlled `422`.
 
 **Flow:**
 1. Resident first selects teaching date.

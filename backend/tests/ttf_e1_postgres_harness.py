@@ -24,8 +24,8 @@ from app.config import Settings
 from app.services.database_context import MataSyncSession
 
 
-E1_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_pre_d_fix_verify"
-E1_REQUIRED_REVISION = "20260804_000034"
+E1_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_dfg_fix_verify"
+E1_REQUIRED_REVISION = "20260804_000035"
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _RUNTIME_GROUP = "mata_app_runtime"
 _AUTH_GROUP = "mata_auth_internal"

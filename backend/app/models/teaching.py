@@ -400,6 +400,31 @@ class TeachingEvent(UUIDTimestampMixin, Base):
             "AND global_session_type_id IS NOT NULL)",
             name="ck_teaching_events_source_identity_exclusive",
         ),
+        CheckConstraint(
+            "(source_programme_code IS NULL) "
+            "= (source_reporting_period_id IS NULL)",
+            name="ck_teaching_events_source_scope_pair",
+        ),
+        CheckConstraint(
+            "teaching_name_id IS NULL "
+            "OR (source_programme_code IS NOT NULL "
+            "AND source_reporting_period_id IS NOT NULL)",
+            name="ck_teaching_events_pool_source_scope_required",
+        ),
+        CheckConstraint(
+            "NOT is_adhoc OR ("
+            "teaching_name_id IS NULL "
+            "AND global_session_type_id IS NULL "
+            "AND source_programme_code IS NULL "
+            "AND source_reporting_period_id IS NULL)",
+            name="ck_teaching_events_adhoc_has_no_scheduled_source",
+        ),
+        CheckConstraint(
+            "global_session_type_id IS NULL "
+            "OR (source_programme_code IS NULL "
+            "AND source_reporting_period_id IS NULL)",
+            name="ck_teaching_events_global_has_no_pool_scope",
+        ),
         Index(
             "idx_teaching_events_posting_date",
             "posting_code",
@@ -447,6 +472,12 @@ class TeachingEvent(UUIDTimestampMixin, Base):
             "global_session_type_id",
             postgresql_where=text("global_session_type_id IS NOT NULL"),
         ),
+        Index(
+            "idx_teaching_events_source_scope",
+            "source_reporting_period_id",
+            "source_programme_code",
+            postgresql_where=text("source_reporting_period_id IS NOT NULL"),
+        ),
     )
 
     posting_code: Mapped[str] = mapped_column(
@@ -475,6 +506,15 @@ class TeachingEvent(UUIDTimestampMixin, Base):
     )
     global_session_type_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("global_session_types.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    source_programme_code: Mapped[str | None] = mapped_column(
+        String(20),
+        ForeignKey("programmes.code", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    source_reporting_period_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("reporting_periods.id", ondelete="RESTRICT"),
         nullable=True,
     )
     series_id: Mapped[UUID | None] = mapped_column(

@@ -49,6 +49,8 @@ def _event_row(row: dict[str, Any]) -> dict[str, Any]:
         "session_type_id": row.get("session_type_id"),
         "teaching_name_id": row.get("teaching_name_id"),
         "global_session_type_id": row.get("global_session_type_id"),
+        "source_programme_code": row.get("source_programme_code"),
+        "source_reporting_period_id": row.get("source_reporting_period_id"),
         "session_type": row.get("session_type"),
         "series_id": row.get("series_id"),
         "cme_points_awarded": row.get("cme_points_awarded", False),
@@ -110,6 +112,43 @@ async def _programme_owned_event_in_secretary_scope(
         },
     )
     return result.mappings().one_or_none() is not None
+
+
+async def _pool_source_in_secretary_scope(
+    db: AsyncSession,
+    *,
+    event: dict[str, Any],
+) -> bool:
+    source_programme = event.get("source_programme_code")
+    source_period = event.get("source_reporting_period_id")
+    if (source_programme is None) != (source_period is None):
+        return False
+    if source_programme is None:
+        return event.get("teaching_name_id") is None
+    if event.get("global_session_type_id") is not None:
+        return False
+    owner = event.get("created_for_programme_code")
+    if owner is not None and owner != source_programme:
+        return False
+    result = await db.execute(
+        text(
+            """
+            /* scheduled_event_sources:secretary_capability */
+            SELECT 1
+            FROM secretary_programme_pools
+            WHERE posting_code = :posting_code
+              AND programme_code = :programme_code
+              AND is_active = true
+              AND can_manage_teaching_names = true
+            LIMIT 1
+            """
+        ),
+        {
+            "posting_code": event["posting_code"],
+            "programme_code": source_programme,
+        },
+    )
+    return result.scalar_one_or_none() is not None
 
 
 def _natural_sort_key(value: str) -> tuple[str | int, ...]:
@@ -188,6 +227,8 @@ async def list_teaching_events(
                 te.session_type_id,
                 te.teaching_name_id,
                 te.global_session_type_id,
+                te.source_programme_code,
+                te.source_reporting_period_id,
                 st.name AS session_type,
                 te.series_id,
                 te.cme_points_awarded,
@@ -268,6 +309,8 @@ async def _insert_event(
                 session_type_id,
                 teaching_name_id,
                 global_session_type_id,
+                source_programme_code,
+                source_reporting_period_id,
                 series_id,
                 cme_points_awarded,
                 smc_event_code,
@@ -284,6 +327,8 @@ async def _insert_event(
                 :session_type_id,
                 :teaching_name_id,
                 :global_session_type_id,
+                :source_programme_code,
+                :source_reporting_period_id,
                 :series_id,
                 :cme_points_awarded,
                 :smc_event_code,
@@ -302,6 +347,8 @@ async def _insert_event(
                 session_type_id,
                 teaching_name_id,
                 global_session_type_id,
+                source_programme_code,
+                source_reporting_period_id,
                 series_id,
                 cme_points_awarded,
                 smc_event_code,
@@ -325,6 +372,12 @@ async def _insert_event(
             "global_session_type_id": str(source.global_session_type_id)
             if source.global_session_type_id is not None
             else None,
+            "source_programme_code": source.programme_code,
+            "source_reporting_period_id": (
+                str(source.reporting_period_id)
+                if source.reporting_period_id is not None
+                else None
+            ),
             "series_id": series_id,
             "cme_points_awarded": cme_points_awarded,
             "smc_event_code": smc_event_code,
@@ -388,6 +441,8 @@ async def _get_event_for_posting(
                 session_type_id,
                 teaching_name_id,
                 global_session_type_id,
+                source_programme_code,
+                source_reporting_period_id,
                 series_id,
                 cme_points_awarded,
                 smc_event_code,
@@ -421,6 +476,12 @@ async def _get_event_for_posting(
             detail="Teaching event not found",
             error_code=ErrorCode.NOT_FOUND.value,
         )
+    if not await _pool_source_in_secretary_scope(db, event=event):
+        raise ApiError(
+            status_code=404,
+            detail="Teaching event not found",
+            error_code=ErrorCode.NOT_FOUND.value,
+        )
     return event
 
 
@@ -445,6 +506,8 @@ async def duplicate_teaching_event(
     if (
         source.get("teaching_name_id") is None
         and source.get("global_session_type_id") is None
+        and source.get("source_programme_code") is None
+        and source.get("source_reporting_period_id") is None
         and teaching_name_id is None
         and global_session_type_id is None
     ):
@@ -506,6 +569,8 @@ async def update_teaching_event(
     if (
         source.get("teaching_name_id") is None
         and source.get("global_session_type_id") is None
+        and source.get("source_programme_code") is None
+        and source.get("source_reporting_period_id") is None
     ):
         raise ApiError(
             status_code=409,
@@ -536,7 +601,25 @@ async def update_teaching_event(
         reporting_period_id=period["id"],
         teaching_name_id=teaching_name_id,
         global_session_type_id=global_session_type_id,
+        allow_inactive_global_session_type_id=source.get("global_session_type_id"),
     )
+    if source.get("source_programme_code") is not None and (
+        not source_identity.is_pool_backed
+        or source_identity.programme_code != source.get("source_programme_code")
+        or str(source_identity.reporting_period_id)
+        != str(source.get("source_reporting_period_id"))
+    ):
+        raise ApiError(
+            status_code=409,
+            detail="Teaching event source programme and reporting period are immutable",
+            error_code=ErrorCode.CONFLICT.value,
+        )
+    if source.get("global_session_type_id") is not None and source_identity.is_pool_backed:
+        raise ApiError(
+            status_code=409,
+            detail="Teaching event source family is immutable",
+            error_code=ErrorCode.CONFLICT.value,
+        )
     scheduled_event_sources.validate_scheduled_event_start_time(
         source=source_identity,
         start_time=start_time,
@@ -575,6 +658,8 @@ async def update_teaching_event(
                 session_type_id,
                 teaching_name_id,
                 global_session_type_id,
+                source_programme_code,
+                source_reporting_period_id,
                 series_id,
                 cme_points_awarded,
                 smc_event_code,
@@ -1043,6 +1128,8 @@ async def _series_events_for_scope(
                 session_type_id,
                 teaching_name_id,
                 global_session_type_id,
+                source_programme_code,
+                source_reporting_period_id,
                 series_id,
                 cme_points_awarded,
                 smc_event_code,

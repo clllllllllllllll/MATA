@@ -662,12 +662,14 @@ async def test_non_rls_master_teaching_name_delete_preserves_used_evidence(
                         id, posting_code, created_for_programme_code, teaching_name,
                         details_of_session, event_date, start_time, end_time,
                         duration_hours, session_type_id, is_adhoc, created_by_role,
-                        teaching_name_id
+                        teaching_name_id, source_programme_code,
+                        source_reporting_period_id
                     )
                     VALUES (
                         :event_id, :posting_code, :programme_code, :teaching_name,
                         :details_of_session, DATE '2051-03-05', TIME '09:00', TIME '10:00',
-                        1.00, :session_type_id, false, 'programme_pc', :teaching_name_id
+                        1.00, :session_type_id, false, 'programme_pc',
+                        :teaching_name_id, :programme_code, :period_id
                     )
                     """
                 ),
@@ -679,6 +681,7 @@ async def test_non_rls_master_teaching_name_delete_preserves_used_evidence(
                     "details_of_session": event_details,
                     "session_type_id": session_type_id,
                     "teaching_name_id": used_name_id,
+                    "period_id": period_id,
                 },
             )
             await db.execute(

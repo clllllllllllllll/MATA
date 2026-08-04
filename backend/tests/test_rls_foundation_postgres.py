@@ -158,6 +158,10 @@ POLICY_HELPER_FUNCTIONS = frozenset(
         "mata_rls.can_access_teaching_catalogue(text,text,uuid)",
         "mata_rls.can_select_teaching_event(uuid)",
         (
+            "mata_rls.can_select_teaching_event_row("
+            "uuid,boolean,text,date,text,text,uuid,uuid,uuid,uuid,text,uuid)"
+        ),
+        (
             "mata_rls.can_insert_teaching_event("
             "text,text,text,date,boolean,text)"
         ),
@@ -166,12 +170,20 @@ POLICY_HELPER_FUNCTIONS = frozenset(
             "text,text,uuid,uuid,date,boolean,text)"
         ),
         (
+            "mata_rls.can_insert_scheduled_event_source("
+            "text,text,uuid,uuid,text,uuid,date,boolean,text)"
+        ),
+        (
             "mata_rls.can_manage_scheduled_event_source("
             "text,uuid,uuid,date,boolean)"
         ),
         (
             "mata_rls.can_manage_teaching_event("
             "text,text,text,date,boolean,text)"
+        ),
+        (
+            "mata_rls.can_manage_teaching_event_row("
+            "text,text,date,boolean,text,uuid,uuid,text,uuid)"
         ),
         "mata_rls.can_submit_native_attendance(uuid,uuid)",
         "mata_rls.can_access_external_attendance(uuid,uuid)",
@@ -223,6 +235,15 @@ PRIVATE_FUNCTIONS = frozenset(
         "mata_private.enforce_attendance_integrity()",
         "mata_private.reconcile_teaching_name_pending_mappings()",
         "mata_private.guard_used_teaching_name_delete()",
+        (
+            "mata_private."
+            "enforce_teaching_event_source_provenance_immutable()"
+        ),
+        (
+            "mata_private.scheduled_event_source_is_valid("
+            "date,uuid,uuid,text,uuid)"
+        ),
+        "mata_private.enforce_attendance_no_overlap()",
     }
 )
 
@@ -296,6 +317,7 @@ POLICY_CUTOVER_REVISIONS = frozenset(
         "20260803_000032",
         "20260804_000033",
         "20260804_000034",
+        "20260804_000035",
     }
 )
 SESSION_LIFECYCLE_REVISIONS = frozenset(
@@ -308,6 +330,7 @@ SESSION_LIFECYCLE_REVISIONS = frozenset(
         "20260803_000032",
         "20260804_000033",
         "20260804_000034",
+        "20260804_000035",
     }
 )
 

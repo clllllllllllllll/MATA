@@ -52,8 +52,10 @@ mapping backend, Phase F scheduled-event source cutover, and Phase G runtime
 decoupling. `teaching_targets.details_of_training` and Column K catalogue
 seeding remain transitional parser/configuration behavior until the later final
 E2/B2 cutover. Phase F writes an explicit Teaching Name or Global Session Type
-UUID plus an immutable display snapshot to new scheduled events. Phase G uses
-that persisted source identity (or deterministic both-null legacy evidence) for
+UUID plus an immutable display snapshot to new scheduled events. Revision
+`20260804_000035` also persists immutable pool-source programme and reporting-
+period snapshots, so source authorization survives Teaching Name deletion.
+Phase G uses that persisted source identity (or deterministic both-null legacy evidence) for
 Resident/Non-NHG discovery and attendance, and fixes ad-hoc creation without a
 catalogue or target lookup. It does not alter the parser, compliance engine, or
 UI implementation.
@@ -73,7 +75,7 @@ Staff password authentication is backend-mediated through Supabase, and no Supab
 
 Session rotation is serialized by subject, transaction-scoped family advisory lock, and locked/refreshed database row. Subject generation fencing invalidates sessions after authorization change, password reset, or deactivation. Revision `20260722_000024` revokes browser-role object privileges.
 
-**5B-H-E/B1/Phase D/Phase F/G current lifecycle local state (2026-08-04):** Revisions `20260726_000025` and `20260726_000026` add separate non-owner runtime and auth-helper capabilities, database-revalidated signed transaction context, reviewed service helpers, database-enforced global MCR uniqueness, and the full policy/grant cutover. Revision `20260727_000027` narrows restricted session-helper results, adds interval-gated activity, and denies signed RLS context after session expiry/revocation. Revisions `20260802_000029`, `20260803_000030`, and `20260803_000031` add the Teaching Name pool/mapping foundation, stable optional event identities, and the explicit Secretary pilot capability without changing the legacy A-K workflow. Revision `20260803_000032` adds the narrow E1 TTF mapping-reconciliation helper. Revision `20260804_000033` adds the narrow, runtime-only scheduled-event source helper and replaces only the scheduled-event insert policy so valid pending Teaching Names can be used without display-text matching. Revision `20260804_000034` moves Resident/Non-NHG scheduled-event and attendance authorization to explicit persisted source evidence (or deterministic both-null legacy evidence), exposes only authorized source scope through a runtime helper, and fixes atomic ad-hoc creation to a server-owned one-hour record without catalogue or target reads. Phase D uses the existing RLS boundary for a PC-only mapping API, revision fencing, explicit count-only impact confirmation, atomic audit/Data Revalidation evidence, and post-commit scoped cache invalidation. All 36 application tables have RLS enabled locally; 92 policies target only `mata_app_runtime`. The runtime, auth-helper, and migration/ownership credentials must be distinct, and startup attestation fails closed on unsafe roles, ownership, grants, helpers, policies, schema access, sequences, PUBLIC, or browser-role state. FastAPI authorization remains mandatory.
+**5B-H-E/B1/Phase D/Phase F/G current lifecycle local state (2026-08-04):** Revisions `20260726_000025` and `20260726_000026` add separate non-owner runtime and auth-helper capabilities, database-revalidated signed transaction context, reviewed service helpers, database-enforced global MCR uniqueness, and the full policy/grant cutover. Revision `20260727_000027` narrows restricted session-helper results, adds interval-gated activity, and denies signed RLS context after session expiry/revocation. Revisions `20260802_000029`, `20260803_000030`, and `20260803_000031` add the Teaching Name pool/mapping foundation, stable optional event identities, and the explicit Secretary pilot capability without changing the legacy A-K workflow. Revision `20260803_000032` adds the narrow E1 TTF mapping-reconciliation helper. Revision `20260804_000033` adds the narrow, runtime-only scheduled-event source helper and replaces only the scheduled-event insert policy so valid pending Teaching Names can be used without display-text matching. Revision `20260804_000034` moves Resident/Non-NHG scheduled-event and attendance authorization to explicit persisted source evidence (or deterministic both-null legacy evidence), exposes only authorized source scope through a runtime helper, and fixes atomic ad-hoc creation to a server-owned one-hour record without catalogue or target reads. Revision `20260804_000035` adds immutable pool-source programme/period snapshots, row-local restricted `INSERT ... RETURNING` authorization, exact owner/source and external-schedule equality, historical global-type visibility, and full-datetime overlap enforcement including midnight. Phase D uses the existing RLS boundary for a PC-only mapping API, revision fencing, explicit count-only impact confirmation, atomic audit/Data Revalidation evidence, and post-commit scoped cache invalidation. All 36 application tables have RLS enabled locally; 92 policies target only `mata_app_runtime`. The runtime, auth-helper, and migration/ownership credentials must be distinct, and startup attestation fails closed on unsafe roles, ownership, grants, helpers, policies, schema access, sequences, PUBLIC, or browser-role state. FastAPI authorization remains mandatory.
 
 Local code and disposable-database verification are not proof of deployed Supabase behavior.
 
@@ -556,11 +558,14 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 - **Phase F current scheduling contract (supersedes the following legacy
   catalogue-display bullets):** create/update/series requests carry exactly one
   active `teaching_name_id` or `global_session_type_id`; the server stores the
-  display snapshot and computes timing. A pool source is exactly one hour and
+  display snapshot and computes timing. Pool rows also store immutable source
+  programme/period snapshots, which survive source deletion. A pool source is exactly one hour and
   may not start after 23:00. A global source uses its configured duration.
   Pending names are event-capable. Source text, client end time, and catalogue
    mapping inference are never accepted. Phase G Resident/Non-NHG runtime
-   resolution uses persisted source evidence and never the catalogue.
+   resolution uses persisted source evidence and never the catalogue. Inactive
+   global types disappear from new choices, but existing global events and
+   eligible attendance remain visible and operational.
 - Legacy pre-Phase-F dropdown and `session_type_id` catalogue-resolution wording is retained only as historical parser-era context; current scheduled creation uses the explicit source-option contract above.
 - `end_time` = `start_time + session_type.duration_hours` (server-computed — NOT a request field)
 - Event creation on public holiday dates is hard-blocked (422)

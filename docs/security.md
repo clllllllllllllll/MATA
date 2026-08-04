@@ -1,7 +1,7 @@
 # Security Contract
 
 Status: current repository security source of truth. This document describes
-the implemented local contract at Alembic revision `20260804_000034`. Local
+the implemented local contract at Alembic revision `20260804_000035`. Local
 source, test, and disposable-database evidence is not proof of a deployed
 Vercel or Supabase environment.
 
@@ -204,6 +204,21 @@ atomic ad-hoc helper accepts only the fixed one-hour
 `Department/Programme Teaching [1h]` record and no longer reads
 `teaching_name_catalogue` or `teaching_targets`.
 
+Revision `20260804_000035` persists immutable pool-source programme and period
+snapshots, safely backfills only explicit Teaching Name rows, and preserves those
+snapshots after guarded source deletion. The scheduled-event policies now call a
+row-local selection helper, allowing restricted `INSERT ... RETURNING` without
+re-querying the new tuple. Insert/manage helpers require exact Teaching Name,
+snapshot, event-owner, programme, period, posting, and Secretary-capability
+evidence. Historical selection does not require a referenced global type to
+remain active; activity still gates new choices and inserts. The source-scope
+helper returns the persisted `varchar(20)` programme contract, and external
+attendance requires exact schedule/source programme equality. Native and
+external attendance triggers plus the atomic ad-hoc helper enforce full-datetime
+overlap under per-subject/date locks, including wrapped midnight intervals.
+Every added helper has fixed `pg_catalog, pg_temp` search path, reviewed owner,
+runtime-only execution, and no `PUBLIC` or browser/auth-helper execution.
+
 The B1/Phase C RLS/grant boundary is intentionally narrow:
 
 - Master Admin may read names and use only the guarded deletion route; ordinary
@@ -385,7 +400,7 @@ business rows; bounded failure evidence may still be recorded.
 
 ## 9. PostgreSQL roles, RLS, grants, and helpers
 
-At current revision `20260804_000034`:
+At current revision `20260804_000035`:
 
 - 36 application tables have RLS enabled;
 - 92 action policies target only `mata_app_runtime`;
@@ -470,6 +485,11 @@ part of the current application-role contract.
 Attendance creation, overlap checks, deletion, and ad-hoc creation use
 transaction-scoped advisory or row locks, uniqueness constraints, typed
 ownership, and one caller-owned transaction.
+
+Overlap authorization uses complete timestamps. End times less than or equal to
+start times fall on the next date, and locks cover every spanned date. Exact
+boundary contact is allowed. A concurrent loser rolls back without changing the
+earlier event or attendance.
 
 Resident-created ad-hoc events preserve immutable native/Non-NHG creator
 identity. The narrow creation helper derives the current subject from database

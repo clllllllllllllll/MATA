@@ -1419,9 +1419,10 @@ class FakeResidentSession:
                     for event in self.events
                     if event["id"] == attendance["teaching_event_id"]
                 )
-                if existing["event_date"] == payload.get("event_date"):
+                if existing["event_date"] in set(payload.get("candidate_dates") or []):
                     rows.append(
                         {
+                            "event_date": existing["event_date"],
                             "start_time": existing["start_time"],
                             "end_time": existing.get("end_time"),
                         }
@@ -1488,9 +1489,10 @@ class FakeResidentSession:
                     for event in self.events
                     if event["id"] == attendance["teaching_event_id"]
                 )
-                if existing["event_date"] == payload.get("event_date"):
+                if existing["event_date"] in set(payload.get("candidate_dates") or []):
                     rows.append(
                         {
+                            "event_date": existing["event_date"],
                             "start_time": existing["start_time"],
                             "end_time": existing.get("end_time"),
                         }

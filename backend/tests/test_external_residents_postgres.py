@@ -52,8 +52,8 @@ APPROVED_TTSH_MAPPINGS = (
     ("MICROB", "TTSHLabMed"),
 )
 INACTIVE_TTSH_PROGRAMMES = ("FM", "PATH", "SPORTSMED", "PALLMED")
-DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_pre_d_fix_verify"
-EXPECTED_ALEMBIC_REVISION = "20260804_000034"
+DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_dfg_fix_verify"
+EXPECTED_ALEMBIC_REVISION = "20260804_000035"
 
 
 class RollbackOnlyAsyncSession(AsyncSession):

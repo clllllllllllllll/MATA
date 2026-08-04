@@ -57,6 +57,8 @@ def _event_row(row: dict[str, Any]) -> dict[str, Any]:
         "session_type_id": row.get("session_type_id"),
         "teaching_name_id": row.get("teaching_name_id"),
         "global_session_type_id": row.get("global_session_type_id"),
+        "source_programme_code": row.get("source_programme_code"),
+        "source_reporting_period_id": row.get("source_reporting_period_id"),
         "session_type": row.get("session_type"),
         "series_id": row.get("series_id"),
         "cme_points_awarded": row.get("cme_points_awarded", False),
@@ -197,18 +199,10 @@ async def teaching_name_options(
             """
             /* programme_teaching_events:global_posting_options */
             SELECT DISTINCT posting_code
-            FROM (
-                SELECT spp.posting_code
-                FROM secretary_programme_pools spp
-                WHERE spp.programme_code = :programme_code
-                  AND spp.is_active = true
-                UNION
-                SELECT tnc.posting_code
-                FROM teaching_name_catalogue tnc
-                WHERE tnc.programme_code = :programme_code
-                  AND tnc.reporting_period_id = :reporting_period_id
-            ) safe_postings
-            WHERE posting_code IS NOT NULL
+            FROM secretary_programme_pools
+            WHERE programme_code = :programme_code
+              AND is_active = true
+              AND posting_code IS NOT NULL
             ORDER BY posting_code ASC
             """
         ),
@@ -249,23 +243,13 @@ async def _posting_available_for_programme(
         text(
             """
             /* programme_teaching_events:posting_available */
-            SELECT
-                (
-                    EXISTS (
-                        SELECT 1
-                        FROM secretary_programme_pools spp
-                        WHERE spp.posting_code = :posting_code
-                          AND spp.programme_code = :programme_code
-                          AND spp.is_active = true
-                    )
-                    OR EXISTS (
-                        SELECT 1
-                        FROM teaching_name_catalogue tnc
-                        WHERE tnc.posting_code = :posting_code
-                          AND tnc.programme_code = :programme_code
-                          AND tnc.reporting_period_id = :reporting_period_id
-                    )
-                ) AS is_available
+            SELECT EXISTS (
+                SELECT 1
+                FROM secretary_programme_pools spp
+                WHERE spp.posting_code = :posting_code
+                  AND spp.programme_code = :programme_code
+                  AND spp.is_active = true
+            ) AS is_available
             """
         ),
         {
@@ -331,22 +315,28 @@ async def list_teaching_events(
         "te.event_date BETWEEN :reporting_period_start AND :reporting_period_end",
         """
         (
-            te.created_for_programme_code = ANY(:programme_scope)
+            (
+                te.source_programme_code IS NOT NULL
+                AND te.source_reporting_period_id = :reporting_period_id
+                AND te.source_programme_code = ANY(:programme_scope)
+                AND te.global_session_type_id IS NULL
+                AND (
+                    te.created_for_programme_code IS NULL
+                    OR te.created_for_programme_code = te.source_programme_code
+                )
+            )
             OR (
-                te.created_for_programme_code IS NULL
+                te.global_session_type_id IS NOT NULL
+                AND te.teaching_name_id IS NULL
+                AND te.source_programme_code IS NULL
+                AND te.source_reporting_period_id IS NULL
                 AND (
                     (
-                        te.teaching_name_id IS NOT NULL
-                        AND EXISTS (
-                            SELECT 1
-                            FROM teaching_names tn
-                            WHERE tn.id = te.teaching_name_id
-                              AND tn.programme_code = ANY(:programme_scope)
-                              AND tn.reporting_period_id = :reporting_period_id
-                        )
+                        te.created_for_programme_code IS NOT NULL
+                        AND te.created_for_programme_code = ANY(:programme_scope)
                     )
                     OR (
-                        te.teaching_name_id IS NULL
+                        te.created_for_programme_code IS NULL
                         AND EXISTS (
                             SELECT 1
                             FROM secretary_programme_pools spp
@@ -355,18 +345,28 @@ async def list_teaching_events(
                               AND spp.is_active = true
                         )
                     )
-                    OR (
-                        te.teaching_name_id IS NULL
-                        AND te.global_session_type_id IS NULL
-                        AND EXISTS (
-                            SELECT 1
-                            FROM teaching_name_catalogue tnc
-                            WHERE tnc.posting_code = te.posting_code
-                              AND tnc.programme_code = ANY(:programme_scope)
-                              AND tnc.keyword = te.teaching_name
-                              AND tnc.reporting_period_id = :reporting_period_id
-                        )
-                    )
+                )
+            )
+            OR (
+                te.teaching_name_id IS NULL
+                AND te.global_session_type_id IS NULL
+                AND te.source_programme_code IS NULL
+                AND te.source_reporting_period_id IS NULL
+                AND te.created_for_programme_code IS NOT NULL
+                AND te.created_for_programme_code = ANY(:programme_scope)
+            )
+            OR (
+                te.teaching_name_id IS NULL
+                AND te.global_session_type_id IS NULL
+                AND te.source_programme_code IS NULL
+                AND te.source_reporting_period_id IS NULL
+                AND te.created_for_programme_code IS NULL
+                AND EXISTS (
+                    SELECT 1
+                    FROM secretary_programme_pools spp
+                    WHERE spp.posting_code = te.posting_code
+                      AND spp.programme_code = ANY(:programme_scope)
+                      AND spp.is_active = true
                 )
             )
         )
@@ -377,43 +377,52 @@ async def list_teaching_events(
         where.append(
             """
             (
-                te.created_for_programme_code = :programme_code
-                OR (
+                te.source_programme_code = :programme_code
+                AND te.source_reporting_period_id = :reporting_period_id
+                AND te.global_session_type_id IS NULL
+                AND (
                     te.created_for_programme_code IS NULL
-                    AND (
-                        (
-                            te.teaching_name_id IS NOT NULL
-                            AND EXISTS (
-                                SELECT 1
-                                FROM teaching_names tn
-                                WHERE tn.id = te.teaching_name_id
-                                  AND tn.programme_code = :programme_code
-                                  AND tn.reporting_period_id = :reporting_period_id
-                            )
-                        )
-                        OR (
-                            te.teaching_name_id IS NULL
-                            AND EXISTS (
-                                SELECT 1
-                                FROM secretary_programme_pools spp
-                                WHERE spp.posting_code = te.posting_code
-                                  AND spp.programme_code = :programme_code
-                                  AND spp.is_active = true
-                            )
-                        )
-                        OR (
-                            te.teaching_name_id IS NULL
-                            AND te.global_session_type_id IS NULL
-                            AND EXISTS (
-                                SELECT 1
-                                FROM teaching_name_catalogue tnc
-                                WHERE tnc.posting_code = te.posting_code
-                                  AND tnc.programme_code = :programme_code
-                                  AND tnc.keyword = te.teaching_name
-                                  AND tnc.reporting_period_id = :reporting_period_id
-                            )
+                    OR te.created_for_programme_code = te.source_programme_code
+                )
+            )
+            OR (
+                te.global_session_type_id IS NOT NULL
+                AND te.teaching_name_id IS NULL
+                AND te.source_programme_code IS NULL
+                AND te.source_reporting_period_id IS NULL
+                AND (
+                    te.created_for_programme_code = :programme_code
+                    OR (
+                        te.created_for_programme_code IS NULL
+                        AND EXISTS (
+                            SELECT 1
+                            FROM secretary_programme_pools spp
+                            WHERE spp.posting_code = te.posting_code
+                              AND spp.programme_code = :programme_code
+                              AND spp.is_active = true
                         )
                     )
+                )
+            )
+            OR (
+                te.teaching_name_id IS NULL
+                AND te.global_session_type_id IS NULL
+                AND te.source_programme_code IS NULL
+                AND te.source_reporting_period_id IS NULL
+                AND te.created_for_programme_code = :programme_code
+            )
+            OR (
+                te.teaching_name_id IS NULL
+                AND te.global_session_type_id IS NULL
+                AND te.source_programme_code IS NULL
+                AND te.source_reporting_period_id IS NULL
+                AND te.created_for_programme_code IS NULL
+                AND EXISTS (
+                    SELECT 1
+                    FROM secretary_programme_pools spp
+                    WHERE spp.posting_code = te.posting_code
+                      AND spp.programme_code = :programme_code
+                      AND spp.is_active = true
                 )
             )
             """
@@ -444,6 +453,8 @@ async def list_teaching_events(
                 te.session_type_id,
                 te.teaching_name_id,
                 te.global_session_type_id,
+                te.source_programme_code,
+                te.source_reporting_period_id,
                 st.name AS session_type,
                 te.series_id,
                 te.cme_points_awarded,
@@ -506,6 +517,8 @@ async def _get_event(
                 te.session_type_id,
                 te.teaching_name_id,
                 te.global_session_type_id,
+                te.source_programme_code,
+                te.source_reporting_period_id,
                 st.name AS session_type,
                 te.series_id,
                 te.cme_points_awarded,
@@ -539,28 +552,23 @@ async def _event_matches_programme(
     programme_code: str,
     reporting_period_id: UUID | str,
 ) -> bool:
-    if event.get("created_for_programme_code") is not None:
-        return event.get("created_for_programme_code") == programme_code
-    if event.get("teaching_name_id") is not None:
-        result = await db.execute(
-            text(
-                """
-                /* programme_teaching_events:event_programme_pool_match */
-                SELECT 1
-                FROM teaching_names
-                WHERE id = :teaching_name_id
-                  AND programme_code = :programme_code
-                  AND reporting_period_id = :reporting_period_id
-                """
-            ),
-            {
-                "teaching_name_id": str(event["teaching_name_id"]),
-                "programme_code": programme_code,
-                "reporting_period_id": str(reporting_period_id),
-            },
+    owner = event.get("created_for_programme_code")
+    source_programme = event.get("source_programme_code")
+    source_period = event.get("source_reporting_period_id")
+    if (source_programme is None) != (source_period is None):
+        return False
+    if source_programme is not None:
+        return (
+            event.get("global_session_type_id") is None
+            and str(source_programme) == programme_code
+            and str(source_period) == str(reporting_period_id)
+            and (owner is None or owner == source_programme)
         )
-        return result.scalar_one_or_none() is not None
+    if event.get("teaching_name_id") is not None:
+        return False
     if event.get("global_session_type_id") is not None:
+        if owner is not None:
+            return owner == programme_code
         result = await db.execute(
             text(
                 """
@@ -580,35 +588,24 @@ async def _event_matches_programme(
         )
         return result.scalar_one_or_none() is not None
 
+    if owner is not None:
+        return owner == programme_code
     result = await db.execute(
         text(
             """
             /* programme_teaching_events:event_programme_match */
-            SELECT
-                (
-                    EXISTS (
-                        SELECT 1
-                        FROM secretary_programme_pools spp
-                        WHERE spp.posting_code = :posting_code
-                          AND spp.programme_code = :programme_code
-                          AND spp.is_active = true
-                    )
-                    OR EXISTS (
-                        SELECT 1
-                        FROM teaching_name_catalogue tnc
-                        WHERE tnc.posting_code = :posting_code
-                          AND tnc.programme_code = :programme_code
-                          AND tnc.keyword = :teaching_name
-                          AND tnc.reporting_period_id = :reporting_period_id
-                    )
-                ) AS is_match
+            SELECT EXISTS (
+                SELECT 1
+                FROM secretary_programme_pools spp
+                WHERE spp.posting_code = :posting_code
+                  AND spp.programme_code = :programme_code
+                  AND spp.is_active = true
+            ) AS is_match
             """
         ),
         {
             "posting_code": event["posting_code"],
             "programme_code": programme_code,
-            "teaching_name": event["teaching_name"],
-            "reporting_period_id": str(reporting_period_id),
         },
     )
     return bool(result.scalar_one_or_none())
@@ -739,6 +736,8 @@ async def _insert_event(
                 session_type_id,
                 teaching_name_id,
                 global_session_type_id,
+                source_programme_code,
+                source_reporting_period_id,
                 cme_points_awarded,
                 smc_event_code,
                 is_adhoc,
@@ -755,6 +754,8 @@ async def _insert_event(
                 :session_type_id,
                 :teaching_name_id,
                 :global_session_type_id,
+                :source_programme_code,
+                :source_reporting_period_id,
                 :cme_points_awarded,
                 :smc_event_code,
                 false,
@@ -772,6 +773,8 @@ async def _insert_event(
                 session_type_id,
                 teaching_name_id,
                 global_session_type_id,
+                source_programme_code,
+                source_reporting_period_id,
                 series_id,
                 cme_points_awarded,
                 smc_event_code,
@@ -796,6 +799,12 @@ async def _insert_event(
             "global_session_type_id": str(source.global_session_type_id)
             if source.global_session_type_id is not None
             else None,
+            "source_programme_code": source.programme_code,
+            "source_reporting_period_id": (
+                str(source.reporting_period_id)
+                if source.reporting_period_id is not None
+                else None
+            ),
             "cme_points_awarded": cme_points_awarded,
             "smc_event_code": smc_event_code,
             "created_by_role": created_by_role,
@@ -909,6 +918,8 @@ async def update_teaching_event(
     if (
         source.get("teaching_name_id") is None
         and source.get("global_session_type_id") is None
+        and source.get("source_programme_code") is None
+        and source.get("source_reporting_period_id") is None
     ):
         raise ApiError(
             status_code=409,
@@ -940,7 +951,25 @@ async def update_teaching_event(
         reporting_period_id=period["id"],
         teaching_name_id=teaching_name_id,
         global_session_type_id=global_session_type_id,
+        allow_inactive_global_session_type_id=source.get("global_session_type_id"),
     )
+    if source.get("source_programme_code") is not None and (
+        not source_identity.is_pool_backed
+        or source_identity.programme_code != source.get("source_programme_code")
+        or str(source_identity.reporting_period_id)
+        != str(source.get("source_reporting_period_id"))
+    ):
+        raise ApiError(
+            status_code=409,
+            detail="Teaching event source programme and reporting period are immutable",
+            error_code=ErrorCode.CONFLICT.value,
+        )
+    if source.get("global_session_type_id") is not None and source_identity.is_pool_backed:
+        raise ApiError(
+            status_code=409,
+            detail="Teaching event source family is immutable",
+            error_code=ErrorCode.CONFLICT.value,
+        )
     if source_identity.kind == "global_session_type" and not await _posting_available_for_programme(
         db,
         programme_code=programme_code,
@@ -994,6 +1023,8 @@ async def update_teaching_event(
                 session_type_id,
                 teaching_name_id,
                 global_session_type_id,
+                source_programme_code,
+                source_reporting_period_id,
                 series_id,
                 cme_points_awarded,
                 smc_event_code,
