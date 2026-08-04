@@ -483,6 +483,11 @@ as TTF reconciliation. They do not change parsing, target reconciliation,
 workbook contents, legacy catalogue seeding, event timing, events, or
 attendance.
 
+Phase F likewise makes no parser or workbook change. It uses a separately
+managed Teaching Name or Global Session Type UUID only when a new scheduled
+event is written; it does not read Column K, create a dual parser, backfill
+legacy events, or change Resident/Non-NHG runtime resolution.
+
 The future evolved TTF has exactly these A-J fields:
 
 | Column | Future field |

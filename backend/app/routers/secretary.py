@@ -82,6 +82,8 @@ _EVENT_SNAPSHOT_SQL = """
         end_time,
         duration_hours,
         session_type_id,
+        teaching_name_id,
+        global_session_type_id,
         series_id,
         cme_points_awarded,
         smc_event_code,
@@ -124,6 +126,8 @@ _SERIES_EVENTS_SNAPSHOT_SQL = """
         end_time,
         duration_hours,
         session_type_id,
+        teaching_name_id,
+        global_session_type_id,
         series_id,
         cme_points_awarded,
         smc_event_code,
@@ -237,6 +241,10 @@ def _event_audit_metadata(
         metadata["event_date"] = snapshot["event_date"]
     if snapshot.get("teaching_name") is not None:
         metadata["teaching_name"] = snapshot["teaching_name"]
+    if snapshot.get("teaching_name_id") is not None:
+        metadata["teaching_name_id"] = str(snapshot["teaching_name_id"])
+    if snapshot.get("global_session_type_id") is not None:
+        metadata["global_session_type_id"] = str(snapshot["global_session_type_id"])
     if snapshot.get("series_id") is not None:
         metadata["series_id"] = str(snapshot["series_id"])
     return metadata
@@ -404,8 +412,10 @@ async def create_teaching_event(
     ):
         event = await secretary_events.create_teaching_event(
             db,
+            source_actor=_teaching_name_pool_actor(secretary_context, staff_actor),
             posting_code=secretary_context.posting_code,
-            teaching_name=request.teaching_name,
+            teaching_name_id=request.teaching_name_id,
+            global_session_type_id=request.global_session_type_id,
             event_date=request.event_date,
             start_time=request.start_time,
             cme_points_awarded=request.cme_points_awarded,
@@ -442,11 +452,13 @@ async def duplicate_teaching_event(
         )
         event = await secretary_events.duplicate_teaching_event(
             db,
+            source_actor=_teaching_name_pool_actor(secretary_context, staff_actor),
             posting_code=secretary_context.posting_code,
             source_event_id=request.source_event_id,
             event_date=request.event_date,
             start_time=request.start_time,
-            teaching_name=request.teaching_name,
+            teaching_name_id=request.teaching_name_id,
+            global_session_type_id=request.global_session_type_id,
         )
         await _write_secretary_event_audit(
             db,
@@ -480,9 +492,11 @@ async def update_teaching_event(
         )
         event = await secretary_events.update_teaching_event(
             db,
+            source_actor=_teaching_name_pool_actor(secretary_context, staff_actor),
             posting_code=secretary_context.posting_code,
             event_id=event_id,
-            teaching_name=request.teaching_name,
+            teaching_name_id=request.teaching_name_id,
+            global_session_type_id=request.global_session_type_id,
             event_date=request.event_date,
             start_time=request.start_time,
             cme_points_awarded=request.cme_points_awarded,
@@ -547,8 +561,10 @@ async def create_event_series(
     ):
         result = await secretary_events.create_event_series(
             db,
+            source_actor=_teaching_name_pool_actor(secretary_context, staff_actor),
             posting_code=secretary_context.posting_code,
-            teaching_name=request.teaching_name,
+            teaching_name_id=request.teaching_name_id,
+            global_session_type_id=request.global_session_type_id,
             start_date=request.start_date,
             start_time=request.start_time,
             cme_points_awarded=request.cme_points_awarded,

@@ -20,7 +20,7 @@ from app.services.database_context import MataSyncSession
 DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_pre_d_fix_verify"
 RUNTIME_GROUP = "mata_app_runtime"
 AUTH_GROUP = "mata_auth_internal"
-REQUIRED_REVISION = "20260803_000032"
+REQUIRED_REVISION = "20260804_000033"
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _TEST_ROLE_RE = re.compile(r"mata_test_(?:runtime|auth)_[0-9a-f]{16}")
 _TEST_PASSWORD_RE = re.compile(r"[0-9a-f]{64}")

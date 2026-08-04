@@ -7,11 +7,13 @@ This document covers the compliance engine, surplus chain, tag-based reallocatio
 BL-1 through BL-12 are the future non-clawback compliance specification. They
 do not establish that `compliance.py`, `surplus.py`, or a full Phase 6 engine is
 implemented today. Clawback and final close remain separately deferred. Current
-upload, event, and attendance behavior remains the legacy A-K catalogue path
-through Phase D. Phase C activates shared Teaching Name configuration lifecycle
-and pending-mapping reconciliation; Phase D adds only guarded Programme-PC
-mapping configuration. Neither phase performs compliance, surplus, warning, or
-attendance revalidation.
+upload, attendance, and Resident/Non-NHG runtime behavior remains the legacy
+A-K catalogue path through Phase F. Phase C activates shared Teaching Name
+configuration lifecycle and pending-mapping reconciliation; Phase D adds only
+guarded Programme-PC mapping configuration. Phase F changes scheduled-event
+writes to use an explicit Teaching Name or Global Session Type identity plus an
+immutable display snapshot. It does not perform compliance, surplus, warning,
+or attendance revalidation, nor does it cut over the runtime lookup path.
 
 The evolved TTF foundation uses `teaching_name` pools scoped by reporting
 period and programme. Phase C creates pending configuration rows for each
@@ -27,7 +29,7 @@ Global session types stay Admin-managed and are considered before ordinary
 Teaching Name mapping. Resident ad-hoc teaching remains fixed to
 `Department/Programme Teaching [1h]`; Non-NHG attendance is excluded from NHG
 compliance. The final A-J TTF removes Column K. The current A-K parser,
-`teaching_name_catalogue`, and `details_of_training` stay in place during Phase C;
+`teaching_name_catalogue`, and `details_of_training` stay in place during Phase F;
 only final E2/B2 may remove them. A populated legacy Column K in a future-format
 upload must return `422`, with no dual-format fallback, backfill, or historical
 migration.

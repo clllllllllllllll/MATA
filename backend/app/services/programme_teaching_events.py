@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dependencies.staff_actor import StaffActorContext
 from app.errors import ApiError, ErrorCode
 from app.security import log_safe_exception
 from app.services.reporting_period_status import (
@@ -16,7 +17,10 @@ from app.services.reporting_period_status import (
     resolve_explicit_reporting_period,
 )
 from app.services import cache_invalidation
+from app.services import scheduled_event_sources
+from app.services.audit import write_audit_log
 from app.services.teaching_event_locks import acquire_teaching_event_locks
+from app.services.teaching_name_pool import TeachingNamePoolActor
 
 
 logger = logging.getLogger(__name__)
@@ -51,6 +55,8 @@ def _event_row(row: dict[str, Any]) -> dict[str, Any]:
         "end_time": row.get("end_time"),
         "duration_hours": row.get("duration_hours"),
         "session_type_id": row.get("session_type_id"),
+        "teaching_name_id": row.get("teaching_name_id"),
+        "global_session_type_id": row.get("global_session_type_id"),
         "session_type": row.get("session_type"),
         "series_id": row.get("series_id"),
         "cme_points_awarded": row.get("cme_points_awarded", False),
@@ -90,27 +96,6 @@ def _natural_sort_key(value: str) -> tuple[str | int, ...]:
         else:
             key.append(chunk.casefold())
     return tuple(key)
-
-
-def _normalise_option_row(row: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
-    keyword = str(row.get("keyword") or "").strip()
-    if not keyword:
-        return None
-    posting_codes = row.get("posting_codes")
-    if isinstance(posting_codes, list):
-        codes = [str(code) for code in posting_codes if str(code).strip()]
-    else:
-        posting_code = row.get("posting_code")
-        codes = [str(posting_code)] if posting_code else []
-    return keyword, {
-        "keyword": keyword,
-        "session_type_id": row.get("session_type_id"),
-        "session_type": row.get("session_type"),
-        "duration_hours": row.get("duration_hours"),
-        "is_tracked": row.get("is_tracked"),
-        "is_global": bool(row.get("is_global")),
-        "posting_codes": codes,
-    }
 
 
 async def _public_holiday_name(db: AsyncSession, event_date: date) -> str | None:
@@ -165,23 +150,23 @@ async def teaching_name_options(
     )
     if period is None:
         return []
-    catalogue_result = await db.execute(
+    pool_result = await db.execute(
         text(
             """
-            /* programme_teaching_events:options_catalogue */
+            /* programme_teaching_events:options_teaching_names */
             SELECT
-                tnc.keyword,
-                tnc.session_type_id,
-                st.name AS session_type,
-                tnc.duration_hours,
-                tnc.is_tracked,
-                false AS is_global,
-                tnc.posting_code
-            FROM teaching_name_catalogue tnc
-            JOIN session_types st ON st.id = tnc.session_type_id
-            WHERE tnc.programme_code = :programme_code
-              AND tnc.reporting_period_id = :reporting_period_id
-            ORDER BY tnc.keyword ASC, tnc.posting_code ASC, tnc.duration_hours DESC
+                tn.id AS teaching_name_id,
+                CAST(NULL AS uuid) AS global_session_type_id,
+                tn.display_name AS keyword,
+                tn.display_name AS teaching_name,
+                tn.programme_code,
+                CAST(1.00 AS numeric) AS duration_hours,
+                false AS is_global
+            FROM teaching_names tn
+            WHERE tn.programme_code = :programme_code
+              AND tn.reporting_period_id = :reporting_period_id
+              AND tn.is_active = true
+            ORDER BY tn.display_name ASC, tn.id ASC
             """
         ),
         {
@@ -194,11 +179,12 @@ async def teaching_name_options(
             """
             /* programme_teaching_events:options_global */
             SELECT
+                CAST(NULL AS uuid) AS teaching_name_id,
+                id AS global_session_type_id,
                 name AS keyword,
-                NULL AS session_type_id,
-                name AS session_type,
+                name AS teaching_name,
+                NULL AS programme_code,
                 duration_hours,
-                false AS is_tracked,
                 true AS is_global
             FROM global_session_types
             WHERE is_active = true
@@ -237,68 +223,19 @@ async def teaching_name_options(
         if row.get("posting_code")
     ]
 
-    options_by_keyword: dict[str, dict[str, Any]] = {}
-    for raw_row in catalogue_result.mappings().all():
-        parsed = _normalise_option_row(dict(raw_row))
-        if parsed is None:
-            continue
-        keyword, row = parsed
-        aggregate = options_by_keyword.setdefault(
-            keyword,
-            {
-                "keyword": keyword,
-                "session_type_id": row.get("session_type_id"),
-                "session_type": row.get("session_type"),
-                "duration_hours": row.get("duration_hours"),
-                "is_tracked": row.get("is_tracked"),
-                "is_global": False,
-                "posting_codes": [],
-                "_session_type_ids": set(),
-                "_session_types": set(),
-                "_durations": set(),
-                "_tracked_values": set(),
-            },
-        )
-        for posting_code in row["posting_codes"]:
-            if posting_code not in aggregate["posting_codes"]:
-                aggregate["posting_codes"].append(posting_code)
-        aggregate["_session_type_ids"].add(str(row.get("session_type_id")))
-        if row.get("session_type") is not None:
-            aggregate["_session_types"].add(str(row.get("session_type")))
-        if row.get("duration_hours") is not None:
-            aggregate["_durations"].add(str(row.get("duration_hours")))
-        aggregate["_tracked_values"].add(bool(row.get("is_tracked")))
-
-    options: list[dict[str, Any]] = []
-    for keyword in sorted(options_by_keyword):
-        aggregate = options_by_keyword[keyword]
-        session_type_ids = {
-            value for value in aggregate.pop("_session_type_ids") if value and value != "None"
-        }
-        session_types = aggregate.pop("_session_types")
-        durations = aggregate.pop("_durations")
-        tracked_values = aggregate.pop("_tracked_values")
-        if len(session_type_ids) != 1 or len(session_types) != 1:
-            aggregate["session_type_id"] = None
-            aggregate["session_type"] = None
-        if len(durations) != 1:
-            aggregate["duration_hours"] = None
-        if len(tracked_values) != 1:
-            aggregate["is_tracked"] = None
-        aggregate["posting_codes"] = sorted(aggregate["posting_codes"])
-        options.append(aggregate)
-
-    for raw_row in global_result.mappings().all():
-        parsed = _normalise_option_row(dict(raw_row))
-        if parsed is None:
-            continue
-        keyword, row = parsed
-        if keyword in options_by_keyword:
-            continue
-        row["posting_codes"] = global_posting_codes
-        options.append(row)
-
-    return sorted(options, key=lambda row: (_natural_sort_key(row["keyword"]), row["is_global"]))
+    options = [dict(row) for row in pool_result.mappings().all()]
+    for row in global_result.mappings().all():
+        option = dict(row)
+        option["posting_codes"] = global_posting_codes
+        options.append(option)
+    return sorted(
+        options,
+        key=lambda row: (
+            _natural_sort_key(str(row["keyword"])),
+            bool(row["is_global"]),
+            str(row.get("programme_code") or ""),
+        ),
+    )
 
 
 async def _posting_available_for_programme(
@@ -338,83 +275,6 @@ async def _posting_available_for_programme(
         },
     )
     return bool(result.scalar_one_or_none())
-
-
-async def resolve_teaching_name(
-    db: AsyncSession,
-    *,
-    programme_code: str,
-    posting_code: str,
-    teaching_name: str,
-    reporting_period_id: UUID | str,
-) -> dict[str, Any]:
-    result = await db.execute(
-        text(
-            """
-            /* programme_teaching_events:resolve_name */
-            SELECT *
-            FROM (
-                SELECT
-                    name AS keyword,
-                    NULL AS session_type_id,
-                    name AS session_type,
-                    duration_hours,
-                    false AS is_tracked,
-                    true AS is_global,
-                    0 AS source_priority
-                FROM global_session_types
-                WHERE is_active = true
-                  AND name = :teaching_name
-                UNION ALL
-                SELECT
-                    tnc.keyword,
-                    tnc.session_type_id,
-                    st.name AS session_type,
-                    tnc.duration_hours,
-                    tnc.is_tracked,
-                    false AS is_global,
-                    1 AS source_priority
-                FROM teaching_name_catalogue tnc
-                JOIN session_types st ON st.id = tnc.session_type_id
-                WHERE tnc.programme_code = :programme_code
-                  AND tnc.posting_code = :posting_code
-                  AND tnc.keyword = :teaching_name
-                  AND tnc.reporting_period_id = :reporting_period_id
-            ) resolved
-            ORDER BY source_priority ASC, duration_hours DESC, session_type ASC
-            LIMIT 1
-            """
-        ),
-        {
-            "programme_code": programme_code,
-            "posting_code": posting_code,
-            "teaching_name": teaching_name,
-            "reporting_period_id": str(reporting_period_id),
-        },
-    )
-    row = result.mappings().one_or_none()
-    if row is None:
-        raise ApiError(
-            status_code=422,
-            detail="teaching_name is not available for this programme and posting",
-            error_code=ErrorCode.VALIDATION_FAILED.value,
-        )
-    resolved = dict(row)
-    if resolved.get("is_global") and not await _posting_available_for_programme(
-        db,
-        programme_code=programme_code,
-        posting_code=posting_code,
-        reporting_period_id=reporting_period_id,
-    ):
-        raise ApiError(
-            status_code=422,
-            detail=(
-                "No posting is configured for this global teaching name and programme. "
-                "Contact an administrator."
-            ),
-            error_code=ErrorCode.VALIDATION_FAILED.value,
-        )
-    return resolved
 
 
 async def list_teaching_events(
@@ -475,20 +335,37 @@ async def list_teaching_events(
             OR (
                 te.created_for_programme_code IS NULL
                 AND (
-                    EXISTS (
-                        SELECT 1
-                        FROM secretary_programme_pools spp
-                        WHERE spp.posting_code = te.posting_code
-                          AND spp.programme_code = ANY(:programme_scope)
-                          AND spp.is_active = true
+                    (
+                        te.teaching_name_id IS NOT NULL
+                        AND EXISTS (
+                            SELECT 1
+                            FROM teaching_names tn
+                            WHERE tn.id = te.teaching_name_id
+                              AND tn.programme_code = ANY(:programme_scope)
+                              AND tn.reporting_period_id = :reporting_period_id
+                        )
                     )
-                    OR EXISTS (
-                        SELECT 1
-                        FROM teaching_name_catalogue tnc
-                        WHERE tnc.posting_code = te.posting_code
-                          AND tnc.programme_code = ANY(:programme_scope)
-                          AND tnc.keyword = te.teaching_name
-                          AND tnc.reporting_period_id = :reporting_period_id
+                    OR (
+                        te.teaching_name_id IS NULL
+                        AND EXISTS (
+                            SELECT 1
+                            FROM secretary_programme_pools spp
+                            WHERE spp.posting_code = te.posting_code
+                              AND spp.programme_code = ANY(:programme_scope)
+                              AND spp.is_active = true
+                        )
+                    )
+                    OR (
+                        te.teaching_name_id IS NULL
+                        AND te.global_session_type_id IS NULL
+                        AND EXISTS (
+                            SELECT 1
+                            FROM teaching_name_catalogue tnc
+                            WHERE tnc.posting_code = te.posting_code
+                              AND tnc.programme_code = ANY(:programme_scope)
+                              AND tnc.keyword = te.teaching_name
+                              AND tnc.reporting_period_id = :reporting_period_id
+                        )
                     )
                 )
             )
@@ -504,20 +381,37 @@ async def list_teaching_events(
                 OR (
                     te.created_for_programme_code IS NULL
                     AND (
-                        EXISTS (
-                            SELECT 1
-                            FROM secretary_programme_pools spp
-                            WHERE spp.posting_code = te.posting_code
-                              AND spp.programme_code = :programme_code
-                              AND spp.is_active = true
+                        (
+                            te.teaching_name_id IS NOT NULL
+                            AND EXISTS (
+                                SELECT 1
+                                FROM teaching_names tn
+                                WHERE tn.id = te.teaching_name_id
+                                  AND tn.programme_code = :programme_code
+                                  AND tn.reporting_period_id = :reporting_period_id
+                            )
                         )
-                        OR EXISTS (
-                            SELECT 1
-                            FROM teaching_name_catalogue tnc
-                        WHERE tnc.posting_code = te.posting_code
-                          AND tnc.programme_code = :programme_code
-                          AND tnc.keyword = te.teaching_name
-                          AND tnc.reporting_period_id = :reporting_period_id
+                        OR (
+                            te.teaching_name_id IS NULL
+                            AND EXISTS (
+                                SELECT 1
+                                FROM secretary_programme_pools spp
+                                WHERE spp.posting_code = te.posting_code
+                                  AND spp.programme_code = :programme_code
+                                  AND spp.is_active = true
+                            )
+                        )
+                        OR (
+                            te.teaching_name_id IS NULL
+                            AND te.global_session_type_id IS NULL
+                            AND EXISTS (
+                                SELECT 1
+                                FROM teaching_name_catalogue tnc
+                                WHERE tnc.posting_code = te.posting_code
+                                  AND tnc.programme_code = :programme_code
+                                  AND tnc.keyword = te.teaching_name
+                                  AND tnc.reporting_period_id = :reporting_period_id
+                            )
                         )
                     )
                 )
@@ -548,6 +442,8 @@ async def list_teaching_events(
                 te.end_time,
                 te.duration_hours,
                 te.session_type_id,
+                te.teaching_name_id,
+                te.global_session_type_id,
                 st.name AS session_type,
                 te.series_id,
                 te.cme_points_awarded,
@@ -608,6 +504,8 @@ async def _get_event(
                 te.end_time,
                 te.duration_hours,
                 te.session_type_id,
+                te.teaching_name_id,
+                te.global_session_type_id,
                 st.name AS session_type,
                 te.series_id,
                 te.cme_points_awarded,
@@ -643,6 +541,44 @@ async def _event_matches_programme(
 ) -> bool:
     if event.get("created_for_programme_code") is not None:
         return event.get("created_for_programme_code") == programme_code
+    if event.get("teaching_name_id") is not None:
+        result = await db.execute(
+            text(
+                """
+                /* programme_teaching_events:event_programme_pool_match */
+                SELECT 1
+                FROM teaching_names
+                WHERE id = :teaching_name_id
+                  AND programme_code = :programme_code
+                  AND reporting_period_id = :reporting_period_id
+                """
+            ),
+            {
+                "teaching_name_id": str(event["teaching_name_id"]),
+                "programme_code": programme_code,
+                "reporting_period_id": str(reporting_period_id),
+            },
+        )
+        return result.scalar_one_or_none() is not None
+    if event.get("global_session_type_id") is not None:
+        result = await db.execute(
+            text(
+                """
+                /* programme_teaching_events:event_programme_global_match */
+                SELECT 1
+                FROM secretary_programme_pools
+                WHERE posting_code = :posting_code
+                  AND programme_code = :programme_code
+                  AND is_active = true
+                LIMIT 1
+                """
+            ),
+            {
+                "posting_code": event["posting_code"],
+                "programme_code": programme_code,
+            },
+        )
+        return result.scalar_one_or_none() is not None
 
     result = await db.execute(
         text(
@@ -739,9 +675,11 @@ async def _has_attendance(db: AsyncSession, *, event_id: UUID) -> bool:
 async def _insert_event(
     db: AsyncSession,
     *,
+    source_actor: TeachingNamePoolActor,
     programme_code: str,
     posting_code: str,
-    teaching_name: str,
+    teaching_name_id: UUID | None,
+    global_session_type_id: UUID | None,
     event_date: date,
     start_time: time,
     cme_points_awarded: bool,
@@ -758,14 +696,33 @@ async def _insert_event(
             detail="No active reporting period is available for the teaching event date",
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
-    resolved = await resolve_teaching_name(
+    source = await scheduled_event_sources.resolve_scheduled_event_source(
+        db,
+        actor=source_actor,
+        programme_code=programme_code,
+        reporting_period_id=period["id"],
+        teaching_name_id=teaching_name_id,
+        global_session_type_id=global_session_type_id,
+    )
+    if source.kind == "global_session_type" and not await _posting_available_for_programme(
         db,
         programme_code=programme_code,
         posting_code=posting_code,
-        teaching_name=teaching_name,
         reporting_period_id=period["id"],
+    ):
+        raise ApiError(
+            status_code=422,
+            detail=(
+                "No posting is configured for this global teaching name and programme. "
+                "Contact an administrator."
+            ),
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
+    scheduled_event_sources.validate_scheduled_event_start_time(
+        source=source,
+        start_time=start_time,
     )
-    duration_hours = resolved["duration_hours"]
+    duration_hours = source.duration_hours
     end_time = _compute_end_time(event_date, start_time, duration_hours)
     result = await db.execute(
         text(
@@ -780,6 +737,8 @@ async def _insert_event(
                 end_time,
                 duration_hours,
                 session_type_id,
+                teaching_name_id,
+                global_session_type_id,
                 cme_points_awarded,
                 smc_event_code,
                 is_adhoc,
@@ -794,6 +753,8 @@ async def _insert_event(
                 :end_time,
                 :duration_hours,
                 :session_type_id,
+                :teaching_name_id,
+                :global_session_type_id,
                 :cme_points_awarded,
                 :smc_event_code,
                 false,
@@ -809,6 +770,8 @@ async def _insert_event(
                 end_time,
                 duration_hours,
                 session_type_id,
+                teaching_name_id,
+                global_session_type_id,
                 series_id,
                 cme_points_awarded,
                 smc_event_code,
@@ -821,12 +784,18 @@ async def _insert_event(
         {
             "programme_code": programme_code,
             "posting_code": posting_code,
-            "teaching_name": teaching_name,
+            "teaching_name": source.teaching_name,
             "event_date": event_date,
             "start_time": start_time,
             "end_time": end_time,
             "duration_hours": duration_hours,
-            "session_type_id": resolved.get("session_type_id"),
+            "session_type_id": None,
+            "teaching_name_id": str(source.teaching_name_id)
+            if source.teaching_name_id is not None
+            else None,
+            "global_session_type_id": str(source.global_session_type_id)
+            if source.global_session_type_id is not None
+            else None,
             "cme_points_awarded": cme_points_awarded,
             "smc_event_code": smc_event_code,
             "created_by_role": created_by_role,
@@ -835,29 +804,83 @@ async def _insert_event(
     return _event_row(dict(result.mappings().one()))
 
 
+async def _write_programme_event_audit(
+    db: AsyncSession,
+    *,
+    actor: StaffActorContext,
+    action: str,
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+    source_event_id: UUID | None = None,
+) -> None:
+    event = after or before
+    if event is None:
+        raise RuntimeError("Programme teaching event audit snapshot is required")
+    metadata: dict[str, Any] = {
+        "route_context": "programme_teaching_event_crud",
+        "posting_code": event["posting_code"],
+        "programme_code": event.get("created_for_programme_code"),
+        "cache_invalidation_target": (
+            f"secretary_events|posting_code={event['posting_code']}"
+        ),
+    }
+    if event.get("teaching_name_id") is not None:
+        metadata["teaching_name_id"] = str(event["teaching_name_id"])
+    if event.get("global_session_type_id") is not None:
+        metadata["global_session_type_id"] = str(event["global_session_type_id"])
+    if source_event_id is not None:
+        metadata["source_event_id"] = str(source_event_id)
+    await write_audit_log(
+        db,
+        actor=actor,
+        action=action,
+        entity_type="teaching_event",
+        entity_id=event["id"],
+        before=before,
+        after=after,
+        metadata=metadata,
+    )
+
+
 async def create_teaching_event(
     db: AsyncSession,
     *,
+    source_actor: TeachingNamePoolActor,
+    audit_actor: StaffActorContext,
     programme_code: str,
     posting_code: str,
-    teaching_name: str,
+    teaching_name_id: UUID | None,
+    global_session_type_id: UUID | None,
     event_date: date,
     start_time: time,
     cme_points_awarded: bool,
     smc_event_code: str | None,
 ) -> dict[str, Any]:
-    await _ensure_not_public_holiday(db, event_date)
-    event = await _insert_event(
-        db,
-        programme_code=programme_code,
-        posting_code=posting_code,
-        teaching_name=teaching_name,
-        event_date=event_date,
-        start_time=start_time,
-        cme_points_awarded=cme_points_awarded,
-        smc_event_code=smc_event_code,
-    )
-    await db.commit()
+    try:
+        await _ensure_not_public_holiday(db, event_date)
+        event = await _insert_event(
+            db,
+            source_actor=source_actor,
+            programme_code=programme_code,
+            posting_code=posting_code,
+            teaching_name_id=teaching_name_id,
+            global_session_type_id=global_session_type_id,
+            event_date=event_date,
+            start_time=start_time,
+            cme_points_awarded=cme_points_awarded,
+            smc_event_code=smc_event_code,
+        )
+        await _write_programme_event_audit(
+            db,
+            actor=audit_actor,
+            action="programme_pc.teaching_event.create",
+            before=None,
+            after=event,
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
     _invalidate_event_caches(posting_code)
     return event
 
@@ -865,10 +888,13 @@ async def create_teaching_event(
 async def update_teaching_event(
     db: AsyncSession,
     *,
+    source_actor: TeachingNamePoolActor,
+    audit_actor: StaffActorContext,
     event_id: UUID,
     programme_code: str,
     posting_code: str,
-    teaching_name: str,
+    teaching_name_id: UUID | None,
+    global_session_type_id: UUID | None,
     event_date: date,
     start_time: time,
     cme_points_awarded: bool,
@@ -880,6 +906,15 @@ async def update_teaching_event(
         event=source,
         programme_code=programme_code,
     )
+    if (
+        source.get("teaching_name_id") is None
+        and source.get("global_session_type_id") is None
+    ):
+        raise ApiError(
+            status_code=409,
+            detail="Legacy teaching events cannot be updated through source-identity routes",
+            error_code=ErrorCode.CONFLICT.value,
+        )
     if await _has_attendance(db, event_id=event_id):
         raise ApiError(
             status_code=409,
@@ -898,18 +933,38 @@ async def update_teaching_event(
             detail="No active reporting period is available for the teaching event date",
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
-    resolved = await resolve_teaching_name(
+    source_identity = await scheduled_event_sources.resolve_scheduled_event_source(
+        db,
+        actor=source_actor,
+        programme_code=programme_code,
+        reporting_period_id=period["id"],
+        teaching_name_id=teaching_name_id,
+        global_session_type_id=global_session_type_id,
+    )
+    if source_identity.kind == "global_session_type" and not await _posting_available_for_programme(
         db,
         programme_code=programme_code,
         posting_code=posting_code,
-        teaching_name=teaching_name,
         reporting_period_id=period["id"],
+    ):
+        raise ApiError(
+            status_code=422,
+            detail=(
+                "No posting is configured for this global teaching name and programme. "
+                "Contact an administrator."
+            ),
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
+    scheduled_event_sources.validate_scheduled_event_start_time(
+        source=source_identity,
+        start_time=start_time,
     )
-    duration_hours = resolved["duration_hours"]
+    duration_hours = source_identity.duration_hours
     end_time = _compute_end_time(event_date, start_time, duration_hours)
-    result = await db.execute(
-        text(
-            """
+    try:
+        result = await db.execute(
+            text(
+                """
             /* programme_teaching_events:update */
             UPDATE teaching_events
             SET
@@ -920,6 +975,8 @@ async def update_teaching_event(
                 end_time = :end_time,
                 duration_hours = :duration_hours,
                 session_type_id = :session_type_id,
+                teaching_name_id = :teaching_name_id,
+                global_session_type_id = :global_session_type_id,
                 cme_points_awarded = :cme_points_awarded,
                 smc_event_code = :smc_event_code,
                 updated_at = now()
@@ -935,6 +992,8 @@ async def update_teaching_event(
                 end_time,
                 duration_hours,
                 session_type_id,
+                teaching_name_id,
+                global_session_type_id,
                 series_id,
                 cme_points_awarded,
                 smc_event_code,
@@ -942,44 +1001,64 @@ async def update_teaching_event(
                 created_by_role,
                 created_at,
                 updated_at
-            """
-        ),
-        {
+                """
+            ),
+            {
             "event_id": str(event_id),
             "posting_code": posting_code,
-            "teaching_name": teaching_name,
+            "teaching_name": source_identity.teaching_name,
             "event_date": event_date,
             "start_time": start_time,
             "end_time": end_time,
             "duration_hours": duration_hours,
-            "session_type_id": resolved.get("session_type_id"),
+            "session_type_id": None,
+            "teaching_name_id": str(source_identity.teaching_name_id)
+            if source_identity.teaching_name_id is not None
+            else None,
+            "global_session_type_id": str(source_identity.global_session_type_id)
+            if source_identity.global_session_type_id is not None
+            else None,
             "cme_points_awarded": cme_points_awarded,
             "smc_event_code": smc_event_code,
-        },
-    )
-    event = result.mappings().one_or_none()
-    if event is None:
-        raise ApiError(
-            status_code=409,
-            detail="Teaching event could not be updated",
-            error_code=ErrorCode.CONFLICT.value,
+            },
         )
-    await db.commit()
+        event = result.mappings().one_or_none()
+        if event is None:
+            raise ApiError(
+                status_code=409,
+                detail="Teaching event could not be updated",
+                error_code=ErrorCode.CONFLICT.value,
+            )
+        event_payload = _event_row(dict(event))
+        await _write_programme_event_audit(
+            db,
+            actor=audit_actor,
+            action="programme_pc.teaching_event.update",
+            before=source,
+            after=event_payload,
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
     _invalidate_event_caches(source["posting_code"])
     if posting_code != source["posting_code"]:
         _invalidate_event_caches(posting_code)
-    return _event_row(dict(event))
+    return event_payload
 
 
 async def duplicate_teaching_event(
     db: AsyncSession,
     *,
+    source_actor: TeachingNamePoolActor,
+    audit_actor: StaffActorContext,
     event_id: UUID,
     programme_code: str,
     event_date: date,
     start_time: time | None,
     posting_code: str | None,
-    teaching_name: str | None,
+    teaching_name_id: UUID | None,
+    global_session_type_id: UUID | None,
     cme_points_awarded: bool | None,
     smc_event_code: str | None,
 ) -> dict[str, Any]:
@@ -989,25 +1068,62 @@ async def duplicate_teaching_event(
         event=source,
         programme_code=programme_code,
     )
+    if (
+        source.get("teaching_name_id") is None
+        and source.get("global_session_type_id") is None
+        and teaching_name_id is None
+        and global_session_type_id is None
+    ):
+        raise ApiError(
+            status_code=409,
+            detail="Legacy teaching events require an explicit source to be duplicated",
+            error_code=ErrorCode.CONFLICT.value,
+        )
     await _ensure_not_public_holiday(db, event_date)
-    new_posting_code = posting_code or source["posting_code"]
-    new_teaching_name = teaching_name or source["teaching_name"]
-    event = await _insert_event(
-        db,
-        programme_code=programme_code,
-        posting_code=new_posting_code,
-        teaching_name=new_teaching_name,
-        event_date=event_date,
-        start_time=start_time or source["start_time"],
-        cme_points_awarded=(
-            cme_points_awarded
-            if cme_points_awarded is not None
-            else bool(source.get("cme_points_awarded", False))
-        ),
-        smc_event_code=smc_event_code if smc_event_code is not None else source.get("smc_event_code"),
-        created_by_role="programme_pc",
+    scheduled_event_sources.require_at_most_one_source(
+        teaching_name_id=teaching_name_id,
+        global_session_type_id=global_session_type_id,
     )
-    await db.commit()
+    new_teaching_name_id = teaching_name_id
+    new_global_session_type_id = global_session_type_id
+    if new_teaching_name_id is None and new_global_session_type_id is None:
+        new_teaching_name_id = source.get("teaching_name_id")
+        new_global_session_type_id = source.get("global_session_type_id")
+    new_posting_code = posting_code or source["posting_code"]
+    try:
+        event = await _insert_event(
+            db,
+            source_actor=source_actor,
+            programme_code=programme_code,
+            posting_code=new_posting_code,
+            teaching_name_id=new_teaching_name_id,
+            global_session_type_id=new_global_session_type_id,
+            event_date=event_date,
+            start_time=start_time or source["start_time"],
+            cme_points_awarded=(
+                cme_points_awarded
+                if cme_points_awarded is not None
+                else bool(source.get("cme_points_awarded", False))
+            ),
+            smc_event_code=(
+                smc_event_code
+                if smc_event_code is not None
+                else source.get("smc_event_code")
+            ),
+            created_by_role="programme_pc",
+        )
+        await _write_programme_event_audit(
+            db,
+            actor=audit_actor,
+            action="programme_pc.teaching_event.duplicate",
+            before=None,
+            after=event,
+            source_event_id=event_id,
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
     _invalidate_event_caches(new_posting_code)
     return event
 

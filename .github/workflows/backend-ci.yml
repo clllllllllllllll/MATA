@@ -54,7 +54,7 @@ jobs:
         run: |
           heads="$(python -B -m alembic heads)"
           test "$(printf '%s\n' "$heads" | wc -l)" -eq 1
-          test "$heads" = "20260803_000032 (head)"
+          test "$heads" = "20260804_000033 (head)"
 
       - name: Run migrations
         run: python -B -m alembic upgrade head

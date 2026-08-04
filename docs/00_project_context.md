@@ -44,15 +44,17 @@ Residents log in via React frontend (MCR-only auth in Phase 1)
   → Future Admin/PC compliance dashboard requirements remain a separate phase
 ```
 
-### Evolved TTF transition (B1 foundation and Phase D mapping backend)
+### Evolved TTF transition (B1 foundation, Phase D mapping, and Phase F event identity)
 
 The current product remains on the legacy **A-K** TTF and
-`teaching_name_catalogue` workflow through the additive B1 foundation and
-Phase D mapping backend. That legacy behavior, including
-`teaching_targets.details_of_training` and Column K catalogue seeding, is
-transitional and remains in force until the later final E2/B2 cutover. Phase D
-adds only a Programme-PC mapping work queue and guarded mapping mutations; it
-does not change the parser, scheduled events, resident flows, compliance, or UI.
+`teaching_name_catalogue` workflow through the additive B1 foundation, Phase D
+mapping backend, and Phase F scheduled-event source cutover. That legacy
+behavior, including `teaching_targets.details_of_training` and Column K
+catalogue seeding, is transitional and remains in force until the later final
+E2/B2 cutover. Phase F changes scheduled-event writes only: they carry an
+explicit Teaching Name or Global Session Type UUID plus an immutable display
+snapshot. It does not change the parser, Resident/Non-NHG runtime resolution,
+attendance, compliance, or UI.
 
 The final evolved TTF is **A-J only**: reporting period, programme, R-year,
 posting, dashboard posting/posting group, session type, monthly target,
@@ -69,7 +71,7 @@ Staff password authentication is backend-mediated through Supabase, and no Supab
 
 Session rotation is serialized by subject, transaction-scoped family advisory lock, and locked/refreshed database row. Subject generation fencing invalidates sessions after authorization change, password reset, or deactivation. Revision `20260722_000024` revokes browser-role object privileges.
 
-**5B-H-E/B1/Phase D current lifecycle local state (2026-08-03):** Revisions `20260726_000025` and `20260726_000026` add separate non-owner runtime and auth-helper capabilities, database-revalidated signed transaction context, reviewed service helpers, database-enforced global MCR uniqueness, and the full policy/grant cutover. Revision `20260727_000027` narrows restricted session-helper results, adds interval-gated activity, and denies signed RLS context after session expiry/revocation. Revisions `20260802_000029`, `20260803_000030`, and `20260803_000031` add the Teaching Name pool/mapping foundation, stable optional event identities, and the explicit Secretary pilot capability without changing the legacy A-K workflow. Revision `20260803_000032` adds the narrow E1 TTF mapping-reconciliation helper. Phase D adds no migration: it uses that existing RLS boundary for a PC-only mapping API, revision fencing, explicit count-only impact confirmation, atomic audit/Data Revalidation evidence, and post-commit scoped cache invalidation. All 36 application tables have RLS enabled locally; 92 policies target only `mata_app_runtime`. The runtime, auth-helper, and migration/ownership credentials must be distinct, and startup attestation fails closed on unsafe roles, ownership, grants, helpers, policies, schema access, sequences, PUBLIC, or browser-role state. FastAPI authorization remains mandatory.
+**5B-H-E/B1/Phase D/Phase F current lifecycle local state (2026-08-04):** Revisions `20260726_000025` and `20260726_000026` add separate non-owner runtime and auth-helper capabilities, database-revalidated signed transaction context, reviewed service helpers, database-enforced global MCR uniqueness, and the full policy/grant cutover. Revision `20260727_000027` narrows restricted session-helper results, adds interval-gated activity, and denies signed RLS context after session expiry/revocation. Revisions `20260802_000029`, `20260803_000030`, and `20260803_000031` add the Teaching Name pool/mapping foundation, stable optional event identities, and the explicit Secretary pilot capability without changing the legacy A-K workflow. Revision `20260803_000032` adds the narrow E1 TTF mapping-reconciliation helper. Revision `20260804_000033` adds the narrow, runtime-only scheduled-event source helper and replaces only the scheduled-event insert policy so valid pending Teaching Names can be used without display-text matching. Phase D uses the existing RLS boundary for a PC-only mapping API, revision fencing, explicit count-only impact confirmation, atomic audit/Data Revalidation evidence, and post-commit scoped cache invalidation. All 36 application tables have RLS enabled locally; 92 policies target only `mata_app_runtime`. The runtime, auth-helper, and migration/ownership credentials must be distinct, and startup attestation fails closed on unsafe roles, ownership, grants, helpers, policies, schema access, sequences, PUBLIC, or browser-role state. FastAPI authorization remains mandatory.
 
 Local code and disposable-database verification are not proof of deployed Supabase behavior.
 
@@ -319,6 +321,13 @@ FormF1 Excel upload
   → form_f1_parser.py
   → form_f1_records table (is_active gate for compliance denominator)
 
+Phase F scheduled-event write path (the legacy catalogue-resolution arrows
+immediately below are historical and do not govern new scheduled events):
+  -> select exactly one active `teaching_name_id` or `global_session_type_id`
+  -> preserve its immutable `teaching_name` display snapshot
+  -> pool sources use one hour and reject starts after 23:00; global sources use configured duration
+  -> server computes `end_time`; no request text or client end time is accepted
+
 Secretary creates teaching_events via /secretary/teaching-events endpoints
   → teaching_name resolved against teaching_name_catalogue for display session_type_id
   → end_time = start_time + session_type.duration_hours (server-computed)
@@ -539,6 +548,14 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 
 **Teaching Event CRUD:**
 - Create events via `POST /secretary/teaching-events`
+- **Phase F current scheduling contract (supersedes the following legacy
+  catalogue-display bullets):** create/update/series requests carry exactly one
+  active `teaching_name_id` or `global_session_type_id`; the server stores the
+  display snapshot and computes timing. A pool source is exactly one hour and
+  may not start after 23:00. A global source uses its configured duration.
+  Pending names are event-capable. Source text, client end time, and catalogue
+  mapping inference are never accepted. Existing Resident/Non-NHG runtime
+  resolution remains legacy until Phase G.
 - Teaching name picked from unified dropdown populated by `GET /secretary/teaching-name-options` — current legacy A-K behavior combines `teaching_name_catalogue` keywords (TTF-derived) AND active `global_session_types` entries
 - `session_type_id` auto-resolved from `teaching_name_catalogue` at event creation (display/prototype only — never used for compliance)
 - `end_time` = `start_time + session_type.duration_hours` (server-computed — NOT a request field)

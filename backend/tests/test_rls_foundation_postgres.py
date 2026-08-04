@@ -161,6 +161,14 @@ POLICY_HELPER_FUNCTIONS = frozenset(
             "text,text,text,date,boolean,text)"
         ),
         (
+            "mata_rls.can_insert_scheduled_event_source("
+            "text,text,uuid,uuid,date,boolean,text)"
+        ),
+        (
+            "mata_rls.can_manage_scheduled_event_source("
+            "text,uuid,uuid,date,boolean)"
+        ),
+        (
             "mata_rls.can_manage_teaching_event("
             "text,text,text,date,boolean,text)"
         ),
@@ -285,6 +293,7 @@ POLICY_CUTOVER_REVISIONS = frozenset(
         "20260803_000030",
         "20260803_000031",
         "20260803_000032",
+        "20260804_000033",
     }
 )
 SESSION_LIFECYCLE_REVISIONS = frozenset(
@@ -295,6 +304,7 @@ SESSION_LIFECYCLE_REVISIONS = frozenset(
         "20260803_000030",
         "20260803_000031",
         "20260803_000032",
+        "20260804_000033",
     }
 )
 

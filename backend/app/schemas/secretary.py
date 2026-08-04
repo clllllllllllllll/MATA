@@ -9,37 +9,55 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 class SecretaryTeachingEventCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    teaching_name: str = Field(min_length=1, max_length=200)
+    teaching_name_id: UUID | None = None
+    global_session_type_id: UUID | None = None
     event_date: date
     start_time: time
     cme_points_awarded: bool = False
     smc_event_code: str | None = Field(default=None, max_length=50)
 
-    @field_validator("teaching_name", "smc_event_code")
+    @field_validator("smc_event_code")
     @classmethod
     def _trim_strings(cls, value: str | None) -> str | None:
         if value is None:
             return None
         trimmed = value.strip()
         return trimmed or None
+
+    @model_validator(mode="after")
+    def _require_explicit_source(self) -> "SecretaryTeachingEventCreateRequest":
+        if (self.teaching_name_id is None) == (self.global_session_type_id is None):
+            raise ValueError(
+                "exactly one of teaching_name_id or global_session_type_id is required"
+            )
+        return self
 
 
 class SecretaryTeachingEventUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    teaching_name: str = Field(min_length=1, max_length=200)
+    teaching_name_id: UUID | None = None
+    global_session_type_id: UUID | None = None
     event_date: date
     start_time: time
     cme_points_awarded: bool = False
     smc_event_code: str | None = Field(default=None, max_length=50)
 
-    @field_validator("teaching_name", "smc_event_code")
+    @field_validator("smc_event_code")
     @classmethod
     def _trim_strings(cls, value: str | None) -> str | None:
         if value is None:
             return None
         trimmed = value.strip()
         return trimmed or None
+
+    @model_validator(mode="after")
+    def _require_explicit_source(self) -> "SecretaryTeachingEventUpdateRequest":
+        if (self.teaching_name_id is None) == (self.global_session_type_id is None):
+            raise ValueError(
+                "exactly one of teaching_name_id or global_session_type_id is required"
+            )
+        return self
 
 
 class SecretaryTeachingEventDuplicateRequest(BaseModel):
@@ -48,21 +66,23 @@ class SecretaryTeachingEventDuplicateRequest(BaseModel):
     source_event_id: UUID
     event_date: date
     start_time: time | None = None
-    teaching_name: str | None = Field(default=None, min_length=1, max_length=200)
+    teaching_name_id: UUID | None = None
+    global_session_type_id: UUID | None = None
 
-    @field_validator("teaching_name")
-    @classmethod
-    def _trim_teaching_name(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        trimmed = value.strip()
-        return trimmed or None
+    @model_validator(mode="after")
+    def _allow_one_source_override(self) -> "SecretaryTeachingEventDuplicateRequest":
+        if self.teaching_name_id is not None and self.global_session_type_id is not None:
+            raise ValueError(
+                "only one of teaching_name_id or global_session_type_id may be supplied"
+            )
+        return self
 
 
 class SecretaryTeachingEventSeriesCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    teaching_name: str = Field(min_length=1, max_length=200)
+    teaching_name_id: UUID | None = None
+    global_session_type_id: UUID | None = None
     start_date: date
     start_time: time
     cme_points_awarded: bool = False
@@ -74,7 +94,7 @@ class SecretaryTeachingEventSeriesCreateRequest(BaseModel):
     end_date: date | None = None
     end_after_count: int | None = Field(default=None, ge=1)
 
-    @field_validator("teaching_name", "smc_event_code")
+    @field_validator("smc_event_code")
     @classmethod
     def _trim_strings(cls, value: str | None) -> str | None:
         if value is None:
@@ -111,6 +131,10 @@ class SecretaryTeachingEventSeriesCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_end_fields(self) -> "SecretaryTeachingEventSeriesCreateRequest":
+        if (self.teaching_name_id is None) == (self.global_session_type_id is None):
+            raise ValueError(
+                "exactly one of teaching_name_id or global_session_type_id is required"
+            )
         if self.end_type == "by_date" and self.end_date is None:
             raise ValueError("end_date is required when end_type is by_date")
         if self.end_type == "by_count" and self.end_after_count is None:
