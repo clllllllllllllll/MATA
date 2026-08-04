@@ -14,11 +14,15 @@ Every important decision made during the project, with reasoning and consequence
 
 ### Decision: Evolved TTF transition contract (2026-08-02)
 
-- **Status:** Confirmed future architecture; Phase A documentation only.
+- **Status:** Phase F scheduled-event source identity is implemented at local
+  revision `20260804_000033`; the final E2/B2 architecture and Phase G runtime
+  decoupling remain future work.
 - **Current versus future boundary:** The current A-K parser,
   `teaching_name_catalogue`, `teaching_targets.details_of_training`, catalogue
-  helpers/policies, event and attendance workflows, and frontend stay current
-  through additive B1. B1 may add foundations beside them only. Final E2/B2 is
+  helpers/policies, attendance workflows, and frontend stay current through
+  additive Phase F. Phase F changes only new scheduled-event writes by adding
+  an explicit source ID and immutable display snapshot; it does not alter the
+  parser, Resident/Non-NHG runtime, or attendance workflows. Final E2/B2 is
   the later destructive cutover; it may remove the legacy path. Phase A creates
   no code, migration, parser, API route, policy, or UI.
 - **Future file format:** A-J only: reporting period, programme, R-year,

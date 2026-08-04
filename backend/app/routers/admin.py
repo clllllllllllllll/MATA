@@ -3157,6 +3157,8 @@ async def create_programme_teaching_event(
         )
     return await programme_teaching_events.create_teaching_event(
         db,
+        source_actor=_teaching_name_pool_actor(admin_context),
+        audit_actor=_admin_actor_context(admin_context),
         **request.model_dump(mode="python"),
     )
 
@@ -3178,6 +3180,8 @@ async def update_programme_teaching_event(
     return await programme_teaching_events.update_teaching_event(
         db,
         event_id=event_id,
+        source_actor=_teaching_name_pool_actor(admin_context),
+        audit_actor=_admin_actor_context(admin_context),
         **request.model_dump(mode="python"),
     )
 
@@ -3199,6 +3203,8 @@ async def duplicate_programme_teaching_event(
     return await programme_teaching_events.duplicate_teaching_event(
         db,
         event_id=event_id,
+        source_actor=_teaching_name_pool_actor(admin_context),
+        audit_actor=_admin_actor_context(admin_context),
         **request.model_dump(mode="python"),
     )
 

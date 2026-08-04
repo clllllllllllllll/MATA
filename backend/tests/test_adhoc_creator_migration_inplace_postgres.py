@@ -32,7 +32,7 @@ from tests.test_external_registration_migrations_postgres import (
 
 PREVIOUS_REVISION = "20260727_000027"
 ADHOC_REVISION = "20260728_000028"
-REPOSITORY_HEAD_REVISION = "20260803_000032"
+REPOSITORY_HEAD_REVISION = "20260804_000033"
 RUNTIME_ROLE = "mata_app_runtime"
 AUTH_ROLE = "mata_auth_internal"
 DEFINER_ROLE = "mata_adhoc_attendance_definer"

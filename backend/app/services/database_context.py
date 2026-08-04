@@ -106,6 +106,8 @@ _POLICY_HELPERS = frozenset(
         "can_access_teaching_catalogue(text,text,uuid)",
         "can_select_teaching_event(uuid)",
         "can_insert_teaching_event(text,text,text,date,boolean,text)",
+        "can_insert_scheduled_event_source(text,text,uuid,uuid,date,boolean,text)",
+        "can_manage_scheduled_event_source(text,uuid,uuid,date,boolean)",
         "can_manage_teaching_event(text,text,text,date,boolean,text)",
         "can_submit_native_attendance(uuid,uuid)",
         "can_access_external_attendance(uuid,uuid)",

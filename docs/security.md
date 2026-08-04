@@ -1,7 +1,7 @@
 # Security Contract
 
 Status: current repository security source of truth. This document describes
-the implemented local contract at Alembic revision `20260803_000032`. Local
+the implemented local contract at Alembic revision `20260804_000033`. Local
 source, test, and disposable-database evidence is not proof of a deployed
 Vercel or Supabase environment.
 
@@ -166,7 +166,7 @@ and subject verifier before any resident identity is used.
 Resident authentication assurance remains separately governed product debt.
 This security contract does not invent or imply an unapproved second factor.
 
-### Shared Teaching Name lifecycle (Phase C), Phase D mapping, and E1 TTF reconciliation
+### Teaching Name lifecycle (Phase C), Phase D mapping, E1 reconciliation, and Phase F event identity
 
 Revisions `20260802_000029` through `20260803_000031` establish the reviewed
 database boundary and activate the shared Teaching Name lifecycle routes.
@@ -174,6 +174,19 @@ Revision `20260803_000032` adds the narrow reconciliation required inside the
 existing TTF upload transaction. Phase D adds a guarded application mapping API
 on that boundary only; it does not add a parser change, event, resident, UI, or
 compliance flow. The legacy A-K catalogue authorization path remains active.
+
+Revision `20260804_000033` adds the runtime-only
+`mata_rls.can_insert_scheduled_event_source(text,text,uuid,uuid,date,boolean,text)`
+and `mata_rls.can_manage_scheduled_event_source(text,uuid,uuid,date,boolean)`
+helpers and replaces the scheduled branches of the `teaching_events` insert and
+update policies. They reject ad-hoc rows and missing/both source IDs, verify an
+active pool name in its event-date reporting period or an active global type,
+and enforce Master Admin, in-scope Programme PC, or explicitly capable
+Secretary authority without a display-text or catalogue lookup. The update
+helper validates the current editor's source authority separately from the
+row's immutable creator provenance, so already-authorized PC/Secretary
+cross-owner edits retain their existing boundary. The existing ad-hoc insert
+helper and all Resident/Non-NHG runtime policies remain unchanged.
 
 The B1/Phase C RLS/grant boundary is intentionally narrow:
 
@@ -239,9 +252,10 @@ The lifecycle endpoints use the existing protected mutation boundary:
   count-only audit response, and clears only the optional event identity. Do not expose raw audit values in browser
   storage, URLs, logs, or error details.
 
-Phase C and Phase D are additive only. They do not remove, backfill, or cut
-over the current A-K catalogue path; final E2/B2 remains the only planned
-destructive cutover.
+Phase C, Phase D, and Phase F are additive only. Phase F changes new scheduled
+event writes but does not backfill, infer source identity for legacy rows, or
+cut over the current A-K Resident/Non-NHG catalogue runtime path; final E2/B2
+remains the only planned destructive cutover.
 
 ## 5. Opaque sessions, expiry, rotation, and logout
 
@@ -355,7 +369,7 @@ business rows; bounded failure evidence may still be recorded.
 
 ## 9. PostgreSQL roles, RLS, grants, and helpers
 
-At current revision `20260803_000032`:
+At current revision `20260804_000033`:
 
 - 36 application tables have RLS enabled;
 - 92 action policies target only `mata_app_runtime`;

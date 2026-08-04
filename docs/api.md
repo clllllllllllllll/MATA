@@ -409,13 +409,16 @@ No push/live-update channel is implied in the current backend. After successful 
 
 ---
 
-## Shared Teaching Name pool and mapping API (Phase C and Phase D)
+## Shared Teaching Name pool, mapping API, and scheduled-event identity (Phases C, D, and F)
 
 Revision `20260803_000031` activates the shared-pool lifecycle and
 `20260803_000032` adds the narrow E1 TTF mapping-reconciliation helper. Phase D
-adds the guarded Programme-PC mapping API below. None of these changes creates
-pool-backed events, alters resident flows, or cuts over the retained A-K
-catalogue path.
+adds the guarded Programme-PC mapping API below. Revision `20260804_000033`
+adds explicit identity to new scheduled events: a pool event carries one
+`teaching_name_id`, a global event carries one `global_session_type_id`, and
+both retain an immutable `teaching_name` display snapshot. This does not alter
+Resident/Non-NHG runtime resolution or cut over the retained A-K catalogue
+path.
 
 ### Lifecycle routes
 
@@ -1430,7 +1433,7 @@ List scheduled teaching events visible to the Programme PC's programme scope.
 - **Auth:** admin/PC only
 - **Scope:** `programme_code IN programme_scope`. Null or empty `programme_scope` means no access. Master admin access is rejected on these PC CRUD endpoints.
 - **Query params:** `programme_code`, `reporting_period_id`, `date_from`, `date_to`, `posting_code` optional.
-- **Visibility contract:** Resolve the selected period, or the effectively active period containing today when none is selected. Return only events whose dates fall in that period. PC-created rows must be in scope; secretary-created/null-owner scheduled rows match the selected programme through `secretary_programme_pools` or `teaching_name_catalogue` in that same reporting-period scope. If an explicit period is supplied with `date_from` or `date_to`, each supplied date must fall inside it or the API returns `422`.
+- **Visibility contract:** Resolve the selected period, or the effectively active period containing today when none is selected. Return only events whose dates fall in that period. PC-created rows must be in scope. A pool-backed secretary-created/null-owner row is scoped by its `teaching_name_id` and the exact Teaching Name programme/period; a global row uses the existing posting/programme pool rule; a legacy both-null row retains the current compatibility rule. If an explicit period is supplied with `date_from` or `date_to`, each supplied date must fall inside it or the API returns `422`.
 
 ### GET `/admin/programme-teaching-name-options`
 
@@ -1439,7 +1442,7 @@ Return teaching-name options for PC event creation.
 - **Auth:** admin/PC only
 - **Query params:** `programme_code` required; `reporting_period_id` or `event_date` optional. An explicit period must be effectively active. When both are supplied, `event_date` must belong to the explicit period or the API returns `422`. With neither option, the backend resolves the single effectively active period containing today. TTF-derived options are scoped to that resolved period.
 - **Scope:** `programme_code IN programme_scope`.
-- **Source:** Current legacy A-K TTF Column K via `teaching_name_catalogue` for the selected programme, plus active `global_session_types`.
+- **Source:** Active `teaching_names` in the selected programme and period, plus active `global_session_types`. Pool options expose `teaching_name_id`; global options expose `global_session_type_id`. Same display text in two pools remains two choices with distinct IDs.
 
 ### POST `/admin/programme-teaching-events`
 
@@ -1447,20 +1450,20 @@ Create a programme-owned scheduled teaching event.
 
 - **Auth:** admin/PC only
 - **Scope:** request `programme_code IN programme_scope`.
-- **Validation:** Returns `422` if `event_date` is in `public_holidays`. Returns `422` if `teaching_name` is not available from that programme's `teaching_name_catalogue` for the selected posting/r_year/period context.
+- **Validation:** Returns `422` if `event_date` is in `public_holidays` or exactly one source ID is not supplied. A pool ID must be active, in the event period, in the exact request programme, and in the authenticated PC scope; it may be pending or mapped. A global ID must be active. A pool event is always one hour, has server-computed end time, and rejects a start later than `23:00`. `teaching_name` and client `end_time` are forbidden request fields.
 - **Body:**
 ```json
 {
   "programme_code": "DR",
   "posting_code": "KTPHDiagRd",
-  "teaching_name": "Journal Club",
+  "teaching_name_id": "00000000-0000-0000-0000-000000000001",
   "event_date": "2026-04-15",
   "start_time": "10:00",
   "cme_points_awarded": false,
   "smc_event_code": null
 }
 ```
-- **Backend writes:** `teaching_events.created_for_programme_code = programme_code`, `created_by_role = 'programme_pc'`, `is_adhoc = false`, and normal event fields. `created_by_role` is role/source metadata only; actor names are not stored on the event.
+- **Backend writes:** `teaching_events.created_for_programme_code = programme_code`, `created_by_role = 'programme_pc'`, `is_adhoc = false`, the selected source ID, and the immutable display snapshot. `created_by_role` is role/source metadata only; actor names are not stored on the event. Event and audit evidence commit atomically, then scoped caches are invalidated.
 - **Resident visibility:** Residents can see the event only when their `programme_code` matches `created_for_programme_code` and the event also passes posting/date/catalogue visibility rules.
 
 ### PUT `/admin/programme-teaching-events/{id}`
@@ -1469,7 +1472,7 @@ Edit a programme-owned scheduled teaching event.
 
 - **Auth:** admin/PC only
 - **Scope:** request `programme_code IN programme_scope`, and event must be programme-owned for that programme or a secretary-created/null-owner scheduled row visible to that programme.
-- **Validation:** Public holiday block and catalogue option validation apply to changed event date/name/posting fields.
+- **Validation:** Public holiday, exact-source-ID, scope, source activity/period, and server-timing rules apply. A legacy event with both source IDs null returns `409` rather than receiving an inferred identity.
 - **Constraint:** Returns `409` if any native `attendance_records` or `external_attendance_records` exist for the event. `created_by_role` is preserved.
 - **Concurrency:** The service locks and reloads the event before the
   all-status attendance guard and update, so a concurrent submission cannot
@@ -1481,7 +1484,7 @@ Duplicate a programme-owned scheduled teaching event.
 
 - **Auth:** admin/PC only
 - **Scope:** request `programme_code IN programme_scope`, and source event must be programme-owned for that programme or a secretary-created/null-owner scheduled row visible to that programme.
-- **Validation:** Public holiday block applies to the duplicate date. The duplicated event sets `created_for_programme_code = programme_code` and `created_by_role = 'programme_pc'`.
+- **Validation:** Public holiday block applies to the duplicate date. An optional source override may supply one source ID; otherwise the source event identity is copied. A both-null legacy source requires an explicit ID and otherwise returns `409`. The duplicated event sets `created_for_programme_code = programme_code` and `created_by_role = 'programme_pc'`.
 
 ### DELETE `/admin/programme-teaching-events/{id}`
 
@@ -1609,22 +1612,41 @@ Create a new teaching event.
 - **Body:**
 ```json
 {
-  "teaching_name": "Journal Club",
+  "teaching_name_id": "00000000-0000-0000-0000-000000000001",
   "event_date": "2026-04-15",
   "start_time": "10:00",
   "cme_points_awarded": false,
   "smc_event_code": null
 }
 ```
-- **Backend auto-resolves:**
+- **Source identity:** Supply exactly one of `teaching_name_id` or
+  `global_session_type_id`. The selected source must be active in the resolved
+  reporting period and within the secretary's authorised pool; a global type is
+  independently active and not a pool name. `teaching_name`, `end_time`, and
+  `duration_hours` are not request fields.
+- **Backend snapshot and timing:**
   - `posting_code` from the current secretary subject's database-owned `users.posting_code`
-  - `session_type_id` display metadata from the selected canonical teaching-name option. It remains display/prototype only and is never used for resident compliance. Do not fuzzy-match or choose a resident mapping by duration.
+  - immutable `teaching_name` display snapshot from the selected source
   - `end_time` = `start_time + session_type.duration_hours` (server-computed — NOT a request field)
-  - `duration_hours` copied from the selected option for event display/time computation only; it is never a compliance multiplier
-- **Returns 422 if:** `teaching_name` is not an allowed canonical option in the secretary's resolved teaching-name pool
+  - pool sources always receive `duration_hours = 1.00`; global sources use their server-configured duration
+  - The selected explicit source supplies the duration; no catalogue mapping or session-type inference occurs.
+- **Returns 422 if:** the identity is missing, both identities are present, or the selected source is inactive, outside scope, or incompatible with the event date. No text lookup, canonical-name fallback, duration tiebreaker, or client-supplied end time is accepted.
 - **Transaction:** the event mutation and its existing Secretary audit entry
   commit once. Audit or commit failure rolls back the event; cache invalidation
   runs only after commit.
+
+### PUT `/secretary/teaching-events/{id}`
+
+Edit a secretary-owned scheduled teaching event.
+
+- **Auth:** secretary only; the event must be in the secretary's posting scope.
+- **Source identity and timing:** the request supplies exactly one current
+  source ID and is validated as for create. The source display snapshot and
+  server-computed timing replace the old values atomically.
+- **Legacy transition:** a readable legacy scheduled row with both source IDs
+  null is never matched by its stored text and is not rewritten. A valid
+  source-bearing update is rejected with `409`; a missing/both source payload
+  is rejected by normal request validation.
 
 ### POST `/secretary/teaching-events/duplicate`
 
@@ -1637,10 +1659,14 @@ Duplicate an existing event.
   "source_event_id": "uuid",
   "event_date": "2026-04-22",
   "start_time": "10:00",
-  "teaching_name": "Journal Club"
+  "teaching_name_id": "00000000-0000-0000-0000-000000000001"
 }
 ```
 - **Validation:** Returns `422` if `event_date` is a public holiday.
+- **Source identity:** An optional single source ID replaces the source-event
+  identity; otherwise the existing identity is copied and re-authorised. A
+  source event with both IDs null is readable but cannot be duplicated without
+  an explicit source ID (`409`). Stored text is never used to infer one.
 - **Transaction:** the duplicate and its existing Secretary audit entry commit
   together.
 
@@ -1662,7 +1688,7 @@ Create a recurring event series.
 - **Body:**
 ```json
 {
-  "teaching_name": "Journal Club",
+  "teaching_name_id": "00000000-0000-0000-0000-000000000001",
   "start_time": "10:00",
   "cme_points_awarded": false,
   "smc_event_code": null,
@@ -1674,6 +1700,10 @@ Create a recurring event series.
   "end_after_count": null
 }
 ```
+- **Source identity:** Supply exactly one source ID. Each materialised row
+  receives the authorised source ID, immutable display snapshot, and
+  server-computed timing. Pool rows use one hour and cannot start after 23:00;
+  the series does not infer names from text or catalogue mappings.
 - **Backend:** Materialises individual `teaching_events` rows per occurrence.
 - **Transaction:** series metadata, every materialised occurrence, and the
   existing Secretary audit entry are one all-or-nothing operation.
@@ -1720,41 +1750,51 @@ This allows one secretary-created event list to support residents from the same 
   - `reporting_period_id`
   - matching `teaching_name_catalogue` rows
 
+The preceding dropdown and event-storage description is retained as pre-Phase-F
+history only. The contract below governs current scheduled-event options.
+
+- **Phase F source contract:** This endpoint now returns each active
+  `teaching_names` row in the secretary's authorised programme pool and period,
+  plus each active global source. Pool options expose `teaching_name_id`; global
+  options expose `global_session_type_id`. An option has exactly one non-null
+  ID and immutable display text. Identical display text from different source
+  rows remains distinct. A pool option has `duration_hours: 1.0`; a global
+  option has its configured duration. This selection endpoint does not query a
+  catalogue mapping, `is_tracked`, or resident compliance.
+- **Resident visibility/compliance in Phase F:** event creation stores the
+  source ID and immutable `teaching_name` snapshot. Resident visibility and
+  compliance remain on the retained pre-Phase-G runtime path; the source-ID
+  cutover does not change its catalogue/global rules.
+
 - **Response:**
 
 ```json
 {
   "options": [
     {
+      "teaching_name_id": "00000000-0000-0000-0000-000000000001",
+      "global_session_type_id": null,
       "keyword": "Journal Club",
-      "session_type": "Department/Programme Teaching [1h]",
       "duration_hours": 1.0,
-      "is_tracked": true,
-      "is_global": false,
-      "posting_codes": ["TTSHGerMed", "TTSHContCC"]
+      "programme_code": "GERI",
+      "is_global": false
     },
     {
-      "keyword": "Case discussions with supervisor",
-      "session_type": "Case-based Teaching [2h]",
-      "duration_hours": 2.0,
-      "is_tracked": true,
-      "is_global": false,
-      "posting_codes": ["TTSHGerMed"]
-    },
-    {
+      "teaching_name_id": null,
+      "global_session_type_id": "00000000-0000-0000-0000-000000000002",
       "keyword": "Department Meeting",
-      "session_type": "Department Meeting [1h]",
-      "duration_hours": 1.0,
-      "is_tracked": false,
-      "is_global": true,
-      "posting_codes": []
+      "duration_hours": 1.5,
+      "programme_code": null,
+      "is_global": true
     }
   ]
 }
 ```
-Deduplication: If the same canonical name appears in multiple `teaching_name_catalogue` rows within the secretary's native programme teaching pool, return the canonical name once. Where useful, include the contributing posting codes. Case/spacing variants within one TTF scope are upload/option data quality, not a runtime compliance matching mode.
+Identity: This endpoint does not deduplicate distinct `teaching_names` rows by display text. A client must return the opaque ID selected by the user, never a display string.
 
-Session type ambiguity: The same canonical name may map to different session types at different postings. The endpoint may return one option with ambiguous display metadata omitted/null, but resident compliance always resolves exactly by reporting period, resident programme, assigned/compliance posting, phase R-year, and canonical name. No fuzzy matching or duration tiebreaker is part of that compliance lookup.
+Session type: a Phase F pool option is a source identity rather than a catalogue mapping. Its one-hour scheduling duration does not represent a resident-compliance classification. The retained resident runtime continues its documented catalogue/global resolution until Phase G.
+
+The following legacy `is_tracked` wording is not part of the Phase F option response or scheduling contract.
 
 Note: is_global = true entries come from global_session_types and are always excluded from PTT compliance. is_tracked = false entries from the TTF are also shown but excluded from compliance. Secretary sees a unified list — the compliance distinction is transparent to them.
 
