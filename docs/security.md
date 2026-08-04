@@ -1,7 +1,7 @@
 # Security Contract
 
 Status: current repository security source of truth. This document describes
-the implemented local contract at Alembic revision `20260804_000033`. Local
+the implemented local contract at Alembic revision `20260804_000034`. Local
 source, test, and disposable-database evidence is not proof of a deployed
 Vercel or Supabase environment.
 
@@ -166,14 +166,16 @@ and subject verifier before any resident identity is used.
 Resident authentication assurance remains separately governed product debt.
 This security contract does not invent or imply an unapproved second factor.
 
-### Teaching Name lifecycle (Phase C), Phase D mapping, E1 reconciliation, and Phase F event identity
+### Teaching Name lifecycle (Phase C), Phase D mapping, E1 reconciliation, and Phase F/G event identity/runtime
 
 Revisions `20260802_000029` through `20260803_000031` establish the reviewed
 database boundary and activate the shared Teaching Name lifecycle routes.
 Revision `20260803_000032` adds the narrow reconciliation required inside the
 existing TTF upload transaction. Phase D adds a guarded application mapping API
 on that boundary only; it does not add a parser change, event, resident, UI, or
-compliance flow. The legacy A-K catalogue authorization path remains active.
+compliance flow. The legacy A-K catalogue authorization path remained active
+through Phase D; revision `20260804_000034` removes it from current
+Resident/Non-NHG runtime authorization.
 
 Revision `20260804_000033` adds the runtime-only
 `mata_rls.can_insert_scheduled_event_source(text,text,uuid,uuid,date,boolean,text)`
@@ -186,7 +188,21 @@ Secretary authority without a display-text or catalogue lookup. The update
 helper validates the current editor's source authority separately from the
 row's immutable creator provenance, so already-authorized PC/Secretary
 cross-owner edits retain their existing boundary. The existing ad-hoc insert
-helper and all Resident/Non-NHG runtime policies remain unchanged.
+helper and all Resident/Non-NHG runtime policies remain unchanged by this
+revision.
+
+Revision `20260804_000034` removes the catalogue/target runtime dependency from
+Resident and Non-NHG scheduled-event selection, attendance authorization, and
+ad-hoc creation. The RLS selection and attendance helpers use explicit
+`teaching_name_id` plus exact source reporting-period/programme scope, or an
+explicit `global_session_type_id`; both-null rows retain only deterministic
+persisted legacy evidence and are never classified from display text. The
+runtime-only `mata_rls.scheduled_event_source_scope(uuid)` helper exposes that
+source scope only after the caller is already authorized for the event, so the
+application does not receive direct resident access to Teaching Name rows. The
+atomic ad-hoc helper accepts only the fixed one-hour
+`Department/Programme Teaching [1h]` record and no longer reads
+`teaching_name_catalogue` or `teaching_targets`.
 
 The B1/Phase C RLS/grant boundary is intentionally narrow:
 
@@ -252,10 +268,10 @@ The lifecycle endpoints use the existing protected mutation boundary:
   count-only audit response, and clears only the optional event identity. Do not expose raw audit values in browser
   storage, URLs, logs, or error details.
 
-Phase C, Phase D, and Phase F are additive only. Phase F changes new scheduled
-event writes but does not backfill, infer source identity for legacy rows, or
-cut over the current A-K Resident/Non-NHG catalogue runtime path; final E2/B2
-remains the only planned destructive cutover.
+Phase C, Phase D, Phase F, and Phase G are additive only. Phase G changes the
+Resident/Non-NHG runtime boundary but does not backfill, infer source identity
+for legacy rows, rewrite historical events, or remove the physical A-K parser
+and catalogue path; final E2/B2 remains the only planned destructive cutover.
 
 ## 5. Opaque sessions, expiry, rotation, and logout
 
@@ -369,7 +385,7 @@ business rows; bounded failure evidence may still be recorded.
 
 ## 9. PostgreSQL roles, RLS, grants, and helpers
 
-At current revision `20260804_000033`:
+At current revision `20260804_000034`:
 
 - 36 application tables have RLS enabled;
 - 92 action policies target only `mata_app_runtime`;

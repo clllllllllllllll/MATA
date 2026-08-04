@@ -85,6 +85,7 @@ RUNTIME_ONLY_FUNCTIONS = frozenset(
             "text,text,text,text,text,date,time without time zone,"
             "time without time zone,numeric,uuid)"
         ),
+        "mata_rls.scheduled_event_source_scope(uuid)",
         "mata_rls.update_own_staff_actor_name(text)",
         "mata_rls.reporting_period_dependency_counts(uuid)",
         "mata_rls.hibernate_stale_surplus(uuid)",
@@ -294,6 +295,7 @@ POLICY_CUTOVER_REVISIONS = frozenset(
         "20260803_000031",
         "20260803_000032",
         "20260804_000033",
+        "20260804_000034",
     }
 )
 SESSION_LIFECYCLE_REVISIONS = frozenset(
@@ -305,6 +307,7 @@ SESSION_LIFECYCLE_REVISIONS = frozenset(
         "20260803_000031",
         "20260803_000032",
         "20260804_000033",
+        "20260804_000034",
     }
 )
 

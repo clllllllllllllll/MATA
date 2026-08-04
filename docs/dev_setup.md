@@ -112,13 +112,13 @@ python -B -m tests.run_rls_restricted_pytest -q --tb=short -p no:cacheprovider t
 Never substitute `mata_db`, the earlier H-D/H-E database, or a remote target.
 
 For the current cumulative restricted-harness verification, use exactly
-`mata_evolved_ttf_phase_f_verify` at head `20260804_000033`. Both database
+`mata_evolved_ttf_pre_d_fix_verify` at head `20260804_000034`. Both database
 URLs must name that local database in a fresh process; the runner derives
 separate temporary runtime/auth URLs and removes its `mata_test_*` roles:
 
 ```powershell
-Set-Item -Path Env:SYNC_DATABASE_URL -Value "postgresql://<local-owner>:<local-password>@localhost:5432/mata_evolved_ttf_phase_f_verify"
-Set-Item -Path Env:DATABASE_URL -Value "postgresql+asyncpg://<local-owner>:<local-password>@localhost:5432/mata_evolved_ttf_phase_f_verify"
+Set-Item -Path Env:SYNC_DATABASE_URL -Value "postgresql://<local-owner>:<local-password>@localhost:5432/mata_evolved_ttf_pre_d_fix_verify"
+Set-Item -Path Env:DATABASE_URL -Value "postgresql+asyncpg://<local-owner>:<local-password>@localhost:5432/mata_evolved_ttf_pre_d_fix_verify"
 cd backend
 python -B -m alembic current
 python -B -m pytest -q --tb=short -p no:cacheprovider --strict-markers -m migration_mutation tests

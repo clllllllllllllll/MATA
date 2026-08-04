@@ -249,7 +249,7 @@ def test_events_do_not_show_arbitrary_ttsh_secretary_events() -> None:
     assert arbitrary_event_id not in ids
 
 
-def test_events_exclude_future_already_submitted_and_unmapped_events() -> None:
+def test_events_exclude_future_and_already_submitted_but_include_legacy_events() -> None:
     fake_db = FakeResidentSession()
     client = _client(fake_db)
 
@@ -259,11 +259,13 @@ def test_events_exclude_future_already_submitted_and_unmapped_events() -> None:
     ids = {row["id"] for row in response.json()["events"]}
     assert fake_db.future_event_id not in ids
     assert fake_db.second_event_id not in ids
-    assert fake_db.invisible_event_id not in ids
+    assert fake_db.invisible_event_id in ids
 
 
 def test_events_include_global_session_types_through_normal_posting_rules() -> None:
     fake_db = FakeResidentSession()
+    fake_db.catalogue = []
+    fake_db.teaching_targets = []
     client = _client(fake_db)
 
     response = client.get("/resident/events", headers=_headers(fake_db))
@@ -274,6 +276,81 @@ def test_events_include_global_session_types_through_normal_posting_rules() -> N
     assert fake_db.global_event_id in ids
     global_event = next(row for row in payload["events"] if row["id"] == fake_db.global_event_id)
     assert global_event["is_global"] is True
+
+
+def test_explicit_pool_events_require_exact_programme_and_period_without_catalogue() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.catalogue = []
+    fake_db.teaching_targets = []
+    matching_event_id = str(uuid4())
+    wrong_programme_event_id = str(uuid4())
+    wrong_period_event_id = str(uuid4())
+    event_date = fake_db.today - timedelta(days=5)
+    fake_db.events.extend(
+        [
+            fake_db._event(  # noqa: SLF001
+                matching_event_id,
+                "TTSHCardio",
+                "Shared Pool Display",
+                event_date,
+                teaching_name_id=str(uuid4()),
+                source_reporting_period_id=fake_db.period_id,
+                source_programme_code="GRM",
+            ),
+            fake_db._event(  # noqa: SLF001
+                wrong_programme_event_id,
+                "TTSHCardio",
+                "Shared Pool Display",
+                event_date,
+                teaching_name_id=str(uuid4()),
+                source_reporting_period_id=fake_db.period_id,
+                source_programme_code="REHAB",
+            ),
+            fake_db._event(  # noqa: SLF001
+                wrong_period_event_id,
+                "TTSHCardio",
+                "Shared Pool Display",
+                event_date,
+                teaching_name_id=str(uuid4()),
+                source_reporting_period_id=str(uuid4()),
+                source_programme_code="GRM",
+            ),
+        ]
+    )
+    client = _client(fake_db)
+
+    response = client.get("/resident/events", headers=_headers(fake_db))
+
+    assert response.status_code == 200
+    event_ids = {row["id"] for row in response.json()["events"]}
+    assert matching_event_id in event_ids
+    assert wrong_programme_event_id not in event_ids
+    assert wrong_period_event_id not in event_ids
+
+
+def test_events_hide_rows_with_both_persisted_source_id_families() -> None:
+    fake_db = FakeResidentSession()
+    ambiguous_event_id = str(uuid4())
+    fake_db.events.append(
+        fake_db._event(  # noqa: SLF001
+            ambiguous_event_id,
+            "TTSHCardio",
+            "Ambiguous Source Evidence",
+            fake_db.today - timedelta(days=5),
+            teaching_name_id=str(uuid4()),
+            global_session_type_id=fake_db.global_session_type_id,
+            source_reporting_period_id=fake_db.period_id,
+            source_programme_code="GRM",
+        )
+    )
+    client = _client(fake_db)
+
+    response = client.get("/resident/events", headers=_headers(fake_db))
+
+    assert response.status_code == 200
+    assert ambiguous_event_id not in {
+        row["id"] for row in response.json()["events"]
+    }
 
 
 def test_events_return_empty_reason_when_no_active_reporting_period_exists() -> None:
@@ -698,7 +775,7 @@ def test_submission_periods_returns_all_effectively_active_periods_without_a_sel
 
 
 @pytest.mark.asyncio
-async def test_events_query_multiple_effectively_active_periods_without_cross_period_fallback() -> None:
+async def test_events_query_multiple_effectively_active_periods_without_catalogue_fallback() -> None:
     fake_db = FakeResidentSession(today=date(2026, 7, 17))
     first_event_id = _configure_historical_geri_case(fake_db)
     second_period_id = str(uuid4())
@@ -725,13 +802,6 @@ async def test_events_query_multiple_effectively_active_periods_without_cross_pe
             "status": "loa_working",
         }
     )
-    fake_db.catalogue.append(
-        {
-            **fake_db.catalogue[0],
-            "keyword": "Second Period Teaching",
-            "reporting_period_id": second_period_id,
-        }
-    )
     fake_db.events.append(
         fake_db._event(  # noqa: SLF001
             second_event_id,
@@ -754,13 +824,13 @@ async def test_events_query_multiple_effectively_active_periods_without_cross_pe
     }
     assert len(payload["active_reporting_periods"]) == 2
 
-    fake_db.catalogue[-1]["reporting_period_id"] = fake_db.reporting_periods[0]["id"]
+    fake_db.catalogue = []
     isolated = await resident_submission.list_available_events(
         fake_db,
         resident_id=fake_db.residents[0]["id"],
         today=date(2026, 7, 17),
     )
-    assert [row["id"] for row in isolated["events"]] == [first_event_id]
+    assert [row["id"] for row in isolated["events"]] == [first_event_id, second_event_id]
 
 
 @pytest.mark.asyncio

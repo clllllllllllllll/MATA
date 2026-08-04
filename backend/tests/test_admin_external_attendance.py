@@ -43,6 +43,8 @@ class FakeAdminExternalAttendanceSession:
         self.cardio_attendance_id = str(uuid4())
         self.geri_attendance_id = str(uuid4())
         self.session_type_id = str(uuid4())
+        self.cardio_teaching_name_id = str(uuid4())
+        self.geri_teaching_name_id = str(uuid4())
         self.operational_reporting_period_id = str(uuid4())
         self.future_reporting_period_id = str(uuid4())
         self.executed_sql: list[str] = []
@@ -93,6 +95,11 @@ class FakeAdminExternalAttendanceSession:
                 "smc_event_code": None,
                 "is_adhoc": False,
                 "created_by_role": "secretary",
+                "created_for_programme_code": None,
+                "teaching_name_id": self.cardio_teaching_name_id,
+                "global_session_type_id": None,
+                "source_reporting_period_id": self.operational_reporting_period_id,
+                "source_programme_code": "DR",
                 "created_at": NOW,
                 "updated_at": NOW,
             },
@@ -110,6 +117,11 @@ class FakeAdminExternalAttendanceSession:
                 "smc_event_code": None,
                 "is_adhoc": True,
                 "created_by_role": "external_resident",
+                "created_for_programme_code": None,
+                "teaching_name_id": None,
+                "global_session_type_id": None,
+                "source_reporting_period_id": None,
+                "source_programme_code": None,
                 "created_at": NOW,
                 "updated_at": NOW,
             },
@@ -128,18 +140,20 @@ class FakeAdminExternalAttendanceSession:
                 "department": "Geriatric Medicine",
             },
         }
-        self.catalogue_mappings = [
+        self.external_resident_postings = [
             {
-                "reporting_period_id": self.operational_reporting_period_id,
+                "external_resident_id": self.cardio_external_id,
                 "posting_code": "TTSHCardio",
-                "keyword": "Journal Club",
                 "programme_code": "DR",
+                "start_date": date(2026, 1, 1),
+                "end_date": date(2026, 12, 31),
             },
             {
-                "reporting_period_id": self.operational_reporting_period_id,
+                "external_resident_id": self.geri_external_id,
                 "posting_code": "TTSHGerMed",
-                "keyword": "Geri Teaching",
                 "programme_code": "GERI",
+                "start_date": date(2026, 1, 1),
+                "end_date": date(2026, 12, 31),
             },
         ]
         self.external_attendance = [
@@ -228,15 +242,43 @@ class FakeAdminExternalAttendanceSession:
             return []
         return [str(matching_periods[0]["id"])]
 
-    def _catalogue_programmes_for_row(self, row: dict, reporting_period_id: str | None = None) -> set[str]:
+    def _source_programmes_for_row(
+        self,
+        row: dict,
+        reporting_period_id: str | None = None,
+    ) -> set[str]:
         period_ids = set(self._period_ids_for_event(row, reporting_period_id))
-        return {
-            str(mapping["programme_code"])
-            for mapping in self.catalogue_mappings
-            if str(mapping["reporting_period_id"]) in period_ids
-            and mapping["posting_code"] == row["posting_code"]
-            and mapping["keyword"] == row["teaching_name"]
-        }
+        if not period_ids:
+            return set()
+        event = self.events[row["teaching_event_id"]]
+        matching_schedules = [
+            schedule
+            for schedule in self.external_resident_postings
+            if schedule["external_resident_id"] == row["external_resident_id"]
+            and schedule["start_date"] <= event["event_date"] <= schedule["end_date"]
+        ]
+        if len(matching_schedules) != 1:
+            return set()
+        schedule = matching_schedules[0]
+        if schedule["posting_code"] != event["posting_code"]:
+            return set()
+        schedule_programme_code = schedule["programme_code"]
+        if event["teaching_name_id"] is not None:
+            if event["global_session_type_id"] is not None:
+                return set()
+            if str(event["source_reporting_period_id"]) not in period_ids:
+                return set()
+            source_programme_code = event["source_programme_code"]
+            if source_programme_code != schedule_programme_code:
+                return set()
+            return {str(source_programme_code)} if source_programme_code else set()
+        if event["created_for_programme_code"] is not None:
+            if event["created_for_programme_code"] != schedule_programme_code:
+                return set()
+            return {str(event["created_for_programme_code"])}
+        if schedule_programme_code is None:
+            return set()
+        return {str(schedule_programme_code)}
 
     def _filtered_rows(self, payload: dict) -> list[dict]:
         rows = [self._row(row) for row in self.external_attendance]
@@ -252,13 +294,14 @@ class FakeAdminExternalAttendanceSession:
             rows = [
                 row
                 for row in rows
-                if self._catalogue_programmes_for_row(row, reporting_period_id) & scope
+                if self._source_programmes_for_row(row, reporting_period_id) & scope
             ]
         if payload.get("programme_code"):
             rows = [
                 row
                 for row in rows
-                if payload["programme_code"] in self._catalogue_programmes_for_row(row, reporting_period_id)
+                if payload["programme_code"]
+                in self._source_programmes_for_row(row, reporting_period_id)
             ]
         if payload.get("attendance_id"):
             rows = [row for row in rows if row["id"] == str(payload["attendance_id"])]
@@ -351,6 +394,9 @@ def test_admin_external_attendance_list_is_programme_scoped_and_external_only() 
     assert "external_attendance_records" in sql
     assert " FROM attendance_records " not in sql
     assert "JOIN residents" not in sql
+    assert "scheduled_event_source_scope" in sql
+    assert "teaching_name_catalogue" not in sql
+    assert "teaching_targets" not in sql
 
 
 def test_admin_external_attendance_empty_programme_scope_is_forbidden() -> None:
@@ -381,23 +427,10 @@ def test_admin_external_attendance_detail_respects_programme_scope() -> None:
     assert allowed.json()["notes"]["compliance_included"] is False
 
 
-def test_programme_pc_catalogue_authorization_cannot_use_a_future_period() -> None:
+def test_programme_pc_pool_source_cannot_use_a_future_period() -> None:
     fake_db = FakeAdminExternalAttendanceSession()
-    fake_db.catalogue_mappings = [
-        mapping
-        for mapping in fake_db.catalogue_mappings
-        if not (
-            mapping["posting_code"] == "TTSHCardio"
-            and mapping["keyword"] == "Journal Club"
-        )
-    ]
-    fake_db.catalogue_mappings.append(
-        {
-            "reporting_period_id": fake_db.future_reporting_period_id,
-            "posting_code": "TTSHCardio",
-            "keyword": "Journal Club",
-            "programme_code": "DR",
-        }
+    fake_db.events[fake_db.cardio_event_id]["source_reporting_period_id"] = (
+        fake_db.future_reporting_period_id
     )
     client = _client(fake_db)
 
@@ -454,9 +487,13 @@ def test_programme_pc_external_attendance_uses_selected_or_unambiguous_event_per
         }
     )
     fake_db.events[fake_db.cardio_event_id]["event_date"] = date(2025, 5, 6)
-    for mapping in fake_db.catalogue_mappings:
-        if mapping["posting_code"] == "TTSHCardio":
-            mapping["reporting_period_id"] = historical_period_id
+    fake_db.events[fake_db.cardio_event_id]["source_reporting_period_id"] = (
+        historical_period_id
+    )
+    fake_db.external_resident_postings[0].update(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 12, 31),
+    )
 
     historical = client.get(
         "/admin/external-attendance",
@@ -471,6 +508,50 @@ def test_programme_pc_external_attendance_uses_selected_or_unambiguous_event_per
     assert historical.status_code == 200
     assert historical.json()["total"] == 1
     assert historical_detail.status_code == 200
+
+
+def test_programme_pc_report_uses_exact_pool_source_not_same_display_text() -> None:
+    fake_db = FakeAdminExternalAttendanceSession()
+    other_event_id = str(uuid4())
+    other_attendance_id = str(uuid4())
+    fake_db.events[other_event_id] = {
+        **fake_db.events[fake_db.cardio_event_id],
+        "id": other_event_id,
+        "teaching_name_id": str(uuid4()),
+        "source_programme_code": "GERI",
+    }
+    fake_db.external_attendance.append(
+        {
+            **fake_db.external_attendance[0],
+            "id": other_attendance_id,
+            "teaching_event_id": other_event_id,
+        }
+    )
+    client = _client(fake_db)
+
+    response = client.get("/admin/external-attendance", headers=_headers(fake_db, scope="DR"))
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [
+        fake_db.cardio_attendance_id
+    ]
+
+
+def test_programme_pc_report_fails_closed_for_overlapping_external_schedule() -> None:
+    fake_db = FakeAdminExternalAttendanceSession()
+    fake_db.external_resident_postings.append(
+        {
+            **fake_db.external_resident_postings[0],
+            "posting_code": "TTSHGerMed",
+            "programme_code": "GERI",
+        }
+    )
+    client = _client(fake_db)
+
+    response = client.get("/admin/external-attendance", headers=_headers(fake_db, scope="DR"))
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 0
 
 
 def test_programme_pc_external_attendance_fails_closed_for_overlapping_event_periods() -> None:

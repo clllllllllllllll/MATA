@@ -31,6 +31,7 @@ WEEKEND_WARNING = (
     "as they do not meet the weekend exception rules for your programme."
 )
 ADHOC_COMPLIANCE_TEACHING_NAME = "Department/Programme Teaching [1h]"
+ADHOC_DURATION_HOURS = Decimal("1.00")
 ExternalEventIneligibilityReason = Literal[
     "future_event",
     "posting_unavailable",
@@ -95,6 +96,64 @@ def _available_event_row(
         row["reporting_period_id"] = reporting_period["id"]
         row["reporting_period_label"] = reporting_period["label"]
     return row
+
+
+def _resolve_scheduled_event_source(
+    event: dict[str, Any],
+    *,
+    reporting_period_id: UUID | str,
+    programme_code: str | None,
+) -> dict[str, Any] | None:
+    """Project a scheduled event from persisted source evidence only.
+
+    Explicit pool identities retain their source programme and reporting-period
+    scope.  Global identities remain programme-neutral.  A pre-Phase-F row
+    with neither identity is deliberately treated as legacy: its immutable
+    event ownership, posting, timing, and snapshot are used by callers, never
+    its display text.
+    """
+
+    teaching_name_id = event.get("teaching_name_id")
+    global_session_type_id = event.get("global_session_type_id")
+    if teaching_name_id is not None and global_session_type_id is not None:
+        return None
+
+    if teaching_name_id is not None:
+        source_programme_code = event.get("source_programme_code")
+        source_reporting_period_id = event.get("source_reporting_period_id")
+        if (
+            source_programme_code is None
+            or source_reporting_period_id is None
+            or programme_code is None
+            or str(source_reporting_period_id) != str(reporting_period_id)
+            or str(source_programme_code) != str(programme_code)
+        ):
+            return None
+        return {
+            "kind": "teaching_name",
+            "session_type": event.get("session_type"),
+            "duration_hours": event.get("duration_hours"),
+            "is_global": False,
+        }
+
+    if global_session_type_id is not None:
+        return {
+            "kind": "global_session_type",
+            "session_type": event.get("session_type") or event["teaching_name"],
+            "duration_hours": event.get("duration_hours"),
+            "is_global": True,
+        }
+
+    return {
+        "kind": "legacy",
+        "session_type": event.get("session_type"),
+        # Legacy rows retain the persisted session type solely for the existing
+        # weekend-exception check.  It is not source classification and must
+        # never be recovered from display text or catalogue data.
+        "session_type_id": event.get("session_type_id"),
+        "duration_hours": event.get("duration_hours"),
+        "is_global": False,
+    }
 
 
 def _submission_period_row(period: dict[str, Any]) -> dict[str, Any]:
@@ -414,117 +473,6 @@ async def _ensure_not_public_holiday(db: AsyncSession, event_date: date) -> None
     )
 
 
-async def _resolve_teaching_name(
-    db: AsyncSession,
-    *,
-    posting_code: str,
-    programme_code: str,
-    r_year: str,
-    reporting_period_id: UUID | str,
-    teaching_name: str,
-) -> dict[str, Any] | None:
-    global_result = await db.execute(
-        text(
-            """
-            SELECT
-                name AS keyword,
-                NULL AS session_type_id,
-                name AS session_type,
-                duration_hours,
-                false AS is_tracked,
-                true AS is_global
-            FROM global_session_types
-            WHERE is_active = true
-              AND name = :teaching_name
-            ORDER BY name ASC
-            """
-        ),
-        {"teaching_name": teaching_name},
-    )
-    global_row = global_result.mappings().one_or_none()
-    if global_row is not None:
-        return dict(global_row)
-
-    result = await db.execute(
-        text(
-            """
-            SELECT
-                tnc.keyword,
-                tnc.session_type_id,
-                st.name AS session_type,
-                tnc.duration_hours,
-                tnc.is_tracked,
-                false AS is_global
-            FROM teaching_name_catalogue tnc
-            JOIN session_types st ON st.id = tnc.session_type_id
-            WHERE tnc.posting_code = :posting_code
-              AND tnc.programme_code = :programme_code
-              AND tnc.reporting_period_id = :reporting_period_id
-              AND tnc.r_year IN (:r_year, 'ALL')
-              AND tnc.keyword = :teaching_name
-            ORDER BY
-                CASE WHEN tnc.r_year = :r_year THEN 0 ELSE 1 END,
-                tnc.duration_hours DESC,
-                st.name ASC
-            """
-        ),
-        {
-            "posting_code": posting_code,
-            "programme_code": programme_code,
-            "reporting_period_id": str(reporting_period_id),
-            "r_year": r_year,
-            "teaching_name": teaching_name,
-        },
-    )
-    row = result.mappings().one_or_none()
-    return dict(row) if row is not None else None
-
-
-async def _resolve_teaching_target(
-    db: AsyncSession,
-    *,
-    posting_code: str,
-    programme_code: str,
-    r_year: str,
-    reporting_period_id: UUID | str,
-    session_type: str,
-) -> dict[str, Any] | None:
-    result = await db.execute(
-        text(
-            """
-            SELECT
-                st.name AS keyword,
-                tt.session_type_id,
-                st.name AS session_type,
-                st.duration_hours,
-                tt.is_tracked,
-                false AS is_global
-            FROM teaching_targets tt
-            JOIN session_types st ON st.id = tt.session_type_id
-            WHERE tt.posting_code = :posting_code
-              AND tt.programme_code = :programme_code
-              AND tt.reporting_period_id = :reporting_period_id
-              AND tt.r_year IN (:r_year, 'ALL')
-              AND st.name = :session_type
-            ORDER BY
-                CASE WHEN tt.r_year = :r_year THEN 0 ELSE 1 END,
-                st.duration_hours DESC,
-                st.name ASC
-            LIMIT 1
-            """
-        ),
-        {
-            "posting_code": posting_code,
-            "programme_code": programme_code,
-            "reporting_period_id": str(reporting_period_id),
-            "r_year": r_year,
-            "session_type": session_type,
-        },
-    )
-    row = result.mappings().one_or_none()
-    return dict(row) if row is not None else None
-
-
 async def _posting_display_label(db: AsyncSession, posting_code: str) -> str:
     result = await db.execute(
         text(
@@ -542,176 +490,26 @@ async def _posting_display_label(db: AsyncSession, posting_code: str) -> str:
     return row.get("display_name") or posting_code
 
 
-async def _teaching_options_for_context(
-    db: AsyncSession,
+def _fixed_adhoc_option(
     *,
     posting_code: str,
-    programme_code: str,
-    r_year: str,
+    posting_label: str,
     reporting_period_id: UUID | str,
-) -> list[dict[str, Any]]:
-    global_result = await db.execute(
-        text(
-            """
-            SELECT
-                name AS teaching_name,
-                name AS keyword,
-                NULL AS session_type_id,
-                name AS session_type,
-                name AS session_type_name,
-                duration_hours,
-                false AS is_tracked,
-                true AS is_global
-            FROM global_session_types
-            WHERE is_active = true
-            ORDER BY name ASC
-            """
-        )
-    )
-    catalogue_result = await db.execute(
-        text(
-            """
-            SELECT
-                tnc.keyword AS teaching_name,
-                tnc.keyword AS keyword,
-                tnc.session_type_id,
-                st.name AS session_type,
-                st.name AS session_type_name,
-                tnc.duration_hours,
-                tnc.is_tracked,
-                false AS is_global
-            FROM teaching_name_catalogue tnc
-            JOIN session_types st ON st.id = tnc.session_type_id
-            WHERE tnc.posting_code = :posting_code
-              AND tnc.programme_code = :programme_code
-              AND tnc.reporting_period_id = :reporting_period_id
-              AND tnc.r_year IN (:r_year, 'ALL')
-            ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
-            """
-        ),
-        {
-            "posting_code": posting_code,
-            "programme_code": programme_code,
-            "reporting_period_id": str(reporting_period_id),
-            "r_year": r_year,
-        },
-    )
-    rows = [dict(row) for row in global_result.mappings().all()]
-    rows.extend(dict(row) for row in catalogue_result.mappings().all())
-    rows.sort(key=lambda row: str(row["teaching_name"]).casefold())
-    return rows
-
-
-async def _teaching_options_for_posting(
-    db: AsyncSession,
-    *,
-    posting_code: str,
-    reporting_period_id: UUID | str,
-) -> list[dict[str, Any]]:
-    global_result = await db.execute(
-        text(
-            """
-            SELECT
-                name AS teaching_name,
-                name AS keyword,
-                NULL AS session_type_id,
-                name AS session_type,
-                name AS session_type_name,
-                duration_hours,
-                false AS is_tracked,
-                true AS is_global
-            FROM global_session_types
-            WHERE is_active = true
-            ORDER BY name ASC
-            """
-        )
-    )
-    catalogue_result = await db.execute(
-        text(
-            """
-            SELECT DISTINCT ON (tnc.keyword)
-                tnc.keyword AS teaching_name,
-                tnc.keyword AS keyword,
-                tnc.session_type_id,
-                st.name AS session_type,
-                st.name AS session_type_name,
-                tnc.duration_hours,
-                tnc.is_tracked,
-                false AS is_global
-            FROM teaching_name_catalogue tnc
-            JOIN session_types st ON st.id = tnc.session_type_id
-            WHERE tnc.posting_code = :posting_code
-              AND tnc.reporting_period_id = :reporting_period_id
-            ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
-            """
-        ),
-        {
-            "posting_code": posting_code,
-            "reporting_period_id": str(reporting_period_id),
-        },
-    )
-    rows = [dict(row) for row in global_result.mappings().all()]
-    rows.extend(dict(row) for row in catalogue_result.mappings().all())
-    rows.sort(key=lambda row: str(row["teaching_name"]).casefold())
-    return rows
-
-
-async def _attended_posting_options_for_resident(
-    db: AsyncSession,
-    *,
-    programme_code: str,
-    r_year: str,
-    reporting_period_id: UUID | str,
-) -> list[dict[str, Any]]:
-    result = await db.execute(
-        text(
-            """
-            SELECT DISTINCT
-                pc.code AS posting_code,
-                COALESCE(pc.display_name, pc.code) AS label,
-                tnc.programme_code,
-                p.name AS programme_name
-            FROM teaching_name_catalogue tnc
-            JOIN posting_codes pc ON pc.code = tnc.posting_code
-            LEFT JOIN programmes p ON p.code = tnc.programme_code
-            WHERE tnc.programme_code = :programme_code
-              AND tnc.reporting_period_id = :reporting_period_id
-              AND tnc.r_year IN (:r_year, 'ALL')
-            ORDER BY label ASC, pc.code ASC
-            """
-        ),
-        {
-            "programme_code": programme_code,
-            "reporting_period_id": str(reporting_period_id),
-            "r_year": r_year,
-        },
-    )
-    return [dict(row) for row in result.mappings().all()]
-
-
-async def _attended_posting_options_for_external(
-    db: AsyncSession,
-    *,
-    reporting_period_id: UUID | str,
-) -> list[dict[str, Any]]:
-    result = await db.execute(
-        text(
-            """
-            SELECT DISTINCT
-                pc.code AS posting_code,
-                COALESCE(pc.display_name, pc.code) AS label,
-                tnc.programme_code,
-                p.name AS programme_name
-            FROM teaching_name_catalogue tnc
-            JOIN posting_codes pc ON pc.code = tnc.posting_code
-            LEFT JOIN programmes p ON p.code = tnc.programme_code
-            WHERE tnc.reporting_period_id = :reporting_period_id
-            ORDER BY label ASC, pc.code ASC, tnc.programme_code ASC
-            """
-        ),
-        {"reporting_period_id": str(reporting_period_id)},
-    )
-    return [dict(row) for row in result.mappings().all()]
+    r_year: str | None,
+) -> dict[str, Any]:
+    return {
+        "teaching_name": ADHOC_COMPLIANCE_TEACHING_NAME,
+        "keyword": ADHOC_COMPLIANCE_TEACHING_NAME,
+        "session_type": ADHOC_COMPLIANCE_TEACHING_NAME,
+        "session_type_name": ADHOC_COMPLIANCE_TEACHING_NAME,
+        "session_type_id": None,
+        "duration_hours": ADHOC_DURATION_HOURS,
+        "posting_code": posting_code,
+        "posting_label": posting_label,
+        "reporting_period_id": str(reporting_period_id),
+        "r_year": r_year,
+        "is_global": False,
+    }
 
 
 def _select_attended_posting(
@@ -786,7 +584,7 @@ async def list_adhoc_teaching_options(
     today: date | None = None,
 ) -> dict[str, Any]:
     today = today or date.today()
-    resident = await _resident(db, resident_id)
+    await _resident(db, resident_id)
     period = await _active_reporting_period(
         db,
         relevant_date=teaching_date,
@@ -826,58 +624,32 @@ async def list_adhoc_teaching_options(
     context = contexts[0]
     assigned_posting_code = context["posting_code"]
     posting_label = await _posting_display_label(db, assigned_posting_code)
-    attended_posting_options = await _attended_posting_options_for_resident(
-        db,
-        programme_code=resident["programme_code"],
-        r_year=context["r_year"],
-        reporting_period_id=period["id"],
-    )
+    attended_posting_options = [
+        {
+            "posting_code": assigned_posting_code,
+            "label": posting_label,
+        }
+    ]
     selected_attended_posting = _select_attended_posting(
         attended_posting_options,
         requested_posting_code=attended_posting_code,
         default_posting_code=assigned_posting_code,
     )
     if selected_attended_posting is None:
-        return _adhoc_options_response(
-            teaching_date=teaching_date,
-            available=False,
-            reason="attended_posting_unavailable",
-            message="No attended department/programme options are available for this date.",
-            reporting_period_id=period["id"],
-            posting_code=assigned_posting_code,
-            posting_label=posting_label,
-            r_year=context["r_year"],
-            attended_posting_options=attended_posting_options,
-        )
-    raw_options = await _teaching_options_for_context(
-        db,
-        posting_code=selected_attended_posting["posting_code"],
-        programme_code=resident["programme_code"],
-        r_year=context["r_year"],
-        reporting_period_id=period["id"],
-    )
+        raise RuntimeError("Assigned posting option invariant was not established")
     options = [
-        {
-            "teaching_name": row["teaching_name"],
-            "keyword": row["keyword"],
-            "session_type": row.get("session_type"),
-            "session_type_name": row.get("session_type_name") or row.get("session_type"),
-            "session_type_id": row.get("session_type_id"),
-            "duration_hours": row.get("duration_hours"),
-            "posting_code": selected_attended_posting["posting_code"],
-            "posting_label": selected_attended_posting["label"],
-            "reporting_period_id": str(period["id"]),
-            "r_year": context["r_year"],
-            "is_tracked": bool(row.get("is_tracked")),
-            "is_global": bool(row.get("is_global")),
-        }
-        for row in raw_options
+        _fixed_adhoc_option(
+            posting_code=selected_attended_posting["posting_code"],
+            posting_label=selected_attended_posting["label"],
+            reporting_period_id=period["id"],
+            r_year=context["r_year"],
+        )
     ]
     return _adhoc_options_response(
         teaching_date=teaching_date,
-        available=bool(options),
-        reason=None if options else "no_catalogue_options",
-        message=None if options else "No teaching options are available for this posting and date.",
+        available=True,
+        reason=None,
+        message=None,
         reporting_period_id=period["id"],
         posting_code=assigned_posting_code,
         posting_label=posting_label,
@@ -920,52 +692,33 @@ async def list_external_adhoc_teaching_options(
 
     posting_code = posting_context["posting_code"]
     posting_label = await _posting_display_label(db, posting_code)
-    attended_posting_options = await _attended_posting_options_for_external(
-        db,
-        reporting_period_id=period["id"],
-    )
+    attended_posting_options = [
+        {
+            "posting_code": posting_code,
+            "label": posting_label,
+        }
+    ]
     selected_attended_posting = _select_attended_posting(
         attended_posting_options,
         requested_posting_code=attended_posting_code,
         default_posting_code=posting_code,
     )
     if selected_attended_posting is None:
-        return _adhoc_options_response(
-            teaching_date=teaching_date,
-            available=False,
-            reason="attended_posting_unavailable",
-            message="No attended department/programme options are available for this date.",
-            posting_code=posting_code,
-            posting_label=posting_label,
-            attended_posting_options=attended_posting_options,
-        )
-    raw_options = await _teaching_options_for_posting(
-        db,
-        posting_code=selected_attended_posting["posting_code"],
-        reporting_period_id=period["id"],
-    )
+        raise RuntimeError("Assigned posting option invariant was not established")
     options = [
-        {
-            "teaching_name": row["teaching_name"],
-            "keyword": row["keyword"],
-            "session_type": row.get("session_type"),
-            "session_type_name": row.get("session_type_name") or row.get("session_type"),
-            "session_type_id": row.get("session_type_id"),
-            "duration_hours": row.get("duration_hours"),
-            "posting_code": selected_attended_posting["posting_code"],
-            "posting_label": selected_attended_posting["label"],
-            "reporting_period_id": str(period["id"]),
-            "r_year": None,
-            "is_tracked": bool(row.get("is_tracked")),
-            "is_global": bool(row.get("is_global")),
-        }
-        for row in raw_options
+        _fixed_adhoc_option(
+            posting_code=selected_attended_posting["posting_code"],
+            posting_label=selected_attended_posting["label"],
+            reporting_period_id=period["id"],
+            r_year=None,
+        )
     ]
     return _adhoc_options_response(
         teaching_date=teaching_date,
-        available=bool(options),
-        reason=None if options else "no_catalogue_options",
-        message=None if options else "No teaching options are available for this posting and date.",
+        available=True,
+        reason=None,
+        message=None,
+        reporting_period_id=period["id"],
         posting_code=posting_code,
         posting_label=posting_label,
         attended_posting_options=attended_posting_options,
@@ -979,25 +732,35 @@ async def _get_event(db: AsyncSession, event_id: UUID) -> dict[str, Any]:
         text(
             """
             SELECT
-                id,
-                posting_code,
-                created_for_programme_code,
-                teaching_name,
-                details_of_session,
-                event_date,
-                start_time,
-                end_time,
-                duration_hours,
-                session_type_id,
-                series_id,
-                cme_points_awarded,
-                smc_event_code,
-                is_adhoc,
-                created_by_role,
-                created_at,
-                updated_at
+                teaching_events.id,
+                teaching_events.posting_code,
+                teaching_events.created_for_programme_code,
+                teaching_events.teaching_name,
+                teaching_events.details_of_session,
+                teaching_events.event_date,
+                teaching_events.start_time,
+                teaching_events.end_time,
+                teaching_events.duration_hours,
+                teaching_events.session_type_id,
+                teaching_events.teaching_name_id,
+                teaching_events.global_session_type_id,
+                source_scope.reporting_period_id AS source_reporting_period_id,
+                source_scope.programme_code AS source_programme_code,
+                session_type.name AS session_type,
+                teaching_events.series_id,
+                teaching_events.cme_points_awarded,
+                teaching_events.smc_event_code,
+                teaching_events.is_adhoc,
+                teaching_events.created_by_role,
+                teaching_events.created_at,
+                teaching_events.updated_at
             FROM teaching_events
-            WHERE id = :event_id
+            LEFT JOIN LATERAL mata_rls.scheduled_event_source_scope(
+                teaching_events.id
+            ) AS source_scope ON true
+            LEFT JOIN session_types AS session_type
+              ON session_type.id = teaching_events.session_type_id
+            WHERE teaching_events.id = :event_id
             """
         ),
         {"event_id": str(event_id)},
@@ -1087,26 +850,37 @@ async def _events_for_postings(
         text(
             f"""
             SELECT
-                id,
-                posting_code,
-                created_for_programme_code,
-                teaching_name,
-                details_of_session,
-                event_date,
-                start_time,
-                end_time,
-                duration_hours,
-                session_type_id,
-                series_id,
-                cme_points_awarded,
-                smc_event_code,
-                is_adhoc,
-                created_by_role,
-                created_at,
-                updated_at
+                teaching_events.id,
+                teaching_events.posting_code,
+                teaching_events.created_for_programme_code,
+                teaching_events.teaching_name,
+                teaching_events.details_of_session,
+                teaching_events.event_date,
+                teaching_events.start_time,
+                teaching_events.end_time,
+                teaching_events.duration_hours,
+                teaching_events.session_type_id,
+                teaching_events.teaching_name_id,
+                teaching_events.global_session_type_id,
+                source_scope.reporting_period_id AS source_reporting_period_id,
+                source_scope.programme_code AS source_programme_code,
+                session_type.name AS session_type,
+                teaching_events.series_id,
+                teaching_events.cme_points_awarded,
+                teaching_events.smc_event_code,
+                teaching_events.is_adhoc,
+                teaching_events.created_by_role,
+                teaching_events.created_at,
+                teaching_events.updated_at
             FROM teaching_events
+            LEFT JOIN LATERAL mata_rls.scheduled_event_source_scope(
+                teaching_events.id
+            ) AS source_scope ON true
+            LEFT JOIN session_types AS session_type
+              ON session_type.id = teaching_events.session_type_id
             WHERE {' AND '.join(where)}
-            ORDER BY event_date ASC, start_time ASC, teaching_name ASC
+            ORDER BY teaching_events.event_date ASC, teaching_events.start_time ASC,
+                     teaching_events.teaching_name ASC
             """
         ),
         params,
@@ -1147,23 +921,28 @@ async def _events_for_external_posting(
         text(
             f"""
             SELECT
-                id,
-                posting_code,
-                created_for_programme_code,
-                teaching_name,
-                details_of_session,
-                event_date,
-                start_time,
-                end_time,
-                duration_hours,
-                session_type_id,
-                series_id,
-                cme_points_awarded,
-                smc_event_code,
-                is_adhoc,
-                created_by_role,
-                created_at,
-                updated_at,
+                teaching_events.id,
+                teaching_events.posting_code,
+                teaching_events.created_for_programme_code,
+                teaching_events.teaching_name,
+                teaching_events.details_of_session,
+                teaching_events.event_date,
+                teaching_events.start_time,
+                teaching_events.end_time,
+                teaching_events.duration_hours,
+                teaching_events.session_type_id,
+                teaching_events.teaching_name_id,
+                teaching_events.global_session_type_id,
+                source_scope.reporting_period_id AS source_reporting_period_id,
+                source_scope.programme_code AS source_programme_code,
+                session_type.name AS session_type,
+                teaching_events.series_id,
+                teaching_events.cme_points_awarded,
+                teaching_events.smc_event_code,
+                teaching_events.is_adhoc,
+                teaching_events.created_by_role,
+                teaching_events.created_at,
+                teaching_events.updated_at,
                 EXISTS (
                     SELECT 1
                     FROM external_attendance_records ear
@@ -1172,8 +951,14 @@ async def _events_for_external_posting(
                       AND ear.status = 'submitted'
                 ) AS already_attended
             FROM teaching_events
+            LEFT JOIN LATERAL mata_rls.scheduled_event_source_scope(
+                teaching_events.id
+            ) AS source_scope ON true
+            LEFT JOIN session_types AS session_type
+              ON session_type.id = teaching_events.session_type_id
             WHERE {' AND '.join(where)}
-            ORDER BY event_date ASC, start_time ASC, teaching_name ASC
+            ORDER BY teaching_events.event_date ASC, teaching_events.start_time ASC,
+                     teaching_events.teaching_name ASC
             """
         ),
         params,
@@ -1217,6 +1002,7 @@ def _external_event_ineligibility_reason(
     event: dict[str, Any],
     posting_contexts: list[dict[str, Any]],
     posting_capabilities: dict[str, bool],
+    reporting_period_id: UUID | str,
     today: date,
     already_attended: bool,
 ) -> ExternalEventIneligibilityReason | None:
@@ -1234,6 +1020,13 @@ def _external_event_ineligibility_reason(
     ):
         return "posting_mismatch"
     if bool(event.get("is_adhoc")):
+        return "event_scope"
+    source = _resolve_scheduled_event_source(
+        event,
+        reporting_period_id=reporting_period_id,
+        programme_code=matching_contexts[0].get("programme_code"),
+    )
+    if source is None:
         return "event_scope"
     owner = event.get("created_for_programme_code")
     if owner is None:
@@ -1321,7 +1114,10 @@ async def _external_posting_context_for_date(
         start_date=on_date,
         end_date=on_date,
     )
-    return contexts[0] if contexts else None
+    # Unlike a display option, the derived host posting is authorization
+    # evidence.  Corrupt/legacy overlapping schedules therefore fail closed
+    # instead of letting order choose an arbitrary department.
+    return contexts[0] if len(contexts) == 1 else None
 
 
 def _normalise_optional_filter(value: str | None) -> str | None:
@@ -1486,6 +1282,7 @@ async def list_available_events(
                         event=event,
                         posting_contexts=contexts,
                         posting_capabilities=period_capabilities,
+                        reporting_period_id=resolved_period["id"],
                         today=today,
                         already_attended=bool(event.get("already_attended")),
                     )
@@ -1632,13 +1429,10 @@ async def list_available_events(
             )
             if context is None:
                 continue
-            resolved = await _resolve_teaching_name(
-                db,
-                posting_code=event["posting_code"],
-                programme_code=resident["programme_code"],
-                r_year=context["r_year"],
+            resolved = _resolve_scheduled_event_source(
+                event,
                 reporting_period_id=resolved_period["id"],
-                teaching_name=event["teaching_name"],
+                programme_code=resident["programme_code"],
             )
             if resolved is not None:
                 event_rows[str(event["id"])] = _available_event_row(
@@ -1674,13 +1468,10 @@ async def list_available_events(
             )
             if context is None:
                 continue
-            resolved = await _resolve_teaching_name(
-                db,
-                posting_code=event["posting_code"],
-                programme_code=resident["programme_code"],
-                r_year=context["r_year"],
+            resolved = _resolve_scheduled_event_source(
+                event,
                 reporting_period_id=resolved_period["id"],
-                teaching_name=event["teaching_name"],
+                programme_code=resident["programme_code"],
             )
             if resolved is not None:
                 option_names.add(event["teaching_name"])
@@ -2266,63 +2057,6 @@ async def _raise_adhoc_helper_error(
     ) from exc
 
 
-async def _resolve_teaching_name_for_posting(
-    db: AsyncSession,
-    *,
-    posting_code: str,
-    teaching_name: str,
-    reporting_period_id: UUID | str,
-) -> dict[str, Any] | None:
-    global_result = await db.execute(
-        text(
-            """
-            SELECT
-                name AS keyword,
-                NULL AS session_type_id,
-                name AS session_type,
-                duration_hours,
-                false AS is_tracked,
-                true AS is_global
-            FROM global_session_types
-            WHERE is_active = true
-              AND name = :teaching_name
-            ORDER BY name ASC
-            """
-        ),
-        {"teaching_name": teaching_name},
-    )
-    global_row = global_result.mappings().one_or_none()
-    if global_row is not None:
-        return dict(global_row)
-
-    result = await db.execute(
-        text(
-            """
-            SELECT
-                tnc.keyword,
-                tnc.session_type_id,
-                st.name AS session_type,
-                tnc.duration_hours,
-                tnc.is_tracked,
-                false AS is_global
-            FROM teaching_name_catalogue tnc
-            JOIN session_types st ON st.id = tnc.session_type_id
-            WHERE tnc.posting_code = :posting_code
-              AND tnc.keyword = :teaching_name
-              AND tnc.reporting_period_id = :reporting_period_id
-            ORDER BY tnc.duration_hours DESC, st.name ASC
-            """
-        ),
-        {
-            "posting_code": posting_code,
-            "teaching_name": teaching_name,
-            "reporting_period_id": str(reporting_period_id),
-        },
-    )
-    row = result.mappings().one_or_none()
-    return dict(row) if row is not None else None
-
-
 async def _weekend_is_accepted(
     db: AsyncSession,
     *,
@@ -2462,6 +2196,7 @@ async def submit_attendance(
                 event=event,
                 posting_contexts=posting_contexts,
                 posting_capabilities=posting_capabilities,
+                reporting_period_id=period["id"],
                 today=today,
                 already_attended=already_attended,
             )
@@ -2631,13 +2366,10 @@ async def submit_attendance(
                 detail="Teaching event is outside the resident posting schedule",
                 error_code=ErrorCode.VALIDATION_FAILED.value,
             )
-        resolved = await _resolve_teaching_name(
-            db,
-            posting_code=event["posting_code"],
-            programme_code=resident["programme_code"],
-            r_year=context["r_year"],
+        resolved = _resolve_scheduled_event_source(
+            event,
             reporting_period_id=period["id"],
-            teaching_name=event["teaching_name"],
+            programme_code=resident["programme_code"],
         )
         if resolved is None:
             raise ApiError(
@@ -2755,7 +2487,6 @@ async def submit_adhoc_teaching(
     external_resident_id: UUID | None = None,
     event_date: date,
     start_time: time,
-    teaching_name: str,
     attended_posting_code: str | None = None,
     details_of_session: str | None = None,
 ) -> dict[str, Any]:
@@ -2787,39 +2518,16 @@ async def submit_adhoc_teaching(
                 error_code=ErrorCode.VALIDATION_FAILED.value,
             )
         posting_code = posting_context["posting_code"]
-        attended_posting_options = await _attended_posting_options_for_external(
-            db,
-            reporting_period_id=period["id"],
-        )
+        attended_posting_options = [{"posting_code": posting_code}]
         selected_attended_posting = _select_attended_posting(
             attended_posting_options,
             requested_posting_code=attended_posting_code,
             default_posting_code=posting_code,
         )
         if selected_attended_posting is None:
-            raise ApiError(
-                status_code=422,
-                detail="No attended department/programme options are available for this teaching date",
-                error_code=ErrorCode.VALIDATION_FAILED.value,
-            )
-        resolved = await _resolve_teaching_name_for_posting(
-            db,
-            posting_code=selected_attended_posting["posting_code"],
-            teaching_name=teaching_name,
-            reporting_period_id=period["id"],
-        )
-        if resolved is None:
-            raise ApiError(
-                status_code=422,
-                detail="teaching_name must be selected from catalogue-backed ad-hoc teaching options",
-                error_code=ErrorCode.VALIDATION_FAILED.value,
-            )
-        duration_hours = resolved["duration_hours"] if resolved is not None else None
-        end_time = (
-            _compute_end_time(event_date, start_time, duration_hours)
-            if duration_hours is not None
-            else None
-        )
+            raise RuntimeError("Assigned posting option invariant was not established")
+        duration_hours = ADHOC_DURATION_HOURS
+        end_time = _compute_end_time(event_date, start_time, duration_hours)
         await _acquire_external_attendance_locks(
             db,
             external_resident_id=external_resident_id,
@@ -2843,14 +2551,14 @@ async def submit_adhoc_teaching(
                 attended_posting_code=selected_attended_posting[
                     "posting_code"
                 ],
-                attended_teaching_name=teaching_name,
-                teaching_name=teaching_name,
+                attended_teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
+                teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
                 details_of_session=details_of_session,
                 event_date=event_date,
                 start_time=start_time,
                 end_time=end_time,
                 duration_hours=duration_hours,
-                session_type_id=resolved.get("session_type_id"),
+                session_type_id=None,
             )
         except DBAPIError as exc:
             await _raise_adhoc_helper_error(db, exc)
@@ -2915,62 +2623,15 @@ async def submit_adhoc_teaching(
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
     context = contexts[0]
-    attended_posting_options = await _attended_posting_options_for_resident(
-        db,
-        programme_code=resident["programme_code"],
-        r_year=context["r_year"],
-        reporting_period_id=period["id"],
-    )
+    attended_posting_options = [{"posting_code": context["posting_code"]}]
     selected_attended_posting = _select_attended_posting(
         attended_posting_options,
         requested_posting_code=attended_posting_code,
         default_posting_code=context["posting_code"],
     )
     if selected_attended_posting is None:
-        raise ApiError(
-            status_code=422,
-            detail="No attended department/programme options are available for this teaching date",
-            error_code=ErrorCode.VALIDATION_FAILED.value,
-        )
-    selected = await _resolve_teaching_name(
-        db,
-        posting_code=selected_attended_posting["posting_code"],
-        programme_code=resident["programme_code"],
-        r_year=context["r_year"],
-        reporting_period_id=period["id"],
-        teaching_name=teaching_name,
-    )
-    if selected is None:
-        raise ApiError(
-            status_code=422,
-            detail="teaching_name must be selected from catalogue-backed ad-hoc teaching options",
-            error_code=ErrorCode.VALIDATION_FAILED.value,
-        )
-    if selected.get("is_global") or not bool(selected.get("is_tracked")):
-        raise ApiError(
-            status_code=422,
-            detail="teaching_name must be selected from tracked catalogue-backed ad-hoc teaching options",
-            error_code=ErrorCode.VALIDATION_FAILED.value,
-        )
-    resolved = await _resolve_teaching_target(
-        db,
-        posting_code=context["posting_code"],
-        programme_code=resident["programme_code"],
-        r_year=context["r_year"],
-        reporting_period_id=period["id"],
-        session_type=ADHOC_COMPLIANCE_TEACHING_NAME,
-    )
-    if resolved is None or resolved.get("is_global") or not bool(resolved.get("is_tracked")):
-        raise ApiError(
-            status_code=422,
-            detail=(
-                f"{ADHOC_COMPLIANCE_TEACHING_NAME} is unavailable for countable "
-                "ad-hoc teaching on this resident posting"
-            ),
-            error_code=ErrorCode.VALIDATION_FAILED.value,
-        )
-
-    duration_hours = resolved["duration_hours"]
+        raise RuntimeError("Assigned posting option invariant was not established")
+    duration_hours = ADHOC_DURATION_HOURS
     end_time = _compute_end_time(event_date, start_time, duration_hours)
     await _acquire_native_attendance_locks(
         db,
@@ -2997,14 +2658,14 @@ async def submit_adhoc_teaching(
             db,
             posting_code=context["posting_code"],
             attended_posting_code=selected_attended_posting["posting_code"],
-            attended_teaching_name=teaching_name,
+            attended_teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
             teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
             details_of_session=details_of_session,
             event_date=event_date,
             start_time=start_time,
             end_time=end_time,
             duration_hours=duration_hours,
-            session_type_id=resolved.get("session_type_id"),
+            session_type_id=None,
         )
     except DBAPIError as exc:
         await _raise_adhoc_helper_error(db, exc)
@@ -3021,7 +2682,7 @@ async def submit_adhoc_teaching(
         db,
         event=event,
         programme_code=resident["programme_code"],
-        session_type_id=resolved.get("session_type_id"),
+        session_type_id=None,
     )
     await db.commit()
     invalidate_resident_caches(

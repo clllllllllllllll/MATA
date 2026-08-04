@@ -32,7 +32,8 @@ from tests.test_external_registration_migrations_postgres import (
 
 PREVIOUS_REVISION = "20260727_000027"
 ADHOC_REVISION = "20260728_000028"
-REPOSITORY_HEAD_REVISION = "20260804_000033"
+REPOSITORY_HEAD_REVISION = "20260804_000034"
+PHASE_G_PREVIOUS_REVISION = "20260804_000033"
 RUNTIME_ROLE = "mata_app_runtime"
 AUTH_ROLE = "mata_auth_internal"
 DEFINER_ROLE = "mata_adhoc_attendance_definer"
@@ -41,6 +42,8 @@ ATOMIC_HELPER = (
     "text,text,text,text,text,date,time without time zone,"
     "time without time zone,numeric,uuid)"
 )
+SOURCE_SCOPE_HELPER = "mata_rls.scheduled_event_source_scope(uuid)"
+EXTERNAL_ACCESS_HELPER = "mata_rls.can_access_external_attendance(uuid,uuid)"
 _SAFE_IDENTIFIER = re.compile(r"[a-z][a-z0-9_]*")
 _EPHEMERAL_ROLE = re.compile(r"mata_test_(?:runtime|auth)_[0-9a-f]{16}")
 
@@ -70,6 +73,12 @@ DEFINER_SELECT_TABLES = {
     "residents",
     "session_types",
     "teaching_events",
+    "teaching_name_catalogue",
+    "teaching_targets",
+}
+PHASE_G_DEFINER_SELECT_TABLES = DEFINER_SELECT_TABLES - {
+    "global_session_types",
+    "session_types",
     "teaching_name_catalogue",
     "teaching_targets",
 }
@@ -842,6 +851,141 @@ def in_place_migration_database(
         )
     finally:
         engine.dispose()
+
+
+@pytest.mark.migration_mutation
+def test_phase_g_runtime_source_decoupling_migration_lifecycle_in_place(
+    in_place_migration_database: InPlaceHarness,
+) -> None:
+    harness = in_place_migration_database
+    try:
+        _migrate(harness, "downgrade", PHASE_G_PREVIOUS_REVISION)
+        with harness.engine.connect() as connection:
+            assert _revision(connection) == PHASE_G_PREVIOUS_REVISION
+            assert connection.scalar(
+                text("SELECT pg_catalog.to_regprocedure(:signature)"),
+                {"signature": SOURCE_SCOPE_HELPER},
+            ) is None
+            assert set(_catalogue(connection)["table_acl"]) == {
+                *((table_name, "SELECT") for table_name in DEFINER_SELECT_TABLES),
+                ("attendance_records", "INSERT"),
+                ("external_attendance_records", "INSERT"),
+                ("teaching_events", "INSERT"),
+            }
+            pre_phase_g_external_access = str(
+                connection.scalar(
+                    text(
+                        "SELECT pg_catalog.pg_get_functiondef("
+                        "pg_catalog.to_regprocedure(:signature))"
+                    ),
+                    {"signature": EXTERNAL_ACCESS_HELPER},
+                )
+            )
+
+        _migrate(harness, "upgrade", REPOSITORY_HEAD_REVISION)
+        with harness.engine.connect() as connection:
+            assert _revision(connection) == REPOSITORY_HEAD_REVISION
+            source_scope = connection.execute(
+                text(
+                    """
+                    SELECT owner_role.rolname,
+                           procedure.prosecdef,
+                           procedure.proconfig,
+                           pg_catalog.has_function_privilege(
+                               :runtime_role, procedure.oid, 'EXECUTE'
+                           ),
+                           pg_catalog.has_function_privilege(
+                               :auth_role, procedure.oid, 'EXECUTE'
+                           ),
+                           NOT EXISTS (
+                               SELECT 1
+                               FROM pg_catalog.aclexplode(
+                                   COALESCE(
+                                       procedure.proacl,
+                                       pg_catalog.acldefault(
+                                           'f', procedure.proowner
+                                       )
+                                   )
+                               ) AS privilege
+                               WHERE privilege.grantee = 0
+                                 AND privilege.privilege_type = 'EXECUTE'
+                           )
+                    FROM pg_catalog.pg_proc AS procedure
+                    JOIN pg_catalog.pg_roles AS owner_role
+                      ON owner_role.oid = procedure.proowner
+                    WHERE procedure.oid = pg_catalog.to_regprocedure(:signature)
+                    """
+                ),
+                {
+                    "signature": SOURCE_SCOPE_HELPER,
+                    "runtime_role": RUNTIME_ROLE,
+                    "auth_role": AUTH_ROLE,
+                },
+            ).one()
+            assert source_scope[0] == harness.owner
+            assert source_scope[1] is True
+            assert list(source_scope[2] or []) == ["search_path=pg_catalog, pg_temp"]
+            assert source_scope[3:] == (True, False, True)
+
+            phase_g_acl = set(_catalogue(connection)["table_acl"])
+            assert phase_g_acl == {
+                *(
+                    (table_name, "SELECT")
+                    for table_name in PHASE_G_DEFINER_SELECT_TABLES
+                ),
+                ("attendance_records", "INSERT"),
+                ("external_attendance_records", "INSERT"),
+                ("teaching_events", "INSERT"),
+            }
+            atomic_definition = str(
+                connection.scalar(
+                    text(
+                        "SELECT pg_catalog.pg_get_functiondef("
+                        "pg_catalog.to_regprocedure(:signature))"
+                    ),
+                    {"signature": ATOMIC_HELPER},
+                )
+            )
+            assert "Department/Programme Teaching [1h]" in atomic_definition
+            assert "teaching_name_catalogue" not in atomic_definition
+            assert "teaching_targets" not in atomic_definition
+            phase_g_external_access = str(
+                connection.scalar(
+                    text(
+                        "SELECT pg_catalog.pg_get_functiondef("
+                        "pg_catalog.to_regprocedure(:signature))"
+                    ),
+                    {"signature": EXTERNAL_ACCESS_HELPER},
+                )
+            )
+            assert phase_g_external_access != pre_phase_g_external_access
+            assert "current_app_role() = 'secretary'" in phase_g_external_access
+            assert "current_app_role() = 'admin'" in phase_g_external_access
+            assert "competing_posting" in phase_g_external_access
+
+        _migrate(harness, "downgrade", PHASE_G_PREVIOUS_REVISION)
+        with harness.engine.connect() as connection:
+            assert connection.scalar(
+                text("SELECT pg_catalog.to_regprocedure(:signature)"),
+                {"signature": SOURCE_SCOPE_HELPER},
+            ) is None
+            assert set(_catalogue(connection)["table_acl"]) == {
+                *((table_name, "SELECT") for table_name in DEFINER_SELECT_TABLES),
+                ("attendance_records", "INSERT"),
+                ("external_attendance_records", "INSERT"),
+                ("teaching_events", "INSERT"),
+            }
+            assert str(
+                connection.scalar(
+                    text(
+                        "SELECT pg_catalog.pg_get_functiondef("
+                        "pg_catalog.to_regprocedure(:signature))"
+                    ),
+                    {"signature": EXTERNAL_ACCESS_HELPER},
+                )
+            ) == pre_phase_g_external_access
+    finally:
+        _recover_head(harness)
 
 
 @pytest.mark.migration_mutation

@@ -17,7 +17,6 @@ class ResidentAdhocTeachingRequest(BaseModel):
 
     teaching_date: date = Field(validation_alias=AliasChoices("teaching_date", "date"))
     start_time: time
-    teaching_name: str = Field(min_length=1, max_length=200)
     attended_posting_code: str | None = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -27,14 +26,6 @@ class ResidentAdhocTeachingRequest(BaseModel):
         max_length=50,
     )
     details_of_session: str | None = Field(default=None, max_length=2000)
-
-    @field_validator("teaching_name")
-    @classmethod
-    def _trim_teaching_name(cls, value: str) -> str:
-        trimmed = value.strip()
-        if not trimmed:
-            raise ValueError("teaching_name is required")
-        return trimmed
 
     @field_validator("attended_posting_code")
     @classmethod

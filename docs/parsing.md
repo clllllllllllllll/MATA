@@ -473,10 +473,11 @@ The SSR (Sub-Specialty Registrar) sheet has a different structure: MCR, Name, SI
 ## Evolved TTF format transition (future; no parser change in Phase A)
 
 The parser section below defines the **current legacy A-K** upload path. It
-remains the active behavior through additive B1, including
+remains the active physical upload behavior through Phase G, including
 `teaching_name_catalogue` seeding from `teaching_targets.details_of_training`.
-B1 does not introduce a dual parser, change the current upload contract, or
-backfill Column K data. Only final E2/B2 may remove that legacy path.
+B1 through Phase G do not introduce a dual parser, change the current upload
+contract, or backfill Column K data. Only final E2/B2 may remove that legacy
+path.
 
 Phase D mapping mutations are configuration-only and use the same scoped lock
 as TTF reconciliation. They do not change parsing, target reconciliation,
@@ -485,8 +486,10 @@ attendance.
 
 Phase F likewise makes no parser or workbook change. It uses a separately
 managed Teaching Name or Global Session Type UUID only when a new scheduled
-event is written; it does not read Column K, create a dual parser, backfill
-legacy events, or change Resident/Non-NHG runtime resolution.
+event is written; it does not read Column K, create a dual parser, or backfill
+legacy events. Phase G changes only the Resident/Non-NHG runtime use of those
+persisted identities; it does not alter the parser, workbook contract, or
+physical legacy catalogue structures.
 
 The future evolved TTF has exactly these A-J fields:
 
@@ -696,7 +699,7 @@ direct stable Teaching Name target links and unambiguous structured event
 evidence; no fuzzy text matching is used, and transitional text-only or
 unresolved evidence is excluded.
 
-**Orphan detection (post-write):** After catalogue regeneration, query for attendance records whose resolved session_type will no longer match any catalogue row. These are returned as warnings in the upload response — the upload still returns `200`.
+**Orphan detection (post-write):** After catalogue regeneration, query for legacy parser/configuration references whose resolved session type no longer matches any catalogue row. These are returned as warnings in the upload response — the upload still returns `200`; they do not alter Phase G event discovery or attendance authorization.
 
 **Concurrency:** The programme-global `posting_groups` PostgreSQL advisory lock is acquired before the reporting-period/programme scope advisory lock. A second upload for the same programme returns `409`, including a different reporting period; different programmes remain independent.
 
@@ -707,7 +710,7 @@ unresolved evidence is excluded.
 3. Upsert session types and posting codes, then load/lock existing target rows
 4. Reconcile targets by their stable natural identity; clear stale mapping links before deleting only stale targets
 5. Provision missing pending mappings for newly introduced target scopes and preserve existing matching links
-6. Delete and reseed the legacy Column K `teaching_name_catalogue` rows — one row per keyword per TTF row. Non-tracked rows (`is_tracked = false`) are still seeded for event visibility.
+6. Delete and reseed the legacy Column K `teaching_name_catalogue` rows — one row per keyword per TTF row. Non-tracked rows (`is_tracked = false`) remain transitional parser/configuration data; Phase G event visibility and attendance use persisted source evidence instead.
 7. Replace the programme's `posting_groups`: delete current programme rows, then upsert non-empty Column E rows, then run orphan detection
 8. Record the successful upload log, warnings, audit evidence, and Data Revalidation outcome in the same transaction as the reconciliation
 9. Commit once, then invalidate scoped caches
@@ -952,11 +955,11 @@ Deduplicate by MCR — use the later sheet's data if there's a conflict.
 
 ### TTF frequency target of 0
 
-**Confirmed rule:** A zero-target row and its teaching-name catalogue entries remain persisted, so the session type remains available for event visibility, event creation, and attendance capture. It contributes to neither the compliance numerator nor denominator and creates no target, percentage, shortage, surplus, reallocation, or clawback contribution.
+**Confirmed rule:** A zero-target row and its teaching-name catalogue entries remain persisted as transitional parser/configuration data. They do not control Phase G event visibility, scheduled-event creation, or attendance capture, which use persisted source evidence. The zero target contributes to neither the deferred compliance numerator nor denominator and creates no target, percentage, shortage, surplus, reallocation, or clawback contribution.
 
 
 ### TTF "No" in Tracked column
-The session type exists and events can be created, but attendance does NOT count toward compliance. The row is still seeded into `teaching_name_catalogue` so events are visible to residents. Both numerator and denominator exclude these sessions.
+The session type exists and events can be created, but attendance does NOT count toward compliance. The row is still seeded into `teaching_name_catalogue` for the physical parser path; Phase G event visibility does not read that catalogue. Both numerator and denominator exclude these sessions.
 
 ### Posting code with parenthetical suffix in RDB
 Examples: `TTSHCardio (CCU)`, `TTSHRespir(MICU)`, `KTPHOrtSrg(SportsMed)`
