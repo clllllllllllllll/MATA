@@ -109,7 +109,7 @@ The two capability groups are stable `NOLOGIN`, `NOINHERIT`, non-owner, `NOSUPER
 
 Before a protected root transaction performs ordinary application queries, PostgreSQL reloads the application session and current subject and installs signed transaction-local context for subject type/id, app role, explicit admin level, normalized programme scope, posting code, application-session id, and authorization fingerprint. The signature is bound to the transaction, backend process, database, and session login. Its verification also requires the backing session to remain unrevoked and strictly before both deadlines. A SQLAlchemy transaction hook reinstalls and revalidates context after an in-request commit or rollback; transaction end clears cached context and expires ORM identity-map state.
 
-All 36 application tables have RLS enabled in the local implementation. Ninety-two policies target only `mata_app_runtime` at current Alembic head `20260804_000033`. `app_sessions`, `rate_limit_buckets`, `programme_institution_posting_map`, `surplus_ledger`, `period_snapshots`, and `clawback_records` have no direct runtime table privilege and are reachable only through explicitly reviewed helpers where a helper exists. The Phase F scheduled-event source helpers are runtime-only and validate the signed subject context, source identity, reporting period, and programme/posting scope for scheduled inserts and updates without treating row provenance as the current editor. `mata_auth_internal` has no direct application-table or sequence privileges. `PUBLIC`, browser roles, and `service_role` receive no application-table or H-E helper access.
+All 36 application tables have RLS enabled in the local implementation. Ninety-two policies target only `mata_app_runtime` at current Alembic head `20260804_000034`. `app_sessions`, `rate_limit_buckets`, `programme_institution_posting_map`, `surplus_ledger`, `period_snapshots`, and `clawback_records` have no direct runtime table privilege and are reachable only through explicitly reviewed helpers where a helper exists. The Phase F scheduled-event source helpers are runtime-only and validate the signed subject context, source identity, reporting period, and programme/posting scope for scheduled inserts and updates without treating row provenance as the current editor. Phase G adds the runtime-only authorized source-scope helper and replaces Resident/Non-NHG selection, attendance, and atomic ad-hoc classification with explicit source evidence or deterministic both-null legacy evidence; it grants no direct resident access to Teaching Name, catalogue, or target tables. `mata_auth_internal` has no direct application-table or sequence privileges. `PUBLIC`, browser roles, and `service_role` receive no application-table or H-E helper access.
 
 Revision `20260727_000027` owns exactly eight minimal lifecycle helpers: three auth-only issuance wrappers, three shared resolve/touch/CSRF helpers, one runtime-only rotation helper, and the auth-only `revoke_app_session_family_for_logout(bytea,bytea,text)` helper. Runtime has no execute grant on the logout helper; the helper is termination-only and returns no identity or authorization context. Logout normally requires token and CSRF digests from one active or rotation-revoked row. It may also consume an active-child-token/rotated-ancestor-CSRF pair only when both rows have the same immutable subject, generation, family, and authentication source and remain within the required deadlines. Callers never supply a subject, row, or family identifier.
 
@@ -128,7 +128,8 @@ FastAPI role/scope dependencies remain mandatory. RLS is defense in depth and mu
 - `programme_scope = NULL` or empty means no programme access.
 - Secretary scope is `posting_code`; Programme PC scope is `programme_scope`.
 - NHG Resident current posting is always derived server-side from `resident_postings` at request time.
-- Non-NHG Resident date-specific programme and posting authorization is not derived from native `resident_postings` or token claims; derive both from the date-matching `external_resident_postings` row where event/ad-hoc logic needs a selected date.
+- Non-NHG scheduled-event authorization is not derived from native `resident_postings` or token claims; derive the date-specific posting and, where an explicit pool/PC source requires it, programme from the date-matching `external_resident_postings` row.
+- Non-NHG ad-hoc authorization derives only one date-specific posting from the sole matching `external_resident_postings` row. It does not require a programme value or permit a client-selected programme/department.
 - Non-NHG programme/institution selection resolves only through `programme_institution_posting_map`. It must not reuse native teaching mappings, Secretary pools/capabilities, teaching targets, posting metadata, or constructed posting-code strings.
 - Emergency `bearer_compat` external-resident tokens must not carry current posting or posting schedule claims as trusted authorization data.
 - User-facing labels are NHG Resident and Non-NHG Resident. Existing backend/internal names such as `resident`, `external_resident`, `/external/*`, and `external_attendance_records` remain acceptable.
@@ -308,8 +309,10 @@ Secretary derived application identity:
 ### Shared Teaching Name management authority (Phase C and Phase D)
 
 Phase C activates the name lifecycle routes and Phase D adds a PC-only mapping
-backend while preserving the current catalogue-backed parser, event, attendance,
-resident, and compliance workflows until the later E2/B2 cutover.
+backend while preserving the current catalogue-backed parser and deferred
+compliance workflow until the later E2/B2 cutover. Phase G separately moves
+Resident/Non-NHG scheduled-event discovery and attendance to persisted source
+identity without changing the physical parser structures.
 
 - Teaching Name pool access is scoped by `(reporting_period_id, programme_code)`.
   Both a Programme PC with the programme in current scope and a Secretary with
@@ -750,11 +753,13 @@ Still deferred beyond this auth/account roadmap alignment:
 
 ## 5A Guardrails Preserved
 
-This contract and patch do not change the following, except for the
-history-preserving AUD-M-04 resubmission clarification called out explicitly:
-- NHG Resident scheduled attendance workflow.
-- Date-first NHG Resident ad-hoc teaching flow with attended TTSH department dropdown.
-- Catalogue-backed ad-hoc options.
+This historical guardrail list is superseded where Phase G explicitly changed
+runtime source handling; the AUD-M-04 resubmission clarification remains:
+- NHG Resident scheduled attendance workflow, now authorized from persisted
+  source identity (or deterministic legacy evidence).
+- Date-first NHG Resident ad-hoc teaching flow with one server-derived posting
+  and fixed one-hour record; no attended-department dropdown.
+- No catalogue-backed ad-hoc options.
 - Server-side posting derivation from `resident_postings`.
 - Display/audit-only treatment of `details_of_session`.
 - Public holiday hard-blocking.

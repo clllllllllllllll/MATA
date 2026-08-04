@@ -452,9 +452,10 @@ Fields (top to bottom):
 
 ### Evolved Teaching Name management (future UX; not implemented in Phase A)
 
-The current schedule, TTF upload, and catalogue-backed controls remain the
-legacy A-K transition UI through B1. Phase A introduces no page, route, or
-component. The later evolved UI uses these exact labels:
+The current legacy parser/configuration controls remain the legacy A-K
+transition UI through B1. Phase A introduces no page, route, or component.
+Scheduled-event runtime source selection is persisted-ID based; the later
+evolved UI uses these exact labels:
 
 - The schedule/table domain column is **Name of Teaching**.
 - The Secretary management page is **Update Names of Teaching** and its primary
@@ -534,15 +535,15 @@ Modal (640px wide). Three-step flow.
 **Step 2 — Session.**
 
 - Two-column row: Start time + fixed compliance type readout.
-- TTSH department/programme dropdown appears after the date-derived assigned posting is available.
-- Teaching/session dropdown is disabled until a TTSH department/programme is selected; current legacy A-K options are catalogue-backed from TTF Column K / `teaching_name_catalogue`.
+- The date-derived posting is a read-only server-provided value; there is no attended-department/programme selector.
+- The teaching/session control is a read-only `Department/Programme Teaching [1h]` value. The client must not offer arbitrary Teaching Name, mapping, target, catalogue, or Column K selection.
 - Optional details text area for display/audit notes only.
-- Reminder card shows assigned posting for compliance and selected attended TTSH department for audit/display.
+- Reminder card shows the derived posting for compliance and audit/display.
 - Inline copy: *"Ad-hoc teachings count as Department/Programme Teaching [1h] under your assigned posting."*
 
 **Step 3 — Review.**
 
-- Recap card with mono date, start, selected teaching/session, assigned posting for compliance, attended TTSH department, and fixed compliance type *Department/Programme Teaching [1h]*.
+- Recap card with mono date, start, derived posting, and fixed teaching/compliance type *Department/Programme Teaching [1h]*.
 - Purple-tinted *Confirm submission* callout.
 - *Back* and dark-green *Submit* button.
 
@@ -550,7 +551,7 @@ Modal (640px wide). Three-step flow.
 
 - Large green check icon.
 - Heading: *"Submitted — your ad-hoc teaching is recorded."*
-- Subtext: *"Counted as Department/Programme Teaching [1h] under your assigned posting when the target is available."*
+- Subtext: *"Recorded as Department/Programme Teaching [1h] under your assigned posting."*
 - Summary card.
 - Actions: *Submit another* (ghost) · *Close* / *View past attendance →* (primary).
 
@@ -661,7 +662,7 @@ Same shell pattern as S8, with the external scope made explicit.
 - Body: *"Use ad-hoc submission to record sessions you attended. Dates without a posting schedule row will show as unavailable."*
 - Primary action: *Submit Ad-hoc Teaching*.
 
-**Non-NHG ad-hoc copy.** The ad-hoc modal uses the same date → attended TTSH department/programme → teaching/session → review shape, but the review and success copy must state: *"Recorded for forwarding to your home cluster. Not included in NHG compliance."*
+**Non-NHG ad-hoc copy.** The ad-hoc modal uses the same date → fixed record → review shape, with a read-only date-derived posting; the review and success copy must state: *"Recorded for forwarding to your home cluster. Not included in NHG compliance."*
 
 ---
 

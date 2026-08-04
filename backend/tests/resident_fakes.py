@@ -139,6 +139,7 @@ class FakeResidentSession:
         self.other_posting_event_id = str(uuid4())
         self.invisible_event_id = str(uuid4())
         self.global_event_id = str(uuid4())
+        self.global_session_type_id = str(uuid4())
         self.weekend_event_id = str(uuid4())
         self.external_resident_id = str(uuid4())
         self.other_external_resident_id = str(uuid4())
@@ -341,7 +342,12 @@ class FakeResidentSession:
             self._target("TTSHCardio", self.adhoc_session_type_id),
         ]
         self.global_session_types = [
-            {"name": "Department Meeting [1h]", "duration_hours": Decimal("1.0"), "is_active": True}
+            {
+                "id": self.global_session_type_id,
+                "name": "Department Meeting [1h]",
+                "duration_hours": Decimal("1.0"),
+                "is_active": True,
+            }
         ]
         self.public_holidays = [
             {"holiday_date": date(2026, 5, 1), "name": "Labour Day"},
@@ -353,7 +359,13 @@ class FakeResidentSession:
             self._event(self.future_event_id, "TTSHCardio", "Journal Club", future_event_day),
             self._event(self.other_posting_event_id, "TTSHNeuro", "Skills Teaching", recent_event_day),
             self._event(self.invisible_event_id, "TTSHCardio", "Unmapped Teaching", recent_event_day),
-            self._event(self.global_event_id, "TTSHCardio", "Department Meeting [1h]", recent_event_day),
+            self._event(
+                self.global_event_id,
+                "TTSHCardio",
+                "Department Meeting [1h]",
+                recent_event_day,
+                global_session_type_id=self.global_session_type_id,
+            ),
             self._event(self.weekend_event_id, "TTSHCardio", "Journal Club", weekend_event_day),
         ]
         self.attendance = [
@@ -449,6 +461,10 @@ class FakeResidentSession:
         *,
         start_time: time = time(10, 0),
         duration_hours: Decimal = Decimal("1.0"),
+        teaching_name_id: str | None = None,
+        global_session_type_id: str | None = None,
+        source_reporting_period_id: str | None = None,
+        source_programme_code: str | None = None,
     ) -> dict:
         return {
             "id": event_id,
@@ -461,6 +477,11 @@ class FakeResidentSession:
             "end_time": time(11, 0),
             "duration_hours": duration_hours,
             "session_type_id": self.session_type_id,
+            "teaching_name_id": teaching_name_id,
+            "global_session_type_id": global_session_type_id,
+            "source_reporting_period_id": source_reporting_period_id,
+            "source_programme_code": source_programme_code,
+            "session_type": f"{teaching_name} [{duration_hours}h]",
             "series_id": None,
             "cme_points_awarded": False,
             "smc_event_code": None,
@@ -1285,7 +1306,13 @@ class FakeResidentSession:
             )
             return FakeResult()
 
-        if "FROM teaching_events" in sql and "WHERE id = :event_id" in sql:
+        if (
+            "FROM teaching_events" in sql
+            and (
+                "WHERE id = :event_id" in sql
+                or "WHERE teaching_events.id = :event_id" in sql
+            )
+        ):
             rows = [row for row in self.events if row["id"] == str(payload["event_id"])]
             return FakeResult(rows=rows)
 

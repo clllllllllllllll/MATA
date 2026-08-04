@@ -136,46 +136,124 @@ def _detail(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _catalogue_authorization_clause(
+def _source_authorization_clause(
     *,
-    catalogue_alias: str,
-    programme_clause: str,
+    programme_value_sql: str,
     reporting_period_id: UUID | None,
 ) -> str:
-    """Scope a catalogue authorization to the event's unambiguous period.
+    """Scope a report row through persisted source or attendance evidence.
 
-    Historical external-attendance reports may read an inactive selected period, so
-    this intentionally uses date containment rather than current effective status.
-    Without an explicit period, overlapping period windows fail closed by allowing
-    no arbitrary catalogue row to authorize the event.
+    Explicit pool events use their exact ``teaching_name_id`` source scope.  Global
+    and both-null legacy/ad-hoc events have no pool programme identity, so they use
+    only the exact date-matched Non-NHG posting or a persisted PC event programme.
+    This deliberately never compares an event's display text to the catalogue.
     """
-    if reporting_period_id is not None:
+    source_programme_clause = (
+        f"source_scope.programme_code = {programme_value_sql}"
+    )
+    event_programme_clause = (
+        f"te.created_for_programme_code = {programme_value_sql}"
+    )
+    schedule_programme_clause = (
+        f"external_scope.programme_code = {programme_value_sql}"
+    )
+
+    def exact_schedule_clause(programme_clause: str) -> str:
         return f"""
             EXISTS (
                 SELECT 1
-                FROM teaching_name_catalogue {catalogue_alias}
-                WHERE {catalogue_alias}.reporting_period_id = :reporting_period_id
-                  AND {catalogue_alias}.posting_code = te.posting_code
-                  AND {catalogue_alias}.keyword = te.teaching_name
+                FROM external_resident_postings external_scope
+                WHERE external_scope.external_resident_id
+                    = ear.external_resident_id
+                  AND external_scope.posting_code = te.posting_code
+                  AND external_scope.start_date <= te.event_date
+                  AND COALESCE(
+                          external_scope.end_date,
+                          'infinity'::date
+                      ) >= te.event_date
+                  AND external_scope.programme_code IS NOT NULL
                   AND {programme_clause}
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM external_resident_postings competing_scope
+                      WHERE competing_scope.external_resident_id
+                          = ear.external_resident_id
+                        AND competing_scope.start_date <= te.event_date
+                        AND COALESCE(
+                                competing_scope.end_date,
+                                'infinity'::date
+                            ) >= te.event_date
+                        AND competing_scope.id <> external_scope.id
+                  )
             )
         """
+
+    pool_schedule_clause = exact_schedule_clause(
+        "external_scope.programme_code = source_scope.programme_code"
+    )
+    event_schedule_clause = exact_schedule_clause(
+        "external_scope.programme_code = te.created_for_programme_code"
+    )
+    scoped_schedule_clause = exact_schedule_clause(schedule_programme_clause)
+    if reporting_period_id is not None:
+        pool_period_clause = (
+            "source_scope.reporting_period_id = :reporting_period_id"
+        )
+        non_pool_period_clause = "true"
+    else:
+        pool_period_clause = """
+            EXISTS (
+                SELECT 1
+                FROM reporting_periods source_period
+                WHERE source_period.id = source_scope.reporting_period_id
+                  AND te.event_date BETWEEN source_period.start_date AND source_period.end_date
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM reporting_periods competing_period
+                      WHERE competing_period.id <> source_period.id
+                        AND te.event_date BETWEEN competing_period.start_date
+                            AND competing_period.end_date
+                  )
+            )
+        """
+        non_pool_period_clause = """
+            EXISTS (
+                SELECT 1
+                FROM reporting_periods applicable_period
+                WHERE te.event_date BETWEEN applicable_period.start_date
+                    AND applicable_period.end_date
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM reporting_periods competing_period
+                      WHERE competing_period.id <> applicable_period.id
+                        AND te.event_date BETWEEN competing_period.start_date
+                            AND competing_period.end_date
+                  )
+            )
+        """
+
     return f"""
-        EXISTS (
-            SELECT 1
-            FROM reporting_periods applicable_period
-            JOIN teaching_name_catalogue {catalogue_alias}
-              ON {catalogue_alias}.reporting_period_id = applicable_period.id
-            WHERE te.event_date BETWEEN applicable_period.start_date AND applicable_period.end_date
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM reporting_periods competing_period
-                  WHERE competing_period.id <> applicable_period.id
-                    AND te.event_date BETWEEN competing_period.start_date AND competing_period.end_date
-              )
-              AND {catalogue_alias}.posting_code = te.posting_code
-              AND {catalogue_alias}.keyword = te.teaching_name
-              AND {programme_clause}
+        (
+            te.teaching_name_id IS NOT NULL
+            AND te.global_session_type_id IS NULL
+            AND {source_programme_clause}
+            AND ({pool_period_clause})
+            AND ({pool_schedule_clause})
+        )
+        OR (
+            te.teaching_name_id IS NULL
+            AND ({non_pool_period_clause})
+            AND (
+                (
+                    te.created_for_programme_code IS NOT NULL
+                    AND {event_programme_clause}
+                    AND ({event_schedule_clause})
+                )
+                OR (
+                    te.created_for_programme_code IS NULL
+                    AND ({scoped_schedule_clause})
+                )
+            )
         )
     """
 
@@ -231,18 +309,16 @@ def _base_where(
     if not master_admin:
         params["programme_scope"] = sorted(programme_scope)
         where.append(
-            _catalogue_authorization_clause(
-                catalogue_alias="tnc_scope",
-                programme_clause="tnc_scope.programme_code = ANY(:programme_scope)",
+            _source_authorization_clause(
+                programme_value_sql="ANY(:programme_scope)",
                 reporting_period_id=reporting_period_id,
             )
         )
     if clean_programme_code is not None:
         params["programme_code"] = clean_programme_code
         where.append(
-            _catalogue_authorization_clause(
-                catalogue_alias="tnc_programme",
-                programme_clause="tnc_programme.programme_code = :programme_code",
+            _source_authorization_clause(
+                programme_value_sql=":programme_code",
                 reporting_period_id=reporting_period_id,
             )
         )
@@ -307,6 +383,16 @@ _SELECT_COLUMNS = """
     te.updated_at AS event_updated_at
 """
 
+_EXTERNAL_ATTENDANCE_FROM = """
+    FROM external_attendance_records ear
+    JOIN external_residents er ON er.id = ear.external_resident_id
+    JOIN teaching_events te ON te.id = ear.teaching_event_id
+    LEFT JOIN LATERAL mata_rls.scheduled_event_source_scope(te.id) AS source_scope
+      ON true
+    LEFT JOIN posting_codes pc ON pc.code = te.posting_code
+    LEFT JOIN session_types st ON st.id = te.session_type_id
+"""
+
 
 async def list_external_attendance(
     db: AsyncSession,
@@ -346,11 +432,7 @@ async def list_external_attendance(
             WITH filtered_external_attendance AS (
                 SELECT
                     {_SELECT_COLUMNS}
-                FROM external_attendance_records ear
-                JOIN external_residents er ON er.id = ear.external_resident_id
-                JOIN teaching_events te ON te.id = ear.teaching_event_id
-                LEFT JOIN posting_codes pc ON pc.code = te.posting_code
-                LEFT JOIN session_types st ON st.id = te.session_type_id
+                {_EXTERNAL_ATTENDANCE_FROM}
                 WHERE {where_sql}
             )
             SELECT
@@ -374,11 +456,7 @@ async def list_external_attendance(
                     ear.id,
                     ear.status,
                     te.is_adhoc
-                FROM external_attendance_records ear
-                JOIN external_residents er ON er.id = ear.external_resident_id
-                JOIN teaching_events te ON te.id = ear.teaching_event_id
-                LEFT JOIN posting_codes pc ON pc.code = te.posting_code
-                LEFT JOIN session_types st ON st.id = te.session_type_id
+                {_EXTERNAL_ATTENDANCE_FROM}
                 WHERE {where_sql}
             )
             SELECT
@@ -429,11 +507,7 @@ async def get_external_attendance(
             /* admin_external_attendance:get */
             SELECT
                 {_SELECT_COLUMNS}
-            FROM external_attendance_records ear
-            JOIN external_residents er ON er.id = ear.external_resident_id
-            JOIN teaching_events te ON te.id = ear.teaching_event_id
-            LEFT JOIN posting_codes pc ON pc.code = te.posting_code
-            LEFT JOIN session_types st ON st.id = te.session_type_id
+            {_EXTERNAL_ATTENDANCE_FROM}
             WHERE {where_sql}
             """
         ),
@@ -531,11 +605,7 @@ async def export_external_attendance_xlsx(
             /* admin_external_attendance:export */
             SELECT
                 {_SELECT_COLUMNS}
-            FROM external_attendance_records ear
-            JOIN external_residents er ON er.id = ear.external_resident_id
-            JOIN teaching_events te ON te.id = ear.teaching_event_id
-            LEFT JOIN posting_codes pc ON pc.code = te.posting_code
-            LEFT JOIN session_types st ON st.id = te.session_type_id
+            {_EXTERNAL_ATTENDANCE_FROM}
             WHERE {where_sql}
             ORDER BY te.event_date DESC, te.start_time DESC, ear.submitted_at DESC
             """

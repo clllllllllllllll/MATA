@@ -409,16 +409,18 @@ No push/live-update channel is implied in the current backend. After successful 
 
 ---
 
-## Shared Teaching Name pool, mapping API, and scheduled-event identity (Phases C, D, and F)
+## Shared Teaching Name pool, mapping API, and scheduled-event identity/runtime (Phases C, D, F, and G)
 
 Revision `20260803_000031` activates the shared-pool lifecycle and
 `20260803_000032` adds the narrow E1 TTF mapping-reconciliation helper. Phase D
 adds the guarded Programme-PC mapping API below. Revision `20260804_000033`
 adds explicit identity to new scheduled events: a pool event carries one
 `teaching_name_id`, a global event carries one `global_session_type_id`, and
-both retain an immutable `teaching_name` display snapshot. This does not alter
-Resident/Non-NHG runtime resolution or cut over the retained A-K catalogue
-path.
+both retain an immutable `teaching_name` display snapshot. Revision
+`20260804_000034` uses those persisted identities for Resident/Non-NHG runtime
+discovery and attendance where present; both-null legacy rows retain
+deterministic persisted evidence only. The physical A-K parser/catalogue path
+remains until E2/B2.
 
 ### Lifecycle routes
 
@@ -612,8 +614,8 @@ Upload Teaching Target File Excel.
 - **Body:** `file` (xlsx), `reporting_period_id` (UUID), `programme_code` (string)
 - **Processing:** See `docs/parsing.md` § TTF Parser
 - **Behaviour:** Stable target reconciliation within `(reporting_period_id, programme_code)` scope. Re-upload remains allowed regardless of existing attendance. Matching `(r_year, posting_code, session_type_id)` targets retain their UUID; stale mapped targets leave their mapping rows pending rather than deleting or redirecting them. The TTF is also the explicit programme-scoped replacement for posting-group configuration: blank or omitted Column E membership removes the prior group row for that posting.
-- **Target validation:** `monthly_target` must be a non-negative whole number. `0` is accepted and remains catalogue-seeded, event-visible, and attendance-capable, but is excluded from compliance aggregation.
-- **Orphan detection:** After catalogue regeneration, checks for attendance records whose `teaching_name` no longer has a `teaching_name_catalogue` row. These are returned as warnings — upload still returns `200`.
+- **Target validation:** `monthly_target` must be a non-negative whole number. `0` is accepted and remains catalogue-seeded for the physical transition path, but it does not determine Phase G event visibility or attendance eligibility.
+- **Orphan detection:** After catalogue regeneration, checks for legacy parser/configuration references whose `teaching_name` no longer has a `teaching_name_catalogue` row. These are returned as warnings — upload still returns `200`; they do not change Phase G runtime eligibility.
 - **Concurrency:** The programme-global `posting_groups` advisory lock is acquired before the existing reporting-period/programme scope lock. A concurrent upload for the same programme, including one for a different reporting period, returns controlled `409`; different programmes remain independent.
 - **Audit log:** Writes `upload_logs` row with `upload_type = 'ttf'`
 - **Response:**
@@ -932,7 +934,7 @@ Correct a single parsed teaching target row (mid-period correction).
 - **Editable fields only:** `monthly_target`, `is_tracked`, `is_reallocatable`, `tag`, and transitional `details_of_training`
 - **Target validation:** `monthly_target` accepts non-negative whole numbers including `0`; negative and fractional values are rejected.
 - **Identity columns (locked):** `session_type_id`, `posting_code`, `programme_code`, `r_year`, and reporting-period identity cannot be changed by this route. Full TTF re-upload is required for structural changes.
-- **Side effect:** When transitional `details_of_training` changes, the corresponding `teaching_name_catalogue` rows are regenerated for that target scope. Keyword changes take effect immediately for current catalogue/event visibility reads.
+- **Side effect:** When transitional `details_of_training` changes, the corresponding `teaching_name_catalogue` rows are regenerated for that target scope. Keyword changes affect only the retained parser/configuration path, not Phase G Resident/Non-NHG runtime eligibility.
 - **Body:**
 ```json
 {
@@ -1464,7 +1466,7 @@ Create a programme-owned scheduled teaching event.
 }
 ```
 - **Backend writes:** `teaching_events.created_for_programme_code = programme_code`, `created_by_role = 'programme_pc'`, `is_adhoc = false`, the selected source ID, and the immutable display snapshot. `created_by_role` is role/source metadata only; actor names are not stored on the event. Event and audit evidence commit atomically, then scoped caches are invalidated.
-- **Resident visibility:** Residents can see the event only when their `programme_code` matches `created_for_programme_code` and the event also passes posting/date/catalogue visibility rules.
+- **Resident visibility:** Residents can see the event only when their `programme_code` matches `created_for_programme_code` and the event also passes posting/date and persisted-source eligibility rules.
 
 ### PUT `/admin/programme-teaching-events/{id}`
 
@@ -1761,10 +1763,12 @@ history only. The contract below governs current scheduled-event options.
   rows remains distinct. A pool option has `duration_hours: 1.0`; a global
   option has its configured duration. This selection endpoint does not query a
   catalogue mapping, `is_tracked`, or resident compliance.
-- **Resident visibility/compliance in Phase F:** event creation stores the
-  source ID and immutable `teaching_name` snapshot. Resident visibility and
-  compliance remain on the retained pre-Phase-G runtime path; the source-ID
-  cutover does not change its catalogue/global rules.
+- **Resident visibility/attendance in Phase G:** event creation stores the
+  source ID and immutable `teaching_name` snapshot. Runtime selection and
+  attendance use the explicit pool identity with an exact reporting-period and
+  programme match, or the explicit global identity first. Both-null legacy rows
+  retain deterministic persisted evidence; neither path uses catalogue or
+  display-text inference.
 
 - **Response:**
 
@@ -1792,7 +1796,7 @@ history only. The contract below governs current scheduled-event options.
 ```
 Identity: This endpoint does not deduplicate distinct `teaching_names` rows by display text. A client must return the opaque ID selected by the user, never a display string.
 
-Session type: a Phase F pool option is a source identity rather than a catalogue mapping. Its one-hour scheduling duration does not represent a resident-compliance classification. The retained resident runtime continues its documented catalogue/global resolution until Phase G.
+Session type: a pool option is a source identity rather than a catalogue mapping. Its one-hour scheduling duration does not represent a resident-compliance classification. Phase G runtime uses its persisted identity, not catalogue/global text matching.
 
 The following legacy `is_tracked` wording is not part of the Phase F option response or scheduling contract.
 
@@ -1807,7 +1811,7 @@ Note: is_global = true entries come from global_session_types and are always exc
 List teaching events available for submission.
 
 - **Auth:** resident only
-- **Period resolution:** enumerate every effectively active reporting period using stored `status` plus due `activate_on` / `deactivate_on` transitions. Residents do not select a period. Each candidate event must fall inside exactly one of those periods; its catalogue and posting checks use that same period ID. Events in inactive/expired periods are excluded, and overlapping active periods for an event date fail closed with `409`.
+- **Period resolution:** enumerate every effectively active reporting period using stored `status` plus due `activate_on` / `deactivate_on` transitions. Residents do not select a period. Each candidate event must fall inside exactly one of those periods; its persisted-source and posting checks use that same period ID. Events in inactive/expired periods are excluded, and overlapping active periods for an event date fail closed with `409`.
 - **Visibility gating:**
   1. If the resident has no `resident_postings` rows in any effectively active period → no assigned-posting visibility; return empty list with `reason: "posting_schedule_unavailable"` if no other allowed source can produce events. A missing posting covering today does not suppress historical rows.
   2. Assigned posting secretary events: derive assigned posting from `resident_postings` covering each event date with `status IN ('active', 'loa_working')`. Secretary-created events at that `posting_code` are eligible.
@@ -1817,7 +1821,7 @@ List teaching events available for submission.
   6. Filter to `event_date <= today` (no future events).
   7. Exclude events already submitted by this resident.
   8. Apply the event-date-specific effectively active reporting-period check; never resolve historical visibility from today.
-  9. Apply exact canonical `teaching_name_catalogue` / global-session matching in the applicable source context. Normal assigned-posting events resolve by `(reporting period, resident programme, assigned posting, phase R-year, canonical name)`. An approved native-programme source outside the assigned posting remains eligible under the native-source rules and is projected for compliance as described below. Global session type exclusion/visibility follows the same source eligibility rules.
+   9. For a source-backed scheduled event, apply an exact `teaching_name_id` source reporting-period/programme match or an explicit `global_session_type_id` first. For a both-null legacy event, use only deterministic persisted event/ownership/posting/date evidence. Do not query the catalogue, target mappings, Column K, or display text to classify an event.
   10. Do not show PC-created events for non-native programmes.
   11. Do not show secretary-created events from arbitrary TTSH departments unless they are either the resident's assigned/current posting or the resident's native programme department.
 - **Query params:** `date_from`, `date_to`, `teaching_name`, `posting_code`. Filters apply to the combined cross-period collection and cannot widen resident scope.
@@ -1828,7 +1832,7 @@ List teaching events available for submission.
 - **Scenario B:** Native GRM Resident John is posted to TTSH Rehab. John sees TTSH Rehab Department Secretary events because he is posted there, TTSH GRM Department Secretary events because GRM is his native programme department, and GRM PC events because GRM is his native programme.
 - **Scenario C:** Native Rehab Resident Mary is posted to TTSH GRM. Mary sees TTSH GRM Department Secretary events because she is posted there, TTSH Rehab Department Secretary events because Rehab is her native programme department, and Rehab PC events because Rehab is her native programme.
 
-**Native-programme compliance attribution:** For an approved native-programme event outside the resident's assigned posting, resolve the assigned posting from `resident_postings` on the event date, preserve the original event, and project exactly one `Department/Programme Teaching [1h]` session under the assigned posting's TTF target. Do not return a compliance result for the event creator posting or `programmes.native_teaching_posting_code`. An event at the assigned posting follows normal catalogue resolution unless another explicit rule applies.
+**Future native-programme compliance attribution:** For an approved native-programme event outside the resident's assigned posting, a future compliance read resolves the assigned posting from `resident_postings` on the event date and preserves the original event. Phase G does not calculate or reclassify compliance, consult mappings, or alter the raw event/attendance evidence.
 
 ### GET `/resident/submission-periods`
 
@@ -1836,7 +1840,7 @@ Return the effectively active reporting-period metadata used by the Submission P
 
 - **Auth:** NHG Resident or registered Non-NHG Resident from the authenticated session.
 - **Response:** `{ "periods": [{ "id", "label", "start_date", "end_date" }] }`
-- **Security/UX:** this endpoint does not accept a resident ID or a selected period and does not authorize access to events. `GET /resident/events` independently enforces period, posting, programme ownership, catalogue, and duplicate checks. The frontend must not render a resident reporting-period selector.
+- **Security/UX:** this endpoint does not accept a resident ID or a selected period and does not authorize access to events. `GET /resident/events` independently enforces period, posting, programme ownership, persisted-source, and duplicate checks. The frontend must not render a resident reporting-period selector.
 
 ### POST `/resident/attendance`
 
@@ -1847,7 +1851,7 @@ Submit attendance for one or more events.
 - **Backend:**
   1. Validates event exists and is visible through the resident's allowed scheduled-event sources: assigned/current posting secretary event, native programme TTSH department secretary event, or native programme PC-created event
   2. Validates `event_date` falls within a `resident_postings` row with `status IN ('active', 'loa_working')` → `422` if outside tenure
-  3. For an assigned-posting event, validates the exact canonical name in `(reporting period, resident programme, assigned posting, phase R-year)`. For an approved native-programme event outside that posting, validates the allowed source and the assigned-posting `Department/Programme Teaching [1h]` target used by the read-time projection; it does not require the creator posting to become a compliance result.
+   3. Validates persisted event evidence: an explicit pool source must match the event-date reporting period and native programme exactly; an explicit global source is global-first; a both-null legacy event is not text-inferred. For an approved native-programme event outside the assigned posting, it validates only the allowed source and does not assign or rewrite a compliance target.
   4. Validates programme ownership: events with `created_for_programme_code` set must match the resident's `programme_code`
   5. Validates no active duplicate; a submitted-only unique index on
      `(resident_id, teaching_event_id)` is the database race boundary.
@@ -1886,25 +1890,26 @@ Remove own submitted attendance without hard-deleting its history.
 
 ### GET `/resident/adhoc-teaching-options`
 
-Return assigned-posting context, attended TTSH department options, and catalogue-backed teaching options for the ad-hoc form.
+Return date-derived posting context and one fixed ad-hoc option.
 
 - **Auth:** NHG Resident or Non-NHG Resident (`resident` or `external_resident` role)
 - **Query params:**
   - `teaching_date` required.
-  - `attended_posting_code` optional. This is the selected TTSH department/programme posting from the attended department dropdown. Older/alternate client field name `attended_department_posting_code` is equivalent if retained for compatibility.
+  - `attended_posting_code` optional. If supplied, it must equal the sole
+    server-derived posting; alternate values return `422`.
 - **NHG Resident backend:**
   1. Derives `assigned_posting_code` from `resident_postings` for `teaching_date` with `status IN ('active', 'loa_working')`.
-  2. Uses resident native `programme_code` from `residents.programme_code`.
-  3. Builds `attended_posting_options[]` from validated TTSH department/programme posting codes backed by `posting_codes` and configured mapping. Do not generate posting codes by string concatenation or regex.
-  4. Returns `options[]` from current legacy A-K TTF Column K / `teaching_name_catalogue` for the selected attended department posting, scoped to the resident's native programme and `r_year`.
-  5. Returns the assigned posting as `posting_code`/`posting_label`; the selected attended posting remains separate.
-  6. If no posting matches, multiple postings match, or no attended-posting/catalogue options exist, returns `available = false` with the corresponding controlled `reason`/`message`; it does not guess.
-  7. Fixed NHG compliance attribution is resolved and enforced by `POST /resident/adhoc-teaching`, not by this options response.
+  2. Requires exactly one matching posting. It returns that posting as both the
+    assigned and attended option; it never infers a different department/site.
+  3. Returns exactly one option: `Department/Programme Teaching [1h]`, duration
+    `1.00`, null `session_type_id`, and `is_global = false`.
+  4. It does not query `teaching_name_catalogue`, `teaching_targets`,
+    `details_of_training`, or Column K.
 - **Non-NHG Resident backend:**
   1. Derives the date-specific host posting from `external_resident_postings` for `teaching_date`.
   2. If no schedule row matches the date, returns `available = false` and `reason = "posting_unavailable"`.
-  3. Uses attended department selection only for option filtering/export context.
-  4. Returns catalogue-backed options for the selected attended posting. Non-NHG submissions remain outside NHG compliance.
+  3. Uses that schedule posting as the only attended option and returns the same
+    fixed one-hour option. Non-NHG submissions remain outside NHG compliance.
 - **Response example:**
 ```json
 {
@@ -1912,32 +1917,29 @@ Return assigned-posting context, attended TTSH department options, and catalogue
   "teaching_date": "2026-04-15",
   "available": true,
   "reporting_period_id": "uuid",
-  "posting_code": "TTSHRehab",
-  "posting_label": "TTSH Rehabilitation Medicine",
+  "posting_code": "TTSHGerMed",
+  "posting_label": "TTSH Geriatric Medicine",
   "r_year": "R2",
   "attended_posting_options": [
     {
       "posting_code": "TTSHGerMed",
-      "label": "TTSH Geriatric Medicine",
-      "programme_code": "GERI",
-      "programme_name": "Geriatric Medicine"
+      "label": "TTSH Geriatric Medicine"
     }
   ],
   "selected_attended_posting_code": "TTSHGerMed",
   "selected_attended_posting_label": "TTSH Geriatric Medicine",
   "options": [
     {
-      "teaching_name": "Journal Club",
-      "keyword": "Journal Club",
-      "session_type": "Journal Club",
-      "session_type_name": "Journal Club",
-      "session_type_id": "uuid",
+      "teaching_name": "Department/Programme Teaching [1h]",
+      "keyword": "Department/Programme Teaching [1h]",
+      "session_type": "Department/Programme Teaching [1h]",
+      "session_type_name": "Department/Programme Teaching [1h]",
+      "session_type_id": null,
       "duration_hours": 1.0,
       "posting_code": "TTSHGerMed",
       "posting_label": "TTSH Geriatric Medicine",
       "reporting_period_id": "uuid",
       "r_year": "R2",
-      "is_tracked": true,
       "is_global": false
     }
   ],
@@ -1957,7 +1959,6 @@ Submit an ad-hoc teaching not pre-created by a secretary.
 {
   "teaching_date": "2026-04-15",
   "start_time": "10:00",
-  "teaching_name": "Journal Club",
   "attended_posting_code": "TTSHGerMed",
   "details_of_session": "Case discussion after ward teaching"
 }
@@ -1967,34 +1968,33 @@ Submit an ad-hoc teaching not pre-created by a secretary.
   2. Derives assigned posting for the selected date:
      - NHG Resident: `resident_postings` date match with `status IN ('active', 'loa_working')`.
      - Non-NHG Resident: `external_resident_postings` date match.
-  3. Validates `attended_posting_code` / selected TTSH department posting against `posting_codes` and configured mapping. Do not generate codes by string concatenation or regex.
-  4. Validates submitted `teaching_name` was selected from the catalogue-backed options for the selected date and attended posting context. Arbitrary free-text teaching names must not drive compliance mapping.
-  5. For NHG Residents, resolves fixed compliance attribution:
-     - `compliance_posting_code = assigned_posting_code`
-     - `compliance_session_type_name = "Department/Programme Teaching [1h]"`
-     - required tracked target exists for assigned posting, resident native programme, `resident_postings.r_year`, and active/effectively active `reporting_period_id`
-  6. If the required assigned-posting `Department/Programme Teaching [1h]` target cannot be resolved, return a clear unavailable/not-countable response rather than guessing.
-  7. Before either row is inserted, takes the native/external subject-date lock
+  3. Accepts no `teaching_name`; unknown request fields, including arbitrary
+     names and targets, return `422`.
+  4. Uses only the derived posting. A supplied `attended_posting_code` must
+     equal it; a second posting is not selectable.
+  5. Before either row is inserted, takes the native/external subject-date lock
      and rejects an interval that overlaps an already submitted distinct event
      for that Resident. It uses a controlled `409` and preserves the earlier
      attendance.
-  8. Calls the narrow PostgreSQL ad-hoc creation function. It derives trusted
+  6. Calls the narrow PostgreSQL ad-hoc creation function. It derives trusted
      subject identity and family from the signed transaction-local context,
-     creates `teaching_events` with the matching immutable
+     creates `teaching_events` with the fixed display snapshot
+     `Department/Programme Teaching [1h]`, duration `1.00`, null
+     `session_type_id`, and the matching immutable
      `created_by_resident_id` or `created_by_external_resident_id`, and inserts
      only the corresponding attendance family. The client supplies none of
      those ownership fields.
-  9. The function and service share the caller transaction and commit once.
+  7. The function and service share the caller transaction and commit once.
      Failure leaves neither an orphan event nor provisional attendance.
-  10. `end_time` = `start_time + 1 hour` for countable NHG ad-hoc compliance attribution. Display duration for the attended catalogue option must not override fixed NHG compliance attribution.
-  11. Checks weekend exception — returns `compliance_warning` if session will not count for native compliance.
+  8. `end_time` = `start_time + 1 hour`; no catalogue option or target mapping
+     can override that fixed record.
+  9. Checks weekend exception — returns `compliance_warning` if session will not count for native compliance.
 - **NHG compliance treatment:** All countable NHG Resident ad-hoc sessions map to `Department/Programme Teaching [1h]` and count under the assigned posting for the selected date. They do not count under the attended TTSH department unless that department is also the assigned posting.
 - **Non-NHG treatment:** Non-NHG ad-hoc sessions create `external_attendance_records` only for attendance storage. They do not create native `attendance_records`, receive no NHG compliance attribution, and never enter NHG numerator, denominator, surplus, snapshots, clawback, or native reports.
 - **Schema/API note:** `details_of_session` is stored on the event as
   display/audit-only context and has no operational or compliance use.
-  `attended_posting_code` still has no dedicated persisted field; keep it as
-  request/option-filtering context and do not overload
-  `teaching_events.posting_code`.
+  `attended_posting_code` is an optional confirmation of the single
+  server-derived posting and has no dedicated persisted field.
 
 ### GET `/resident/dashboard`
 
@@ -2336,6 +2336,7 @@ The same route may support NHG and Non-NHG Residents through identity branching.
 - If the posting's `posting_codes.supports_secretary_events = true`, return eligible Secretary-created events whose `posting_code` exactly matches the schedule row and whose `created_for_programme_code IS NULL`.
 - If `supports_secretary_events = false`, return no secretary-created event list but keep ad-hoc submission available in the frontend.
 - Return Programme PC-created events only when `event.posting_code = schedule.posting_code`, the schedule `programme_code` is non-null, and `event.created_for_programme_code = schedule.programme_code`. This PC-event source does not depend on `supports_secretary_events`.
+- For an explicit Teaching Name source, require that source's reporting period to be the event-date period and its programme to exactly equal the schedule programme. An explicit global source is global-first. A both-null legacy event uses only deterministic persisted event/schedule evidence; do not infer identity from the display name, catalogue, targets, or Column K.
 - Apply the exact match independently for every schedule row/date. Do not infer programme identity from posting-code prefixes, institution names, teaching targets, teaching-name catalogue rows, `programmes.native_teaching_posting_code`, fuzzy matching, or the first mapping row. AIM must not see IM events at shared `TTSHGenMed`; GS must not see SIG events at shared `TTSHGenSrg`.
 - Return normal scheduled events only. Exclude resident-created ad-hoc events, events outside the schedule date range or in a schedule gap, and events blocked by existing reporting-period or status rules.
 - Filter `event_date <= today`.
@@ -2349,6 +2350,7 @@ The same route may support NHG and Non-NHG Residents through identity branching.
 - For `role = external_resident`, authorize against the date-matched `external_resident_postings` row, not token claims or the current/cache pointer.
 - A Secretary-created event requires an exact posting match, `created_for_programme_code IS NULL`, and the existing Secretary capability, scheduled-event, reporting-period, status, duplicate, and overlap checks.
 - A Programme PC-created event requires exact posting and non-null programme matches: `event.posting_code = schedule.posting_code` and `event.created_for_programme_code = schedule.programme_code`. Another programme or posting returns controlled `422`; unresolved legacy schedule programme provenance never grants access. The same scheduled-event, reporting-period, status, duplicate, and overlap checks apply.
+- For an explicit Teaching Name source, require exact event-date reporting-period and schedule-programme scope; a same-display name from another programme is denied. An explicit global source remains globally eligible under the exact schedule/date checks. A both-null legacy event is never text-inferred.
 - Create `external_attendance_records`, not native `attendance_records`.
 - Active duplicates are protected by the submitted-only unique index on
   `(external_resident_id, teaching_event_id)`; removed history is retained.
@@ -2365,9 +2367,11 @@ The same route may support NHG and Non-NHG Residents through identity branching.
 
 - For `role = external_resident`, derive host posting from `external_resident_postings` for `teaching_date`.
 - If no schedule row matches `teaching_date`, return unavailable/no posting for selected date.
-- Teaching options come from `GET /resident/adhoc-teaching-options` using the selected teaching date and attended department/programme.
-- Attended department/programme selection is for option filtering/export context only.
-- Resolve selected attended posting against `posting_codes` using validated/configured mapping. Do not concatenate strings or infer codes by regex.
+- `GET /resident/adhoc-teaching-options` returns the one date-derived posting
+  and fixed `Department/Programme Teaching [1h]` option.
+- A client may only omit or repeat that posting; it cannot choose a separate
+  attended department/programme or Teaching Name.
+- No catalogue, target, mapping, or Column K data is used for this ad-hoc flow.
 - PH hard-block with `422`.
 - The narrow PostgreSQL function derives the exact Non-NHG subject, persists
   immutable `created_by_external_resident_id`, and creates the event plus
@@ -2411,7 +2415,7 @@ Non-NHG attendance list/read and Excel export are Phase 5B-F admin/PC tools. Ext
 List Non-NHG attendance for authorized admin/PC users.
 
 - **Auth:** admin/PC only
-- **Scope:** Programme-PC authorization requires a `teaching_name_catalogue` row matching the event posting, teaching name, programme scope, and the event's applicable reporting period. With no explicit period filter, the event date must map to exactly one reporting-period range; overlapping ranges fail closed. An explicit `reporting_period_id` scopes the report by date containment and permits authorized inactive historical reporting. Explicit master admin may access all programmes. Null/empty `programme_scope` means no access.
+- **Scope:** Programme-PC authorization is based on persisted event/source evidence, never a display-text, catalogue, or target lookup. A pool-backed event requires its exact persisted source programme/reporting-period scope and exactly one matching Non-NHG schedule row for that programme and posting. A global or deterministic both-null legacy/ad-hoc event requires either the event's persisted PC programme or exactly one matching date-based Non-NHG schedule programme. Event-date reporting-period or schedule ambiguity fails closed. An explicit `reporting_period_id` permits authorized inactive historical reporting. Explicit master admin may access all programmes. Null/empty `programme_scope` means no access.
 - **Filters:** `reporting_period_id`, `home_cluster`, `posting_code`, `attended_posting_code` where supported, `date_from`, `date_to`, `mcr`, `status`.
 - **Compliance exclusion:** Results are for audit/forwarding only and must not be joined into native compliance reports.
 
@@ -2454,7 +2458,7 @@ Workbook columns and programme/r_year routing metadata remain implementation-own
 { "detail": "TTF validation failed", "errors": [...] }                           // 422
 { "detail": "Event date is a public holiday — event creation not allowed" }      // 422
 { "detail": "Attendance submission invalid: event date is outside your tenure at this posting" }  // 422
-{ "detail": "Teaching name not found in catalogue for your programme and posting" }  // 422
+{ "detail": "Teaching event is outside the Resident scope" }                         // 422
 { "detail": "Too many requests" }                                                // 429 persistent limit exceeded; Retry-After supplied
 { "detail": "Authentication service unavailable" }                              // 503 session store unavailable; shared cookie unchanged
 ```

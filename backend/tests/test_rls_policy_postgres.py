@@ -515,7 +515,7 @@ async def _issue_context(
 async def policy_harness(
     rls_postgres_harness: RlsPostgresHarness,
 ) -> AsyncIterator[RlsPostgresHarness]:
-    assert rls_postgres_harness.revision == "20260804_000033"
+    assert rls_postgres_harness.revision == "20260804_000034"
     yield rls_postgres_harness
 
 
@@ -2132,41 +2132,116 @@ async def test_secretary_own_posting_attendance_rows_are_visible(
     policy_harness: RlsPostgresHarness,
     policy_seed: PolicyMatrixSeed,
 ) -> None:
-    """Own-posting attendance counts must not be filtered out by joins."""
+    """Secretary event guards must retain linked Non-NHG attendance visibility."""
 
     values = policy_seed.values
-    async with _runtime_context(
-        policy_harness,
-        policy_seed.contexts["secretary"],
-    ) as db:
-        attendance_ids = await _scalar_set(
-            db,
-            """
-            SELECT id
-            FROM attendance_records
-            WHERE id IN (:a, :b)
-            """,
-            {
-                "a": values["attendance_a_id"],
-                "b": values["attendance_b_id"],
-            },
-        )
-        assert attendance_ids == {values["attendance_a_id"]}
-        external_attendance_ids = await _scalar_set(
-            db,
-            """
-            SELECT id
-            FROM external_attendance_records
-            WHERE id IN (:a, :b)
-            """,
-            {
-                "a": values["external_attendance_a_id"],
-                "b": values["external_attendance_b_id"],
-            },
-        )
-        assert external_attendance_ids == {
-            values["external_attendance_a_id"]
-        }
+    external_only_event_id = uuid4()
+    external_only_attendance_id = uuid4()
+    try:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_events (
+                        id, posting_code, teaching_name, event_date, start_time,
+                        end_time, duration_hours, is_adhoc, created_by_role,
+                        teaching_name_id
+                    )
+                    VALUES (
+                        :event_id, :posting_code, :teaching_name,
+                        DATE '2035-03-10', TIME '09:00', TIME '10:00',
+                        1.00, false, 'secretary', :teaching_name_id
+                    )
+                    """
+                ),
+                {
+                    "event_id": external_only_event_id,
+                    "posting_code": values["posting_a"],
+                    "teaching_name": values["keyword"],
+                    "teaching_name_id": values["teaching_name_a_id"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO external_attendance_records (
+                        id, external_resident_id, teaching_event_id, status,
+                        posting_code
+                    )
+                    VALUES (
+                        :attendance_id, :external_resident_id, :event_id,
+                        'submitted', :posting_code
+                    )
+                    """
+                ),
+                {
+                    "attendance_id": external_only_attendance_id,
+                    "external_resident_id": values["external_a_id"],
+                    "event_id": external_only_event_id,
+                    "posting_code": values["posting_a"],
+                },
+            )
+            await db.commit()
+
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["secretary"],
+        ) as db:
+            attendance_ids = await _scalar_set(
+                db,
+                """
+                SELECT id
+                FROM attendance_records
+                WHERE id IN (:a, :b)
+                """,
+                {
+                    "a": values["attendance_a_id"],
+                    "b": values["attendance_b_id"],
+                },
+            )
+            assert attendance_ids == {values["attendance_a_id"]}
+            external_attendance_ids = await _scalar_set(
+                db,
+                """
+                SELECT id
+                FROM external_attendance_records
+                WHERE id IN (:a, :b, :external_only)
+                """,
+                {
+                    "a": values["external_attendance_a_id"],
+                    "b": values["external_attendance_b_id"],
+                    "external_only": external_only_attendance_id,
+                },
+            )
+            assert external_attendance_ids == {
+                values["external_attendance_a_id"],
+                external_only_attendance_id,
+            }
+            with pytest.raises(ApiError) as attendance_guard:
+                await secretary_events.delete_teaching_event(
+                    db,
+                    posting_code=values["posting_a"],
+                    event_id=external_only_event_id,
+                )
+            assert attendance_guard.value.status_code == 409
+            assert "attendance exists" in attendance_guard.value.detail
+    finally:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    DELETE FROM external_attendance_records
+                    WHERE id = :attendance_id
+                    """
+                ),
+                {"attendance_id": external_only_attendance_id},
+            )
+            await db.execute(
+                text(
+                    "DELETE FROM teaching_events WHERE id = :event_id"),
+                {"event_id": external_only_event_id},
+            )
+            await db.commit()
 
 
 @pytest.mark.asyncio
@@ -2495,6 +2570,305 @@ async def test_external_resident_owns_only_external_rows_and_attendance_mutation
 
 
 @pytest.mark.asyncio
+async def test_phase_g_persisted_source_rls_isolation_and_submission_matrix(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+) -> None:
+    """Phase G must enforce source identity under restricted runtime roles."""
+
+    values = policy_seed.values
+    global_session_type_id = uuid4()
+    wrong_pool_event_id = uuid4()
+    global_event_id = uuid4()
+    wrong_external_attendance_id = uuid4()
+    event_parameters = {
+        **values,
+        "global_session_type_id": global_session_type_id,
+        "wrong_pool_event_id": wrong_pool_event_id,
+        "global_event_id": global_event_id,
+        "wrong_external_attendance_id": wrong_external_attendance_id,
+    }
+    try:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO global_session_types (
+                        id, name, duration_hours, is_active
+                    )
+                    VALUES (:global_session_type_id, 'Phase G global source', 1.00, true)
+                    """
+                ),
+                event_parameters,
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_events (
+                        id, posting_code, teaching_name, event_date, start_time,
+                        end_time, duration_hours, session_type_id, series_id,
+                        is_adhoc, created_by_role, teaching_name_id,
+                        global_session_type_id
+                    )
+                    VALUES
+                        (
+                            :wrong_pool_event_id, :posting_a, :keyword,
+                            DATE '2035-03-07', TIME '09:00', TIME '10:00',
+                            1.00, :session_type_id, :series_a_id, false,
+                            'secretary', :teaching_name_b_id, NULL
+                        ),
+                        (
+                            :global_event_id, :posting_a, 'Phase G global source',
+                            DATE '2035-03-08', TIME '09:00', TIME '10:00',
+                            1.00, NULL, :series_a_id, false,
+                            'secretary', NULL, :global_session_type_id
+                        )
+                    """
+                ),
+                event_parameters,
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO external_attendance_records (
+                        id, external_resident_id, teaching_event_id, status,
+                        posting_code
+                    )
+                    VALUES (
+                        :wrong_external_attendance_id, :external_a_id,
+                        :wrong_pool_event_id, 'submitted', :posting_a
+                    )
+                    """
+                ),
+                event_parameters,
+            )
+            with pytest.raises(DBAPIError) as malformed_source:
+                async with db.begin_nested():
+                    await db.execute(
+                        text(
+                            """
+                            INSERT INTO teaching_events (
+                                id, posting_code, teaching_name, event_date,
+                                start_time, end_time, duration_hours,
+                                session_type_id, is_adhoc, created_by_role,
+                                teaching_name_id, global_session_type_id
+                            )
+                            VALUES (
+                                :id, :posting_a, :keyword, DATE '2035-03-09',
+                                TIME '09:00', TIME '10:00', 1.00,
+                                :session_type_id, false, 'secretary',
+                                :teaching_name_a_id, :global_session_type_id
+                            )
+                            """
+                        ),
+                        {**event_parameters, "id": uuid4()},
+                    )
+            assert _sqlstate(malformed_source.value) == "23514"
+            await db.commit()
+
+        scoped_event_parameters = {
+            "allowed": values["event_seed_a_id"],
+            "wrong": wrong_pool_event_id,
+            "global": global_event_id,
+            "external_allowed": values["external_attendance_a_id"],
+            "external_wrong": wrong_external_attendance_id,
+        }
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            assert await _scalar_set(
+                db,
+                """
+                SELECT id
+                FROM teaching_events
+                WHERE id IN (:allowed, :wrong, :global)
+                """,
+                scoped_event_parameters,
+            ) == {values["event_seed_a_id"], global_event_id}
+            assert await _scalar_set(
+                db,
+                """
+                SELECT id
+                FROM external_attendance_records
+                WHERE id IN (:external_allowed, :external_wrong)
+                """,
+                scoped_event_parameters,
+            ) == {values["external_attendance_a_id"]}
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT programme_code
+                    FROM mata_rls.scheduled_event_source_scope(:allowed)
+                    """
+                ),
+                {"allowed": values["event_seed_a_id"]},
+            ) == values["programme_a"]
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT programme_code
+                    FROM mata_rls.scheduled_event_source_scope(:wrong)
+                    """
+                ),
+                {"wrong": wrong_pool_event_id},
+            ) is None
+
+        for context_name in ("resident", "external"):
+            async with _runtime_context(
+                policy_harness,
+                policy_seed.contexts[context_name],
+            ) as db:
+                assert await _scalar_set(
+                    db,
+                    """
+                    SELECT id
+                    FROM teaching_events
+                    WHERE id IN (:allowed, :wrong, :global)
+                    """,
+                    scoped_event_parameters,
+                ) == {values["event_seed_a_id"], global_event_id}
+                assert await db.scalar(
+                    text(
+                        """
+                        SELECT programme_code
+                        FROM mata_rls.scheduled_event_source_scope(:allowed)
+                        """
+                    ),
+                    {"allowed": values["event_seed_a_id"]},
+                ) == values["programme_a"]
+                assert await db.scalar(
+                    text(
+                        """
+                        SELECT programme_code
+                        FROM mata_rls.scheduled_event_source_scope(:wrong)
+                        """
+                    ),
+                    {"wrong": wrong_pool_event_id},
+                ) is None
+                assert await db.scalar(
+                    text(
+                        """
+                        SELECT programme_code
+                        FROM mata_rls.scheduled_event_source_scope(:global)
+                        """
+                    ),
+                    {"global": global_event_id},
+                ) is None
+                if context_name == "resident":
+                    allowed = await db.scalar(
+                        text(
+                            """
+                            SELECT mata_rls.can_submit_native_attendance(
+                                :resident_id, :event_id
+                            )
+                            """
+                        ),
+                        {
+                            "resident_id": values["resident_a_id"],
+                            "event_id": values["event_seed_a_id"],
+                        },
+                    )
+                    wrong = await db.scalar(
+                        text(
+                            """
+                            SELECT mata_rls.can_submit_native_attendance(
+                                :resident_id, :event_id
+                            )
+                            """
+                        ),
+                        {
+                            "resident_id": values["resident_a_id"],
+                            "event_id": wrong_pool_event_id,
+                        },
+                    )
+                    global_allowed = await db.scalar(
+                        text(
+                            """
+                            SELECT mata_rls.can_submit_native_attendance(
+                                :resident_id, :event_id
+                            )
+                            """
+                        ),
+                        {
+                            "resident_id": values["resident_a_id"],
+                            "event_id": global_event_id,
+                        },
+                    )
+                else:
+                    allowed = await db.scalar(
+                        text(
+                            """
+                            SELECT mata_rls.can_submit_external_attendance(
+                                :external_resident_id, :event_id
+                            )
+                            """
+                        ),
+                        {
+                            "external_resident_id": values["external_a_id"],
+                            "event_id": values["event_seed_a_id"],
+                        },
+                    )
+                    wrong = await db.scalar(
+                        text(
+                            """
+                            SELECT mata_rls.can_submit_external_attendance(
+                                :external_resident_id, :event_id
+                            )
+                            """
+                        ),
+                        {
+                            "external_resident_id": values["external_a_id"],
+                            "event_id": wrong_pool_event_id,
+                        },
+                    )
+                    global_allowed = await db.scalar(
+                        text(
+                            """
+                            SELECT mata_rls.can_submit_external_attendance(
+                                :external_resident_id, :event_id
+                            )
+                            """
+                        ),
+                        {
+                            "external_resident_id": values["external_a_id"],
+                            "event_id": global_event_id,
+                        },
+                    )
+                assert allowed is True
+                assert wrong is False
+                assert global_allowed is True
+    finally:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    DELETE FROM external_attendance_records
+                    WHERE id = :wrong_external_attendance_id
+                    """
+                ),
+                {"wrong_external_attendance_id": wrong_external_attendance_id},
+            )
+            await db.execute(
+                text(
+                    """
+                    DELETE FROM teaching_events
+                    WHERE id IN (:wrong_pool_event_id, :global_event_id)
+                    """
+                ),
+                {
+                    "wrong_pool_event_id": wrong_pool_event_id,
+                    "global_event_id": global_event_id,
+                },
+            )
+            await db.execute(
+                text("DELETE FROM global_session_types WHERE id = :id"),
+                {"id": global_session_type_id},
+            )
+            await db.commit()
+
+
+@pytest.mark.asyncio
 async def test_atomic_adhoc_and_scheduled_submission_share_canonical_lock(
     policy_harness: RlsPostgresHarness,
     policy_seed: PolicyMatrixSeed,
@@ -2556,24 +2930,21 @@ async def test_atomic_adhoc_and_scheduled_submission_share_canonical_lock(
                         FROM mata_rls.create_adhoc_attendance(
                             :posting_code,
                             :attended_posting_code,
-                            :attended_teaching_name,
-                            :teaching_name,
+                            'Department/Programme Teaching [1h]',
+                            'Department/Programme Teaching [1h]',
                             NULL,
                             :event_date,
                             TIME '10:00',
                             TIME '11:00',
                             1.00,
-                            :session_type_id
+                            NULL::uuid
                         )
                         """
                     ),
                     {
                         "posting_code": values["posting_a"],
                         "attended_posting_code": values["posting_a"],
-                        "attended_teaching_name": values["keyword"],
-                        "teaching_name": values["session_name"],
                         "event_date": event_date,
-                        "session_type_id": values["session_type_id"],
                     },
                 )
             ).mappings().one()
@@ -2706,29 +3077,46 @@ async def test_adhoc_creator_and_storage_family_are_database_owned(
                         FROM mata_rls.create_adhoc_attendance(
                             CAST(:posting_code AS text),
                             CAST(:attended_posting_code AS text),
-                            CAST(:attended_teaching_name AS text),
-                            CAST(:teaching_name AS text),
+                            CAST('Department/Programme Teaching [1h]' AS text),
+                            CAST('Department/Programme Teaching [1h]' AS text),
                             CAST(:details AS text),
                             DATE '2035-04-01',
                             TIME '09:00',
                             TIME '10:00',
                             CAST(1.00 AS numeric),
-                            CAST(:session_type_id AS uuid)
+                            NULL::uuid
                         )
                         """
                     ),
                     {
                         "posting_code": values["posting_a"],
                         "attended_posting_code": values["posting_a"],
-                        "attended_teaching_name": values["keyword"],
-                        "teaching_name": values["session_name"],
                         "details": "native creator matrix",
-                        "session_type_id": values["session_type_id"],
                     },
                 )
             ).mappings().one()
             native_event_id = created["event_id"]
             native_attendance_id = created["attendance_id"]
+            native_event = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT teaching_name, duration_hours, session_type_id,
+                               teaching_name_id, global_session_type_id
+                        FROM teaching_events
+                        WHERE id = :event_id
+                        """
+                    ),
+                    {"event_id": native_event_id},
+                )
+            ).mappings().one()
+            assert dict(native_event) == {
+                "teaching_name": "Department/Programme Teaching [1h]",
+                "duration_hours": Decimal("1.00"),
+                "session_type_id": None,
+                "teaching_name_id": None,
+                "global_session_type_id": None,
+            }
             assert await db.scalar(
                 text(
                     """
@@ -2807,20 +3195,18 @@ async def test_adhoc_creator_and_storage_family_are_database_owned(
                     CAST(:posting_code AS text),
                     CAST(:attended_posting_code AS text),
                     'not an allowed attended teaching',
-                    CAST(:teaching_name AS text),
+                    CAST('Department/Programme Teaching [1h]' AS text),
                     'invalid native catalogue marker',
                     DATE '2035-04-02',
                     TIME '11:00',
                     TIME '12:00',
                     CAST(1.00 AS numeric),
-                    CAST(:session_type_id AS uuid)
+                    NULL::uuid
                 )
                 """,
                 {
                     "posting_code": values["posting_a"],
                     "attended_posting_code": values["posting_a"],
-                    "teaching_name": values["session_name"],
-                    "session_type_id": values["session_type_id"],
                 },
                 sqlstates={"22023"},
             )
@@ -2831,23 +3217,20 @@ async def test_adhoc_creator_and_storage_family_are_database_owned(
                 FROM mata_rls.create_adhoc_attendance(
                     CAST(:posting_code AS text),
                     CAST(:attended_posting_code AS text),
-                    CAST(:attended_teaching_name AS text),
-                    CAST(:teaching_name AS text),
+                    CAST('Department/Programme Teaching [1h]' AS text),
+                    CAST('Department/Programme Teaching [1h]' AS text),
                     'public holiday marker',
                     CAST(:event_date AS date),
                     TIME '11:00',
                     TIME '12:00',
                     CAST(1.00 AS numeric),
-                    CAST(:session_type_id AS uuid)
+                    NULL::uuid
                 )
                 """,
                 {
                     "posting_code": values["posting_a"],
                     "attended_posting_code": values["posting_a"],
-                    "attended_teaching_name": values["keyword"],
-                    "teaching_name": values["session_name"],
                     "event_date": holiday_date,
-                    "session_type_id": values["session_type_id"],
                 },
                 sqlstates={"22023"},
             )
@@ -2858,22 +3241,19 @@ async def test_adhoc_creator_and_storage_family_are_database_owned(
                 FROM mata_rls.create_adhoc_attendance(
                     CAST(:posting_code AS text),
                     CAST(:attended_posting_code AS text),
-                    CAST(:attended_teaching_name AS text),
-                    CAST(:teaching_name AS text),
+                    CAST('Department/Programme Teaching [1h]' AS text),
+                    CAST('Department/Programme Teaching [1h]' AS text),
                     'overlap marker',
                     DATE '2035-04-01',
                     TIME '09:30',
                     TIME '10:30',
                     CAST(1.00 AS numeric),
-                    CAST(:session_type_id AS uuid)
+                    NULL::uuid
                 )
                 """,
                 {
                     "posting_code": values["posting_a"],
                     "attended_posting_code": values["posting_a"],
-                    "attended_teaching_name": values["keyword"],
-                    "teaching_name": values["session_name"],
-                    "session_type_id": values["session_type_id"],
                 },
                 sqlstates={"23P01"},
             )
@@ -2981,21 +3361,19 @@ async def test_adhoc_creator_and_storage_family_are_database_owned(
                     CAST(:posting_code AS text),
                     CAST(:attended_posting_code AS text),
                     CAST(:attended_teaching_name AS text),
-                    CAST(:teaching_name AS text),
+                    CAST('Department/Programme Teaching [1h]' AS text),
                     'wrong attended posting marker',
                     DATE '2035-04-02',
                     TIME '11:00',
                     TIME '12:00',
                     CAST(1.00 AS numeric),
-                    CAST(:session_type_id AS uuid)
+                    NULL::uuid
                 )
                 """,
                 {
                     "posting_code": values["posting_a"],
                     "attended_posting_code": values["posting_a"],
                     "attended_teaching_name": alternate_keyword,
-                    "teaching_name": alternate_keyword,
-                    "session_type_id": values["session_type_id"],
                 },
                 sqlstates={"22023"},
             )
@@ -3008,24 +3386,21 @@ async def test_adhoc_creator_and_storage_family_are_database_owned(
                         FROM mata_rls.create_adhoc_attendance(
                             CAST(:posting_code AS text),
                             CAST(:attended_posting_code AS text),
-                            CAST(:attended_teaching_name AS text),
-                            CAST(:teaching_name AS text),
+                            CAST('Department/Programme Teaching [1h]' AS text),
+                            CAST('Department/Programme Teaching [1h]' AS text),
                             CAST(:details AS text),
                             DATE '2035-04-03',
                             TIME '09:00',
                             TIME '10:00',
                             CAST(1.00 AS numeric),
-                            CAST(:session_type_id AS uuid)
+                            NULL::uuid
                         )
                         """
                     ),
                     {
                         "posting_code": values["posting_a"],
                         "attended_posting_code": values["posting_a"],
-                        "attended_teaching_name": values["keyword"],
-                        "teaching_name": values["keyword"],
                         "details": "external creator matrix",
-                        "session_type_id": values["session_type_id"],
                     },
                 )
             ).mappings().one()
@@ -3255,23 +3630,20 @@ async def test_adhoc_creator_and_storage_family_are_database_owned(
                             FROM mata_rls.create_adhoc_attendance(
                                 CAST(:posting_code AS text),
                                 CAST(:attended_posting_code AS text),
-                                CAST(:attended_teaching_name AS text),
-                                CAST(:teaching_name AS text),
+                                CAST('Department/Programme Teaching [1h]' AS text),
+                                CAST('Department/Programme Teaching [1h]' AS text),
                                 'rollback marker',
                                 DATE '2035-04-04',
                                 TIME '09:00',
                                 TIME '10:00',
                                 CAST(1.00 AS numeric),
-                                CAST(:session_type_id AS uuid)
+                                NULL::uuid
                             )
                             """
                         ),
                         {
                             "posting_code": values["posting_a"],
                             "attended_posting_code": values["posting_a"],
-                            "attended_teaching_name": values["keyword"],
-                            "teaching_name": values["session_name"],
-                            "session_type_id": values["session_type_id"],
                         },
                     )
             assert await db.scalar(
@@ -3315,22 +3687,19 @@ async def test_adhoc_creator_and_storage_family_are_database_owned(
                 FROM mata_rls.create_adhoc_attendance(
                     CAST(:posting_code AS text),
                     CAST(:attended_posting_code AS text),
-                    CAST(:attended_teaching_name AS text),
-                    CAST(:teaching_name AS text),
+                    CAST('Department/Programme Teaching [1h]' AS text),
+                    CAST('Department/Programme Teaching [1h]' AS text),
                     'ambiguous period marker',
                     DATE '2035-05-01',
                     TIME '11:00',
                     TIME '12:00',
                     CAST(1.00 AS numeric),
-                    CAST(:session_type_id AS uuid)
+                    NULL::uuid
                 )
                 """,
                 {
                     "posting_code": values["posting_a"],
                     "attended_posting_code": values["posting_a"],
-                    "attended_teaching_name": values["keyword"],
-                    "teaching_name": values["session_name"],
-                    "session_type_id": values["session_type_id"],
                 },
                 sqlstates={"22023"},
             )
@@ -3392,6 +3761,117 @@ async def test_adhoc_creator_and_storage_family_are_database_owned(
                     {"event_ids": event_ids},
                 )
             await owner_db.commit()
+
+
+@pytest.mark.asyncio
+async def test_phase_g_atomic_adhoc_helper_fails_closed_for_overlapping_schedule_rows(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+) -> None:
+    """The direct helper must not let an ambiguous schedule choose a posting."""
+
+    values = policy_seed.values
+    native_overlap_id = uuid4()
+    external_overlap_id = uuid4()
+    try:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO resident_postings (
+                        id, resident_id, posting_code, reporting_period_id,
+                        start_date, end_date, r_year, status
+                    )
+                    VALUES (
+                        :id, :resident_id, :posting_code, :reporting_period_id,
+                        DATE '2035-04-05', DATE '2035-04-05', 'R1', 'active'
+                    )
+                    """
+                ),
+                {
+                    "id": native_overlap_id,
+                    "resident_id": values["resident_a_id"],
+                    "posting_code": values["posting_b"],
+                    "reporting_period_id": values["period_id"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO external_resident_postings (
+                        id, external_resident_id, posting_code, programme_code,
+                        start_date, end_date, is_current
+                    )
+                    VALUES (
+                        :id, :external_resident_id, :posting_code,
+                        :programme_code, DATE '2035-04-06', DATE '2035-04-06',
+                        false
+                    )
+                    """
+                ),
+                {
+                    "id": external_overlap_id,
+                    "external_resident_id": values["external_a_id"],
+                    "posting_code": values["posting_b"],
+                    "programme_code": values["programme_b"],
+                },
+            )
+            await db.commit()
+
+        for context_name, event_date in (
+            ("resident", date(2035, 4, 5)),
+            ("external", date(2035, 4, 6)),
+        ):
+            async with _runtime_context(
+                policy_harness,
+                policy_seed.contexts[context_name],
+            ) as db:
+                with pytest.raises(DBAPIError) as ambiguous_schedule:
+                    async with db.begin_nested():
+                        await db.execute(
+                            text(
+                                """
+                                SELECT *
+                                FROM mata_rls.create_adhoc_attendance(
+                                    CAST(:posting_code AS text),
+                                    CAST(:posting_code AS text),
+                                    CAST('Department/Programme Teaching [1h]' AS text),
+                                    CAST('Department/Programme Teaching [1h]' AS text),
+                                    'ambiguous schedule marker',
+                                    CAST(:event_date AS date),
+                                    TIME '13:00',
+                                    TIME '14:00',
+                                    CAST(1.00 AS numeric),
+                                    NULL::uuid
+                                )
+                                """
+                            ),
+                            {
+                                "posting_code": values["posting_a"],
+                                "event_date": event_date,
+                            },
+                        )
+                assert _sqlstate(ambiguous_schedule.value) == "22023"
+                assert await db.scalar(
+                    text(
+                        """
+                        SELECT COUNT(*)
+                        FROM teaching_events
+                        WHERE details_of_session = 'ambiguous schedule marker'
+                        """
+                    )
+                ) == 0
+    finally:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text("DELETE FROM external_resident_postings WHERE id = :id"),
+                {"id": external_overlap_id},
+            )
+            await db.execute(
+                text("DELETE FROM resident_postings WHERE id = :id"),
+                {"id": native_overlap_id},
+            )
+            await db.commit()
 
 
 @pytest.mark.asyncio

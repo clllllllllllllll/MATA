@@ -226,6 +226,105 @@ def test_external_event_visibility_does_not_require_teaching_name_catalogue() ->
     assert event_id in ids
 
 
+def test_external_explicit_pool_events_require_exact_schedule_programme() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.catalogue = []
+    fake_db.teaching_targets = []
+    event_date = fake_db.today - timedelta(days=5)
+    matching = fake_db._event(  # noqa: SLF001
+        str(uuid4()),
+        "TTSHCardio",
+        "Shared Pool Display",
+        event_date,
+        teaching_name_id=str(uuid4()),
+        source_reporting_period_id=fake_db.period_id,
+        source_programme_code="CARDIO",
+    )
+    wrong_programme = fake_db._event(  # noqa: SLF001
+        str(uuid4()),
+        "TTSHCardio",
+        "Shared Pool Display",
+        event_date,
+        teaching_name_id=str(uuid4()),
+        source_reporting_period_id=fake_db.period_id,
+        source_programme_code="GRM",
+    )
+    fake_db.events.extend((matching, wrong_programme))
+    before_attendance = list(fake_db.external_attendance)
+    client = _client(fake_db)
+
+    list_response = client.get("/resident/events", headers=_external_headers(fake_db))
+    submit_response = client.post(
+        "/resident/attendance",
+        headers=_external_headers(fake_db),
+        json={"event_ids": [wrong_programme["id"]]},
+    )
+
+    assert list_response.status_code == 200
+    event_ids = {row["id"] for row in list_response.json()["events"]}
+    assert matching["id"] in event_ids
+    assert wrong_programme["id"] not in event_ids
+    assert submit_response.status_code == 422
+    assert submit_response.json()["detail"] == "Teaching event is outside the Non-NHG Resident scope"
+    assert fake_db.external_attendance == before_attendance
+
+
+def test_external_explicit_pool_event_requires_non_null_schedule_programme() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.external_resident_postings[0]["programme_code"] = None
+    event = fake_db._event(  # noqa: SLF001
+        str(uuid4()),
+        "TTSHCardio",
+        "Pool Event Without Schedule Programme",
+        fake_db.today - timedelta(days=5),
+        teaching_name_id=str(uuid4()),
+        source_reporting_period_id=fake_db.period_id,
+        source_programme_code="CARDIO",
+    )
+    fake_db.events.append(event)
+    before_attendance = list(fake_db.external_attendance)
+    client = _client(fake_db)
+
+    list_response = client.get("/resident/events", headers=_external_headers(fake_db))
+    submit_response = client.post(
+        "/resident/attendance",
+        headers=_external_headers(fake_db),
+        json={"event_ids": [event["id"]]},
+    )
+
+    assert list_response.status_code == 200
+    assert event["id"] not in {row["id"] for row in list_response.json()["events"]}
+    assert submit_response.status_code == 422
+    assert submit_response.json()["detail"] == "Teaching event is outside the Non-NHG Resident scope"
+    assert fake_db.external_attendance == before_attendance
+
+
+def test_external_global_event_is_visible_and_submittable_without_catalogue() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.catalogue = []
+    fake_db.teaching_targets = []
+    client = _client(fake_db)
+
+    list_response = client.get("/resident/events", headers=_external_headers(fake_db))
+    submit_response = client.post(
+        "/resident/attendance",
+        headers=_external_headers(fake_db),
+        json={"event_ids": [fake_db.global_event_id]},
+    )
+
+    assert list_response.status_code == 200
+    assert fake_db.global_event_id in {
+        row["id"] for row in list_response.json()["events"]
+    }
+    assert submit_response.status_code == 200
+    assert submit_response.json()["submitted"] == 1
+    assert any(
+        row["external_resident_id"] == fake_db.external_resident_id
+        and row["teaching_event_id"] == fake_db.global_event_id
+        for row in fake_db.external_attendance
+    )
+
+
 def test_external_attendance_creates_external_record_only() -> None:
     fake_db = FakeResidentSession()
     before_external = len(fake_db.external_attendance)

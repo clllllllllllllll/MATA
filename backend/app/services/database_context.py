@@ -59,6 +59,7 @@ _RUNTIME_ONLY_HELPERS = frozenset(
             "text,text,text,text,text,date,time without time zone,"
             "time without time zone,numeric,uuid)"
         ),
+        "scheduled_event_source_scope(uuid)",
         "update_own_staff_actor_name(text)",
         "reporting_period_dependency_counts(uuid)",
         "hibernate_stale_surplus(uuid)",
@@ -1147,16 +1148,12 @@ _ADHOC_DEFINER_ACL_ATTESTATION_SQL = text(
             ('external_attendance_records', 'INSERT'),
             ('external_resident_postings', 'SELECT'),
             ('external_residents', 'SELECT'),
-            ('global_session_types', 'SELECT'),
             ('public_holidays', 'SELECT'),
             ('reporting_periods', 'SELECT'),
             ('resident_postings', 'SELECT'),
             ('residents', 'SELECT'),
-            ('session_types', 'SELECT'),
             ('teaching_events', 'SELECT'),
-            ('teaching_events', 'INSERT'),
-            ('teaching_name_catalogue', 'SELECT'),
-            ('teaching_targets', 'SELECT')
+            ('teaching_events', 'INSERT')
     ),
     actual_table AS (
         SELECT relation.relname AS table_name, privilege.action
