@@ -78,6 +78,7 @@ export const routeAccessRules = [
   { path: '/admin/external-attendance', kind: 'protected', allowedRoles: ['master_admin'] },
   { path: '/pc', kind: 'protected', allowedRoles: ['programme_pc'] },
   { path: '/pc/teaching-events', kind: 'protected', allowedRoles: ['programme_pc'] },
+  { path: '/pc/session-types', kind: 'protected', allowedRoles: ['programme_pc'] },
   { path: '/pc/upload-ttf', kind: 'protected', allowedRoles: ['programme_pc'] },
   { path: '/pc/warnings', kind: 'protected', allowedRoles: ['programme_pc'] },
   { path: '/pc/config', kind: 'protected', allowedRoles: ['programme_pc'] },
