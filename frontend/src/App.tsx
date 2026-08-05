@@ -16,6 +16,7 @@ import { AdminUploadPage } from './pages/admin/AdminUploadPage'
 import { AdminWarningsPage } from './pages/admin/AdminWarningsPage'
 import { PcResidentAttendanceDetailPage } from './pages/pc/PcResidentAttendanceDetailPage'
 import { PcResidentAttendancePage } from './pages/pc/PcResidentAttendancePage'
+import { PcSessionTypesPage } from './pages/pc/PcSessionTypesPage'
 import { PcTeachingEventsPage } from './pages/pc/PcTeachingEventsPage'
 import { PcUploadTtfPage } from './pages/pc/PcUploadTtfPage'
 import { ResidentAttendancePage } from './pages/resident/ResidentAttendancePage'
@@ -164,6 +165,7 @@ const AppRoutes = () => {
       <Route path="/pc" element={shellElement(<Navigate to="/pc/teaching-events" replace />)} />
       <Route path="/pc/upload-ttf" element={shellElement(<PcUploadTtfPage />)} />
       <Route path="/pc/teaching-events" element={shellElement(<PcTeachingEventsPage />)} />
+      <Route path="/pc/session-types" element={shellElement(<PcSessionTypesPage />)} />
       <Route path="/pc/config" element={shellElement(<AdminConfigPage configViewRole="programme_pc" />)} />
       <Route path="/pc/warnings" element={shellElement(<AdminWarningsPage />)} />
       <Route path="/pc/resident-attendance" element={shellElement(<PcResidentAttendancePage />)} />

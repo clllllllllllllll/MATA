@@ -118,6 +118,12 @@ export const navItems: NavItem[] = [
     icon: 'calendar',
   },
   {
+    label: 'Session Types',
+    path: '/pc/session-types',
+    roles: ['programme_pc'],
+    icon: 'settings',
+  },
+  {
     label: 'Warnings',
     path: '/pc/warnings',
     roles: ['programme_pc'],
@@ -194,6 +200,7 @@ export const breadcrumbMap: Record<string, string[]> = {
   '/admin/external-attendance': ['Master Admin', 'Non-NHG Attendance'],
   '/pc/upload-ttf': ['PC', 'Upload TTF'],
   '/pc/teaching-events': ['PC', 'Teaching Events'],
+  '/pc/session-types': ['PC', 'Session Types'],
   '/pc/warnings': ['PC', 'Warnings'],
   '/pc/config': ['PC', 'Configuration'],
   '/pc/resident-attendance': ['PC', 'NHG Resident Attendance'],
