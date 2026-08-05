@@ -173,9 +173,10 @@ database boundary and activate the shared Teaching Name lifecycle routes.
 Revision `20260803_000032` adds the narrow reconciliation required inside the
 existing TTF upload transaction. Phase D adds a guarded application mapping API
 on that boundary only; it does not add a parser change, event, resident, UI, or
-compliance flow. The legacy A-K catalogue authorization path remained active
-through Phase D; revision `20260804_000034` removes it from current
-Resident/Non-NHG runtime authorization.
+  compliance flow. The legacy A–K catalogue authorization path was retained
+  through Phase D; revision `20260804_000034` removed it from current
+  Resident/Non-NHG runtime authorization, and revision `20260805_000036`
+  physically removes the obsolete catalogue and target-details structures.
 
 Revision `20260804_000033` adds the runtime-only
 `mata_rls.can_insert_scheduled_event_source(text,text,uuid,uuid,date,boolean,text)`
@@ -201,8 +202,8 @@ runtime-only `mata_rls.scheduled_event_source_scope(uuid)` helper exposes that
 source scope only after the caller is already authorized for the event, so the
 application does not receive direct resident access to Teaching Name rows. The
 atomic ad-hoc helper accepts only the fixed one-hour
-`Department/Programme Teaching [1h]` record and no longer reads
-`teaching_name_catalogue` or `teaching_targets`.
+`Department/Programme Teaching [1h]` record and does not query teaching targets
+or the retired catalogue.
 
 Revision `20260804_000035` persists immutable pool-source programme and period
 snapshots, safely backfills only explicit Teaching Name rows, and preserves those
@@ -283,10 +284,10 @@ The lifecycle endpoints use the existing protected mutation boundary:
   count-only audit response, and clears only the optional event identity. Do not expose raw audit values in browser
   storage, URLs, logs, or error details.
 
-Phase C, Phase D, Phase F, and Phase G are additive only. Phase G changes the
-Resident/Non-NHG runtime boundary but does not backfill, infer source identity
-for legacy rows, rewrite historical events, or remove the physical A-K parser
-and catalogue path; final E2/B2 remains the only planned destructive cutover.
+Phase C, Phase D, Phase F, and Phase G remain additive historical milestones.
+E2+B2 is the single destructive cutover: it removes the physical A–K parser,
+catalogue, and target-details path without backfilling workbook text or
+rewriting historical events, attendance, warning evidence, or audit evidence.
 
 ## 5. Opaque sessions, expiry, rotation, and logout
 
@@ -391,8 +392,8 @@ structural and cell limits remain authoritative after preflight. Spreadsheet
 exports sanitize formula-leading cells.
 
 For a successful TTF upload, reconciled targets, Teaching Name mapping state,
-legacy catalogue/posting-group rows, upload evidence, derived warnings, audit
-evidence, and the Data Revalidation outcome share one transaction. Scoped cache
+posting-group rows, upload evidence, relevant derived warnings, audit evidence,
+and the Data Revalidation outcome share one transaction. Scoped cache
 invalidation occurs only after that commit. Cache-invalidation failure is safely
 logged and cannot turn an already committed TTF upload or teaching-target
 correction into an error response. A validation-failed workbook writes no TTF
@@ -400,10 +401,10 @@ business rows; bounded failure evidence may still be recorded.
 
 ## 9. PostgreSQL roles, RLS, grants, and helpers
 
-At current revision `20260804_000035`:
+At current revision `20260805_000036`:
 
-- 36 application tables have RLS enabled;
-- 92 action policies target only `mata_app_runtime`;
+- 35 application tables have RLS enabled;
+- 89 action policies target only `mata_app_runtime`;
 - application policies do not target `PUBLIC`, `anon`, `authenticated`, or a
   service role;
 - application login roles are non-owner and `NOBYPASSRLS`;

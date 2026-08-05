@@ -29,7 +29,6 @@ from app.services.rdb_parser import (
     parse_rdb_source_cell_replacement,
     resolve_r_year,
 )
-from app.services.ttf_parser import split_keywords
 from app.services.teaching_target_impacts import stable_target_mapping_impact_counts
 from app.services.ttf_scope_lock import acquire_ttf_scope_lock
 
@@ -42,7 +41,6 @@ _ALLOWED_SCOPE_COLUMN_SQL = frozenset(
         "al.metadata_json ->> 'programme_code'",
         "programme_code",
         "r.programme_code",
-        "tnc.programme_code",
         "tt.programme_code",
         "wi.programme_code",
     }
@@ -71,11 +69,6 @@ _ALLOWED_SEARCH_COLUMN_SQL = frozenset(
         "rp.month_label",
         "rp.posting_code",
         "st.name",
-        "tnc.keyword",
-        "tnc.posting_code",
-        "tnc.programme_code",
-        "tnc.r_year",
-        "tt.details_of_training",
         "tt.posting_code",
         "tt.programme_code",
         "tt.r_year",
@@ -89,12 +82,11 @@ _ALLOWED_PARTIAL_TEXT_COLUMNS_BY_KEY = {
     "posting_code": frozenset(
         {
             "rp.posting_code",
-            "tnc.posting_code",
             "tt.posting_code",
         }
     ),
     "programme_code": _ALLOWED_SCOPE_COLUMN_SQL,
-    "r_year": frozenset({"tnc.r_year", "tt.r_year"}),
+    "r_year": frozenset({"tt.r_year"}),
 }
 
 
@@ -490,7 +482,7 @@ async def list_teaching_targets(
         where_clauses,
         params,
         search=search,
-        columns_sql=["tt.programme_code", "tt.posting_code", "tt.r_year", "st.name", "tt.tag", "tt.details_of_training"],
+        columns_sql=["tt.programme_code", "tt.posting_code", "tt.r_year", "st.name", "tt.tag"],
     )
     return await _page(
         db,
@@ -509,7 +501,6 @@ async def list_teaching_targets(
                 tt.is_tracked,
                 tt.is_reallocatable,
                 tt.tag,
-                tt.details_of_training,
                 tt.updated_at
         """,
         from_sql="""
@@ -527,93 +518,6 @@ async def list_teaching_targets(
                 tt.r_year ASC,
                 st.name ASC,
                 tt.id ASC
-        """,
-        limit=limit,
-        offset=offset,
-    )
-
-
-async def list_teaching_name_catalogue(
-    db: AsyncSession,
-    *,
-    programme_scope: set[str],
-    master_admin: bool,
-    reporting_period_id: UUID | None = None,
-    programme_code: str | None = None,
-    posting_code: str | None = None,
-    r_year: str | None = None,
-    keyword: str | None = None,
-    is_tracked: bool | None = None,
-    search: str | None = None,
-    limit: int = 50,
-    offset: int = 0,
-) -> dict[str, Any]:
-    params: dict[str, Any] = {}
-    where_clauses: list[str] = []
-    _add_programme_scope_filter(
-        where_clauses,
-        params,
-        column_sql="tnc.programme_code",
-        programme_scope=programme_scope,
-        master_admin=master_admin,
-        programme_code=programme_code,
-    )
-    if reporting_period_id:
-        params["reporting_period_id"] = str(reporting_period_id)
-        where_clauses.append("tnc.reporting_period_id = :reporting_period_id")
-    if posting_code:
-        _add_partial_text_filter(
-            where_clauses,
-            params,
-            key="posting_code",
-            column_sql="tnc.posting_code",
-            value=posting_code,
-        )
-    if r_year:
-        _add_partial_text_filter(where_clauses, params, key="r_year", column_sql="tnc.r_year", value=r_year)
-    if keyword:
-        params["keyword"] = f"%{keyword.strip()}%"
-        where_clauses.append("tnc.keyword ILIKE :keyword")
-    if is_tracked is not None:
-        params["is_tracked"] = is_tracked
-        where_clauses.append("tnc.is_tracked = :is_tracked")
-    _add_search_filter(
-        where_clauses,
-        params,
-        search=search,
-        columns_sql=["tnc.keyword", "tnc.programme_code", "tnc.posting_code", "tnc.r_year", "st.name"],
-    )
-    return await _page(
-        db,
-        select_sql="""
-            SELECT
-                tnc.id,
-                tnc.keyword,
-                tnc.programme_code,
-                tnc.posting_code,
-                tnc.r_year,
-                tnc.reporting_period_id,
-                rper.label AS reporting_period_label,
-                tnc.session_type_id,
-                st.name AS session_type_name,
-                tnc.duration_hours,
-                tnc.is_tracked
-        """,
-        from_sql="""
-            FROM teaching_name_catalogue tnc
-            JOIN session_types st ON st.id = tnc.session_type_id
-            LEFT JOIN reporting_periods rper ON rper.id = tnc.reporting_period_id
-        """,
-        where_clauses=where_clauses,
-        params=params,
-        order_sql="""
-            ORDER BY
-                tnc.reporting_period_id ASC,
-                tnc.programme_code ASC,
-                tnc.posting_code ASC,
-                tnc.r_year ASC,
-                tnc.keyword ASC,
-                tnc.id ASC
         """,
         limit=limit,
         offset=offset,
@@ -853,7 +757,6 @@ _TEACHING_TARGET_ALLOWED_FIELDS = {
     "is_tracked",
     "is_reallocatable",
     "tag",
-    "details_of_training",
 }
 
 _FORM_F1_ALLOWED_FIELDS = {
@@ -905,7 +808,6 @@ _REQUIRED_TEXT_FIELDS = {
     "academic_year_label",
     "ay_date_category",
     "month_label",
-    "details_of_training",
 }
 
 _RESIDENT_STATUS_VALUES = {"active", "inactive", "loa", "employed"}
@@ -1286,7 +1188,6 @@ async def _snapshot_teaching_target(
                 tt.is_tracked,
                 tt.is_reallocatable,
                 tt.tag,
-                tt.details_of_training,
                 tt.created_at,
                 tt.updated_at
             FROM teaching_targets tt
@@ -1557,7 +1458,7 @@ async def _validate_teaching_target_changes(
     *,
     merged: dict[str, Any],
     changed: dict[str, Any],
-) -> list[str] | None:
+) -> None:
     if "monthly_target" in changed and int(merged["monthly_target"]) < 0:
         _raise_validation("monthly_target must be a non-negative whole number")
     if bool(merged.get("is_reallocatable")) and not (merged.get("tag") or "").strip():
@@ -1590,54 +1491,6 @@ async def _validate_teaching_target_changes(
     if session_type is None:
         _raise_validation("session_type_id does not exist")
     merged["duration_hours"] = session_type["duration_hours"]
-
-    catalogue_changed = bool(
-        set(changed)
-        & {
-            "details_of_training",
-            "reporting_period_id",
-            "programme_code",
-            "posting_code",
-            "r_year",
-            "session_type_id",
-            "is_tracked",
-        }
-    )
-    if not catalogue_changed:
-        return None
-
-    keywords = split_keywords(str(merged.get("details_of_training") or ""))
-    if not keywords:
-        _raise_validation("details_of_training must include at least one keyword")
-    for keyword in keywords:
-        if await _scalar_exists(
-            db,
-            """
-            /* parsed_data_validation:catalogue_keyword_conflict */
-            SELECT 1
-            FROM teaching_name_catalogue
-            WHERE reporting_period_id = :reporting_period_id
-              AND programme_code = :programme_code
-              AND posting_code = :posting_code
-              AND r_year = :r_year
-              AND LOWER(keyword) = LOWER(:keyword)
-              AND session_type_id <> :session_type_id
-            LIMIT 1
-            """,
-            {
-                "reporting_period_id": str(merged["reporting_period_id"]),
-                "programme_code": merged["programme_code"],
-                "posting_code": merged["posting_code"],
-                "r_year": merged["r_year"],
-                "keyword": keyword,
-                "session_type_id": str(merged["session_type_id"]),
-            },
-        ):
-            _raise_validation(
-                f"keyword already maps to another session type in this target scope: {keyword}"
-            )
-    return keywords
-
 
 def _validate_form_f1_changes(changed: dict[str, Any], merged: dict[str, Any]) -> None:
     if "status_raw" not in changed and "is_active" not in changed:
@@ -1987,77 +1840,6 @@ async def correct_resident_posting(
     }
 
 
-async def _regenerate_target_catalogue(
-    db: AsyncSession,
-    *,
-    target_id: UUID,
-    before_target: dict[str, Any],
-    target: dict[str, Any],
-    keywords: list[str],
-) -> None:
-    for scope in (before_target, target):
-        await db.execute(
-            text(
-                """
-                DELETE FROM teaching_name_catalogue
-                WHERE reporting_period_id = :reporting_period_id
-                  AND programme_code = :programme_code
-                  AND posting_code = :posting_code
-                  AND r_year = :r_year
-                  AND session_type_id = :session_type_id
-                  AND EXISTS (
-                    SELECT 1 FROM teaching_targets tt WHERE tt.id = :target_id
-                  )
-                """
-            ),
-            {
-                "target_id": str(target_id),
-                "reporting_period_id": str(scope["reporting_period_id"]),
-                "programme_code": scope["programme_code"],
-                "posting_code": scope["posting_code"],
-                "r_year": scope["r_year"],
-                "session_type_id": str(scope["session_type_id"]),
-            },
-        )
-    for keyword in keywords:
-        await db.execute(
-            text(
-                """
-                INSERT INTO teaching_name_catalogue (
-                    keyword,
-                    session_type_id,
-                    posting_code,
-                    programme_code,
-                    r_year,
-                    reporting_period_id,
-                    duration_hours,
-                    is_tracked
-                )
-                VALUES (
-                    :keyword,
-                    :session_type_id,
-                    :posting_code,
-                    :programme_code,
-                    :r_year,
-                    :reporting_period_id,
-                    :duration_hours,
-                    :is_tracked
-                )
-                """
-            ),
-            {
-                "keyword": keyword,
-                "session_type_id": str(target["session_type_id"]),
-                "posting_code": target["posting_code"],
-                "programme_code": target["programme_code"],
-                "r_year": target["r_year"],
-                "reporting_period_id": str(target["reporting_period_id"]),
-                "duration_hours": target["duration_hours"],
-                "is_tracked": target["is_tracked"],
-            },
-        )
-
-
 async def correct_teaching_target(
     db: AsyncSession,
     *,
@@ -2101,7 +1883,7 @@ async def correct_teaching_target(
         if not changed:
             _raise_validation("changes do not modify the teaching target row")
         merged = _merged_row(before, changed)
-        keywords = await _validate_teaching_target_changes(
+        await _validate_teaching_target_changes(
             db,
             merged=merged,
             changed=changed,
@@ -2146,14 +1928,6 @@ async def correct_teaching_target(
             programme_scope=programme_scope,
             master_admin=master_admin,
         )
-        if keywords is not None:
-            await _regenerate_target_catalogue(
-                db,
-                target_id=row_id,
-                before_target=before,
-                target=after,
-                keywords=keywords,
-            )
         updated_fields = sorted(changed)
         data_revalidation = await _revalidate_live_data_correction(
             db,
@@ -2184,7 +1958,6 @@ async def correct_teaching_target(
                 "updated_fields": updated_fields,
                 "programme_code": after.get("programme_code"),
                 "reporting_period_id": str(after.get("reporting_period_id")),
-                "catalogue_keywords": keywords,
                 "target_semantic_changed_fields": semantic_changed_fields,
                 "target_semantic_impact": target_semantic_impact,
                 "data_revalidation": data_revalidation,

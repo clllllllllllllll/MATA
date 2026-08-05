@@ -153,7 +153,6 @@ def test_external_adhoc_rejects_overlap_before_calling_atomic_helper() -> None:
 
 def test_external_adhoc_options_use_date_matched_posting_schedule() -> None:
     fake_db = FakeResidentSession()
-    fake_db.catalogue = []
     fake_db.teaching_targets = []
     fake_db.external_residents[0]["current_nhg_posting_code"] = "TTSHCardio"
     fake_db.external_resident_postings = [
@@ -209,7 +208,7 @@ def test_external_adhoc_options_reject_client_selected_non_schedule_posting() ->
     assert "attended_posting_code" in response.json()["detail"]
 
 
-def test_external_adhoc_options_ignore_future_period_catalogue() -> None:
+def test_external_adhoc_options_ignore_future_period() -> None:
     fake_db = FakeResidentSession()
     future_period_id = str(uuid4())
     fake_db.reporting_periods.append(
@@ -223,10 +222,6 @@ def test_external_adhoc_options_ignore_future_period_catalogue() -> None:
             "deactivate_on": None,
         }
     )
-    future_row = dict(fake_db.catalogue[0])
-    future_row["keyword"] = "Future Test Teaching"
-    future_row["reporting_period_id"] = future_period_id
-    fake_db.catalogue.append(future_row)
     client = _client(fake_db)
 
     response = client.get(
@@ -316,7 +311,6 @@ def test_external_adhoc_missing_schedule_error_uses_non_nhg_label() -> None:
 
 def test_external_adhoc_uses_date_matched_posting_schedule() -> None:
     fake_db = FakeResidentSession()
-    fake_db.catalogue = []
     fake_db.teaching_targets = []
     fake_db.external_residents[0]["current_nhg_posting_code"] = "TTSHCardio"
     fake_db.external_resident_postings = [
@@ -376,7 +370,7 @@ def test_external_adhoc_rejects_client_selected_non_schedule_posting() -> None:
     assert len(fake_db.attendance) == before_native_attendance
 
 
-def test_external_adhoc_works_without_teaching_name_catalogue_or_target() -> None:
+def test_external_adhoc_works_without_teaching_target() -> None:
     fake_db = FakeResidentSession()
     before_events = len(fake_db.events)
     before_attendance = len(fake_db.external_attendance)
@@ -391,7 +385,6 @@ def test_external_adhoc_works_without_teaching_name_catalogue_or_target() -> Non
             "is_current": True,
         }
     ]
-    fake_db.catalogue = []
     fake_db.teaching_targets = []
     client = _client(fake_db)
 

@@ -105,7 +105,6 @@ class TeachingTarget(UUIDTimestampMixin, Base):
         server_default=text("false"),
     )
     tag: Mapped[str | None] = mapped_column(String(10), nullable=True)
-    details_of_training: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class TeachingName(UUIDTimestampMixin, Base):
@@ -280,67 +279,6 @@ class TeachingNameMapping(UUIDTimestampMixin, Base):
     updated_by_user_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id"),
         nullable=True,
-    )
-
-
-class TeachingNameCatalogue(UUIDTimestampMixin, Base):
-    __tablename__ = "teaching_name_catalogue"
-    __table_args__ = (
-        UniqueConstraint(
-            "keyword",
-            "posting_code",
-            "programme_code",
-            "r_year",
-            "reporting_period_id",
-            name="uq_teaching_name_catalogue_resolution",
-        ),
-        Index(
-            "idx_teaching_name_catalogue_resolution",
-            "reporting_period_id",
-            "programme_code",
-            "posting_code",
-            "r_year",
-            "keyword",
-        ),
-        Index(
-            "idx_teaching_name_catalogue_session_type",
-            "session_type_id",
-        ),
-        Index(
-            "idx_teaching_name_catalogue_tracked",
-            "reporting_period_id",
-            "programme_code",
-            "posting_code",
-            "r_year",
-            "is_tracked",
-        ),
-    )
-
-    keyword: Mapped[str] = mapped_column(String(200), nullable=False)
-    session_type_id: Mapped[UUID] = mapped_column(
-        ForeignKey("session_types.id"),
-        nullable=False,
-    )
-    posting_code: Mapped[str] = mapped_column(
-        String(50),
-        ForeignKey("posting_codes.code"),
-        nullable=False,
-    )
-    programme_code: Mapped[str] = mapped_column(
-        String(20),
-        ForeignKey("programmes.code"),
-        nullable=False,
-    )
-    r_year: Mapped[str] = mapped_column(String(10), nullable=False)
-    reporting_period_id: Mapped[UUID] = mapped_column(
-        ForeignKey("reporting_periods.id"),
-        nullable=False,
-    )
-    duration_hours: Mapped[Decimal] = mapped_column(Numeric(4, 2), nullable=False)
-    is_tracked: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        server_default=text("true"),
     )
 
 

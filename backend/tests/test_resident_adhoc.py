@@ -474,9 +474,8 @@ def test_adhoc_teaching_rejects_client_supplied_teaching_name() -> None:
     assert len(fake_db.attendance) == before_attendance
 
 
-def test_adhoc_teaching_ignores_catalogue_and_target_tracking_state() -> None:
+def test_adhoc_teaching_ignores_target_tracking_state() -> None:
     fake_db = _fake_db()
-    fake_db.catalogue[0]["is_tracked"] = False
     fake_db.teaching_targets = []
     before_events = len(fake_db.events)
     before_attendance = len(fake_db.attendance)

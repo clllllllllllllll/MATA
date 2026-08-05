@@ -484,7 +484,6 @@ const dependencyLabels: Record<string, string> = {
   upload_logs: 'upload logs',
   resident_postings: 'resident postings',
   teaching_targets: 'teaching targets',
-  teaching_name_catalogue: 'teaching name catalogue',
   form_f1_records: 'FormF1 records',
   academic_month_boundaries: 'academic month boundaries',
   period_snapshots: 'period snapshots',

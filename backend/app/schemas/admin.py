@@ -565,33 +565,11 @@ class ParsedTeachingTargetRow(BaseModel):
     is_tracked: bool
     is_reallocatable: bool
     tag: str | None = None
-    details_of_training: str | None = None
     updated_at: datetime | None = None
 
 
 class ParsedTeachingTargetListResponse(BaseModel):
     items: list[ParsedTeachingTargetRow]
-    total: int
-    limit: int
-    offset: int
-
-
-class ParsedTeachingNameCatalogueRow(BaseModel):
-    id: UUID
-    keyword: str
-    programme_code: str
-    posting_code: str
-    r_year: str
-    reporting_period_id: UUID
-    reporting_period_label: str | None = None
-    session_type_id: UUID
-    session_type_name: str | None = None
-    duration_hours: Decimal
-    is_tracked: bool
-
-
-class ParsedTeachingNameCatalogueListResponse(BaseModel):
-    items: list[ParsedTeachingNameCatalogueRow]
     total: int
     limit: int
     offset: int
@@ -875,21 +853,6 @@ class TeachingTargetResponse(BaseModel):
     is_tracked: bool
     is_reallocatable: bool
     tag: str | None
-    details_of_training: str | None
-    created_at: datetime
-    updated_at: datetime
-
-
-class TeachingNameCatalogueResponse(BaseModel):
-    id: UUID
-    keyword: str
-    session_type_id: UUID
-    posting_code: str
-    programme_code: str
-    r_year: str
-    reporting_period_id: UUID
-    duration_hours: Decimal
-    is_tracked: bool
     created_at: datetime
     updated_at: datetime
 

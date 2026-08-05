@@ -101,7 +101,7 @@ class FakeSecretarySession:
                 "name": "Labour Day",
             }
         ]
-        self.catalogue = [
+        self.source_specs = [
             {
                 "keyword": "Journal Club",
                 "posting_code": "TTSHCardio",
@@ -175,7 +175,7 @@ class FakeSecretarySession:
                 "is_tracked": True,
             },
         ]
-        for row in self.catalogue:
+        for row in self.source_specs:
             row["reporting_period_id"] = self.reporting_period_id
         self.teaching_names = [
             {
@@ -185,7 +185,7 @@ class FakeSecretarySession:
                 "reporting_period_id": self.reporting_period_id,
                 "is_active": True,
             }
-            for row in self.catalogue
+            for row in self.source_specs
         ]
         self.global_session_types = [
             {
@@ -424,19 +424,19 @@ class FakeSecretarySession:
         return next(row["id"] for row in self.global_session_types if row["name"] == name)
 
     def _teaching_name_id_for_posting(self, display_name: str, posting_code: str) -> str | None:
-        catalogue_row = next(
+        source_spec = next(
             (
                 row
-                for row in self.catalogue
+                for row in self.source_specs
                 if row["keyword"] == display_name and row["posting_code"] == posting_code
             ),
             None,
         )
-        if catalogue_row is None:
+        if source_spec is None:
             return None
         return self.teaching_name_id_for(
             display_name,
-            catalogue_row["programme_code"],
+            source_spec["programme_code"],
         )
 
     def add_unrelated_pc_event_for_cardio(self) -> None:
@@ -644,33 +644,6 @@ class FakeSecretarySession:
                 None,
             )
             return _FakeResult(rows=[holiday] if holiday else [], scalar=1 if holiday else None)
-
-        if "FROM teaching_name_catalogue" in sql and "JOIN session_types" in sql:
-            programme_codes = payload.get("programme_codes") or []
-            use_programme_pool = bool(programme_codes)
-            rows = [
-                {
-                    "keyword": row["keyword"],
-                    "session_type_id": row["session_type_id"],
-                    "session_type": row["session_type"],
-                    "duration_hours": row["duration_hours"],
-                    "is_tracked": row["is_tracked"],
-                    "is_global": False,
-                    "posting_code": row["posting_code"],
-                }
-                for row in self.catalogue
-                if (
-                    row["programme_code"] in set(programme_codes)
-                    if use_programme_pool
-                    else row["posting_code"] == payload["posting_code"]
-                )
-                and row["reporting_period_id"] == str(payload["reporting_period_id"])
-                and (
-                    payload.get("teaching_name") in {None, ""}
-                    or row["keyword"] == payload.get("teaching_name")
-                )
-            ]
-            return _FakeResult(rows=rows)
 
         if "FROM secretary_programme_pools" in sql and "FROM teaching_events" not in sql:
             rows = [
@@ -1423,6 +1396,24 @@ def test_create_event_rejects_client_posting_code_and_end_time() -> None:
     assert end_time_response.status_code == 422
 
 
+def test_create_event_rejects_display_teaching_name() -> None:
+    fake_db = FakeSecretarySession()
+    client = _client(fake_db)
+
+    response = client.post(
+        "/secretary/teaching-events",
+        headers=_headers(fake_db),
+        json={
+            **_pool_source(fake_db),
+            "event_date": "2026-05-18",
+            "start_time": "10:00",
+            "teaching_name": "Journal Club",
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_multi_capability_secretary_cannot_switch_event_source_programme() -> None:
     fake_db = FakeSecretarySession()
     fake_db.secretary_programme_pools.append(
@@ -1631,7 +1622,7 @@ def test_teaching_name_options_do_not_leak_from_future_period() -> None:
     assert mismatched_date.status_code == 422
 
 
-def test_create_event_accepts_keyword_from_mapped_programme_pool() -> None:
+def test_create_event_accepts_source_id_from_mapped_programme_pool() -> None:
     fake_db = FakeSecretarySession()
     client = _client(fake_db)
 

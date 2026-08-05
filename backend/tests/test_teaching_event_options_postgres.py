@@ -20,7 +20,7 @@ from app.services.database_context import (
 )
 
 
-DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_dfg_fix_verify"
+DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_e2b2_verify"
 _TEST_SESSION_HASH_KEY = "rls-event-options-test-session-key-32-bytes"
 
 
@@ -143,7 +143,6 @@ async def test_programme_and_secretary_options_have_postgres_cardinality_and_sco
     pending_keyword = f"PG Pending {suffix}"
     mapped_keyword = f"PG Mapped {suffix}"
     inactive_keyword = f"PG Inactive {suffix}"
-    catalogue_only_keyword = f"PG Catalogue Only {suffix}"
     period_id = uuid4()
     session_type_one = uuid4()
     session_type_two = uuid4()
@@ -383,37 +382,6 @@ async def test_programme_and_secretary_options_have_postgres_cardinality_and_sco
                         "inactive_name": f"PG Global Inactive {suffix}",
                     },
                 )
-            await owner_db.execute(
-                    text(
-                        """
-                        INSERT INTO teaching_name_catalogue (
-                            id,
-                            keyword,
-                            session_type_id,
-                            posting_code,
-                            programme_code,
-                            r_year,
-                            reporting_period_id,
-                            duration_hours,
-                            is_tracked
-                        )
-                        VALUES (
-                            :id, :keyword, :session_type_id,
-                            :posting_code, :programme_code, 'ALL',
-                            :reporting_period_id, 2.0, true
-                        )
-                        """
-                    ),
-                    {
-                        "id": uuid4(),
-                        "keyword": catalogue_only_keyword,
-                        "session_type_id": session_type_one,
-                        "posting_code": second_posting,
-                        "programme_code": programme_code,
-                        "reporting_period_id": period_id,
-                    },
-                )
-
             await owner_db.commit()
 
         pc_session = await _issue_staff_session(
@@ -462,7 +430,6 @@ async def test_programme_and_secretary_options_have_postgres_cardinality_and_sco
             ] == active_global_id
             assert inactive_keyword not in by_keyword
             assert f"PG Global Inactive {suffix}" not in by_keyword
-            assert catalogue_only_keyword not in by_keyword
     finally:
         async with AsyncSession(owner_engine, expire_on_commit=False) as owner_db:
             await owner_db.execute(
@@ -473,13 +440,6 @@ async def test_programme_and_secretary_options_have_postgres_cardinality_and_sco
                     """
                 ),
                 {"pc_id": pc_user_id, "secretary_id": secretary_user_id},
-            )
-            await owner_db.execute(
-                text(
-                    "DELETE FROM teaching_name_catalogue "
-                    "WHERE reporting_period_id = :period_id"
-                ),
-                {"period_id": period_id},
             )
             await owner_db.execute(
                 text("DELETE FROM teaching_name_mappings WHERE id = :id"),

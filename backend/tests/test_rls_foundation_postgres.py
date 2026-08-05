@@ -247,6 +247,31 @@ PRIVATE_FUNCTIONS = frozenset(
     }
 )
 
+# The final A-J cutover removes the catalogue boundary and the obsolete
+# catalogue-backed helper implementations.  Keep the preceding policy-cutover
+# inventory intact for historical revisions, then subtract only the functions
+# deliberately retired by revision 000036.
+FINAL_AJ_RETIRED_POLICY_HELPER_FUNCTIONS = frozenset(
+    {
+        "mata_rls.can_access_teaching_catalogue(text,text,uuid)",
+        (
+            "mata_rls.can_insert_scheduled_event_source("
+            "text,text,uuid,uuid,date,boolean,text)"
+        ),
+    }
+)
+FINAL_AJ_RETIRED_PRIVATE_FUNCTIONS = frozenset(
+    {
+        "mata_private.can_select_teaching_event_000027(uuid)",
+        (
+            "mata_private.can_insert_teaching_event_000027("
+            "text,text,text,date,boolean,text)"
+        ),
+        "mata_private.can_submit_native_attendance_000027(uuid,uuid)",
+        "mata_private.can_submit_external_attendance_000027(uuid,uuid)",
+    }
+)
+
 _INSTALL_CONTEXT_SQL = text(
     """
     SELECT
@@ -318,8 +343,10 @@ POLICY_CUTOVER_REVISIONS = frozenset(
         "20260804_000033",
         "20260804_000034",
         "20260804_000035",
+        "20260805_000036",
     }
 )
+FINAL_AJ_CUTOVER_REVISIONS = frozenset({"20260805_000036"})
 SESSION_LIFECYCLE_REVISIONS = frozenset(
     {
         "20260727_000027",
@@ -331,6 +358,7 @@ SESSION_LIFECYCLE_REVISIONS = frozenset(
         "20260804_000033",
         "20260804_000034",
         "20260804_000035",
+        "20260805_000036",
     }
 )
 
@@ -1957,17 +1985,22 @@ async def test_foundation_function_acls_search_paths_and_table_denials_are_exact
             for row in functions
             if row["schema_name"] == "mata_private"
         }
+        policy_helper_functions = POLICY_HELPER_FUNCTIONS
+        private_functions = PRIVATE_FUNCTIONS
+        if harness.revision in FINAL_AJ_CUTOVER_REVISIONS:
+            policy_helper_functions -= FINAL_AJ_RETIRED_POLICY_HELPER_FUNCTIONS
+            private_functions -= FINAL_AJ_RETIRED_PRIVATE_FUNCTIONS
         expected_public_helpers = (
             RUNTIME_ONLY_FUNCTIONS
             | AUTH_ONLY_FUNCTIONS
             | BOTH_GROUP_FUNCTIONS
         )
         if harness.revision in POLICY_CUTOVER_REVISIONS:
-            expected_public_helpers |= POLICY_HELPER_FUNCTIONS
+            expected_public_helpers |= policy_helper_functions
         if harness.revision in SESSION_LIFECYCLE_REVISIONS:
             expected_public_helpers |= RETIRED_SESSION_FUNCTIONS
         assert mata_rls_signatures == expected_public_helpers
-        assert mata_private_signatures == PRIVATE_FUNCTIONS
+        assert mata_private_signatures == private_functions
         assert all(row["public_denied"] is True for row in functions)
         assert all(row["anon_execute"] is False for row in functions)
         assert all(row["authenticated_execute"] is False for row in functions)
@@ -1989,7 +2022,7 @@ async def test_foundation_function_acls_search_paths_and_table_denials_are_exact
             assert row["auth_execute"] is True
 
         if harness.revision in POLICY_CUTOVER_REVISIONS:
-            for signature in POLICY_HELPER_FUNCTIONS:
+            for signature in policy_helper_functions:
                 row = by_signature[signature]
                 assert row["runtime_execute"] is True
                 assert row["auth_execute"] is False

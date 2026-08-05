@@ -48,7 +48,6 @@ _CONFIG_DOMAINS_BY_ENTITY = {
     ),
     "global_session_type": (
         "config",
-        "teaching_name_catalogue",
         "secretary_events",
         "resident_events",
         "resident_dashboard",
@@ -72,7 +71,6 @@ _UPLOAD_DOMAINS_BY_TYPE = {
         "config",
         "parsed_data",
         "teaching_targets",
-        "teaching_name_catalogue",
         "teaching_name_pool",
         "teaching_name_mappings",
         "teaching_name_options",
@@ -121,7 +119,6 @@ _LIVE_DATA_DOMAINS_BY_ENTITY = {
     "teaching_target": (
         "parsed_data",
         "teaching_targets",
-        "teaching_name_catalogue",
         "teaching_name_mappings",
         "teaching_name_options",
         "programme_teaching_events",

@@ -12,16 +12,15 @@ pre-compliance workflow, references below to compliance calculation, surplus,
 or a compliance engine are future Phase 6 specification. They do not claim that
 a full `compliance.py` or surplus engine is currently implemented.
 
-## Evolved TTF transition contract (future architecture; no Phase A schema change)
+## Evolved TTF final A-J contract
 
-The current legacy A-K parser, `teaching_name_catalogue`, and
-`teaching_targets.details_of_training` remain physical transitional
-structures. Phase C adds the shared-name lifecycle, Phase D adds guarded
-mapping changes, and Phase F adds explicit source identities to new scheduled
-events. Phase G removes Resident, Non-NHG, attendance, and ad-hoc runtime
-classification dependence on those legacy fields without backfilling or
-rewriting historical events. Parser and catalogue removal remain deferred to
-the later E2/B2 cutover.
+E2+B2 is implemented by revision `20260805_000036`. The legacy A-K parser,
+`teaching_name_catalogue`, and `teaching_targets.details_of_training` are no
+longer current schema or runtime objects. The migration removes them after
+fail-closed dependency checks; it preserves Teaching Names, mappings, targets,
+events, attendance, upload/warning/audit history, and immutable source/display
+evidence. Historical A-K references below are retained only as pre-cutover
+evidence and downgrade context.
 
 Revision `20260802_000029` introduced the additive B1 persistence foundation.
 Revision `20260803_000030` changed the optional event identity FK to `SET NULL`.
@@ -43,7 +42,14 @@ snapshots, safely backfills only rows with an explicit Teaching Name ID, and
 replaces the affected event and attendance authorization with row-local,
 full-datetime rules.
 
-The planned final model uses `teaching_name` as the canonical term:
+Revision `20260805_000036` removes the catalogue and target details column,
+retires their policies/grants/helper inventory, and sets SPORTSMED/PALLMED to
+`r_year_required = true` and `is_subspecialty = false`. It deliberately does
+not rekey existing targets or mappings. Downgrade can restore only an empty
+catalogue structure and nullable details column; it cannot recreate deleted
+Column K text or catalogue rows.
+
+The current final model uses `teaching_name` as the canonical term:
 
 - The `teaching_names` relation is scoped by
   `(reporting_period_id, programme_code)`, has a display name, a server-owned
@@ -102,11 +108,12 @@ compliance.
 
 The final TTF is A-J only: reporting period, programme, R-year, posting,
 dashboard posting/posting group, session type, monthly target, tracked,
-reallocatable, and tag. Column K is removed. A future-format upload with a
+reallocatable, and tag. Column K is removed. An upload with a
 populated legacy Column K must return controlled `422`; there is no dual-format
-support, Column K backfill, or historical-data migration. Supplied workbooks
-are legacy structural references only. Phase A creates none of these objects or
-constraints.
+support, Column K backfill, or historical-data migration. A TTF creates no
+Teaching Name and no mapping from workbook text. Existing mappings are
+provisioned only from distinct posting/R-year target scopes and active shared
+pool names. Actual all-28 operational onboarding remains Phase R.
 
 ## Entity Relationship Summary
 
@@ -140,19 +147,15 @@ teaching_events ─N:1─ event_series (nullable)
 
 session_types ─1:N─ teaching_targets
 session_types ─1:N─ teaching_events (display only)
-session_types ─1:N─ teaching_name_catalogue
 
 reporting_periods ─1:N─ teaching_targets
 reporting_periods ─1:N─ resident_postings
 reporting_periods ─1:N─ period_snapshots
 reporting_periods ─1:N─ teaching_names
 reporting_periods ─1:N─ teaching_name_mappings
-reporting_periods ─1:N─ teaching_name_catalogue
 reporting_periods ─1:N─ form_f1_records
 
-posting_codes ─1:N─ teaching_name_catalogue
 posting_codes ─1:N─ teaching_name_mappings
-programmes ─1:N─ teaching_name_catalogue
 programmes ─1:N─ teaching_names
 programmes ─1:N─ teaching_name_mappings
 
@@ -428,13 +431,12 @@ Catalogue of all session types. Seeded from TTF upload.
 
 ## B1 foundation and Phase C Teaching Name lifecycle
 
-Revision `20260802_000029` creates the additive objects below. Phase C reads
-and writes the name pool through its dedicated lifecycle service, while the
-legacy parser/configuration workflow retains `teaching_name_catalogue`. Phase F
-and Phase G scheduled-event creation, discovery, and attendance use persisted
+Revision `20260802_000029` created the additive objects below. Before E2+B2,
+the legacy parser/configuration workflow also retained
+`teaching_name_catalogue`; revision `20260805_000036` removes it. Phase F and
+Phase G scheduled-event creation, discovery, and attendance use persisted
 source identities instead. The deferred compliance resolver must use a scoped
-mapping rather than event display text. The pool is not seeded from legacy
-Column K and does not replace `teaching_name_catalogue` as parser configuration.
+mapping rather than event display text. The pool is never seeded from TTF text.
 
 ### Table: `teaching_names`
 
@@ -476,7 +478,7 @@ One optional exact-target mapping for a Teaching Name and posting/R-year scope.
 **Unique constraint:** `UNIQUE(teaching_name_id, posting_code, r_year)`. The
 target foreign key uses the additive candidate key `(id, reporting_period_id,
 programme_code, posting_code, r_year)`. It deliberately does **not** make that
-four-part target scope globally unique: retained A-K targets may have several
+  four-part target scope globally unique: targets may have several
 session types in the same scope.
 
 ### Related B1 / Phase C additions
@@ -506,13 +508,30 @@ session types in the same scope.
 
 ---
 
-## Physical legacy A-K TTF catalogue path (retained through E2/B2)
+## Current final A-J TTF persistence
 
-The following target, catalogue, and event fields remain part of the physical
-transition schema. References to `details_of_training` or Column K in this
-section describe legacy A-K parser/configuration behavior, not the final
-evolved TTF contract or the Phase G Resident/Non-NHG runtime. They remain
-unchanged until the later E2/B2 cutover.
+`teaching_targets` contains only the stable natural identity
+`(reporting_period_id, programme_code, r_year, posting_code, session_type_id)`
+and these mutable target fields: `monthly_target`, `is_tracked`,
+`is_reallocatable`, and `tag`. Structural fields require TTF re-upload. A
+successful upload preserves unchanged target IDs, updates mutable fields in
+place, makes stale mappings pending before deleting stale targets, and creates
+pending mappings only for active shared-pool Teaching Names in newly introduced
+posting/R-year scopes. Adding another session type to an existing scope does not
+create another mapping.
+
+`teaching_name_catalogue` does not exist. No current model, API route, helper,
+policy, grant, cache domain, parser, or event/attendance path may depend on it.
+Historical warning/audit rows that mention the retired type remain immutable
+evidence. Non-NHG availability remains independently configured by
+`programme_institution_posting_map` and is never activated or inferred by TTF.
+
+## Historical legacy A-K TTF catalogue path (removed by E2+B2)
+
+The following target, catalogue, and event fields are pre-`20260805_000036`
+schema evidence. References to `details_of_training` or Column K in this
+section are historical only and do not describe the final evolved TTF contract
+or any current runtime path.
 
 ## Table: `teaching_targets`
 
@@ -1160,7 +1179,6 @@ Persistent audit trail of every RDB, TTF, FormF1, and Academic Calendar / Public
   "affected_attendance_count": 7,
   "session_types_upserted": 5,
   "posting_codes_added": ["AICAIC", "DPPallia"],
-  "catalogue_rows_seeded": 84,
   "posting_groups_upserted": 5,
   "posting_groups_removed": 2,
   "rows_exploded": 3,
@@ -1547,7 +1565,7 @@ ON teaching_targets(reporting_period_id, programme_code, posting_code, tag)
 WHERE is_reallocatable = true;
 ```
 
-#### `teaching_name_catalogue`
+#### `teaching_name_catalogue` (historical, removed by E2+B2)
 
 ```sql
 -- Critical compliance/event-visibility lookup.

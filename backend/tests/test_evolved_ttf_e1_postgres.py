@@ -16,7 +16,6 @@ from app.errors import ApiError
 from app.services.database_context import configure_request_context, prime_request_context
 from app.services.teaching_name_pool import TeachingNamePoolActor, delete_teaching_name
 from app.services.ttf_parser import (
-    ParsedCatalogueRow,
     ParsedTeachingTargetRow,
     TTFUploadLockError,
     _persist_ttf_rows,
@@ -205,7 +204,6 @@ def _target_row(
     session_type: str,
     duration_hours: float,
     monthly_target: float,
-    details_of_training: str,
 ) -> ParsedTeachingTargetRow:
     return ParsedTeachingTargetRow(
         source_row=2,
@@ -221,22 +219,6 @@ def _target_row(
         is_tracked=True,
         is_reallocatable=False,
         tag=None,
-        details_of_training=details_of_training,
-        keywords=[details_of_training],
-    )
-
-
-def _catalogue_row(target: ParsedTeachingTargetRow) -> ParsedCatalogueRow:
-    return ParsedCatalogueRow(
-        source_row=target.source_row,
-        keyword=target.details_of_training,
-        session_type=target.session_type,
-        posting_code=target.posting_code,
-        programme_code=target.programme_code,
-        r_year=target.r_year,
-        reporting_period_id=target.reporting_period_id,
-        duration_hours=target.duration_hours,
-        is_tracked=target.is_tracked,
     )
 
 
@@ -255,7 +237,6 @@ def _ttf_workbook_bytes(rows: list[list[object]]) -> bytes:
         "is_tracked",
         "is_reallocatable",
         "tag",
-        "details_of_training",
     ]
     for column, header in enumerate(headers, start=1):
         worksheet.cell(row=1, column=column, value=header)
@@ -301,7 +282,6 @@ async def test_ttf_programme_lock_serializes_programme_wide_posting_group_replac
                 "Yes",
                 "No",
                 "",
-                f"PG first topic {suffix}",
             ],
             [
                 f"PG first {suffix}",
@@ -314,7 +294,6 @@ async def test_ttf_programme_lock_serializes_programme_wide_posting_group_replac
                 "Yes",
                 "No",
                 "",
-                f"PG second topic {suffix}",
             ],
         ]
     )
@@ -331,7 +310,6 @@ async def test_ttf_programme_lock_serializes_programme_wide_posting_group_replac
                 "Yes",
                 "No",
                 "",
-                f"PG competing topic {suffix}",
             ]
         ]
     )
@@ -348,7 +326,6 @@ async def test_ttf_programme_lock_serializes_programme_wide_posting_group_replac
                 "Yes",
                 "No",
                 "",
-                f"OP topic {suffix}",
             ]
         ]
     )
@@ -477,15 +454,6 @@ async def test_ttf_programme_lock_serializes_programme_wide_posting_group_replac
             assert other_programme_groups == [(other_posting, "OP-GROUP")]
         finally:
             await owner_db.rollback()
-            await owner_db.execute(
-                text(
-                    """
-                    DELETE FROM teaching_name_catalogue
-                    WHERE reporting_period_id = ANY(CAST(:period_ids AS uuid[]))
-                    """
-                ),
-                {"period_ids": [first_period_id, second_period_id, other_period_id]},
-            )
             await owner_db.execute(
                 text(
                     """
@@ -945,7 +913,6 @@ async def test_e1_reconciliation_preserves_ids_invalidates_stale_mappings_and_is
         session_type=retained_session_name,
         duration_hours=1.0,
         monthly_target=9.0,
-        details_of_training=f"retained keyword {suffix}",
     )
     introduced_row = _target_row(
         reporting_period_id=period_id,
@@ -955,7 +922,6 @@ async def test_e1_reconciliation_preserves_ids_invalidates_stale_mappings_and_is
         session_type=introduced_session_name,
         duration_hours=1.0,
         monthly_target=3.0,
-        details_of_training=f"introduced keyword {suffix}",
     )
 
     async with AsyncSession(ttf_e1_postgres_engine, expire_on_commit=False) as db:
@@ -1053,15 +1019,15 @@ async def test_e1_reconciliation_preserves_ids_invalidates_stale_mappings_and_is
                     INSERT INTO teaching_targets (
                         id, reporting_period_id, programme_code, r_year, posting_code,
                         session_type_id, monthly_target, is_tracked, is_reallocatable,
-                        tag, details_of_training
+                        tag
                     )
                     VALUES
                         (:retained_target_id, :period_id, :programme_code, 'R1',
                          :retained_posting, :retained_session_id, 1, true, false,
-                         NULL, 'old retained keyword'),
+                         NULL),
                         (:stale_target_id, :period_id, :programme_code, 'R1',
                          :retained_posting, :stale_session_id, 2, true, false,
-                         NULL, 'stale keyword')
+                         NULL)
                     """
                 ),
                 {
@@ -1144,7 +1110,6 @@ async def test_e1_reconciliation_preserves_ids_invalidates_stale_mappings_and_is
                 reporting_period_id=period_id,
                 programme_code=programme_code,
                 teaching_targets=[retained_row, introduced_row],
-                catalogue_rows=[_catalogue_row(retained_row), _catalogue_row(introduced_row)],
                 posting_group_rows=[],
             )
             assert first_counts["targets_inserted"] == 1
@@ -1157,7 +1122,7 @@ async def test_e1_reconciliation_preserves_ids_invalidates_stale_mappings_and_is
                 await db.execute(
                     text(
                         """
-                        SELECT id, monthly_target, details_of_training
+                        SELECT id, monthly_target
                         FROM teaching_targets
                         WHERE reporting_period_id = :period_id
                           AND programme_code = :programme_code
@@ -1176,7 +1141,6 @@ async def test_e1_reconciliation_preserves_ids_invalidates_stale_mappings_and_is
             ).mappings().one()
             assert retained_target["id"] == retained_target_id
             assert retained_target["monthly_target"] == 9
-            assert retained_target["details_of_training"] == retained_row.details_of_training
 
             # The target FK is RESTRICT.  The retained mapping row and incremented
             # revision demonstrate the explicit null-before-delete reconciliation.
@@ -1233,7 +1197,6 @@ async def test_e1_reconciliation_preserves_ids_invalidates_stale_mappings_and_is
                 reporting_period_id=period_id,
                 programme_code=programme_code,
                 teaching_targets=[retained_row, introduced_row],
-                catalogue_rows=[_catalogue_row(retained_row), _catalogue_row(introduced_row)],
                 posting_group_rows=[],
             )
             assert second_counts["targets_inserted"] == 0
@@ -1316,7 +1279,6 @@ async def test_e1_mapping_reconciliation_uses_verified_restricted_runtime_contex
         session_type=retained_session_name,
         duration_hours=1.0,
         monthly_target=9.0,
-        details_of_training=f"retained keyword {suffix}",
     )
     introduced_row = _target_row(
         reporting_period_id=period_id,
@@ -1326,7 +1288,6 @@ async def test_e1_mapping_reconciliation_uses_verified_restricted_runtime_contex
         session_type=introduced_session_name,
         duration_hours=1.0,
         monthly_target=3.0,
-        details_of_training=f"introduced keyword {suffix}",
     )
 
     async with ttf_e1_restricted_runtime_harness.owner_session() as db:
@@ -1506,18 +1467,18 @@ async def test_e1_mapping_reconciliation_uses_verified_restricted_runtime_contex
                     INSERT INTO teaching_targets (
                         id, reporting_period_id, programme_code, r_year, posting_code,
                         session_type_id, monthly_target, is_tracked, is_reallocatable,
-                        tag, details_of_training
+                        tag
                     )
                     VALUES
                         (:retained_target_id, :period_id, :programme_code, 'R1',
                          :posting_code, :retained_session_id, 1, true, false,
-                         NULL, 'old retained keyword'),
+                         NULL),
                         (:master_stale_target_id, :period_id, :programme_code, 'R1',
                          :posting_code, :master_stale_session_id, 2, true, false,
-                         NULL, 'master stale keyword'),
+                         NULL),
                         (:pc_stale_target_id, :period_id, :programme_code, 'R3',
                          :posting_code, :pc_stale_session_id, 2, true, false,
-                         NULL, 'pc stale keyword')
+                         NULL)
                     """
                 ),
                 {
@@ -1560,7 +1521,7 @@ async def test_e1_mapping_reconciliation_uses_verified_restricted_runtime_contex
                 },
             )
 
-            helper_catalogue = (
+            helper_security = (
                 await db.execute(
                     text(
                         """
@@ -1593,13 +1554,13 @@ async def test_e1_mapping_reconciliation_uses_verified_restricted_runtime_contex
                     )
                 )
             ).mappings().one()
-            assert helper_catalogue["prosecdef"] is True
-            assert helper_catalogue["proconfig"] == [
+            assert helper_security["prosecdef"] is True
+            assert helper_security["proconfig"] == [
                 "search_path=pg_catalog, pg_temp"
             ]
-            assert helper_catalogue["runtime_execute"] is True
-            assert helper_catalogue["auth_execute"] is False
-            assert helper_catalogue["public_execute"] is False
+            assert helper_security["runtime_execute"] is True
+            assert helper_security["auth_execute"] is False
+            assert helper_security["public_execute"] is False
 
             # Persist only unique seed data so independently authenticated
             # runtime/auth connections can observe it.
@@ -1781,10 +1742,6 @@ async def test_e1_mapping_reconciliation_uses_verified_restricted_runtime_contex
                     reporting_period_id=period_id,
                     programme_code=programme_code,
                     teaching_targets=[retained_row, introduced_row],
-                    catalogue_rows=[
-                        _catalogue_row(retained_row),
-                        _catalogue_row(introduced_row),
-                    ],
                     posting_group_rows=[],
                 )
                 assert master_counts["targets_inserted"] == 1
@@ -1889,16 +1846,6 @@ async def test_e1_mapping_reconciliation_uses_verified_restricted_runtime_contex
                 text(
                     """
                     DELETE FROM teaching_name_mappings
-                    WHERE reporting_period_id = :period_id
-                      AND programme_code = :programme_code
-                    """
-                ),
-                {"period_id": period_id, "programme_code": programme_code},
-            )
-            await db.execute(
-                text(
-                    """
-                    DELETE FROM teaching_name_catalogue
                     WHERE reporting_period_id = :period_id
                       AND programme_code = :programme_code
                     """

@@ -31,7 +31,6 @@ from app.models.teaching import (
     SessionType,
     TeachingEvent,
     TeachingName,
-    TeachingNameCatalogue,
     TeachingNameMapping,
     TeachingTarget,
 )
@@ -66,7 +65,6 @@ __all__ = [
     "SurplusLedger",
     "TeachingEvent",
     "TeachingName",
-    "TeachingNameCatalogue",
     "TeachingNameMapping",
     "TeachingTarget",
     "UploadLog",

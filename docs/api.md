@@ -209,7 +209,7 @@ retains or restores a stale session cookie.
 ### XSS and response safety
 
 - API responses are JSON by default and must not intentionally return executable HTML.
-- Do not trust stored free-text fields such as `teaching_name`, `details_of_training`, `posting_code`, `display_name`, or uploaded filename. They must be treated as plain text by the frontend.
+- Do not trust stored free-text fields such as `teaching_name`, `posting_code`, `display_name`, or uploaded filename. They must be treated as plain text by the frontend.
 - Backend-generated export files must escape spreadsheet formula injection. Any exported cell beginning with `=`, `+`, `-`, or `@` from user-controlled data must be prefixed safely before writing CSV/XLSX.
 - Error responses must not leak stack traces, SQL errors, internal paths, environment variables, secrets, or raw parser internals.
 - Security headers middleware should set at least:
@@ -419,8 +419,9 @@ adds explicit identity to new scheduled events: a pool event carries one
 both retain an immutable `teaching_name` display snapshot. Revision
 `20260804_000034` uses those persisted identities for Resident/Non-NHG runtime
 discovery and attendance where present; both-null legacy rows retain
-deterministic persisted evidence only. The physical A-K parser/catalogue path
-remains until E2/B2.
+  deterministic persisted evidence only. Revision `20260805_000036` completes
+  E2+B2: the physical parser is A–J only, and no current API or runtime path
+  uses a catalogue or `details_of_training` field.
 Revision `20260804_000035` adds immutable pool-source programme/period
 snapshots. Pool creation writes both values, used-name deletion preserves them,
 and list/manage/attendance authorization uses them without catalogue or display-
@@ -620,8 +621,8 @@ Upload Teaching Target File Excel.
 - **Body:** `file` (xlsx), `reporting_period_id` (UUID), `programme_code` (string)
 - **Processing:** See `docs/parsing.md` § TTF Parser
 - **Behaviour:** Stable target reconciliation within `(reporting_period_id, programme_code)` scope. Re-upload remains allowed regardless of existing attendance. Matching `(r_year, posting_code, session_type_id)` targets retain their UUID; stale mapped targets leave their mapping rows pending rather than deleting or redirecting them. The TTF is also the explicit programme-scoped replacement for posting-group configuration: blank or omitted Column E membership removes the prior group row for that posting.
-- **Target validation:** `monthly_target` must be a non-negative whole number. `0` is accepted and remains catalogue-seeded for the physical transition path, but it does not determine Phase G event visibility or attendance eligibility.
-- **Orphan detection:** After catalogue regeneration, checks for legacy parser/configuration references whose `teaching_name` no longer has a `teaching_name_catalogue` row. These are returned as warnings — upload still returns `200`; they do not change Phase G runtime eligibility.
+- **Final A–J contract:** Columns A–J are the only accepted TTF fields. Each row must match the selected reporting period and programme; the parser supports all 28 seeded programmes generically, normalizes the 20 all-year programmes to `ALL`, and retains exact R-years for the other eight. A populated Column K or any later unsupported column returns controlled `422` without echoing submitted cell values.
+- **Target validation:** `monthly_target` must be a non-negative whole number. `0` is accepted but does not determine Phase G event visibility or attendance eligibility. TTF never creates Teaching Names or mappings from workbook text.
 - **Concurrency:** The programme-global `posting_groups` advisory lock is acquired before the existing reporting-period/programme scope lock. A concurrent upload for the same programme, including one for a different reporting period, returns controlled `409`; different programmes remain independent.
 - **Audit log:** Writes `upload_logs` row with `upload_type = 'ttf'`
 - **Response:**
@@ -640,19 +641,10 @@ Upload Teaching Target File Excel.
   "affected_attendance_count": 7,
   "session_types_upserted": 5,
   "posting_codes_added": ["AICAIC", "DPPallia"],
-  "catalogue_rows_seeded": 84,
   "posting_groups_upserted": 5,
   "posting_groups_removed": 2,
   "rows_exploded": 3,
-  "warnings": [
-    {
-      "type": "orphaned_attendance",
-      "session_type": "Case-based Teaching [1h]",
-      "posting_code": "KTPHGerMed",
-      "count": 3,
-      "message": "3 attendance records no longer map to any teaching target and will not count toward compliance"
-    }
-  ],
+  "warnings": [],
   "errors": []
 }
 ```
@@ -937,10 +929,10 @@ List parsed teaching targets with filters.
 Correct a single parsed teaching target row (mid-period correction).
 
 - **Auth:** admin only
-- **Editable fields only:** `monthly_target`, `is_tracked`, `is_reallocatable`, `tag`, and transitional `details_of_training`
+- **Editable fields only:** `monthly_target`, `is_tracked`, `is_reallocatable`, and `tag`
 - **Target validation:** `monthly_target` accepts non-negative whole numbers including `0`; negative and fractional values are rejected.
 - **Identity columns (locked):** `session_type_id`, `posting_code`, `programme_code`, `r_year`, and reporting-period identity cannot be changed by this route. Full TTF re-upload is required for structural changes.
-- **Side effect:** When transitional `details_of_training` changes, the corresponding `teaching_name_catalogue` rows are regenerated for that target scope. Keyword changes affect only the retained parser/configuration path, not Phase G Resident/Non-NHG runtime eligibility.
+- **Side effect:** The correction updates only the target's mutable semantics, audit evidence, and bounded Data Revalidation outcome. It never seeds Teaching Names or creates mappings from text.
 - **Body:**
 ```json
 {
@@ -948,8 +940,7 @@ Correct a single parsed teaching target row (mid-period correction).
     "monthly_target": 15,
     "is_tracked": true,
     "is_reallocatable": false,
-    "tag": "A",
-    "details_of_training": "Lectures, Journal Club, Tutorials"
+    "tag": "A"
   },
   "correction_reason": "Corrected approved mid-period target",
   "last_seen_updated_at": "2026-08-03T10:00:00Z"
@@ -1448,7 +1439,7 @@ List scheduled teaching events visible to the Programme PC's programme scope.
 Return teaching-name options for PC event creation.
 
 - **Auth:** admin/PC only
-- **Query params:** `programme_code` required; `reporting_period_id` or `event_date` optional. An explicit period must be effectively active. When both are supplied, `event_date` must belong to the explicit period or the API returns `422`. With neither option, the backend resolves the single effectively active period containing today. TTF-derived options are scoped to that resolved period.
+- **Query params:** `programme_code` required; `reporting_period_id` or `event_date` optional. An explicit period must be effectively active. When both are supplied, `event_date` must belong to the explicit period or the API returns `422`. With neither option, the backend resolves the single effectively active period containing today. Options are scoped to that resolved period.
 - **Scope:** `programme_code IN programme_scope`.
 - **Source:** Active `teaching_names` in the selected programme and period, plus active `global_session_types`. Pool options expose `teaching_name_id`; global options expose `global_session_type_id`. Same display text in two pools remains two choices with distinct IDs.
 
@@ -1739,27 +1730,10 @@ List residents currently posted to the secretary's site.
 
 ### GET `/secretary/teaching-name-options`
 
-Get available teaching name keywords for the secretary event-creation dropdown.
+Get available Teaching Name and global-session-type source options for the secretary event-creation dropdown.
 
 - **Auth:** secretary only
-- **Query params:** `reporting_period_id` or `event_date` optional. An explicit period must be effectively active. When both are supplied, `event_date` must belong to the explicit period or the API returns `422`. With neither option, the backend resolves the single effectively active period containing today. TTF-derived options are scoped to that resolved period.
-- **Scope:** Returns a unified, deduplicated list combining:
-  1. Keywords from `teaching_name_catalogue` for the secretary’s **native programme teaching pool**, not only the exact database-owned secretary posting.
-  2. Active entries from `global_session_types` (compliance-exempt, available to all secretaries).
-
-For the TTSH pilot workflow, a secretary assigned to a native department/site such as `TTSHGerMed` should be able to create teaching events using the deduplicated teaching-name pool from the relevant native programme TTF, e.g. `GERI`, across that programme’s applicable postings.
-
-This allows one secretary-created event list to support residents from the same native programme who may currently be posted to different sites/postings, while resident visibility and compliance counting remain resolved per resident context.
-
-- **Resident visibility/compliance:** Event creation only stores the selected `teaching_name`. Whether a resident sees or counts that event is still resolved later using the resident’s own:
-  - `programme_code`
-  - current `resident_postings.posting_code`
-  - `resident_postings.r_year`
-  - `reporting_period_id`
-  - matching `teaching_name_catalogue` rows
-
-The preceding dropdown and event-storage description is retained as pre-Phase-F
-history only. The contract below governs current scheduled-event options.
+- **Query params:** `reporting_period_id` or `event_date` optional. An explicit period must be effectively active. When both are supplied, `event_date` must belong to the explicit period or the API returns `422`. With neither option, the backend resolves the single effectively active period containing today. Pool options are scoped to that resolved period.
 
 - **Phase F source contract:** This endpoint now returns each active
   `teaching_names` row in the secretary's authorised programme pool and period,
@@ -1915,8 +1889,8 @@ Return date-derived posting context and one fixed ad-hoc option.
     assigned and attended option; it never infers a different department/site.
   3. Returns exactly one option: `Department/Programme Teaching [1h]`, duration
     `1.00`, null `session_type_id`, and `is_global = false`.
-  4. It does not query `teaching_name_catalogue`, `teaching_targets`,
-    `details_of_training`, or Column K.
+  4. It does not query teaching targets, mappings, or any retired
+    catalogue/`details_of_training`/Column K structure.
 - **Non-NHG Resident backend:**
   1. Derives the date-specific host posting from `external_resident_postings` for `teaching_date`.
   2. If no schedule row matches the date, returns `available = false` and `reason = "posting_unavailable"`.
@@ -2354,7 +2328,7 @@ The same route may support NHG and Non-NHG Residents through identity branching.
 - If `supports_secretary_events = false`, return no secretary-created event list but keep ad-hoc submission available in the frontend.
 - Return Programme PC-created events only when `event.posting_code = schedule.posting_code`, the schedule `programme_code` is non-null, and `event.created_for_programme_code = schedule.programme_code`. This PC-event source does not depend on `supports_secretary_events`.
 - For an explicit Teaching Name source, require that source's reporting period to be the event-date period and its programme to exactly equal the schedule programme. An explicit global source is global-first. A both-null legacy event uses only deterministic persisted event/schedule evidence; do not infer identity from the display name, catalogue, targets, or Column K.
-- Apply the exact match independently for every schedule row/date. Do not infer programme identity from posting-code prefixes, institution names, teaching targets, teaching-name catalogue rows, `programmes.native_teaching_posting_code`, fuzzy matching, or the first mapping row. AIM must not see IM events at shared `TTSHGenMed`; GS must not see SIG events at shared `TTSHGenSrg`.
+- Apply the exact match independently for every schedule row/date. Do not infer programme identity from posting-code prefixes, institution names, teaching targets, the retired catalogue, `programmes.native_teaching_posting_code`, fuzzy matching, or the first mapping row. AIM must not see IM events at shared `TTSHGenMed`; GS must not see SIG events at shared `TTSHGenSrg`.
 - Return normal scheduled events only. Exclude resident-created ad-hoc events, events outside the schedule date range or in a schedule gap, and events blocked by existing reporting-period or status rules.
 - Filter `event_date <= today`.
 - Exclude events already submitted by that Non-NHG Resident in `external_attendance_records`.

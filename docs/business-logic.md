@@ -6,10 +6,11 @@ This document covers the compliance engine, surplus chain, tag-based reallocatio
 
 BL-1 through BL-12 are the future non-clawback compliance specification. They
 do not establish that `compliance.py`, `surplus.py`, or a full Phase 6 engine is
-implemented today. Clawback and final close remain separately deferred. Current
-upload behavior remains the legacy A-K parser path. Phase C activates shared
-Teaching Name configuration lifecycle and pending-mapping reconciliation; Phase
-D adds only guarded Programme-PC mapping configuration. Phase F changes
+implemented today. Clawback and final close remain separately deferred. Revision
+`20260805_000036` implements the final A–J parser and removes the former
+catalogue/details path. Phase C activates shared Teaching Name configuration
+lifecycle and pending-mapping reconciliation; Phase D adds only guarded
+Programme-PC mapping configuration. Phase F changes
 scheduled-event writes to use an explicit Teaching Name or Global Session Type
 identity plus an immutable display snapshot. Phase G uses those persisted
 identities for Resident/Non-NHG discovery and attendance where present, uses
@@ -31,12 +32,12 @@ Global session types stay Admin-managed and, for source-backed scheduled
 events, are identified by `global_session_type_id` before ordinary Teaching
 Name mapping. Resident ad-hoc teaching remains fixed to
 `Department/Programme Teaching [1h]`; Non-NHG attendance is excluded from NHG
-compliance. The final A-J TTF removes Column K. The current A-K parser,
-`teaching_name_catalogue`, and `details_of_training` remain physical
-transitional structures, but Phase G Resident/Non-NHG discovery, attendance,
-and ad-hoc flows do not use them. Only final E2/B2 may remove them. A populated
-legacy Column K in a future-format upload must return `422`, with no dual-format
-fallback, backfill, or historical migration.
+compliance. The final A–J TTF is the only accepted format. It removes Column K,
+`teaching_name_catalogue`, and `details_of_training`; a populated legacy
+Column K receives controlled `422`, with no dual-format fallback, backfill, or
+historical-data restoration. TTF does not seed Teaching Names or infer mappings
+from workbook text. Phase G Resident/Non-NHG discovery, attendance, and ad-hoc
+flows remain based on persisted source evidence.
 
 ---
 
@@ -888,7 +889,7 @@ Both programmes require R-year matching and are not configured as subspecialties
 - `r_year_required = true`
 - `is_subspecialty = false`
 - RDB R4, R5, and R6 remain R4, R5, and R6
-- TTF target and catalogue rows use R4, R5, and R6
+- TTF targets use R4, R5, and R6
 - Do not use `ALL` and do not remap these values to SS1, SS2, or SS3
 
 ### RDB alias normalisation

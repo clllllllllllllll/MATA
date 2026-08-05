@@ -118,9 +118,8 @@ def test_attendance_rejects_explicit_pool_event_from_another_programme() -> None
     assert fake_db.attendance == before_attendance
 
 
-def test_attendance_accepts_explicit_global_event_without_catalogue() -> None:
+def test_attendance_accepts_explicit_global_event_without_teaching_target() -> None:
     fake_db = FakeResidentSession()
-    fake_db.catalogue = []
     fake_db.teaching_targets = []
     client = _client(fake_db)
 
@@ -654,17 +653,14 @@ def test_attendance_accepts_rehab_native_department_event_when_posted_to_grm() -
             "native_teaching_posting_code": "TTSHNeuro",
         }
     )
-    fake_db.catalogue.append(
+    event = next(
+        row for row in fake_db.events if row["id"] == fake_db.other_posting_event_id
+    )
+    event.update(
         {
-            "keyword": "Skills Teaching",
-            "posting_code": "TTSHNeuro",
-            "programme_code": "REHAB",
-            "r_year": "R2",
-            "reporting_period_id": fake_db.period_id,
-            "session_type_id": fake_db.second_session_type_id,
-            "session_type": "Skills Teaching [2.0h]",
-            "duration_hours": 2.0,
-            "is_tracked": True,
+            "teaching_name_id": str(uuid4()),
+            "source_reporting_period_id": fake_db.period_id,
+            "source_programme_code": "REHAB",
         }
     )
     client = _client(fake_db)
@@ -723,19 +719,6 @@ def test_attendance_rejects_arbitrary_ttsh_secretary_event() -> None:
             "supports_secretary_events": True,
         }
     )
-    fake_db.catalogue.append(
-        {
-            "keyword": "Ortho Teaching",
-            "posting_code": "TTSHOrtho",
-            "programme_code": "GRM",
-            "r_year": "R2",
-            "reporting_period_id": fake_db.period_id,
-            "session_type_id": fake_db.session_type_id,
-            "session_type": "Ortho Teaching [1.0h]",
-            "duration_hours": 1.0,
-            "is_tracked": True,
-        }
-    )
     arbitrary_event = fake_db._event(  # noqa: SLF001
         str(uuid4()),
         "TTSHOrtho",
@@ -784,24 +767,14 @@ def test_attendance_duplicate_native_event_remains_blocked() -> None:
 def test_attendance_accepts_valid_secretary_event_even_when_supports_flag_is_false() -> None:
     fake_db = FakeResidentSession()
     fake_db.resident_postings[0]["posting_code"] = "KTPHGerMed"
-    fake_db.catalogue.append(
-        {
-            "keyword": "KTPH Teaching",
-            "posting_code": "KTPHGerMed",
-            "programme_code": "GRM",
-            "r_year": "R2",
-            "reporting_period_id": fake_db.period_id,
-            "session_type_id": fake_db.session_type_id,
-            "session_type": "KTPH Teaching [1.0h]",
-            "duration_hours": 1.0,
-            "is_tracked": True,
-        }
-    )
     ktph_event = fake_db._event(  # noqa: SLF001
         str(uuid4()),
         "KTPHGerMed",
         "KTPH Teaching",
         fake_db.today - timedelta(days=1),
+        teaching_name_id=str(uuid4()),
+        source_reporting_period_id=fake_db.period_id,
+        source_programme_code="GRM",
     )
     fake_db.events.append(ktph_event)
     client = _client(fake_db)

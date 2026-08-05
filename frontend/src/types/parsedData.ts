@@ -64,22 +64,7 @@ export interface ParsedTeachingTargetRow {
   is_tracked: boolean
   is_reallocatable: boolean
   tag: string | null
-  details_of_training: string | null
   updated_at: string | null
-}
-
-export interface ParsedTeachingNameCatalogueRow {
-  id: string
-  keyword: string
-  programme_code: string
-  posting_code: string
-  r_year: string
-  reporting_period_id: string
-  reporting_period_label: string | null
-  session_type_id: string
-  session_type_name: string | null
-  duration_hours: number
-  is_tracked: boolean
 }
 
 export interface ParsedFormF1RecordRow {
@@ -209,7 +194,6 @@ export type ParsedDataRow =
   | ParsedResidentRow
   | ParsedResidentPostingRow
   | ParsedTeachingTargetRow
-  | ParsedTeachingNameCatalogueRow
   | ParsedFormF1RecordRow
   | ParsedPublicHolidayRow
   | ParsedAcademicMonthBoundaryRow

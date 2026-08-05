@@ -12,7 +12,6 @@ import type {
   ParsedResidentPostingRow,
   ParsedResidentRow,
   ParsedDataSourceCellReplaceResponse,
-  ParsedTeachingNameCatalogueRow,
   ParsedTeachingTargetRow,
   ResidentPostingSourceCellReplaceRequest,
 } from '../types/parsedData'
@@ -51,16 +50,6 @@ export interface ListParsedTeachingTargetsParams extends AdminParsedDataParams {
   postingCode?: string
   rYear?: string
   sessionType?: string
-  isTracked?: boolean | 'all'
-  search?: string
-}
-
-export interface ListParsedTeachingNameCatalogueParams extends AdminParsedDataParams {
-  reportingPeriodId?: string
-  programmeCode?: string
-  postingCode?: string
-  rYear?: string
-  keyword?: string
   isTracked?: boolean | 'all'
   search?: string
 }
@@ -282,24 +271,7 @@ const toParsedTeachingTarget = (value: ApiRow): ParsedTeachingTargetRow => ({
   is_tracked: booleanValue(value.is_tracked),
   is_reallocatable: booleanValue(value.is_reallocatable),
   tag: optionalString(value.tag),
-  details_of_training: optionalString(value.details_of_training),
   updated_at: optionalString(value.updated_at),
-})
-
-const toParsedTeachingNameCatalogue = (
-  value: ApiRow,
-): ParsedTeachingNameCatalogueRow => ({
-  id: requiredString(value.id),
-  keyword: requiredString(value.keyword),
-  programme_code: requiredString(value.programme_code),
-  posting_code: requiredString(value.posting_code),
-  r_year: requiredString(value.r_year),
-  reporting_period_id: requiredString(value.reporting_period_id),
-  reporting_period_label: optionalString(value.reporting_period_label),
-  session_type_id: requiredString(value.session_type_id),
-  session_type_name: optionalString(value.session_type_name),
-  duration_hours: finiteNumber(value.duration_hours),
-  is_tracked: booleanValue(value.is_tracked),
 })
 
 const toParsedFormF1Record = (value: ApiRow): ParsedFormF1RecordRow => ({
@@ -405,27 +377,6 @@ export const listParsedTeachingTargets = (
     params,
     queryParams,
     toParsedTeachingTarget,
-  )
-}
-
-export const listParsedTeachingNameCatalogue = (
-  params: ListParsedTeachingNameCatalogueParams,
-): Promise<ParsedDataListResponse<ParsedTeachingNameCatalogueRow>> => {
-  const queryParams: Record<string, string | number | boolean> = {}
-  addTextParam(queryParams, 'reporting_period_id', params.reportingPeriodId)
-  addTextParam(queryParams, 'programme_code', params.programmeCode)
-  addTextParam(queryParams, 'posting_code', params.postingCode)
-  addTextParam(queryParams, 'r_year', params.rYear)
-  addTextParam(queryParams, 'keyword', params.keyword)
-  addTextParam(queryParams, 'search', params.search)
-  if (params.isTracked !== undefined && params.isTracked !== 'all') {
-    queryParams.is_tracked = params.isTracked
-  }
-  return listParsedData(
-    '/admin/parsed-data/teaching-name-catalogue',
-    params,
-    queryParams,
-    toParsedTeachingNameCatalogue,
   )
 }
 

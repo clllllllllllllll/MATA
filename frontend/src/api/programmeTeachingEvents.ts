@@ -6,6 +6,8 @@ export interface ProgrammeTeachingEvent {
   postingCode: string
   createdForProgrammeCode?: string
   teachingName: string
+  teachingNameId?: string
+  globalSessionTypeId?: string
   eventDate: string
   startTime: string
   endTime?: string
@@ -25,7 +27,10 @@ export interface ProgrammeTeachingEvent {
 }
 
 export interface ProgrammeTeachingNameOption {
+  sourceKey: string
   keyword: string
+  teachingNameId?: string
+  globalSessionTypeId?: string
   sessionTypeId?: string
   sessionType?: string
   durationHours?: number
@@ -37,7 +42,8 @@ export interface ProgrammeTeachingNameOption {
 export interface ProgrammeTeachingEventPayload {
   programmeCode: string
   postingCode: string
-  teachingName: string
+  teachingNameId?: string
+  globalSessionTypeId?: string
   eventDate: string
   startTime: string
   cmePointsAwarded: boolean
@@ -49,7 +55,8 @@ export interface ProgrammeTeachingEventDuplicatePayload {
   eventDate: string
   startTime?: string
   postingCode?: string
-  teachingName?: string
+  teachingNameId?: string
+  globalSessionTypeId?: string
   cmePointsAwarded?: boolean
   smcEventCode?: string
 }
@@ -75,11 +82,25 @@ const toNumber = (value: unknown): number | undefined => {
 const optionalString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0 ? value : undefined
 
+const sourceKeyFromIds = (
+  teachingNameId?: string,
+  globalSessionTypeId?: string,
+): string | undefined => {
+  if ((teachingNameId === undefined) === (globalSessionTypeId === undefined)) {
+    return undefined
+  }
+  return teachingNameId
+    ? `teaching-name:${teachingNameId}`
+    : `global-session-type:${globalSessionTypeId}`
+}
+
 const toTeachingEvent = (value: Record<string, unknown>): ProgrammeTeachingEvent => ({
   id: String(value.id ?? ''),
   postingCode: String(value.posting_code ?? ''),
   createdForProgrammeCode: optionalString(value.created_for_programme_code),
   teachingName: String(value.teaching_name ?? ''),
+  teachingNameId: optionalString(value.teaching_name_id),
+  globalSessionTypeId: optionalString(value.global_session_type_id),
   eventDate: String(value.event_date ?? ''),
   startTime: String(value.start_time ?? ''),
   endTime: optionalString(value.end_time),
@@ -98,24 +119,32 @@ const toTeachingEvent = (value: Record<string, unknown>): ProgrammeTeachingEvent
   updatedAt: optionalString(value.updated_at),
 })
 
-const toTeachingNameOption = (value: Record<string, unknown>): ProgrammeTeachingNameOption => ({
-  keyword: String(value.keyword ?? ''),
-  sessionTypeId: optionalString(value.session_type_id),
-  sessionType: optionalString(value.session_type),
-  durationHours: toNumber(value.duration_hours),
-  isTracked: typeof value.is_tracked === 'boolean' ? value.is_tracked : undefined,
-  isGlobal: Boolean(value.is_global),
-  postingCodes: Array.isArray(value.posting_codes)
-    ? value.posting_codes
-        .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
-        .map((entry) => entry.trim())
-    : [],
-})
+const toTeachingNameOption = (value: Record<string, unknown>): ProgrammeTeachingNameOption => {
+  const teachingNameId = optionalString(value.teaching_name_id)
+  const globalSessionTypeId = optionalString(value.global_session_type_id)
+  return {
+    sourceKey: sourceKeyFromIds(teachingNameId, globalSessionTypeId) ?? '',
+    keyword: String(value.keyword ?? ''),
+    teachingNameId,
+    globalSessionTypeId,
+    sessionTypeId: optionalString(value.session_type_id),
+    sessionType: optionalString(value.session_type),
+    durationHours: toNumber(value.duration_hours),
+    isTracked: typeof value.is_tracked === 'boolean' ? value.is_tracked : undefined,
+    isGlobal: Boolean(value.is_global),
+    postingCodes: Array.isArray(value.posting_codes)
+      ? value.posting_codes
+          .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+          .map((entry) => entry.trim())
+      : [],
+  }
+}
 
 const toApiPayload = (payload: ProgrammeTeachingEventPayload): Record<string, unknown> => ({
   programme_code: payload.programmeCode,
   posting_code: payload.postingCode,
-  teaching_name: payload.teachingName,
+  teaching_name_id: payload.teachingNameId ?? null,
+  global_session_type_id: payload.globalSessionTypeId ?? null,
   event_date: payload.eventDate,
   start_time: payload.startTime,
   cme_points_awarded: payload.cmePointsAwarded,
@@ -127,7 +156,8 @@ const toDuplicateApiPayload = (payload: ProgrammeTeachingEventDuplicatePayload):
   event_date: payload.eventDate,
   start_time: payload.startTime ?? null,
   posting_code: payload.postingCode ?? null,
-  teaching_name: payload.teachingName ?? null,
+  teaching_name_id: payload.teachingNameId ?? null,
+  global_session_type_id: payload.globalSessionTypeId ?? null,
   cme_points_awarded: payload.cmePointsAwarded ?? null,
   smc_event_code: payload.smcEventCode ?? null,
 })
@@ -183,7 +213,7 @@ export const listProgrammeTeachingNameOptions = async (
     return options
       .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
       .map(toTeachingNameOption)
-      .filter((row) => row.keyword.trim().length > 0)
+      .filter((row) => row.sourceKey.length > 0 && row.keyword.trim().length > 0)
   } catch (error) {
     throw toApiRequestError(error)
   }

@@ -873,15 +873,6 @@ async def revalidate_after_live_data_correction(
             db_session=db_session,
         )
 
-    affected_models: list[str] | None = None
-    details: dict[str, Any] = {"backend_handler_available": True}
-    if (
-        context.changed_entity == DataRevalidationChangedEntity.TEACHING_TARGET
-        and "details_of_training" in context.changed_fields
-    ):
-        affected_models = ["teaching_targets", "teaching_name_catalogue"]
-        details["catalogue_regenerated"] = True
-
     return _summary(
         context=context,
         outcome=DataRevalidationOutcome.FUTURE_COMPLIANCE_IMPACT,
@@ -889,8 +880,8 @@ async def revalidate_after_live_data_correction(
             "Live Data correction may affect future compliance reads. "
             "No heavy Data Revalidation handler is implemented."
         ),
-        affected_models=affected_models,
-        details=details,
+        affected_models=None,
+        details={"backend_handler_available": True},
     )
 
 

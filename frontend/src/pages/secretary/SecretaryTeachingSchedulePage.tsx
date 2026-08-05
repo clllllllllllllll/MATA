@@ -28,12 +28,13 @@ import {
   updateSecretaryTeachingEvent,
   listSecretaryTeachingEvents,
   listSecretaryTeachingNameOptions,
+  sourceKeyForSecretaryTeachingEvent,
   type SecretaryTeachingEvent,
   type TeachingNameOption,
 } from '../../api/secretaryEvents'
 
 interface TeachingFormState {
-  teachingName: string
+  sourceKey: string
   eventDate: string
   startTime: string
   cmePointsAwarded: boolean
@@ -43,7 +44,7 @@ interface TeachingFormState {
 type DrawerMode = 'create' | 'duplicate' | 'edit'
 
 const INITIAL_FORM: TeachingFormState = {
-  teachingName: '',
+  sourceKey: '',
   eventDate: '',
   startTime: '',
   cmePointsAwarded: false,
@@ -359,15 +360,40 @@ export const SecretaryTeachingSchedulePage = () => {
     }
   }, [loadTeachingNameOptions])
 
-  const teachingTypeByName = useMemo(() => {
-    const map = new Map<string, string>()
+  const optionsBySourceKey = useMemo(() => {
+    const map = new Map<string, TeachingNameOption>()
     nameOptions.forEach((option) => {
-      if (!map.has(option.keyword) && option.sessionType) {
-        map.set(option.keyword, option.sessionType)
-      }
+      map.set(option.sourceKey, option)
     })
     return map
   }, [nameOptions])
+  const retainedInactiveGlobalOption = useMemo<TeachingNameOption | undefined>(() => {
+    if (drawerMode !== 'edit' || !sourceEvent?.globalSessionTypeId) {
+      return undefined
+    }
+    const sourceKey = sourceKeyForSecretaryTeachingEvent(sourceEvent)
+    if (!sourceKey || optionsBySourceKey.has(sourceKey)) {
+      return undefined
+    }
+    return {
+      sourceKey,
+      keyword: sourceEvent.teachingName,
+      globalSessionTypeId: sourceEvent.globalSessionTypeId,
+      sessionTypeId: sourceEvent.sessionTypeId,
+      sessionType: sourceEvent.sessionTypeName,
+      durationHours: sourceEvent.durationHours,
+      isGlobal: true,
+    }
+  }, [drawerMode, optionsBySourceKey, sourceEvent])
+  const drawerSourceOptions = useMemo(
+    () => retainedInactiveGlobalOption ? [...nameOptions, retainedInactiveGlobalOption] : nameOptions,
+    [nameOptions, retainedInactiveGlobalOption],
+  )
+  const selectedSourceOption =
+    optionsBySourceKey.get(formState.sourceKey)
+    ?? (retainedInactiveGlobalOption?.sourceKey === formState.sourceKey
+      ? retainedInactiveGlobalOption
+      : undefined)
 
   const visibleEvents = selectedPeriod
     ? supportsEventListEndpoint
@@ -382,6 +408,7 @@ export const SecretaryTeachingSchedulePage = () => {
     optionCount: nameOptions.length,
   })
   const canAddTeaching = canAddTeachingFromOptions(nameOptionsState)
+  const canSubmitTeaching = canAddTeaching || Boolean(retainedInactiveGlobalOption)
   const nameOptionsUnavailableMessage =
     nameOptionsState === 'unavailable'
       ? 'Select an active reporting period to load teaching names.'
@@ -494,7 +521,7 @@ export const SecretaryTeachingSchedulePage = () => {
     setSourceEvent(singleSelectedEvent)
     setDrawerMode('duplicate')
     setFormState({
-      teachingName: singleSelectedEvent.teachingName,
+      sourceKey: sourceKeyForSecretaryTeachingEvent(singleSelectedEvent),
       eventDate: singleSelectedEvent.eventDate,
       startTime: toTimeInputValue(singleSelectedEvent.startTime),
       cmePointsAwarded: singleSelectedEvent.cmePointsAwarded,
@@ -519,7 +546,7 @@ export const SecretaryTeachingSchedulePage = () => {
     setSourceEvent(targetEvent)
     setDrawerMode('edit')
     setFormState({
-      teachingName: targetEvent.teachingName,
+      sourceKey: sourceKeyForSecretaryTeachingEvent(targetEvent),
       eventDate: targetEvent.eventDate,
       startTime: toTimeInputValue(targetEvent.startTime),
       cmePointsAwarded: targetEvent.cmePointsAwarded,
@@ -628,15 +655,15 @@ export const SecretaryTeachingSchedulePage = () => {
       return
     }
     if (drawerMode === 'duplicate' && sourceEvent) {
-      const sourceName = sourceEvent.teachingName.trim()
-      const targetName = formState.teachingName.trim()
+      const sourceKey = sourceKeyForSecretaryTeachingEvent(sourceEvent)
+      const targetSourceKey = formState.sourceKey
       const sourceStartTime = toTimeInputValue(sourceEvent.startTime)
       const targetStartTime = formState.startTime
       const sourceDate = sourceEvent.eventDate
       const sourceCmeCode = sourceEvent.cmePointsAwarded ? sourceEvent.smcEventCode ?? '' : ''
       const targetCmeCode = formState.cmePointsAwarded ? formState.smcEventCode.trim() : ''
       const sourceSame =
-        sourceName === targetName &&
+        sourceKey === targetSourceKey &&
         sourceDate === formState.eventDate &&
         sourceStartTime === targetStartTime &&
         sourceEvent.cmePointsAwarded === formState.cmePointsAwarded &&
@@ -648,10 +675,10 @@ export const SecretaryTeachingSchedulePage = () => {
       }
     }
     const nextErrors: Partial<Record<keyof TeachingFormState, string>> = {}
-    if (!formState.teachingName.trim()) {
-      nextErrors.teachingName = 'Teaching name is required.'
-    } else if (!nameOptions.some((option) => option.keyword === formState.teachingName.trim())) {
-      nextErrors.teachingName = 'Select a teaching name from the approved catalogue.'
+    if (!formState.sourceKey) {
+      nextErrors.sourceKey = 'Teaching name is required.'
+    } else if (!selectedSourceOption) {
+      nextErrors.sourceKey = 'Select a teaching name from the approved teaching-name pool.'
     }
     if (!selectedPeriod) {
       nextErrors.eventDate = 'An active reporting period is required.'
@@ -673,7 +700,8 @@ export const SecretaryTeachingSchedulePage = () => {
     setSubmitState('submitting')
     setSubmitMessage(null)
     const payload = {
-      teachingName: formState.teachingName.trim(),
+      teachingNameId: selectedSourceOption?.teachingNameId,
+      globalSessionTypeId: selectedSourceOption?.globalSessionTypeId,
       eventDate: formState.eventDate,
       startTime: formState.startTime,
       cmePointsAwarded: formState.cmePointsAwarded,
@@ -909,7 +937,7 @@ export const SecretaryTeachingSchedulePage = () => {
                 ) : (
                   visibleEvents.map((event) => {
                     const selected = selectedIds.has(event.id)
-                    const teachingType = event.sessionTypeName ?? teachingTypeByName.get(event.teachingName) ?? '-'
+                    const teachingType = event.sessionTypeName ?? '-'
                     return (
                       <tr
                         key={event.id}
@@ -961,7 +989,7 @@ export const SecretaryTeachingSchedulePage = () => {
           ) : (
             visibleEvents.map((event) => {
               const selected = selectedIds.has(event.id)
-              const teachingType = event.sessionTypeName ?? teachingTypeByName.get(event.teachingName) ?? '-'
+              const teachingType = event.sessionTypeName ?? '-'
               const postingLabel = event.postingCode || frontendConfig.demoSecretaryScopeLabel
               const sourceLabel = event.isAdhoc ? 'Ad-hoc' : 'Scheduled'
 
@@ -1047,14 +1075,14 @@ export const SecretaryTeachingSchedulePage = () => {
                 disabled={
                   submitState === 'submitting' ||
                   !selectedPeriod ||
-                  !canAddTeaching ||
+                  !canSubmitTeaching ||
                   !!selectedPeriodDateError ||
                   (drawerMode === 'edit' && (!sourceEvent || sourceEvent.hasAttendance))
                 }
                 title={
                   !selectedPeriod
                     ? 'Select an active reporting period before creating a teaching event.'
-                    : !canAddTeaching
+                    : !canSubmitTeaching
                       ? addTeachingTitle
                       : selectedPeriodDateError
                         ? 'Event date must be within the selected reporting period.'
@@ -1079,31 +1107,34 @@ export const SecretaryTeachingSchedulePage = () => {
         <div className="secretary-form-grid">
           <label>
             Teaching name
-            {nameOptionsState === 'ready' ? (
+            {nameOptionsState === 'ready' || retainedInactiveGlobalOption ? (
               <select
-                value={formState.teachingName}
+                value={formState.sourceKey}
                 onChange={(event) =>
                   setFormState((previous) => ({
                     ...previous,
-                    teachingName: event.target.value,
+                    sourceKey: event.target.value,
                   }))
                 }
               >
                 <option value="">Select teaching name</option>
-                {nameOptions.map((option) => (
-                  <option key={option.keyword} value={option.keyword}>
+                {drawerSourceOptions.map((option) => (
+                  <option key={option.sourceKey} value={option.sourceKey}>
                     {option.keyword}
+                    {option.sourceKey === retainedInactiveGlobalOption?.sourceKey
+                      ? ' (current inactive global source)'
+                      : ''}
                   </option>
                 ))}
               </select>
             ) : (
               <>
                 <input type="text" value={nameOptionsUnavailableMessage} readOnly disabled />
-                <small>Teaching names must come from the approved catalogue or global session types.</small>
+                <small>Teaching names must come from the approved teaching-name pool or global session types.</small>
               </>
             )}
-            {formErrors.teachingName ? (
-              <small className="upload-validation-text">{formErrors.teachingName}</small>
+            {formErrors.sourceKey ? (
+              <small className="upload-validation-text">{formErrors.sourceKey}</small>
             ) : null}
             {nameOptionsError ? <small className="upload-validation-text">{nameOptionsError}</small> : null}
             {nameOptionsState === 'empty' ? (

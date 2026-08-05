@@ -149,31 +149,15 @@ def test_events_include_rehab_native_department_when_rehab_resident_posted_to_gr
             "native_teaching_posting_code": "TTSHNeuro",
         }
     )
-    fake_db.catalogue.extend(
-        [
-            {
-                "keyword": "Journal Club",
-                "posting_code": "TTSHCardio",
-                "programme_code": "REHAB",
-                "r_year": "R2",
-                "reporting_period_id": fake_db.period_id,
-                "session_type_id": fake_db.session_type_id,
-                "session_type": "Journal Club [1.0h]",
-                "duration_hours": 1.0,
-                "is_tracked": True,
-            },
-            {
-                "keyword": "Skills Teaching",
-                "posting_code": "TTSHNeuro",
-                "programme_code": "REHAB",
-                "r_year": "R2",
-                "reporting_period_id": fake_db.period_id,
-                "session_type_id": fake_db.second_session_type_id,
-                "session_type": "Skills Teaching [2.0h]",
-                "duration_hours": 2.0,
-                "is_tracked": True,
-            },
-        ]
+    other_posting_event = next(
+        row for row in fake_db.events if row["id"] == fake_db.other_posting_event_id
+    )
+    other_posting_event.update(
+        {
+            "teaching_name_id": str(uuid4()),
+            "source_reporting_period_id": fake_db.period_id,
+            "source_programme_code": "REHAB",
+        }
     )
     rehab_pc_event_id = str(uuid4())
     rehab_pc_event = fake_db._event(  # noqa: SLF001
@@ -184,6 +168,9 @@ def test_events_include_rehab_native_department_when_rehab_resident_posted_to_gr
     )
     rehab_pc_event["created_by_role"] = "programme_pc"
     rehab_pc_event["created_for_programme_code"] = "REHAB"
+    rehab_pc_event["teaching_name_id"] = str(uuid4())
+    rehab_pc_event["source_reporting_period_id"] = fake_db.period_id
+    rehab_pc_event["source_programme_code"] = "REHAB"
     fake_db.events.append(rehab_pc_event)
     grm_pc_event_id = str(uuid4())
     grm_pc_event = fake_db._event(  # noqa: SLF001
@@ -194,6 +181,9 @@ def test_events_include_rehab_native_department_when_rehab_resident_posted_to_gr
     )
     grm_pc_event["created_by_role"] = "programme_pc"
     grm_pc_event["created_for_programme_code"] = "GRM"
+    grm_pc_event["teaching_name_id"] = str(uuid4())
+    grm_pc_event["source_reporting_period_id"] = fake_db.period_id
+    grm_pc_event["source_programme_code"] = "GRM"
     fake_db.events.append(grm_pc_event)
     client = _client(fake_db)
 
@@ -216,19 +206,6 @@ def test_events_do_not_show_arbitrary_ttsh_secretary_events() -> None:
             "display_name": "TTSH Orthopaedic Surgery",
             "institution": "TTSH",
             "supports_secretary_events": True,
-        }
-    )
-    fake_db.catalogue.append(
-        {
-            "keyword": "Ortho Teaching",
-            "posting_code": "TTSHOrtho",
-            "programme_code": "GRM",
-            "r_year": "R2",
-            "reporting_period_id": fake_db.period_id,
-            "session_type_id": fake_db.session_type_id,
-            "session_type": "Ortho Teaching [1.0h]",
-            "duration_hours": 1.0,
-            "is_tracked": True,
         }
     )
     arbitrary_event_id = str(uuid4())
@@ -264,7 +241,6 @@ def test_events_exclude_future_and_already_submitted_but_include_legacy_events()
 
 def test_events_include_global_session_types_through_normal_posting_rules() -> None:
     fake_db = FakeResidentSession()
-    fake_db.catalogue = []
     fake_db.teaching_targets = []
     client = _client(fake_db)
 
@@ -278,9 +254,8 @@ def test_events_include_global_session_types_through_normal_posting_rules() -> N
     assert global_event["is_global"] is True
 
 
-def test_explicit_pool_events_require_exact_programme_and_period_without_catalogue() -> None:
+def test_explicit_pool_events_require_exact_programme_and_period() -> None:
     fake_db = FakeResidentSession()
-    fake_db.catalogue = []
     fake_db.teaching_targets = []
     matching_event_id = str(uuid4())
     wrong_programme_event_id = str(uuid4())
@@ -411,21 +386,16 @@ def test_events_return_empty_and_allow_adhoc_when_no_eligible_scheduled_events_e
 def test_events_do_not_clamp_on_supports_secretary_events_flag_for_native_resident() -> None:
     fake_db = FakeResidentSession()
     fake_db.resident_postings[0]["posting_code"] = "KTPHGerMed"
-    fake_db.catalogue.append(
-        {
-            "keyword": "KTPH Teaching",
-            "posting_code": "KTPHGerMed",
-            "programme_code": "GRM",
-            "r_year": "R2",
-            "reporting_period_id": fake_db.period_id,
-            "session_type_id": fake_db.session_type_id,
-            "session_type": "KTPH Teaching [1.0h]",
-            "duration_hours": 1.0,
-            "is_tracked": True,
-        }
-    )
     fake_db.events.append(
-        fake_db._event(str(uuid4()), "KTPHGerMed", "KTPH Teaching", fake_db.today - timedelta(days=1))  # noqa: SLF001
+        fake_db._event(  # noqa: SLF001
+            str(uuid4()),
+            "KTPHGerMed",
+            "KTPH Teaching",
+            fake_db.today - timedelta(days=1),
+            teaching_name_id=str(uuid4()),
+            source_reporting_period_id=fake_db.period_id,
+            source_programme_code="GRM",
+        )
     )
     client = _client(fake_db)
 
@@ -512,19 +482,6 @@ def test_events_use_active_period_event_window_not_today_posting_only() -> None:
     ]
     fake_db.residents[0]["programme_code"] = "GERI"
     fake_db.posting_codes.append({"code": "TTSHGerMed", "supports_secretary_events": False})
-    fake_db.catalogue = [
-        {
-            "keyword": "GERI Demo Row 22",
-            "posting_code": "TTSHGerMed",
-            "programme_code": "GERI",
-            "r_year": "ALL",
-            "reporting_period_id": fake_db.period_id,
-            "session_type_id": fake_db.session_type_id,
-            "session_type": "GERI Session [1.0h]",
-            "duration_hours": 1.0,
-            "is_tracked": True,
-        }
-    ]
     fake_db.attendance = []
     valid_event_id = str(uuid4())
     outside_window_id = str(uuid4())
@@ -575,19 +532,6 @@ def test_events_exclude_submitted_event_in_active_period_window() -> None:
     ]
     fake_db.residents[0]["programme_code"] = "GERI"
     fake_db.posting_codes.append({"code": "TTSHGerMed", "supports_secretary_events": True})
-    fake_db.catalogue = [
-        {
-            "keyword": "GERI Demo Row 22",
-            "posting_code": "TTSHGerMed",
-            "programme_code": "GERI",
-            "r_year": "ALL",
-            "reporting_period_id": fake_db.period_id,
-            "session_type_id": fake_db.session_type_id,
-            "session_type": "GERI Session [1.0h]",
-            "duration_hours": 1.0,
-            "is_tracked": True,
-        }
-    ]
     submitted_event_id = str(uuid4())
     fake_db.events = [
         fake_db._event(submitted_event_id, "TTSHGerMed", "GERI Demo Row 22", fake_db.today),  # noqa: SLF001
@@ -703,19 +647,6 @@ def _configure_historical_geri_case(fake_db: FakeResidentSession) -> str:
             "supports_secretary_events": True,
         }
     )
-    fake_db.catalogue = [
-        {
-            "keyword": "GERI Historical Teaching",
-            "posting_code": "TTSHGerMed",
-            "programme_code": "GERI",
-            "r_year": "ALL",
-            "reporting_period_id": historical_period_id,
-            "session_type_id": fake_db.session_type_id,
-            "session_type": "GERI Teaching [1.0h]",
-            "duration_hours": 1.0,
-            "is_tracked": True,
-        }
-    ]
     fake_db.attendance = []
     fake_db.events = [
         fake_db._event(  # noqa: SLF001
@@ -775,7 +706,7 @@ def test_submission_periods_returns_all_effectively_active_periods_without_a_sel
 
 
 @pytest.mark.asyncio
-async def test_events_query_multiple_effectively_active_periods_without_catalogue_fallback() -> None:
+async def test_events_query_multiple_effectively_active_periods() -> None:
     fake_db = FakeResidentSession(today=date(2026, 7, 17))
     first_event_id = _configure_historical_geri_case(fake_db)
     second_period_id = str(uuid4())
@@ -824,7 +755,6 @@ async def test_events_query_multiple_effectively_active_periods_without_catalogu
     }
     assert len(payload["active_reporting_periods"]) == 2
 
-    fake_db.catalogue = []
     isolated = await resident_submission.list_available_events(
         fake_db,
         resident_id=fake_db.residents[0]["id"],

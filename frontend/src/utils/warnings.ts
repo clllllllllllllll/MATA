@@ -317,7 +317,6 @@ export const getSummaryCounts = (response: Record<string, unknown>) => {
     'records_created',
     'public_holidays_created',
     'academic_month_boundaries_created',
-    'catalogue_rows_seeded',
   ])
 
   const updated = sumNumericByKeys(response, [
@@ -344,7 +343,6 @@ const compactResponseKeys = [
   'targets_created',
   'session_types_upserted',
   'posting_codes_added',
-  'catalogue_rows_seeded',
   'rows_exploded',
   'records_created',
   'records_updated',

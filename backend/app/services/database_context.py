@@ -104,14 +104,12 @@ _POLICY_HELPERS = frozenset(
         "can_manage_resident(uuid)",
         "can_access_form_f1(text)",
         "native_assignment_matches(text,text,uuid)",
-        "can_access_teaching_catalogue(text,text,uuid)",
         "can_select_teaching_event(uuid)",
         (
             "can_select_teaching_event_row("
             "uuid,boolean,text,date,text,text,uuid,uuid,uuid,uuid,text,uuid)"
         ),
         "can_insert_teaching_event(text,text,text,date,boolean,text)",
-        "can_insert_scheduled_event_source(text,text,uuid,uuid,date,boolean,text)",
         (
             "can_insert_scheduled_event_source("
             "text,text,uuid,uuid,text,uuid,date,boolean,text)"
@@ -155,7 +153,6 @@ _RUNTIME_TABLE_PRIVILEGES = {
     "teaching_events": {"SELECT", "INSERT", "UPDATE", "DELETE"},
     "teaching_name_mappings": {"SELECT", "INSERT", "UPDATE", "DELETE"},
     "teaching_names": {"SELECT", "INSERT", "UPDATE", "DELETE"},
-    "teaching_name_catalogue": {"SELECT", "INSERT", "DELETE"},
     "teaching_targets": {"SELECT", "INSERT", "UPDATE", "DELETE"},
     "upload_logs": {"SELECT", "INSERT"},
     "upload_warnings": {"SELECT", "INSERT"},
@@ -213,7 +210,6 @@ _APPLICATION_TABLES = frozenset(
         "teaching_events",
         "teaching_name_mappings",
         "teaching_names",
-        "teaching_name_catalogue",
         "teaching_targets",
         "upload_logs",
         "upload_warnings",
@@ -879,7 +875,6 @@ _ROLE_ATTESTATION_SQL = text(
                           'teaching_events',
                           'teaching_name_mappings',
                           'teaching_names',
-                          'teaching_name_catalogue',
                           'teaching_targets',
                           'upload_logs',
                           'upload_warnings',
@@ -934,7 +929,6 @@ _ROLE_ATTESTATION_SQL = text(
                           'teaching_events',
                           'teaching_name_mappings',
                           'teaching_names',
-                          'teaching_name_catalogue',
                           'teaching_targets',
                           'upload_logs',
                           'upload_warnings',
@@ -998,7 +992,6 @@ _ROLE_ATTESTATION_SQL = text(
                           'teaching_events',
                           'teaching_name_mappings',
                           'teaching_names',
-                          'teaching_name_catalogue',
                           'teaching_targets',
                           'upload_logs',
                           'upload_warnings',
@@ -1049,7 +1042,6 @@ _ROLE_ATTESTATION_SQL = text(
                       'teaching_events',
                       'teaching_name_mappings',
                       'teaching_names',
-                      'teaching_name_catalogue',
                       'teaching_targets',
                       'upload_logs',
                       'upload_warnings',

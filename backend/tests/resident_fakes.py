@@ -334,10 +334,6 @@ class FakeResidentSession:
                 "status": "active",
             },
         ]
-        self.catalogue = [
-            self._catalogue("Journal Club", "TTSHCardio", self.session_type_id, Decimal("1.0")),
-            self._catalogue("Skills Teaching", "TTSHNeuro", self.second_session_type_id, Decimal("2.0")),
-        ]
         self.teaching_targets = [
             self._target("TTSHCardio", self.adhoc_session_type_id),
         ]
@@ -405,30 +401,6 @@ class FakeResidentSession:
         self.external_attendance_removal_lock_calls: list[str] = []
         self.adhoc_helper_calls: list[dict] = []
         self._adhoc_attendance_family: str | None = None
-
-    def _catalogue(
-        self,
-        keyword: str,
-        posting_code: str,
-        session_type_id: str,
-        duration_hours: Decimal,
-        *,
-        programme_code: str = "GRM",
-        r_year: str = "R2",
-        session_type: str | None = None,
-        is_tracked: bool = True,
-    ) -> dict:
-        return {
-            "keyword": keyword,
-            "posting_code": posting_code,
-            "programme_code": programme_code,
-            "r_year": r_year,
-            "reporting_period_id": self.period_id,
-            "session_type_id": session_type_id,
-            "session_type": session_type or f"{keyword} [{duration_hours}h]",
-            "duration_hours": duration_hours,
-            "is_tracked": is_tracked,
-        }
 
     def _target(
         self,
@@ -1143,96 +1115,6 @@ class FakeResidentSession:
                 if row["is_active"]
                 and ("teaching_name" not in payload or row["name"] == payload["teaching_name"])
             ]
-            return FakeResult(rows=rows)
-
-        if "pc.code AS posting_code" in sql and "FROM teaching_name_catalogue" in sql:
-            if "programme_code" in payload:
-                catalogue_rows = [
-                    row
-                    for row in self.catalogue
-                    if row["programme_code"] == payload.get("programme_code")
-                    and row["r_year"] in {payload.get("r_year"), "ALL"}
-                    and row["reporting_period_id"] == str(payload.get("reporting_period_id"))
-                ]
-            else:
-                catalogue_rows = [
-                    row
-                    for row in self.catalogue
-                    if row["reporting_period_id"] == str(payload.get("reporting_period_id"))
-                ]
-            rows = []
-            seen: set[tuple[str, str]] = set()
-            for catalogue_row in catalogue_rows:
-                posting = next(
-                    (
-                        row
-                        for row in self.posting_codes
-                        if row["code"] == catalogue_row["posting_code"]
-                    ),
-                    None,
-                )
-                if posting is None:
-                    continue
-                key = (posting["code"], catalogue_row["programme_code"])
-                if key in seen:
-                    continue
-                seen.add(key)
-                programme = next(
-                    (
-                        row
-                        for row in self.programmes
-                        if row["code"] == catalogue_row["programme_code"]
-                    ),
-                    None,
-                )
-                rows.append(
-                    {
-                        "posting_code": posting["code"],
-                        "label": posting.get("display_name") or posting["code"],
-                        "programme_code": catalogue_row["programme_code"],
-                        "programme_name": programme.get("name") if programme else None,
-                    }
-                )
-            rows.sort(key=lambda row: (row["label"], row["posting_code"], row["programme_code"]))
-            return FakeResult(rows=rows)
-
-        if "FROM teaching_name_catalogue" in sql:
-            if "programme_code" in payload:
-                rows = [
-                    {
-                        "teaching_name": row["keyword"],
-                        "keyword": row["keyword"],
-                        "session_type_id": row["session_type_id"],
-                        "session_type": row["session_type"],
-                        "session_type_name": row["session_type"],
-                        "duration_hours": row["duration_hours"],
-                        "is_tracked": row["is_tracked"],
-                        "is_global": False,
-                    }
-                    for row in self.catalogue
-                    if row["posting_code"] == payload.get("posting_code")
-                    and row["programme_code"] == payload.get("programme_code")
-                    and row["r_year"] in {payload.get("r_year"), "ALL"}
-                    and row["reporting_period_id"] == str(payload.get("reporting_period_id"))
-                    and ("teaching_name" not in payload or row["keyword"] == payload["teaching_name"])
-                ]
-            else:
-                rows = [
-                    {
-                        "teaching_name": row["keyword"],
-                        "keyword": row["keyword"],
-                        "session_type_id": row["session_type_id"],
-                        "session_type": row["session_type"],
-                        "session_type_name": row["session_type"],
-                        "duration_hours": row["duration_hours"],
-                        "is_tracked": row["is_tracked"],
-                        "is_global": False,
-                    }
-                    for row in self.catalogue
-                    if row["posting_code"] == payload.get("posting_code")
-                    and row["reporting_period_id"] == str(payload.get("reporting_period_id"))
-                    and ("teaching_name" not in payload or row["keyword"] == payload["teaching_name"])
-                ]
             return FakeResult(rows=rows)
 
         if "mata_rls.create_adhoc_attendance" in sql:
