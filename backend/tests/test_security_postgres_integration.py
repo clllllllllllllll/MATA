@@ -65,7 +65,7 @@ from app.services.staff_accounts import (
 SESSION_KEY = "postgres-session-integration-key-at-least-32-characters"
 RATE_KEY = "postgres-rate-integration-key-at-least-32-characters"
 DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_e2b2_verify"
-EXPECTED_ALEMBIC_REVISION = "20260805_000036"
+EXPECTED_ALEMBIC_REVISION = "20260805_000037"
 CONCURRENCY_TIMEOUT_SECONDS = 10
 
 

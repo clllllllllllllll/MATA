@@ -18,6 +18,24 @@ only deterministic persisted evidence for both-null legacy events, and never
 infers an identity from display text. It does not implement compliance,
 surplus, warning, or attendance reclassification.
 
+Phase H adds a read-only native target-resolution seam, not a compliance
+calculation. Given an authorized native Resident/event context—only the native
+Resident themself, a scoped Programme PC, or an explicit Master—it uses only
+the persisted source identity, immutable source scope, the date-matched
+resident phase, and an exact Teaching Name mapping scope. Its only outcomes
+are `global_excluded`, `fixed_adhoc_target`, `mapped_target`, and
+`pending_mapping`. Explicit global identity takes precedence without consulting
+the current active flag, so an inactive historical global remains excluded.
+Native ad-hoc rows resolve only the server-owned exact
+`Department/Programme Teaching [1h]` target for the assigned phase after the
+event date is also proven within that phase's reporting-period boundaries; they
+do not consult mappings. A true legacy row, deleted/malformed pool identity,
+missing exact mapping, ambiguous phase, or target-scope mismatch is an internal
+unsupported/data-quality failure, not a fifth resolver outcome and never a
+display-text, session-type, posting, or first-target fallback. The seam does
+not write events or attendance and does not calculate counts, targets,
+percentages, reallocation, Form F1, snapshots, surplus, or clawback.
+
 The evolved TTF foundation uses `teaching_name` pools scoped by reporting
 period and programme. Phase C creates pending configuration rows for each
 distinct existing `(posting_code, r_year)` target scope and preserves them on

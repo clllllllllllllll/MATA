@@ -32,7 +32,7 @@ from tests.test_external_registration_migrations_postgres import (
 
 PREVIOUS_REVISION = "20260727_000027"
 ADHOC_REVISION = "20260728_000028"
-REPOSITORY_HEAD_REVISION = "20260805_000036"
+REPOSITORY_HEAD_REVISION = "20260805_000037"
 PHASE_G_PREVIOUS_REVISION = "20260804_000033"
 DFG_PREVIOUS_REVISION = "20260804_000034"
 RUNTIME_ROLE = "mata_app_runtime"
@@ -44,6 +44,7 @@ ATOMIC_HELPER = (
     "time without time zone,numeric,uuid)"
 )
 SOURCE_SCOPE_HELPER = "mata_rls.scheduled_event_source_scope(uuid)"
+TARGET_RESOLUTION_HELPER = "mata_rls.resolve_native_teaching_target(uuid,uuid)"
 EXTERNAL_ACCESS_HELPER = "mata_rls.can_access_external_attendance(uuid,uuid)"
 DFG_SELECT_ROW_HELPER = (
     "mata_rls.can_select_teaching_event_row("
@@ -890,9 +891,10 @@ def test_phase_g_runtime_source_decoupling_migration_lifecycle_in_place(
         _migrate(harness, "upgrade", REPOSITORY_HEAD_REVISION)
         with harness.engine.connect() as connection:
             assert _revision(connection) == REPOSITORY_HEAD_REVISION
-            source_scope = connection.execute(
-                text(
-                    """
+            for helper_signature in (SOURCE_SCOPE_HELPER, TARGET_RESOLUTION_HELPER):
+                runtime_helper = connection.execute(
+                    text(
+                        """
                     SELECT owner_role.rolname,
                            procedure.prosecdef,
                            procedure.proconfig,
@@ -920,17 +922,19 @@ def test_phase_g_runtime_source_decoupling_migration_lifecycle_in_place(
                       ON owner_role.oid = procedure.proowner
                     WHERE procedure.oid = pg_catalog.to_regprocedure(:signature)
                     """
-                ),
-                {
-                    "signature": SOURCE_SCOPE_HELPER,
-                    "runtime_role": RUNTIME_ROLE,
-                    "auth_role": AUTH_ROLE,
-                },
-            ).one()
-            assert source_scope[0] == harness.owner
-            assert source_scope[1] is True
-            assert list(source_scope[2] or []) == ["search_path=pg_catalog, pg_temp"]
-            assert source_scope[3:] == (True, False, True)
+                    ),
+                    {
+                        "signature": helper_signature,
+                        "runtime_role": RUNTIME_ROLE,
+                        "auth_role": AUTH_ROLE,
+                    },
+                ).one()
+                assert runtime_helper[0] == harness.owner
+                assert runtime_helper[1] is True
+                assert list(runtime_helper[2] or []) == [
+                    "search_path=pg_catalog, pg_temp"
+                ]
+                assert runtime_helper[3:] == (True, False, True)
 
             phase_g_acl = set(_catalogue(connection)["table_acl"])
             assert phase_g_acl == {

@@ -60,6 +60,7 @@ _RUNTIME_ONLY_HELPERS = frozenset(
             "time without time zone,numeric,uuid)"
         ),
         "scheduled_event_source_scope(uuid)",
+        "resolve_native_teaching_target(uuid,uuid)",
         "update_own_staff_actor_name(text)",
         "reporting_period_dependency_counts(uuid)",
         "hibernate_stale_surplus(uuid)",

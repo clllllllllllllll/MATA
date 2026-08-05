@@ -26,7 +26,7 @@ from app.services.reporting_period_status import (
 from app.services.session_transport import session_cookie_name
 
 DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_e2b2_verify"
-EXPECTED_ALEMBIC_REVISION = "20260805_000036"
+EXPECTED_ALEMBIC_REVISION = "20260805_000037"
 
 
 @dataclass

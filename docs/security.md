@@ -401,7 +401,7 @@ business rows; bounded failure evidence may still be recorded.
 
 ## 9. PostgreSQL roles, RLS, grants, and helpers
 
-At current revision `20260805_000036`:
+At current revision `20260805_000037`:
 
 - 35 application tables have RLS enabled;
 - 89 action policies target only `mata_app_runtime`;
@@ -413,6 +413,16 @@ At current revision `20260805_000036`:
 - table, column, sequence, schema, and function access is explicitly
   allowlisted; and
 - browser/Data API and `PUBLIC` application-object privileges are revoked.
+
+Revision `20260805_000037` adds the runtime-only
+`mata_rls.resolve_native_teaching_target(uuid,uuid)` helper for the Phase H
+read-time classification seam. It has a fixed `pg_catalog, pg_temp` search path,
+no `PUBLIC`, browser, service, or auth-helper execution grant, and enforces
+an exact signed-context boundary before deriving any source, phase, mapping, or
+target evidence: only the native Resident for the requested resident, a scoped
+Programme PC, or an explicit Master may invoke it. Secretary and external
+resident contexts return no resolver row before the ordinary event-visibility
+check. It returns no resident PII and performs no writes.
 
 `mata_app_runtime` and `mata_auth_internal` are stable `NOLOGIN`,
 `NOINHERIT`, `NOSUPERUSER`, `NOCREATEDB`, `NOCREATEROLE`,

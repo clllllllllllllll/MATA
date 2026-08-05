@@ -33,6 +33,13 @@ from app.services import (
     teaching_name_pool,
 )
 from app.services.database_context import configure_request_context
+from app.services.teaching_target_resolution import (
+    FixedAdhocTargetResolution,
+    MappedTargetResolution,
+    PendingMappingResolution,
+    TeachingTargetResolutionUnavailable,
+    resolve_native_teaching_target,
+)
 from app.services.ttf_scope_lock import acquire_ttf_scope_lock
 from tests.rls_postgres_harness import (
     RUNTIME_GROUP,
@@ -514,7 +521,7 @@ async def _issue_context(
 async def policy_harness(
     rls_postgres_harness: RlsPostgresHarness,
 ) -> AsyncIterator[RlsPostgresHarness]:
-    assert rls_postgres_harness.revision == "20260805_000036"
+    assert rls_postgres_harness.revision == "20260805_000037"
     yield rls_postgres_harness
 
 
@@ -1141,6 +1148,372 @@ async def policy_seed(
                     ),
                     {"ids": [values[key] for key in id_keys]},
                 )
+            await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_phase_h_native_target_resolution_is_exact_and_re_reads_mapping(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+) -> None:
+    values = policy_seed.values
+    replacement_session_type_id = uuid4()
+    replacement_target_id = uuid4()
+    event_snapshot: Any
+    attendance_snapshot: Any
+
+    try:
+        async with policy_harness.owner_session() as db:
+            event_snapshot = await db.scalar(
+                text(
+                    "SELECT to_jsonb(event) FROM teaching_events AS event "
+                    "WHERE id = :event_id"
+                ),
+                {"event_id": values["event_seed_a_id"]},
+            )
+            attendance_snapshot = await db.scalar(
+                text(
+                    "SELECT to_jsonb(attendance) FROM attendance_records AS attendance "
+                    "WHERE id = :attendance_id"
+                ),
+                {"attendance_id": values["attendance_a_id"]},
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO session_types (id, name, duration_hours, duration_label)
+                    VALUES (:id, :name, 1.00, '1h')
+                    """
+                ),
+                {
+                    "id": replacement_session_type_id,
+                    "name": f"Phase H replacement {replacement_session_type_id.hex}",
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_targets (
+                        id, reporting_period_id, programme_code, r_year,
+                        posting_code, session_type_id, monthly_target, is_tracked
+                    )
+                    VALUES (
+                        :id, :reporting_period_id, :programme_code, 'R1',
+                        :posting_code, :session_type_id, 1, true
+                    )
+                    """
+                ),
+                {
+                    "id": replacement_target_id,
+                    "reporting_period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                    "posting_code": values["posting_a"],
+                    "session_type_id": replacement_session_type_id,
+                },
+            )
+            await db.commit()
+
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["resident"],
+        ) as db:
+            initial = await resolve_native_teaching_target(
+                db,
+                resident_id=values["resident_a_id"],
+                event_id=values["event_seed_a_id"],
+            )
+            assert isinstance(initial, MappedTargetResolution)
+            assert (
+                initial.reporting_period_id,
+                initial.programme_code,
+                initial.posting_code,
+                initial.r_year,
+                initial.mapping_id,
+                initial.teaching_target_id,
+            ) == (
+                values["period_id"],
+                values["programme_a"],
+                values["posting_a"],
+                "R1",
+                values["mapping_a_id"],
+                values["target_a_id"],
+            )
+            with pytest.raises(TeachingTargetResolutionUnavailable) as legacy:
+                await resolve_native_teaching_target(
+                    db,
+                    resident_id=values["resident_a_id"],
+                    event_id=values["event_action_a_id"],
+                )
+            assert legacy.value.reason == "legacy_source_unsupported"
+
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    "UPDATE teaching_name_mappings SET teaching_target_id = :target_id "
+                    "WHERE id = :mapping_id"
+                ),
+                {
+                    "target_id": replacement_target_id,
+                    "mapping_id": values["mapping_a_id"],
+                },
+            )
+            await db.commit()
+
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["resident"],
+        ) as db:
+            changed = await resolve_native_teaching_target(
+                db,
+                resident_id=values["resident_a_id"],
+                event_id=values["event_seed_a_id"],
+            )
+            assert isinstance(changed, MappedTargetResolution)
+            assert changed.teaching_target_id == replacement_target_id
+
+        async with policy_harness.owner_session() as db:
+            assert await db.scalar(
+                text(
+                    "SELECT to_jsonb(event) FROM teaching_events AS event "
+                    "WHERE id = :event_id"
+                ),
+                {"event_id": values["event_seed_a_id"]},
+            ) == event_snapshot
+            assert await db.scalar(
+                text(
+                    "SELECT to_jsonb(attendance) FROM attendance_records AS attendance "
+                    "WHERE id = :attendance_id"
+                ),
+                {"attendance_id": values["attendance_a_id"]},
+            ) == attendance_snapshot
+            await db.execute(
+                text(
+                    "UPDATE teaching_name_mappings SET teaching_target_id = NULL "
+                    "WHERE id = :mapping_id"
+                ),
+                {"mapping_id": values["mapping_a_id"]},
+            )
+            await db.commit()
+
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["resident"],
+        ) as db:
+            pending = await resolve_native_teaching_target(
+                db,
+                resident_id=values["resident_a_id"],
+                event_id=values["event_seed_a_id"],
+            )
+            assert isinstance(pending, PendingMappingResolution)
+            assert pending.mapping_id == values["mapping_a_id"]
+    finally:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text("DELETE FROM teaching_targets WHERE id = :id"),
+                {"id": replacement_target_id},
+            )
+            await db.execute(
+                text("DELETE FROM session_types WHERE id = :id"),
+                {"id": replacement_session_type_id},
+            )
+            await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_phase_h_native_target_resolution_requires_native_adhoc_and_excludes_non_nhg(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+) -> None:
+    values = policy_seed.values
+    fixed_session_type_id = uuid4()
+    fixed_target_id = uuid4()
+    invalid_phase_period_id = uuid4()
+    invalid_phase_event_id = uuid4()
+
+    try:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO session_types (id, name, duration_hours, duration_label)
+                    VALUES (:id, 'Department/Programme Teaching [1h]', 1.00, '1h')
+                    """
+                ),
+                {"id": fixed_session_type_id},
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_targets (
+                        id, reporting_period_id, programme_code, r_year,
+                        posting_code, session_type_id, monthly_target, is_tracked
+                    )
+                    VALUES (
+                        :id, :reporting_period_id, :programme_code, 'R1',
+                        :posting_code, :session_type_id, 1, true
+                    )
+                    """
+                ),
+                {
+                    "id": fixed_target_id,
+                    "reporting_period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                    "posting_code": values["posting_a"],
+                    "session_type_id": fixed_session_type_id,
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_events (
+                        id, posting_code, teaching_name, event_date, start_time,
+                        end_time, duration_hours, is_adhoc, created_by_role,
+                        created_by_resident_id
+                    )
+                    VALUES (
+                        :id, :posting_code, 'Department/Programme Teaching [1h]',
+                        DATE '2035-05-02', TIME '09:00', TIME '10:00', 1.00,
+                        true, 'resident', :resident_id
+                    )
+                    """
+                ),
+                {
+                    "id": invalid_phase_event_id,
+                    "posting_code": values["posting_a"],
+                    "resident_id": values["resident_a_id"],
+                },
+            )
+            await db.commit()
+
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["resident"],
+        ) as db:
+            created = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT event_id
+                        FROM mata_rls.create_adhoc_attendance(
+                            :posting_code,
+                            :attended_posting_code,
+                            'Department/Programme Teaching [1h]',
+                            'Department/Programme Teaching [1h]',
+                            NULL,
+                            DATE '2035-05-02',
+                            TIME '09:00',
+                            TIME '10:00',
+                            1.00,
+                            NULL::uuid
+                        )
+                        """
+                    ),
+                    {
+                        "posting_code": values["posting_a"],
+                        "attended_posting_code": values["posting_a"],
+                    },
+                )
+            ).mappings().one()
+            resolution = await resolve_native_teaching_target(
+                db,
+                resident_id=values["resident_a_id"],
+                event_id=created["event_id"],
+            )
+            assert isinstance(resolution, FixedAdhocTargetResolution)
+            assert (
+                resolution.reporting_period_id,
+                resolution.programme_code,
+                resolution.posting_code,
+                resolution.r_year,
+                resolution.teaching_target_id,
+                resolution.session_type_id,
+            ) == (
+                values["period_id"],
+                values["programme_a"],
+                values["posting_a"],
+                "R1",
+                fixed_target_id,
+                fixed_session_type_id,
+            )
+
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO reporting_periods (id, label, start_date, end_date, status)
+                    VALUES (
+                        :id, :label, DATE '2034-01-01', DATE '2034-12-31', 'active'
+                    )
+                    """
+                ),
+                {
+                    "id": invalid_phase_period_id,
+                    "label": f"H adhoc {invalid_phase_period_id.hex[:8]}",
+                },
+            )
+            await db.execute(
+                text(
+                    "UPDATE resident_postings SET reporting_period_id = :period_id "
+                    "WHERE id = :posting_id"
+                ),
+                {
+                    "period_id": invalid_phase_period_id,
+                    "posting_id": values["resident_posting_a_id"],
+                },
+            )
+            await db.commit()
+
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["resident"],
+        ) as db:
+            with pytest.raises(TeachingTargetResolutionUnavailable) as phase_period:
+                await resolve_native_teaching_target(
+                    db,
+                    resident_id=values["resident_a_id"],
+                    event_id=invalid_phase_event_id,
+                )
+        assert phase_period.value.reason == "native_phase_period_unavailable"
+
+        async with _runtime_context(
+            policy_harness,
+            policy_seed.contexts["external"],
+        ) as db:
+            with pytest.raises(TeachingTargetResolutionUnavailable) as non_nhg:
+                await resolve_native_teaching_target(
+                    db,
+                    resident_id=values["external_a_id"],
+                    event_id=values["event_seed_a_id"],
+                )
+            assert non_nhg.value.reason == "not_available"
+    finally:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text("DELETE FROM teaching_events WHERE id = :id"),
+                {"id": invalid_phase_event_id},
+            )
+            await db.execute(
+                text(
+                    "UPDATE resident_postings SET reporting_period_id = :period_id "
+                    "WHERE id = :posting_id"
+                ),
+                {
+                    "period_id": values["period_id"],
+                    "posting_id": values["resident_posting_a_id"],
+                },
+            )
+            await db.execute(
+                text("DELETE FROM reporting_periods WHERE id = :id"),
+                {"id": invalid_phase_period_id},
+            )
+            await db.execute(
+                text("DELETE FROM teaching_targets WHERE id = :id"),
+                {"id": fixed_target_id},
+            )
+            await db.execute(
+                text("DELETE FROM session_types WHERE id = :id"),
+                {"id": fixed_session_type_id},
+            )
             await db.commit()
 
 
