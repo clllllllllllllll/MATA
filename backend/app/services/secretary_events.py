@@ -771,6 +771,7 @@ async def teaching_name_options(
     posting_code: str,
     reporting_period_id: UUID | str | None = None,
     relevant_date: date | None = None,
+    programme_code: str | None = None,
 ) -> list[dict[str, Any]]:
     period = (
         await resolve_explicit_reporting_period(
@@ -787,6 +788,12 @@ async def teaching_name_options(
     )
     if period is None:
         return []
+    pool_params: dict[str, Any] = {
+        "posting_code": posting_code,
+        "reporting_period_id": str(period["id"]),
+        "programme_code": programme_code,
+    }
+
     pool_result = await db.execute(
         text(
             """
@@ -802,6 +809,10 @@ async def teaching_name_options(
             FROM teaching_names tn
             WHERE tn.reporting_period_id = :reporting_period_id
               AND tn.is_active = true
+              AND (
+                  :programme_code IS NULL
+                  OR tn.programme_code = :programme_code
+              )
               AND EXISTS (
                   SELECT 1
                   FROM secretary_programme_pools spp
@@ -813,10 +824,7 @@ async def teaching_name_options(
             ORDER BY tn.display_name ASC, tn.programme_code ASC, tn.id ASC
             """
         ),
-        {
-            "posting_code": posting_code,
-            "reporting_period_id": str(period["id"]),
-        },
+        pool_params,
     )
     global_result = await db.execute(
         text(

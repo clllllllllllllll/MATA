@@ -91,6 +91,7 @@ export const routeAccessRules = [
   { path: '/pc/external-attendance', kind: 'protected', allowedRoles: ['programme_pc'] },
   { path: '/secretary', kind: 'protected', allowedRoles: ['secretary'] },
   { path: '/secretary/events', kind: 'protected', allowedRoles: ['secretary'] },
+  { path: '/secretary/teaching-names', kind: 'protected', allowedRoles: ['secretary'] },
   { path: '/resident', kind: 'protected', allowedRoles: ['resident'] },
   { path: '/resident/submissions', kind: 'protected', allowedRoles: ['resident'] },
   { path: '/resident/attendance', kind: 'protected', allowedRoles: ['resident'] },

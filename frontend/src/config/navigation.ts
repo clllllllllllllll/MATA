@@ -148,6 +148,12 @@ export const navItems: NavItem[] = [
     icon: 'calendar',
   },
   {
+    label: 'Update Names of Teaching',
+    path: '/secretary/teaching-names',
+    roles: ['secretary'],
+    icon: 'settings',
+  },
+  {
     label: 'Submission Portal',
     path: '/resident/submissions',
     roles: ['resident'],
@@ -194,6 +200,7 @@ export const breadcrumbMap: Record<string, string[]> = {
   '/pc/external-attendance': ['PC', 'Non-NHG Attendance'],
   '/secretary': ['Secretary', 'Teaching Schedule'],
   '/secretary/events': ['Secretary', 'Teaching Schedule'],
+  '/secretary/teaching-names': ['Secretary', 'Update Names of Teaching'],
   '/resident': ['NHG Resident', 'Submission Portal'],
   '/resident/submissions': ['NHG Resident', 'Submission Portal'],
   '/resident/attendance': ['NHG Resident', 'Past Submissions'],

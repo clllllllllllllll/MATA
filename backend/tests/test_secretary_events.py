@@ -559,6 +559,10 @@ class FakeSecretarySession:
                 for name in self.teaching_names
                 if name["reporting_period_id"] == str(payload["reporting_period_id"])
                 and name["is_active"]
+                and (
+                    payload.get("programme_code") is None
+                    or name["programme_code"] == payload["programme_code"]
+                )
                 and any(
                     pool["posting_code"] == payload["posting_code"]
                     and pool["programme_code"] == name["programme_code"]
@@ -1573,6 +1577,47 @@ def test_teaching_name_options_use_programme_pool_and_include_active_globals() -
     row10_index = keywords.index("GERI Demo Row 10")
     row11_index = keywords.index("GERI Demo Row 11")
     assert row2_index < row10_index < row11_index
+
+
+def test_teaching_name_options_filter_pool_rows_to_the_selected_programme() -> None:
+    fake_db = FakeSecretarySession()
+    fake_db.secretary_programme_pools.append(
+        {
+            "posting_code": "TTSHGerMed",
+            "programme_code": "CARD",
+            "is_active": True,
+            "can_manage_teaching_names": True,
+        }
+    )
+    client = _client(fake_db)
+
+    response = client.get(
+        "/secretary/teaching-name-options",
+        headers=_headers(fake_db, site="TTSHGerMed"),
+        params={"programme_code": "GERI"},
+    )
+
+    assert response.status_code == 200
+    options = response.json()["options"]
+    pool_rows = [row for row in options if not row["is_global"]]
+    global_rows = [row for row in options if row["is_global"]]
+    assert pool_rows
+    assert {row["programme_code"] for row in pool_rows} == {"GERI"}
+    assert "Journal Club" not in {row["keyword"] for row in pool_rows}
+    assert {row["keyword"] for row in global_rows} == {"Department Meeting [1h]"}
+
+    unauthorised_response = client.get(
+        "/secretary/teaching-name-options",
+        headers=_headers(fake_db, site="TTSHGerMed"),
+        params={"programme_code": "NEURO"},
+    )
+
+    assert unauthorised_response.status_code == 200
+    unauthorised_options = unauthorised_response.json()["options"]
+    assert [row for row in unauthorised_options if not row["is_global"]] == []
+    assert {row["keyword"] for row in unauthorised_options if row["is_global"]} == {
+        "Department Meeting [1h]"
+    }
 
 
 def test_teaching_name_options_do_not_leak_from_future_period() -> None:

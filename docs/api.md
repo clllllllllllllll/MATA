@@ -1733,7 +1733,7 @@ List residents currently posted to the secretary's site.
 Get available Teaching Name and global-session-type source options for the secretary event-creation dropdown.
 
 - **Auth:** secretary only
-- **Query params:** `reporting_period_id` or `event_date` optional. An explicit period must be effectively active. When both are supplied, `event_date` must belong to the explicit period or the API returns `422`. With neither option, the backend resolves the single effectively active period containing today. Pool options are scoped to that resolved period.
+- **Query params:** `reporting_period_id` or `event_date` optional; `programme_code` is optional but, when supplied, restricts pool options to that exact programme. An explicit period must be effectively active. When both period and event date are supplied, `event_date` must belong to the explicit period or the API returns `422`. With neither option, the backend resolves the single effectively active period containing today. Pool options are scoped to that resolved period and the Secretary's active explicit capability; global options remain separate.
 
 - **Phase F source contract:** This endpoint now returns each active
   `teaching_names` row in the secretary's authorised programme pool and period,
