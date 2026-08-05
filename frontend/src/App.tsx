@@ -21,6 +21,7 @@ import { PcUploadTtfPage } from './pages/pc/PcUploadTtfPage'
 import { ResidentAttendancePage } from './pages/resident/ResidentAttendancePage'
 import { ResidentSubmissionPage } from './pages/resident/ResidentSubmissionPage'
 import { SecretaryTeachingSchedulePage } from './pages/secretary/SecretaryTeachingSchedulePage'
+import { SecretaryTeachingNamesPage } from './pages/secretary/SecretaryTeachingNamesPage'
 import { useAuth } from './context/useAuth'
 import { LoginPage } from './pages/auth/LoginPage'
 import { NonNhgRegistrationPage } from './pages/auth/NonNhgRegistrationPage'
@@ -173,6 +174,7 @@ const AppRoutes = () => {
       <Route path="/pc/external-attendance" element={shellElement(<AdminExternalAttendancePage />)} />
       <Route path="/secretary" element={shellElement(<Navigate to="/secretary/events" replace />)} />
       <Route path="/secretary/events" element={shellElement(<SecretaryTeachingSchedulePage />)} />
+      <Route path="/secretary/teaching-names" element={shellElement(<SecretaryTeachingNamesPage />)} />
       <Route path="/resident" element={shellElement(<Navigate to="/resident/submissions" replace />)} />
       <Route path="/resident/submissions" element={shellElement(<ResidentSubmissionPage />)} />
       <Route path="/resident/attendance" element={shellElement(<ResidentAttendancePage />)} />

@@ -806,6 +806,7 @@ async def delete_teaching_name(
 async def teaching_name_options(
     reporting_period_id: UUID | None = Query(default=None),
     event_date: date | None = Query(default=None),
+    programme_code: str | None = Query(default=None, min_length=1, max_length=20),
     secretary_context: SecretaryContext = Depends(require_secretary_context),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
@@ -814,5 +815,6 @@ async def teaching_name_options(
         posting_code=secretary_context.posting_code,
         reporting_period_id=reporting_period_id,
         relevant_date=event_date,
+        programme_code=programme_code,
     )
     return {"options": options}

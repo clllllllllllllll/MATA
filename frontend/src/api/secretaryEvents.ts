@@ -10,6 +10,7 @@ export interface SecretaryTeachingEvent {
   teachingName: string
   teachingNameId?: string
   globalSessionTypeId?: string
+  sourceProgrammeCode?: string
   eventDate: string
   startTime: string
   endTime?: string
@@ -31,6 +32,7 @@ export interface TeachingNameOption {
   keyword: string
   teachingNameId?: string
   globalSessionTypeId?: string
+  programmeCode?: string
   sessionTypeId?: string
   sessionType?: string
   durationHours?: number
@@ -71,13 +73,14 @@ export const sourceKeyForSecretaryTeachingEvent = (
   event: Pick<SecretaryTeachingEvent, 'teachingNameId' | 'globalSessionTypeId'>,
 ): string => sourceKeyFromIds(event.teachingNameId, event.globalSessionTypeId) ?? ''
 
-const toTeachingEvent = (value: Record<string, unknown>): SecretaryTeachingEvent => ({
+export const parseSecretaryTeachingEvent = (value: Record<string, unknown>): SecretaryTeachingEvent => ({
   id: String(value.id ?? ''),
   postingCode: String(value.posting_code ?? ''),
   createdForProgrammeCode: value.created_for_programme_code ? String(value.created_for_programme_code) : undefined,
   teachingName: String(value.teaching_name ?? ''),
   teachingNameId: optionalString(value.teaching_name_id),
   globalSessionTypeId: optionalString(value.global_session_type_id),
+  sourceProgrammeCode: optionalString(value.source_programme_code),
   eventDate: String(value.event_date ?? ''),
   startTime: String(value.start_time ?? ''),
   endTime: value.end_time ? String(value.end_time) : undefined,
@@ -107,6 +110,7 @@ const toTeachingNameOption = (value: Record<string, unknown>): TeachingNameOptio
     keyword: String(value.keyword ?? ''),
     teachingNameId,
     globalSessionTypeId,
+    programmeCode: optionalString(value.programme_code),
     sessionTypeId: optionalString(value.session_type_id),
     sessionType: optionalString(value.session_type),
     durationHours: toNumber(value.duration_hours),
@@ -137,7 +141,7 @@ export const listSecretaryTeachingEvents = async (params?: {
     const events = Array.isArray(rows) ? rows : []
     return events
       .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
-      .map(toTeachingEvent)
+      .map(parseSecretaryTeachingEvent)
   } catch (error) {
     throw toApiRequestError(error)
   }
@@ -157,12 +161,14 @@ export const listSecretaryReportingPeriods = async (): Promise<ReportingPeriodOp
 export const listSecretaryTeachingNameOptions = async (params?: {
   reportingPeriodId?: string
   eventDate?: string
+  programmeCode?: string
 }): Promise<TeachingNameOption[]> => {
   try {
     const response = await httpClient.get('/secretary/teaching-name-options', {
       params: {
         reporting_period_id: params?.reportingPeriodId || undefined,
         event_date: params?.eventDate || undefined,
+        programme_code: params?.programmeCode || undefined,
       },
       headers: buildSecretaryDemoHeaders(),
     })
@@ -209,7 +215,7 @@ export const createSecretaryTeachingEvent = async (
       typeof response.data === 'object' && response.data !== null
         ? (response.data as Record<string, unknown>)
         : {}
-    return toTeachingEvent(row)
+    return parseSecretaryTeachingEvent(row)
   } catch (error) {
     throw toApiRequestError(error)
   }
@@ -248,7 +254,53 @@ export const updateSecretaryTeachingEvent = async (
       typeof response.data === 'object' && response.data !== null
         ? (response.data as Record<string, unknown>)
         : {}
-    return toTeachingEvent(row)
+    return parseSecretaryTeachingEvent(row)
+  } catch (error) {
+    throw toApiRequestError(error)
+  }
+}
+
+export interface DuplicateSecretaryTeachingEventRequest {
+  sourceEventId: string
+  eventDate: string
+  startTime?: string
+  teachingNameId?: string
+  globalSessionTypeId?: string
+}
+
+export const buildSecretaryTeachingEventDuplicateBody = (
+  payload: DuplicateSecretaryTeachingEventRequest,
+): Record<string, string> => {
+  const body: Record<string, string> = {
+    source_event_id: payload.sourceEventId,
+    event_date: payload.eventDate,
+  }
+  if (payload.startTime) {
+    body.start_time = payload.startTime
+  }
+  if (payload.teachingNameId) {
+    body.teaching_name_id = payload.teachingNameId
+  } else if (payload.globalSessionTypeId) {
+    body.global_session_type_id = payload.globalSessionTypeId
+  }
+  return body
+}
+
+export const duplicateSecretaryTeachingEvent = async (
+  payload: DuplicateSecretaryTeachingEventRequest,
+  actorName?: string,
+): Promise<SecretaryTeachingEvent> => {
+  try {
+    const response = await httpClient.post(
+      '/secretary/teaching-events/duplicate',
+      buildSecretaryTeachingEventDuplicateBody(payload),
+      { headers: buildSecretaryDemoHeaders({ actorName }) },
+    )
+    const row =
+      typeof response.data === 'object' && response.data !== null
+        ? (response.data as Record<string, unknown>)
+        : {}
+    return parseSecretaryTeachingEvent(row)
   } catch (error) {
     throw toApiRequestError(error)
   }
