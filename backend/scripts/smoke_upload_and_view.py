@@ -256,11 +256,6 @@ def main() -> None:
                 {"reporting_period_id": reporting_period_id, "limit": 100},
             ),
             (
-                "GET /admin/teaching-name-catalogue",
-                "/admin/teaching-name-catalogue",
-                {"reporting_period_id": reporting_period_id, "limit": 100},
-            ),
-            (
                 "GET /admin/form-f1-records",
                 "/admin/form-f1-records",
                 {"reporting_period_id": reporting_period_id},

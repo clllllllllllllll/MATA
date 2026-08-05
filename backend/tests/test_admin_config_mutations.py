@@ -391,10 +391,6 @@ class FakeMutationSession:
             period_counts = self.reporting_period_dependencies.get(payload["id"], {})
             return _FakeMutationResult(rows=[{"count": period_counts.get("teaching_targets", 0)}])
 
-        if "FROM teaching_name_catalogue" in sql and "reporting_period_id = :id" in sql:
-            period_counts = self.reporting_period_dependencies.get(payload["id"], {})
-            return _FakeMutationResult(rows=[{"count": period_counts.get("teaching_name_catalogue", 0)}])
-
         if "FROM form_f1_records" in sql and "reporting_period_id = :id" in sql:
             period_counts = self.reporting_period_dependencies.get(payload["id"], {})
             return _FakeMutationResult(rows=[{"count": period_counts.get("form_f1_records", 0)}])

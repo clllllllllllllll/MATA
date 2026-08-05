@@ -470,49 +470,34 @@ The SSR (Sub-Specialty Registrar) sheet has a different structure: MCR, Name, SI
 
 ---
 
-## Evolved TTF format transition (future; no parser change in Phase A)
+## Evolved TTF format (implemented E2+B2)
 
-The parser section below defines the **current legacy A-K** upload path. It
-remains the active physical upload behavior through Phase G, including
-`teaching_name_catalogue` seeding from `teaching_targets.details_of_training`.
-B1 through Phase G do not introduce a dual parser, change the current upload
-contract, or backfill Column K data. Only final E2/B2 may remove that legacy
-path.
+Revision `20260805_000036` makes the final TTF contract **A–J only**. The
+parser does not support a dual format, backfill Column K, seed Teaching Names,
+or infer mappings from workbook text. A populated Column K or any later
+unsupported column returns controlled `422`; empty formatted unused cells do
+not by themselves cause rejection. Historical A–K descriptions retained below
+are evidence of the pre-cutover format only.
 
-Phase D mapping mutations are configuration-only and use the same scoped lock
-as TTF reconciliation. They do not change parsing, target reconciliation,
-workbook contents, legacy catalogue seeding, event timing, events, or
-attendance.
+Phase D mapping mutations still use the same scoped lock as TTF reconciliation.
+Phase F/G scheduled-event and attendance behavior still uses persisted Teaching
+Name or Global Session Type identity and source provenance, never a workbook
+name, catalogue, Column K, or display-text match.
 
-Phase F likewise makes no parser or workbook change. It uses a separately
-managed Teaching Name or Global Session Type UUID only when a new scheduled
-event is written; it does not read Column K, create a dual parser, or backfill
-legacy events. Phase G changes only the Resident/Non-NHG runtime use of those
-persisted identities; it does not alter the parser, workbook contract, or
-physical legacy catalogue structures.
+## TTF Parser (final A–J behavior)
 
-The future evolved TTF has exactly these A-J fields:
+The upload remains one programme per request. All 28 seeded programmes use the
+same parser/runtime path: AIM, CARDIO, EM, ENDO, ENT, EYE, GASTRO, GERI, GS,
+ID, IM, MEDONCO, ORTHO, PATH, REHAB, RENAL, RHEUM, SIG, URO, and MICROB
+normalize a valid Column C value to `ALL`; ANAES, DERM, DR, FM, PSY, RESPI,
+SPORTSMED, and PALLMED retain exact `R1`–`R7` values. SPORTSMED and PALLMED
+are operationally covered with `R4`, `R5`, and `R6` and are never remapped to
+SS values. Actual onboarding of 28 operational workbooks remains Phase R.
 
-| Column | Future field |
-|---|---|
-| A | reporting period |
-| B | programme |
-| C | R-year |
-| D | posting |
-| E | dashboard posting / posting group |
-| F | session type |
-| G | monthly target |
-| H | tracked |
-| I | reallocatable |
-| J | tag |
-
-Column K is removed in that future format. A future-format upload containing a
-populated legacy Column K must return a controlled `422`. There is no A-K/A-J
-dual-format compatibility, Column K backfill, or historical-data migration.
-Supplied workbooks remain legacy structural references only; they do not expand
-the future parser contract.
-
-## TTF Parser (current legacy A-K behavior)
+Valid TTF readiness does not activate Non-NHG availability. That remains
+controlled independently by `programme_institution_posting_map`; the parser
+does not create mappings, infer external posting codes, or alter external
+registration options.
 
 **Upload slot:** Admin uploads via the dedicated **Teaching Target File (TTF)** file input on the admin upload page. The upload form also requires a **programme selector** (e.g. DR, GRM) — this is a required parameter alongside the file. The filename is not used for parsing.
 **Accepted format:** `.xlsx` only
@@ -522,7 +507,7 @@ the future parser contract.
 ### TTF Sheet Detection
 
 Iterate over all sheets in the workbook. The first sheet where:
-- Row 1 contains expected column headers (columns A–K contain header-like text)
+- One row within the bounded header scan contains all expected A–J headers
 - At least one data row (row 2+) has a non-empty value in column B that matches a known `programme_code` format
 
 ...is treated as the data sheet. All other sheets are skipped.
@@ -552,7 +537,6 @@ def detect_ttf_sheet(workbook) -> str | None:
 | H | is_tracked | `Yes` → true, anything else → false |
 | I | is_reallocatable | `Y` → true, anything else → false |
 | J | tag | Reallocation tier label, e.g. `A1`, `A2`, `A3`. Empty = no reallocation |
-| K | details_of_training | Comma-separated canonical event-option names (e.g. `Journal Club, Grand Round, M&M`). Exact resolution is scoped by period, programme, posting, R-year, and canonical name. |
 
 ### TTF Column E — Posting Group / Dashboard Posting
 
@@ -565,7 +549,7 @@ deleted. Therefore a blank Column E row, or a posting omitted from the upload,
 removes any previous group membership for that posting.
 
 For each non-empty Column E row:
-- Column D remains the posting code used by `teaching_targets` and `teaching_name_catalogue`.
+- Column D remains the posting code used by `teaching_targets`.
 - Column G remains the monthly target for that specific Column D row.
 - If Column E is non-empty, create/upsert a `posting_groups` row:
   - `group_code = Column E`
@@ -655,8 +639,10 @@ Before inserting, validate:
 5. No duplicate `(reporting_period_id, programme_code, r_year, posting_code, session_type_id)` after explosion
 6. If `is_reallocatable = true`, `tag` must not be empty
 7. If a tag is set, there must be at least one other reallocatable row in the same R-year context at the same physical posting and in the same configured tag prefix so alphabetical flow can occur; do not treat posting-group membership or another R-year context as transfer eligibility
-8. **Canonical-name deduplication:** Within one `(reporting_period_id, programme_code, posting_code, r_year, canonical teaching name)` scope, the name must resolve to exactly one session type. The same canonical name at another posting is valid and may map differently. Case/spacing variants are upload/event-option data quality to reject or clean within scope; runtime compliance uses exact canonical names and never fuzzy-matches.
-9. **Tag order vs duration warning (not block):** For each tag group at a posting, check that tag label alphabetical order aligns with duration descending (e.g. `A1` should map to longer duration than `A2`). If misaligned, add a warning to the upload response: `"tag_order_warnings": ["Posting TTSHGerMed: tag A1 maps to [1h] but A2 maps to [2h] — reallocation will flow A1→A2, which is shorter→longer. Verify tag assignment is intentional."]`. Upload still proceeds.
+8. **Tag order vs duration warning (not block):** For each tag group at a posting, check that tag label alphabetical order aligns with duration descending. The warning is bounded and does not expose unsafe workbook values in a validation error. Upload still proceeds.
+
+The parser reports controlled, bounded errors with sheet/row/cell information
+where available. It does not echo untrusted cell values in unsafe errors.
 
 ### Column E — Posting Groups
 
@@ -690,7 +676,7 @@ def seed_posting_groups(ttf_row: dict, db_session):
 
 The TTF upload reconciles targets within `(reporting_period_id, programme_code)` scope — regardless of whether attendance records exist. There is no attendance guard blocking re-uploads. A target's stable identity is `(reporting_period_id, programme_code, r_year, posting_code, session_type_id)`: matching rows retain their UUID and update only mutable target values; new rows are inserted; absent rows are made stale.
 
-When a stale target has Teaching Name mappings, each mapping retains its UUID and becomes pending (`teaching_target_id = NULL`) before the target is deleted. Matching targets never redirect mappings. A change to `monthly_target`, `is_tracked`, `is_reallocatable`, or `tag` preserves mapped links and is reported as a target-semantic change; a `details_of_training`-only change is not semantic for mapping purposes.
+When a stale target has Teaching Name mappings, each mapping retains its UUID and becomes pending (`teaching_target_id = NULL`) before the target is deleted. Matching targets never redirect mappings. A change to `monthly_target`, `is_tracked`, `is_reallocatable`, or `tag` preserves mapped links and is reported as a target-semantic change.
 
 For a newly introduced `(posting_code, r_year)` target scope, every active Teaching Name in the programme/period receives at most one pending mapping. Inactive names receive none, and re-upload is idempotent.
 
@@ -699,7 +685,7 @@ direct stable Teaching Name target links and unambiguous structured event
 evidence; no fuzzy text matching is used, and transitional text-only or
 unresolved evidence is excluded.
 
-**Orphan detection (post-write):** After catalogue regeneration, query for legacy parser/configuration references whose resolved session type no longer matches any catalogue row. These are returned as warnings in the upload response — the upload still returns `200`; they do not alter Phase G event discovery or attendance authorization.
+TTF does not create Teaching Names, mappings, or warnings from workbook name text. Pending mappings are provisioned solely from new distinct posting/R-year target scopes and active Teaching Names already in the shared pool.
 
 **Concurrency:** The programme-global `posting_groups` PostgreSQL advisory lock is acquired before the reporting-period/programme scope advisory lock. A second upload for the same programme returns `409`, including a different reporting period; different programmes remain independent.
 
@@ -710,10 +696,9 @@ unresolved evidence is excluded.
 3. Upsert session types and posting codes, then load/lock existing target rows
 4. Reconcile targets by their stable natural identity; clear stale mapping links before deleting only stale targets
 5. Provision missing pending mappings for newly introduced target scopes and preserve existing matching links
-6. Delete and reseed the legacy Column K `teaching_name_catalogue` rows — one row per keyword per TTF row. Non-tracked rows (`is_tracked = false`) remain transitional parser/configuration data; Phase G event visibility and attendance use persisted source evidence instead.
-7. Replace the programme's `posting_groups`: delete current programme rows, then upsert non-empty Column E rows, then run orphan detection
-8. Record the successful upload log, warnings, audit evidence, and Data Revalidation outcome in the same transaction as the reconciliation
-9. Commit once, then invalidate scoped caches
+6. Replace the programme's `posting_groups`: delete current programme rows, then upsert non-empty Column E rows
+7. Record the successful upload log, relevant warnings, audit evidence, and Data Revalidation outcome in the same transaction as the reconciliation
+8. Commit once, then invalidate scoped caches
 
 #### `ON CONFLICT` upserts
 
@@ -955,11 +940,11 @@ Deduplicate by MCR — use the later sheet's data if there's a conflict.
 
 ### TTF frequency target of 0
 
-**Confirmed rule:** A zero-target row and its teaching-name catalogue entries remain persisted as transitional parser/configuration data. They do not control Phase G event visibility, scheduled-event creation, or attendance capture, which use persisted source evidence. The zero target contributes to neither the deferred compliance numerator nor denominator and creates no target, percentage, shortage, surplus, reallocation, or clawback contribution.
+**Confirmed rule:** A zero-target row remains a valid final A–J target. It does not control Phase G event visibility, scheduled-event creation, or attendance capture, which use persisted source evidence. The zero target contributes to neither the deferred compliance numerator nor denominator and creates no target, percentage, shortage, surplus, reallocation, or clawback contribution.
 
 
 ### TTF "No" in Tracked column
-The session type exists and events can be created, but attendance does NOT count toward compliance. The row is still seeded into `teaching_name_catalogue` for the physical parser path; Phase G event visibility does not read that catalogue. Both numerator and denominator exclude these sessions.
+The session type exists and events can be created, but attendance does NOT count toward compliance. TTF does not seed a Teaching Name or a mapping from this row. Both numerator and denominator exclude these sessions.
 
 ### Posting code with parenthetical suffix in RDB
 Examples: `TTSHCardio (CCU)`, `TTSHRespir(MICU)`, `KTPHOrtSrg(SportsMed)`

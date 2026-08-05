@@ -11,6 +11,7 @@ from app.config import Settings
 from app.middleware.auth_stub import AuthIdentity, AuthStubMiddleware
 from app.middleware.errors import install_error_handlers
 from app.routers import external_residents
+from app.services import external_residents as external_resident_service
 from tests.resident_fakes import (
     TTSH_ACTIVE_REGISTRATION_MAPPINGS,
     TTSH_INACTIVE_REGISTRATION_PROGRAMMES,
@@ -197,8 +198,16 @@ def test_external_registration_creates_initial_posting_history_row() -> None:
     assert row["end_date"] == date(2026, 9, 30)
 
 
-def test_external_registration_creates_forecast_posting_schedule_rows() -> None:
-    fake_db = FakeResidentSession()
+def test_external_registration_creates_forecast_posting_schedule_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FixedDate(date):
+        @classmethod
+        def today(cls) -> "FixedDate":
+            return cls(2026, 7, 15)
+
+    monkeypatch.setattr(external_resident_service, "date", FixedDate)
+    fake_db = FakeResidentSession(today=date(2026, 7, 15))
     _configure_mapping(fake_db)
     _configure_mapping(
         fake_db,
@@ -1229,7 +1238,6 @@ def test_active_mapping_does_not_mutate_native_secretary_or_compliance_configura
     secretary_pools = deepcopy(fake_db.secretary_programme_pools)
     posting_codes = deepcopy(fake_db.posting_codes)
     teaching_targets = deepcopy(fake_db.teaching_targets)
-    teaching_catalogue = deepcopy(fake_db.catalogue)
     teaching_events = deepcopy(fake_db.events)
     weekend_exceptions = deepcopy(fake_db.weekend_exceptions)
     global_session_types = deepcopy(fake_db.global_session_types)
@@ -1251,7 +1259,6 @@ def test_active_mapping_does_not_mutate_native_secretary_or_compliance_configura
     assert fake_db.secretary_programme_pools == secretary_pools
     assert fake_db.posting_codes == posting_codes
     assert fake_db.teaching_targets == teaching_targets
-    assert fake_db.catalogue == teaching_catalogue
     assert fake_db.events == teaching_events
     assert fake_db.weekend_exceptions == weekend_exceptions
     assert fake_db.global_session_types == global_session_types

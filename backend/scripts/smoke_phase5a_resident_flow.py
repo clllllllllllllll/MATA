@@ -210,50 +210,14 @@ def ensure_secretary_for_posting(conn: Connection, posting_code: str) -> Secreta
     )
 
 
-def teaching_name_visible_for_resident(
-    conn: Connection,
-    *,
-    teaching_name: str,
-    posting_code: str,
-    programme_code: str,
-    r_year: str,
-    reporting_period_id: str,
-) -> bool:
-    global_match = db_fetchone(
-        conn,
-        """
-        SELECT 1
-        FROM global_session_types
-        WHERE is_active = true
-          AND name = :teaching_name
-        LIMIT 1
-        """,
-        {"teaching_name": teaching_name},
-    )
-    if global_match is not None:
-        return True
-
-    catalogue_match = db_fetchone(
-        conn,
-        """
-        SELECT 1
-        FROM teaching_name_catalogue
-        WHERE posting_code = :posting_code
-          AND programme_code = :programme_code
-          AND reporting_period_id = :reporting_period_id
-          AND keyword = :teaching_name
-          AND (r_year = :r_year OR r_year = 'ALL')
-        LIMIT 1
-        """,
-        {
-            "posting_code": posting_code,
-            "programme_code": programme_code,
-            "reporting_period_id": reporting_period_id,
-            "teaching_name": teaching_name,
-            "r_year": r_year,
-        },
-    )
-    return catalogue_match is not None
+def source_payload_from_option(option: dict[str, Any]) -> dict[str, str] | None:
+    teaching_name_id = option.get("teaching_name_id")
+    global_session_type_id = option.get("global_session_type_id")
+    if bool(teaching_name_id) == bool(global_session_type_id):
+        return None
+    if teaching_name_id:
+        return {"teaching_name_id": str(teaching_name_id)}
+    return {"global_session_type_id": str(global_session_type_id)}
 
 
 def build_resident_headers(context: SmokeContext) -> dict[str, str]:
@@ -320,14 +284,14 @@ def create_secretary_event(
     client: httpx.Client,
     *,
     headers: dict[str, str],
-    teaching_name: str,
+    source_payload: dict[str, str],
     event_date: date,
 ) -> tuple[bool, dict[str, Any] | None, str]:
     response = client.post(
         "/secretary/teaching-events",
         headers=headers,
         json={
-            "teaching_name": teaching_name,
+            **source_payload,
             "event_date": event_date.isoformat(),
             "start_time": "10:00",
         },
@@ -495,34 +459,28 @@ def main() -> int:
                     f"options_count={len(options)}",
                 )
 
-                visible_candidates: list[dict[str, Any]] = []
-                for option in options:
-                    keyword = option.get("keyword")
-                    if not keyword:
-                        continue
-                    if teaching_name_visible_for_resident(
-                        conn,
-                        teaching_name=keyword,
-                        posting_code=context.posting_code,
-                        programme_code=context.resident_programme_code,
-                        r_year=context.posting_r_year,
-                        reporting_period_id=context.reporting_period_id,
-                    ):
-                        visible_candidates.append(option)
+                source_candidates = [
+                    (option, source_payload)
+                    for option in options
+                    if isinstance(option, dict)
+                    and (source_payload := source_payload_from_option(option)) is not None
+                ]
+                if not source_candidates:
+                    runner.fail(
+                        "GET /secretary/teaching-name-options",
+                        "No option supplied exactly one explicit source ID.",
+                    )
+                    runner.summary()
+                    return 1
 
-                if visible_candidates:
-                    selected_option = visible_candidates[0]
-                    selected_should_be_visible = True
-                else:
-                    selected_option = options[0]
-                    selected_should_be_visible = False
+                selected_option, selected_source_payload = source_candidates[0]
 
                 selected_teaching_name = selected_option["keyword"]
                 runner.pass_(
-                    "select teaching_name for smoke",
+                    "select explicit scheduled-event source for smoke",
                     (
                         f"teaching_name='{selected_teaching_name}' "
-                        f"should_be_visible={selected_should_be_visible}"
+                        f"source={'teaching_name_id' if 'teaching_name_id' in selected_source_payload else 'global_session_type_id'}"
                     ),
                 )
 
@@ -544,7 +502,7 @@ def main() -> int:
                 created_ok, created_event, created_error = create_secretary_event(
                     client,
                     headers=secretary_headers,
-                    teaching_name=selected_teaching_name,
+                    source_payload=selected_source_payload,
                     event_date=primary_event_date,
                 )
                 if not created_ok or created_event is None:
@@ -578,25 +536,14 @@ def main() -> int:
                 resident_event_ids = {row["id"] for row in resident_events_body.get("events", [])}
 
                 created_event_visible = created_event_id in resident_event_ids
+                visible_candidates = [selected_option] if created_event_visible else []
                 if created_event_visible:
                     runner.pass_("resident visibility for created secretary event", f"event_id={created_event_id}")
-                elif selected_should_be_visible:
-                    runner.fail(
-                        "resident visibility for created secretary event",
-                        (
-                            "Expected visibility from selected teaching_name but event was absent. "
-                            f"teaching_name='{selected_teaching_name}' "
-                            f"posting={context.posting_code} "
-                            f"programme={context.resident_programme_code} "
-                            f"r_year={context.posting_r_year} "
-                            f"events_returned={len(resident_events_body.get('events', []))}"
-                        ),
-                    )
                 else:
                     runner.skip(
                         "resident visibility for created secretary event",
                         (
-                            "Selected teaching_name is not visible for this resident in current catalogue scope. "
+                            "Selected explicit source is not visible for this resident under current persisted scope. "
                             f"teaching_name='{selected_teaching_name}'"
                         ),
                     )
@@ -688,7 +635,7 @@ def main() -> int:
                 else:
                     runner.skip(
                         "attendance submit/hide/delete/show flow",
-                        "Created event was not visible to resident under current catalogue scope.",
+                        "Created event was not visible to resident under current persisted source scope.",
                     )
 
                 # POST /resident/adhoc-teaching success path
@@ -700,7 +647,7 @@ def main() -> int:
                         json={
                             "date": adhoc_date.isoformat(),
                             "start_time": "09:00",
-                            "teaching_name": visible_candidates[0]["keyword"],
+                            "details_of_session": visible_candidates[0]["keyword"],
                         },
                     )
                     if adhoc_resp.status_code == 200:
@@ -724,7 +671,7 @@ def main() -> int:
                 else:
                     runner.skip(
                         "POST /resident/adhoc-teaching success",
-                        "No teaching_name option is visible to this resident in current scope.",
+                            "No selected explicit source is visible to this resident in current scope.",
                     )
 
                 # PH ad-hoc check
@@ -737,7 +684,7 @@ def main() -> int:
                         json={
                             "date": ph_date.isoformat(),
                             "start_time": "10:00",
-                            "teaching_name": ph_teaching_name,
+                            "details_of_session": ph_teaching_name,
                         },
                     )
                     if ph_adhoc_resp.status_code == 422:
@@ -770,11 +717,21 @@ def main() -> int:
                         )
                     else:
                         weekend_warning_observed = False
+                        weekend_source_payload = source_payload_from_option(
+                            visible_candidates[0]
+                        )
+                        if weekend_source_payload is None:
+                            runner.fail(
+                                "weekend non-exception compliance_warning",
+                                "Resident-visible option no longer has exactly one explicit source ID.",
+                            )
+                            runner.summary()
+                            return 1
                         for weekend_date in weekend_dates:
                             ok, weekend_event, weekend_error = create_secretary_event(
                                 client,
                                 headers=secretary_headers,
-                                teaching_name=visible_candidates[0]["keyword"],
+                                source_payload=weekend_source_payload,
                                 event_date=weekend_date,
                             )
                             if not ok or weekend_event is None:

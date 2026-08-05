@@ -24,6 +24,9 @@ class _FakeScalarResult:
     def scalar(self):
         return self._value
 
+    def scalar_one_or_none(self):
+        return self._value
+
     def mappings(self):
         return self
 
@@ -84,7 +87,6 @@ class FakeTTFSession:
         self.teaching_targets: list[dict] = []
         self.teaching_names: list[dict] = []
         self.teaching_name_mappings: list[dict] = []
-        self.catalogue_rows: list[dict] = []
         self.posting_groups: dict[tuple[str, str], dict] = {}
         self.teaching_events: dict[str, dict] = {}
         self.attendance_records: list[dict] = []
@@ -105,7 +107,6 @@ class FakeTTFSession:
             "posting_codes": deepcopy(self.posting_codes),
             "teaching_targets": deepcopy(self.teaching_targets),
             "teaching_name_mappings": deepcopy(self.teaching_name_mappings),
-            "catalogue_rows": deepcopy(self.catalogue_rows),
             "posting_groups": deepcopy(self.posting_groups),
         }
 
@@ -130,6 +131,9 @@ class FakeTTFSession:
         if "/* upload:reporting_period_status */" in sql:
             row = self.reporting_periods.get(str(params["reporting_period_id"]))
             return _FakeMappingResult([row] if row else [])
+
+        if "SELECT label" in sql and "FROM reporting_periods" in sql:
+            return _FakeScalarResult("Jan - June")
 
         if "pg_try_advisory_xact_lock" in sql:
             return _FakeScalarResult(self.lock_available)
@@ -234,7 +238,6 @@ class FakeTTFSession:
                     "is_tracked": params["is_tracked"],
                     "is_reallocatable": params["is_reallocatable"],
                     "tag": params["tag"],
-                    "details_of_training": params["details_of_training"],
                 }
             )
             return _FakeScalarResult(rowcount=1)
@@ -246,7 +249,6 @@ class FakeTTFSession:
                 "is_tracked",
                 "is_reallocatable",
                 "tag",
-                "details_of_training",
             ):
                 target[key] = params[key]
             return _FakeScalarResult(rowcount=1)
@@ -367,16 +369,6 @@ class FakeTTFSession:
             self.posting_codes.setdefault(code, {"code": code, "display_name": None})
             return _FakeScalarResult()
 
-        if "DELETE FROM teaching_name_catalogue" in sql:
-            rp = str(params["reporting_period_id"])
-            prog = params["programme_code"]
-            self.catalogue_rows = [
-                row
-                for row in self.catalogue_rows
-                if not (row["reporting_period_id"] == rp and row["programme_code"] == prog)
-            ]
-            return _FakeScalarResult()
-
         if "DELETE FROM teaching_targets" in sql:
             rp = str(params["reporting_period_id"])
             prog = params["programme_code"]
@@ -400,27 +392,13 @@ class FakeTTFSession:
                     "is_tracked": params["is_tracked"],
                     "is_reallocatable": params["is_reallocatable"],
                     "tag": params["tag"],
-                    "details_of_training": params["details_of_training"],
-                }
-            )
-            return _FakeScalarResult()
-
-        if "INSERT INTO teaching_name_catalogue" in sql:
-            self.catalogue_rows.append(
-                {
-                    "keyword": params["keyword"],
-                    "session_type_id": str(params["session_type_id"]),
-                    "posting_code": params["posting_code"],
-                    "programme_code": params["programme_code"],
-                    "r_year": params["r_year"],
-                    "reporting_period_id": str(params["reporting_period_id"]),
-                    "duration_hours": params["duration_hours"],
-                    "is_tracked": params["is_tracked"],
                 }
             )
             return _FakeScalarResult()
 
         if "INSERT INTO posting_groups" in sql:
+            if self.fail_after_posting_group_replacement:
+                raise RuntimeError("injected posting group write failure")
             key = (params["posting_code"], params["programme_code"])
             self.posting_groups[key] = {
                 "group_code": params["group_code"],
@@ -438,26 +416,6 @@ class FakeTTFSession:
             for key in removed:
                 del self.posting_groups[key]
             return _FakeScalarResult(rowcount=len(removed))
-
-        if "SELECT COUNT(*) AS orphan_count" in sql:
-            if self.fail_after_posting_group_replacement:
-                raise RuntimeError("injected orphan check failure")
-            rp = str(params["reporting_period_id"])
-            prog = params["programme_code"]
-            catalogue_pairs = {
-                (row["keyword"], row["posting_code"])
-                for row in self.catalogue_rows
-                if row["reporting_period_id"] == rp and row["programme_code"] == prog
-            }
-            orphan_count = 0
-            for attendance in self.attendance_records:
-                event = self.teaching_events.get(attendance["teaching_event_id"])
-                if event is None:
-                    continue
-                pair = (event["teaching_name"], event["posting_code"])
-                if pair not in catalogue_pairs:
-                    orphan_count += 1
-            return _FakeScalarResult(orphan_count)
 
         if "INSERT INTO upload_logs" in sql:
             self.upload_logs.append(dict(params))
@@ -481,7 +439,6 @@ class FakeTTFSession:
             self.teaching_name_mappings = deepcopy(
                 self._rollback_snapshot["teaching_name_mappings"]
             )
-            self.catalogue_rows = deepcopy(self._rollback_snapshot["catalogue_rows"])
             self.posting_groups = deepcopy(self._rollback_snapshot["posting_groups"])
 
 
@@ -504,7 +461,6 @@ def _ttf_bytes(rows: list[list[object]]) -> bytes:
         "is_tracked",
         "is_reallocatable",
         "tag",
-        "details_of_training",
     ]
     for idx, header in enumerate(headers, start=1):
         ws.cell(row=1, column=idx, value=header)
@@ -529,7 +485,6 @@ def _base_row(**overrides: object) -> list[object]:
         "Yes",
         "N",
         "",
-        "Journal Club, Bedside Teaching",
     ]
     mapping = {
         "programme": 1,
@@ -541,7 +496,6 @@ def _base_row(**overrides: object) -> list[object]:
         "is_tracked": 7,
         "is_reallocatable": 8,
         "tag": 9,
-        "details": 10,
     }
     for key, value in overrides.items():
         row[mapping[key]] = value
@@ -563,12 +517,12 @@ def test_parse_only_mode_still_works_without_db_writes() -> None:
     assert result.metadata["targets_created"] == 0
 
 
-def test_valid_sample_persists_targets_session_types_posting_codes_and_catalogue() -> None:
+def test_valid_sample_persists_targets_session_types_and_posting_codes() -> None:
     session = FakeTTFSession()
     period_id = uuid4()
     rows = [
         _base_row(posting="TTSHDiagRd", session_type="Department Learning Events [1h]"),
-        _base_row(posting="DormantCode123", session_type="National Teaching [3h]", details="Grand Round"),
+        _base_row(posting="DormantCode123", session_type="National Teaching [3h]"),
     ]
     result = _run(
         parse_ttf_upload(
@@ -581,7 +535,6 @@ def test_valid_sample_persists_targets_session_types_posting_codes_and_catalogue
     )
     assert result.errors == []
     assert len(session.teaching_targets) == 2
-    assert len(session.catalogue_rows) == 3
     assert "Department Learning Events [1h]" in session.session_types
     assert "DormantCode123" in session.posting_codes
     assert "DormantCode123" in result.metadata["posting_codes_added"]
@@ -605,13 +558,13 @@ def test_transaction_owner_mode_leaves_ttf_writes_uncommitted() -> None:
     assert session.commits == 0
 
 
-def test_db_programme_config_drives_all_and_subspecialty_years_for_custom_programmes() -> None:
+def test_db_programme_config_drives_all_and_preserved_years_for_custom_programmes() -> None:
     session = FakeTTFSession()
     period_id = uuid4()
     all_result = _run(
         parse_ttf_upload(
             file_bytes=_ttf_bytes(
-                [_base_row(programme="XALL", r_year="R2,R3", details="All Topic")]
+                [_base_row(programme="XALL", r_year="R2,R3")]
             ),
             original_filename="xall.xlsx",
             reporting_period_id=period_id,
@@ -622,7 +575,7 @@ def test_db_programme_config_drives_all_and_subspecialty_years_for_custom_progra
     ss_result = _run(
         parse_ttf_upload(
             file_bytes=_ttf_bytes(
-                [_base_row(programme="XSS", r_year="R4, R5, R6", details="SS Topic")]
+                [_base_row(programme="XSS", r_year="R4, R5, R6")]
             ),
             original_filename="xss.xlsx",
             reporting_period_id=period_id,
@@ -637,11 +590,8 @@ def test_db_programme_config_drives_all_and_subspecialty_years_for_custom_progra
         row["r_year"] for row in session.teaching_targets if row["programme_code"] == "XALL"
     ] == ["ALL"]
     assert [
-        row["r_year"] for row in session.catalogue_rows if row["programme_code"] == "XALL"
-    ] == ["ALL"]
-    assert [
         row["r_year"] for row in session.teaching_targets if row["programme_code"] == "XSS"
-    ] == ["SS1", "SS2", "SS3"]
+    ] == ["R4", "R5", "R6"]
 
 
 def test_reupload_replaces_only_selected_programme_period_scope() -> None:
@@ -650,7 +600,7 @@ def test_reupload_replaces_only_selected_programme_period_scope() -> None:
     p2 = uuid4()
     _run(
         parse_ttf_upload(
-            file_bytes=_ttf_bytes([_base_row(programme="DR", posting="P1", details="K1")]),
+            file_bytes=_ttf_bytes([_base_row(programme="DR", posting="P1")]),
             original_filename="a.xlsx",
             reporting_period_id=p1,
             programme_code="DR",
@@ -659,7 +609,7 @@ def test_reupload_replaces_only_selected_programme_period_scope() -> None:
     )
     _run(
         parse_ttf_upload(
-            file_bytes=_ttf_bytes([_base_row(programme="GERI", posting="OTHER", details="K2")]),
+            file_bytes=_ttf_bytes([_base_row(programme="GERI", posting="OTHER")]),
             original_filename="b.xlsx",
             reporting_period_id=p1,
             programme_code="GERI",
@@ -668,7 +618,7 @@ def test_reupload_replaces_only_selected_programme_period_scope() -> None:
     )
     _run(
         parse_ttf_upload(
-            file_bytes=_ttf_bytes([_base_row(programme="DR", posting="P2", details="K3")]),
+            file_bytes=_ttf_bytes([_base_row(programme="DR", posting="P2")]),
             original_filename="c.xlsx",
             reporting_period_id=p1,
             programme_code="DR",
@@ -677,7 +627,7 @@ def test_reupload_replaces_only_selected_programme_period_scope() -> None:
     )
     _run(
         parse_ttf_upload(
-            file_bytes=_ttf_bytes([_base_row(programme="DR", posting="P3", details="K4")]),
+            file_bytes=_ttf_bytes([_base_row(programme="DR", posting="P3")]),
             original_filename="d.xlsx",
             reporting_period_id=p2,
             programme_code="DR",
@@ -728,7 +678,7 @@ def test_reupload_preserves_matching_target_identity_and_mapped_link() -> None:
     result = _run(
         parse_ttf_upload(
             file_bytes=_ttf_bytes(
-                [_base_row(posting="P1", monthly_target=8, details="Updated Topic")]
+                [_base_row(posting="P1", monthly_target=8)]
             ),
             original_filename="reupload.xlsx",
             reporting_period_id=period_id,
@@ -866,7 +816,7 @@ def test_reupload_invalidates_only_stale_mapping_and_provisions_new_scope() -> N
     assert result.metadata["pending_mappings_created"] == 1
 
 
-def test_existing_attendance_does_not_block_and_orphan_warning_returned() -> None:
+def test_existing_attendance_does_not_block_target_reconciliation() -> None:
     session = FakeTTFSession()
     period_id = uuid4()
     event_id = str(uuid4())
@@ -875,7 +825,7 @@ def test_existing_attendance_does_not_block_and_orphan_warning_returned() -> Non
 
     result = _run(
         parse_ttf_upload(
-            file_bytes=_ttf_bytes([_base_row(details="New Topic")]),
+            file_bytes=_ttf_bytes([_base_row()]),
             original_filename="ttf.xlsx",
             reporting_period_id=period_id,
             programme_code="DR",
@@ -883,9 +833,10 @@ def test_existing_attendance_does_not_block_and_orphan_warning_returned() -> Non
         )
     )
     assert result.errors == []
-    warnings = [w for w in result.warnings if isinstance(w, dict)]
-    orphan = [w for w in warnings if w.get("type") == "orphaned_attendance"]
-    assert orphan and orphan[0]["count"] == 1
+    assert not any(
+        isinstance(warning, dict) and warning.get("type") == "orphaned_attendance"
+        for warning in result.warnings
+    )
 
 
 def test_non_tracked_rows_persist_with_false_flags() -> None:
@@ -901,10 +852,9 @@ def test_non_tracked_rows_persist_with_false_flags() -> None:
     )
     assert result.errors == []
     assert all(row["is_tracked"] is False for row in session.teaching_targets)
-    assert all(row["is_tracked"] is False for row in session.catalogue_rows)
 
 
-def test_geri_upload_seeds_ttshgermed_catalogue_for_zero_and_untracked_rows() -> None:
+def test_geri_upload_keeps_all_r_year_for_zero_and_untracked_rows() -> None:
     session = FakeTTFSession()
     period_id = uuid4()
 
@@ -917,7 +867,6 @@ def test_geri_upload_seeds_ttshgermed_catalogue_for_zero_and_untracked_rows() ->
                         r_year="R1,R2",
                         posting="TTSHGerMed",
                         monthly_target=0,
-                        details="Zero Target GERI Teaching",
                     ),
                     _base_row(
                         programme="GERI",
@@ -925,7 +874,6 @@ def test_geri_upload_seeds_ttshgermed_catalogue_for_zero_and_untracked_rows() ->
                         posting="TTSHGerMed",
                         session_type="Untracked GERI Session [2h]",
                         is_tracked="No",
-                        details="Untracked GERI Teaching",
                     ),
                 ]
             ),
@@ -939,17 +887,14 @@ def test_geri_upload_seeds_ttshgermed_catalogue_for_zero_and_untracked_rows() ->
     assert result.errors == []
     rows = [
         row
-        for row in session.catalogue_rows
+        for row in session.teaching_targets
         if row["programme_code"] == "GERI"
         and row["posting_code"] == "TTSHGerMed"
         and row["reporting_period_id"] == str(period_id)
     ]
-    assert {row["keyword"] for row in rows} == {
-        "Untracked GERI Teaching",
-        "Zero Target GERI Teaching",
-    }
     assert {row["r_year"] for row in rows} == {"ALL"}
-    assert next(row for row in rows if row["keyword"] == "Untracked GERI Teaching")["is_tracked"] is False
+    assert any(row["monthly_target"] == 0 for row in rows)
+    assert any(row["is_tracked"] is False for row in rows)
     zero_target = next(
         row
         for row in session.teaching_targets
@@ -1029,10 +974,10 @@ def test_ttf_posting_group_replacement_rolls_back_with_the_upload() -> None:
     session.capture_transaction_snapshot()
     session.fail_after_posting_group_replacement = True
 
-    with pytest.raises(RuntimeError, match="injected orphan check failure"):
+    with pytest.raises(RuntimeError, match="injected posting group write failure"):
         _run(
             parse_ttf_upload(
-                file_bytes=_ttf_bytes([_base_row(posting="P1", group="")]),
+                file_bytes=_ttf_bytes([_base_row(posting="P1", group="GROUP_B")]),
                 original_filename="replacement.xlsx",
                 reporting_period_id=period_id,
                 programme_code="DR",
@@ -1054,7 +999,7 @@ def test_validation_error_prevents_any_db_writes_even_with_db_session() -> None:
     session = FakeTTFSession()
     result = _run(
         parse_ttf_upload(
-            file_bytes=_ttf_bytes([_base_row(details="")]),
+            file_bytes=_ttf_bytes([_base_row() + ["legacy teaching text"]]),
             original_filename="ttf.xlsx",
             reporting_period_id=uuid4(),
             programme_code="DR",
@@ -1063,17 +1008,16 @@ def test_validation_error_prevents_any_db_writes_even_with_db_session() -> None:
     )
     assert result.errors
     assert session.teaching_targets == []
-    assert session.catalogue_rows == []
     assert session.posting_groups == {}
 
 
-def test_zero_target_persists_and_seeds_teaching_name_catalogue() -> None:
+def test_zero_target_persists_without_legacy_catalogue_side_effect() -> None:
     session = FakeTTFSession()
     period_id = uuid4()
 
     result = _run(
         parse_ttf_upload(
-            file_bytes=_ttf_bytes([_base_row(monthly_target=0, details="Zero Target Teaching")]),
+            file_bytes=_ttf_bytes([_base_row(monthly_target=0)]),
             original_filename="ttf-zero-target.xlsx",
             reporting_period_id=period_id,
             programme_code="DR",
@@ -1084,7 +1028,7 @@ def test_zero_target_persists_and_seeds_teaching_name_catalogue() -> None:
     assert result.errors == []
     assert session.teaching_targets[0]["monthly_target"] == 0
     assert session.teaching_targets[0]["is_tracked"] is True
-    assert [row["keyword"] for row in session.catalogue_rows] == ["Zero Target Teaching"]
+    assert not hasattr(session, "catalogue_rows")
 
 
 def test_upload_route_uses_db_session_writes_upload_log_and_maps_lock_to_409() -> None:
@@ -1099,7 +1043,7 @@ def test_upload_route_uses_db_session_writes_upload_log_and_maps_lock_to_409() -
     app.dependency_overrides[admin.get_db_session] = _db_override
     client = TestClient(app)
     period_id = uuid4()
-    body_rows = [_base_row(posting="TTSHDiagRd", details="Journal Club")]
+    body_rows = [_base_row(posting="TTSHDiagRd")]
     payload = _ttf_bytes(body_rows)
 
     response = client.post(

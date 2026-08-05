@@ -7,20 +7,26 @@ Scope: specification audit only; no application, migration, test, source workboo
 
 **NON-CLAWBACK SPECIFICATION RESOLVED; CLAWBACK DEFERRED**
 
-The Phase 6-A ordinary compliance business logic is resolved at specification level. This reconciliation updates the source-of-truth documents for FormF1/AY boundaries, distinct-event overlap rejection, exact-type ORTHO mutation, the three multi-posting outcomes, native-programme attribution, canonical catalogue matching, SPORTSMED/PALLMED R-years, mid-period R-year contexts, fractional-target status, raw-count tag reallocation, and persistent-surplus lifecycle.
+The Phase 6-A ordinary compliance business logic is resolved at specification level. This reconciliation updates the source-of-truth documents for FormF1/AY boundaries, distinct-event overlap rejection, exact-type ORTHO mutation, the three multi-posting outcomes, native-programme attribution, explicit source/mapping identity, SPORTSMED/PALLMED R-years, mid-period R-year contexts, fractional-target status, raw-count tag reallocation, and persistent-surplus lifecycle.
 
 This verdict makes **no claim that Phase 6 application code or tests are implemented**. Implementation and verification remain future work. The legacy evidence and defect descriptions below are retained so known legacy defects—especially reusable donor supply, duplicated R-year months, formatted clawback triggering, and temporary in-memory transfer behavior—are not reproduced.
 
 ### Evolved TTF transition notice (2026-08-02)
 
-The Column K/catalogue references in this audit describe the current legacy A-K
-transition path or preserved historical evidence. They do not define the final
-evolved TTF. The final contract is A-J only and uses Teaching Name pools and
-exact mappings; a populated legacy Column K in a future-format upload receives
-controlled `422`, with no dual format, backfill, or historical-data migration.
-Additive B1 retains the current catalogue, `details_of_training`, parser,
-event/attendance helpers, policies, and frontend. Only later E2/B2 may remove
-them. This notice adds no code, migration, or Phase 6 implementation claim.
+The Column K/catalogue references in this audit describe preserved historical
+evidence only. They do not define the final evolved TTF. The implemented E2+B2
+cutover at revision `20260805_000036` is A-J only and uses Teaching Name pools
+and exact mappings; a populated legacy Column K in a final-format upload
+receives controlled `422`, with no dual format, backfill, or historical-data
+migration. The former additive-B1 catalogue, `details_of_training`, and parser
+structure are historical. This notice adds no Phase 6 implementation claim.
+
+Unless a paragraph is explicitly labelled historical, the final event-source
+contract is the persisted `teaching_name_id` or `global_session_type_id` (or
+deterministic persisted evidence for a both-null legacy row). References below
+to a catalogue, keyword, or Column K are legacy-analysis terminology, not a
+live parser, event, attendance, or API contract. A future Phase 6 resolver must
+use that source evidence and scoped mappings, never display-text matching.
 
 Clawback remains explicitly **DEFERRED** and separate from ordinary compliance readiness. Norm rates/effective dating, funding R-year, financial programme classification, Extension/R7/SAF/SCDF suppression granularity/precedence, grouped-posting identity, billing attribution, missing-rate behavior, rounding/precision, and final-close transaction/rerun/idempotency are unresolved and must not be inferred from legacy scripts.
 
@@ -192,7 +198,7 @@ The following matrix supersedes the original pre-decision matrix. `Resolved` mea
 | Multi-posting | Legacy used workbook/string paths | Distinct main/combine/half outcomes; half-month factor once | `ARCHITECTURAL_TRANSLATION` | Resolved |
 | Combined posting | Legacy combined labels fed combined targets | Use configured canonical combined code with TTF rows; no component results | `ARCHITECTURAL_TRANSLATION` | Resolved |
 | Native-programme event | No direct legacy equivalent | Project approved outside event to one assigned-posting 1h session | `DOCUMENTED_NEW_BEHAVIOR` | Resolved |
-| Catalogue matching | Legacy fuzzy/first-match behavior | Exact canonical scoped match; same name may differ by posting; no fuzzy match | `INTENTIONAL_OVERRIDE_RESOLVED` | Resolved |
+| Source/mapping resolution | Legacy fuzzy/first-match behavior | Exact persisted source identity and scoped mapping; duplicate display names may remain distinct; no fuzzy match | `INTENTIONAL_OVERRIDE_RESOLVED` | Resolved |
 | SPORTSMED/PALLMED | Previous docs made remap unreachable | R-year required, not subspecialty; store/use R4–R6 | `DOC_CONTRADICTION_RESOLVED` | Resolved |
 | Overlapping events | Legacy adjacency behavior was fragile | Reject later overlapping submission; preserve earlier attendance | `INTENTIONAL_OVERRIDE_RESOLVED` | Resolved |
 | ORTHO mutation | Legacy exact mutation/order evidence | Exact 3h type only; adjust time, project type, then Saturday window | `ARCHITECTURAL_TRANSLATION` | Resolved |
@@ -269,7 +275,7 @@ The fields below preserve the original 2026-07-17 evidence and defect analysis. 
 | F-12 | RESOLVED SPECIFICATION | Resident and admin paths share the same BL-6 contract; no implementation claim. |
 | F-13 | RESOLVED | Exact original ORTHO 3h type only; adjust end time, project type, then Saturday-window check. |
 | F-14/F-15/F-16 | **DEFERRED** | Clawback financial, suppression, identity, billing, precision, and close behavior await confirmation. |
-| F-17 | RESOLVED | Canonical exact scoped match; native outside events project under assigned posting; global/session/report semantics ordered in BL-6. |
+| F-17 | RESOLVED | Persisted explicit source plus scoped mapping; native outside events project under assigned posting; global/session/report semantics ordered in BL-6. |
 | F-19/F-20 | RESOLVED AS AUDIT CONTEXT | Legacy report/Word claims remain evidence only and do not override source-of-truth rules. |
 | F-21 | RESOLVED | Reject later overlapping distinct submission and preserve earlier attendance; same-event uniqueness is separate. |
 | F-22 | RESOLVED | Target/cap each physical-posting/session-type/R-year context separately, then sum without duplicated months. |
@@ -613,7 +619,7 @@ The fields below are intentionally repetitive so an implementation or documentat
 | Decision required, if any | All listed row/suppression/billing/error/rounding/close semantics. |
 | Required regression test | G-01/G-02 trigger; G-22/G-23; G-28–G-30; G-36–G-39; G-43/G-44; missing rate; and approved close rerun/rollback behavior. |
 
-#### F-17 — Catalogue/API/report semantic conflicts
+#### F-17 — Source/mapping/API/report semantic conflicts
 
 | Required field | Evidence/conclusion |
 |---|---|
@@ -625,13 +631,13 @@ The fields below are intentionally repetitive so an implementation or documentat
 | Legacy function/block/object | First target match and exclusion on no match |
 | Relevant R expression or unique fragment | `rowno_matched[1]`; unmatched attendance is marked error/excluded. |
 | Current documentation file | `docs/schema.md`; `docs/parsing.md`; `docs/business-logic.md`; `docs/api.md`; `docs/99_decision_log_and_gap_audit.md` (secondary gap record only) |
-| Current documentation section | catalogue uniqueness; TTF keyword validation; BL-6 step 7; event/attendance endpoints and dashboard `1532-1569`; decision-log ambiguity `1037-1054` |
+| Current documentation section | persisted scheduled-event source identity, scoped Teaching Name mappings, final A-J TTF validation, BL-6 future resolver boundary, and event/attendance endpoints |
 | Observed behavior | Legacy silently chooses the first fuzzy target and has no global catalogue. |
-| Current documented behavior | Schema permits one keyword per posting/programme/R-year/period, parsing implies the same keyword may occur at different durations, and BL-6 specifies a duration tiebreaker. BL-6 uses exact `keyword = teaching_name`, but authoritative domain docs define no case-folding or leading/trailing/internal-whitespace normalization; the decision log records this as unresolved rather than deciding it. Global types are visible/attendance-trackable and excluded before catalogue, but attendance submission appears to require catalogue unconditionally. Resident event visibility also includes a native-programme posting while the resident is assigned elsewhere, yet BL-6 requires event posting to match the active phase before catalogue/target resolution. Dashboard examples attach colour/percentage to a session-type row despite posting-level compliance. |
-| Analysis | Current relational rules should replace “first match,” but storage, resolver and API must describe the same cardinality, normalization and grain. Without one canonical normalization boundary, case/space variants can silently disappear or collide differently at upload, event creation and read time. Legacy C has no separate native-programme visibility branch: it resolves against the posting/phase target context. Current documents therefore leave a visible-and-submittable native-programme event with no authoritative compliance identity—assigned posting, native posting, or display-only. |
-| Implementation consequence | Valid global attendance can be rejected; ambiguous or case/space-variant keywords can be stored/resolved inconsistently; native-programme attendance can be accepted but silently excluded or attributed to different targets by different paths; UI can imply session-type compliance. |
-| Recommended documentation action | Choose one keyword uniqueness and canonical normalization model (case, Unicode if relevant, leading/trailing and repeated internal whitespace) and apply it identically at TTF upload, event creation/submission, uniqueness enforcement and read-time lookup; remove the unused duration tiebreaker or expand the key; exempt global types from submission catalogue requirement; define whether native-programme events seen while posted elsewhere are display-only or exactly how their catalogue, posting, phase and target are resolved; make dashboard posting summary authoritative and session types a breakdown. |
-| Decision required, if any | Whether cross-duration duplicate keywords are allowed; exact keyword normalization/case semantics; and whether a native-programme event outside the assigned posting counts, under which posting/target identity. |
+| Current documented behavior | The final schema removes the catalogue. Scheduled events persist exactly one Teaching Name or global source ID when source-backed; a both-null legacy row uses deterministic persisted evidence only. Global source rows are visible/attendance-trackable but excluded before a future compliance resolver. Phase G runtime discovery and attendance are not a compliance resolver. A future resolver must use explicit source identity plus scoped mappings and target context, never display text. |
+| Analysis | Persisted source identity replaces “first match,” but the future resolver, mappings, and reporting API still need one authorized cardinality and grain. Legacy C has no separate native-programme visibility branch, so the future resolver must not infer an identity from visibility or a display snapshot. |
+| Implementation consequence | Valid global attendance can be stored while remaining compliance-exempt; native-programme attendance can be accepted without granting implicit compliance attribution; UI cannot imply that a display name alone establishes a session type. |
+| Recommended documentation action | Define the future scoped source-to-mapping/target contract, including native-programme and combined-posting attribution, and require every read-time path to use it. Preserve global exclusion and deterministic legacy evidence. Do not reintroduce keyword normalization, Column K, or display-text lookup. |
+| Decision required, if any | Whether a native-programme event outside the assigned posting counts, under which posting/target identity, and the owner-approved combined-posting attribution contract. |
 | Required regression test | G-17/G-18/G-35/G-45 and API global-submission test; posting summary equals breakdown aggregate. |
 
 #### F-18 — Ledger persistence constraint
@@ -767,7 +773,7 @@ These differences must **not** be “corrected back” to legacy behavior.
 | Current rule | Legacy behavior/evidence | Classification | Why the current rule wins |
 |---|---|---|---|
 | Authenticated, structured direct submission | B parses free-text MCR/name, CSV columns and timestamps (`29-700`) | `LEGACY_DISCARD_CONFIRMED` | Transport workaround eliminated by the application architecture. |
-| Event/catalogue/FK resolution instead of fuzzy target matching | C normalizes strings and takes `rowno_matched[1]` (`113-180`) | `ARCHITECTURAL_TRANSLATION` | Relational keys and validation provide the intended outcome without first-match ambiguity. |
+| Event/source/mapping resolution instead of fuzzy target matching | C normalizes strings and takes `rowno_matched[1]` (`113-180`) | `ARCHITECTURAL_TRANSLATION` | Persisted source IDs, scoped mappings, and validation provide the intended outcome without first-match ambiguity. |
 | No resident-dashboard spreadsheet feedback loop | B reads error codes from generated dashboards (`759-857`) | `LEGACY_DISCARD_CONFIRMED` | API/DB state replaces circular workbook control. |
 | No response-row duplication for consecutive/dept-meeting answers | B clones FormSG responses (`638-700`) | `LEGACY_DISCARD_CONFIRMED` | Each event/attendance is a discrete DB row. |
 | FormF1 is final authority; `Extension` is active | C retains exact `Active` only (`63-64`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Explicit current confirmed decision; account status/RDB LOA must not replace it. |
@@ -777,10 +783,10 @@ These differences must **not** be “corrected back” to legacy behavior.
 | Phase-specific active-month targets at an R-year change | C computes posting-wide active months without R year, then applies that count to each R-year row (`286-295`, `380-395`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Weight target and cap separately per physical-posting/session-type/R-year context, then sum; do not duplicate months. |
 | Generic `multi_posting_rules` and `active_months_weight` | A hardcodes/replays workbook string replacements; C has brittle GASTRO branch | `ARCHITECTURAL_TRANSLATION` | DB configuration replaces spreadsheet code. Half-month applies 0.5 through the weight once and leaves TTF target unchanged. |
 | Posting groups seeded from TTF Column E | C uses `Posting Site(Dashboard)` labels | `ARCHITECTURAL_TRANSLATION` | Preserves grouping outcome while keeping member targets explicit. Do not conflate with multi-posting rules. |
-| Current legacy A-K Column K catalogue, read-time session resolution, full scoped replace | Legacy TTF has only A–J and FormSG session type is matched directly | `DOCUMENTED_NEW_BEHAVIOR` | Transitional architecture for current TTF corrections without rewriting attendance; final A-J/E2/B2 supersedes Column K as the target format. |
-| STP is not a system input | Legacy attendance/session matching depends on FormSG/TTF strings; no current STP ingestion is authorized | `LEGACY_DISCARD_CONFIRMED` | In the current legacy A-K transition, PCs place Details of Training keywords in mandatory TTF Column K; do not add an STP parser or hidden dependency. |
+| Final A-J TTF and persisted event source evidence | Legacy TTF has only A–J and FormSG session type is matched directly | `DOCUMENTED_NEW_BEHAVIOR` | E2+B2 supersedes the former Column K transition: final TTF never creates source identities from workbook text, and future read-time resolution begins from persisted event evidence. |
+| STP is not a system input | Legacy attendance/session matching depends on FormSG/TTF strings; no current STP ingestion is authorized | `LEGACY_DISCARD_CONFIRMED` | Final A-J TTF neither accepts Column K nor creates Teaching Names/mappings from workbook text; do not add an STP parser or hidden dependency. |
 | Zero targets remain visible/auditable but are compliance-inapplicable | Legacy C can retain numeric zero rows and produce undefined `0/0` displays | `INTENTIONAL_OVERRIDE_RESOLVED` | Explicit current guardrail prevents false met/surplus/shortage/clawback. |
-| Global session types excluded before catalogue | No exact R equivalent | `DOCUMENTED_NEW_BEHAVIOR` | Explicit confirmed rule; trackable attendance is not necessarily PTT compliance. |
+| Global session types excluded before source/mapping resolution | No exact R equivalent | `DOCUMENTED_NEW_BEHAVIOR` | Explicit confirmed rule; trackable attendance is not necessarily PTT compliance. |
 | PH event/ad-hoc creation hard-blocked | B accepts/rejects PH rows after submission, including emergency subsets (`896-925`, `1014-1017`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Confirmed current product decision. Do not recreate PH exception ingestion. |
 | Only confirmed URO, DERM and ORTHO weekend rules | B also accepts SIG, FM, ANAES and emergency postings (`923-947`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Later PC-confirmed list supersedes R. Schema’s stale emergency note must be patched. |
 | ORTHO mutation is read-time and raw attendance is preserved | B mutates the working attendance data (`912-918`) | `INTENTIONAL_OVERRIDE_RESOLVED` | Auditability/current decision; the exact original type, adjusted-time order, Saturday window, and Sunday exclusion are now confirmed. |
@@ -841,7 +847,7 @@ The table below preserves the reasons the Phase 6-A decisions were requested. On
 
 ### 7.1 Current disposition
 
-The non-clawback contradictions listed in the historical table below are resolved in the domain source-of-truth documents. In particular: raw-count transfer precedes caps; ledger state is raw-minus-target and never carry-in attendance; FormF1 follows the AY label; half-month weighting occurs once; SPORTSMED/PALLMED use R4–R6; R-year contexts cap separately; percentage is canonical; combined/native attribution is explicit; canonical catalogue matching is exact/scoped; later overlaps are rejected; ORTHO is exact-type/adjusted-time/Saturday-only; resident/admin calculation shares one contract; and the snapshot example is corrected.
+The non-clawback contradictions listed in the historical table below are resolved in the domain source-of-truth documents. In particular: raw-count transfer precedes caps; ledger state is raw-minus-target and never carry-in attendance; FormF1 follows the AY label; half-month weighting occurs once; SPORTSMED/PALLMED use R4–R6; R-year contexts cap separately; percentage is canonical; combined/native attribution is explicit; persisted source/mapping resolution is exact and scoped; later overlaps are rejected; ORTHO is exact-type/adjusted-time/Saturday-only; resident/admin calculation shares one contract; and the snapshot example is corrected.
 
 Remaining ambiguity is clawback-only and remains deferred. The multi-posting reliability annotation and display rounding are non-blocking response/presentation details; they do not change specified arithmetic.
 
@@ -947,8 +953,8 @@ This is the current non-clawback specification contract. It does not assert that
 1. Resolve one applicable reporting period, resident scope, event-date physical posting phase, phase R-year, and inclusive AY bucket. Use the bucket label to select the FormF1 row for both numerator and denominator across the whole bucket.
 2. Read native attendance only. The submission service has already rejected later distinct-event overlaps while preserving earlier accepted attendance; same-event uniqueness remains separate.
 3. Resolve parse-time posting identity by the applicable distinct rule: existing main code, configured canonical combined code, or two half-month rows with unchanged targets and weight 0.5 once. Retain physical posting identity for tag transfer; posting groups aggregate only later.
-4. For an approved native-programme event outside the assigned posting, preserve the event and project exactly one assigned-posting `Department/Programme Teaching [1h]` session using the assigned target. Normal assigned-posting events use the catalogue path.
-5. Exclude active global session types before catalogue matching. Otherwise resolve the exact canonical name by period, resident programme, assigned/compliance posting, phase R-year, and name. Same names at different postings may map differently; never fuzzy-match.
+4. For an approved native-programme event outside the assigned posting, preserve the event and project exactly one assigned-posting `Department/Programme Teaching [1h]` session using the assigned target. Normal assigned-posting events retain their persisted scheduled-event source evidence; a future resolver must use that evidence rather than display text or the retired catalogue.
+5. Exclude active global session types before source/mapping resolution. Otherwise resolve the explicit Teaching Name source ID through its scoped period, resident programme, assigned/compliance posting, phase R-year, and mapping. Same display names may have distinct sources or mappings; never fuzzy-match.
 6. Apply weekday/weekend rules. For ORTHO, only the exact original 3h type subtracts two hours from end time, projects to the 1h type, and then tests the adjusted interval against Saturday 08:30–10:30. Sunday is excluded; other ORTHO types do not mutate and require any separately applicable acceptance rule.
 7. Exclude untracked and zero-target rows from ordinary math while retaining audit/visibility. Count eligible sessions one-for-one; duration never multiplies count.
 8. Calculate correctly FormF1-gated `target_100` for each `(resident, physical posting, session type, R-year context)`. Never apply posting-wide months to every R-year row.
@@ -978,11 +984,11 @@ The following ordered contract contains `PENDING` markers from the 2026-07-17 au
 
 5. **Resolve the AY month bucket.** Resolve `programmes.ay_date_category`, then exactly one `academic_month_boundaries` row where `event_date BETWEEN start_date AND end_date` (inclusive). Do not branch on JR/SR text. Fail safely on missing/overlapping boundaries. **PENDING F-08:** align this event bucket with step 4’s calendar gate. Source: BL-5A and BL-6 step 4 `425`; `docs/parsing.md` AY Dates; schema academic boundaries.
 
-6. **Determine compliance posting identity and fixed-attribution branches.** A countable native ad-hoc row first maps to the assigned posting and fixed `Department/Programme Teaching [1h]`; its selected attended keyword/duration is display/audit evidence only. For non-ad-hoc normal attendance, use the resolved posting and apply the documented FM 5h compliance-posting override. For a configured `posting_groups` member, retain the physical member posting and its phase/target contribution while recording `(programme_code, group_code)` as the later aggregate identity. Keep `multi_posting_rules` parse-time semantics distinct from posting groups. **PENDING F-11:** define component-event-to-combined-label attribution. Source: BL-1 posting groups `39-66`; BL-8; BL-FM `672-682`; BL-9; `docs/api.md` ad-hoc endpoint; `docs/parsing.md` TTF Column E/multi-posting.
+6. **Determine compliance posting identity and fixed-attribution branches.** A countable native ad-hoc row first maps to the assigned posting and fixed `Department/Programme Teaching [1h]`; no client-selected teaching name or attended posting changes that attribution. For non-ad-hoc normal attendance, use the resolved posting and apply the documented FM 5h compliance-posting override. For a configured `posting_groups` member, retain the physical member posting and its phase/target contribution while recording `(programme_code, group_code)` as the later aggregate identity. Keep `multi_posting_rules` parse-time semantics distinct from posting groups. **PENDING F-11:** define component-event-to-combined-label attribution. Source: BL-1 posting groups `39-66`; BL-8; BL-FM `672-682`; BL-9; `docs/api.md` ad-hoc endpoint; `docs/parsing.md` TTF Column E/multi-posting.
 
-7. **Exclude global session types first.** Compare `teaching_event.teaching_name` against active `global_session_types.name`. A match is stored/auditable but excluded from numerator, denominator, catalogue resolution, reallocation, surplus and clawback. Submission must not require a TTF catalogue row for a valid global type. Source: BL-6 step 6/7 `426-427`; schema global session types; `AGENTS.md` global-type rule. API wording must be patched per F-17.
+7. **Exclude global session types first.** An explicit `global_session_type_id` is stored/auditable but excluded from numerator, denominator, source/mapping resolution, reallocation, surplus and clawback. Submission must not require a TTF-derived mapping for a valid global type. A both-null legacy row is never classified as global from display text. Source: BL-6 step 6/7 `426-427`; schema global session types; `AGENTS.md` global-type rule.
 
-8. **Resolve catalogue/session context at read time.** For non-global, non-fixed-ad-hoc records, match the owner-approved canonical keyword, event posting context, resident programme, phase R year/reporting period, and the documented duration rule. A native fixed-ad-hoc row instead requires the assigned-posting fixed 1h target and must return unavailable/not-countable if it cannot be resolved. No ordinary catalogue match is silently excluded from compliance, while attendance remains stored. Attendance records never store session type. **PENDING F-11/F-17:** combined-posting context, native-programme event attribution outside the assigned posting, catalogue cardinality/tiebreaker, case/whitespace normalization, and catalogue-without-target behavior must be resolved. Source: BL-6 step 7 `428`; BL-9; schema `teaching_name_catalogue`; `docs/parsing.md` TTF Column K.
+8. **Resolve source/mapping/session context at read time.** For non-global, non-fixed-ad-hoc records, start with the persisted Teaching Name source ID and its scoped mapping, then apply event posting context, resident programme, phase R year, reporting period, and the owner-approved target rule. A native fixed-ad-hoc row instead requires the assigned-posting fixed 1h target and must return unavailable/not-countable if it cannot be resolved. Attendance records never store session type. **PENDING F-11/F-17:** combined-posting context, native-programme event attribution outside the assigned posting, mapping/target cardinality, and missing-mapping/target behavior must be resolved. Do not use a catalogue, keyword, Column K, duration tiebreaker, or display-text lookup. Source: BL-6 step 7 `428`; BL-9; final schema source/mapping sections.
 
 9. **Apply weekend acceptance or mutation.** Weekday records pass. Weekend records count only when a configured exception matches programme/posting, day, time and optional original name/type. Unaccepted weekend attendance remains stored and is excluded. For a valid ORTHO mutation, preserve raw attendance, substitute the configured session type/duration for compliance, and resolve the target for the mutated type. **PENDING F-13:** constrain the ORTHO mutation predicate, separate it from general acceptance, and decide whether raw or adjusted times are tested first. Source: BL-5 `277-366`; schema weekend exceptions.
 
@@ -1030,10 +1036,10 @@ The following decision-lock fixtures supersede the `PENDING` branches in the his
 | G-34 distinct-event overlap | Earlier accepted event remains stored/countable once; later overlapping distinct submission is rejected. Same-event uniqueness remains a separate rejection. |
 | G-35 native event outside assigned posting | Preserve the PN event but count exactly one assigned-P1 `Department/Programme Teaching [1h]` session against P1's target; no PN/native-posting result. |
 | G-40 half-month multiple types | Weight .5 once with unchanged targets 3 and 1: caps `[1.5,.5]`, posting target2/counted2, met/green. |
-| G-45 canonical catalogue names | Scheduled creation stores canonical `Journal Club`. P1 and P2 may map it differently; assigned/compliance posting selects the mapping. Case/spacing variants are rejected/cleaned in upload/options and are never fuzzy-matched at runtime. |
+| G-45 explicit source identities | Scheduled creation stores an exact source ID plus immutable display snapshot. P1 and P2 may have sources with the same display name but distinct scoped mappings; assigned/compliance posting selects the mapping. Display text is never fuzzy-matched at runtime. |
 | G-46 persistent-surplus return | First phase target2/raw4 → ledger2. Return expands cumulative target to4 while raw remains4 → counted4 and idempotently replaced ledger0. Never calculate attendance as `4 + stored 2`. |
 | G-47 combined posting | `TTSHDiagRd + NNINeuRad` resolves to existing canonical `TTSHDiagRd & NNINeuRad`; persist/use one row and its TTF target, with no component compliance results. |
-| G-48 SPORTSMED/PALLMED years | SPORTSMED R4 and PALLMED R6 persist/match R4 and R6 catalogue/target rows. Neither resolves through `ALL` or SS1–SS3. |
+| G-48 SPORTSMED/PALLMED years | SPORTSMED R4 and PALLMED R6 persist/match R4 and R6 mapping/target scopes. Neither resolves through `ALL` or SS1–SS3. |
 
 All ordinary fixtures must produce identical canonical values through resident and admin/report paths. Clawback expectations are intentionally absent until its deferred rules are confirmed.
 
@@ -1394,9 +1400,9 @@ The Phase 6-A non-clawback patches represented by the historical recommendation 
 - [ ] Apply the AY-label FormF1 status to both numerator and denominator for the entire bucket.
 - [ ] Resolve AY buckets inclusively and fail safely on missing/overlap configuration.
 - [ ] Apply FM 5h attribution and combined/group identity in the approved order.
-- [ ] Apply native ad-hoc assigned-posting/fixed-1h attribution before generic keyword resolution; selected attended keyword/duration is audit/display only.
-- [ ] Exclude global types before catalogue lookup.
-- [ ] Resolve catalogue/session type at read time; never persist session type on attendance records.
+- [ ] Apply native ad-hoc assigned-posting/fixed-1h attribution before generic persisted-source/mapping resolution; no client-selected teaching name or attended posting changes that attribution.
+- [ ] Exclude global types before source/mapping resolution.
+- [ ] Resolve persisted scheduled-event source and mapping at read time; never persist session type on attendance records or consult the retired catalogue.
 - [ ] Apply weekend exclusion/read-time mutation without changing raw attendance.
 - [ ] Resolve distinct-event conflicts and final status eligibility before raw counting; never let query order decide which row counts.
 - [ ] Exclude untracked and zero-target rows before cap, surplus and reallocation.
@@ -1414,7 +1420,7 @@ The Phase 6-A non-clawback patches represented by the historical recommendation 
 - [ ] Resident JIT and admin batch paths share primitives and pass identical golden fixtures.
 - [ ] Cache keys include role/scope and cache invalidation follows uploads/config/event/attendance mutations and close/reopen.
 - [ ] Ledger updates are idempotent and concurrency-safe under the documented unique key.
-- [ ] Missing catalogue rows are stored/audited but silently excluded from compliance as specified; no guessing.
+- [ ] Missing source, mapping, or target evidence is stored/audited but excluded from compliance as specified; no guessing.
 - [ ] **DEFERRED CLAWBACK:** missing-configuration, Decimal precision, billing identity, and suppression behavior require owner-approved rules first.
 - [ ] Operational period deactivation does not generate snapshots, clawback or close-time surplus mutations.
 - [ ] **DEFERRED:** final close/freeze has an owner-approved atomicity, rollback, uniqueness/replacement, rerun, authorization, and provenance contract.

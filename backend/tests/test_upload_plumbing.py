@@ -999,7 +999,7 @@ def test_successful_admin_uploads_write_audit_logs_linked_to_upload_logs(monkeyp
         return ParserResult(
             upload_type="ttf",
             created_count=3,
-            metadata={"catalogue_rows_seeded": 3},
+            metadata={"targets_inserted": 3},
         )
 
     async def _fake_formf1_parser(**kwargs):
@@ -1266,7 +1266,7 @@ def test_successful_admin_uploads_derive_warning_issues_after_upload_log(monkeyp
         for domains, _scope, commits in invalidation_calls
         if "teaching_targets" in domains
     )
-    assert {"config", "parsed_data", "teaching_targets", "teaching_name_catalogue"} <= ttf_invalidation[0]
+    assert {"config", "parsed_data", "teaching_targets"} <= ttf_invalidation[0]
     assert ttf_invalidation[1] > 0
     assert any({"form_f1", "resident_dashboard", "admin_reports"} <= domains for domains in upload_domains)
     assert any({"public_holidays", "academic_month_boundaries"} <= domains for domains in upload_domains)
@@ -1337,7 +1337,6 @@ def test_ttf_outer_transaction_rolls_back_all_e1_evidence_on_post_parser_failure
             self.e1_rows = {
                 "targets": [],
                 "mappings": [],
-                "catalogue": [],
                 "posting_groups": [],
                 "upload_logs": [],
                 "warnings": [],
@@ -1365,7 +1364,7 @@ def test_ttf_outer_transaction_rolls_back_all_e1_evidence_on_post_parser_failure
     async def _fake_ttf_parser(**kwargs):
         db_session = kwargs["db_session"]
         assert kwargs["manage_transaction"] is False
-        db_session.persist("targets", "mappings", "catalogue", "posting_groups")
+        db_session.persist("targets", "mappings", "posting_groups")
         return ParserResult(
             upload_type="ttf",
             created_count=2,
@@ -1453,6 +1452,7 @@ def test_ttf_response_keeps_legacy_created_count_separate_from_insert_delta() ->
     assert response["session_types_upserted"] == 5
     assert response["posting_groups_upserted"] == 5
     assert response["posting_groups_removed"] == 2
+    assert "catalogue_rows_seeded" not in response
 
 
 def test_ttf_response_includes_zero_posting_group_deltas() -> None:
@@ -1868,4 +1868,6 @@ def test_no_ttf_attendance_guard_pattern_in_service() -> None:
     )
     ttf_source = ttf_path.read_text(encoding="utf-8").casefold()
     assert "attendance guard" not in ttf_source
-    assert "orphaned_attendance" in ttf_source
+    assert "orphaned_attendance" not in ttf_source
+    assert "teaching_name_catalogue" not in ttf_source
+    assert "details_of_training" not in ttf_source

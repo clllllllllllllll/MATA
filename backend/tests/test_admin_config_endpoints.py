@@ -429,7 +429,6 @@ def test_all_phase3_read_endpoints_reject_non_admin() -> None:
         "/admin/posting-codes",
         "/admin/session-types",
         "/admin/teaching-targets",
-        "/admin/teaching-name-catalogue",
         "/admin/academic-month-boundaries",
         f"/admin/residents/{uuid4()}",
     ]

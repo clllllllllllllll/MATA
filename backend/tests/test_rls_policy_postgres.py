@@ -71,7 +71,6 @@ APPLICATION_TABLES = (
     "teaching_events",
     "teaching_name_mappings",
     "teaching_names",
-    "teaching_name_catalogue",
     "teaching_targets",
     "upload_logs",
     "upload_warnings",
@@ -515,7 +514,7 @@ async def _issue_context(
 async def policy_harness(
     rls_postgres_harness: RlsPostgresHarness,
 ) -> AsyncIterator[RlsPostgresHarness]:
-    assert rls_postgres_harness.revision == "20260804_000035"
+    assert rls_postgres_harness.revision == "20260805_000036"
     yield rls_postgres_harness
 
 
@@ -563,9 +562,6 @@ async def policy_seed(
         "external_posting_a_id",
         "external_posting_b_id",
         "external_posting_peer_id",
-        "catalogue_a_id",
-        "catalogue_b_id",
-        "catalogue_cross_id",
         "target_a_id",
         "target_b_id",
         "teaching_name_a_id",
@@ -809,34 +805,6 @@ async def policy_seed(
                         :external_posting_peer_id, :external_peer_id,
                         :posting_a, :programme_a, DATE '2035-01-01',
                         DATE '2035-12-31', true
-                    )
-                """
-            ),
-            values,
-        )
-        await db.execute(
-            text(
-                """
-                INSERT INTO teaching_name_catalogue (
-                    id, keyword, session_type_id, posting_code,
-                    programme_code, r_year, reporting_period_id,
-                    duration_hours, is_tracked
-                )
-                VALUES
-                    (
-                        :catalogue_a_id, :keyword, :session_type_id,
-                        :posting_a, :programme_a, 'R1', :period_id,
-                        1.00, true
-                    ),
-                    (
-                        :catalogue_b_id, :keyword, :session_type_id,
-                        :posting_b, :programme_b, 'R1', :period_id,
-                        1.00, true
-                    ),
-                    (
-                        :catalogue_cross_id, :keyword, :session_type_id,
-                        :posting_b, :programme_a, 'R1', :period_id,
-                        1.00, true
                     )
                 """
             ),
@@ -1114,10 +1082,6 @@ async def policy_seed(
                     ("mapping_a_id", "mapping_b_id", "pc_mapping_id"),
                 ),
                 (
-                    "teaching_name_catalogue",
-                    ("catalogue_a_id", "catalogue_b_id", "catalogue_cross_id"),
-                ),
-                (
                     "teaching_names",
                     (
                         "teaching_name_a_id",
@@ -1181,7 +1145,7 @@ async def policy_seed(
 
 
 @pytest.mark.asyncio
-async def test_policy_catalogue_covers_every_application_table_without_force(
+async def test_final_policy_surface_covers_every_application_table_without_force(
     policy_harness: RlsPostgresHarness,
 ) -> None:
     async with policy_harness.owner_session() as db:
@@ -1233,10 +1197,43 @@ async def test_policy_catalogue_covers_every_application_table_without_force(
                 {"table_names": list(APPLICATION_TABLES)},
             )
         ).mappings().all()
+        legacy_catalogue = await db.scalar(
+            text("SELECT to_regclass('public.teaching_name_catalogue')")
+        )
+        legacy_target_column = await db.scalar(
+            text(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.pg_attribute AS attribute
+                    WHERE attribute.attrelid = 'public.teaching_targets'::regclass
+                      AND attribute.attname = 'details_of_training'
+                      AND attribute.attnum > 0
+                      AND NOT attribute.attisdropped
+                )
+                """
+            )
+        )
 
-    assert len(policy_rows) == 92
+    assert len(APPLICATION_TABLES) == 35
+    assert len(policy_rows) == 89
     assert {row["relname"] for row in policy_rows} == set(DIRECT_TABLES)
     assert all(tuple(row["polroles"]) == (runtime_oid,) for row in policy_rows)
+    assert legacy_catalogue is None
+    assert legacy_target_column is False
+
+    async with policy_harness.runtime_session() as db:
+        with pytest.raises(DBAPIError) as catalogue_error:
+            async with db.begin_nested():
+                await db.execute(text("SELECT 1 FROM teaching_name_catalogue"))
+        assert _sqlstate(catalogue_error.value) == "42P01"
+
+        with pytest.raises(DBAPIError) as target_column_error:
+            async with db.begin_nested():
+                await db.execute(
+                    text("SELECT details_of_training FROM teaching_targets")
+                )
+        assert _sqlstate(target_column_error.value) == "42703"
 
 
 @pytest.mark.asyncio
@@ -1976,7 +1973,7 @@ async def test_null_and_empty_programme_scopes_fail_closed(
 
 
 @pytest.mark.asyncio
-async def test_secretary_events_stay_posting_bound_and_catalogue_follows_pool(
+async def test_secretary_events_stay_posting_bound(
     policy_harness: RlsPostgresHarness,
     policy_seed: PolicyMatrixSeed,
 ) -> None:
@@ -2078,25 +2075,6 @@ async def test_secretary_events_stay_posting_bound_and_catalogue_follows_pool(
             {"id": values["series_b_id"]},
         )
         assert hidden_delete.rowcount == 0
-
-        visible_catalogue_ids = await _scalar_set(
-            db,
-            """
-            SELECT id
-            FROM teaching_name_catalogue
-            WHERE id IN (:own_id, :other_programme_id, :cross_posting_id)
-            """,
-            {
-                "own_id": values["catalogue_a_id"],
-                "other_programme_id": values["catalogue_b_id"],
-                "cross_posting_id": values["catalogue_cross_id"],
-            },
-        )
-        assert visible_catalogue_ids == {
-            values["catalogue_a_id"],
-            values["catalogue_cross_id"],
-        }
-
 
 @pytest.mark.asyncio
 async def test_secretary_own_posting_resident_rows_are_visible(
@@ -2291,19 +2269,6 @@ async def test_native_resident_owns_only_native_rows_and_attendance_mutation(
                 "b": values["resident_posting_b_id"],
             },
         ) == {values["resident_posting_a_id"]}
-        assert await _scalar_set(
-            db,
-            """
-            SELECT id
-            FROM teaching_name_catalogue
-            WHERE id IN (:own, :other, :cross)
-            """,
-            {
-                "own": values["catalogue_a_id"],
-                "other": values["catalogue_b_id"],
-                "cross": values["catalogue_cross_id"],
-            },
-        ) == {values["catalogue_a_id"]}
         assert await _scalar_set(
             db,
             "SELECT id FROM external_residents WHERE id IN (:a, :b)",
@@ -3095,12 +3060,11 @@ async def test_adhoc_creator_and_storage_family_are_database_owned(
     external_event_id: UUID | None = None
     external_attendance_id: UUID | None = None
     holiday_id = uuid4()
-    alternate_catalogue_id = uuid4()
     ambiguous_period_id = uuid4()
     holiday_date = date(2035, 6, 1) + timedelta(
         days=values["resident_a_id"].int % 20
     )
-    alternate_keyword = f"{values['keyword']} alternate"
+    alternate_attended_teaching_name = f"{values['keyword']} alternate"
     rollback_constraint = (
         f"ck_rls_adhoc_rollback_{str(values['resident_peer_id']).replace('-', '')}"
     )
@@ -3132,29 +3096,6 @@ async def test_adhoc_creator_and_storage_family_are_database_owned(
                     """
                 ),
                 {"id": holiday_id, "holiday_date": holiday_date},
-            )
-            await owner_db.execute(
-                text(
-                    """
-                    INSERT INTO teaching_name_catalogue (
-                        id, keyword, session_type_id, posting_code,
-                        programme_code, r_year, reporting_period_id,
-                        duration_hours, is_tracked
-                    )
-                    VALUES (
-                        :id, :keyword, :session_type_id, :posting_code,
-                        :programme_code, 'R1', :period_id, 1.00, true
-                    )
-                    """
-                ),
-                {
-                    "id": alternate_catalogue_id,
-                    "keyword": alternate_keyword,
-                    "session_type_id": values["session_type_id"],
-                    "posting_code": values["posting_b"],
-                    "programme_code": values["programme_b"],
-                    "period_id": values["period_id"],
-                },
             )
             await owner_db.commit()
 
@@ -3289,7 +3230,7 @@ async def test_adhoc_creator_and_storage_family_are_database_owned(
                     CAST(:attended_posting_code AS text),
                     'not an allowed attended teaching',
                     CAST('Department/Programme Teaching [1h]' AS text),
-                    'invalid native catalogue marker',
+                    'invalid native attended-teaching marker',
                     DATE '2035-04-02',
                     TIME '11:00',
                     TIME '12:00',
@@ -3356,7 +3297,7 @@ async def test_adhoc_creator_and_storage_family_are_database_owned(
                     SELECT COUNT(*)
                     FROM teaching_events
                     WHERE details_of_session IN (
-                        'invalid native catalogue marker',
+                        'invalid native attended-teaching marker',
                         'public holiday marker',
                         'overlap marker'
                     )
@@ -3466,7 +3407,7 @@ async def test_adhoc_creator_and_storage_family_are_database_owned(
                 {
                     "posting_code": values["posting_a"],
                     "attended_posting_code": values["posting_a"],
-                    "attended_teaching_name": alternate_keyword,
+                    "attended_teaching_name": alternate_attended_teaching_name,
                 },
                 sqlstates={"22023"},
             )
@@ -3813,10 +3754,6 @@ async def test_adhoc_creator_and_storage_family_are_database_owned(
             await owner_db.execute(
                 text("DELETE FROM public_holidays WHERE id = :id"),
                 {"id": holiday_id},
-            )
-            await owner_db.execute(
-                text("DELETE FROM teaching_name_catalogue WHERE id = :id"),
-                {"id": alternate_catalogue_id},
             )
             event_ids = [
                 event_id

@@ -70,11 +70,6 @@ class FakeProgrammeTeachingEventsSession:
         self.public_holidays = [
             {"holiday_date": date(2026, 5, 1), "name": "Labour Day"},
         ]
-        self.catalogue = [
-            self._catalogue("Journal Club", "DR", "TTSHCardio", self.session_type_id),
-            self._catalogue("Grand Round", "DR", "TTSHCardio", self.session_type_id),
-            self._catalogue("Geri Teaching", "GERI", "TTSHGerMed", self.other_session_type_id),
-        ]
         self.teaching_names = [
             self._teaching_name("Journal Club", "DR"),
             self._teaching_name("Grand Round", "DR"),
@@ -167,25 +162,6 @@ class FakeProgrammeTeachingEventsSession:
 
     def global_session_type_id_for(self, name: str) -> str:
         return next(row["id"] for row in self.global_session_types if row["name"] == name)
-
-    def _catalogue(
-        self,
-        keyword: str,
-        programme_code: str,
-        posting_code: str,
-        session_type_id: str,
-    ) -> dict:
-        return {
-            "keyword": keyword,
-            "programme_code": programme_code,
-            "posting_code": posting_code,
-            "r_year": "ALL",
-            "reporting_period_id": self.period_id,
-            "session_type_id": session_type_id,
-            "session_type": f"{keyword} [1h]",
-            "duration_hours": Decimal("1.0"),
-            "is_tracked": True,
-        }
 
     def _event(
         self,
@@ -487,21 +463,6 @@ class FakeProgrammeTeachingEventsSession:
             row["programme_code"]
             for row in self.secretary_programme_pools
             if row["posting_code"] == posting_code and row["is_active"]
-        }
-
-    def _catalogue_programmes(
-        self,
-        *,
-        posting_code: str,
-        teaching_name: str,
-        reporting_period_id: str,
-    ) -> set[str]:
-        return {
-            row["programme_code"]
-            for row in self.catalogue
-            if row["posting_code"] == posting_code
-            and row["keyword"] == teaching_name
-            and row["reporting_period_id"] == reporting_period_id
         }
 
     def _pool_event_programmes(
@@ -817,14 +778,6 @@ def test_pc_update_cache_failure_after_commit_is_best_effort_for_both_postings(
     caplog,
 ) -> None:
     session = FakeProgrammeTeachingEventsSession()
-    session.catalogue.append(
-        session._catalogue(  # noqa: SLF001
-            "Journal Club",
-            "DR",
-            "TTSHNeuro",
-            session.session_type_id,
-        )
-    )
     invalidated_postings: list[str] = []
 
     def _invalidate(*, posting_code: str) -> None:
@@ -1033,9 +986,6 @@ def test_pc_event_list_and_management_are_isolated_by_reporting_period() -> None
             "deactivate_on": None,
         }
     )
-    future_catalogue = session._catalogue("Future Test Teaching", "DR", "TTSHNeuro", session.session_type_id)
-    future_catalogue["reporting_period_id"] = future_period_id
-    session.catalogue.append(future_catalogue)
     future_teaching_name = session._teaching_name("Future Test Teaching", "DR")
     future_teaching_name["reporting_period_id"] = future_period_id
     session.teaching_names.append(future_teaching_name)
@@ -1209,7 +1159,6 @@ def test_pc_pool_event_is_pending_mapping_independent_and_preserves_snapshot() -
     session = FakeProgrammeTeachingEventsSession()
     pending_name = session._teaching_name("Pending Pool Event", "DR")
     session.teaching_names.append(pending_name)
-    session.catalogue = []
     client = _client(session)
 
     created = client.post(
@@ -1239,21 +1188,13 @@ def test_pc_pool_event_is_pending_mapping_independent_and_preserves_snapshot() -
     assert session.events[-1]["duration_hours"] == Decimal("1.0")
 
 
-def test_catalogue_text_alone_does_not_grant_pc_list_update_or_delete() -> None:
+def test_display_text_alone_does_not_grant_pc_list_update_or_delete() -> None:
     session = FakeProgrammeTeachingEventsSession()
-    catalogue_only_posting = "CatalogueOnlyPosting"
-    session.catalogue.append(
-        session._catalogue(
-            "Catalogue Only Teaching",
-            "DR",
-            catalogue_only_posting,
-            session.session_type_id,
-        )
-    )
+    display_only_posting = "DisplayOnlyPosting"
     event = session._event(
         event_id=str(uuid4()),
-        posting_code=catalogue_only_posting,
-        teaching_name="Catalogue Only Teaching",
+        posting_code=display_only_posting,
+        teaching_name="Display Only Teaching",
         teaching_name_id=None,
         created_by_role="secretary",
         created_for_programme_code=None,
@@ -1270,7 +1211,7 @@ def test_catalogue_text_alone_does_not_grant_pc_list_update_or_delete() -> None:
         headers=_headers(scope="DR"),
         json={
             "programme_code": "DR",
-            "posting_code": catalogue_only_posting,
+            "posting_code": display_only_posting,
             "teaching_name_id": session.teaching_name_id_for("Journal Club", "DR"),
             "event_date": "2026-05-20",
             "start_time": "10:00",

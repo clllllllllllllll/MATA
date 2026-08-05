@@ -21,7 +21,7 @@ import {
   createdByRoleLabel,
   EMPTY_PROGRAMME_TEACHING_EVENT_FORM,
   formStateFromEvent,
-  postingOptionsForTeachingName,
+  postingOptionsForSource,
   type ProgrammeTeachingEventFormState,
 } from './pcTeachingEventsPageLogic'
 import { resolvePcProgrammeScope } from './pcUploadTtfPageLogic'
@@ -178,19 +178,48 @@ export const PcTeachingEventsPage = () => {
     return 'Add a programme teaching event.'
   }, [nameOptionsState, programmeScope.mode])
   const dateRange = useMemo(() => selectedPeriodRange(selectedPeriod), [selectedPeriod])
-  const optionsByKeyword = useMemo(() => {
-    const byKeyword = new Map<string, ProgrammeTeachingNameOption>()
+  const optionsBySourceKey = useMemo(() => {
+    const bySourceKey = new Map<string, ProgrammeTeachingNameOption>()
     nameOptions.forEach((option) => {
-      byKeyword.set(option.keyword, option)
+      bySourceKey.set(option.sourceKey, option)
     })
-    return byKeyword
+    return bySourceKey
   }, [nameOptions])
-  const selectedNameOption = optionsByKeyword.get(formState.teachingName)
-  const selectedOptionPostingCodes = useMemo(
-    () => postingOptionsForTeachingName(nameOptions, formState.teachingName),
-    [formState.teachingName, nameOptions],
+  const retainedInactiveGlobalOption = useMemo<ProgrammeTeachingNameOption | undefined>(() => {
+    if (drawerMode !== 'edit' || !sourceEvent?.globalSessionTypeId) {
+      return undefined
+    }
+    const sourceKey = `global-session-type:${sourceEvent.globalSessionTypeId}`
+    if (optionsBySourceKey.has(sourceKey)) {
+      return undefined
+    }
+    const activeGlobalPostingCodes = nameOptions.find((option) => option.isGlobal)?.postingCodes
+    return {
+      sourceKey,
+      keyword: sourceEvent.teachingName,
+      globalSessionTypeId: sourceEvent.globalSessionTypeId,
+      sessionTypeId: sourceEvent.sessionTypeId,
+      sessionType: sourceEvent.sessionTypeName,
+      durationHours: sourceEvent.durationHours,
+      isGlobal: true,
+      postingCodes: activeGlobalPostingCodes?.length ? activeGlobalPostingCodes : [sourceEvent.postingCode],
+    }
+  }, [drawerMode, nameOptions, optionsBySourceKey, sourceEvent])
+  const drawerSourceOptions = useMemo(
+    () => retainedInactiveGlobalOption ? [...nameOptions, retainedInactiveGlobalOption] : nameOptions,
+    [nameOptions, retainedInactiveGlobalOption],
   )
-  const isCatalogueBackedName = Boolean(selectedNameOption)
+  const selectedSourceOption =
+    optionsBySourceKey.get(formState.sourceKey)
+    ?? (retainedInactiveGlobalOption?.sourceKey === formState.sourceKey
+      ? retainedInactiveGlobalOption
+      : undefined)
+  const selectedOptionPostingCodes = useMemo(
+    () => postingOptionsForSource(drawerSourceOptions, formState.sourceKey),
+    [drawerSourceOptions, formState.sourceKey],
+  )
+  const isSelectedSourceOption = Boolean(selectedSourceOption)
+  const canSubmitTeaching = canAddTeaching || Boolean(retainedInactiveGlobalOption)
   const selectedRows = useMemo(() => events.filter((event) => selectedIds.has(event.id)), [events, selectedIds])
   const selectedCount = selectedRows.length
   const selectedWithAttendanceCount = selectedRows.filter((event) => event.hasAttendance).length
@@ -410,7 +439,7 @@ export const PcTeachingEventsPage = () => {
     setFormState((previous) => ({
       ...previous,
       programmeCode,
-      teachingName: '',
+      sourceKey: '',
       postingCode: '',
     }))
   }
@@ -533,17 +562,17 @@ export const PcTeachingEventsPage = () => {
 
   const validateForm = () => {
     const errors: Partial<Record<keyof ProgrammeTeachingEventFormState, string>> = {}
-    const payload = buildProgrammeTeachingEventPayload(formState)
+    const payload = buildProgrammeTeachingEventPayload(formState, selectedSourceOption)
     if (!payload.programmeCode) {
       errors.programmeCode = 'Programme is required.'
     }
     if (!payload.postingCode) {
       errors.postingCode = 'Posting code is required.'
     }
-    if (!payload.teachingName) {
-      errors.teachingName = 'Teaching name is required.'
-    } else if (!optionsByKeyword.has(payload.teachingName)) {
-      errors.teachingName = 'Select a teaching name from the programme catalogue.'
+    if (!formState.sourceKey) {
+      errors.sourceKey = 'Teaching name is required.'
+    } else if (!selectedSourceOption) {
+      errors.sourceKey = 'Select a teaching name from the programme teaching-name pool.'
     }
     if (!payload.eventDate) {
       errors.eventDate = 'Event date is required.'
@@ -578,7 +607,7 @@ export const PcTeachingEventsPage = () => {
 
     setSubmitting(true)
     setSubmitError(null)
-    const payload = buildProgrammeTeachingEventPayload(formState)
+    const payload = buildProgrammeTeachingEventPayload(formState, selectedSourceOption)
     try {
       if (drawerMode === 'edit' && sourceEvent) {
         await updateProgrammeTeachingEvent({
@@ -617,7 +646,7 @@ export const PcTeachingEventsPage = () => {
     setFormState((previous) => ({
       ...previous,
       [field]: value,
-      ...(field === 'teachingName' ? { postingCode: '' } : {}),
+      ...(field === 'sourceKey' ? { postingCode: '' } : {}),
     }))
   }
 
@@ -826,7 +855,7 @@ export const PcTeachingEventsPage = () => {
                 ) : (
                   events.map((event) => {
                     const selected = selectedIds.has(event.id)
-                    const teachingType = event.sessionTypeName ?? optionsByKeyword.get(event.teachingName)?.sessionType ?? '-'
+                    const teachingType = event.sessionTypeName ?? '-'
                     return (
                       <tr
                         key={event.id}
@@ -890,7 +919,7 @@ export const PcTeachingEventsPage = () => {
           ) : (
             events.map((event) => {
               const selected = selectedIds.has(event.id)
-              const teachingType = event.sessionTypeName ?? optionsByKeyword.get(event.teachingName)?.sessionType ?? '-'
+              const teachingType = event.sessionTypeName ?? '-'
               const attendanceTotal = event.attendanceCount + event.externalAttendanceCount
 
               return (
@@ -973,7 +1002,7 @@ export const PcTeachingEventsPage = () => {
               onClick={() => void saveEvent()}
               disabled={
                 submitting
-                || !canAddTeaching
+                || !canSubmitTeaching
                 || (drawerMode === 'edit' && !canMutateProgrammeTeachingEvent(sourceEvent))
               }
             >
@@ -1022,19 +1051,22 @@ export const PcTeachingEventsPage = () => {
           <label>
             Teaching name
             <select
-              value={formState.teachingName}
-              onChange={(event) => updateField('teachingName', event.target.value)}
-              disabled={!canAddTeaching}
+              value={formState.sourceKey}
+              onChange={(event) => updateField('sourceKey', event.target.value)}
+              disabled={!canSubmitTeaching}
             >
               <option value="">Select teaching name</option>
-              {nameOptions.map((option) => (
-                <option key={option.keyword} value={option.keyword}>
+              {drawerSourceOptions.map((option) => (
+                <option key={option.sourceKey} value={option.sourceKey}>
                   {option.keyword}
+                  {option.sourceKey === retainedInactiveGlobalOption?.sourceKey
+                    ? ' (current inactive global source)'
+                    : ''}
                 </option>
               ))}
             </select>
-            {formErrors.teachingName ? (
-              <small className="upload-validation-text">{formErrors.teachingName}</small>
+            {formErrors.sourceKey ? (
+              <small className="upload-validation-text">{formErrors.sourceKey}</small>
             ) : null}
             {nameOptionsError ? <small className="upload-validation-text">{nameOptionsError}</small> : null}
           </label>
@@ -1045,10 +1077,10 @@ export const PcTeachingEventsPage = () => {
               className="pc-drawer-posting-select"
               value={formState.postingCode}
               onChange={(event) => updateField('postingCode', event.target.value)}
-              disabled={!formState.teachingName || selectedOptionPostingCodes.length === 0}
+              disabled={!formState.sourceKey || selectedOptionPostingCodes.length === 0}
             >
               <option value="">
-                {!formState.teachingName
+                {!formState.sourceKey
                   ? 'Select teaching name first'
                   : selectedOptionPostingCodes.length === 0
                     ? 'No postings available'
@@ -1063,7 +1095,7 @@ export const PcTeachingEventsPage = () => {
             {formErrors.postingCode ? (
               <small className="upload-validation-text">{formErrors.postingCode}</small>
             ) : null}
-            {formState.teachingName && isCatalogueBackedName && selectedOptionPostingCodes.length === 0 ? (
+            {formState.sourceKey && isSelectedSourceOption && selectedOptionPostingCodes.length === 0 ? (
               <small className="upload-validation-text">
                 No postings are available for the selected teaching name.
               </small>

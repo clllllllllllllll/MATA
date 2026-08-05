@@ -8,6 +8,8 @@ export interface SecretaryTeachingEvent {
   postingCode: string
   createdForProgrammeCode?: string
   teachingName: string
+  teachingNameId?: string
+  globalSessionTypeId?: string
   eventDate: string
   startTime: string
   endTime?: string
@@ -25,7 +27,10 @@ export interface SecretaryTeachingEvent {
 }
 
 export interface TeachingNameOption {
+  sourceKey: string
   keyword: string
+  teachingNameId?: string
+  globalSessionTypeId?: string
   sessionTypeId?: string
   sessionType?: string
   durationHours?: number
@@ -47,11 +52,32 @@ const toNumber = (value: unknown): number | undefined => {
   return undefined
 }
 
+const optionalString = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim().length > 0 ? value : undefined
+
+const sourceKeyFromIds = (
+  teachingNameId?: string,
+  globalSessionTypeId?: string,
+): string | undefined => {
+  if ((teachingNameId === undefined) === (globalSessionTypeId === undefined)) {
+    return undefined
+  }
+  return teachingNameId
+    ? `teaching-name:${teachingNameId}`
+    : `global-session-type:${globalSessionTypeId}`
+}
+
+export const sourceKeyForSecretaryTeachingEvent = (
+  event: Pick<SecretaryTeachingEvent, 'teachingNameId' | 'globalSessionTypeId'>,
+): string => sourceKeyFromIds(event.teachingNameId, event.globalSessionTypeId) ?? ''
+
 const toTeachingEvent = (value: Record<string, unknown>): SecretaryTeachingEvent => ({
   id: String(value.id ?? ''),
   postingCode: String(value.posting_code ?? ''),
   createdForProgrammeCode: value.created_for_programme_code ? String(value.created_for_programme_code) : undefined,
   teachingName: String(value.teaching_name ?? ''),
+  teachingNameId: optionalString(value.teaching_name_id),
+  globalSessionTypeId: optionalString(value.global_session_type_id),
   eventDate: String(value.event_date ?? ''),
   startTime: String(value.start_time ?? ''),
   endTime: value.end_time ? String(value.end_time) : undefined,
@@ -73,19 +99,26 @@ const toTeachingEvent = (value: Record<string, unknown>): SecretaryTeachingEvent
   updatedAt: value.updated_at ? String(value.updated_at) : undefined,
 })
 
-const toTeachingNameOption = (value: Record<string, unknown>): TeachingNameOption => ({
-  keyword: String(value.keyword ?? ''),
-  sessionTypeId: value.session_type_id ? String(value.session_type_id) : undefined,
-  sessionType: value.session_type ? String(value.session_type) : undefined,
-  durationHours: toNumber(value.duration_hours),
-  isTracked: typeof value.is_tracked === 'boolean' ? value.is_tracked : undefined,
-  isGlobal: typeof value.is_global === 'boolean' ? value.is_global : undefined,
-  postingCodes: Array.isArray(value.posting_codes)
-    ? value.posting_codes
-        .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
-        .map((entry) => entry.trim())
-    : undefined,
-})
+const toTeachingNameOption = (value: Record<string, unknown>): TeachingNameOption => {
+  const teachingNameId = optionalString(value.teaching_name_id)
+  const globalSessionTypeId = optionalString(value.global_session_type_id)
+  return {
+    sourceKey: sourceKeyFromIds(teachingNameId, globalSessionTypeId) ?? '',
+    keyword: String(value.keyword ?? ''),
+    teachingNameId,
+    globalSessionTypeId,
+    sessionTypeId: optionalString(value.session_type_id),
+    sessionType: optionalString(value.session_type),
+    durationHours: toNumber(value.duration_hours),
+    isTracked: typeof value.is_tracked === 'boolean' ? value.is_tracked : undefined,
+    isGlobal: typeof value.is_global === 'boolean' ? value.is_global : undefined,
+    postingCodes: Array.isArray(value.posting_codes)
+      ? value.posting_codes
+          .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+          .map((entry) => entry.trim())
+      : undefined,
+  }
+}
 
 export const listSecretaryTeachingEvents = async (params?: {
   dateFrom?: string
@@ -135,29 +168,18 @@ export const listSecretaryTeachingNameOptions = async (params?: {
     })
     const rows = (response.data as { options?: unknown })?.options
     const options = Array.isArray(rows) ? rows : []
-    const mapped = options
+    return options
       .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
       .map(toTeachingNameOption)
-      .filter((row) => row.keyword.trim().length > 0)
-
-    const deduped = new Map<string, TeachingNameOption>()
-    mapped.forEach((option) => {
-      const keyword = option.keyword.trim()
-      if (!deduped.has(keyword)) {
-        deduped.set(keyword, {
-          ...option,
-          keyword,
-        })
-      }
-    })
-    return [...deduped.values()]
+      .filter((row) => row.sourceKey.length > 0 && row.keyword.trim().length > 0)
   } catch (error) {
     throw toApiRequestError(error)
   }
 }
 
 export interface CreateSecretaryTeachingEventRequest {
-  teachingName: string
+  teachingNameId?: string
+  globalSessionTypeId?: string
   eventDate: string
   startTime: string
   cmePointsAwarded: boolean
@@ -172,7 +194,8 @@ export const createSecretaryTeachingEvent = async (
     const response = await httpClient.post(
       '/secretary/teaching-events',
       {
-        teaching_name: payload.teachingName,
+        teaching_name_id: payload.teachingNameId ?? null,
+        global_session_type_id: payload.globalSessionTypeId ?? null,
         event_date: payload.eventDate,
         start_time: payload.startTime,
         cme_points_awarded: payload.cmePointsAwarded,
@@ -193,7 +216,8 @@ export const createSecretaryTeachingEvent = async (
 }
 
 export interface UpdateSecretaryTeachingEventRequest {
-  teachingName: string
+  teachingNameId?: string
+  globalSessionTypeId?: string
   eventDate: string
   startTime: string
   cmePointsAwarded: boolean
@@ -209,7 +233,8 @@ export const updateSecretaryTeachingEvent = async (
     const response = await httpClient.put(
       `/secretary/teaching-events/${eventId}`,
       {
-        teaching_name: payload.teachingName,
+        teaching_name_id: payload.teachingNameId ?? null,
+        global_session_type_id: payload.globalSessionTypeId ?? null,
         event_date: payload.eventDate,
         start_time: payload.startTime,
         cme_points_awarded: payload.cmePointsAwarded,

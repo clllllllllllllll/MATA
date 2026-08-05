@@ -97,21 +97,6 @@ class FakeParsedDataCorrectionSession:
                 },
             }
         ]
-        self.catalogue_rows: list[dict] = [
-            {
-                "id": str(uuid4()),
-                "keyword": "Journal Club",
-                "session_type_id": self.session_type_id,
-                "posting_code": "TTSHGerMed",
-                "programme_code": "GERI",
-                "r_year": "ALL",
-                "reporting_period_id": self.period_id,
-                "duration_hours": Decimal("1.00"),
-                "is_tracked": True,
-                "created_at": self.now,
-                "updated_at": self.now,
-            }
-        ]
         self.session_types = {
             self.session_type_id: {
                 "id": self.session_type_id,
@@ -171,7 +156,6 @@ class FakeParsedDataCorrectionSession:
                 "is_tracked": True,
                 "is_reallocatable": True,
                 "tag": "A1",
-                "details_of_training": "Journal Club",
                 "created_at": self.now,
                 "updated_at": self.now,
             }
@@ -463,9 +447,6 @@ class FakeParsedDataCorrectionSession:
             session_type = self.session_types.get(payload["session_type_id"])
             return _FakeResult(rows=[deepcopy(session_type)] if session_type else [])
 
-        if "/* parsed_data_validation:catalogue_keyword_conflict */" in sql:
-            return _FakeResult(scalar=None)
-
         if "UPDATE teaching_targets SET" in sql:
             row = next(item for item in self.teaching_targets if item["id"] == payload["id"])
             for key in (
@@ -478,44 +459,10 @@ class FakeParsedDataCorrectionSession:
                 "is_tracked",
                 "is_reallocatable",
                 "tag",
-                "details_of_training",
             ):
                 if key in payload:
                     row[key] = payload[key]
             row["updated_at"] = self.after_now
-            return _FakeResult(rowcount=1)
-
-        if "DELETE FROM teaching_name_catalogue" in sql:
-            target = next(row for row in self.teaching_targets if row["id"] == payload["target_id"])
-            self.catalogue_rows = [
-                row
-                for row in self.catalogue_rows
-                if not (
-                    row["reporting_period_id"] == target["reporting_period_id"]
-                    and row["programme_code"] == target["programme_code"]
-                    and row["posting_code"] == target["posting_code"]
-                    and row["r_year"] == target["r_year"]
-                    and row["session_type_id"] == target["session_type_id"]
-                )
-            ]
-            return _FakeResult(rowcount=1)
-
-        if "INSERT INTO teaching_name_catalogue" in sql:
-            self.catalogue_rows.append(
-                {
-                    "id": str(uuid4()),
-                    "keyword": payload["keyword"],
-                    "session_type_id": payload["session_type_id"],
-                    "posting_code": payload["posting_code"],
-                    "programme_code": payload["programme_code"],
-                    "r_year": payload["r_year"],
-                    "reporting_period_id": payload["reporting_period_id"],
-                    "duration_hours": payload["duration_hours"],
-                    "is_tracked": payload["is_tracked"],
-                    "created_at": self.after_now,
-                    "updated_at": self.after_now,
-                }
-            )
             return _FakeResult(rowcount=1)
 
         if "/* parsed_data_correction:form_f1_record_snapshot */" in sql:
@@ -1240,7 +1187,7 @@ def test_source_cell_replace_uses_documented_status_values() -> None:
     assert session.audit_logs == []
 
 
-def test_teaching_target_correction_regenerates_catalogue_from_details_of_training() -> None:
+def test_teaching_target_correction_rejects_legacy_details_field() -> None:
     session = FakeParsedDataCorrectionSession()
     client = _build_client_with_session(session)
 
@@ -1248,22 +1195,15 @@ def test_teaching_target_correction_regenerates_catalogue_from_details_of_traini
         f"/admin/parsed-data/teaching-targets/{session.target_id}",
         headers=_headers(),
         json={
-            "correction_reason": "TTF column K was corrected",
+            "correction_reason": "Reject retired TTF field",
             "last_seen_updated_at": session.now.isoformat(),
             "changes": {"details_of_training": "Journal Club, Grand Round"},
         },
     )
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["item"]["details_of_training"] == "Journal Club, Grand Round"
-    impact = _impact(body)
-    assert impact["changed_entity"] == "teaching_target"
-    assert impact["affected_models"] == ["teaching_targets", "teaching_name_catalogue"]
-    assert {row["keyword"] for row in session.catalogue_rows} == {"Journal Club", "Grand Round"}
-    audit_row = session.audit_logs[0]
-    assert audit_row["action"] == "admin.parsed_data.teaching_target.update"
-    assert _audit_json(audit_row, "metadata_json")["catalogue_keywords"] == ["Journal Club", "Grand Round"]
+    assert response.status_code == 422
+    assert session.teaching_targets[0]["monthly_target"] == 4
+    assert session.audit_logs == []
 
 
 def test_teaching_target_correction_cache_failure_keeps_committed_success(monkeypatch) -> None:

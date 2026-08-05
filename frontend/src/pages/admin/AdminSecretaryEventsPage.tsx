@@ -1224,7 +1224,7 @@ export const AdminSecretaryEventsPage = () => {
                 <DetailField label="SMC event code" value={activeDetail.smcEventCode} />
                 <DetailField label="Session type display" value={activeDetail.sessionTypeName} />
                 <DetailField label="Session type id" value={activeDetail.sessionTypeId} />
-                <DetailField label="Compliance authority" value="TTF catalogue read-time resolution" />
+                <DetailField label="Teaching-name source" value="Programme teaching-name mapping" />
               </div>
             </div>
 

@@ -27,7 +27,7 @@ from app.services.database_context import (
 from app.services.teaching_event_locks import acquire_teaching_event_locks
 
 
-DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_dfg_fix_verify"
+DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_e2b2_verify"
 _TEST_SESSION_HASH_KEY = "rls-resident-attendance-test-session-key-32-bytes"
 
 

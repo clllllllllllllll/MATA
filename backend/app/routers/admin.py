@@ -66,7 +66,6 @@ from app.schemas import (
     ParsedPublicHolidayListResponse,
     ParsedResidentListResponse,
     ParsedResidentPostingListResponse,
-    ParsedTeachingNameCatalogueListResponse,
     ParsedTeachingTargetListResponse,
     ResidentPostingSourceCellReplaceRequest,
     PostingGroupMutationRequest,
@@ -98,7 +97,6 @@ from app.schemas import (
     StaffAccountResetPasswordRequest,
     StaffAccountResponse,
     StaffAccountUpdateRequest,
-    TeachingNameCatalogueResponse,
     TeachingTargetResponse,
     UploadLogDetailResponse,
     UploadLogListResponse,
@@ -438,7 +436,6 @@ def _format_ttf_response(result: ParserResult) -> dict[str, Any]:
         "affected_attendance_count": metadata.get("affected_attendance_count", 0),
         "session_types_upserted": metadata.get("session_types_upserted", result.updated_count),
         "posting_codes_added": metadata.get("posting_codes_added", []),
-        "catalogue_rows_seeded": metadata.get("catalogue_rows_seeded", 0),
         "posting_groups_upserted": metadata.get("posting_groups_upserted", 0),
         "posting_groups_removed": metadata.get("posting_groups_removed", 0),
         "rows_exploded": metadata.get("rows_exploded", 0),
@@ -489,14 +486,14 @@ def _format_public_holiday_response(result: ParserResult) -> dict[str, Any]:
 async def _require_active_upload_reporting_period(
     db: AsyncSession | None,
     reporting_period_id: UUID,
-) -> None:
+) -> str | None:
     if db is None:
-        return
+        return None
     result = await db.execute(
         text(
             """
             /* upload:reporting_period_status */
-            SELECT status
+            SELECT label, status
             FROM reporting_periods
             WHERE id = :reporting_period_id
             """
@@ -505,9 +502,9 @@ async def _require_active_upload_reporting_period(
     )
     row = result.mappings().one_or_none()
     if row is None:
-        return
+        return None
     if str(row.get("status") or "").strip().lower() == REPORTING_PERIOD_ACTIVE:
-        return
+        return str(row.get("label") or "").strip() or None
     raise ApiError(
         status_code=422,
         detail="Selected reporting period is inactive. Activate the reporting period before uploading.",
@@ -1242,7 +1239,10 @@ async def upload_ttf(
             errors=[str(exc)],
         ) from exc
 
-    await _require_active_upload_reporting_period(db, reporting_period_id)
+    selected_reporting_period_label = await _require_active_upload_reporting_period(
+        db,
+        reporting_period_id,
+    )
 
     await enforce_upload_persistent_rate_limit(
         db,
@@ -1258,6 +1258,7 @@ async def upload_ttf(
             original_filename=validated.original_filename,
             reporting_period_id=reporting_period_id,
             programme_code=programme_code,
+            reporting_period_label=selected_reporting_period_label,
             db_session=db,
             manage_transaction=False,
         )
@@ -1276,7 +1277,7 @@ async def upload_ttf(
         raise
 
     # Parsing is fully validated before the parser opens the scope-locked
-    # persistence path.  A failed workbook therefore has no target/catalogue
+    # persistence path. A failed workbook therefore has no target or mapping
     # mutations, but still retains the established bounded failure evidence.
     if parser_result.errors:
         await _write_upload_log_and_audit(
@@ -1310,7 +1311,6 @@ async def upload_ttf(
                     "is_tracked",
                     "is_reallocatable",
                     "tag",
-                    "details_of_training",
                 ],
                 source_metadata={
                     key: parser_result.metadata.get(key, 0)
@@ -4121,42 +4121,6 @@ async def list_parsed_teaching_targets(
     return ParsedTeachingTargetListResponse.model_validate(payload)
 
 
-@router.get(
-    "/parsed-data/teaching-name-catalogue",
-    response_model=ParsedTeachingNameCatalogueListResponse,
-)
-async def list_parsed_teaching_name_catalogue(
-    reporting_period_id: UUID | None = Query(default=None),
-    programme_code: str | None = Query(default=None),
-    posting_code: str | None = Query(default=None),
-    r_year: str | None = Query(default=None),
-    keyword: str | None = Query(default=None),
-    is_tracked: bool | None = Query(default=None),
-    search: str | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
-    admin_context: AdminContext = Depends(require_admin_context),
-    db: AsyncSession | None = Depends(get_db_session),
-) -> ParsedTeachingNameCatalogueListResponse:
-    if db is None:
-        return ParsedTeachingNameCatalogueListResponse(items=[], total=0, limit=limit, offset=offset)
-    payload = await parsed_data.list_teaching_name_catalogue(
-        db,
-        programme_scope=admin_context.programme_scope,
-        master_admin=admin_context.is_master_admin,
-        reporting_period_id=reporting_period_id,
-        programme_code=programme_code,
-        posting_code=posting_code,
-        r_year=r_year,
-        keyword=keyword,
-        is_tracked=is_tracked,
-        search=search,
-        limit=limit,
-        offset=offset,
-    )
-    return ParsedTeachingNameCatalogueListResponse.model_validate(payload)
-
-
 @router.get("/parsed-data/form-f1-records", response_model=ParsedFormF1RecordListResponse)
 async def list_parsed_form_f1_records(
     reporting_period_id: UUID | None = Query(default=None),
@@ -4623,39 +4587,6 @@ async def list_teaching_targets(
         limit=limit,
     )
     return [TeachingTargetResponse.model_validate(row) for row in rows]
-
-
-@router.get(
-    "/teaching-name-catalogue",
-    response_model=list[TeachingNameCatalogueResponse],
-)
-async def list_teaching_name_catalogue(
-    reporting_period_id: UUID | None = Query(default=None),
-    programme_code: str | None = Query(default=None),
-    posting_code: str | None = Query(default=None),
-    r_year: str | None = Query(default=None),
-    keyword: str | None = Query(default=None),
-    session_type_id: UUID | None = Query(default=None),
-    is_tracked: bool | None = Query(default=None),
-    limit: int = Query(default=100, ge=1, le=500),
-    admin_context: AdminContext = Depends(require_admin_context),
-    db: AsyncSession | None = Depends(get_db_session),
-) -> list[TeachingNameCatalogueResponse]:
-    if db is None:
-        return []
-    rows = await admin_config.list_teaching_name_catalogue(
-        db,
-        programme_scope=admin_context.programme_scope,
-        reporting_period_id=reporting_period_id,
-        programme_code=programme_code,
-        posting_code=posting_code,
-        r_year=r_year,
-        keyword=keyword,
-        session_type_id=session_type_id,
-        is_tracked=is_tracked,
-        limit=limit,
-    )
-    return [TeachingNameCatalogueResponse.model_validate(row) for row in rows]
 
 
 @router.get(

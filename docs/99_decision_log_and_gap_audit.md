@@ -15,28 +15,23 @@ Every important decision made during the project, with reasoning and consequence
 ### Decision: Evolved TTF transition contract (2026-08-02)
 
 - **Status:** Phase G Resident/Non-NHG runtime decoupling and its D/F/G audit
-  corrections are implemented at local revision `20260804_000035`; the final E2/B2 architecture remains future
-  work.
-- **Current versus future boundary:** The physical A-K parser,
-  `teaching_name_catalogue`, and `teaching_targets.details_of_training` remain
-  through additive Phase G, but Resident/Non-NHG discovery, attendance, and
-  ad-hoc runtime no longer classify events through catalogue/target/Column K
-  data. Phase F adds explicit source IDs and immutable display snapshots to new
-  scheduled events. Revision `20260804_000035` adds immutable pool-source
-  programme/period snapshots, safely backfilled only from explicit IDs, so a
-  guarded Teaching Name deletion cannot erase provenance. Phase G uses persisted
-  source evidence where present, keeps both-null legacy rows as deterministic
-  persisted evidence, and never infers authorization from display/catalogue text.
-  Global type inactivity gates new choices only; full-datetime overlap treats a
-  wrapped end time as the next date. Final E2/B2 is the later destructive cutover; it may remove the
-  legacy path. Phase A creates no code, migration, parser, API route, policy, or
-  UI.
-- **Future file format:** A-J only: reporting period, programme, R-year,
-  posting, dashboard posting/posting group, session type, monthly target,
-  tracked, reallocatable, and tag. Column K is removed. A future-format upload
-  with populated legacy Column K returns controlled `422`; no dual format,
-  backfill, or historical-data migration is authorized. Supplied workbooks are
-  legacy structural references only.
+  corrections are implemented at local revision `20260804_000035`; revision
+  `20260805_000036` completes the final E2+B2 cutover.
+- **Current boundary:** The parser accepts A–J only: reporting period,
+  programme, R-year, posting, dashboard posting/posting group, session type,
+  monthly target, tracked, reallocatable, and tag. It physically removes
+  `teaching_name_catalogue` and `teaching_targets.details_of_training` without
+  reconstructing historical catalogue rows or Column K text. A populated legacy
+  Column K receives controlled `422`; there is no dual format, backfill, or
+  workbook-text-driven Teaching Name/mapping creation. Historical warning and
+  audit evidence remains immutable.
+- **Runtime preservation:** Phase F source IDs and immutable display snapshots,
+  plus revision `20260804_000035` immutable pool-source programme/period
+  snapshots, remain the event/attendance authority. Guarded Teaching Name
+  deletion cannot erase provenance. Phase G uses persisted source evidence where
+  present, keeps both-null legacy rows as deterministic persisted evidence, and
+  never infers authorization from display text. Global type inactivity gates new
+  choices only; full-datetime overlap treats a wrapped end time as the next date.
 - **Terms and ownership:** The canonical term is `teaching_name`. The schedule
   column is **Name of Teaching**; the Secretary page/button are **Update Names
   of Teaching** / **Update Name of Teaching**; Programme PC navigation/page are
@@ -90,11 +85,9 @@ Every important decision made during the project, with reasoning and consequence
 - **Phase 6 boundary:** Non-clawback Phase 6 logic is specified, not
   implemented; no full `compliance.py` engine is currently implemented.
 
-This decision supersedes historical entries only as the **final future TTF
-target**. Their documented Column K/catalogue behavior remains the current
-physical parser/configuration transition rule until E2/B2, not Phase G runtime
-authorization. Preserve those entries as historical audit evidence; do not
-erase or reinterpret them as Phase A implementation.
+This decision is implemented by E2+B2. Later entries documenting Column K or
+catalogue behavior are pre-cutover audit evidence only; do not reinterpret them
+as current parser, API, runtime, or authorization behavior.
 
 ---
 
@@ -120,7 +113,7 @@ These entries supersede any earlier contradictory current-state entry in this au
 
 #### Decision: TTF zero monthly target semantics
 - **Status:** Confirmed
-- **Decision:** `teaching_targets.monthly_target = 0` is valid. The target row and its `teaching_name_catalogue` entries remain persisted for the legacy parser/configuration workflow. Phase G Resident/Non-NHG event discovery and attendance use persisted event-source evidence instead.
+- **Decision:** `teaching_targets.monthly_target = 0` is valid. The final A–J target row remains persisted; TTF creates no Teaching Name or mapping from the row. Phase G Resident/Non-NHG event discovery and attendance use persisted event-source evidence instead.
 - **Compliance consequence:** Zero-target rows contribute to neither numerator nor denominator and create no percentage, shortage, surplus, reallocation, or clawback contribution.
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -397,10 +390,10 @@ only under an approved product scope.
 
 #### Decision: TTF upload — logical scope replacement, warn not 422 on existing attendance
 - **Status:** ✅ Confirmed
-- **Decision:** TTF re-upload always logically replaces the `(reporting_period_id, programme_code)` target scope, regardless of existing attendance. Physical persistence reconciles by stable target identity: matching targets retain UUIDs, mutable fields update, and only stale targets are removed. Mappings for removed targets remain as pending rows. No 422 attendance guard. Orphaned attendance returns as warnings.
-- **Reasoning:** PCs need to correct TTF errors mid-period. Blocking re-upload forces manual DB intervention. Orphaned attendance is silently excluded from compliance on next read — no data corruption, just compliance recalculation.
+- **Decision:** TTF re-upload always logically replaces the `(reporting_period_id, programme_code)` target scope, regardless of existing attendance. Physical persistence reconciles by stable target identity: matching targets retain UUIDs, mutable fields update, and only stale targets are removed. Mappings for removed targets remain as pending rows. No 422 attendance guard.
+- **Reasoning:** PCs need to correct TTF errors mid-period. Blocking re-upload forces manual DB intervention. Current event/attendance runtime preserves its persisted source evidence and does not use the retired catalogue path.
 - **Alternatives considered:** 422 guard blocking re-upload when attendance exists — rejected, too restrictive for PC workflow.
-- **Consequences for codebase:** `ttf_parser.py` reconciles `teaching_targets` within scope, regenerates the legacy `teaching_name_catalogue`, and replaces programme-wide `posting_groups`. Post-write orphan detection queries attendance records with no matching catalogue row. Results are included in the response `warnings` array.
+- **Consequences for codebase:** `ttf_parser.py` reconciles `teaching_targets` within scope and replaces programme-wide `posting_groups`. It does not regenerate a catalogue or emit catalogue-specific orphan warnings.
 - **Reference file and section:** `api.md` § POST `/admin/upload/ttf`; `parsing.md` § TTF Parser Upload Behaviour
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -463,9 +456,9 @@ only under an approved product scope.
 
 #### Decision: STP never uploaded — TTF is the compliance input
 - **Status:** ✅ Confirmed
-- **Decision:** STP is a planning document created by secretaries. It is never uploaded to the system. In the current legacy A-K transition, no STP parser exists and the PC manually converts STP to TTF before a Master Admin or Programme PC for that normalized in-scope programme uploads it. Legacy Column K (Details of Training) is absent from STP and must be added manually.
-- **Reasoning:** The current legacy A-K TTF needs Column K keywords, tags, and reallocation flags. The PC adds this data during manual conversion. This historical conversion rule does not apply to final A-J/E2/B2.
-- **Alternatives considered:** STP upload with auto-conversion — rejected for the current legacy A-K parser because Column K data does not exist in STP.
+- **Decision:** STP is a planning document created by secretaries. It is never uploaded to the system; the PC manually converts it to a final A-J TTF before a Master Admin or in-scope Programme PC uploads it.
+- **Reasoning:** No STP parser has been approved. The former A-K/Column K conversion detail is historical only and does not apply to the final format.
+- **Alternatives considered:** STP upload with auto-conversion — rejected; no STP parser is authorized.
 - **Consequences for codebase:** No `stp_parser.py`. No STP upload endpoint. TTF is the only teaching target upload path.
 - **Reference file and section:** `AGENTS.md` § "No STP in the system"
 - **Do not change without PM/stakeholder approval:** Yes
@@ -818,12 +811,12 @@ only under an approved product scope.
 
 ---
 
-#### Decision: Non-tracked parser/configuration rows retained; compliance treatment deferred
+#### Decision: Non-tracked target rows retained; compliance treatment deferred
 - **Status:** ✅ Confirmed
-- **Decision:** TTF rows with `Tracked? = "No"` are seeded into `teaching_name_catalogue` as transitional parser/configuration data. Phase G event visibility and attendance do not consult that catalogue; the future compliance treatment remains a compliance-only concern.
-- **Reasoning:** The parser must retain the legacy configuration row, while Phase G runtime authorization is intentionally independent of that configuration.
-- **Alternatives considered:** Not seeding non-tracked rows — rejected because it would discard required legacy parser/configuration data.
-- **Consequences for codebase:** `ttf_parser.py` seeds catalogue rows with `is_tracked = false`. No current runtime visibility or compliance engine reads it for Phase G authorization.
+- **Decision:** TTF rows with `Tracked? = "No"` remain target semantics only. Phase G event visibility and attendance do not consult target configuration; the future compliance treatment remains a compliance-only concern.
+- **Reasoning:** The final parser retains the target row while runtime authorization remains intentionally independent of target configuration.
+- **Alternatives considered:** Creating Teaching Names or mappings from the row — rejected because workbook text is not an authority source.
+- **Consequences for codebase:** `ttf_parser.py` persists `is_tracked = false` without seeding a catalogue, Teaching Name, or mapping. No current runtime visibility or compliance engine reads it for Phase G authorization.
 - **Reference file and section:** `AGENTS.md` confirmed decisions; `parsing.md` § TTF Parser
 - **Do not change without PM/stakeholder approval:** Yes
 
@@ -938,12 +931,12 @@ Status: ✅ Resolved
 
 ---
 
-#### TBD-1: Details of Training Keyword Matching (Mechanism)
+#### TBD-1: Details of Training Keyword Matching (historical mechanism retired by E2+B2)
 - **Original question:** How should teaching events be matched to session types for compliance? The STP/Details of Training keywords were not available in the original system design.
-- **Final decision:** In the current legacy A-K transition, `teaching_name_catalogue` is the transitional parser/configuration store. It is seeded from TTF Column K at upload time, with one row per `(keyword, posting_code, programme_code, r_year, reporting_period_id)`. It is not a Phase G runtime source classifier, and session type is not stored on `attendance_records`.
-- **Consequences for codebase:** The current parser seeds `teaching_name_catalogue`; `PATCH /admin/parsed-data/teaching-targets/{id}` regenerates its transitional rows when `details_of_training` changes. The deferred Phase 6 resolver must use persisted source identity and a scoped mapping, never `keyword = teaching_event.teaching_name`.
-- **File and section:** `business-logic.md` § BL-6; `schema.md` § `teaching_name_catalogue`; `parsing.md` § TTF Parser
-- **Mandatory instruction:** Do NOT reopen the current legacy mechanism before E2/B2. Its keyword data comes from TTF Column K prepared by the PC; the final evolved A-J target is governed by the 2026-08-02 transition decision above.
+- **Historical decision:** The former A-K parser seeded `teaching_name_catalogue` from Column K. It was not a Phase G runtime source classifier, and session type was not stored on `attendance_records`.
+- **Current consequence:** Revision `20260805_000036` removes that table/column and the parsed-data regeneration path. The deferred Phase 6 resolver must use persisted source identity and a scoped mapping, never display-text equality.
+- **File and section:** `business-logic.md` § BL-6; `schema.md` final TTF persistence; `parsing.md` § TTF Parser
+- **Mandatory instruction:** Do not restore the retired legacy mechanism. The final A-J contract governs current uploads.
 
 ---
 
@@ -1028,13 +1021,13 @@ Status: ✅ Resolved
 - **What it was:** Blocking TTF re-upload with a 422 error if any attendance records reference the existing teaching targets.
 - **Why rejected:** PCs need to correct TTF errors mid-period. Blocking re-upload forces manual DB intervention, which is operationally unacceptable.
 - **When it might become valid:** Never in the current workflow.
-- **What replaced it:** Warn-on-reupload. Orphaned attendance returned as warnings in the upload response. Upload still returns 200.
+- **What replaced it:** Re-upload remains allowed. Current event/attendance runtime retains its persisted source evidence and no longer produces retired catalogue-specific orphan warnings.
 
 ---
 
 #### ❌ STP upload / STP parser
 - **What it was:** An endpoint and parser for uploading STP files directly to the system.
-- **Why rejected:** For the current legacy A-K path, STP lacks Column K (Details of Training / keywords), which is mandatory for `teaching_name_catalogue` seeding. PC must manually add it during STP→TTF conversion.
+- **Why rejected:** The former A-K rationale required a now-retired Column K/catalogue path. The final A-J TTF does not require or accept Column K, and no STP parser is authorized.
 - **When it might become valid:** The historical A-K rationale is superseded at final A-J/E2/B2 cutover; no STP parser is authorized by this decision.
 - **What replaced it:** TTF upload is the only teaching target upload path. PC manually converts STP → TTF.
 
