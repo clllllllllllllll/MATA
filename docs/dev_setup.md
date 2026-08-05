@@ -112,7 +112,7 @@ python -B -m tests.run_rls_restricted_pytest -q --tb=short -p no:cacheprovider t
 Never substitute `mata_db`, the earlier H-D/H-E database, or a remote target.
 
 For the current cumulative restricted-harness verification, use exactly
-`mata_evolved_ttf_e2b2_verify` at head `20260805_000036`. Both database
+`mata_evolved_ttf_e2b2_verify` at head `20260805_000037`. Both database
 URLs must name that local database in a fresh process; the runner derives
 separate temporary runtime/auth URLs and removes its `mata_test_*` roles:
 

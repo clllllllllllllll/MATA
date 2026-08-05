@@ -86,6 +86,7 @@ RUNTIME_ONLY_FUNCTIONS = frozenset(
             "time without time zone,numeric,uuid)"
         ),
         "mata_rls.scheduled_event_source_scope(uuid)",
+        "mata_rls.resolve_native_teaching_target(uuid,uuid)",
         "mata_rls.update_own_staff_actor_name(text)",
         "mata_rls.reporting_period_dependency_counts(uuid)",
         "mata_rls.hibernate_stale_surplus(uuid)",
@@ -344,6 +345,7 @@ POLICY_CUTOVER_REVISIONS = frozenset(
         "20260804_000034",
         "20260804_000035",
         "20260805_000036",
+        "20260805_000037",
     }
 )
 FINAL_AJ_CUTOVER_REVISIONS = frozenset({"20260805_000036"})
