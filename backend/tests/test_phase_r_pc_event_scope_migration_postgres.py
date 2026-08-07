@@ -13,10 +13,13 @@ from sqlalchemy.pool import NullPool
 
 from app.config import Settings
 from tests.run_phase_r_postgres_verify import _normalise_server_address
+from tests.postgres_disposable_database import configured_disposable_database_name
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-TARGET_DATABASE_NAME = "mata_evolved_ttf_r_verify"
+TARGET_DATABASE_NAME = configured_disposable_database_name(
+    default="mata_evolved_ttf_r_verify"
+)
 PREVIOUS_REVISION = "20260805_000037"
 HEAD_REVISION = "20260806_000038"
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})

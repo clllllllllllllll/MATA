@@ -67,6 +67,7 @@ SESSION_KEY = "postgres-session-integration-key-at-least-32-characters"
 RATE_KEY = "postgres-rate-integration-key-at-least-32-characters"
 DEFAULT_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_e2b2_verify"
 PHASE_R_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_r_verify"
+PHASE_K_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_k_verify"
 DISPOSABLE_DATABASE_NAME = os.environ.get(
     "MATA_RLS_DISPOSABLE_DATABASE_NAME",
     DEFAULT_DISPOSABLE_DATABASE_NAME,
@@ -113,7 +114,11 @@ def _assert_disposable_database(database_url: str) -> None:
         url.drivername != "postgresql+asyncpg"
         or url.host not in {"localhost", "127.0.0.1", "::1"}
         or DISPOSABLE_DATABASE_NAME
-        not in {DEFAULT_DISPOSABLE_DATABASE_NAME, PHASE_R_DISPOSABLE_DATABASE_NAME}
+        not in {
+            DEFAULT_DISPOSABLE_DATABASE_NAME,
+            PHASE_R_DISPOSABLE_DATABASE_NAME,
+            PHASE_K_DISPOSABLE_DATABASE_NAME,
+        }
         or url.database != DISPOSABLE_DATABASE_NAME
         or bool(url.query)
     ):

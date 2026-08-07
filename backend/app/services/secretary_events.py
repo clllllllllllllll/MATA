@@ -810,8 +810,8 @@ async def teaching_name_options(
             WHERE tn.reporting_period_id = :reporting_period_id
               AND tn.is_active = true
               AND (
-                  :programme_code IS NULL
-                  OR tn.programme_code = :programme_code
+                  CAST(:programme_code AS text) IS NULL
+                  OR tn.programme_code = CAST(:programme_code AS text)
               )
               AND EXISTS (
                   SELECT 1
