@@ -63,7 +63,7 @@ def _normalise_scope(scope: list[str] | None) -> list[str]:
     seen: set[str] = set()
     values: list[str] = []
     for item in scope:
-        value = item.strip() if isinstance(item, str) else ""
+        value = item.strip().upper() if isinstance(item, str) else ""
         if value and value not in seen:
             seen.add(value)
             values.append(value)

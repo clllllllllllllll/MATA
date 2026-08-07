@@ -2536,6 +2536,40 @@ def test_programme_update_can_clear_rdb_alias_and_persist_false_booleans() -> No
     assert whitespace_clear.json()["rdb_alias"] is None
 
 
+@pytest.mark.parametrize("programme_code", ("SPORTSMED", "PALLMED"))
+def test_programme_update_preserves_protected_actual_r_year_flags(
+    programme_code: str,
+) -> None:
+    session = FakeMutationSession()
+    protected_programme = {
+        "id": str(uuid4()),
+        "code": programme_code,
+        "name": programme_code,
+        "classification": "senior",
+        "ay_date_category": "non_im_subspec",
+        "r_year_required": True,
+        "is_subspecialty": False,
+        "rdb_alias": None,
+        "created_at": session.now,
+        "updated_at": session.now,
+    }
+    session.programmes.append(protected_programme)
+    client = _build_client_with_session(session)
+
+    response = client.put(
+        f"/admin/programmes/{programme_code}",
+        headers=_master_admin_headers(programme_code),
+        json={"r_year_required": False, "is_subspecialty": True},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "SPORTSMED and PALLMED must retain r_year_required=true and is_subspecialty=false."
+    )
+    assert protected_programme["r_year_required"] is True
+    assert protected_programme["is_subspecialty"] is False
+
+
 def test_programme_update_out_of_scope_rejected() -> None:
     client = _build_client_with_session(FakeMutationSession())
     response = client.put(

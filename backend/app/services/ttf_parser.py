@@ -19,58 +19,6 @@ from app.services.ttf_scope_lock import acquire_ttf_programme_lock, acquire_ttf_
 
 logger = logging.getLogger(__name__)
 
-_PARSER_ONLY_FALLBACK_PROGRAMME_CODES = {
-    "AIM",
-    "ANAES",
-    "CARDIO",
-    "DERM",
-    "DR",
-    "EM",
-    "ENDO",
-    "ENT",
-    "EYE",
-    "FM",
-    "GASTRO",
-    "GERI",
-    "GS",
-    "ID",
-    "IM",
-    "MEDONCO",
-    "ORTHO",
-    "PATH",
-    "PSY",
-    "REHAB",
-    "RENAL",
-    "RESPI",
-    "RHEUM",
-    "SPORTSMED",
-    "SIG",
-    "URO",
-    "MICROB",
-    "PALLMED",
-}
-_PARSER_ONLY_FALLBACK_R_YEAR_NOT_REQUIRED = {
-    "AIM",
-    "CARDIO",
-    "EM",
-    "ENDO",
-    "ENT",
-    "EYE",
-    "GASTRO",
-    "GERI",
-    "GS",
-    "ID",
-    "IM",
-    "MEDONCO",
-    "ORTHO",
-    "PATH",
-    "REHAB",
-    "RENAL",
-    "RHEUM",
-    "SIG",
-    "URO",
-    "MICROB",
-}
 _TTF_HEADERS = {
     1: "reporting_period",
     2: "programme_code",
@@ -275,21 +223,6 @@ def _normalise_programme_config(value: ProgrammeConfig | Mapping[str, Any]) -> P
         r_year_required=bool(value.get("r_year_required", True)),
         is_subspecialty=bool(value.get("is_subspecialty", False)),
     )
-
-
-def _parser_only_fallback_programme_configs(
-    known_programmes: set[str] | None,
-) -> dict[str, ProgrammeConfig]:
-    programme_codes = known_programmes or _PARSER_ONLY_FALLBACK_PROGRAMME_CODES
-    configs: dict[str, ProgrammeConfig] = {}
-    for code in programme_codes:
-        normalised_code = _normalise_programme_code(code)
-        configs[normalised_code] = ProgrammeConfig(
-            code=normalised_code,
-            r_year_required=normalised_code not in _PARSER_ONLY_FALLBACK_R_YEAR_NOT_REQUIRED,
-            is_subspecialty=False,
-        )
-    return configs
 
 
 def _explicit_programme_configs(
@@ -811,7 +744,6 @@ async def parse_ttf_upload(
     reporting_period_id: UUID | None,
     programme_code: str | None = None,
     reporting_period_label: str | None = None,
-    known_programmes: set[str] | None = None,
     programme_configs: Mapping[str, ProgrammeConfig | Mapping[str, Any]] | None = None,
     db_session: AsyncSession | None = None,
     manage_transaction: bool = True,
@@ -853,8 +785,13 @@ async def parse_ttf_upload(
     elif programme_configs is not None:
         programme_config_by_code = _explicit_programme_configs(programme_configs)
     else:
-        programme_config_by_code = _parser_only_fallback_programme_configs(
-            known_programmes
+        workbook.close()
+        return ParserResult(
+            upload_type="ttf",
+            errors=[
+                "TTF parser requires persisted or explicitly supplied programme configuration."
+            ],
+            metadata=metadata,
         )
     warnings: list[Any] = []
     errors: list[Any] = []
@@ -935,6 +872,27 @@ async def parse_ttf_upload(
             }
         )
 
+    formula_cells = {
+        (row_idx, column_idx)
+        for row_idx, column_idx in _stored_populated_cells(
+            formula_worksheet,
+            minimum_row=header_row,
+            minimum_column=1,
+            maximum_column=10,
+        )
+        if getattr(formula_worksheet.cell(row=row_idx, column=column_idx), "data_type", None)
+        == "f"
+    }
+    rows_with_formula_cells = {row_idx for row_idx, _ in formula_cells}
+    for row_idx, column_idx in sorted(formula_cells):
+        errors.append(
+            {
+                "row": row_idx,
+                "column": _excel_column_name(column_idx),
+                "message": "Formula cells are not allowed in final A–J TTF content.",
+            }
+        )
+
     data_row_indexes = sorted(
         {
             row_idx
@@ -947,7 +905,7 @@ async def parse_ttf_upload(
         }
     )
     for row_idx in data_row_indexes:
-        if row_idx in rows_with_unsupported_columns:
+        if row_idx in rows_with_unsupported_columns or row_idx in rows_with_formula_cells:
             continue
         period_label = _cell_text(ws.cell(row=row_idx, column=1).value)
         row_programme = _cell_text(ws.cell(row=row_idx, column=2).value).upper()

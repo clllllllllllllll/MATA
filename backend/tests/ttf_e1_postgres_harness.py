@@ -25,7 +25,7 @@ from app.services.database_context import MataSyncSession
 
 
 E1_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_e2b2_verify"
-E1_REQUIRED_REVISION = "20260805_000037"
+E1_REQUIRED_REVISION = "20260806_000038"
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _RUNTIME_GROUP = "mata_app_runtime"
 _AUTH_GROUP = "mata_auth_internal"

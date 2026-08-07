@@ -75,6 +75,21 @@ class FakeProgrammeTeachingEventsSession:
             self._teaching_name("Grand Round", "DR"),
             self._teaching_name("Geri Teaching", "GERI"),
         ]
+        self.teaching_name_mappings = [
+            self._mapping_scope(
+                teaching_name_id=self.teaching_name_id_for("Journal Club", "DR"),
+                posting_code="TTSHCardio",
+            ),
+            self._mapping_scope(
+                teaching_name_id=self.teaching_name_id_for("Grand Round", "DR"),
+                posting_code="TTSHCardio",
+                teaching_target_id=str(uuid4()),
+            ),
+            self._mapping_scope(
+                teaching_name_id=self.teaching_name_id_for("Geri Teaching", "GERI"),
+                posting_code="TTSHGerMed",
+            ),
+        ]
         self.global_session_types = [
             {
                 "id": str(uuid4()),
@@ -162,6 +177,40 @@ class FakeProgrammeTeachingEventsSession:
 
     def global_session_type_id_for(self, name: str) -> str:
         return next(row["id"] for row in self.global_session_types if row["name"] == name)
+
+    def _mapping_scope(
+        self,
+        *,
+        teaching_name_id: str,
+        posting_code: str,
+        teaching_target_id: str | None = None,
+    ) -> dict:
+        teaching_name = next(
+            row for row in self.teaching_names if row["id"] == teaching_name_id
+        )
+        return {
+            "teaching_name_id": teaching_name_id,
+            "reporting_period_id": teaching_name["reporting_period_id"],
+            "programme_code": teaching_name["programme_code"],
+            "posting_code": posting_code,
+            "r_year": "R1",
+            "teaching_target_id": teaching_target_id,
+        }
+
+    def add_mapping_scope(
+        self,
+        *,
+        teaching_name_id: str,
+        posting_code: str,
+        teaching_target_id: str | None = None,
+    ) -> None:
+        self.teaching_name_mappings.append(
+            self._mapping_scope(
+                teaching_name_id=teaching_name_id,
+                posting_code=posting_code,
+                teaching_target_id=teaching_target_id,
+            )
+        )
 
     def _event(
         self,
@@ -355,6 +404,16 @@ class FakeProgrammeTeachingEventsSession:
                 self._secretary_programmes(posting_code) & {programme_code}
             )
             return _FakeResult(scalar=is_available)
+
+        if "/* programme_teaching_events:pool_mapping_scope */" in sql:
+            has_mapping_scope = any(
+                row["teaching_name_id"] == str(payload["teaching_name_id"])
+                and row["reporting_period_id"] == str(payload["reporting_period_id"])
+                and row["programme_code"] == payload["programme_code"]
+                and row["posting_code"] == payload["posting_code"]
+                for row in self.teaching_name_mappings
+            )
+            return _FakeResult(scalar=has_mapping_scope)
 
         if "/* programme_teaching_events:insert */" in sql:
             row = self._event(
@@ -778,6 +837,10 @@ def test_pc_update_cache_failure_after_commit_is_best_effort_for_both_postings(
     caplog,
 ) -> None:
     session = FakeProgrammeTeachingEventsSession()
+    session.add_mapping_scope(
+        teaching_name_id=session.teaching_name_id_for("Journal Club", "DR"),
+        posting_code="TTSHNeuro",
+    )
     invalidated_postings: list[str] = []
 
     def _invalidate(*, posting_code: str) -> None:
@@ -1048,6 +1111,10 @@ def test_pc_operational_pool_visibility_and_overlap_conflict() -> None:
     session = FakeProgrammeTeachingEventsSession()
     teaching_name = session._teaching_name("Current-period teaching", "DR")
     session.teaching_names.append(teaching_name)
+    session.add_mapping_scope(
+        teaching_name_id=teaching_name["id"],
+        posting_code="TTSHNeuro",
+    )
     scoped_event = session._event(
         event_id=str(uuid4()),
         posting_code="TTSHNeuro",
@@ -1155,10 +1222,14 @@ def test_pc_scheduled_event_requires_one_explicit_source_and_rejects_client_end_
     assert client_end_time.status_code == 422
 
 
-def test_pc_pool_event_is_pending_mapping_independent_and_preserves_snapshot() -> None:
+def test_pc_pool_event_accepts_pending_mapping_scope_and_preserves_snapshot() -> None:
     session = FakeProgrammeTeachingEventsSession()
     pending_name = session._teaching_name("Pending Pool Event", "DR")
     session.teaching_names.append(pending_name)
+    session.add_mapping_scope(
+        teaching_name_id=pending_name["id"],
+        posting_code="TTSHCardio",
+    )
     client = _client(session)
 
     created = client.post(
@@ -1186,6 +1257,41 @@ def test_pc_pool_event_is_pending_mapping_independent_and_preserves_snapshot() -
     pending_name["display_name"] = "Renamed Pending Pool Event"
     assert session.events[-1]["teaching_name"] == "Pending Pool Event"
     assert session.events[-1]["duration_hours"] == Decimal("1.0")
+
+
+def test_pc_pool_event_requires_exact_persisted_mapping_posting_scope() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    original_events = deepcopy(session.events)
+    client = _client(session)
+
+    rejected_create = client.post(
+        "/admin/programme-teaching-events",
+        headers=_headers(scope="DR"),
+        json={
+            "programme_code": "DR",
+            "posting_code": "TTSHNeuro",
+            "teaching_name_id": session.teaching_name_id_for("Journal Club", "DR"),
+            "event_date": "2026-05-20",
+            "start_time": "10:00",
+        },
+    )
+    rejected_update = client.put(
+        f"/admin/programme-teaching-events/{session.pc_dr_event_id}",
+        headers=_headers(scope="DR"),
+        json={
+            "programme_code": "DR",
+            "posting_code": "TTSHNeuro",
+            "teaching_name_id": session.teaching_name_id_for("Journal Club", "DR"),
+            "event_date": "2026-05-20",
+            "start_time": "10:00",
+        },
+    )
+
+    assert rejected_create.status_code == 422
+    assert rejected_update.status_code == 422
+    assert "mapping scope" in rejected_create.json()["detail"]
+    assert "mapping scope" in rejected_update.json()["detail"]
+    assert session.events == original_events
 
 
 def test_display_text_alone_does_not_grant_pc_list_update_or_delete() -> None:

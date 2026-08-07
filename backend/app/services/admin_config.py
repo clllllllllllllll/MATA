@@ -23,6 +23,10 @@ from app.services.ttf_scope_lock import acquire_ttf_programme_lock
 
 
 ALLOWED_MULTI_POSTING_RULE_TYPES = {"main_posting", "combine", "half_month"}
+_IMMUTABLE_R_YEAR_PROGRAMME_FLAGS = {
+    "SPORTSMED": (True, False),
+    "PALLMED": (True, False),
+}
 _ALLOWED_SCOPE_FIELD_NAMES = frozenset(
     {
         "code",
@@ -1679,6 +1683,17 @@ async def update_programme(
         programme_scope=programme_scope,
         programme_code=programme_code,
     )
+    immutable_flags = _IMMUTABLE_R_YEAR_PROGRAMME_FLAGS.get(programme_code)
+    if immutable_flags is not None:
+        required_r_year, is_subspecialty_value = immutable_flags
+        if (
+            r_year_required is not None and r_year_required != required_r_year
+        ) or (
+            is_subspecialty is not None and is_subspecialty != is_subspecialty_value
+        ):
+            _raise_validation(
+                "SPORTSMED and PALLMED must retain r_year_required=true and is_subspecialty=false."
+            )
     result = await db.execute(
         text(
             """

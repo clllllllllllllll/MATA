@@ -376,6 +376,16 @@ def test_create_programme_pc_uses_mocked_supabase_admin_and_local_user_source(
     assert "password" not in serialized_audit
 
 
+def test_programme_pc_scope_is_canonicalized_before_persistence() -> None:
+    fields = staff_accounts._fields_for_account_type(
+        account_type="programme_pc",
+        programme_scope=[" dr ", "DR", "geri", ""],
+        posting_code=None,
+    )
+
+    assert fields["programme_scope"] == ["DR", "GERI"]
+
+
 def test_create_staff_account_rejects_blank_required_fields_without_side_effects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

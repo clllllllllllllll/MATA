@@ -346,9 +346,16 @@ POLICY_CUTOVER_REVISIONS = frozenset(
         "20260804_000035",
         "20260805_000036",
         "20260805_000037",
+        "20260806_000038",
     }
 )
-FINAL_AJ_CUTOVER_REVISIONS = frozenset({"20260805_000036"})
+FINAL_AJ_CUTOVER_REVISIONS = frozenset(
+    {
+        "20260805_000036",
+        "20260805_000037",
+        "20260806_000038",
+    }
+)
 SESSION_LIFECYCLE_REVISIONS = frozenset(
     {
         "20260727_000027",
@@ -361,6 +368,8 @@ SESSION_LIFECYCLE_REVISIONS = frozenset(
         "20260804_000034",
         "20260804_000035",
         "20260805_000036",
+        "20260805_000037",
+        "20260806_000038",
     }
 )
 

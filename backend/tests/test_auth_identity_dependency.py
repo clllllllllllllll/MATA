@@ -115,6 +115,22 @@ def test_programme_pc_null_or_empty_scope_grants_no_programme_access() -> None:
     assert scoped.get("/programme/DR").status_code == 403
 
 
+def test_programme_pc_scope_and_lookup_are_case_canonicalized() -> None:
+    client = _identity_client(
+        _admin_identity(
+            admin_level="programme",
+            programme_scope=[" dr ", "DR", "geri", ""],
+        )
+    )
+
+    first = client.get("/programme/dr")
+    second = client.get("/programme/GERI")
+
+    assert first.status_code == 200
+    assert first.json()["programme_scope"] == ["DR", "GERI"]
+    assert second.status_code == 200
+
+
 def test_programme_pc_dependency_rejects_master_admin() -> None:
     client = _identity_client(_admin_identity(admin_level="master", programme_scope=[]))
 

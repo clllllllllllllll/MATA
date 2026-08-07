@@ -1449,7 +1449,7 @@ Create a programme-owned scheduled teaching event.
 
 - **Auth:** admin/PC only
 - **Scope:** request `programme_code IN programme_scope`.
-- **Validation:** Returns `422` if `event_date` is in `public_holidays` or exactly one source ID is not supplied. A pool ID must be active, in the event period, in the exact request programme, and in the authenticated PC scope; it may be pending or mapped. A global ID must be active. A pool event is always one hour, has server-computed end time, and rejects a start later than `23:00`. `teaching_name` and client `end_time` are forbidden request fields.
+- **Validation:** Returns `422` if `event_date` is in `public_holidays` or exactly one source ID is not supplied. A pool ID must be active, in the event period, in the exact request programme, and in the authenticated PC scope; it must also have an exact persisted Teaching Name mapping for that programme/period and the requested `posting_code`. The mapping may be pending or mapped. A global ID must be active. A pool event is always one hour, has server-computed end time, and rejects a start later than `23:00`. `teaching_name` and client `end_time` are forbidden request fields.
 - **Body:**
 ```json
 {
@@ -1471,7 +1471,7 @@ Edit a programme-owned scheduled teaching event.
 
 - **Auth:** admin/PC only
 - **Scope:** request `programme_code IN programme_scope`, and event must be programme-owned for that programme or a secretary-created/null-owner scheduled row visible to that programme.
-- **Validation:** Public holiday, exact-source-ID, scope, source period, immutable owner/source equality, and server-timing rules apply. An existing global event may keep its same later-inactivated global ID; a new event may not select it. A legacy event with both source IDs null returns `409` rather than receiving an inferred identity.
+- **Validation:** Public holiday, exact-source-ID, scope, exact pool-mapping posting scope, source period, immutable owner/source equality, and server-timing rules apply. An existing global event may keep its same later-inactivated global ID; a new event may not select it. A legacy event with both source IDs null returns `409` rather than receiving an inferred identity.
 - **Constraint:** Returns `409` if any native `attendance_records` or `external_attendance_records` exist for the event. `created_by_role` is preserved.
 - **Concurrency:** The service locks and reloads the event before the
   all-status attendance guard and update, so a concurrent submission cannot
@@ -1483,7 +1483,7 @@ Duplicate a programme-owned scheduled teaching event.
 
 - **Auth:** admin/PC only
 - **Scope:** request `programme_code IN programme_scope`, and source event must be programme-owned for that programme or a secretary-created/null-owner scheduled row visible to that programme.
-- **Validation:** Public holiday block applies to the duplicate date. An optional source override may supply one source ID; otherwise the source event identity is copied. A both-null legacy source requires an explicit ID and otherwise returns `409`. The duplicated event sets `created_for_programme_code = programme_code` and `created_by_role = 'programme_pc'`.
+- **Validation:** Public holiday block and the same exact pool-mapping posting scope apply to the duplicate date. An optional source override may supply one source ID; otherwise the source event identity is copied. A both-null legacy source requires an explicit ID and otherwise returns `409`. The duplicated event sets `created_for_programme_code = programme_code` and `created_by_role = 'programme_pc'`.
 
 ### DELETE `/admin/programme-teaching-events/{id}`
 

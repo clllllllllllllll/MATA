@@ -1,7 +1,7 @@
 # Security Contract
 
 Status: current repository security source of truth. This document describes
-the implemented local contract at Alembic revision `20260804_000035`. Local
+the implemented local contract at Alembic revision `20260806_000038`. Local
 source, test, and disposable-database evidence is not proof of a deployed
 Vercel or Supabase environment.
 
@@ -401,7 +401,7 @@ business rows; bounded failure evidence may still be recorded.
 
 ## 9. PostgreSQL roles, RLS, grants, and helpers
 
-At current revision `20260805_000037`:
+At current revision `20260806_000038`:
 
 - 35 application tables have RLS enabled;
 - 89 action policies target only `mata_app_runtime`;
@@ -423,6 +423,16 @@ target evidence: only the native Resident for the requested resident, a scoped
 Programme PC, or an explicit Master may invoke it. Secretary and external
 resident contexts return no resolver row before the ordinary event-visibility
 check. It returns no resident PII and performs no writes.
+
+Revision `20260806_000038` replaces (without adding a policy or widening a
+grant) the two existing pool-event write helpers. For the scoped Programme-PC
+branch only, a pool-backed insert or edit requires an exact
+`teaching_name_mappings` row matching Teaching Name ID, source reporting
+period, source programme, and event posting. The helpers remain `STABLE`,
+`SECURITY DEFINER`, fixed to `pg_catalog, pg_temp`, executable only by
+`mata_app_runtime`, and revoked from `PUBLIC`, browser roles, and the auth
+helper. Pending mappings remain eligible. Master and Secretary branches retain
+their prior boundaries; Resident and cross-programme denials are unchanged.
 
 `mata_app_runtime` and `mata_auth_internal` are stable `NOLOGIN`,
 `NOINHERIT`, `NOSUPERUSER`, `NOCREATEDB`, `NOCREATEROLE`,

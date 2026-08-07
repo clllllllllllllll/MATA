@@ -150,8 +150,8 @@ class FakeRDBSession:
             {
                 "code": "PALLMED",
                 "name": "Palliative Medicine",
-                "r_year_required": False,
-                "is_subspecialty": True,
+                "r_year_required": True,
+                "is_subspecialty": False,
                 "rdb_alias": None,
             },
             {
@@ -169,17 +169,10 @@ class FakeRDBSession:
                 "rdb_alias": "Surgery-in-General",
             },
             {
-                "code": "SPORT",
-                "name": "Sports Test",
-                "r_year_required": True,
-                "is_subspecialty": True,
-                "rdb_alias": None,
-            },
-            {
                 "code": "SPORTSMED",
                 "name": "Sports Medicine",
-                "r_year_required": False,
-                "is_subspecialty": True,
+                "r_year_required": True,
+                "is_subspecialty": False,
                 "rdb_alias": None,
             },
         ]
@@ -1100,7 +1093,74 @@ def test_reupload_validation_error_keeps_existing_resident_postings_for_period()
     assert session.resident_postings == before_rows
 
 
-def test_programme_alias_r_year_all_subspecialty_and_employed_cells() -> None:
+@pytest.mark.parametrize(
+    ("raw_r_year", "expected_error"),
+    [
+        ("", "R-year is required"),
+        ("ALL", "R-year must be one of R1 through R7"),
+        ("SS1", "R-year must be one of R1 through R7"),
+    ],
+)
+def test_actual_r_year_validation_blocks_invalid_rdb_reupload(
+    raw_r_year: str,
+    expected_error: str,
+) -> None:
+    session = FakeRDBSession()
+    period_id = uuid4()
+    valid_file = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E001",
+                name="Sports Medicine Resident",
+                mcr="M11111A",
+                r_year="R4",
+                programme="SPORTSMED",
+                jul="SportsPost",
+            )
+        ]
+    )
+    invalid_file = _rdb_workbook(
+        [
+            _resident_row(
+                employee_code="E002",
+                name="Palliative Medicine Resident",
+                mcr="M22222B",
+                r_year=raw_r_year,
+                programme="PALLMED",
+                jul="PallMedPost",
+            )
+        ]
+    )
+
+    first_result = _run(
+        parse_rdb_upload(
+            file_bytes=valid_file,
+            original_filename="valid.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+    assert first_result.errors == []
+    before_rows = list(session.resident_postings)
+
+    second_result = _run(
+        parse_rdb_upload(
+            file_bytes=invalid_file,
+            original_filename="invalid-r-year.xlsx",
+            reporting_period_id=period_id,
+            db_session=session,
+        )
+    )
+
+    assert len(second_result.errors) == 1
+    assert expected_error in second_result.errors[0]
+    assert session.resident_postings == before_rows
+    assert [row["r_year"] for row in session.resident_postings] == ["R4"]
+    assert "M22222B" not in session.residents
+    assert session.rollbacks == 1
+
+
+def test_programme_alias_all_year_actual_r_year_and_employed_cells() -> None:
     session = FakeRDBSession()
     period_id = uuid4()
     file_bytes = _rdb_workbook(
@@ -1123,14 +1183,22 @@ def test_programme_alias_r_year_all_subspecialty_and_employed_cells() -> None:
             ),
             _resident_row(
                 employee_code="E003",
-                name="Subspecialty Resident",
+                name="Sports Medicine Resident",
                 mcr="M33333C",
-                r_year="R4",
-                programme="SPORT",
+                r_year=" r4 ",
                 jul="SportsPost",
+                programme="SPORTSMED",
             ),
             _resident_row(
                 employee_code="E004",
+                name="Palliative Medicine Resident",
+                mcr="M55555E",
+                r_year="r6",
+                programme="PALLMED",
+                jul="PallMedPost",
+            ),
+            _resident_row(
+                employee_code="E005",
                 name="Employed Resident",
                 mcr="M44444D",
                 r_year="R2",
@@ -1156,9 +1224,17 @@ def test_programme_alias_r_year_all_subspecialty_and_employed_cells() -> None:
         row["resident_id"]: row for row in session.resident_postings
     }
 
+    assert result.errors == []
     assert postings_by_resident[by_mcr["M11111A"]]["r_year"] == "ALL"
     assert session.residents["M22222B"]["programme_code"] == "ID"
-    assert postings_by_resident[by_mcr["M33333C"]]["r_year"] == "SS1"
+    assert session.residents["M33333C"]["r_year"] == "R4"
+    assert postings_by_resident[by_mcr["M33333C"]]["r_year"] == "R4"
+    assert session.residents["M55555E"]["r_year"] == "R6"
+    assert postings_by_resident[by_mcr["M55555E"]]["r_year"] == "R6"
+    assert not {
+        postings_by_resident[by_mcr["M33333C"]]["r_year"],
+        postings_by_resident[by_mcr["M55555E"]]["r_year"],
+    }.intersection({"ALL", "SS1", "SS2", "SS3"})
     assert session.residents["M44444D"]["employer_tag"] == "SAF"
     assert by_mcr["M44444D"] not in postings_by_resident
     assert result.metadata["employed_residents_flagged"] == 1

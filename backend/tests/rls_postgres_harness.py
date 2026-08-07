@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+import os
 import re
 import secrets
 from uuid import uuid4
@@ -17,13 +18,26 @@ from app.config import Settings
 from app.services.database_context import MataSyncSession
 
 
-DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_e2b2_verify"
+DEFAULT_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_e2b2_verify"
+PHASE_R_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_r_verify"
+_ALLOWED_DISPOSABLE_DATABASE_NAMES = frozenset(
+    {DEFAULT_DISPOSABLE_DATABASE_NAME, PHASE_R_DISPOSABLE_DATABASE_NAME}
+)
+DISPOSABLE_DATABASE_NAME = os.environ.get(
+    "MATA_RLS_DISPOSABLE_DATABASE_NAME",
+    DEFAULT_DISPOSABLE_DATABASE_NAME,
+)
 RUNTIME_GROUP = "mata_app_runtime"
 AUTH_GROUP = "mata_auth_internal"
-REQUIRED_REVISION = "20260805_000037"
+REQUIRED_REVISION = "20260806_000038"
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _TEST_ROLE_RE = re.compile(r"mata_test_(?:runtime|auth)_[0-9a-f]{16}")
+_PHASE_R_ROLE_RE = re.compile(r"mata_phase_r_(?:runtime|auth)_[0-9a-f]{16}")
 _TEST_PASSWORD_RE = re.compile(r"[0-9a-f]{64}")
+_RUNTIME_ROLE_ENV = "MATA_RLS_RUNTIME_ROLE"
+_RUNTIME_PASSWORD_ENV = "MATA_RLS_RUNTIME_PASSWORD"
+_AUTH_ROLE_ENV = "MATA_RLS_AUTH_ROLE"
+_AUTH_PASSWORD_ENV = "MATA_RLS_AUTH_PASSWORD"
 
 
 def _assert_named_local_disposable(url: URL, *, async_url: bool) -> None:
@@ -35,6 +49,7 @@ def _assert_named_local_disposable(url: URL, *, async_url: bool) -> None:
     if (
         url.drivername not in expected_drivers
         or url.host not in _LOCAL_HOSTS
+        or DISPOSABLE_DATABASE_NAME not in _ALLOWED_DISPOSABLE_DATABASE_NAMES
         or url.database != DISPOSABLE_DATABASE_NAME
         or not url.username
         or bool(url.query)
@@ -47,9 +62,37 @@ def _assert_named_local_disposable(url: URL, *, async_url: bool) -> None:
 
 
 def _quoted_test_role(role_name: str) -> str:
-    if _TEST_ROLE_RE.fullmatch(role_name) is None:
+    if (
+        _TEST_ROLE_RE.fullmatch(role_name) is None
+        and _PHASE_R_ROLE_RE.fullmatch(role_name) is None
+    ):
         raise AssertionError("Refusing to use an unexpected PostgreSQL test role")
     return f'"{role_name}"'
+
+
+def _configured_restricted_logins() -> tuple[str, str, str, str] | None:
+    values = (
+        os.environ.get(_RUNTIME_ROLE_ENV, ""),
+        os.environ.get(_RUNTIME_PASSWORD_ENV, ""),
+        os.environ.get(_AUTH_ROLE_ENV, ""),
+        os.environ.get(_AUTH_PASSWORD_ENV, ""),
+    )
+    if not any(values):
+        return None
+    runtime_role, runtime_password, auth_role, auth_password = values
+    if not (
+        _PHASE_R_ROLE_RE.fullmatch(runtime_role)
+        and _PHASE_R_ROLE_RE.fullmatch(auth_role)
+        and runtime_role != auth_role
+        and _TEST_PASSWORD_RE.fullmatch(runtime_password)
+        and _TEST_PASSWORD_RE.fullmatch(auth_password)
+        and DISPOSABLE_DATABASE_NAME == PHASE_R_DISPOSABLE_DATABASE_NAME
+    ):
+        pytest.fail(
+            "Phase R RLS verification requires runner-provisioned exact local roles",
+            pytrace=False,
+        )
+    return runtime_role, runtime_password, auth_role, auth_password
 
 
 def _credentialed_url(owner_url: URL, role_name: str, password: str) -> URL:
@@ -180,10 +223,14 @@ async def rls_postgres_harness() -> AsyncIterator[RlsPostgresHarness]:
         )
 
     admin_engine = create_engine(owner_sync_url, poolclass=NullPool)
-    runtime_role = f"mata_test_runtime_{uuid4().hex[:16]}"
-    auth_role = f"mata_test_auth_{uuid4().hex[:16]}"
-    runtime_password = secrets.token_hex(32)
-    auth_password = secrets.token_hex(32)
+    configured_logins = _configured_restricted_logins()
+    if configured_logins is None:
+        runtime_role = f"mata_test_runtime_{uuid4().hex[:16]}"
+        auth_role = f"mata_test_auth_{uuid4().hex[:16]}"
+        runtime_password = secrets.token_hex(32)
+        auth_password = secrets.token_hex(32)
+    else:
+        runtime_role, runtime_password, auth_role, auth_password = configured_logins
     created_roles: list[tuple[str, str]] = []
     owner_engine: AsyncEngine | None = None
     runtime_engine: AsyncEngine | None = None
@@ -227,20 +274,21 @@ async def rls_postgres_harness() -> AsyncIterator[RlsPostgresHarness]:
             f"host={owner_sync_url.host}:{owner_sync_url.port or 5432}",
             flush=True,
         )
-        _create_login_member(
-            admin_engine,
-            role_name=runtime_role,
-            password=runtime_password,
-            group_name=RUNTIME_GROUP,
-        )
-        created_roles.append((runtime_role, RUNTIME_GROUP))
-        _create_login_member(
-            admin_engine,
-            role_name=auth_role,
-            password=auth_password,
-            group_name=AUTH_GROUP,
-        )
-        created_roles.append((auth_role, AUTH_GROUP))
+        if configured_logins is None:
+            _create_login_member(
+                admin_engine,
+                role_name=runtime_role,
+                password=runtime_password,
+                group_name=RUNTIME_GROUP,
+            )
+            created_roles.append((runtime_role, RUNTIME_GROUP))
+            _create_login_member(
+                admin_engine,
+                role_name=auth_role,
+                password=auth_password,
+                group_name=AUTH_GROUP,
+            )
+            created_roles.append((auth_role, AUTH_GROUP))
 
         owner_engine = create_async_engine(owner_async_url, poolclass=NullPool)
         runtime_engine = create_async_engine(

@@ -78,6 +78,12 @@ Every important decision made during the project, with reasoning and consequence
   contracts. Globals remain Admin-managed/outside the queue; ad-hoc remains
   fixed to `Department/Programme Teaching [1h]`; Non-NHG remains outside NHG
   compliance.
+- **Current Phase R RLS alignment:** Revision `20260806_000038` requires a
+  Programme-PC pool-event write to match an existing Teaching Name mapping at
+  the exact source period, source programme, and requested posting. A pending
+  mapping is sufficient; missing or cross-posting scope is denied. This is a
+  defence-in-depth match for the application authorization and does not alter
+  Secretary, Master, Resident, or cross-programme authority.
 - **Historical module labels:** Later historical entries that refer to
   `compliance.py` or `surplus.py` in a consequence, blind-spot, or planned
   module column describe the future specification only. They are not evidence

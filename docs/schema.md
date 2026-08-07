@@ -49,6 +49,13 @@ not rekey existing targets or mappings. Downgrade can restore only an empty
 catalogue structure and nullable details column; it cannot recreate deleted
 Column K text or catalogue rows.
 
+Revision `20260806_000038` keeps the same table and policy inventory while
+tightening the existing runtime-only pool-event helpers. A Programme PC's
+pool-backed insert or update now requires an exact persisted Teaching Name
+mapping for the source reporting period, source programme, and event posting.
+Pending mappings are valid; a missing mapping scope is not. Secretary and
+Master branches are unchanged.
+
 The current final model uses `teaching_name` as the canonical term:
 
 - The `teaching_names` relation is scoped by
@@ -88,6 +95,12 @@ The current final model uses `teaching_name` as the canonical term:
   never inferred from display text. Pool-backed events belong to exactly one
   programme through their Teaching Name; PC event programme must match it, and
   snapshot-text fan-out across programme pools is forbidden.
+- A Programme PC may write a pool-backed event only when a
+  `teaching_name_mappings` row exists for that exact Teaching Name, source
+  reporting period, source programme, and event posting. This is an event
+  authorization scope check, not a target-state check: both pending and mapped
+  rows qualify, while Secretary and Master event authority retains its separate
+  documented boundary.
 - Every pool-backed scheduled event is exactly one hour. The client supplies
   `start_time` only, the server computes `end_time`, and a start later than
   23:00 is a controlled `422`. A later mapping change never alters stored

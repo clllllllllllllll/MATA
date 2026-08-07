@@ -9,6 +9,16 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill
 
 from app.services.ttf_parser import parse_ttf_upload
+from tests.phase_r_readiness_manifest import (
+    ACTUAL_R_YEAR_PROGRAMME_CODES,
+    ALL_R_YEAR_PROGRAMME_CODES,
+    PROGRAMME_CONFIGS,
+)
+
+
+_DR_PROGRAMME_CONFIG = {
+    "DR": PROGRAMME_CONFIGS["DR"],
+}
 
 
 def _make_ttf_bytes(
@@ -77,6 +87,7 @@ async def _parse(
         reporting_period_id=uuid4(),
         programme_code="DR",
         reporting_period_label=reporting_period_label,
+        programme_configs=_DR_PROGRAMME_CONFIG,
     )
 
 
@@ -86,6 +97,7 @@ async def _parse_for_programme(rows: list[list[object]], programme_code: str):
         original_filename=f"Teaching_Target_File_{programme_code}.xlsx",
         reporting_period_id=uuid4(),
         programme_code=programme_code,
+        programme_configs={programme_code: PROGRAMME_CONFIGS[programme_code]},
     )
 
 
@@ -143,6 +155,7 @@ async def test_ttf_workbook_read_error_is_sanitized_and_logged(monkeypatch, capl
         original_filename="ttf.xlsx",
         reporting_period_id=uuid4(),
         programme_code="DR",
+        programme_configs=_DR_PROGRAMME_CONFIG,
     )
 
     assert result.errors == [
@@ -222,6 +235,7 @@ async def test_dynamic_sheet_detection() -> None:
         original_filename="ttf.xlsx",
         reporting_period_id=uuid4(),
         programme_code="DR",
+        programme_configs=_DR_PROGRAMME_CONFIG,
     )
     assert result.metadata is not None
     assert result.metadata["ttf_sheet"] == "Real TTF"
@@ -261,6 +275,7 @@ async def test_dynamic_sheet_detection_wrapped_header_non_first_row() -> None:
         original_filename="Teaching_Target_File_DR.xlsx",
         reporting_period_id=uuid4(),
         programme_code="DR",
+        programme_configs=_DR_PROGRAMME_CONFIG,
     )
     assert result.errors == []
     assert result.metadata["ttf_sheet"] == "DR TTF"
@@ -317,48 +332,16 @@ async def test_r_year_required_false_maps_to_all() -> None:
         original_filename="ttf.xlsx",
         reporting_period_id=uuid4(),
         programme_code="GERI",
+        programme_configs={
+            "GERI": PROGRAMME_CONFIGS["GERI"],
+        },
     )
     assert result.errors == []
     assert [row["r_year"] for row in result.metadata["targets"]] == ["ALL"]
 
 
-_ALL_R_YEAR_PROGRAMMES = (
-    "AIM",
-    "CARDIO",
-    "EM",
-    "ENDO",
-    "ENT",
-    "EYE",
-    "GASTRO",
-    "GERI",
-    "GS",
-    "ID",
-    "IM",
-    "MEDONCO",
-    "ORTHO",
-    "PATH",
-    "REHAB",
-    "RENAL",
-    "RHEUM",
-    "SIG",
-    "URO",
-    "MICROB",
-)
-
-_R_YEAR_PROGRAMMES = (
-    "ANAES",
-    "DERM",
-    "DR",
-    "FM",
-    "PSY",
-    "RESPI",
-    "SPORTSMED",
-    "PALLMED",
-)
-
-
 @pytest.mark.asyncio
-@pytest.mark.parametrize("programme_code", _ALL_R_YEAR_PROGRAMMES)
+@pytest.mark.parametrize("programme_code", ALL_R_YEAR_PROGRAMME_CODES)
 async def test_all_programmes_store_all_r_year(
     programme_code: str,
 ) -> None:
@@ -372,7 +355,7 @@ async def test_all_programmes_store_all_r_year(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("programme_code", _R_YEAR_PROGRAMMES)
+@pytest.mark.parametrize("programme_code", ACTUAL_R_YEAR_PROGRAMME_CODES)
 async def test_r_year_programmes_preserve_uploaded_years(
     programme_code: str,
 ) -> None:
@@ -474,6 +457,38 @@ async def test_formula_in_column_k_is_rejected_without_echoing_formula_text() ->
         for error in result.errors
     )
     assert "legacy teaching text" not in str(result.errors)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("column", ("E", "H", "I", "J"))
+async def test_formula_in_final_schema_is_rejected_without_echoing_formula_text(
+    column: str,
+) -> None:
+    result = await _parse(
+        [_base_row()],
+        sparse_cells={f"{column}2": '="untrusted formula text"'},
+    )
+
+    assert any(
+        error["column"] == column
+        and error["message"] == "Formula cells are not allowed in final A–J TTF content."
+        for error in result.errors
+    )
+    assert "untrusted formula text" not in str(result.errors)
+
+
+@pytest.mark.asyncio
+async def test_parse_only_mode_requires_explicit_programme_configuration() -> None:
+    result = await parse_ttf_upload(
+        file_bytes=_make_ttf_bytes(rows=[_base_row()]),
+        original_filename="ttf.xlsx",
+        reporting_period_id=uuid4(),
+        programme_code="DR",
+    )
+
+    assert result.errors == [
+        "TTF parser requires persisted or explicitly supplied programme configuration."
+    ]
 
 
 @pytest.mark.asyncio
@@ -770,6 +785,7 @@ async def test_legacy_a_k_fixture_is_rejected_when_available() -> None:
         original_filename=workbook_path.name,
         reporting_period_id=uuid4(),
         programme_code="DR",
+        programme_configs=_DR_PROGRAMME_CONFIG,
     )
     assert result.errors
     assert any(error["column"] == "K" for error in result.errors)

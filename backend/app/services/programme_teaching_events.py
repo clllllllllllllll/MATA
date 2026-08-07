@@ -261,6 +261,53 @@ async def _posting_available_for_programme(
     return bool(result.scalar_one_or_none())
 
 
+async def _ensure_pool_source_mapping_scope(
+    db: AsyncSession,
+    *,
+    source: scheduled_event_sources.ScheduledEventSource,
+    posting_code: str,
+) -> None:
+    """Require the PC's pool event posting to be an existing mapping scope."""
+
+    if not source.is_pool_backed:
+        return
+    if (
+        source.teaching_name_id is None
+        or source.reporting_period_id is None
+        or source.programme_code is None
+    ):
+        raise RuntimeError("Pool-backed scheduled event source is missing its scope")
+
+    result = await db.execute(
+        text(
+            """
+            /* programme_teaching_events:pool_mapping_scope */
+            SELECT EXISTS (
+                SELECT 1
+                FROM teaching_name_mappings AS mapping
+                WHERE mapping.teaching_name_id = :teaching_name_id
+                  AND mapping.reporting_period_id = :reporting_period_id
+                  AND mapping.programme_code = :programme_code
+                  AND mapping.posting_code = :posting_code
+            ) AS has_mapping_scope
+            """
+        ),
+        {
+            "teaching_name_id": str(source.teaching_name_id),
+            "reporting_period_id": str(source.reporting_period_id),
+            "programme_code": source.programme_code,
+            "posting_code": posting_code,
+        },
+    )
+    if bool(result.scalar_one_or_none()):
+        return
+    raise ApiError(
+        status_code=422,
+        detail="Selected Teaching Name has no configured mapping scope for this posting",
+        error_code=ErrorCode.VALIDATION_FAILED.value,
+    )
+
+
 async def list_teaching_events(
     db: AsyncSession,
     *,
@@ -701,6 +748,11 @@ async def _insert_event(
         teaching_name_id=teaching_name_id,
         global_session_type_id=global_session_type_id,
     )
+    await _ensure_pool_source_mapping_scope(
+        db,
+        source=source,
+        posting_code=posting_code,
+    )
     if source.kind == "global_session_type" and not await _posting_available_for_programme(
         db,
         programme_code=programme_code,
@@ -970,6 +1022,11 @@ async def update_teaching_event(
             detail="Teaching event source family is immutable",
             error_code=ErrorCode.CONFLICT.value,
         )
+    await _ensure_pool_source_mapping_scope(
+        db,
+        source=source_identity,
+        posting_code=posting_code,
+    )
     if source_identity.kind == "global_session_type" and not await _posting_available_for_programme(
         db,
         programme_code=programme_code,
