@@ -14,6 +14,7 @@ import pytest
 from app.middleware.errors import install_error_handlers
 from app.routers import admin
 from app.services.ttf_parser import parse_ttf_upload
+from tests.phase_r_readiness_manifest import PROGRAMME_CONFIGS
 
 
 class _FakeScalarResult:
@@ -510,6 +511,7 @@ def test_parse_only_mode_still_works_without_db_writes() -> None:
             reporting_period_id=uuid4(),
             programme_code="DR",
             db_session=None,
+            programme_configs={"DR": PROGRAMME_CONFIGS["DR"]},
         )
     )
     assert result.errors == []

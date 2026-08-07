@@ -521,7 +521,7 @@ async def _issue_context(
 async def policy_harness(
     rls_postgres_harness: RlsPostgresHarness,
 ) -> AsyncIterator[RlsPostgresHarness]:
-    assert rls_postgres_harness.revision == "20260805_000037"
+    assert rls_postgres_harness.revision == "20260806_000038"
     yield rls_postgres_harness
 
 
@@ -6775,6 +6775,54 @@ async def test_scheduled_event_source_policy_accepts_pending_ids_and_enforces_sc
                     )
             assert _sqlstate(denied_cross_programme.value) == "42501"
 
+            with pytest.raises(DBAPIError) as denied_cross_posting:
+                async with db.begin_nested():
+                    await db.execute(
+                        text(
+                            """
+                            INSERT INTO teaching_events (
+                                posting_code, created_for_programme_code,
+                                teaching_name, event_date, start_time, end_time,
+                                duration_hours, is_adhoc, created_by_role,
+                                teaching_name_id, global_session_type_id,
+                                source_programme_code,
+                                source_reporting_period_id
+                            )
+                            VALUES (
+                                :posting_b, :programme_a, 'F forbidden cross posting',
+                                DATE '2035-04-05', TIME '10:00', TIME '11:00',
+                                1.00, false, 'programme_pc',
+                                :pending_name_id, NULL,
+                                :programme_a, :source_reporting_period_id
+                            )
+                            """
+                        ),
+                        {
+                            "posting_b": values["posting_b"],
+                            "programme_a": values["programme_a"],
+                            "pending_name_id": pending_name_id,
+                            "source_reporting_period_id": values["period_id"],
+                        },
+                    )
+            assert _sqlstate(denied_cross_posting.value) == "42501"
+
+            with pytest.raises(DBAPIError) as denied_cross_posting_update:
+                async with db.begin_nested():
+                    await db.execute(
+                        text(
+                            """
+                            UPDATE teaching_events
+                            SET posting_code = :posting_b
+                            WHERE id = :event_id
+                            """
+                        ),
+                        {
+                            "posting_b": values["posting_b"],
+                            "event_id": pending_event["id"],
+                        },
+                    )
+            assert _sqlstate(denied_cross_posting_update.value) == "42501"
+
             with pytest.raises(DBAPIError) as denied_source_update:
                 async with db.begin_nested():
                     await db.execute(
@@ -6797,6 +6845,23 @@ async def test_scheduled_event_source_policy_accepts_pending_ids_and_enforces_sc
             policy_harness,
             policy_seed.contexts["master"],
         ) as db:
+            assert await db.scalar(
+                text(
+                    """
+                    SELECT mata_rls.can_insert_scheduled_event_source(
+                        :posting_b, :programme_a, :pending_name_id, NULL,
+                        :programme_a, :source_reporting_period_id,
+                        DATE '2035-04-09', false, 'programme_pc'
+                    )
+                    """
+                ),
+                {
+                    "posting_b": values["posting_b"],
+                    "programme_a": values["programme_a"],
+                    "pending_name_id": pending_name_id,
+                    "source_reporting_period_id": values["period_id"],
+                },
+            ) is True
             with pytest.raises(DBAPIError) as denied_master_owner_mismatch:
                 async with db.begin_nested():
                     await db.execute(

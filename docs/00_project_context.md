@@ -83,6 +83,14 @@ without SS remapping. The preceding 36-table/92-policy statement is historical
 pre-cutover evidence. The current local attestation inventory is 35 application
 tables and 89 policies, all scoped to `mata_app_runtime`.
 
+**Phase R local authorization update (2026-08-06):** Revision
+`20260806_000038` preserves that 35-table/89-policy inventory and narrows the
+existing pool-event write helpers to the Programme-PC authorization already
+enforced by the application: a pool source must have an exact persisted
+Teaching Name mapping for its source period/programme and requested posting.
+Pending mappings remain valid. Secretary, Master, Resident, and
+cross-programme boundaries do not change.
+
 Local code and disposable-database verification are not proof of deployed Supabase behavior.
 
 **AUD-M-06 reliable-logout local state (2026-07-28):** Logout clears local

@@ -36,7 +36,14 @@ def _normalise_admin_level(raw_value: str | None) -> str | None:
 def normalise_programme_scope(raw_scope: list[str] | None) -> list[str]:
     if raw_scope is None:
         return []
-    return [value for raw in raw_scope if (value := str(raw).strip())]
+    seen: set[str] = set()
+    normalised: list[str] = []
+    for raw in raw_scope:
+        value = raw.strip().upper() if isinstance(raw, str) else ""
+        if value and value not in seen:
+            seen.add(value)
+            normalised.append(value)
+    return normalised
 
 
 async def get_current_identity(request: Request) -> AuthIdentity:
@@ -90,7 +97,7 @@ def ensure_programme_in_scope(identity: AuthIdentity, programme_code: str) -> No
     identity.programme_scope = normalise_programme_scope(identity.programme_scope)
     if not identity.programme_scope:
         raise _forbidden("Forbidden - admin programme scope is empty")
-    if programme_code not in identity.programme_scope:
+    if programme_code.strip().upper() not in identity.programme_scope:
         raise _forbidden("Forbidden - programme not in admin scope")
 
 
