@@ -689,8 +689,8 @@ was removed by 5B-H-D.
 - Added backend-owned opaque PostgreSQL sessions, strict cookie/CSRF transport, rotation-family locking, generation fencing, logout/revocation, persistent rate limiting, upload/archive hardening, error redaction, same-origin frontend transport, and browser-role privilege revocation.
 - Removed the normal frontend Supabase session and bearer-token paths.
 - Verified migrations through `20260722_000024`, dependency audits, backend/frontend suites, PostgreSQL races, and source scans locally.
-- The cookie transport is deployed; current deployment evidence and remaining
-  timed/manual rows are recorded in `docs/deployed_auth_transport_uat.md`.
+- The cookie transport is deployed; historical deployment evidence and remaining
+  timed/manual rows are recorded in `docs/archive/deployed_auth_transport_uat.md`.
   The archived 5B-D report remains historical evidence only.
 
 Deployed-auth transport remediation audit:
@@ -706,8 +706,8 @@ Deployed-auth transport remediation audit:
   only `__Host-mata_session` plus memory-only CSRF/identity state.
 - Read-only Vercel evidence confirms both current projects are READY on the same
   reviewed `main` commit and the backend startup exception is resolved. The
-  current-commit credentialed browser/timed rows remain in
-  `docs/deployed_auth_transport_uat.md`.
+  historical credentialed browser/timed rows remain in
+  `docs/archive/deployed_auth_transport_uat.md`.
 
 5B-H-E locally implemented:
 

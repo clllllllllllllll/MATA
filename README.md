@@ -212,7 +212,7 @@ All technical specifications live in `docs/`:
 | `docs/parsing.md` | RDB and TTF Excel upload parsing rules and edge cases |
 | `docs/auth-account-contract.md` | Current identity, account, and session-lifecycle contract |
 | `docs/security.md` | Current cross-cutting security contract, locally verified controls, deployment assumptions, and deferred debt |
-| `docs/deployed_auth_transport_uat.md` | Current deployed-auth root-cause record, Vercel configuration plan, and post-deployment verification checklist |
+| `docs/archive/deployed_auth_transport_uat.md` | Historical deployed-auth root-cause record, Vercel configuration plan, and post-deployment verification checklist |
 | `docs/99_decision_log_and_gap_audit.md` | Architectural decisions, accepted trade-offs, unresolved gaps, and superseded history |
 | `docs/archive/security/phase-5b/README.md` | Historical Phase 5B security, migration, UAT, and verification records |
 | `AGENTS.md` | Architectural rules, TBD items, confirmed decisions — read before coding |
@@ -329,7 +329,7 @@ not the current merged source. The historical backend also returned
 configuration cutover is now deployed: both Vercel projects are READY on the
 same reviewed `main` commit, the database is at `20260728_000028`, and the
 current backend returns controlled health/auth responses without a current
-startup failure. See `docs/deployed_auth_transport_uat.md` for the deployed
+startup failure. See `docs/archive/deployed_auth_transport_uat.md` for the deployed
 evidence and remaining timed/manual UAT rows.
 
 ---

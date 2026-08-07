@@ -698,7 +698,7 @@ catalogue checks without displaying connection values or credentials. That
 failed attempt remains historical evidence only. The corrected retry later
 reached `20260728_000028`, and the deployed catalogue and startup attestation
 were separately verified as recorded in
-`docs/deployed_auth_transport_uat.md`.
+`docs/archive/deployed_auth_transport_uat.md`.
 
 Security migrations may restore historically compatible but weaker behavior
 during downgrade. A generic `alembic downgrade -1` is not an online production
@@ -818,8 +818,9 @@ approved deployment record; archived Phase 5B verdicts and evidence rows are
 never edited to imply a later deployment result.
 
 No local test result should be relabelled as deployed evidence.
-Use `docs/deployed_auth_transport_uat.md` for the current bounded deployment
-configuration and verification record.
+Use `docs/archive/deployed_auth_transport_uat.md` as historical bounded
+deployment configuration and verification evidence; a future deployment needs
+its own approved current record.
 
 ## 18. Deferred security debt
 
