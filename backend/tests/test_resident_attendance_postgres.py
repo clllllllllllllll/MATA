@@ -25,9 +25,10 @@ from app.services.database_context import (
     configure_request_context,
 )
 from app.services.teaching_event_locks import acquire_teaching_event_locks
+from tests.postgres_disposable_database import configured_disposable_database_name
 
 
-DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_e2b2_verify"
+DISPOSABLE_DATABASE_NAME = configured_disposable_database_name()
 _TEST_SESSION_HASH_KEY = "rls-resident-attendance-test-session-key-32-bytes"
 
 

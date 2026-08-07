@@ -22,9 +22,10 @@ from sqlalchemy.pool import NullPool
 
 from app.config import Settings
 from app.services.database_context import MataSyncSession
+from tests.postgres_disposable_database import configured_disposable_database_name
 
 
-E1_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_e2b2_verify"
+E1_DISPOSABLE_DATABASE_NAME = configured_disposable_database_name()
 E1_REQUIRED_REVISION = "20260806_000038"
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _RUNTIME_GROUP = "mata_app_runtime"
