@@ -13,8 +13,25 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.dependencies.staff_actor import StaffActorContext
 from app.errors import ApiError
+from app.services import (
+    programme_teaching_events,
+    resident_submission,
+    teaching_name_mappings,
+)
 from app.services.database_context import configure_request_context, prime_request_context
-from app.services.teaching_name_pool import TeachingNamePoolActor, delete_teaching_name
+from app.services.teaching_name_pool import (
+    TeachingNamePoolActor,
+    create_teaching_name,
+    deactivate_teaching_name,
+    delete_teaching_name,
+)
+from app.services.teaching_target_resolution import (
+    FixedAdhocTargetResolution,
+    GlobalExcludedResolution,
+    MappedTargetResolution,
+    PendingMappingResolution,
+    resolve_native_teaching_target,
+)
 from app.services.ttf_parser import (
     ParsedTeachingTargetRow,
     TTFUploadLockError,
@@ -1917,3 +1934,603 @@ async def test_e1_mapping_reconciliation_uses_verified_restricted_runtime_contex
                 {"period_id": period_id},
             )
             await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_phase_l_real_postgres_journey_from_ttf_to_mapping_clear_and_next_read(
+    ttf_e1_restricted_runtime_harness: E1RestrictedRuntimeHarness,
+) -> None:
+    """Exercise the Phase L path through real services, RLS, and PostgreSQL."""
+
+    suffix = uuid4().hex[:12].upper()
+    period_id = uuid4()
+    programme_id = uuid4()
+    posting_id = uuid4()
+    pool_id = uuid4()
+    pc_id = uuid4()
+    pc_supabase_id = uuid4()
+    resident_id = uuid4()
+    global_session_type_id = uuid4()
+    programme_code = f"PL{suffix}"[:20]
+    posting_code = f"PLP{suffix}"
+    reporting_period_label = f"Phase L {suffix}"
+    target_name = f"Phase L target {suffix} [1h]"
+    fixed_adhoc_target_name = "Department/Programme Teaching [1h]"
+    teaching_name = f"Phase L pool {suffix}"
+    resident_mcr = f"PL{suffix}"
+    event_date = date(2042, 3, 12)
+    adhoc_date = date(2042, 3, 10)
+    pc_actor = TeachingNamePoolActor(
+        kind="programme_pc",
+        user_id=pc_id,
+        staff_actor=StaffActorContext(
+            actor_user_id=pc_id,
+            actor_role="admin",
+            actor_name="Phase L Programme PC",
+            actor_admin_level="programme",
+        ),
+        programme_scope=frozenset({programme_code}),
+    )
+    valid_ttf = _ttf_workbook_bytes(
+        [
+            [
+                reporting_period_label,
+                programme_code,
+                "R1",
+                posting_code,
+                "",
+                target_name,
+                1,
+                "Yes",
+                "No",
+                "",
+            ],
+            [
+                reporting_period_label,
+                programme_code,
+                "R1",
+                posting_code,
+                "",
+                fixed_adhoc_target_name,
+                1,
+                "Yes",
+                "No",
+                "",
+            ],
+        ]
+    )
+    rejected_k_ttf = _ttf_workbook_bytes(
+        [
+            [
+                reporting_period_label,
+                programme_code,
+                "R1",
+                posting_code,
+                "",
+                target_name,
+                1,
+                "Yes",
+                "No",
+                "",
+                "legacy free text is not accepted",
+            ]
+        ]
+    )
+    target_id: UUID | None = None
+    fixed_adhoc_target_id: UUID | None = None
+    pool_event_id: UUID | None = None
+    global_event_id: UUID | None = None
+    adhoc_event_id: UUID | None = None
+
+    try:
+        async with ttf_e1_restricted_runtime_harness.owner_session() as owner_db:
+            owner_db.info["mata_rls_enabled"] = False
+            await owner_db.execute(
+                text(
+                    """
+                    INSERT INTO reporting_periods (
+                        id, label, start_date, end_date, status
+                    )
+                    VALUES (:id, :label, DATE '2042-01-01', DATE '2042-06-30', 'active')
+                    """
+                ),
+                {"id": period_id, "label": reporting_period_label},
+            )
+            await owner_db.execute(
+                text(
+                    """
+                    INSERT INTO programmes (
+                        id, code, name, ay_date_category, r_year_required, is_subspecialty
+                    )
+                    VALUES (
+                        :id, :programme_code, :name, 'non_im_subspec', true, false
+                    )
+                    """
+                ),
+                {
+                    "id": programme_id,
+                    "programme_code": programme_code,
+                    "name": f"Phase L programme {suffix}",
+                },
+            )
+            await owner_db.execute(
+                text(
+                    """
+                    INSERT INTO posting_codes (
+                        id, code, display_name, supports_secretary_events
+                    )
+                    VALUES (:id, :code, :code, true)
+                    """
+                ),
+                {"id": posting_id, "code": posting_code},
+            )
+            await owner_db.execute(
+                text(
+                    """
+                    INSERT INTO secretary_programme_pools (
+                        id, posting_code, programme_code, is_active,
+                        can_manage_teaching_names
+                    )
+                    VALUES (:id, :posting_code, :programme_code, true, true)
+                    """
+                ),
+                {
+                    "id": pool_id,
+                    "posting_code": posting_code,
+                    "programme_code": programme_code,
+                },
+            )
+            await owner_db.execute(
+                text(
+                    """
+                    INSERT INTO users (
+                        id, email, password_hash, role, name, posting_code,
+                        programme_scope, admin_level, supabase_user_id,
+                        current_staff_actor_name
+                    )
+                    VALUES (
+                        :id, :email, 'test-hash', 'admin', :name, NULL,
+                        ARRAY[:programme_code]::text[], 'programme', :supabase_user_id,
+                        :actor_name
+                    )
+                    """
+                ),
+                {
+                    "id": pc_id,
+                    "email": f"phase-l-pc-{suffix}@example.test",
+                    "name": "Phase L Programme PC",
+                    "programme_code": programme_code,
+                    "supabase_user_id": pc_supabase_id,
+                    "actor_name": "Phase L Programme PC",
+                },
+            )
+            await owner_db.execute(
+                text(
+                    """
+                    INSERT INTO residents (id, name, mcr, programme_code, r_year, status)
+                    VALUES (:id, :name, :mcr, :programme_code, 'R1', 'active')
+                    """
+                ),
+                {
+                    "id": resident_id,
+                    "name": "Phase L Resident",
+                    "mcr": resident_mcr,
+                    "programme_code": programme_code,
+                },
+            )
+            await owner_db.execute(
+                text(
+                    """
+                    INSERT INTO resident_postings (
+                        id, resident_id, reporting_period_id, posting_code,
+                        r_year, start_date, end_date, status
+                    )
+                    VALUES (
+                        :id, :resident_id, :period_id, :posting_code,
+                        'R1', DATE '2042-01-01', DATE '2042-06-30', 'active'
+                    )
+                    """
+                ),
+                {
+                    "id": uuid4(),
+                    "resident_id": resident_id,
+                    "period_id": period_id,
+                    "posting_code": posting_code,
+                },
+            )
+            await owner_db.execute(
+                text(
+                    """
+                    INSERT INTO global_session_types (id, name, duration_hours, is_active)
+                    VALUES (:id, :name, 1.0, true)
+                    """
+                ),
+                {
+                    "id": global_session_type_id,
+                    "name": f"Phase L global {suffix}",
+                },
+            )
+
+            rejected = await parse_ttf_upload(
+                file_bytes=rejected_k_ttf,
+                original_filename="phase-l-column-k.xlsx",
+                reporting_period_id=period_id,
+                programme_code=programme_code,
+                db_session=owner_db,
+                manage_transaction=False,
+            )
+            assert any(
+                error["column"] == "K"
+                and "TTF accepts columns A–J only" in error["message"]
+                for error in rejected.errors
+            )
+
+            uploaded = await parse_ttf_upload(
+                file_bytes=valid_ttf,
+                original_filename="phase-l-valid.xlsx",
+                reporting_period_id=period_id,
+                programme_code=programme_code,
+                db_session=owner_db,
+                manage_transaction=False,
+            )
+            assert uploaded.errors == []
+            assert uploaded.metadata["targets_inserted"] == 2
+            target_row = (
+                await owner_db.execute(
+                    text(
+                        """
+                        SELECT target.id
+                        FROM teaching_targets AS target
+                        JOIN session_types AS session_type
+                          ON session_type.id = target.session_type_id
+                        WHERE reporting_period_id = :period_id
+                          AND programme_code = :programme_code
+                          AND posting_code = :posting_code
+                          AND r_year = 'R1'
+                          AND session_type.name = :target_name
+                        """
+                    ),
+                    {
+                        "period_id": period_id,
+                        "programme_code": programme_code,
+                        "posting_code": posting_code,
+                        "target_name": target_name,
+                    },
+                )
+            ).mappings().one()
+            target_id = UUID(str(target_row["id"]))
+            fixed_adhoc_target_row = (
+                await owner_db.execute(
+                    text(
+                        """
+                        SELECT target.id
+                        FROM teaching_targets AS target
+                        JOIN session_types AS session_type
+                          ON session_type.id = target.session_type_id
+                        WHERE target.reporting_period_id = :period_id
+                          AND target.programme_code = :programme_code
+                          AND target.posting_code = :posting_code
+                          AND target.r_year = 'R1'
+                          AND session_type.name = :target_name
+                        """
+                    ),
+                    {
+                        "period_id": period_id,
+                        "programme_code": programme_code,
+                        "posting_code": posting_code,
+                        "target_name": fixed_adhoc_target_name,
+                    },
+                )
+            ).mappings().one()
+            fixed_adhoc_target_id = UUID(str(fixed_adhoc_target_row["id"]))
+            await owner_db.commit()
+
+        async with ttf_e1_restricted_runtime_harness.auth_session() as auth_db:
+            pc_context = await _issue_staff_context(
+                auth_db,
+                user_id=pc_id,
+                supabase_user_id=pc_supabase_id,
+            )
+            resident_context = await _issue_resident_context(
+                auth_db,
+                resident_id=resident_id,
+                normalized_mcr=resident_mcr,
+            )
+            await auth_db.commit()
+
+        async with ttf_e1_restricted_runtime_harness.runtime_context_session() as pc_db:
+            await _configure_runtime_context(pc_db, pc_context)
+            created_name = await create_teaching_name(
+                pc_db,
+                actor=pc_actor,
+                reporting_period_id=period_id,
+                programme_code=programme_code,
+                teaching_name=teaching_name,
+            )
+            mapping_payload = await teaching_name_mappings.list_mappings(
+                pc_db,
+                actor=pc_actor,
+                reporting_period_id=period_id,
+                programme_code=programme_code,
+                posting_code=posting_code,
+                r_year="R1",
+            )
+            assert mapping_payload["total"] == 1
+            pending_mapping = mapping_payload["items"][0]
+            assert pending_mapping["teaching_name_id"] == created_name["id"]
+            assert pending_mapping["state"] == "pending"
+
+            pool_event = await programme_teaching_events.create_teaching_event(
+                pc_db,
+                source_actor=pc_actor,
+                audit_actor=pc_actor.staff_actor,
+                programme_code=programme_code,
+                posting_code=posting_code,
+                teaching_name_id=UUID(str(created_name["id"])),
+                global_session_type_id=None,
+                event_date=event_date,
+                start_time=time(9, 0),
+                cme_points_awarded=False,
+                smc_event_code=None,
+            )
+            global_event = await programme_teaching_events.create_teaching_event(
+                pc_db,
+                source_actor=pc_actor,
+                audit_actor=pc_actor.staff_actor,
+                programme_code=programme_code,
+                posting_code=posting_code,
+                teaching_name_id=None,
+                global_session_type_id=global_session_type_id,
+                event_date=event_date,
+                start_time=time(11, 0),
+                cme_points_awarded=False,
+                smc_event_code=None,
+            )
+            pool_event_id = UUID(str(pool_event["id"]))
+            global_event_id = UUID(str(global_event["id"]))
+
+        async with ttf_e1_restricted_runtime_harness.runtime_context_session() as resident_db:
+            await _configure_runtime_context(resident_db, resident_context)
+            visible = await resident_submission.list_available_events(
+                resident_db,
+                resident_id=resident_id,
+                today=event_date,
+            )
+            assert {UUID(str(event["id"])) for event in visible["events"]} == {
+                pool_event_id,
+                global_event_id,
+            }
+            submitted = await resident_submission.submit_attendance(
+                resident_db,
+                resident_id=resident_id,
+                event_ids=[pool_event_id],
+                today=event_date,
+            )
+            assert submitted["submitted"] == 1
+            pending_resolution = await resolve_native_teaching_target(
+                resident_db,
+                resident_id=resident_id,
+                event_id=pool_event_id,
+            )
+            assert isinstance(pending_resolution, PendingMappingResolution)
+            global_resolution = await resolve_native_teaching_target(
+                resident_db,
+                resident_id=resident_id,
+                event_id=global_event_id,
+            )
+            assert isinstance(global_resolution, GlobalExcludedResolution)
+            adhoc = await resident_submission.submit_adhoc_teaching(
+                resident_db,
+                resident_id=resident_id,
+                event_date=adhoc_date,
+                start_time=time(15, 0),
+                details_of_session="Phase L synthetic fixed ad-hoc evidence",
+            )
+            adhoc_event_id = UUID(str(adhoc["event"]["id"]))
+            fixed_adhoc_resolution = await resolve_native_teaching_target(
+                resident_db,
+                resident_id=resident_id,
+                event_id=adhoc_event_id,
+            )
+            assert isinstance(fixed_adhoc_resolution, FixedAdhocTargetResolution)
+            assert fixed_adhoc_resolution.teaching_target_id == fixed_adhoc_target_id
+
+        async with ttf_e1_restricted_runtime_harness.runtime_context_session() as pc_db:
+            await _configure_runtime_context(pc_db, pc_context)
+            mapped = await teaching_name_mappings.apply_mapping_change(
+                pc_db,
+                actor=pc_actor,
+                mapping_id=UUID(str(pending_mapping["id"])),
+                expected_revision=int(pending_mapping["revision"]),
+                teaching_target_id=target_id,
+                confirm_impact=False,
+            )
+            assert mapped["state"] == "mapped"
+
+        async with ttf_e1_restricted_runtime_harness.runtime_context_session() as resident_db:
+            await _configure_runtime_context(resident_db, resident_context)
+            mapped_resolution = await resolve_native_teaching_target(
+                resident_db,
+                resident_id=resident_id,
+                event_id=pool_event_id,
+            )
+            assert isinstance(mapped_resolution, MappedTargetResolution)
+            assert mapped_resolution.teaching_target_id == target_id
+
+        async with ttf_e1_restricted_runtime_harness.runtime_context_session() as pc_db:
+            await _configure_runtime_context(pc_db, pc_context)
+            impact = await teaching_name_mappings.get_mapping_impact(
+                pc_db,
+                actor=pc_actor,
+                mapping_id=UUID(str(mapped["id"])),
+                expected_revision=int(mapped["revision"]),
+                teaching_target_id=None,
+            )
+            assert impact == {"affected_event_count": 1, "affected_attendance_count": 1}
+            with pytest.raises(ApiError) as unconfirmed_clear:
+                await teaching_name_mappings.apply_mapping_change(
+                    pc_db,
+                    actor=pc_actor,
+                    mapping_id=UUID(str(mapped["id"])),
+                    expected_revision=int(mapped["revision"]),
+                    teaching_target_id=None,
+                    confirm_impact=False,
+                )
+            assert unconfirmed_clear.value.status_code == 409
+            cleared = await teaching_name_mappings.apply_mapping_change(
+                pc_db,
+                actor=pc_actor,
+                mapping_id=UUID(str(mapped["id"])),
+                expected_revision=int(mapped["revision"]),
+                teaching_target_id=None,
+                confirm_impact=True,
+            )
+            assert cleared["state"] == "pending"
+            assert cleared["impact"] == impact
+            inactive_name = await deactivate_teaching_name(
+                pc_db,
+                actor=pc_actor,
+                teaching_name_id=UUID(str(created_name["id"])),
+                expected_revision=int(created_name["revision"]),
+            )
+            assert inactive_name["is_active"] is False
+            with pytest.raises(ApiError) as inactive_source:
+                await programme_teaching_events.create_teaching_event(
+                    pc_db,
+                    source_actor=pc_actor,
+                    audit_actor=pc_actor.staff_actor,
+                    programme_code=programme_code,
+                    posting_code=posting_code,
+                    teaching_name_id=UUID(str(created_name["id"])),
+                    global_session_type_id=None,
+                    event_date=event_date,
+                    start_time=time(13, 0),
+                    cme_points_awarded=False,
+                    smc_event_code=None,
+                )
+            assert inactive_source.value.status_code == 422
+
+        async with ttf_e1_restricted_runtime_harness.runtime_context_session() as resident_db:
+            await _configure_runtime_context(resident_db, resident_context)
+            cleared_resolution = await resolve_native_teaching_target(
+                resident_db,
+                resident_id=resident_id,
+                event_id=pool_event_id,
+            )
+            assert isinstance(cleared_resolution, PendingMappingResolution)
+
+        async with ttf_e1_restricted_runtime_harness.owner_session() as owner_db:
+            audit_count = await owner_db.scalar(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM audit_logs
+                    WHERE actor_user_id = :actor_user_id
+                      AND action = 'programme_pc.teaching_name_mapping.update'
+                    """
+                ),
+                {"actor_user_id": pc_id},
+            )
+            assert audit_count == 2
+    finally:
+        async with ttf_e1_restricted_runtime_harness.owner_session() as owner_db:
+            await owner_db.execute(
+                text("DELETE FROM audit_logs WHERE actor_user_id = :actor_user_id"),
+                {"actor_user_id": pc_id},
+            )
+            await owner_db.execute(
+                text("DELETE FROM attendance_records WHERE resident_id = :resident_id"),
+                {"resident_id": resident_id},
+            )
+            await owner_db.execute(
+                text(
+                    """
+                    DELETE FROM teaching_events
+                    WHERE created_for_programme_code = :programme_code
+                       OR (
+                           posting_code = :posting_code
+                           AND is_adhoc = true
+                       )
+                    """
+                ),
+                {
+                    "programme_code": programme_code,
+                    "posting_code": posting_code,
+                },
+            )
+            await owner_db.execute(
+                text("DELETE FROM app_sessions WHERE subject_id IN (:pc_id, :resident_id)"),
+                {"pc_id": pc_id, "resident_id": resident_id},
+            )
+            await owner_db.execute(
+                text(
+                    """
+                    DELETE FROM teaching_name_mappings
+                    WHERE reporting_period_id = :period_id
+                      AND programme_code = :programme_code
+                    """
+                ),
+                {"period_id": period_id, "programme_code": programme_code},
+            )
+            await owner_db.execute(
+                text(
+                    """
+                    DELETE FROM teaching_names
+                    WHERE reporting_period_id = :period_id
+                      AND programme_code = :programme_code
+                    """
+                ),
+                {"period_id": period_id, "programme_code": programme_code},
+            )
+            await owner_db.execute(
+                text(
+                    """
+                    DELETE FROM teaching_targets
+                    WHERE reporting_period_id = :period_id
+                      AND programme_code = :programme_code
+                    """
+                ),
+                {"period_id": period_id, "programme_code": programme_code},
+            )
+            await owner_db.execute(
+                text(
+                    """
+                    DELETE FROM session_types
+                    WHERE name = ANY(CAST(:session_type_names AS text[]))
+                    """
+                ),
+                {"session_type_names": [target_name, fixed_adhoc_target_name]},
+            )
+            await owner_db.execute(
+                text("DELETE FROM resident_postings WHERE resident_id = :resident_id"),
+                {"resident_id": resident_id},
+            )
+            await owner_db.execute(
+                text("DELETE FROM residents WHERE id = :resident_id"),
+                {"resident_id": resident_id},
+            )
+            await owner_db.execute(
+                text("DELETE FROM global_session_types WHERE id = :id"),
+                {"id": global_session_type_id},
+            )
+            await owner_db.execute(
+                text("DELETE FROM secretary_programme_pools WHERE id = :id"),
+                {"id": pool_id},
+            )
+            await owner_db.execute(
+                text("DELETE FROM users WHERE id = :id"),
+                {"id": pc_id},
+            )
+            await owner_db.execute(
+                text("DELETE FROM programmes WHERE id = :id"),
+                {"id": programme_id},
+            )
+            await owner_db.execute(
+                text("DELETE FROM posting_codes WHERE id = :id"),
+                {"id": posting_id},
+            )
+            await owner_db.execute(
+                text("DELETE FROM reporting_periods WHERE id = :id"),
+                {"id": period_id},
+            )
+            await owner_db.commit()

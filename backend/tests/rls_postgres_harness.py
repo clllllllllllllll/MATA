@@ -21,11 +21,13 @@ from app.services.database_context import MataSyncSession
 DEFAULT_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_e2b2_verify"
 PHASE_R_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_r_verify"
 PHASE_K_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_k_verify"
+PHASE_L_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_l_verify"
 _ALLOWED_DISPOSABLE_DATABASE_NAMES = frozenset(
     {
         DEFAULT_DISPOSABLE_DATABASE_NAME,
         PHASE_R_DISPOSABLE_DATABASE_NAME,
         PHASE_K_DISPOSABLE_DATABASE_NAME,
+        PHASE_L_DISPOSABLE_DATABASE_NAME,
     }
 )
 DISPOSABLE_DATABASE_NAME = os.environ.get(
@@ -37,7 +39,7 @@ AUTH_GROUP = "mata_auth_internal"
 REQUIRED_REVISION = "20260806_000038"
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _TEST_ROLE_RE = re.compile(r"mata_test_(?:runtime|auth)_[0-9a-f]{16}")
-_PHASE_R_ROLE_RE = re.compile(r"mata_phase_(?:r|k)_(?:runtime|auth)_[0-9a-f]{16}")
+_PHASE_R_ROLE_RE = re.compile(r"mata_phase_(?:r|k|l)_(?:runtime|auth)_[0-9a-f]{16}")
 _TEST_PASSWORD_RE = re.compile(r"[0-9a-f]{64}")
 _RUNTIME_ROLE_ENV = "MATA_RLS_RUNTIME_ROLE"
 _RUNTIME_PASSWORD_ENV = "MATA_RLS_RUNTIME_PASSWORD"
@@ -92,7 +94,11 @@ def _configured_restricted_logins() -> tuple[str, str, str, str] | None:
         and _TEST_PASSWORD_RE.fullmatch(runtime_password)
         and _TEST_PASSWORD_RE.fullmatch(auth_password)
         and DISPOSABLE_DATABASE_NAME
-        in {PHASE_R_DISPOSABLE_DATABASE_NAME, PHASE_K_DISPOSABLE_DATABASE_NAME}
+        in {
+            PHASE_R_DISPOSABLE_DATABASE_NAME,
+            PHASE_K_DISPOSABLE_DATABASE_NAME,
+            PHASE_L_DISPOSABLE_DATABASE_NAME,
+        }
     ):
         pytest.fail(
             "Phase R RLS verification requires runner-provisioned exact local roles",

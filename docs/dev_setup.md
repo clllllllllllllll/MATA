@@ -178,9 +178,9 @@ Supabase project reference. Users who used a pre-cookie deployment must clear
 site data once after the corrected release, then open a new tab. This
 operational cleanup is not a substitute for the cookie-only build.
 
-The exact read-only Vercel inspection, deployment configuration, and
+The historical read-only Vercel inspection, deployment configuration, and
 post-deployment browser checklist is
-`docs/deployed_auth_transport_uat.md`. Do not treat local gates as deployed
+`docs/archive/deployed_auth_transport_uat.md`. Do not treat local gates as deployed
 evidence or deploy without separate authorization.
 
 The current security contract is `docs/security.md`. Historical
