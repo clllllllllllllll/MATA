@@ -34,6 +34,7 @@ const navigationSource = readFileSync(
   fileURLToPath(new URL('../../config/navigation.ts', import.meta.url)),
   'utf8',
 )
+const stylesheetSource = readFileSync(fileURLToPath(new URL('../../index.css', import.meta.url)), 'utf8')
 const adhocSectionSource = pageSource.slice(pageSource.indexOf('Ad-hoc Teaching Submission'))
 const adhocSubmitSource = apiSource.slice(
   apiSource.indexOf('export const submitResidentAdhocTeaching'),
@@ -143,6 +144,17 @@ assert(
   'recent widget link targets the correct past submissions route for NHG and Non-NHG residents',
 )
 assert(pageSource.includes('resident-history-card-header'), 'recent submissions header has dedicated spacing class')
+assert(
+  stylesheetSource.includes(`.resident-history-card-header {
+    flex-direction: column;
+    align-items: stretch;
+  }`) &&
+    stylesheetSource.includes(`.resident-history-card-header .button {
+    width: 100%;
+    white-space: normal;
+  }`),
+  'recent submissions header stacks its action at narrow widths without page-level overflow',
+)
 assert(appSource.includes("path=\"/resident/attendance\""), '/resident/attendance route is registered')
 assert(navigationSource.includes("label: 'Past Submissions'"), 'Past Submissions appears in resident navigation')
 assert(pageSource.includes('handleDeleteAttendance'), 'recent widget supports delete submission action')

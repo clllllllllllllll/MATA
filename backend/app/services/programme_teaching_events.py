@@ -163,7 +163,19 @@ async def teaching_name_options(
                 tn.display_name AS teaching_name,
                 tn.programme_code,
                 CAST(1.00 AS numeric) AS duration_hours,
-                false AS is_global
+                false AS is_global,
+                ARRAY(
+                    SELECT DISTINCT mapping.posting_code
+                    FROM teaching_name_mappings AS mapping
+                    JOIN secretary_programme_pools AS spp
+                      ON spp.posting_code = mapping.posting_code
+                     AND spp.programme_code = mapping.programme_code
+                     AND spp.is_active = true
+                    WHERE mapping.teaching_name_id = tn.id
+                      AND mapping.reporting_period_id = tn.reporting_period_id
+                      AND mapping.programme_code = tn.programme_code
+                    ORDER BY mapping.posting_code
+                ) AS posting_codes
             FROM teaching_names tn
             WHERE tn.programme_code = :programme_code
               AND tn.reporting_period_id = :reporting_period_id

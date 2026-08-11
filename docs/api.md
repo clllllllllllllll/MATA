@@ -1441,7 +1441,7 @@ Return teaching-name options for PC event creation.
 - **Auth:** admin/PC only
 - **Query params:** `programme_code` required; `reporting_period_id` or `event_date` optional. An explicit period must be effectively active. When both are supplied, `event_date` must belong to the explicit period or the API returns `422`. With neither option, the backend resolves the single effectively active period containing today. Options are scoped to that resolved period.
 - **Scope:** `programme_code IN programme_scope`.
-- **Source:** Active `teaching_names` in the selected programme and period, plus active `global_session_types`. Pool options expose `teaching_name_id`; global options expose `global_session_type_id`. Same display text in two pools remains two choices with distinct IDs.
+- **Source:** Active `teaching_names` in the selected programme and period, plus active `global_session_types`. Pool options expose `teaching_name_id`; global options expose `global_session_type_id`. Each pool option's `posting_codes` contains only exact persisted mapping scopes that are also active programme postings; each global option exposes all active programme postings. Same display text in two pools remains two choices with distinct IDs.
 
 ### POST `/admin/programme-teaching-events`
 

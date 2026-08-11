@@ -14,6 +14,7 @@ import { PageHero } from '../../components/PageHero'
 import { StatusBadge } from '../../components/StatusBadge'
 import { uploadLabels } from '../../config/frontendConfig'
 import { useAppState } from '../../context/useAppState'
+import { useAuth } from '../../context/useAuth'
 import type { UploadType } from '../../types/app'
 import type { UploadLogListItem, UploadLogStatus } from '../../types/upload'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
@@ -124,6 +125,7 @@ const formatMobileUploadSummary = (log: UploadLogListItem) => {
 
 export const AdminHomePage = () => {
   const navigate = useNavigate()
+  const { identity } = useAuth()
   const { demoAdminId, demoAdminProgrammes } = useAppState()
   const [uploadLogs, setUploadLogs] = useState<UploadLogListItem[]>([])
   const [uploadLogsLoading, setUploadLogsLoading] = useState(true)
@@ -188,7 +190,7 @@ export const AdminHomePage = () => {
   return (
     <div className="page admin-home-page">
       <PageHero
-        title="Welcome back, Demo Admin"
+        title={`Welcome back, ${identity?.name ?? 'Master Admin'}`}
         subtitle="Master Admin - All programmes - System overview"
         actions={
           <div className="hero-action-row">

@@ -356,6 +356,23 @@ class FakeProgrammeTeachingEventsSession:
                     "programme_code": row["programme_code"],
                     "duration_hours": Decimal("1.0"),
                     "is_global": False,
+                    "posting_codes": sorted(
+                        {
+                            mapping["posting_code"]
+                            for mapping in self.teaching_name_mappings
+                            if mapping["teaching_name_id"] == row["id"]
+                            and mapping["reporting_period_id"]
+                            == row["reporting_period_id"]
+                            and mapping["programme_code"] == row["programme_code"]
+                            and any(
+                                pool["posting_code"] == mapping["posting_code"]
+                                and pool["programme_code"]
+                                == mapping["programme_code"]
+                                and pool["is_active"]
+                                for pool in self.secretary_programme_pools
+                            )
+                        }
+                    ),
                 }
                 for row in self.teaching_names
                 if row["programme_code"] == payload["programme_code"]
@@ -1173,6 +1190,31 @@ def test_global_teaching_name_options_include_safe_programme_postings() -> None:
     )
     assert department_meeting["is_global"] is True
     assert department_meeting["posting_codes"] == ["TTSHGerMed"]
+
+
+def test_pool_teaching_name_options_include_only_exact_safe_mapping_postings() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    session.secretary_programme_pools.append(
+        {"posting_code": "TTSHNeuro", "programme_code": "DR", "is_active": True}
+    )
+    client = _client(session)
+
+    response = client.get(
+        "/admin/programme-teaching-name-options",
+        headers=_headers(scope="DR"),
+        params={"programme_code": "DR"},
+    )
+
+    assert response.status_code == 200
+    journal_club = next(
+        row for row in response.json()["options"] if row["keyword"] == "Journal Club"
+    )
+    department_meeting = next(
+        row for row in response.json()["options"] if row["keyword"] == "Department Meeting [1h]"
+    )
+    assert journal_club["is_global"] is False
+    assert journal_club["posting_codes"] == ["TTSHCardio"]
+    assert department_meeting["posting_codes"] == ["TTSHCardio", "TTSHNeuro"]
 
 
 def test_pc_scheduled_event_requires_one_explicit_source_and_rejects_client_end_time() -> None:
