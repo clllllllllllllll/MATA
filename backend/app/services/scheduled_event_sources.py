@@ -10,10 +10,13 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
+from app.services.pool_event_timing import (
+    PoolEventTimingScope,
+    resolve_pool_event_timing,
+)
 from app.services.teaching_name_pool import TeachingNamePoolActor
 
 
-POOL_EVENT_DURATION_HOURS = Decimal("1.00")
 ScheduledEventSourceKind = Literal["teaching_name", "global_session_type"]
 
 
@@ -26,6 +29,7 @@ class ScheduledEventSource:
     kind: ScheduledEventSourceKind
     programme_code: str | None = None
     reporting_period_id: UUID | None = None
+    duration_is_mapped: bool = True
 
     @property
     def is_pool_backed(self) -> bool:
@@ -141,6 +145,7 @@ async def _resolve_teaching_name_source(
     actor: TeachingNamePoolActor,
     teaching_name_id: UUID,
     reporting_period_id: UUID | str,
+    posting_code: str,
     programme_code: str | None,
 ) -> ScheduledEventSource:
     result = await db.execute(
@@ -181,14 +186,25 @@ async def _resolve_teaching_name_source(
     if not bool(source["is_active"]):
         raise _validation_error("Selected Teaching Name is inactive")
 
+    timing = await resolve_pool_event_timing(
+        db,
+        scope=PoolEventTimingScope(
+            teaching_name_id=source["id"],
+            reporting_period_id=source["reporting_period_id"],
+            programme_code=source_programme_code,
+            posting_code=posting_code,
+        ),
+    )
+
     return ScheduledEventSource(
         teaching_name_id=UUID(str(source["id"])),
         global_session_type_id=None,
         teaching_name=str(source["teaching_name"]),
-        duration_hours=POOL_EVENT_DURATION_HOURS,
+        duration_hours=timing.duration_hours,
         kind="teaching_name",
         programme_code=source_programme_code,
         reporting_period_id=UUID(str(source["reporting_period_id"])),
+        duration_is_mapped=timing.is_mapped,
     )
 
 
@@ -230,6 +246,7 @@ async def resolve_scheduled_event_source(
     reporting_period_id: UUID | str,
     teaching_name_id: UUID | None,
     global_session_type_id: UUID | None,
+    posting_code: str | None = None,
     programme_code: str | None = None,
     allow_inactive_global_session_type_id: UUID | None = None,
 ) -> ScheduledEventSource:
@@ -240,11 +257,14 @@ async def resolve_scheduled_event_source(
         global_session_type_id=global_session_type_id,
     )
     if teaching_name_id is not None:
+        if not posting_code:
+            raise _validation_error("posting_code is required for a Teaching Name source")
         return await _resolve_teaching_name_source(
             db,
             actor=actor,
             teaching_name_id=teaching_name_id,
             reporting_period_id=reporting_period_id,
+            posting_code=posting_code,
             programme_code=programme_code,
         )
     assert global_session_type_id is not None

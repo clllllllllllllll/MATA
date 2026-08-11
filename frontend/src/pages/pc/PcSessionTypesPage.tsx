@@ -480,6 +480,10 @@ export const PcSessionTypesPage = () => {
     }
     if (error instanceof ApiRequestError && error.status === 409) {
       closeActiveOverlay()
+      if (error.message.includes('conflicting durations')) {
+        setMappingFeedbackState(`${error.message} No mapping changes were applied.`, 'warning', true)
+        return
+      }
       setMappingFeedbackState('This mapping could not be applied. Refresh the queue and retry.', 'warning', true)
       return
     }
@@ -516,7 +520,7 @@ export const PcSessionTypesPage = () => {
       setSelectedMappingIds(new Set())
       closeActiveOverlay('single-confirmation')
       setMappingFeedbackState(
-        `Mapping updated. It changes future classification on the next read and does not edit historical events or attendance records. ${impactSummary(response.impact)} were reviewed.`,
+        `Mapping updated. Existing event durations and end times were recalculated for the exact Teaching Name and posting. Attendance submissions were preserved. ${impactSummary(response.impact)} were reviewed.`,
         'success',
       )
       await loadMappings()
@@ -609,7 +613,7 @@ export const PcSessionTypesPage = () => {
       setSelectedMappingIds(new Set())
       closeActiveOverlay('bulk-confirmation')
       setMappingFeedbackState(
-        `Atomic bulk mapping updated ${result.updatedCount} row${result.updatedCount === 1 ? '' : 's'} (${result.mappedCount} mapped, ${result.pendingCount} pending). It changes future classification on the next read and does not edit historical events or attendance records.`,
+        `Atomic bulk mapping updated ${result.updatedCount} row${result.updatedCount === 1 ? '' : 's'} (${result.mappedCount} mapped, ${result.pendingCount} pending). Existing event durations and end times were recalculated; attendance submissions were preserved.`,
         'success',
       )
       await loadMappings()
@@ -976,7 +980,7 @@ export const PcSessionTypesPage = () => {
             </div>
 
             <div className="inline-callout callout-warning pc-session-types-pending-callout" role="status">
-              <span>A mapping changes future classification on the next read. It never rewrites historical events, attendance, timing, or Name of Teaching text.</span>
+              <span>A mapping updates existing pool-backed event duration and end time for this exact scope. Attendance submissions and historical Name of Teaching text remain unchanged.</span>
             </div>
 
             <form
@@ -1432,7 +1436,7 @@ export const PcSessionTypesPage = () => {
         {singleConfirmation ? (
           <div className="pc-session-types-confirmation" role="status">
             <p>This change may affect {impactSummary(singleConfirmation.impact)}. Only these aggregate counts are shown.</p>
-            <p>Confirm to change future classification on the next read. Historical events and attendance records will not be edited.</p>
+            <p>Confirm to recalculate duration and end time for existing events in this exact Teaching Name and posting. Attendance submissions will be preserved and will display the updated event duration.</p>
           </div>
         ) : null}
       </DetailDrawer>
@@ -1465,7 +1469,7 @@ export const PcSessionTypesPage = () => {
         {bulkConfirmation ? (
           <div className="pc-session-types-confirmation" role="status">
             <p>The {bulkConfirmation.items.length} prepared change{bulkConfirmation.items.length === 1 ? '' : 's'} may affect {impactSummary(bulkConfirmation.impact)}. Only aggregate counts are shown.</p>
-            <p>All rows are applied together or none are applied. A confirmed mapping changes future classification on the next read and does not edit historical events or attendance records.</p>
+            <p>All rows are applied together or none are applied. Existing event durations and end times will be recalculated for the affected exact scopes. Attendance submissions will be preserved and will display the updated event duration.</p>
           </div>
         ) : null}
       </DetailDrawer>

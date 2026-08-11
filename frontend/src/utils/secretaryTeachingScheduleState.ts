@@ -51,13 +51,16 @@ export const isCurrentTeachingSourceEligible = (
   currentOptions: ReadonlyArray<{ sourceKey: string }>,
 ): boolean => sourceKey.length > 0 && currentOptions.some((option) => option.sourceKey === sourceKey)
 
-export const serverComputedPoolEndTime = (startTime: string): string | null => {
+export const serverComputedPoolEndTime = (
+  startTime: string,
+  durationHours = 1,
+): string | null => {
   const match = /^(?<hour>[01]\d|2[0-3]):(?<minute>[0-5]\d)$/.exec(startTime)
-  if (!match?.groups) {
+  if (!match?.groups || !Number.isFinite(durationHours) || durationHours <= 0) {
     return null
   }
   const startMinutes = Number(match.groups.hour) * 60 + Number(match.groups.minute)
-  const endMinutes = (startMinutes + 60) % (24 * 60)
+  const endMinutes = (startMinutes + Math.round(durationHours * 60)) % (24 * 60)
   const hour = Math.floor(endMinutes / 60)
   const minute = endMinutes % 60
   return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`

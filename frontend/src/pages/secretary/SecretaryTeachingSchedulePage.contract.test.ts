@@ -33,6 +33,17 @@ assert(
   'Secretary form selects an immutable source key rather than display text',
 )
 assert(
+  apiSource.includes('durationIsMapped')
+    && pageSource.includes('temporary one-hour duration')
+    && pageSource.includes('automatically update its duration and end time'),
+  'Secretary form hides unmapped timing fields behind the automatic-update notice',
+)
+assert(
+  pageSource.includes('selectedSourceOption.durationIsMapped')
+    && pageSource.includes('(TTF mapping)'),
+  'Secretary form displays mapped posting-specific duration and end time',
+)
+assert(
   pageSource.includes('sourceKeyForSecretaryTeachingEvent'),
   'Secretary edits and duplicates preserve the existing event source identity',
 )

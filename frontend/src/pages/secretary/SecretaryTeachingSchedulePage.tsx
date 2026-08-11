@@ -542,7 +542,8 @@ export const SecretaryTeachingSchedulePage = () => {
       programmeCode: programmeContext.kind === 'pool_backed'
         ? programmeContext.programmeCode
         : undefined,
-      durationHours: 1,
+      durationHours: sourceEvent.durationHours,
+      durationIsMapped: false,
       isGlobal: false,
     }
   }, [
@@ -626,8 +627,13 @@ export const SecretaryTeachingSchedulePage = () => {
   const selectedPoolStartTimeError = selectedSourceOption?.teachingNameId
     ? poolStartTimeValidationError(formState.startTime)
     : null
-  const selectedPoolEndTime = selectedSourceOption?.teachingNameId && !selectedPoolStartTimeError
-    ? serverComputedPoolEndTime(formState.startTime)
+  const selectedPoolEndTime = selectedSourceOption?.teachingNameId
+    && selectedSourceOption.durationIsMapped
+    && !selectedPoolStartTimeError
+    ? serverComputedPoolEndTime(
+        formState.startTime,
+        selectedSourceOption.durationHours,
+      )
     : null
 
   const toggleSelected = (id: string) => {
@@ -1457,17 +1463,21 @@ export const SecretaryTeachingSchedulePage = () => {
             ) : null}
           </label>
 
-          <div className="secretary-toggle-block" aria-live="polite">
-            <span className="secretary-toggle-label">Duration</span>
-            <strong>
-              {selectedSourceOption?.teachingNameId
-                ? '1 hour (fixed)'
-                : selectedSourceOption?.globalSessionTypeId
+          {selectedSourceOption?.teachingNameId && !selectedSourceOption.durationIsMapped ? (
+            <div className="inline-callout callout-neutral" role="status">
+              This Teaching Name has not been mapped by the Programme PC. This event will use a temporary one-hour duration. Once mapped, the system will automatically update its duration and end time.
+            </div>
+          ) : selectedSourceOption ? (
+            <div className="secretary-toggle-block" aria-live="polite">
+              <span className="secretary-toggle-label">Duration</span>
+              <strong>
+                {selectedSourceOption.globalSessionTypeId
                   ? `${formatDuration(selectedSourceOption.durationHours)} (global source)`
-                  : 'Select a source'}
-            </strong>
-            <small>End time is calculated by the server.</small>
-          </div>
+                  : `${formatDuration(selectedSourceOption.durationHours)} (TTF mapping)`}
+              </strong>
+              <small>End time is calculated by the server.</small>
+            </div>
+          ) : null}
 
           <div className="secretary-form-row">
             <label>
@@ -1515,11 +1525,11 @@ export const SecretaryTeachingSchedulePage = () => {
             </label>
           </div>
 
-          {selectedSourceOption?.teachingNameId ? (
+          {selectedSourceOption?.teachingNameId && selectedSourceOption.durationIsMapped ? (
             <div className="secretary-toggle-block" aria-live="polite">
               <span className="secretary-toggle-label">End time</span>
               <strong>{selectedPoolEndTime ?? 'Select a valid start time'}</strong>
-              <small>Server-computed for the fixed one-hour pool event. A 23:00 start ends at 00:00.</small>
+              <small>Server-computed from the posting-specific TTF mapping.</small>
             </div>
           ) : null}
 

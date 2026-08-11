@@ -36,6 +36,7 @@ export interface TeachingNameOption {
   sessionTypeId?: string
   sessionType?: string
   durationHours?: number
+  durationIsMapped?: boolean
   isTracked?: boolean
   isGlobal?: boolean
   postingCodes?: string[]
@@ -114,6 +115,9 @@ const toTeachingNameOption = (value: Record<string, unknown>): TeachingNameOptio
     sessionTypeId: optionalString(value.session_type_id),
     sessionType: optionalString(value.session_type),
     durationHours: toNumber(value.duration_hours),
+    durationIsMapped: typeof value.duration_is_mapped === 'boolean'
+      ? value.duration_is_mapped
+      : undefined,
     isTracked: typeof value.is_tracked === 'boolean' ? value.is_tracked : undefined,
     isGlobal: typeof value.is_global === 'boolean' ? value.is_global : undefined,
     postingCodes: Array.isArray(value.posting_codes)

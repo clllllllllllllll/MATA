@@ -182,6 +182,7 @@ assert(!apiSource.includes('created_by_name'), 'PC teaching events API does not 
 assert(apiSource.includes('teaching_name_id: payload.teachingNameId'), 'PC API sends explicit Teaching Name IDs')
 assert(apiSource.includes('global_session_type_id: payload.globalSessionTypeId'), 'PC API sends explicit global-session IDs')
 assert(!apiSource.includes('teaching_name: payload.'), 'PC API never posts display text as an event source')
+assert(apiSource.includes('postingDurations'), 'PC API preserves posting-specific mapping durations')
 
 const pageSource = readFileSync(
   fileURLToPath(new URL('./PcTeachingEventsPage.tsx', import.meta.url)),
@@ -212,6 +213,17 @@ assert(
 assert(pageSource.includes('Created By'), 'PC teaching-events table still renders Created By')
 assert(pageSource.includes('<h2>Teaching schedule</h2>'), 'PC teaching-events table uses Secretary-style title')
 assert(pageSource.includes('Add Teaching'), 'PC teaching-events primary action follows Secretary wording')
+assert(
+  pageSource.includes('selectedPostingDuration')
+    && pageSource.includes('temporary one-hour duration')
+    && pageSource.includes('automatically update its duration and end time'),
+  'PC Add Teaching explains the temporary duration without showing unmapped timing fields',
+)
+assert(
+  pageSource.includes('(TTF mapping)')
+    && pageSource.includes('selectedMappedPoolEndTime'),
+  'PC Add Teaching shows mapped posting-specific duration and end time',
+)
 assertOrdered(
   pageSource,
   ['className="button button-secondary"', '<IconRefresh size={14} />', 'className="button button-primary"', '<IconPlus size={14} />'],

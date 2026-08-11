@@ -350,7 +350,7 @@ def test_phase_r_all_28_pc_scope_controls_pending_and_mapped_pool_events(
         assert payload["global_session_type_id"] is None
         assert payload["source_programme_code"] == expectation.code
         assert payload["source_reporting_period_id"] == session.period_id
-        assert payload["duration_hours"] == "1.00"
+        assert float(payload["duration_hours"]) == 1.0
     assert pending.json()["end_time"] == "00:00:00"
 
     null_scope_headers = programme_pc_headers(scope="unused")

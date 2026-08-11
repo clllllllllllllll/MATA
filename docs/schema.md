@@ -101,18 +101,24 @@ The current final model uses `teaching_name` as the canonical term:
   authorization scope check, not a target-state check: both pending and mapped
   rows qualify, while Secretary and Master event authority retains its separate
   documented boundary.
-- Every pool-backed scheduled event is exactly one hour. The client supplies
-  `start_time` only, the server computes `end_time`, and a start later than
-  23:00 is a controlled `422`. A later mapping change never alters stored
-  timing.
+- A pool-backed scheduled event derives duration from the exact Teaching Name,
+  reporting-period, programme, and posting mapping scope. When every R-year
+  mapping is pending, the event temporarily uses one hour. When mapped R-year
+  rows exist, their session types must agree on one duration or the write fails
+  with a controlled conflict. The client supplies `start_time` only, the server
+  computes `end_time`, and a start later than 23:00 is a controlled `422`.
+  Assigning, changing, clearing, or invalidating a mapping recalculates stored
+  `duration_hours` and `end_time` for existing events in that exact scope.
 
 In the implemented Phase F/G model, pending names remain selectable,
-event-capable, visible, attendance-submittable, and auditable; a mapped target
-is never consulted when writing their event timing or immutable snapshot.
+event-capable, visible, attendance-submittable, and auditable. A mapped target
+supplies scheduling duration only; it does not change the immutable display or
+source snapshots and is not a compliance multiplier.
 Resident/Non-NHG runtime uses the persisted source identity, never a mapping,
 catalogue value, or display-text inference. They are excluded from future
 compliance until an exact mapping exists; the next JIT read resolves a newly
-mapped name without rewriting raw events or attendance.
+mapped name without rewriting attendance rows. Mapping changes may update only
+the exact pool events' server-owned duration and end time.
 `global_session_types` remain
 Admin-managed, outside this queue, and are handled before ordinary Teaching
 Name mapping. Resident ad-hoc teaching remains fixed to
@@ -610,8 +616,8 @@ Teaching sessions created by secretaries, Programme PC CRUD, or ad-hoc submissio
 | details_of_session | TEXT | nullable | Display/audit-only free text for ad-hoc session context. It has no operational or compliance use and is stored on the shared event row for both NHG and Non-NHG Residents. |
 | event_date | DATE | NOT NULL | |
 | start_time | TIME | NOT NULL | |
-| end_time | TIME | | Server-computed from the explicit scheduled-event source duration at creation/update. Pool sources are one hour and cannot start after 23:00; global sources use their configured duration. |
-| duration_hours | DECIMAL(4,2) | | Server-owned scheduling duration: `1.00` for a pool source or the active global source duration. Never used as a compliance multiplier, catalogue tiebreaker, or text inference input. |
+| end_time | TIME | | Server-computed from the explicit scheduled-event source duration at creation/update. Pool sources use their posting-specific mapped TTF duration, temporarily defaulting to one hour while unmapped, and cannot start after 23:00; global sources use their configured duration. |
+| duration_hours | DECIMAL(4,2) | | Server-owned scheduling duration: the consistent exact-scope mapped TTF duration for a pool source, temporary `1.00` while unmapped, or the active global source duration. Mapping changes recalculate this field and `end_time` for exact-scope pool events. Never used as a compliance multiplier or text inference input. |
 | session_type_id | UUID | FK → session_types.id, nullable | Legacy display/prototype field. It is null for Phase G ad-hoc rows and must not be used to infer a scheduled-event source, Resident/Non-NHG visibility, attendance eligibility, or ad-hoc classification. |
 | teaching_name_id | UUID | FK → teaching_names.id, nullable, `SET NULL` | Additive B1 stable pool identity. Deleting the referenced name clears this optional link only; the event snapshot and attendance remain. Legacy rows remain null until a later cutover. Cannot coexist with `global_session_type_id`. |
 | global_session_type_id | UUID | FK → global_session_types.id, nullable, `RESTRICT` | Additive B1 stable global identity. Legacy rows remain null until a later cutover. Cannot coexist with `teaching_name_id`. |

@@ -115,9 +115,11 @@ test('missing pool sources are omitted after an authoritative response and canno
   )
 })
 
-test('the fixed pool duration preview matches the server-owned one-hour boundary', () => {
+test('the pool duration preview supports mapped durations and midnight rollover', () => {
   assert.equal(serverComputedPoolEndTime('10:15'), '11:15')
+  assert.equal(serverComputedPoolEndTime('10:15', 2), '12:15')
   assert.equal(serverComputedPoolEndTime('23:00'), '00:00')
+  assert.equal(serverComputedPoolEndTime('23:00', 2), '01:00')
   assert.equal(serverComputedPoolEndTime('24:00'), null)
   assert.equal(serverComputedPoolEndTime('not-a-time'), null)
   assert.equal(poolStartTimeValidationError('23:00'), null)

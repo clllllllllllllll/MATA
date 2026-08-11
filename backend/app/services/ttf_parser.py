@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.security import log_safe_exception
 from app.services.parser_common import ParserResult
+from app.services.pool_event_timing import sync_programme_period_pool_event_timings
 from app.services.teaching_target_impacts import stable_target_mapping_impact_counts
 from app.services.ttf_scope_lock import acquire_ttf_programme_lock, acquire_ttf_scope_lock
 
@@ -669,6 +670,12 @@ async def _persist_ttf_rows(
             {"target_ids": stale_target_ids},
         )
 
+    event_timings_updated = await sync_programme_period_pool_event_timings(
+        db_session,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+    )
+
     preserved_result = await db_session.execute(
         text(
             """
@@ -729,6 +736,7 @@ async def _persist_ttf_rows(
         "pending_mappings_created": pending_mappings_created,
         "affected_event_count": affected_event_count,
         "affected_attendance_count": affected_attendance_count,
+        "event_timings_updated": event_timings_updated,
         "session_types_upserted": len(session_type_rows),
         "posting_codes_added": posting_codes_added,
         "posting_groups_upserted": len(posting_group_rows),
@@ -1225,6 +1233,9 @@ async def parse_ttf_upload(
             "affected_event_count": persistence_counts.get("affected_event_count", 0),
             "affected_attendance_count": persistence_counts.get(
                 "affected_attendance_count", 0
+            ),
+            "event_timings_updated": persistence_counts.get(
+                "event_timings_updated", 0
             ),
             "session_types_upserted": persistence_counts.get("session_types_upserted", 0),
             "posting_codes_added": persistence_counts.get("posting_codes_added", []),

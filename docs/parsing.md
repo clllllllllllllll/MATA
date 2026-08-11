@@ -678,6 +678,12 @@ The TTF upload reconciles targets within `(reporting_period_id, programme_code)`
 
 When a stale target has Teaching Name mappings, each mapping retains its UUID and becomes pending (`teaching_target_id = NULL`) before the target is deleted. Matching targets never redirect mappings. A change to `monthly_target`, `is_tracked`, `is_reallocatable`, or `tag` preserves mapped links and is reported as a target-semantic change.
 
+After target/mapping reconciliation, pool-backed event timing is recalculated
+for every Teaching Name/posting scope in the uploaded programme and period. A
+scope uses its one consistent mapped session-type duration, or temporarily
+returns to one hour when all mappings are pending. Conflicting mapped R-year
+durations reject the upload transaction rather than selecting one arbitrarily.
+
 For a newly introduced `(posting_code, r_year)` target scope, every active Teaching Name in the programme/period receives at most one pending mapping. Inactive names receive none, and re-upload is idempotent.
 
 Mapping, event, and attendance impact counters are aggregate only. They count
@@ -696,9 +702,10 @@ TTF does not create Teaching Names, mappings, or warnings from workbook name tex
 3. Upsert session types and posting codes, then load/lock existing target rows
 4. Reconcile targets by their stable natural identity; clear stale mapping links before deleting only stale targets
 5. Provision missing pending mappings for newly introduced target scopes and preserve existing matching links
-6. Replace the programme's `posting_groups`: delete current programme rows, then upsert non-empty Column E rows
-7. Record the successful upload log, relevant warnings, audit evidence, and Data Revalidation outcome in the same transaction as the reconciliation
-8. Commit once, then invalidate scoped caches
+6. Recalculate exact-scope pool-event duration and end time from the reconciled mappings
+7. Replace the programme's `posting_groups`: delete current programme rows, then upsert non-empty Column E rows
+8. Record the successful upload log, relevant warnings, audit evidence, and Data Revalidation outcome in the same transaction as the reconciliation
+9. Commit once, then invalidate scoped caches
 
 #### `ON CONFLICT` upserts
 

@@ -36,6 +36,7 @@ import {
   canAddTeachingFromOptions,
   resolveTeachingNameOptionsState,
 } from '../../utils/teachingNameOptionsState'
+import { serverComputedPoolEndTime } from '../../utils/secretaryTeachingScheduleState'
 
 type DrawerMode = 'create' | 'edit' | 'duplicate'
 
@@ -218,6 +219,17 @@ export const PcTeachingEventsPage = () => {
     () => postingOptionsForSource(drawerSourceOptions, formState.sourceKey),
     [drawerSourceOptions, formState.sourceKey],
   )
+  const selectedPostingDuration = selectedSourceOption?.teachingNameId
+    ? selectedSourceOption.postingDurations?.find(
+        (entry) => entry.postingCode === formState.postingCode,
+      )
+    : undefined
+  const selectedMappedPoolEndTime = selectedPostingDuration?.isMapped
+    ? serverComputedPoolEndTime(
+        formState.startTime,
+        selectedPostingDuration.durationHours,
+      )
+    : null
   const isSelectedSourceOption = Boolean(selectedSourceOption)
   const canSubmitTeaching = canAddTeaching || Boolean(retainedInactiveGlobalOption)
   const selectedRows = useMemo(() => events.filter((event) => selectedIds.has(event.id)), [events, selectedIds])
@@ -1102,6 +1114,27 @@ export const PcTeachingEventsPage = () => {
             ) : null}
           </label>
 
+          {selectedSourceOption?.teachingNameId
+            && formState.postingCode
+            && selectedPostingDuration
+            && !selectedPostingDuration.isMapped ? (
+              <div className="inline-callout callout-neutral" role="status">
+                This Teaching Name has not been mapped by the Programme PC. This event will use a temporary one-hour duration. Once mapped, the system will automatically update its duration and end time.
+              </div>
+            ) : selectedPostingDuration?.isMapped ? (
+              <div className="secretary-toggle-block" aria-live="polite">
+                <span className="secretary-toggle-label">Duration</span>
+                <strong>{formatDuration(selectedPostingDuration.durationHours)} (TTF mapping)</strong>
+                <small>End time is calculated by the server.</small>
+              </div>
+            ) : selectedSourceOption?.globalSessionTypeId ? (
+              <div className="secretary-toggle-block" aria-live="polite">
+                <span className="secretary-toggle-label">Duration</span>
+                <strong>{formatDuration(selectedSourceOption.durationHours)} (global source)</strong>
+                <small>End time is calculated by the server.</small>
+              </div>
+            ) : null}
+
           <div className="secretary-form-row">
             <label>
               Event date
@@ -1132,6 +1165,14 @@ export const PcTeachingEventsPage = () => {
               ) : null}
             </label>
           </div>
+
+          {selectedPostingDuration?.isMapped ? (
+            <div className="secretary-toggle-block" aria-live="polite">
+              <span className="secretary-toggle-label">End time</span>
+              <strong>{selectedMappedPoolEndTime ?? 'Select a valid start time'}</strong>
+              <small>Server-computed from the posting-specific TTF mapping.</small>
+            </div>
+          ) : null}
 
           <div className="secretary-toggle-block">
             <span className="secretary-toggle-label">CME points awarded</span>

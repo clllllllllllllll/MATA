@@ -37,6 +37,13 @@ export interface ProgrammeTeachingNameOption {
   isTracked?: boolean
   isGlobal: boolean
   postingCodes: string[]
+  postingDurations?: ProgrammeTeachingPostingDuration[]
+}
+
+export interface ProgrammeTeachingPostingDuration {
+  postingCode: string
+  durationHours: number
+  isMapped: boolean
 }
 
 export interface ProgrammeTeachingEventPayload {
@@ -136,6 +143,18 @@ const toTeachingNameOption = (value: Record<string, unknown>): ProgrammeTeaching
       ? value.posting_codes
           .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
           .map((entry) => entry.trim())
+      : [],
+    postingDurations: Array.isArray(value.posting_durations)
+      ? value.posting_durations
+          .filter((entry): entry is Record<string, unknown> => (
+            typeof entry === 'object' && entry !== null
+          ))
+          .map((entry) => ({
+            postingCode: String(entry.posting_code ?? ''),
+            durationHours: toNumber(entry.duration_hours) ?? 1,
+            isMapped: Boolean(entry.is_mapped),
+          }))
+          .filter((entry) => entry.postingCode.length > 0)
       : [],
   }
 }

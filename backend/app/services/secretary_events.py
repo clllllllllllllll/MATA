@@ -17,6 +17,10 @@ from app.services.reporting_period_status import (
 )
 from app.services import cache_invalidation
 from app.services import scheduled_event_sources
+from app.services.pool_event_timing import (
+    DEFAULT_POOL_EVENT_DURATION_HOURS,
+    list_pool_event_timings,
+)
 from app.services.teaching_event_locks import acquire_teaching_event_locks
 from app.services.teaching_name_pool import TeachingNamePoolActor
 
@@ -288,6 +292,7 @@ async def _insert_event(
         reporting_period_id=period["id"],
         teaching_name_id=teaching_name_id,
         global_session_type_id=global_session_type_id,
+        posting_code=posting_code,
     )
     scheduled_event_sources.validate_scheduled_event_start_time(
         source=source,
@@ -601,6 +606,7 @@ async def update_teaching_event(
         reporting_period_id=period["id"],
         teaching_name_id=teaching_name_id,
         global_session_type_id=global_session_type_id,
+        posting_code=posting_code,
         allow_inactive_global_session_type_id=source.get("global_session_type_id"),
     )
     if source.get("source_programme_code") is not None and (
@@ -804,7 +810,7 @@ async def teaching_name_options(
                 tn.display_name AS keyword,
                 tn.display_name AS teaching_name,
                 tn.programme_code,
-                CAST(1.00 AS numeric) AS duration_hours,
+                CAST(NULL AS numeric) AS duration_hours,
                 false AS is_global
             FROM teaching_names tn
             WHERE tn.reporting_period_id = :reporting_period_id
@@ -845,7 +851,32 @@ async def teaching_name_options(
         )
     )
     options = [dict(row) for row in pool_result.mappings().all()]
-    options.extend(dict(row) for row in global_result.mappings().all())
+    for option_programme_code in sorted(
+        {str(row["programme_code"]) for row in options}
+    ):
+        programme_options = [
+            row for row in options
+            if str(row["programme_code"]) == option_programme_code
+        ]
+        timings = await list_pool_event_timings(
+            db,
+            teaching_name_ids=[row["teaching_name_id"] for row in programme_options],
+            reporting_period_id=period["id"],
+            programme_code=option_programme_code,
+            posting_code=posting_code,
+        )
+        for row in programme_options:
+            timing = timings.get((str(row["teaching_name_id"]), posting_code))
+            row["duration_hours"] = (
+                timing.duration_hours
+                if timing is not None
+                else DEFAULT_POOL_EVENT_DURATION_HOURS
+            )
+            row["duration_is_mapped"] = bool(timing and timing.is_mapped)
+    for row in global_result.mappings().all():
+        option = dict(row)
+        option["duration_is_mapped"] = True
+        options.append(option)
     return sorted(
         options,
         key=lambda row: (

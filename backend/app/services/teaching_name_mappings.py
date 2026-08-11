@@ -19,6 +19,10 @@ from app.schemas.data_revalidation import (
 from app.security import log_safe_exception
 from app.services import cache_invalidation, data_revalidation_service
 from app.services.audit import write_audit_log
+from app.services.pool_event_timing import (
+    PoolEventTimingScope,
+    sync_pool_event_timings,
+)
 from app.services.teaching_name_pool import (
     TeachingNamePoolActor,
     _normalised_scope,
@@ -426,8 +430,6 @@ async def _mapping_impact_counts(
     undercounting a same-name/posting event that may be resolved by the mapping.
     """
 
-    if mapping.get("teaching_target_id") is None:
-        return {"affected_event_count": 0, "affected_attendance_count": 0}
     result = await db.execute(
         text(
             """
@@ -435,6 +437,8 @@ async def _mapping_impact_counts(
                 SELECT
                     mapping.id,
                     mapping.teaching_name_id,
+                    mapping.reporting_period_id,
+                    mapping.programme_code,
                     mapping.posting_code
                 FROM teaching_name_mappings AS mapping
                 WHERE mapping.id = :mapping_id
@@ -443,7 +447,11 @@ async def _mapping_impact_counts(
                 FROM source_mapping AS mapping
                 JOIN teaching_events AS event
                   ON event.teaching_name_id = mapping.teaching_name_id
+                  AND event.source_reporting_period_id = mapping.reporting_period_id
+                  AND event.source_programme_code = mapping.programme_code
                   AND event.posting_code = mapping.posting_code
+                  AND event.global_session_type_id IS NULL
+                  AND event.is_adhoc = false
             )
             SELECT
                 COUNT(DISTINCT event.id) AS affected_event_count,
@@ -637,8 +645,6 @@ async def get_mapping_impact(
         )
         if target_result.scalar_one_or_none() is None:
             _raise_validation("teaching_target_id must belong to the mapping's exact scope")
-    if mapping.get("teaching_target_id") is None:
-        return {"affected_event_count": 0, "affected_attendance_count": 0}
     return await _mapping_impact_counts(db, mapping=mapping)
 
 
@@ -659,7 +665,7 @@ async def _prepare_locked_change(
         await _locked_target(db, target_id=teaching_target_id, mapping=mapping)
 
     impact = await _mapping_impact_counts(db, mapping=mapping)
-    confirmation_required = mapping.get("teaching_target_id") is not None and (
+    confirmation_required = (
         impact["affected_event_count"] > 0 or impact["affected_attendance_count"] > 0
     )
     if confirmation_required and not confirm_impact:
@@ -770,6 +776,17 @@ async def apply_mapping_change(
             impact=impact,
             confirmation_required=confirmation_required,
             bulk_operation_id=None,
+        )
+        await sync_pool_event_timings(
+            db,
+            scopes=[
+                PoolEventTimingScope(
+                    teaching_name_id=after["teaching_name_id"],
+                    reporting_period_id=after["reporting_period_id"],
+                    programme_code=str(after["programme_code"]),
+                    posting_code=str(after["posting_code"]),
+                )
+            ],
         )
         await db.commit()
     except Exception:
@@ -948,6 +965,18 @@ async def apply_bulk_mapping_changes(
                 bulk_operation_id=bulk_operation_id,
             )
             updated.append(after)
+        await sync_pool_event_timings(
+            db,
+            scopes=[
+                PoolEventTimingScope(
+                    teaching_name_id=row["teaching_name_id"],
+                    reporting_period_id=row["reporting_period_id"],
+                    programme_code=str(row["programme_code"]),
+                    posting_code=str(row["posting_code"]),
+                )
+                for row in updated
+            ],
+        )
         await db.commit()
     except Exception:
         await db.rollback()

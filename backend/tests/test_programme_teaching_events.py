@@ -184,6 +184,7 @@ class FakeProgrammeTeachingEventsSession:
         teaching_name_id: str,
         posting_code: str,
         teaching_target_id: str | None = None,
+        duration_hours: Decimal | None = None,
     ) -> dict:
         teaching_name = next(
             row for row in self.teaching_names if row["id"] == teaching_name_id
@@ -195,6 +196,11 @@ class FakeProgrammeTeachingEventsSession:
             "posting_code": posting_code,
             "r_year": "R1",
             "teaching_target_id": teaching_target_id,
+            "duration_hours": (
+                (duration_hours if duration_hours is not None else Decimal("1.0"))
+                if teaching_target_id is not None
+                else None
+            ),
         }
 
     def add_mapping_scope(
@@ -203,12 +209,14 @@ class FakeProgrammeTeachingEventsSession:
         teaching_name_id: str,
         posting_code: str,
         teaching_target_id: str | None = None,
+        duration_hours: Decimal | None = None,
     ) -> None:
         self.teaching_name_mappings.append(
             self._mapping_scope(
                 teaching_name_id=teaching_name_id,
                 posting_code=posting_code,
                 teaching_target_id=teaching_target_id,
+                duration_hours=duration_hours,
             )
         )
 
@@ -314,6 +322,37 @@ class FakeProgrammeTeachingEventsSession:
                 }
                 for row in self.global_session_types
                 if row["id"] == str(payload["global_session_type_id"])
+            ]
+            return _FakeResult(rows=rows)
+
+        if "/* pool_event_timing:resolve */" in sql:
+            rows = [
+                {"duration_hours": mapping["duration_hours"]}
+                for mapping in self.teaching_name_mappings
+                if mapping["teaching_name_id"] == str(payload["teaching_name_id"])
+                and mapping["reporting_period_id"] == str(payload["reporting_period_id"])
+                and mapping["programme_code"] == payload["programme_code"]
+                and mapping["posting_code"] == payload["posting_code"]
+                and mapping["teaching_target_id"] is not None
+            ]
+            return _FakeResult(rows=rows)
+
+        if "/* pool_event_timing:list */" in sql:
+            requested_ids = {str(value) for value in payload["teaching_name_ids"]}
+            rows = [
+                {
+                    "teaching_name_id": mapping["teaching_name_id"],
+                    "posting_code": mapping["posting_code"],
+                    "duration_hours": mapping["duration_hours"],
+                }
+                for mapping in self.teaching_name_mappings
+                if mapping["teaching_name_id"] in requested_ids
+                and mapping["reporting_period_id"] == str(payload["reporting_period_id"])
+                and mapping["programme_code"] == payload["programme_code"]
+                and (
+                    payload.get("posting_code") is None
+                    or mapping["posting_code"] == payload["posting_code"]
+                )
             ]
             return _FakeResult(rows=rows)
 
@@ -1299,6 +1338,53 @@ def test_pc_pool_event_accepts_pending_mapping_scope_and_preserves_snapshot() ->
     pending_name["display_name"] = "Renamed Pending Pool Event"
     assert session.events[-1]["teaching_name"] == "Pending Pool Event"
     assert session.events[-1]["duration_hours"] == Decimal("1.0")
+
+
+def test_pc_pool_event_uses_posting_specific_mapped_duration() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    mapped_name = session._teaching_name("Mapped Two Hour Teaching", "DR")
+    session.teaching_names.append(mapped_name)
+    session.add_mapping_scope(
+        teaching_name_id=mapped_name["id"],
+        posting_code="TTSHCardio",
+        teaching_target_id=str(uuid4()),
+        duration_hours=Decimal("2.0"),
+    )
+    client = _client(session)
+
+    options_response = client.get(
+        "/admin/programme-teaching-name-options",
+        headers=_headers(scope="DR"),
+        params={"programme_code": "DR"},
+    )
+    created = client.post(
+        "/admin/programme-teaching-events",
+        headers=_headers(scope="DR"),
+        json={
+            "programme_code": "DR",
+            "posting_code": "TTSHCardio",
+            "teaching_name_id": mapped_name["id"],
+            "event_date": "2026-05-20",
+            "start_time": "10:00",
+        },
+    )
+
+    assert options_response.status_code == 200
+    option = next(
+        row
+        for row in options_response.json()["options"]
+        if row["teaching_name_id"] == mapped_name["id"]
+    )
+    assert option["posting_durations"] == [
+        {
+            "posting_code": "TTSHCardio",
+            "duration_hours": "2.0",
+            "is_mapped": True,
+        }
+    ]
+    assert created.status_code == 200
+    assert created.json()["duration_hours"] == "2.0"
+    assert created.json()["end_time"] == "12:00:00"
 
 
 def test_pc_pool_event_requires_exact_persisted_mapping_posting_scope() -> None:

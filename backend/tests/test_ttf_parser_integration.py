@@ -323,6 +323,41 @@ class FakeTTFSession:
             ]
             return _FakeScalarResult()
 
+        if "/* pool_event_timing:list_programme_period_scopes */" in sql:
+            scopes = {
+                (mapping["teaching_name_id"], mapping["posting_code"])
+                for mapping in self.teaching_name_mappings
+                if mapping["reporting_period_id"] == str(params["reporting_period_id"])
+                and mapping["programme_code"] == params["programme_code"]
+            }
+            return _FakeMappingResult(
+                [
+                    {"teaching_name_id": teaching_name_id, "posting_code": posting_code}
+                    for teaching_name_id, posting_code in sorted(scopes)
+                ]
+            )
+
+        if "/* pool_event_timing:resolve */" in sql:
+            target_by_id = {row["id"]: row for row in self.teaching_targets}
+            session_type_by_id = {
+                str(row["id"]): row for row in self.session_types.values()
+            }
+            durations = {
+                session_type_by_id[str(target_by_id[mapping["teaching_target_id"]]["session_type_id"])]["duration_hours"]
+                for mapping in self.teaching_name_mappings
+                if mapping["teaching_name_id"] == str(params["teaching_name_id"])
+                and mapping["reporting_period_id"] == str(params["reporting_period_id"])
+                and mapping["programme_code"] == params["programme_code"]
+                and mapping["posting_code"] == params["posting_code"]
+                and mapping.get("teaching_target_id") in target_by_id
+            }
+            return _FakeMappingResult(
+                [{"duration_hours": duration} for duration in sorted(durations)]
+            )
+
+        if "/* pool_event_timing:sync */" in sql:
+            return _FakeScalarResult(rowcount=0)
+
         if "/* ttf_e1:provision_pending_mappings */" in sql:
             created = 0
             for teaching_name in self.teaching_names:

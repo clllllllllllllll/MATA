@@ -651,6 +651,13 @@ def _install_single_mapping_harness(
             for target in harness.targets.values()
         ]
 
+    async def sync_timings(_db, *, scopes):  # noqa: ANN001
+        assert all(
+            scope.teaching_name_id == harness.row["teaching_name_id"]
+            for scope in scopes
+        )
+        return 0
+
     def invalidate(rows):  # noqa: ANN001
         assert harness.session.commits > 0
         harness.invalidated_mapping_ids.extend(row["id"] for row in rows)
@@ -661,6 +668,7 @@ def _install_single_mapping_harness(
     monkeypatch.setattr(teaching_name_mappings, "_mapping_impact_counts", impact)
     monkeypatch.setattr(teaching_name_mappings, "_persist_prepared_change", persist)
     monkeypatch.setattr(teaching_name_mappings, "_target_options", target_options)
+    monkeypatch.setattr(teaching_name_mappings, "sync_pool_event_timings", sync_timings)
     monkeypatch.setattr(teaching_name_mappings, "_invalidate_after_commit", invalidate)
 
 
@@ -946,6 +954,12 @@ async def test_phase_r_representative_bulk_mapping_is_atomic_and_returns_count_o
         persisted.append(mapping["id"])
         return dict(after), _Revalidation({"phase_r": True})
 
+    async def sync_timings(_db, *, scopes):  # noqa: ANN001
+        assert all(
+            scope.teaching_name_id == first["teaching_name_id"] for scope in scopes
+        )
+        return 0
+
     def invalidate(updated):  # noqa: ANN001
         assert session.commits == 1
         invalidated.extend(row["id"] for row in updated)
@@ -956,6 +970,7 @@ async def test_phase_r_representative_bulk_mapping_is_atomic_and_returns_count_o
     monkeypatch.setattr(teaching_name_mappings, "_locked_targets_for_bulk", locked_targets)
     monkeypatch.setattr(teaching_name_mappings, "_mapping_impact_counts", impact)
     monkeypatch.setattr(teaching_name_mappings, "_persist_prepared_change", persist)
+    monkeypatch.setattr(teaching_name_mappings, "sync_pool_event_timings", sync_timings)
     monkeypatch.setattr(teaching_name_mappings, "_invalidate_after_commit", invalidate)
 
     payload = await teaching_name_mappings.apply_bulk_mapping_changes(

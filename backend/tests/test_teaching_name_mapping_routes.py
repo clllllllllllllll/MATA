@@ -499,6 +499,11 @@ def test_bulk_mapping_locks_and_invalidates_only_after_commit(
             "revision": mapping["revision"] + 1,
         }, _revalidation()
 
+    async def sync(_db, *, scopes):  # noqa: ANN001
+        operation_steps.append("sync")
+        assert len(list(scopes)) == 2
+        return 0
+
     def invalidate(updated):  # noqa: ANN001
         operation_steps.append("invalidate")
         assert session.commit_count == 1
@@ -510,6 +515,7 @@ def test_bulk_mapping_locks_and_invalidates_only_after_commit(
     monkeypatch.setattr(teaching_name_mappings, "_locked_targets_for_bulk", locked_targets)
     monkeypatch.setattr(teaching_name_mappings, "_prepare_locked_change", prepare)
     monkeypatch.setattr(teaching_name_mappings, "_persist_prepared_change", persist)
+    monkeypatch.setattr(teaching_name_mappings, "sync_pool_event_timings", sync)
     monkeypatch.setattr(teaching_name_mappings, "_invalidate_after_commit", invalidate)
 
     items = [
@@ -542,6 +548,7 @@ def test_bulk_mapping_locks_and_invalidates_only_after_commit(
         "prepare",
         "persist",
         "persist",
+        "sync",
         "invalidate",
     ]
     assert payload == {
@@ -603,7 +610,7 @@ def test_nonzero_mapped_impact_requires_explicit_confirmation(
     asyncio.run(exercise())
 
 
-def test_pending_assignment_requires_no_confirmation(
+def test_zero_impact_pending_assignment_requires_no_confirmation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mapping = _mapping_row(teaching_target_id=None)
@@ -612,6 +619,11 @@ def test_pending_assignment_requires_no_confirmation(
         return {}
 
     monkeypatch.setattr(teaching_name_mappings, "_locked_target", lock_target)
+
+    async def impact(_db, *, mapping):  # noqa: ANN001
+        return {"affected_event_count": 0, "affected_attendance_count": 0}
+
+    monkeypatch.setattr(teaching_name_mappings, "_mapping_impact_counts", impact)
 
     async def exercise() -> None:
         impact, confirmation_required = await teaching_name_mappings._prepare_locked_change(
@@ -624,5 +636,38 @@ def test_pending_assignment_requires_no_confirmation(
         )
         assert impact == {"affected_event_count": 0, "affected_attendance_count": 0}
         assert confirmation_required is False
+
+    asyncio.run(exercise())
+
+
+def test_nonzero_pending_assignment_requires_explicit_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mapping = _mapping_row(teaching_target_id=None)
+
+    async def lock_target(_db, **_kwargs):  # noqa: ANN001
+        return {}
+
+    async def impact(_db, *, mapping):  # noqa: ANN001
+        return {"affected_event_count": 1, "affected_attendance_count": 0}
+
+    monkeypatch.setattr(teaching_name_mappings, "_locked_target", lock_target)
+    monkeypatch.setattr(teaching_name_mappings, "_mapping_impact_counts", impact)
+
+    async def exercise() -> None:
+        with pytest.raises(ApiError) as caught:
+            await teaching_name_mappings._prepare_locked_change(
+                _NoopSession(),  # type: ignore[arg-type]
+                actor=_mapping_actor(),
+                mapping=mapping,
+                expected_revision=3,
+                teaching_target_id=uuid4(),
+                confirm_impact=False,
+            )
+        assert caught.value.status_code == 409
+        assert caught.value.metadata == {
+            "impact": {"affected_event_count": 1, "affected_attendance_count": 0},
+            "confirmation_required": True,
+        }
 
     asyncio.run(exercise())

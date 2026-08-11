@@ -19,6 +19,7 @@ from app.services.reporting_period_status import (
 from app.services import cache_invalidation
 from app.services import scheduled_event_sources
 from app.services.audit import write_audit_log
+from app.services.pool_event_timing import list_pool_event_timings
 from app.services.teaching_event_locks import acquire_teaching_event_locks
 from app.services.teaching_name_pool import TeachingNamePoolActor
 
@@ -162,7 +163,7 @@ async def teaching_name_options(
                 tn.display_name AS keyword,
                 tn.display_name AS teaching_name,
                 tn.programme_code,
-                CAST(1.00 AS numeric) AS duration_hours,
+                CAST(NULL AS numeric) AS duration_hours,
                 false AS is_global,
                 ARRAY(
                     SELECT DISTINCT mapping.posting_code
@@ -230,9 +231,25 @@ async def teaching_name_options(
     ]
 
     options = [dict(row) for row in pool_result.mappings().all()]
+    timings = await list_pool_event_timings(
+        db,
+        teaching_name_ids=[row["teaching_name_id"] for row in options],
+        reporting_period_id=period["id"],
+        programme_code=programme_code,
+    )
+    for option in options:
+        option["posting_durations"] = [
+            {
+                "posting_code": posting_code,
+                "duration_hours": timings[(str(option["teaching_name_id"]), posting_code)].duration_hours,
+                "is_mapped": timings[(str(option["teaching_name_id"]), posting_code)].is_mapped,
+            }
+            for posting_code in option["posting_codes"]
+        ]
     for row in global_result.mappings().all():
         option = dict(row)
         option["posting_codes"] = global_posting_codes
+        option["posting_durations"] = []
         options.append(option)
     return sorted(
         options,
@@ -759,6 +776,7 @@ async def _insert_event(
         reporting_period_id=period["id"],
         teaching_name_id=teaching_name_id,
         global_session_type_id=global_session_type_id,
+        posting_code=posting_code,
     )
     await _ensure_pool_source_mapping_scope(
         db,
@@ -1015,6 +1033,7 @@ async def update_teaching_event(
         reporting_period_id=period["id"],
         teaching_name_id=teaching_name_id,
         global_session_type_id=global_session_type_id,
+        posting_code=posting_code,
         allow_inactive_global_session_type_id=source.get("global_session_type_id"),
     )
     if source.get("source_programme_code") is not None and (

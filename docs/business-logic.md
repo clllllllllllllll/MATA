@@ -43,8 +43,12 @@ rename/deactivation. Phase D lets only an in-scope Programme PC assign, change,
 or clear one existing mapping to an exact target using its persisted revision;
 Master Admin oversight is read-only. A null target is pending and a non-null
 exact target is mapped, with no manual excluded state. The later JIT calculation
-must not rewrite raw event or attendance records, and a Phase D mapping change
-does not activate that calculation.
+must not rewrite attendance records, and a Phase D mapping change does not
+activate that calculation. Scheduling is the narrow exception: mapping changes
+recalculate `duration_hours` and `end_time` on existing pool events in the exact
+Teaching Name/posting/programme/period scope so resident views display the
+correct mapped duration. Immutable display and source snapshots and linked
+attendance rows remain unchanged.
 
 Global session types stay Admin-managed and, for source-backed scheduled
 events, are identified by `global_session_type_id` before ordinary Teaching
@@ -544,7 +548,8 @@ Secretary-created scheduled events remain posting-owned and programme-neutral: `
 Pool-backed events persist immutable `source_programme_code` and
 `source_reporting_period_id` snapshots. A used Teaching Name may later be
 deleted and clear `teaching_name_id`, but those snapshots, the display snapshot,
-and all attendance remain. No rename or mapping change rewrites them. A PC-owned
+and all attendance remain. Rename does not rewrite them; a mapping change may
+recalculate only `duration_hours` and `end_time` for the exact pool scope. A PC-owned
 pool event requires exact owner/source programme equality; Secretary updates
 require capability for that exact immutable source programme.
 

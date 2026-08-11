@@ -545,6 +545,37 @@ class FakeSecretarySession:
             ]
             return _FakeResult(rows=rows)
 
+        if "/* pool_event_timing:resolve */" in sql:
+            teaching_name_id = str(payload["teaching_name_id"])
+            rows = []
+            for index, teaching_name in enumerate(self.teaching_names):
+                if teaching_name["id"] != teaching_name_id:
+                    continue
+                source = self.source_specs[index] if index < len(self.source_specs) else None
+                if source and source["posting_code"] == payload["posting_code"]:
+                    rows.append({"duration_hours": source["duration_hours"]})
+            return _FakeResult(rows=rows)
+
+        if "/* pool_event_timing:list */" in sql:
+            requested_ids = {str(value) for value in payload["teaching_name_ids"]}
+            rows = []
+            for index, teaching_name in enumerate(self.teaching_names):
+                if teaching_name["id"] not in requested_ids:
+                    continue
+                source = self.source_specs[index] if index < len(self.source_specs) else None
+                if source is None:
+                    continue
+                if payload.get("posting_code") and source["posting_code"] != payload["posting_code"]:
+                    continue
+                rows.append(
+                    {
+                        "teaching_name_id": teaching_name["id"],
+                        "posting_code": source["posting_code"],
+                        "duration_hours": source["duration_hours"],
+                    }
+                )
+            return _FakeResult(rows=rows)
+
         if "/* secretary_events:options_teaching_names */" in sql:
             rows = [
                 {
@@ -1572,6 +1603,15 @@ def test_teaching_name_options_use_programme_pool_and_include_active_globals() -
         fake_db.teaching_names[-1]["id"],
     }
     assert all(row["global_session_type_id"] is None for row in shared)
+    shared_by_id = {row["teaching_name_id"]: row for row in shared}
+    mapped_shared = shared_by_id[
+        fake_db.teaching_name_id_for("GERI Shared Teaching", "GERI")
+    ]
+    pending_shared = shared_by_id[fake_db.teaching_names[-1]["id"]]
+    assert Decimal(str(mapped_shared["duration_hours"])) == Decimal("2.0")
+    assert mapped_shared["duration_is_mapped"] is True
+    assert Decimal(str(pending_shared["duration_hours"])) == Decimal("1.0")
+    assert pending_shared["duration_is_mapped"] is False
 
     row2_index = keywords.index("GERI Demo Row 2")
     row10_index = keywords.index("GERI Demo Row 10")

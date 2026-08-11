@@ -70,8 +70,11 @@ Every important decision made during the project, with reasoning and consequence
   no global ID; global events carry `global_session_type_id` and no Teaching
   Name ID; legacy rows may have neither but never both. Pool events belong to
   exactly one programme through their name; PC programme must match and text
-  fan-out is forbidden. Pool events are exactly one hour, accept start only,
-  compute end server-side, and reject starts after 23:00. Secretary write
+  fan-out is forbidden. Pool events accept start only, compute end server-side,
+  use the exact posting-specific mapped duration or a temporary one-hour
+  fallback while unmapped, and reject starts after 23:00. Mapping changes
+  recalculate existing exact-scope event timing while preserving attendance and
+  immutable source/display snapshots. Secretary write
   authority is an explicit Secretary-to-programme capability (TTSH GERI pilot),
   not native-teaching-posting visibility. Mutations use current CSRF,
   authorization, rate-limit, audit, and post-commit cache-invalidation

@@ -587,7 +587,9 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
   catalogue-display bullets):** create/update/series requests carry exactly one
   active `teaching_name_id` or `global_session_type_id`; the server stores the
   display snapshot and computes timing. Pool rows also store immutable source
-  programme/period snapshots, which survive source deletion. A pool source is exactly one hour and
+  programme/period snapshots, which survive source deletion. A pool source uses
+  the exact posting-specific mapped TTF duration and temporarily defaults to one
+  hour while unmapped; mapping changes update existing exact-scope timing. It
   may not start after 23:00. A global source uses its configured duration.
   Pending names are event-capable. Source text, client end time, and catalogue
    mapping inference are never accepted. Phase G Resident/Non-NHG runtime

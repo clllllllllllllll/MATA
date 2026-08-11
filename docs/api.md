@@ -525,10 +525,11 @@ R-year exactly.
 Single and bulk mutation items require `expected_revision` and a
 `teaching_target_id` field. The field is an existing exact-scope target UUID to
 assign/change, or explicit JSON `null` to clear while retaining the mapping UUID.
-An omitted field is invalid. Successful changes update only the target link and
-increment the persisted mapping revision once. A stale revision returns `409`.
+An omitted field is invalid. Successful changes update the target link,
+increment the persisted mapping revision once, and recalculate exact-scope
+pool-event duration and end time. A stale revision returns `409`.
 
-For a change or clear of an already mapped row, the service counts only stable
+For an assignment, change, or clear, the service counts only stable
 Teaching Name ID plus posting identity and submitted attendance. Because events
 do not carry R-year, the count is conservative across same-name/posting R-year
 mappings rather than silently treating potentially affected evidence as zero. It
@@ -536,16 +537,18 @@ never returns event, attendance, resident, MCR, or external-resident identifiers
 When either aggregate is nonzero, a first request without
 `confirm_impact: true` returns controlled `409` with count-only impact and no
 write; retrying with the same current revision and explicit confirmation applies
-the change. Pending assignment has no prior target impact and needs no
-confirmation. There is no confirmation token, generic confirmation framework, or
+the change. There is no confirmation token, generic confirmation framework, or
 client-supplied scope fingerprint.
 
 Each mutation uses the shared reporting-period/programme TTF advisory lock,
 locks mapping rows and requested target rows deterministically, validates all
 bulk items before writing, records mapping-specific audit and Data Revalidation
-evidence atomically, commits once, and invalidates only affected scoped mapping,
-name-option, target-resolution, and event-option caches after commit. Mapping
-changes never rewrite events, attendance, timing, or immutable display snapshots.
+evidence atomically, commits once, and invalidates affected scoped mapping,
+name-option, target-resolution, event, attendance-view, and report caches after
+commit. Mapping changes preserve attendance rows and immutable display/source
+snapshots while recalculating `duration_hours` and `end_time` on pool events in
+the exact Teaching Name/posting/programme/period scope. Mapped R-year rows for
+that event scope must agree on one duration; conflicts reject the transaction.
 
 ## Admin Endpoints
 
@@ -1441,7 +1444,7 @@ Return teaching-name options for PC event creation.
 - **Auth:** admin/PC only
 - **Query params:** `programme_code` required; `reporting_period_id` or `event_date` optional. An explicit period must be effectively active. When both are supplied, `event_date` must belong to the explicit period or the API returns `422`. With neither option, the backend resolves the single effectively active period containing today. Options are scoped to that resolved period.
 - **Scope:** `programme_code IN programme_scope`.
-- **Source:** Active `teaching_names` in the selected programme and period, plus active `global_session_types`. Pool options expose `teaching_name_id`; global options expose `global_session_type_id`. Each pool option's `posting_codes` contains only exact persisted mapping scopes that are also active programme postings; each global option exposes all active programme postings. Same display text in two pools remains two choices with distinct IDs.
+- **Source:** Active `teaching_names` in the selected programme and period, plus active `global_session_types`. Pool options expose `teaching_name_id`; global options expose `global_session_type_id`. Each pool option's `posting_codes` contains only exact persisted mapping scopes that are also active programme postings and `posting_durations` reports the mapped or temporary duration for each posting. Each global option exposes all active programme postings. Same display text in two pools remains two choices with distinct IDs.
 
 ### POST `/admin/programme-teaching-events`
 
@@ -1449,7 +1452,7 @@ Create a programme-owned scheduled teaching event.
 
 - **Auth:** admin/PC only
 - **Scope:** request `programme_code IN programme_scope`.
-- **Validation:** Returns `422` if `event_date` is in `public_holidays` or exactly one source ID is not supplied. A pool ID must be active, in the event period, in the exact request programme, and in the authenticated PC scope; it must also have an exact persisted Teaching Name mapping for that programme/period and the requested `posting_code`. The mapping may be pending or mapped. A global ID must be active. A pool event is always one hour, has server-computed end time, and rejects a start later than `23:00`. `teaching_name` and client `end_time` are forbidden request fields.
+- **Validation:** Returns `422` if `event_date` is in `public_holidays` or exactly one source ID is not supplied. A pool ID must be active, in the event period, in the exact request programme, and in the authenticated PC scope; it must also have an exact persisted Teaching Name mapping for that programme/period and the requested `posting_code`. Pending scopes temporarily use one hour; mapped R-year rows must agree on one session-type duration. A global ID must be active. The server computes end time, and a pool event rejects a start later than `23:00`. `teaching_name`, client duration, and client `end_time` are forbidden request fields.
 - **Body:**
 ```json
 {
@@ -1627,8 +1630,8 @@ Create a new teaching event.
   - `posting_code` from the current secretary subject's database-owned `users.posting_code`
   - immutable `teaching_name` display snapshot from the selected source
   - `end_time` = `start_time + session_type.duration_hours` (server-computed — NOT a request field)
-  - pool sources always receive `duration_hours = 1.00`; global sources use their server-configured duration
-  - The selected explicit source supplies the duration; no catalogue mapping or session-type inference occurs.
+  - pool sources use the consistent exact posting-specific TTF mapping duration, temporarily defaulting to `1.00` while unmapped; global sources use their server-configured duration
+  - no display-text, catalogue, or cross-posting duration inference occurs
 - **Returns 422 if:** the identity is missing, both identities are present, or the selected source is inactive, outside scope, or incompatible with the event date. No text lookup, canonical-name fallback, duration tiebreaker, or client-supplied end time is accepted.
 - **Transaction:** the event mutation and its existing Secretary audit entry
   commit once. Audit or commit failure rolls back the event; cache invalidation
@@ -1701,7 +1704,8 @@ Create a recurring event series.
 ```
 - **Source identity:** Supply exactly one source ID. Each materialised row
   receives the authorised source ID, immutable display snapshot, and
-  server-computed timing. Pool rows use one hour and cannot start after 23:00;
+  server-computed timing. Pool rows use the posting-specific mapped duration,
+  temporarily default to one hour while unmapped, and cannot start after 23:00;
   the series does not infer names from text or catalogue mappings.
 - **Backend:** Materialises individual `teaching_events` rows per occurrence.
 - **Transaction:** series metadata, every materialised occurrence, and the
@@ -1740,9 +1744,10 @@ Get available Teaching Name and global-session-type source options for the secre
   plus each active global source. Pool options expose `teaching_name_id`; global
   options expose `global_session_type_id`. An option has exactly one non-null
   ID and immutable display text. Identical display text from different source
-  rows remains distinct. A pool option has `duration_hours: 1.0`; a global
-  option has its configured duration. This selection endpoint does not query a
-  catalogue mapping, `is_tracked`, or resident compliance.
+  rows remains distinct. A pool option has the exact posting's effective
+  `duration_hours` and `duration_is_mapped`; a global option has its configured
+  duration. This selection endpoint does not query a catalogue, `is_tracked`,
+  or resident compliance.
 - **Phase F/G provenance contract:** A pool event also stores immutable
   `source_programme_code` and `source_reporting_period_id`. The selected name
   must match them exactly and the Secretary must hold capability for that exact
@@ -1766,6 +1771,7 @@ Get available Teaching Name and global-session-type source options for the secre
       "global_session_type_id": null,
       "keyword": "Journal Club",
       "duration_hours": 1.0,
+      "duration_is_mapped": false,
       "programme_code": "GERI",
       "is_global": false
     },
@@ -1774,6 +1780,7 @@ Get available Teaching Name and global-session-type source options for the secre
       "global_session_type_id": "00000000-0000-0000-0000-000000000002",
       "keyword": "Department Meeting",
       "duration_hours": 1.5,
+      "duration_is_mapped": true,
       "programme_code": null,
       "is_global": true
     }
@@ -1782,7 +1789,9 @@ Get available Teaching Name and global-session-type source options for the secre
 ```
 Identity: This endpoint does not deduplicate distinct `teaching_names` rows by display text. A client must return the opaque ID selected by the user, never a display string.
 
-Session type: a pool option is a source identity rather than a catalogue mapping. Its one-hour scheduling duration does not represent a resident-compliance classification. Phase G runtime uses its persisted identity, not catalogue/global text matching.
+Session type: a pool option is a source identity. Its posting-specific mapped
+duration is scheduling data and does not multiply resident compliance counts.
+Phase G runtime uses persisted identity, not catalogue/global text matching.
 
 The following legacy `is_tracked` wording is not part of the Phase F option response or scheduling contract.
 
