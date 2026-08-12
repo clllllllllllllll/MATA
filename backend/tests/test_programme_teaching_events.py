@@ -327,7 +327,13 @@ class FakeProgrammeTeachingEventsSession:
 
         if "/* pool_event_timing:resolve */" in sql:
             rows = [
-                {"duration_hours": mapping["duration_hours"]}
+                {
+                    "r_year": mapping["r_year"],
+                    "teaching_target_id": mapping["teaching_target_id"],
+                    "session_type_id": mapping["teaching_target_id"],
+                    "session_type_name": "Mapped session",
+                    "duration_hours": mapping["duration_hours"],
+                }
                 for mapping in self.teaching_name_mappings
                 if mapping["teaching_name_id"] == str(payload["teaching_name_id"])
                 and mapping["reporting_period_id"] == str(payload["reporting_period_id"])
@@ -343,6 +349,14 @@ class FakeProgrammeTeachingEventsSession:
                 {
                     "teaching_name_id": mapping["teaching_name_id"],
                     "posting_code": mapping["posting_code"],
+                    "r_year": mapping["r_year"],
+                    "teaching_target_id": mapping["teaching_target_id"],
+                    "session_type_id": mapping["teaching_target_id"],
+                    "session_type_name": (
+                        "Mapped session"
+                        if mapping["teaching_target_id"] is not None
+                        else None
+                    ),
                     "duration_hours": mapping["duration_hours"],
                 }
                 for mapping in self.teaching_name_mappings
@@ -1380,11 +1394,56 @@ def test_pc_pool_event_uses_posting_specific_mapped_duration() -> None:
             "posting_code": "TTSHCardio",
             "duration_hours": "2.0",
             "is_mapped": True,
+            "duration_varies": False,
+            "has_pending_mappings": False,
+            "r_year_durations": [
+                {
+                    "r_year": "R1",
+                    "duration_hours": "2.0",
+                    "is_mapped": True,
+                    "session_type_id": session.teaching_name_mappings[-1][
+                        "teaching_target_id"
+                    ],
+                    "session_type_name": "Mapped session",
+                }
+            ],
         }
     ]
     assert created.status_code == 200
     assert created.json()["duration_hours"] == "2.0"
     assert created.json()["end_time"] == "12:00:00"
+
+
+def test_pc_pool_event_creation_allows_schedule_overlap() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    client = _client(session)
+    headers = _headers(scope="DR")
+    payload = {
+        "programme_code": "DR",
+        "posting_code": "TTSHCardio",
+        "teaching_name_id": session.teaching_name_id_for("Journal Club", "DR"),
+        "event_date": "2026-05-20",
+        "start_time": "10:00",
+    }
+
+    first = client.post(
+        "/admin/programme-teaching-events",
+        headers=headers,
+        json=payload,
+    )
+    second = client.post(
+        "/admin/programme-teaching-events",
+        headers=headers,
+        json={**payload, "start_time": "10:30"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["id"] != second.json()["id"]
+    assert {first.json()["end_time"], second.json()["end_time"]} == {
+        "11:00:00",
+        "11:30:00",
+    }
 
 
 def test_pc_pool_event_requires_exact_persisted_mapping_posting_scope() -> None:

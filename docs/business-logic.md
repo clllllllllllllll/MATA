@@ -45,10 +45,15 @@ Master Admin oversight is read-only. A null target is pending and a non-null
 exact target is mapped, with no manual excluded state. The later JIT calculation
 must not rewrite attendance records, and a Phase D mapping change does not
 activate that calculation. Scheduling is the narrow exception: mapping changes
-recalculate `duration_hours` and `end_time` on existing pool events in the exact
-Teaching Name/posting/programme/period scope so resident views display the
-correct mapped duration. Immutable display and source snapshots and linked
-attendance rows remain unchanged.
+recalculate the longest effective R-year duration and end time stored as the
+staff envelope on existing pool events in the exact Teaching
+Name/posting/programme/period scope. Native Resident views and overlap checks
+instead resolve the exact event-date R-year mapping, so R1 and R2 may receive
+different durations from the same event. Each exact R-year mapping still
+selects only one target. Immutable display and source snapshots and linked
+attendance rows remain unchanged. Non-NHG Residents use exact posting
+visibility and the staff envelope because NHG compliance/R-year resolution
+does not apply.
 
 Global session types stay Admin-managed and, for source-backed scheduled
 events, are identified by `global_session_type_id` before ordinary Teaching
@@ -474,6 +479,18 @@ boundary contact is not overlap.
 
 **Submission-time outcome for distinct events:** For the same resident, compare a later submission against already accepted distinct events. If the later interval overlaps an earlier accepted interval, reject the later submission and preserve the earlier attendance unchanged. Do not delete, replace, or retroactively flag the earlier record. This rule applies to native and Non-NHG sequential/concurrent submissions and atomic ad-hoc creation, before compliance calculation, and is separate from the database uniqueness rule for submitting the same `teaching_event_id` twice.
 
+**Availability and staff scheduling outcome:** Scheduled-event overlap is
+permitted. Before attendance, a resident sees every otherwise eligible event,
+including overlapping alternatives. After one attendance is accepted, the
+submitted event and every other candidate that directly overlaps that
+resident's effective interval are hidden from the available list; overlap is
+not propagated transitively through a chain. Removing the attendance restores
+all otherwise eligible alternatives. Native Residents use their exact
+event-date R-year timing for this test; Non-NHG Residents use the staff event
+envelope. Staff Add Teaching and mapping-impact confirmation warn about staff
+envelope overlap but do not block creation or authoritative mapping changes.
+Mapping-driven timing expansion preserves existing events and attendance.
+
 ---
 
 ## BL-5A: Academic-Year Month Bucketing (AY Dates)
@@ -823,12 +840,18 @@ New registration, schedule replacement, and current-posting compatibility writes
 **Scheduled-event visibility and submission:**
 For each candidate event date, use the one `external_resident_postings` row whose date range covers that event. A gap produces no eligible event. The allowed scheduled-event sources are:
 
-1. **Department Secretary event:** `event.posting_code = schedule.posting_code` and `event.created_for_programme_code IS NULL`. `posting_codes.supports_secretary_events` must be true, and the normal scheduled-event, reporting-period, status, date, duplicate/submission, and other existing filters continue to apply.
-2. **Programme PC event:** the schedule `programme_code` must be present, `event.posting_code = schedule.posting_code`, and `event.created_for_programme_code = schedule.programme_code`. The normal scheduled-event, reporting-period, status, date, and duplicate/submission filters continue to apply. This source does not depend on the Secretary capability flag.
+1. **Department Secretary event:** `event.posting_code = schedule.posting_code`.
+2. **Programme PC event:** `event.posting_code = schedule.posting_code`, regardless of the PC event's programme owner.
 
-Both listing and `POST /resident/attendance` enforce the same exact source rule. Exclude another programme's PC event even when it shares the posting, a matching-programme event at another posting, events outside a schedule range or in a gap, any resident ad-hoc event, and events already submitted by that Non-NHG Resident. Successful attendance writes only `external_attendance_records`.
+Both listing and `POST /resident/attendance` enforce the same exact posting rule. Non-NHG Residents may see every normal scheduled event created at their date-matched posting because they do not participate in NHG compliance or R-year target resolution. `posting_codes.supports_secretary_events`, Teaching Name source programme, and PC programme ownership do not narrow this resident-facing list. Exclude events at another posting, events outside a schedule range or in a gap, resident-created ad-hoc events, and events already submitted by that Non-NHG Resident. Successful attendance writes only `external_attendance_records` and uses the event's longest-duration staff envelope for display and overlap checks.
 
-Do not hardcode TTSH or another institution in service logic. Never infer programme ownership from a posting-code prefix, institution name, teaching target, teaching-name catalogue row, `programmes.native_teaching_posting_code`, fuzzy match, or first mapping candidate. AIM and IM may share `TTSHGenMed`; GS and SIG may share `TTSHGenSrg`, so the persisted schedule programme is mandatory for PC-event authorization. Current TTSH pilot postings can enable Secretary listings through the capability flag; future hospitals such as KTPH can be onboarded through data.
+Overlapping eligible events all appear before submission. After one is
+submitted, the available list hides that event and every candidate that
+directly overlaps its staff envelope. Removing the attendance restores the
+alternatives when their posting/date/status rules still pass; a stale or direct
+attempt to submit another overlapping event remains a controlled conflict.
+
+Do not hardcode TTSH or another institution in service logic. Never infer or broaden posting access from a posting-code prefix, institution name, teaching target, teaching-name catalogue row, `programmes.native_teaching_posting_code`, fuzzy match, or first mapping candidate.
 
 **Compliance exclusion:**
 Non-NHG Residents are excluded from all NHG compliance surfaces:
@@ -845,7 +868,7 @@ Non-NHG Residents are excluded from all NHG compliance surfaces:
 **Phase 6 guardrail:** Compliance reads native `attendance_records` only. It must never join `external_attendance_records`, even for reporting convenience.
 
 **Submission behaviour:**
-- Non-NHG Residents can submit attendance for eligible Department Secretary events and exact-programme Programme PC events at their date-matched schedule posting.
+- Non-NHG Residents can submit attendance for every normal scheduled Department Secretary or Programme PC event at their exact date-matched schedule posting.
 - Non-NHG Residents can submit the fixed, server-owned one-hour ad-hoc record for one exact date-matched schedule posting.
 - PH ad-hoc teaching is hard-blocked with `422`.
 - Weekend non-exception submissions are stored and return `compliance_warning`.

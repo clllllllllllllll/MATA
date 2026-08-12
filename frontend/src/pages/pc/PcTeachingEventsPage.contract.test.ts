@@ -224,6 +224,13 @@ assert(
     && pageSource.includes('selectedMappedPoolEndTime'),
   'PC Add Teaching shows mapped posting-specific duration and end time',
 )
+assert(
+  apiSource.includes('rYearDurations')
+    && pageSource.includes('Duration varies by R-year')
+    && pageSource.includes('End time by R-year')
+    && pageSource.includes('Staff scheduling uses the longest duration'),
+  'PC Add Teaching shows R-year timings and the longest staff envelope',
+)
 assertOrdered(
   pageSource,
   ['className="button button-secondary"', '<IconRefresh size={14} />', 'className="button button-primary"', '<IconPlus size={14} />'],

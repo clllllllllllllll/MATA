@@ -71,10 +71,14 @@ Every important decision made during the project, with reasoning and consequence
   Name ID; legacy rows may have neither but never both. Pool events belong to
   exactly one programme through their name; PC programme must match and text
   fan-out is forbidden. Pool events accept start only, compute end server-side,
-  use the exact posting-specific mapped duration or a temporary one-hour
-  fallback while unmapped, and reject starts after 23:00. Mapping changes
-  recalculate existing exact-scope event timing while preserving attendance and
-  immutable source/display snapshots. Secretary write
+  store the longest effective posting/R-year duration as the staff envelope,
+  use a temporary one-hour contribution for each pending R-year, and reject
+  starts after 23:00. Different R-years may map the same Teaching Name to
+  different duration-bearing targets; each exact R-year identity still selects
+  only one target. Native Resident views use the event-date R-year duration,
+  while Non-NHG views use exact posting visibility and the staff envelope.
+  Mapping changes recalculate existing exact-scope event timing while
+  preserving attendance and immutable source/display snapshots. Secretary write
   authority is an explicit Secretary-to-programme capability (TTSH GERI pilot),
   not native-teaching-posting visibility. Mutations use current CSRF,
   authorization, rate-limit, audit, and post-commit cache-invalidation
@@ -204,7 +208,7 @@ only under an approved product scope.
 - **MCR uniqueness:** MCR is globally unique for every doctor. Because native and external identities use separate tables, enforce cross-table uniqueness in service logic: reject registration if MCR exists in either `residents` or `external_residents`.
 - **Workflow direction:** Non-NHG Residents self-register on first use. After registration, they use the same shared Resident MCR field as NHG Residents. The frontend sends one neutral `role = resident` request and never selects, infers, or retries an identity subtype; the backend resolves the unique native/external match and returns the authenticated role. Non-NHG Residents may self-update their upcoming NHG posting schedule.
 - **Posting model:** Non-NHG date-bounded forecast postings are stored in `external_resident_postings`; do not use native `resident_postings`. Each row retains the validated `programme_code` and resolved `posting_code`, and authorization-sensitive event/ad-hoc derivation uses the row matching the selected event date.
-- **Scheduled-event sources:** A date-matched schedule row authorizes a Department Secretary event only at its exact posting with `created_for_programme_code IS NULL` and the Secretary capability enabled. It authorizes a Programme PC event only when both event posting and programme owner exactly match the schedule row. Listing and attendance submission enforce the same rule.
+- **Scheduled-event sources:** A date-matched schedule row authorizes every normal scheduled Department Secretary or Programme PC event at its exact posting. Non-NHG Residents do not resolve NHG compliance, R-year mappings, PC programme ownership, or the Secretary capability for this list. Listing and attendance submission enforce the same exact-posting rule and use the staff event envelope.
 - **Functional scope:** Phase 5B must be completed before Phase 6 compliance. It includes Non-NHG registration/login, upcoming NHG posting schedule update, supported event listing, attendance submission, revised ad-hoc teaching submission, past attendance, admin/PC external attendance list/read, and Excel export for forwarding to NUH/SingHealth PCs.
 - **Explicit exclusions:** Non-NHG Residents are excluded from NHG compliance and clawback surfaces:
   - no NHG resident compliance dashboard
@@ -282,8 +286,8 @@ only under an approved product scope.
 - **Current pilot:** TTSH pilot postings can be seeded/configured with `supports_secretary_events = true`, so residents posted there see secretary-created events plus ad-hoc submission.
 - **Future onboarding:** Future hospitals such as KTPH can be enabled by setting the same flag on their posting codes. This avoids service-code hardcoding and makes onboarding a data/config change.
 - **Behaviour:**
-  - `supports_secretary_events = true` → NHG Residents and Non-NHG Residents at that posting may see secretary-created event lists and may also submit ad-hoc teaching.
-  - `supports_secretary_events = false` → no secretary-created event list is expected; ad-hoc submission remains available.
+  - `supports_secretary_events = true` → native NHG Residents at that posting may see secretary-created event lists and may also submit ad-hoc teaching.
+  - `supports_secretary_events = false` → no secretary-created event list is expected for native NHG Residents; ad-hoc submission remains available. Non-NHG scheduled-event visibility is separately governed by exact date-matched posting and is not narrowed by this flag.
 - **Applicability:** Applies to both native NHG residents and external NUH/SingHealth residents.
 - **Rejected approach:** Hardcoding `posting_codes.institution = 'TTSH'` in service logic.
 - **Reference file and section:** `schema.md` § `posting_codes`; `business-logic.md` § BL-12; `api.md` § Resident/Non-NHG Resident Endpoints
@@ -665,7 +669,7 @@ only under an approved product scope.
 - **Storage:** Persist the validated `programme_code` and backend-resolved `posting_code` together on each date-bounded `external_resident_postings` row. Programme belongs to the schedule row because a Non-NHG Resident may rotate through different programmes; do not add one global programme to `external_residents`. `external_residents.current_nhg_posting_code` may remain as a current/cache/backward-compatibility pointer if implementation needs it.
 - **Write paths:** Initial registration, schedule replacement, and the current-posting compatibility route must all preserve the validated programme with its resolved posting.
 - **Legacy provenance:** Keep the schedule `programme_code` nullable for unresolved legacy rows. Backfill only when authoritative mapping data yields exactly one programme, for example `TTSHGerMed -> GERI`; leave shared postings such as `TTSHGenMed` (AIM/IM) and `TTSHGenSrg` (GS/SIG) null. Never pick the first match. A null legacy programme grants no Programme PC-event visibility.
-- **Authorization-sensitive derivation:** Event/ad-hoc derivation must use the date-matching `external_resident_postings` row rather than token claims or the current/cache pointer. A Secretary-created event requires the exact schedule posting, a null `created_for_programme_code`, and the existing capability/event filters. A Programme PC-created event requires exact equality on both schedule posting and non-null schedule programme. Listing and attendance submission use the same rule.
+- **Authorization-sensitive derivation:** Event/ad-hoc derivation must use the date-matching `external_resident_postings` row rather than token claims or the current/cache pointer. Every normal scheduled Secretary or Programme PC event at the exact schedule posting is eligible; PC programme ownership and Secretary capability do not narrow Non-NHG visibility. Listing and attendance submission use the same exact-posting rule.
 - **No inference:** Do not infer schedule or event programme ownership from posting prefixes, institution names, teaching targets, teaching-name catalogue rows, `programmes.native_teaching_posting_code`, fuzzy matching, or the first mapping row.
 - **Range validation:** Rows for the same Non-NHG Resident must not overlap. Gaps are allowed, but event/ad-hoc options for a date in a gap return unavailable/no posting for selected date.
 - **Identity and compliance:** Global MCR uniqueness still applies. Non-NHG attendance remains export-only and excluded from NHG compliance, clawback, numerator, denominator, surplus, snapshots, and native reports.

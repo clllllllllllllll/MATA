@@ -553,7 +553,15 @@ class FakeSecretarySession:
                     continue
                 source = self.source_specs[index] if index < len(self.source_specs) else None
                 if source and source["posting_code"] == payload["posting_code"]:
-                    rows.append({"duration_hours": source["duration_hours"]})
+                    rows.append(
+                        {
+                            "r_year": "R2",
+                            "teaching_target_id": source["session_type_id"],
+                            "session_type_id": source["session_type_id"],
+                            "session_type_name": source["session_type"],
+                            "duration_hours": source["duration_hours"],
+                        }
+                    )
             return _FakeResult(rows=rows)
 
         if "/* pool_event_timing:list */" in sql:
@@ -571,6 +579,10 @@ class FakeSecretarySession:
                     {
                         "teaching_name_id": teaching_name["id"],
                         "posting_code": source["posting_code"],
+                        "r_year": "R2",
+                        "teaching_target_id": source["session_type_id"],
+                        "session_type_id": source["session_type_id"],
+                        "session_type_name": source["session_type"],
                         "duration_hours": source["duration_hours"],
                     }
                 )
@@ -1726,6 +1738,31 @@ def test_create_event_accepts_source_id_from_mapped_programme_pool() -> None:
     assert payload["posting_code"] == "TTSHGerMed"
     assert payload["teaching_name"] == "GERI Demo Row 22"
     assert payload["created_for_programme_code"] is None
+
+
+def test_secretary_pool_event_creation_allows_schedule_overlap() -> None:
+    fake_db = FakeSecretarySession()
+    client = _client(fake_db)
+    payload = {
+        **_pool_source(fake_db, "GERI Demo Row 22", "GERI"),
+        "event_date": "2026-05-18",
+        "start_time": "10:00",
+    }
+
+    first = client.post(
+        "/secretary/teaching-events",
+        headers=_headers(fake_db, site="TTSHGerMed"),
+        json=payload,
+    )
+    second = client.post(
+        "/secretary/teaching-events",
+        headers=_headers(fake_db, site="TTSHGerMed"),
+        json={**payload, "start_time": "10:30"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["id"] != second.json()["id"]
 
 
 def test_other_secretary_posting_cannot_use_ttshgermed_pool_identity() -> None:

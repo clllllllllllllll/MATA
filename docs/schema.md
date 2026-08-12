@@ -56,6 +56,12 @@ mapping for the source reporting period, source programme, and event posting.
 Pending mappings are valid; a missing mapping scope is not. Secretary and
 Master branches are unchanged.
 
+Revision `20260812_000039` adds no table or policy. It adds a protected,
+read-only staff timing resolver so an authorized Secretary can derive exact
+Teaching Name/reporting-period/programme/posting mapping durations without a
+direct grant on Programme-PC mapping rows. The resolver is runtime-only and
+does not expose mappings to Resident or Non-NHG contexts.
+
 The current final model uses `teaching_name` as the canonical term:
 
 - The `teaching_names` relation is scoped by
@@ -102,11 +108,13 @@ The current final model uses `teaching_name` as the canonical term:
   rows qualify, while Secretary and Master event authority retains its separate
   documented boundary.
 - A pool-backed scheduled event derives duration from the exact Teaching Name,
-  reporting-period, programme, and posting mapping scope. When every R-year
-  mapping is pending, the event temporarily uses one hour. When mapped R-year
-  rows exist, their session types must agree on one duration or the write fails
-  with a controlled conflict. The client supplies `start_time` only, the server
-  computes `end_time`, and a start later than 23:00 is a controlled `422`.
+  reporting-period, programme, posting, and R-year mappings. Each exact
+  Teaching Name/posting/R-year identity selects at most one target. Different
+  R-years may select session types with different durations; the longest
+  effective R-year duration is stored as the staff event envelope. A pending
+  R-year contributes a temporary one hour. The client supplies `start_time`
+  only, the server computes `end_time`, and a start later than 23:00 is a
+  controlled `422`.
   Assigning, changing, clearing, or invalidating a mapping recalculates stored
   `duration_hours` and `end_time` for existing events in that exact scope.
 
@@ -114,11 +122,13 @@ In the implemented Phase F/G model, pending names remain selectable,
 event-capable, visible, attendance-submittable, and auditable. A mapped target
 supplies scheduling duration only; it does not change the immutable display or
 source snapshots and is not a compliance multiplier.
-Resident/Non-NHG runtime uses the persisted source identity, never a mapping,
-catalogue value, or display-text inference. They are excluded from future
-compliance until an exact mapping exists; the next JIT read resolves a newly
-mapped name without rewriting attendance rows. Mapping changes may update only
-the exact pool events' server-owned duration and end time.
+Native Resident runtime uses persisted source identity plus the Resident's
+date-specific R-year to derive resident-facing duration and end time. Non-NHG
+runtime uses exact date-matched posting visibility and the staff event envelope;
+it does not resolve NHG compliance or R-year mappings. Neither path uses a
+catalogue value or display-text inference. Native attendance is excluded from
+future compliance until an exact R-year mapping exists; the next JIT read
+resolves a newly mapped name without rewriting attendance rows.
 `global_session_types` remain
 Admin-managed, outside this queue, and are handled before ordinary Teaching
 Name mapping. Resident ad-hoc teaching remains fixed to
@@ -269,7 +279,7 @@ Canonical registry of all posting sites. Seeded from both RDB (active sites) and
 | department | VARCHAR(50) | | e.g. `Anaes`, `GerMed`, `DiagRd` |
 | billing_dept | VARCHAR(50) | | Legacy/planned billing metadata. Any future clawback attribution source and time grain remain deferred. |
 | is_emergency | BOOLEAN | DEFAULT false | Emergency-posting classification for audit/display. It does not bypass public-holiday blocking or create an automatic weekend exception. |
-| supports_secretary_events | BOOLEAN | DEFAULT false | Posting capability hint for secretary-event onboarding. For native residents, visibility/submission remains data-driven by posting context plus persisted scheduled-event source evidence (or deterministic legacy evidence); this flag is not a hard authorization clamp. External flow may apply additional controls. |
+| supports_secretary_events | BOOLEAN | DEFAULT false | Posting capability hint for secretary-event onboarding. It is not a Resident or Non-NHG Resident visibility/submission authorization clamp. |
 
 **Important:** Posting codes are NOT derivable by regex from institution+department. Real codes like `MOHHGTG1`, `AICAIC`, `RenCiCommHosp`, `NHGPlyNHGPly` break any uniform pattern. This table is the source of truth — no string parsing.
 
@@ -729,6 +739,12 @@ than or equal to `start_time` belongs to the following date, so `23:00–00:00`
 is valid and is compared against rows on both dates. Exact boundary contact is
 not overlap. The earlier accepted attendance is preserved unchanged. This rule
 is separate from same-event uniqueness and applies to native and Non-NHG rows.
+Scheduled events themselves may overlap: staff creation and later
+mapping-driven envelope changes warn but are not rejected. Resident available
+event reads hide directly overlapping alternatives only while a submitted
+attendance exists; removal restores them if otherwise eligible. Existing
+attendance is never rewritten or deleted when later timing changes create an
+overlap.
 
 **Session type is NOT stored here.** The Phase 6 compliance resolver is deferred. When implemented, it must resolve through the event's persisted source identity and a scoped mapping for the resident/posting/r-year context; the immutable `teaching_name` display snapshot is never a matching input.
 
@@ -780,7 +796,7 @@ Confirmed Phase 5B source for Non-NHG forecasted/date-specific posting derivatio
 - Registration/update UI collects configured institutions and programmes from the public mapping-options endpoint. Current TTSH configuration exposes only the 24 active Non-NHG registration choices; the four inactive TTSH mappings for `FM`, `PATH`, `SPORTSMED`, and `PALLMED` are omitted. Future KTPH/WH rows appear automatically from configuration. Each stored row retains both the validated `programme_code` and backend-resolved `posting_code`; institution remains request/configuration context rather than duplicated schedule state.
 - A composite scope/date index on (`external_resident_id`, `posting_code`, `programme_code`, `start_date`, `end_date`) supports exact programme/posting authorization while retaining the existing resident/date lookup indexes.
 - A migration may backfill a legacy row only when its posting resolves to exactly one programme through authoritative mapping data. It must leave ambiguous rows null rather than pick the first candidate; `TTSHGenMed` may represent AIM or IM, and `TTSHGenSrg` may represent GS or SIG. Unique cases such as `TTSHGerMed` may be backfilled to GERI when the authoritative mapping data proves that resolution. Unrelated residents, schedules, and attendance remain unchanged.
-- For a date-matched schedule row, a Secretary-created scheduled event is eligible only when its `posting_code` matches and `created_for_programme_code IS NULL`, with the existing Secretary capability and event filters. A Programme PC-created scheduled event is eligible only when both its `posting_code` and `created_for_programme_code` exactly match the non-null schedule values. Never derive programme ownership from posting metadata or another domain.
+- For a date-matched schedule row, every normal scheduled Department Secretary or Programme PC event is eligible when its `posting_code` matches exactly. Teaching Name source programme, `created_for_programme_code`, and `posting_codes.supports_secretary_events` are not Non-NHG Resident visibility/submission gates. Another posting, an event outside the schedule dates, an ad-hoc event owned by another resident, or an already-submitted event remains ineligible.
 
 ---
 

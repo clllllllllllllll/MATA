@@ -87,6 +87,7 @@ RUNTIME_ONLY_FUNCTIONS = frozenset(
         ),
         "mata_rls.scheduled_event_source_scope(uuid)",
         "mata_rls.resolve_native_teaching_target(uuid,uuid)",
+        "mata_rls.resolve_staff_pool_event_timings(uuid[],uuid,text,text)",
         "mata_rls.update_own_staff_actor_name(text)",
         "mata_rls.reporting_period_dependency_counts(uuid)",
         "mata_rls.hibernate_stale_surplus(uuid)",
@@ -347,6 +348,7 @@ POLICY_CUTOVER_REVISIONS = frozenset(
         "20260805_000036",
         "20260805_000037",
         "20260806_000038",
+        "20260812_000039",
     }
 )
 FINAL_AJ_CUTOVER_REVISIONS = frozenset(
@@ -354,6 +356,7 @@ FINAL_AJ_CUTOVER_REVISIONS = frozenset(
         "20260805_000036",
         "20260805_000037",
         "20260806_000038",
+        "20260812_000039",
     }
 )
 SESSION_LIFECYCLE_REVISIONS = frozenset(
@@ -370,6 +373,7 @@ SESSION_LIFECYCLE_REVISIONS = frozenset(
         "20260805_000036",
         "20260805_000037",
         "20260806_000038",
+        "20260812_000039",
     }
 )
 

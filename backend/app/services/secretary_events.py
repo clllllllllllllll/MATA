@@ -20,6 +20,7 @@ from app.services import scheduled_event_sources
 from app.services.pool_event_timing import (
     DEFAULT_POOL_EVENT_DURATION_HOURS,
     list_pool_event_timings,
+    with_staff_pool_event_timings,
 )
 from app.services.teaching_event_locks import acquire_teaching_event_locks
 from app.services.teaching_name_pool import TeachingNamePoolActor
@@ -50,6 +51,9 @@ def _event_row(row: dict[str, Any]) -> dict[str, Any]:
         "start_time": row["start_time"],
         "end_time": row["end_time"],
         "duration_hours": row.get("duration_hours"),
+        "duration_varies": bool(row.get("duration_varies", False)),
+        "has_pending_mappings": bool(row.get("has_pending_mappings", False)),
+        "r_year_durations": row.get("r_year_durations", []),
         "session_type_id": row.get("session_type_id"),
         "teaching_name_id": row.get("teaching_name_id"),
         "global_session_type_id": row.get("global_session_type_id"),
@@ -260,7 +264,11 @@ async def list_teaching_events(
         ),
         params,
     )
-    return [_event_row(dict(row)) for row in result.mappings().all()]
+    rows = await with_staff_pool_event_timings(
+        db,
+        rows=[dict(row) for row in result.mappings().all()],
+    )
+    return [_event_row(row) for row in rows]
 
 
 async def _insert_event(
@@ -873,9 +881,26 @@ async def teaching_name_options(
                 else DEFAULT_POOL_EVENT_DURATION_HOURS
             )
             row["duration_is_mapped"] = bool(timing and timing.is_mapped)
+            row["duration_varies"] = bool(timing and timing.duration_varies)
+            row["has_pending_mappings"] = bool(
+                timing and timing.has_pending_mappings
+            )
+            row["r_year_durations"] = [
+                {
+                    "r_year": r_year_timing.r_year,
+                    "duration_hours": r_year_timing.duration_hours,
+                    "is_mapped": r_year_timing.is_mapped,
+                    "session_type_id": r_year_timing.session_type_id,
+                    "session_type_name": r_year_timing.session_type_name,
+                }
+                for r_year_timing in (timing.r_year_timings if timing else ())
+            ]
     for row in global_result.mappings().all():
         option = dict(row)
         option["duration_is_mapped"] = True
+        option["duration_varies"] = False
+        option["has_pending_mappings"] = False
+        option["r_year_durations"] = []
         options.append(option)
     return sorted(
         options,

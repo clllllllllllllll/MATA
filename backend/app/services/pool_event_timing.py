@@ -3,22 +3,41 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
+from app.services.database_context import RLS_ENABLED_INFO_KEY
 
 
 DEFAULT_POOL_EVENT_DURATION_HOURS = Decimal("1.00")
 
 
 @dataclass(frozen=True, slots=True)
-class PoolEventTiming:
+class PoolEventRYearTiming:
+    r_year: str
     duration_hours: Decimal
     is_mapped: bool
+    teaching_target_id: UUID | None = None
+    session_type_id: UUID | None = None
+    session_type_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PoolEventTiming:
+    """Staff-facing timing envelope for one Teaching Name/posting scope."""
+
+    duration_hours: Decimal
+    is_mapped: bool
+    duration_varies: bool = False
+    r_year_timings: tuple[PoolEventRYearTiming, ...] = ()
+
+    @property
+    def has_pending_mappings(self) -> bool:
+        return any(not timing.is_mapped for timing in self.r_year_timings)
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,15 +48,50 @@ class PoolEventTimingScope:
     posting_code: str
 
 
-def _conflicting_duration_error(*, posting_code: str) -> ApiError:
+def pool_event_timing_payload(timing: PoolEventTiming) -> dict[str, object]:
+    return {
+        "duration_varies": timing.duration_varies,
+        "has_pending_mappings": timing.has_pending_mappings,
+        "r_year_durations": [
+            {
+                "r_year": row.r_year,
+                "duration_hours": row.duration_hours,
+                "is_mapped": row.is_mapped,
+                "session_type_id": row.session_type_id,
+                "session_type_name": row.session_type_name,
+            }
+            for row in timing.r_year_timings
+        ],
+    }
+
+
+def _missing_r_year_mapping_error(*, posting_code: str, r_year: str) -> ApiError:
     return ApiError(
         status_code=409,
         detail=(
-            "Teaching Name mappings for this posting have conflicting durations. "
-            "Align the Programme PC mappings before scheduling teaching."
+            "Teaching Name mapping is unavailable for the resident's event-date "
+            "R-year. Ask the Programme PC to reconcile the mapping before retrying."
         ),
         error_code=ErrorCode.CONFLICT.value,
-        metadata={"posting_code": posting_code},
+        metadata={"posting_code": posting_code, "r_year": r_year},
+    )
+
+
+def _timing_envelope(
+    rows: Iterable[PoolEventRYearTiming],
+) -> PoolEventTiming:
+    r_year_timings = tuple(sorted(rows, key=lambda timing: timing.r_year))
+    if not r_year_timings:
+        return PoolEventTiming(
+            duration_hours=DEFAULT_POOL_EVENT_DURATION_HOURS,
+            is_mapped=False,
+        )
+    effective_durations = {timing.duration_hours for timing in r_year_timings}
+    return PoolEventTiming(
+        duration_hours=max(effective_durations),
+        is_mapped=all(timing.is_mapped for timing in r_year_timings),
+        duration_varies=len(effective_durations) > 1,
+        r_year_timings=r_year_timings,
     )
 
 
@@ -46,24 +100,109 @@ async def resolve_pool_event_timing(
     *,
     scope: PoolEventTimingScope,
 ) -> PoolEventTiming:
-    """Resolve one effective duration across the scope's mapped R-year rows."""
+    """Resolve the staff envelope across the scope's R-year mapping rows."""
 
+    rls_enabled = bool(
+        getattr(db, "info", {}).get(RLS_ENABLED_INFO_KEY, False)
+    )
     result = await db.execute(
         text(
             """
+            SELECT
+                r_year,
+                teaching_target_id,
+                session_type_id,
+                session_type_name,
+                duration_hours
+            FROM mata_rls.resolve_staff_pool_event_timings(
+                CAST(:teaching_name_ids AS uuid[]),
+                CAST(:reporting_period_id AS uuid),
+                CAST(:programme_code AS text),
+                CAST(:posting_code AS text)
+            )
+            """
+            if rls_enabled
+            else """
             /* pool_event_timing:resolve */
-            SELECT DISTINCT session_type.duration_hours
+            SELECT
+                mapping.r_year,
+                mapping.teaching_target_id,
+                target.session_type_id,
+                session_type.name AS session_type_name,
+                session_type.duration_hours
             FROM teaching_name_mappings AS mapping
-            JOIN teaching_targets AS target
+            LEFT JOIN teaching_targets AS target
               ON target.id = mapping.teaching_target_id
-            JOIN session_types AS session_type
+            LEFT JOIN session_types AS session_type
               ON session_type.id = target.session_type_id
             WHERE mapping.teaching_name_id = :teaching_name_id
               AND mapping.reporting_period_id = :reporting_period_id
               AND mapping.programme_code = :programme_code
               AND mapping.posting_code = :posting_code
-              AND mapping.teaching_target_id IS NOT NULL
-            ORDER BY session_type.duration_hours ASC
+            ORDER BY mapping.r_year ASC
+            """
+        ),
+        {
+            "teaching_name_id": str(scope.teaching_name_id),
+            "teaching_name_ids": [str(scope.teaching_name_id)],
+            "reporting_period_id": str(scope.reporting_period_id),
+            "programme_code": scope.programme_code,
+            "posting_code": scope.posting_code,
+        },
+    )
+    return _timing_envelope(
+        PoolEventRYearTiming(
+            r_year=str(row["r_year"]),
+            duration_hours=(
+                Decimal(str(row["duration_hours"]))
+                if row.get("duration_hours") is not None
+                else DEFAULT_POOL_EVENT_DURATION_HOURS
+            ),
+            is_mapped=row.get("teaching_target_id") is not None,
+            teaching_target_id=(
+                UUID(str(row["teaching_target_id"]))
+                if row.get("teaching_target_id") is not None
+                else None
+            ),
+            session_type_id=(
+                UUID(str(row["session_type_id"]))
+                if row.get("session_type_id") is not None
+                else None
+            ),
+            session_type_name=row.get("session_type_name"),
+        )
+        for row in result.mappings().all()
+    )
+
+
+async def resolve_pool_event_r_year_timing(
+    db: AsyncSession,
+    *,
+    scope: PoolEventTimingScope,
+    r_year: str,
+) -> PoolEventRYearTiming:
+    """Resolve native-resident timing from one exact event-date R-year mapping."""
+
+    result = await db.execute(
+        text(
+            """
+            /* pool_event_timing:resolve_r_year */
+            SELECT
+                mapping.r_year,
+                mapping.teaching_target_id,
+                target.session_type_id,
+                session_type.name AS session_type_name,
+                session_type.duration_hours
+            FROM teaching_name_mappings AS mapping
+            LEFT JOIN teaching_targets AS target
+              ON target.id = mapping.teaching_target_id
+            LEFT JOIN session_types AS session_type
+              ON session_type.id = target.session_type_id
+            WHERE mapping.teaching_name_id = :teaching_name_id
+              AND mapping.reporting_period_id = :reporting_period_id
+              AND mapping.programme_code = :programme_code
+              AND mapping.posting_code = :posting_code
+              AND mapping.r_year = :r_year
             """
         ),
         {
@@ -71,21 +210,35 @@ async def resolve_pool_event_timing(
             "reporting_period_id": str(scope.reporting_period_id),
             "programme_code": scope.programme_code,
             "posting_code": scope.posting_code,
+            "r_year": r_year,
         },
     )
-    durations = {
-        Decimal(str(row["duration_hours"]))
-        for row in result.mappings().all()
-        if row.get("duration_hours") is not None
-    }
-    if len(durations) > 1:
-        raise _conflicting_duration_error(posting_code=scope.posting_code)
-    if not durations:
-        return PoolEventTiming(
-            duration_hours=DEFAULT_POOL_EVENT_DURATION_HOURS,
-            is_mapped=False,
+    row = result.mappings().one_or_none()
+    if row is None:
+        raise _missing_r_year_mapping_error(
+            posting_code=scope.posting_code,
+            r_year=r_year,
         )
-    return PoolEventTiming(duration_hours=durations.pop(), is_mapped=True)
+    return PoolEventRYearTiming(
+        r_year=str(row["r_year"]),
+        duration_hours=(
+            Decimal(str(row["duration_hours"]))
+            if row.get("duration_hours") is not None
+            else DEFAULT_POOL_EVENT_DURATION_HOURS
+        ),
+        is_mapped=row.get("teaching_target_id") is not None,
+        teaching_target_id=(
+            UUID(str(row["teaching_target_id"]))
+            if row.get("teaching_target_id") is not None
+            else None
+        ),
+        session_type_id=(
+            UUID(str(row["session_type_id"]))
+            if row.get("session_type_id") is not None
+            else None
+        ),
+        session_type_name=row.get("session_type_name"),
+    )
 
 
 async def list_pool_event_timings(
@@ -100,13 +253,30 @@ async def list_pool_event_timings(
 
     if not teaching_name_ids:
         return {}
+    rls_enabled = bool(
+        getattr(db, "info", {}).get(RLS_ENABLED_INFO_KEY, False)
+    )
     result = await db.execute(
         text(
             """
+            SELECT *
+            FROM mata_rls.resolve_staff_pool_event_timings(
+                CAST(:teaching_name_ids AS uuid[]),
+                CAST(:reporting_period_id AS uuid),
+                CAST(:programme_code AS text),
+                CAST(:posting_code AS text)
+            )
+            """
+            if rls_enabled
+            else """
             /* pool_event_timing:list */
             SELECT
                 mapping.teaching_name_id,
                 mapping.posting_code,
+                mapping.r_year,
+                mapping.teaching_target_id,
+                target.session_type_id,
+                session_type.name AS session_type_name,
                 session_type.duration_hours
             FROM teaching_name_mappings AS mapping
             LEFT JOIN teaching_targets AS target
@@ -130,26 +300,108 @@ async def list_pool_event_timings(
             "posting_code": posting_code,
         },
     )
-    durations_by_scope: defaultdict[tuple[str, str], set[Decimal]] = defaultdict(set)
+    timings_by_scope: defaultdict[
+        tuple[str, str], list[PoolEventRYearTiming]
+    ] = defaultdict(list)
     for row in result.mappings().all():
         key = (str(row["teaching_name_id"]), str(row["posting_code"]))
-        durations_by_scope[key]
-        if row.get("duration_hours") is not None:
-            durations_by_scope[key].add(Decimal(str(row["duration_hours"])))
-
-    timings: dict[tuple[str, str], PoolEventTiming] = {}
-    for key, durations in durations_by_scope.items():
-        if len(durations) > 1:
-            raise _conflicting_duration_error(posting_code=key[1])
-        timings[key] = (
-            PoolEventTiming(duration_hours=durations.pop(), is_mapped=True)
-            if durations
-            else PoolEventTiming(
-                duration_hours=DEFAULT_POOL_EVENT_DURATION_HOURS,
-                is_mapped=False,
+        timings_by_scope[key].append(
+            PoolEventRYearTiming(
+                r_year=str(row["r_year"]),
+                duration_hours=(
+                    Decimal(str(row["duration_hours"]))
+                    if row.get("duration_hours") is not None
+                    else DEFAULT_POOL_EVENT_DURATION_HOURS
+                ),
+                is_mapped=row.get("teaching_target_id") is not None,
+                teaching_target_id=(
+                    UUID(str(row["teaching_target_id"]))
+                    if row.get("teaching_target_id") is not None
+                    else None
+                ),
+                session_type_id=(
+                    UUID(str(row["session_type_id"]))
+                    if row.get("session_type_id") is not None
+                    else None
+                ),
+                session_type_name=row.get("session_type_name"),
             )
         )
-    return timings
+
+    return {
+        key: _timing_envelope(r_year_timings)
+        for key, r_year_timings in timings_by_scope.items()
+    }
+
+
+async def with_staff_pool_event_timings(
+    db: AsyncSession,
+    *,
+    rows: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach staff timing metadata with one query per period/programme scope."""
+
+    enriched_rows = [dict(row) for row in rows]
+    teaching_names_by_scope: defaultdict[
+        tuple[str, str, str], set[str]
+    ] = defaultdict(set)
+    for row in enriched_rows:
+        teaching_name_id = row.get("teaching_name_id")
+        reporting_period_id = row.get("source_reporting_period_id")
+        programme_code = row.get("source_programme_code")
+        posting_code = row.get("posting_code")
+        if (
+            teaching_name_id is None
+            or reporting_period_id is None
+            or programme_code is None
+            or posting_code is None
+        ):
+            continue
+        teaching_names_by_scope[
+            (
+                str(reporting_period_id),
+                str(programme_code),
+                str(posting_code),
+            )
+        ].add(str(teaching_name_id))
+
+    timings_by_full_scope: dict[tuple[str, str, str, str], PoolEventTiming] = {}
+    for (
+        reporting_period_id,
+        programme_code,
+        posting_code,
+    ), teaching_name_ids in sorted(teaching_names_by_scope.items()):
+        timings = await list_pool_event_timings(
+            db,
+            teaching_name_ids=sorted(teaching_name_ids),
+            reporting_period_id=reporting_period_id,
+            programme_code=programme_code,
+            posting_code=posting_code,
+        )
+        timings_by_full_scope.update(
+            {
+                (
+                    reporting_period_id,
+                    programme_code,
+                    teaching_name_id,
+                    posting_code,
+                ): timing
+                for (teaching_name_id, posting_code), timing in timings.items()
+            }
+        )
+
+    for row in enriched_rows:
+        timing = timings_by_full_scope.get(
+            (
+                str(row.get("source_reporting_period_id")),
+                str(row.get("source_programme_code")),
+                str(row.get("teaching_name_id")),
+                str(row.get("posting_code")),
+            )
+        )
+        if timing is not None:
+            row.update(pool_event_timing_payload(timing))
+    return enriched_rows
 
 
 async def sync_pool_event_timings(

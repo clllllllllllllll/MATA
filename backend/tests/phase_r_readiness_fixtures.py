@@ -470,21 +470,40 @@ class PhaseRInMemoryTTFSession:
             session_type_by_id = {
                 str(row["id"]): row for row in self.session_types.values()
             }
-            durations = {
-                session_type_by_id[
-                    str(target_by_id[str(mapping["teaching_target_id"])]["session_type_id"])
-                ]["duration_hours"]
-                for mapping in self.teaching_name_mappings
-                if mapping["teaching_name_id"] == str(params["teaching_name_id"])
-                and mapping["reporting_period_id"]
-                == str(params["reporting_period_id"])
-                and mapping["programme_code"] == params["programme_code"]
-                and mapping["posting_code"] == params["posting_code"]
-                and str(mapping.get("teaching_target_id")) in target_by_id
-            }
-            return PhaseRInMemoryMappingResult(
-                [{"duration_hours": duration} for duration in sorted(durations)]
-            )
+            rows = []
+            for mapping in self.teaching_name_mappings:
+                if (
+                    mapping["teaching_name_id"] != str(params["teaching_name_id"])
+                    or mapping["reporting_period_id"]
+                    != str(params["reporting_period_id"])
+                    or mapping["programme_code"] != params["programme_code"]
+                    or mapping["posting_code"] != params["posting_code"]
+                ):
+                    continue
+                target = target_by_id.get(str(mapping.get("teaching_target_id")))
+                session_type = (
+                    session_type_by_id.get(str(target["session_type_id"]))
+                    if target is not None
+                    else None
+                )
+                rows.append(
+                    {
+                        "r_year": mapping["r_year"],
+                        "teaching_target_id": mapping.get("teaching_target_id"),
+                        "session_type_id": (
+                            target["session_type_id"] if target is not None else None
+                        ),
+                        "session_type_name": (
+                            session_type["name"] if session_type is not None else None
+                        ),
+                        "duration_hours": (
+                            session_type["duration_hours"]
+                            if session_type is not None
+                            else None
+                        ),
+                    }
+                )
+            return PhaseRInMemoryMappingResult(rows)
         if "/* pool_event_timing:sync */" in sql:
             return PhaseRInMemoryScalarResult(rowcount=0)
         if "/* ttf_e1:preserved_mapping_count */" in sql:

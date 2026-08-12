@@ -15,6 +15,9 @@ export interface SecretaryTeachingEvent {
   startTime: string
   endTime?: string
   durationHours?: number
+  durationVaries?: boolean
+  hasPendingMappings?: boolean
+  rYearDurations?: TeachingNameRYearDuration[]
   sessionTypeId?: string
   sessionTypeName?: string
   seriesId?: string
@@ -37,9 +40,20 @@ export interface TeachingNameOption {
   sessionType?: string
   durationHours?: number
   durationIsMapped?: boolean
+  durationVaries?: boolean
+  hasPendingMappings?: boolean
+  rYearDurations?: TeachingNameRYearDuration[]
   isTracked?: boolean
   isGlobal?: boolean
   postingCodes?: string[]
+}
+
+export interface TeachingNameRYearDuration {
+  rYear: string
+  durationHours: number
+  isMapped: boolean
+  sessionTypeId?: string
+  sessionTypeName?: string
 }
 
 const toNumber = (value: unknown): number | undefined => {
@@ -86,6 +100,22 @@ export const parseSecretaryTeachingEvent = (value: Record<string, unknown>): Sec
   startTime: String(value.start_time ?? ''),
   endTime: value.end_time ? String(value.end_time) : undefined,
   durationHours: toNumber(value.duration_hours),
+  durationVaries: Boolean(value.duration_varies),
+  hasPendingMappings: Boolean(value.has_pending_mappings),
+  rYearDurations: Array.isArray(value.r_year_durations)
+    ? value.r_year_durations
+        .filter((entry): entry is Record<string, unknown> => (
+          typeof entry === 'object' && entry !== null
+        ))
+        .map((entry) => ({
+          rYear: String(entry.r_year ?? ''),
+          durationHours: toNumber(entry.duration_hours) ?? 1,
+          isMapped: Boolean(entry.is_mapped),
+          sessionTypeId: optionalString(entry.session_type_id),
+          sessionTypeName: optionalString(entry.session_type_name),
+        }))
+        .filter((entry) => entry.rYear.length > 0)
+    : [],
   sessionTypeId: value.session_type_id ? String(value.session_type_id) : undefined,
   sessionTypeName:
     value.session_type_name
@@ -118,6 +148,22 @@ const toTeachingNameOption = (value: Record<string, unknown>): TeachingNameOptio
     durationIsMapped: typeof value.duration_is_mapped === 'boolean'
       ? value.duration_is_mapped
       : undefined,
+    durationVaries: Boolean(value.duration_varies),
+    hasPendingMappings: Boolean(value.has_pending_mappings),
+    rYearDurations: Array.isArray(value.r_year_durations)
+      ? value.r_year_durations
+          .filter((entry): entry is Record<string, unknown> => (
+            typeof entry === 'object' && entry !== null
+          ))
+          .map((entry) => ({
+            rYear: String(entry.r_year ?? ''),
+            durationHours: toNumber(entry.duration_hours) ?? 1,
+            isMapped: Boolean(entry.is_mapped),
+            sessionTypeId: optionalString(entry.session_type_id),
+            sessionTypeName: optionalString(entry.session_type_name),
+          }))
+          .filter((entry) => entry.rYear.length > 0)
+      : [],
     isTracked: typeof value.is_tracked === 'boolean' ? value.is_tracked : undefined,
     isGlobal: typeof value.is_global === 'boolean' ? value.is_global : undefined,
     postingCodes: Array.isArray(value.posting_codes)

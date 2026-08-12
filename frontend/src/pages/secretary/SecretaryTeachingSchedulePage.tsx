@@ -3,6 +3,7 @@ import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconCalendar, IconDownload, IconPlus } from '../../components/icons'
 import { frontendConfig } from '../../config/frontendConfig'
 import { useAppState } from '../../context/useAppState'
+import { useAuth } from '../../context/useAuth'
 import { ApiRequestError } from '../../api/http'
 import {
   listSecretaryTeachingNameProgrammes,
@@ -45,6 +46,7 @@ import {
   shouldTemporarilyRetainPoolSource,
 } from '../../utils/secretaryTeachingScheduleState'
 import { createScopedRequestFence } from '../../utils/scopedRequestFence'
+import { countStaffEnvelopeOverlaps } from '../../utils/teachingEventOverlapWarning'
 
 interface TeachingFormState {
   sourceKey: string
@@ -141,6 +143,12 @@ const formatDuration = (value?: number) => {
   return `${rounded}h`
 }
 
+const formatStaffEventDuration = (
+  event: Pick<SecretaryTeachingEvent, 'durationHours' | 'durationVaries'>,
+) => event.durationVaries
+  ? `Varies by R-year (up to ${formatDuration(event.durationHours)})`
+  : formatDuration(event.durationHours)
+
 const sourceProgrammeDisplay = (event: SecretaryTeachingEvent) => {
   if (event.sourceProgrammeCode) {
     return event.sourceProgrammeCode
@@ -235,6 +243,7 @@ export const SecretaryTeachingSchedulePage = () => {
     reportingPeriodsLoading,
     reportingPeriodsError,
   } = useAppState()
+  const { identity } = useAuth()
 
   const [events, setEvents] = useState<SecretaryTeachingEvent[]>([])
   const [recentCreatedEvents, setRecentCreatedEvents] = useState<SecretaryTeachingEvent[]>([])
@@ -629,12 +638,48 @@ export const SecretaryTeachingSchedulePage = () => {
     : null
   const selectedPoolEndTime = selectedSourceOption?.teachingNameId
     && selectedSourceOption.durationIsMapped
+    && !selectedSourceOption.durationVaries
     && !selectedPoolStartTimeError
     ? serverComputedPoolEndTime(
         formState.startTime,
         selectedSourceOption.durationHours,
       )
     : null
+  const selectedPoolRYearDurations = selectedSourceOption?.teachingNameId
+    ? selectedSourceOption.rYearDurations ?? []
+    : []
+  const selectedPoolHasNoMappedDurations = Boolean(
+    selectedSourceOption?.teachingNameId
+    && (
+      selectedPoolRYearDurations.length > 0
+        ? selectedPoolRYearDurations.every((timing) => !timing.isMapped)
+        : !selectedSourceOption.durationIsMapped
+    ),
+  )
+  const selectedPoolNeedsRYearBreakdown = Boolean(
+    selectedSourceOption?.teachingNameId
+    && !selectedPoolHasNoMappedDurations
+    && (selectedSourceOption.durationVaries || selectedSourceOption.hasPendingMappings),
+  )
+  const overlapWarningCount = useMemo(() => countStaffEnvelopeOverlaps(
+    visibleEvents,
+    {
+      postingCode: sourceEvent?.postingCode
+        ?? (identity?.role === 'secretary' ? identity.postingCode : undefined),
+      eventDate: formState.eventDate,
+      startTime: formState.startTime,
+      durationHours: selectedSourceOption?.durationHours,
+      excludedEventId: drawerMode === 'edit' ? sourceEvent?.id : undefined,
+    },
+  ), [
+    drawerMode,
+    formState.eventDate,
+    formState.startTime,
+    identity,
+    selectedSourceOption,
+    sourceEvent,
+    visibleEvents,
+  ])
 
   const toggleSelected = (id: string) => {
     setSelectedIds((previous) => {
@@ -1267,7 +1312,7 @@ export const SecretaryTeachingSchedulePage = () => {
                         <td className="mono">{sourceProgrammeDisplay(event)}</td>
                         <td className="mono">{formatDate(event.eventDate)}</td>
                         <td className="mono">{formatTime(event.startTime)}</td>
-                        <td>{formatDuration(event.durationHours)}</td>
+                        <td>{formatStaffEventDuration(event)}</td>
                         <td>
                           <span
                             className={`status-badge ${
@@ -1325,7 +1370,7 @@ export const SecretaryTeachingSchedulePage = () => {
                   <span className="secretary-event-card-meta">
                     <span className="secretary-event-card-line mono">
                       {formatCompactDate(event.eventDate)} · {formatTime(event.startTime)} ·{' '}
-                      {formatDuration(event.durationHours)}
+                      {formatStaffEventDuration(event)}
                     </span>
                     {teachingType !== '-' ? (
                       <span className="secretary-event-card-line safe-wrap">{teachingType}</span>
@@ -1463,9 +1508,24 @@ export const SecretaryTeachingSchedulePage = () => {
             ) : null}
           </label>
 
-          {selectedSourceOption?.teachingNameId && !selectedSourceOption.durationIsMapped ? (
+          {selectedPoolHasNoMappedDurations ? (
             <div className="inline-callout callout-neutral" role="status">
               This Teaching Name has not been mapped by the Programme PC. This event will use a temporary one-hour duration. Once mapped, the system will automatically update its duration and end time.
+            </div>
+          ) : selectedPoolNeedsRYearBreakdown ? (
+            <div className="secretary-toggle-block" aria-live="polite">
+              <span className="secretary-toggle-label">
+                {selectedSourceOption?.durationVaries ? 'Duration varies by R-year' : 'Duration by R-year'}
+              </span>
+              {selectedPoolRYearDurations.map((timing) => (
+                <strong key={timing.rYear}>
+                  {timing.rYear}: {formatDuration(timing.durationHours)}
+                  {timing.isMapped ? '' : ' (temporary until mapped)'}
+                </strong>
+              ))}
+              <small>
+                Staff scheduling uses the longest duration. Each native resident receives the duration mapped to their event-date R-year.
+              </small>
             </div>
           ) : selectedSourceOption ? (
             <div className="secretary-toggle-block" aria-live="polite">
@@ -1525,11 +1585,40 @@ export const SecretaryTeachingSchedulePage = () => {
             </label>
           </div>
 
-          {selectedSourceOption?.teachingNameId && selectedSourceOption.durationIsMapped ? (
+          {selectedPoolNeedsRYearBreakdown ? (
+            <div className="secretary-toggle-block" aria-live="polite">
+              <span className="secretary-toggle-label">End time by R-year</span>
+              {selectedPoolRYearDurations.map((timing) => (
+                <strong key={timing.rYear}>
+                  {timing.rYear}: {
+                    selectedPoolStartTimeError
+                      ? 'Select a valid start time'
+                      : serverComputedPoolEndTime(formState.startTime, timing.durationHours)
+                  }
+                </strong>
+              ))}
+              <small>
+                Staff schedule envelope ends at {
+                  selectedPoolStartTimeError
+                    ? 'a valid calculated time'
+                    : serverComputedPoolEndTime(
+                        formState.startTime,
+                        selectedSourceOption?.durationHours,
+                      )
+                }.
+              </small>
+            </div>
+          ) : selectedSourceOption?.teachingNameId && selectedSourceOption.durationIsMapped ? (
             <div className="secretary-toggle-block" aria-live="polite">
               <span className="secretary-toggle-label">End time</span>
               <strong>{selectedPoolEndTime ?? 'Select a valid start time'}</strong>
               <small>Server-computed from the posting-specific TTF mapping.</small>
+            </div>
+          ) : null}
+
+          {overlapWarningCount > 0 ? (
+            <div className="inline-callout callout-warning" role="status">
+              This time overlaps {overlapWarningCount} existing scheduled event{overlapWarningCount === 1 ? '' : 's'} within the staff scheduling envelope. Overlapping sessions are allowed. Residents will see eligible alternatives and should submit only the session they attended.
             </div>
           ) : null}
 

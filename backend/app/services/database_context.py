@@ -61,6 +61,7 @@ _RUNTIME_ONLY_HELPERS = frozenset(
         ),
         "scheduled_event_source_scope(uuid)",
         "resolve_native_teaching_target(uuid,uuid)",
+        "resolve_staff_pool_event_timings(uuid[],uuid,text,text)",
         "update_own_staff_actor_name(text)",
         "reporting_period_dependency_counts(uuid)",
         "hibernate_stale_surplus(uuid)",

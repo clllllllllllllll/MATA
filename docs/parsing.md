@@ -679,10 +679,12 @@ The TTF upload reconciles targets within `(reporting_period_id, programme_code)`
 When a stale target has Teaching Name mappings, each mapping retains its UUID and becomes pending (`teaching_target_id = NULL`) before the target is deleted. Matching targets never redirect mappings. A change to `monthly_target`, `is_tracked`, `is_reallocatable`, or `tag` preserves mapped links and is reported as a target-semantic change.
 
 After target/mapping reconciliation, pool-backed event timing is recalculated
-for every Teaching Name/posting scope in the uploaded programme and period. A
-scope uses its one consistent mapped session-type duration, or temporarily
-returns to one hour when all mappings are pending. Conflicting mapped R-year
-durations reject the upload transaction rather than selecting one arbitrarily.
+for every Teaching Name/posting scope in the uploaded programme and period.
+Each R-year mapping contributes its selected session-type duration, or a
+temporary one hour while pending, and the longest effective duration becomes
+the stored staff event envelope. Different mapped R-years may legitimately
+have different durations. The prohibited case remains more than one target for
+the same exact Teaching Name/posting/R-year mapping identity.
 
 For a newly introduced `(posting_code, r_year)` target scope, every active Teaching Name in the programme/period receives at most one pending mapping. Inactive names receive none, and re-upload is idempotent.
 
