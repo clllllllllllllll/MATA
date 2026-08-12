@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.services.reporting_period_status import is_reporting_period_effectively_active
 
@@ -401,6 +401,9 @@ class FakeResidentSession:
         self.external_attendance_removal_lock_calls: list[str] = []
         self.adhoc_helper_calls: list[dict] = []
         self._adhoc_attendance_family: str | None = None
+        self.pool_event_r_year_timings: dict[
+            tuple[str, str, str, str, str], dict | None
+        ] = {}
 
     def _target(
         self,
@@ -605,6 +608,130 @@ class FakeResidentSession:
     async def execute(self, statement, params=None):  # noqa: C901, PLR0912, PLR0915
         sql = str(statement)
         payload = dict(params or {})
+
+        if "mata_rls.resolve_native_teaching_target" in sql:
+            event = next(
+                (
+                    row
+                    for row in self.events
+                    if row["id"] == str(payload.get("event_id"))
+                ),
+                None,
+            )
+            if event is None:
+                return FakeResult(rows=[])
+            posting = next(
+                (
+                    row
+                    for row in self.resident_postings
+                    if row["resident_id"] == str(payload.get("resident_id"))
+                    and row["start_date"] <= event["event_date"] <= row["end_date"]
+                    and row["status"] in {"active", "loa_working"}
+                ),
+                None,
+            )
+            if posting is None:
+                return FakeResult(
+                    rows=[{"outcome": None, "unavailable_reason": "native_phase_unavailable"}]
+                )
+            key = (
+                str(event.get("teaching_name_id")),
+                str(event.get("source_reporting_period_id")),
+                str(event.get("source_programme_code")),
+                str(posting["posting_code"]),
+                str(posting["r_year"]),
+            )
+            timing = self.pool_event_r_year_timings.get(key)
+            if key in self.pool_event_r_year_timings and timing is None:
+                return FakeResult(
+                    rows=[{"outcome": None, "unavailable_reason": "mapping_unavailable"}]
+                )
+            if timing is None:
+                target = next(
+                    (
+                        row
+                        for row in self.teaching_targets
+                        if row["posting_code"] == posting["posting_code"]
+                        and row["programme_code"] == event.get("source_programme_code")
+                        and row["r_year"] == posting["r_year"]
+                        and row["reporting_period_id"]
+                        == str(event.get("source_reporting_period_id"))
+                    ),
+                    None,
+                )
+                timing = {
+                    "teaching_target_id": (
+                        target["session_type_id"] if target else self.session_type_id
+                    ),
+                    "session_type_id": (
+                        target["session_type_id"] if target else self.session_type_id
+                    ),
+                }
+            mapped = timing.get("teaching_target_id") is not None
+            return FakeResult(
+                rows=[
+                    {
+                        "outcome": "mapped_target" if mapped else "pending_mapping",
+                        "unavailable_reason": None,
+                        "event_id": UUID(str(event["id"])),
+                        "reporting_period_id": UUID(
+                            str(event["source_reporting_period_id"])
+                        ),
+                        "programme_code": event["source_programme_code"],
+                        "posting_code": posting["posting_code"],
+                        "r_year": posting["r_year"],
+                        "global_session_type_id": None,
+                        "teaching_name_id": UUID(str(event["teaching_name_id"])),
+                        "mapping_id": UUID(str(self.session_type_id)),
+                        "mapping_revision": 1,
+                        "teaching_target_id": (
+                            UUID(str(timing["teaching_target_id"])) if mapped else None
+                        ),
+                        "session_type_id": (
+                            UUID(str(timing["session_type_id"])) if mapped else None
+                        ),
+                    }
+                ]
+            )
+
+        if "/* native_resident_event_session_timing */" in sql:
+            session_type_id = str(payload.get("session_type_id"))
+            timing = next(
+                (
+                    row
+                    for row in self.pool_event_r_year_timings.values()
+                    if row is not None
+                    and str(row.get("session_type_id")) == session_type_id
+                ),
+                None,
+            )
+            target = next(
+                (
+                    row
+                    for row in self.teaching_targets
+                    if str(row["session_type_id"]) == session_type_id
+                ),
+                None,
+            )
+            source = timing or target
+            return FakeResult(
+                rows=(
+                    [
+                        {
+                            "name": source.get("session_type_name")
+                            or source.get("session_type"),
+                            "duration_hours": source["duration_hours"],
+                        }
+                    ]
+                    if source is not None
+                    else [
+                        {
+                            "name": "Department/Programme Teaching [1h]",
+                            "duration_hours": Decimal("1.0"),
+                        }
+                    ]
+                )
+            )
 
         if "INSERT INTO rate_limit_buckets" in sql:
             return self._execute_rate_limit_bucket(payload)
@@ -1020,6 +1147,53 @@ class FakeResidentSession:
             ]
             rows.sort(key=lambda row: (0 if row["r_year"] == payload.get("r_year") else 1, row["session_type"]))
             return FakeResult(rows=rows[:1])
+
+        if "/* pool_event_timing:resolve_r_year */" in sql:
+            key = (
+                str(payload["teaching_name_id"]),
+                str(payload["reporting_period_id"]),
+                str(payload["programme_code"]),
+                str(payload["posting_code"]),
+                str(payload["r_year"]),
+            )
+            if key in self.pool_event_r_year_timings:
+                row = self.pool_event_r_year_timings[key]
+                return FakeResult(rows=[] if row is None else [row])
+            target = next(
+                (
+                    row
+                    for row in self.teaching_targets
+                    if row["posting_code"] == payload.get("posting_code")
+                    and row["programme_code"] == payload.get("programme_code")
+                    and row["r_year"] == payload.get("r_year")
+                    and row["reporting_period_id"]
+                    == str(payload.get("reporting_period_id"))
+                ),
+                None,
+            )
+            if target is None:
+                return FakeResult(
+                    rows=[
+                        {
+                            "r_year": payload["r_year"],
+                            "teaching_target_id": self.session_type_id,
+                            "session_type_id": self.session_type_id,
+                            "session_type_name": "Department/Programme Teaching [1h]",
+                            "duration_hours": Decimal("1.0"),
+                        }
+                    ]
+                )
+            return FakeResult(
+                rows=[
+                    {
+                        "r_year": target["r_year"],
+                        "teaching_target_id": target["session_type_id"],
+                        "session_type_id": target["session_type_id"],
+                        "session_type_name": target["session_type"],
+                        "duration_hours": target["duration_hours"],
+                    }
+                ]
+            )
 
         if "FROM teaching_targets" in sql and "JOIN posting_codes" in sql:
             rows = []

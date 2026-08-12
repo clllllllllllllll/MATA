@@ -488,15 +488,62 @@ server-owned normalized key.
   `future_compliance_impact` summary only; no compliance, surplus, warning, or
   attendance revalidation is performed.
 
-### Deferred event and mapping work
+### Scheduled-event source and timing contract
 
-- A pool-backed scheduled-event request identifies `teaching_name_id`, belongs
-  to that name's single programme, accepts `start_time` only, and receives a
-  server-computed one-hour `end_time`. A start after 23:00 returns `422`.
-  Mapping changes never change stored timing. A global event instead identifies
-  `global_session_type_id`; global types remain Admin-managed and outside the
-  ordinary mapping queue. No event may carry both identities; transitional
-  legacy rows may carry neither.
+- A pool-backed scheduled-event request identifies one `teaching_name_id` and
+  belongs to that name's single programme and reporting period. The selected
+  name must have an existing mapping scope for the event's exact posting;
+  either a pending or mapped scope is sufficient. A global event instead
+  identifies one `global_session_type_id`; global types remain Admin-managed
+  and outside the ordinary mapping queue. No event may carry both identities;
+  transitional legacy rows may carry neither.
+- The client supplies `start_time` only. For a pool-backed event, the server
+  resolves duration from the exact Teaching Name, reporting period, programme,
+  posting, and R-year mappings. Staff scheduling stores the longest effective
+  R-year duration as the operational event envelope. A pending R-year mapping
+  contributes a temporary one-hour duration; a mapped R-year contributes its
+  selected TTF session type's duration. Global events use their configured
+  duration. The server stores the envelope `duration_hours`, computes its
+  `end_time`, and rejects a pool-event start later than 23:00 with `422`.
+- Assigning, changing, clearing, or invalidating a mapping recalculates
+  `duration_hours` and `end_time` on existing pool-backed events in the exact
+  Teaching Name/posting/programme/reporting-period scope. Attendance rows and
+  immutable event source/display snapshots are preserved. Native Resident
+  submission and history views derive their own duration and end time from the
+  Resident's exact event-date R-year mapping. Non-NHG Residents do not resolve
+  NHG compliance or R-year mappings; they may view all scheduled events at
+  their exact date-matched posting and use the staff event envelope.
+
+#### Valid and prohibited R-year mapping cases
+
+`teaching_name_mappings` includes R-year because compliance target selection is
+resident-contextual. One shared event may therefore link through the same
+Teaching Name to different duration-bearing TTF session types for different
+R-years.
+
+- **Intended valid case:** for one Teaching Name, reporting period, programme,
+  and posting, R1 may map to `Journal Club [1h]` while R2 maps to
+  `Journal Club [2h]`. Staff Add Teaching displays `Varies by R-year`, shows the
+  one-hour and two-hour calculated end times, and stores two hours as the staff
+  schedule envelope. An R1 Resident sees and uses one hour; an R2 Resident sees
+  and uses two hours. Both attendance rows continue to reference the same
+  scheduled event.
+- **Prohibited case:** the same exact Teaching Name, reporting period,
+  programme, posting, and R-year audience cannot be split between both a
+  one-hour and two-hour target. The mapping identity has exactly one selected
+  `teaching_target_id`; an attempt to apply competing changes to that same
+  mapping identity is rejected atomically rather than duplicated or resolved by
+  query order.
+
+Native Resident timing always uses the R-year from the Resident's date-specific
+posting/phase covering the event date, not merely a current profile value. The
+same resident's historical events therefore retain the R-year applicable when
+each event occurred. Resident overlap checks use those resident-specific event
+intervals; staff and Non-NHG overlap/display use the longest-duration event
+envelope.
+
+#### Protected mutation boundary
+
 - Every Teaching Name mutation uses the current protected-mutation
   contract: opaque-session authentication, current server-side authorization,
   CSRF and exact-Origin validation, applicable rate limiting, transactional
@@ -547,8 +594,10 @@ evidence atomically, commits once, and invalidates affected scoped mapping,
 name-option, target-resolution, event, attendance-view, and report caches after
 commit. Mapping changes preserve attendance rows and immutable display/source
 snapshots while recalculating `duration_hours` and `end_time` on pool events in
-the exact Teaching Name/posting/programme/period scope. Mapped R-year rows for
-that event scope must agree on one duration; conflicts reject the transaction.
+the exact Teaching Name/posting/programme/period scope. Different R-years may
+map to different durations; the stored staff event timing is the longest
+effective R-year duration, while native Resident reads resolve their exact
+event-date R-year duration.
 
 ## Admin Endpoints
 
@@ -1452,7 +1501,7 @@ Create a programme-owned scheduled teaching event.
 
 - **Auth:** admin/PC only
 - **Scope:** request `programme_code IN programme_scope`.
-- **Validation:** Returns `422` if `event_date` is in `public_holidays` or exactly one source ID is not supplied. A pool ID must be active, in the event period, in the exact request programme, and in the authenticated PC scope; it must also have an exact persisted Teaching Name mapping for that programme/period and the requested `posting_code`. Pending scopes temporarily use one hour; mapped R-year rows must agree on one session-type duration. A global ID must be active. The server computes end time, and a pool event rejects a start later than `23:00`. `teaching_name`, client duration, and client `end_time` are forbidden request fields.
+- **Validation:** Returns `422` if `event_date` is in `public_holidays` or exactly one source ID is not supplied. A pool ID must be active, in the event period, in the exact request programme, and in the authenticated PC scope; it must also have an exact persisted Teaching Name mapping for that programme/period and the requested `posting_code`. Pending R-year scopes temporarily contribute one hour; mapped R-year scopes contribute their selected TTF session-type duration, and the longest effective duration becomes the staff event envelope. Different R-years may legitimately have different durations. A global ID must be active. The server computes end time, and a pool event rejects a start later than `23:00`. `teaching_name`, client duration, and client `end_time` are forbidden request fields.
 - **Body:**
 ```json
 {
@@ -1835,24 +1884,25 @@ Return the effectively active reporting-period metadata used by the Submission P
 
 - **Auth:** NHG Resident or registered Non-NHG Resident from the authenticated session.
 - **Response:** `{ "periods": [{ "id", "label", "start_date", "end_date" }] }`
-- **Security/UX:** this endpoint does not accept a resident ID or a selected period and does not authorize access to events. `GET /resident/events` independently enforces period, posting, programme ownership, persisted-source, and duplicate checks. The frontend must not render a resident reporting-period selector.
+- **Security/UX:** this endpoint does not accept a resident ID or a selected period and does not authorize access to events. `GET /resident/events` independently enforces the applicable identity-specific scope: native Residents use period, assigned/native posting, programme ownership, persisted-source, and duplicate checks; Non-NHG Residents use one exact date-matched schedule posting and duplicate checks without programme/R-year narrowing. The frontend must not render a resident reporting-period selector.
 
 ### POST `/resident/attendance`
 
 Submit attendance for one or more events.
 
-- **Auth:** resident only
+- **Auth:** NHG Resident or Non-NHG Resident (`resident` or `external_resident` role)
 - **Body:** `{ "event_ids": ["uuid1", "uuid2"] }`
-- **Backend:**
+- **Native Resident backend:**
   1. Validates event exists and is visible through the resident's allowed scheduled-event sources: assigned/current posting secretary event, native programme TTSH department secretary event, or native programme PC-created event
   2. Validates `event_date` falls within a `resident_postings` row with `status IN ('active', 'loa_working')` → `422` if outside tenure
-   3. Validates persisted event evidence: an explicit pool source must match the event-date reporting period and native programme exactly; an explicit global source is global-first; a both-null legacy event is not text-inferred. For an approved native-programme event outside the assigned posting, it validates only the allowed source and does not assign or rewrite a compliance target.
+  3. Validates persisted event evidence: an explicit pool source must match the event-date reporting period and native programme exactly; an explicit global source is global-first; a both-null legacy event is not text-inferred. For an approved native-programme event outside the assigned posting, it validates only the allowed source and does not assign or rewrite a compliance target.
   4. Validates programme ownership: events with `created_for_programme_code` set must match the resident's `programme_code`
   5. Validates no active duplicate; a submitted-only unique index on
      `(resident_id, teaching_event_id)` is the database race boundary.
   6. Before insert, rejects a later submission whose distinct event interval overlaps an already accepted event for the same resident. The earlier accepted attendance remains unchanged; this check is separate from same-event uniqueness.
   7. Creates accepted `attendance_records` rows — **does NOT store `session_type_id`**
   8. Checks each submitted event against `weekend_exceptions` — if a weekend session has no matching rule, adds a `compliance_warning` to the response
+- **Non-NHG Resident backend:** requires one exact date-matched `external_resident_postings` row and accepts every normal scheduled event at that posting. It does not resolve Teaching Name R-year mappings and does not use source programme, PC programme ownership, or Secretary capability as a submission gate. It stores only `external_attendance_records` and uses the staff event envelope for display and overlap checks.
 - **Transaction/concurrency:** The complete `event_ids` list is one atomic
   batch. Transaction-scoped event advisory keys are acquired in deterministic
   order and are shared with staff event edit/delete paths; a family-specific
@@ -2331,13 +2381,17 @@ The registration mapping is isolated from `programmes.native_teaching_posting_co
 The same route may support NHG and Non-NHG Residents through identity branching.
 
 - For native `role = resident`, use native Phase 5A behaviour from `resident_postings`.
-- For `role = external_resident`, resolve the date-matching `external_resident_postings` row for each candidate event. That row's `programme_code` and `posting_code` are the authorization provenance; `external_residents.current_nhg_posting_code` may be used only as a current/cache/backward-compatibility pointer.
+- For `role = external_resident`, resolve the date-matching `external_resident_postings` row for each candidate event. Its `posting_code` is the scheduled-event authorization boundary; `external_residents.current_nhg_posting_code` may be used only as a current/cache/backward-compatibility pointer.
 - If no `external_resident_postings` row matches a requested date, return unavailable/no posting for that date.
-- If the posting's `posting_codes.supports_secretary_events = true`, return eligible Secretary-created events whose `posting_code` exactly matches the schedule row and whose `created_for_programme_code IS NULL`.
-- If `supports_secretary_events = false`, return no secretary-created event list but keep ad-hoc submission available in the frontend.
-- Return Programme PC-created events only when `event.posting_code = schedule.posting_code`, the schedule `programme_code` is non-null, and `event.created_for_programme_code = schedule.programme_code`. This PC-event source does not depend on `supports_secretary_events`.
-- For an explicit Teaching Name source, require that source's reporting period to be the event-date period and its programme to exactly equal the schedule programme. An explicit global source is global-first. A both-null legacy event uses only deterministic persisted event/schedule evidence; do not infer identity from the display name, catalogue, targets, or Column K.
-- Apply the exact match independently for every schedule row/date. Do not infer programme identity from posting-code prefixes, institution names, teaching targets, the retired catalogue, `programmes.native_teaching_posting_code`, fuzzy matching, or the first mapping row. AIM must not see IM events at shared `TTSHGenMed`; GS must not see SIG events at shared `TTSHGenSrg`.
+- Return every normal scheduled Secretary or Programme PC event whose
+  `event.posting_code` exactly matches that date-matched schedule posting.
+  Programme ownership, Teaching Name source programme, and
+  `supports_secretary_events` do not narrow this Non-NHG listing because
+  Non-NHG attendance is excluded from NHG compliance and no R-year mapping is
+  resolved.
+- Apply the exact posting match independently for every schedule row/date. Do
+  not infer or broaden posting access from programme names, prefixes, teaching
+  targets, the retired catalogue, fuzzy matching, or a first candidate.
 - Return normal scheduled events only. Exclude resident-created ad-hoc events, events outside the schedule date range or in a schedule gap, and events blocked by existing reporting-period or status rules.
 - Filter `event_date <= today`.
 - Exclude events already submitted by that Non-NHG Resident in `external_attendance_records`.
@@ -2348,9 +2402,11 @@ The same route may support NHG and Non-NHG Residents through identity branching.
 The same route may support NHG and Non-NHG Residents through identity branching.
 
 - For `role = external_resident`, authorize against the date-matched `external_resident_postings` row, not token claims or the current/cache pointer.
-- A Secretary-created event requires an exact posting match, `created_for_programme_code IS NULL`, and the existing Secretary capability, scheduled-event, reporting-period, status, duplicate, and overlap checks.
-- A Programme PC-created event requires exact posting and non-null programme matches: `event.posting_code = schedule.posting_code` and `event.created_for_programme_code = schedule.programme_code`. Another programme or posting returns controlled `422`; unresolved legacy schedule programme provenance never grants access. The same scheduled-event, reporting-period, status, duplicate, and overlap checks apply.
-- For an explicit Teaching Name source, require exact event-date reporting-period and schedule-programme scope; a same-display name from another programme is denied. An explicit global source remains globally eligible under the exact schedule/date checks. A both-null legacy event is never text-inferred.
+- A normal scheduled Secretary or Programme PC event requires the exact posting
+  match. Programme ownership, Teaching Name R-year mapping, and Secretary
+  capability are not submission gates for Non-NHG Residents. Another posting
+  returns controlled `422`; the normal reporting-period, status, date,
+  duplicate, and staff-envelope overlap checks still apply.
 - Create `external_attendance_records`, not native `attendance_records`.
 - Active duplicates are protected by the submitted-only unique index on
   `(external_resident_id, teaching_event_id)`; removed history is retained.

@@ -327,7 +327,13 @@ class FakeProgrammeTeachingEventsSession:
 
         if "/* pool_event_timing:resolve */" in sql:
             rows = [
-                {"duration_hours": mapping["duration_hours"]}
+                {
+                    "r_year": mapping["r_year"],
+                    "teaching_target_id": mapping["teaching_target_id"],
+                    "session_type_id": mapping["teaching_target_id"],
+                    "session_type_name": "Mapped session",
+                    "duration_hours": mapping["duration_hours"],
+                }
                 for mapping in self.teaching_name_mappings
                 if mapping["teaching_name_id"] == str(payload["teaching_name_id"])
                 and mapping["reporting_period_id"] == str(payload["reporting_period_id"])
@@ -343,6 +349,14 @@ class FakeProgrammeTeachingEventsSession:
                 {
                     "teaching_name_id": mapping["teaching_name_id"],
                     "posting_code": mapping["posting_code"],
+                    "r_year": mapping["r_year"],
+                    "teaching_target_id": mapping["teaching_target_id"],
+                    "session_type_id": mapping["teaching_target_id"],
+                    "session_type_name": (
+                        "Mapped session"
+                        if mapping["teaching_target_id"] is not None
+                        else None
+                    ),
                     "duration_hours": mapping["duration_hours"],
                 }
                 for mapping in self.teaching_name_mappings
@@ -1380,6 +1394,19 @@ def test_pc_pool_event_uses_posting_specific_mapped_duration() -> None:
             "posting_code": "TTSHCardio",
             "duration_hours": "2.0",
             "is_mapped": True,
+            "duration_varies": False,
+            "has_pending_mappings": False,
+            "r_year_durations": [
+                {
+                    "r_year": "R1",
+                    "duration_hours": "2.0",
+                    "is_mapped": True,
+                    "session_type_id": session.teaching_name_mappings[-1][
+                        "teaching_target_id"
+                    ],
+                    "session_type_name": "Mapped session",
+                }
+            ],
         }
     ]
     assert created.status_code == 200

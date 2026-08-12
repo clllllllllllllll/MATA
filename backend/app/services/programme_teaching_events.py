@@ -19,7 +19,10 @@ from app.services.reporting_period_status import (
 from app.services import cache_invalidation
 from app.services import scheduled_event_sources
 from app.services.audit import write_audit_log
-from app.services.pool_event_timing import list_pool_event_timings
+from app.services.pool_event_timing import (
+    list_pool_event_timings,
+    with_staff_pool_event_timings,
+)
 from app.services.teaching_event_locks import acquire_teaching_event_locks
 from app.services.teaching_name_pool import TeachingNamePoolActor
 
@@ -55,6 +58,9 @@ def _event_row(row: dict[str, Any]) -> dict[str, Any]:
         "start_time": row["start_time"],
         "end_time": row.get("end_time"),
         "duration_hours": row.get("duration_hours"),
+        "duration_varies": bool(row.get("duration_varies", False)),
+        "has_pending_mappings": bool(row.get("has_pending_mappings", False)),
+        "r_year_durations": row.get("r_year_durations", []),
         "session_type_id": row.get("session_type_id"),
         "teaching_name_id": row.get("teaching_name_id"),
         "global_session_type_id": row.get("global_session_type_id"),
@@ -238,14 +244,29 @@ async def teaching_name_options(
         programme_code=programme_code,
     )
     for option in options:
-        option["posting_durations"] = [
-            {
-                "posting_code": posting_code,
-                "duration_hours": timings[(str(option["teaching_name_id"]), posting_code)].duration_hours,
-                "is_mapped": timings[(str(option["teaching_name_id"]), posting_code)].is_mapped,
-            }
-            for posting_code in option["posting_codes"]
-        ]
+        posting_durations = []
+        for posting_code in option["posting_codes"]:
+            timing = timings[(str(option["teaching_name_id"]), posting_code)]
+            posting_durations.append(
+                {
+                    "posting_code": posting_code,
+                    "duration_hours": timing.duration_hours,
+                    "is_mapped": timing.is_mapped,
+                    "duration_varies": timing.duration_varies,
+                    "has_pending_mappings": timing.has_pending_mappings,
+                    "r_year_durations": [
+                        {
+                            "r_year": r_year_timing.r_year,
+                            "duration_hours": r_year_timing.duration_hours,
+                            "is_mapped": r_year_timing.is_mapped,
+                            "session_type_id": r_year_timing.session_type_id,
+                            "session_type_name": r_year_timing.session_type_name,
+                        }
+                        for r_year_timing in timing.r_year_timings
+                    ],
+                }
+            )
+        option["posting_durations"] = posting_durations
     for row in global_result.mappings().all():
         option = dict(row)
         option["posting_codes"] = global_posting_codes
@@ -565,7 +586,11 @@ async def list_teaching_events(
         ),
         params,
     )
-    return [_event_row(dict(row)) for row in result.mappings().all()]
+    rows = await with_staff_pool_event_timings(
+        db,
+        rows=[dict(row) for row in result.mappings().all()],
+    )
+    return [_event_row(row) for row in rows]
 
 
 async def _get_event(

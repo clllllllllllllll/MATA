@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, time, timedelta
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -66,6 +67,46 @@ def test_events_derive_posting_from_resident_postings_not_header_site() -> None:
     ids = {row["id"] for row in events}
     assert fake_db.event_id in ids
     assert fake_db.other_posting_event_id not in ids
+
+
+def test_native_event_timing_uses_residents_event_date_r_year() -> None:
+    fake_db = FakeResidentSession()
+    event = next(row for row in fake_db.events if row["id"] == fake_db.event_id)
+    teaching_name_id = str(uuid4())
+    event.update(
+        {
+            "teaching_name_id": teaching_name_id,
+            "source_reporting_period_id": fake_db.period_id,
+            "source_programme_code": "GRM",
+            "duration_hours": Decimal("2.0"),
+            "end_time": time(12, 0),
+        }
+    )
+    fake_db.pool_event_r_year_timings[
+        (
+            teaching_name_id,
+            fake_db.period_id,
+            "GRM",
+            "TTSHCardio",
+            "R2",
+        )
+    ] = {
+        "r_year": "R2",
+        "teaching_target_id": fake_db.session_type_id,
+        "session_type_id": fake_db.session_type_id,
+        "session_type_name": "R2 teaching [1h]",
+        "duration_hours": Decimal("1.0"),
+    }
+    client = _client(fake_db)
+
+    response = client.get("/resident/events", headers=_headers(fake_db))
+
+    assert response.status_code == 200
+    listed = next(row for row in response.json()["events"] if row["id"] == event["id"])
+    assert listed["resident_r_year"] == "R2"
+    assert listed["duration_hours"] == "1.0"
+    assert listed["end_time"] == "11:00:00"
+    assert listed["duration_is_mapped"] is True
 
 
 def test_events_support_multiple_current_postings_as_union() -> None:

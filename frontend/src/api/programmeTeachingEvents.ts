@@ -12,6 +12,9 @@ export interface ProgrammeTeachingEvent {
   startTime: string
   endTime?: string
   durationHours?: number
+  durationVaries?: boolean
+  hasPendingMappings?: boolean
+  rYearDurations?: ProgrammeTeachingRYearDuration[]
   sessionTypeId?: string
   sessionTypeName?: string
   seriesId?: string
@@ -44,6 +47,17 @@ export interface ProgrammeTeachingPostingDuration {
   postingCode: string
   durationHours: number
   isMapped: boolean
+  durationVaries: boolean
+  hasPendingMappings: boolean
+  rYearDurations: ProgrammeTeachingRYearDuration[]
+}
+
+export interface ProgrammeTeachingRYearDuration {
+  rYear: string
+  durationHours: number
+  isMapped: boolean
+  sessionTypeId?: string
+  sessionTypeName?: string
 }
 
 export interface ProgrammeTeachingEventPayload {
@@ -112,6 +126,22 @@ const toTeachingEvent = (value: Record<string, unknown>): ProgrammeTeachingEvent
   startTime: String(value.start_time ?? ''),
   endTime: optionalString(value.end_time),
   durationHours: toNumber(value.duration_hours),
+  durationVaries: Boolean(value.duration_varies),
+  hasPendingMappings: Boolean(value.has_pending_mappings),
+  rYearDurations: Array.isArray(value.r_year_durations)
+    ? value.r_year_durations
+        .filter((entry): entry is Record<string, unknown> => (
+          typeof entry === 'object' && entry !== null
+        ))
+        .map((entry) => ({
+          rYear: String(entry.r_year ?? ''),
+          durationHours: toNumber(entry.duration_hours) ?? 1,
+          isMapped: Boolean(entry.is_mapped),
+          sessionTypeId: optionalString(entry.session_type_id),
+          sessionTypeName: optionalString(entry.session_type_name),
+        }))
+        .filter((entry) => entry.rYear.length > 0)
+    : [],
   sessionTypeId: optionalString(value.session_type_id),
   sessionTypeName: optionalString(value.session_type_name) ?? optionalString(value.session_type),
   seriesId: optionalString(value.series_id),
@@ -153,6 +183,22 @@ const toTeachingNameOption = (value: Record<string, unknown>): ProgrammeTeaching
             postingCode: String(entry.posting_code ?? ''),
             durationHours: toNumber(entry.duration_hours) ?? 1,
             isMapped: Boolean(entry.is_mapped),
+            durationVaries: Boolean(entry.duration_varies),
+            hasPendingMappings: Boolean(entry.has_pending_mappings),
+            rYearDurations: Array.isArray(entry.r_year_durations)
+              ? entry.r_year_durations
+                  .filter((timing): timing is Record<string, unknown> => (
+                    typeof timing === 'object' && timing !== null
+                  ))
+                  .map((timing) => ({
+                    rYear: String(timing.r_year ?? ''),
+                    durationHours: toNumber(timing.duration_hours) ?? 1,
+                    isMapped: Boolean(timing.is_mapped),
+                    sessionTypeId: optionalString(timing.session_type_id),
+                    sessionTypeName: optionalString(timing.session_type_name),
+                  }))
+                  .filter((timing) => timing.rYear.length > 0)
+              : [],
           }))
           .filter((entry) => entry.postingCode.length > 0)
       : [],

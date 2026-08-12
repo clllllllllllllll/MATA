@@ -20,12 +20,19 @@ from app.services.event_intervals import (
     overlap_candidate_dates,
     spanned_dates,
 )
+from app.services.pool_event_timing import (
+    DEFAULT_POOL_EVENT_DURATION_HOURS,
+)
 from app.services.reporting_period_status import (
     list_effectively_active_reporting_periods,
     resolve_active_reporting_period_for_date,
     resolve_reporting_period_for_date,
 )
 from app.services.teaching_event_locks import acquire_teaching_event_locks
+from app.services.teaching_target_resolution import (
+    TeachingTargetResolutionUnavailable,
+    resolve_native_teaching_target,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -42,7 +49,6 @@ ExternalEventIneligibilityReason = Literal[
     "posting_unavailable",
     "posting_mismatch",
     "event_scope",
-    "secretary_events_not_supported",
     "already_attended",
     "overlapping_attendance",
 ]
@@ -92,6 +98,8 @@ def _available_event_row(
         "session_type": resolved.get("session_type"),
         "session_type_name": resolved.get("session_type"),
         "duration_hours": event.get("duration_hours") or resolved.get("duration_hours"),
+        "duration_is_mapped": resolved.get("duration_is_mapped"),
+        "resident_r_year": resolved.get("resident_r_year"),
         "details_of_session": event.get("details_of_session"),
         "is_global": bool(resolved.get("is_global")),
         "is_adhoc": bool(event.get("is_adhoc", False)),
@@ -199,6 +207,92 @@ def _external_attendance_row(row: dict[str, Any]) -> dict[str, Any]:
 def _compute_end_time(event_date: date, start_time: time, duration_hours: Decimal) -> time:
     minutes = int(duration_hours * Decimal("60"))
     return (datetime.combine(event_date, start_time) + timedelta(minutes=minutes)).time()
+
+
+async def _native_resident_event_view(
+    db: AsyncSession,
+    *,
+    event: dict[str, Any],
+    resident_id: UUID,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Apply one native resident's event-date R-year timing to a shared event."""
+
+    if (
+        event.get("teaching_name_id") is None
+        or event.get("global_session_type_id") is not None
+        or bool(event.get("is_adhoc"))
+    ):
+        return event, {}
+    if event.get("id") is None:
+        return event, {}
+    try:
+        resolution = await resolve_native_teaching_target(
+            db,
+            resident_id=resident_id,
+            event_id=UUID(str(event["id"])),
+        )
+    except TeachingTargetResolutionUnavailable as exc:
+        raise ApiError(
+            status_code=409,
+            detail=(
+                "Teaching Name mapping is unavailable for the resident's "
+                "event-date R-year. Ask the Programme PC to reconcile the "
+                "mapping before retrying."
+            ),
+            error_code=ErrorCode.CONFLICT.value,
+        ) from exc
+
+    if resolution.kind == "pending_mapping":
+        duration_hours = DEFAULT_POOL_EVENT_DURATION_HOURS
+        session_type_id = None
+        session_type_name = None
+        is_mapped = False
+        r_year = resolution.r_year
+    elif resolution.kind == "mapped_target":
+        session_result = await db.execute(
+            text(
+                """
+                /* native_resident_event_session_timing */
+                SELECT name, duration_hours
+                FROM session_types
+                WHERE id = :session_type_id
+                """
+            ),
+            {"session_type_id": str(resolution.session_type_id)},
+        )
+        session_row = session_result.mappings().one_or_none()
+        if session_row is None or session_row.get("duration_hours") is None:
+            raise ApiError(
+                status_code=409,
+                detail="Mapped session timing is unavailable",
+                error_code=ErrorCode.CONFLICT.value,
+            )
+        duration_hours = Decimal(str(session_row["duration_hours"]))
+        session_type_id = resolution.session_type_id
+        session_type_name = session_row.get("name")
+        is_mapped = True
+        r_year = resolution.r_year
+    else:
+        return event, {}
+
+    resident_event = {
+        **event,
+        "duration_hours": duration_hours,
+        "end_time": _compute_end_time(
+            event["event_date"],
+            event["start_time"],
+            duration_hours,
+        ),
+        "resident_r_year": r_year,
+        "duration_is_mapped": is_mapped,
+    }
+    return resident_event, {
+        "session_type": session_type_name,
+        "session_type_id": session_type_id,
+        "duration_hours": duration_hours,
+        "duration_is_mapped": is_mapped,
+        "resident_r_year": r_year,
+    }
 
 
 def _is_weekend(value: date) -> tuple[bool, str]:
@@ -1010,11 +1104,12 @@ def _external_event_ineligibility_reason(
     *,
     event: dict[str, Any],
     posting_contexts: list[dict[str, Any]],
-    posting_capabilities: dict[str, bool],
-    reporting_period_id: UUID | str,
     today: date,
     already_attended: bool,
 ) -> ExternalEventIneligibilityReason | None:
+    # Non-NHG Residents have no NHG compliance/R-year resolution. Exact
+    # date-matched posting is therefore the complete scheduled-event scope;
+    # event programme ownership and Secretary capability do not narrow it.
     if event["event_date"] > today:
         return "future_event"
     if not posting_contexts:
@@ -1030,23 +1125,6 @@ def _external_event_ineligibility_reason(
         return "posting_mismatch"
     if bool(event.get("is_adhoc")):
         return "event_scope"
-    source = _resolve_scheduled_event_source(
-        event,
-        reporting_period_id=reporting_period_id,
-        programme_code=matching_contexts[0].get("programme_code"),
-    )
-    if source is None:
-        return "event_scope"
-    owner = event.get("created_for_programme_code")
-    source_programme = event.get("source_programme_code")
-    if source_programme is not None and owner is not None and owner != source_programme:
-        return "event_scope"
-    if owner is None:
-        if not posting_capabilities.get(event["posting_code"], False):
-            return "secretary_events_not_supported"
-    else:
-        if matching_contexts[0].get("programme_code") != owner:
-            return "event_scope"
     if already_attended:
         return "already_attended"
     return None
@@ -1070,9 +1148,6 @@ def _external_event_ineligibility_error(
         "posting_unavailable": "No Non-NHG Resident posting is available for the teaching date",
         "posting_mismatch": "Teaching event is outside the resident posting scope",
         "event_scope": "Teaching event is outside the Non-NHG Resident scope",
-        "secretary_events_not_supported": (
-            "Secretary-created events are not supported for this posting"
-        ),
     }
     return ApiError(
         status_code=422,
@@ -1232,7 +1307,6 @@ async def list_available_events(
             raise RuntimeError("External resident identity invariant was not established")
         all_contexts: list[dict[str, Any]] = []
         all_capability_codes: set[str] = set()
-        supported_anywhere = False
         event_rows: dict[str, dict[str, Any]] = {}
         option_names: set[str] = set()
         posting_option_codes: set[str] = set()
@@ -1267,11 +1341,6 @@ async def list_available_events(
             selected_codes = eligible_codes
             if posting_code is not None:
                 selected_codes = {posting_code} if posting_code in eligible_codes else set()
-            period_capabilities = await _posting_capabilities(
-                db,
-                posting_codes=eligible_codes,
-            )
-            supported_anywhere = supported_anywhere or any(period_capabilities.values())
             for external_posting_code in sorted(selected_codes):
                 raw_events = await _events_for_external_posting(
                     db,
@@ -1293,8 +1362,6 @@ async def list_available_events(
                     reason = _external_event_ineligibility_reason(
                         event=event,
                         posting_contexts=contexts,
-                        posting_capabilities=period_capabilities,
-                        reporting_period_id=resolved_period["id"],
                         today=today,
                         already_attended=bool(event.get("already_attended")),
                     )
@@ -1335,16 +1402,6 @@ async def list_available_events(
                 "reason": "posting_schedule_unavailable",
                 "ad_hoc_allowed": False,
                 "message": "No posting schedule is available for an active submission period.",
-                "posting_capabilities": posting_capability_rows,
-                "filter_options": filter_options,
-                "active_reporting_periods": active_period_rows,
-            }
-        if not supported_anywhere and not event_rows:
-            return {
-                "events": [],
-                "reason": "secretary_events_not_supported",
-                "ad_hoc_allowed": True,
-                "message": "No scheduled teaching events are supported for your postings.",
                 "posting_capabilities": posting_capability_rows,
                 "filter_options": filter_options,
                 "active_reporting_periods": active_period_rows,
@@ -1447,6 +1504,12 @@ async def list_available_events(
                 programme_code=resident["programme_code"],
             )
             if resolved is not None:
+                event, resident_timing = await _native_resident_event_view(
+                    db,
+                    event=event,
+                    resident_id=resident_id,
+                )
+                resolved.update(resident_timing)
                 event_rows[str(event["id"])] = _available_event_row(
                     event,
                     resolved=resolved,
@@ -1860,10 +1923,24 @@ async def _overlapping_native_attendance_exists(
         text(
             """
             /* native_attendance_overlap_candidates */
-            SELECT existing.event_date, existing.start_time, existing.end_time
+            SELECT
+                existing.id,
+                existing.posting_code,
+                existing.event_date,
+                existing.start_time,
+                existing.end_time,
+                existing.duration_hours,
+                existing.teaching_name_id,
+                existing.global_session_type_id,
+                existing.is_adhoc,
+                source_scope.reporting_period_id AS source_reporting_period_id,
+                source_scope.programme_code AS source_programme_code
             FROM attendance_records AS attendance
             JOIN teaching_events AS existing
               ON existing.id = attendance.teaching_event_id
+            LEFT JOIN LATERAL mata_rls.scheduled_event_source_scope(
+                existing.id
+            ) AS source_scope ON true
             WHERE attendance.resident_id = :resident_id
               AND attendance.status = 'submitted'
               AND (
@@ -1885,17 +1962,27 @@ async def _overlapping_native_attendance_exists(
             ),
         },
     )
-    return any(
-        _event_intervals_overlap(
+    existing_events = [dict(row) for row in result.mappings().all()]
+    for existing in existing_events:
+        if (
+            existing.get("teaching_name_id") is not None
+            and existing.get("source_reporting_period_id") is not None
+        ):
+            existing, _ = await _native_resident_event_view(
+                db,
+                event=existing,
+                resident_id=resident_id,
+            )
+        if _event_intervals_overlap(
             left_date=event["event_date"],
             left_start=event["start_time"],
             left_end=event.get("end_time"),
-            right_date=row["event_date"],
-            right_start=row["start_time"],
-            right_end=row.get("end_time"),
-        )
-        for row in result.mappings().all()
-    )
+            right_date=existing["event_date"],
+            right_start=existing["start_time"],
+            right_end=existing.get("end_time"),
+        ):
+            return True
+    return False
 
 
 async def _overlapping_external_attendance_exists(
@@ -2215,14 +2302,6 @@ async def submit_attendance(
                 start_date=event["event_date"],
                 end_date=event["event_date"],
             )
-            posting_capabilities = await _posting_capabilities(
-                db,
-                posting_codes={
-                    context["posting_code"]
-                    for context in posting_contexts
-                    if context.get("posting_code")
-                },
-            )
             event_key = str(event_id)
             if event_key in seen_event_ids:
                 raise _external_event_ineligibility_error("already_attended")
@@ -2234,8 +2313,6 @@ async def submit_attendance(
             reason = _external_event_ineligibility_reason(
                 event=event,
                 posting_contexts=posting_contexts,
-                posting_capabilities=posting_capabilities,
-                reporting_period_id=period["id"],
                 today=today,
                 already_attended=already_attended,
             )
@@ -2423,6 +2500,12 @@ async def submit_attendance(
                 detail="Teaching event is not visible for this resident",
                 error_code=ErrorCode.VALIDATION_FAILED.value,
             )
+        event, resident_timing = await _native_resident_event_view(
+            db,
+            event=event,
+            resident_id=resident_id,
+        )
+        resolved.update(resident_timing)
         event_key = str(event_id)
         if event_key in seen_event_ids:
             raise ApiError(
@@ -3057,11 +3140,18 @@ async def list_attendance_records(
                 events.end_time,
                 events.duration_hours,
                 events.posting_code,
+                events.teaching_name_id,
+                events.global_session_type_id,
+                source_scope.reporting_period_id AS source_reporting_period_id,
+                source_scope.programme_code AS source_programme_code,
                 attendance.status,
                 attendance.submitted_at
             FROM {table_name} attendance
             JOIN teaching_events events
               ON events.id = attendance.teaching_event_id
+            LEFT JOIN LATERAL mata_rls.scheduled_event_source_scope(
+                events.id
+            ) AS source_scope ON true
             WHERE {' AND '.join(where)}
             ORDER BY events.event_date DESC, events.start_time DESC, attendance.submitted_at DESC, attendance.id DESC
             LIMIT :limit OFFSET :offset
@@ -3070,6 +3160,20 @@ async def list_attendance_records(
         params,
     )
     rows = [dict(row) for row in result.mappings().all()]
+    if role != "external_resident" and resident_id is not None:
+        for index, row in enumerate(rows):
+            if (
+                row.get("teaching_name_id") is None
+                or row.get("source_reporting_period_id") is None
+                or bool(row.get("is_adhoc"))
+            ):
+                continue
+            resident_row, timing = await _native_resident_event_view(
+                db,
+                event=row,
+                resident_id=resident_id,
+            )
+            rows[index] = {**resident_row, **timing}
     return {
         "attendance": rows,
         "limit": params["limit"],

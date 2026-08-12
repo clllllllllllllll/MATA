@@ -44,6 +44,13 @@ assert(
   'Secretary form displays mapped posting-specific duration and end time',
 )
 assert(
+  apiSource.includes('rYearDurations')
+    && pageSource.includes('Duration varies by R-year')
+    && pageSource.includes('End time by R-year')
+    && pageSource.includes('Staff scheduling uses the longest duration'),
+  'Secretary form displays R-year timings and the longest staff envelope',
+)
+assert(
   pageSource.includes('sourceKeyForSecretaryTeachingEvent'),
   'Secretary edits and duplicates preserve the existing event source identity',
 )

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
 from app.services.pool_event_timing import (
+    PoolEventRYearTiming,
     PoolEventTimingScope,
     resolve_pool_event_timing,
 )
@@ -30,6 +31,8 @@ class ScheduledEventSource:
     programme_code: str | None = None
     reporting_period_id: UUID | None = None
     duration_is_mapped: bool = True
+    duration_varies: bool = False
+    r_year_timings: tuple[PoolEventRYearTiming, ...] = ()
 
     @property
     def is_pool_backed(self) -> bool:
@@ -205,6 +208,8 @@ async def _resolve_teaching_name_source(
         programme_code=source_programme_code,
         reporting_period_id=UUID(str(source["reporting_period_id"])),
         duration_is_mapped=timing.is_mapped,
+        duration_varies=timing.duration_varies,
+        r_year_timings=timing.r_year_timings,
     )
 
 

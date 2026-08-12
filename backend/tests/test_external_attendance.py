@@ -151,7 +151,7 @@ def test_external_events_accept_verified_external_identity_without_raw_headers()
     assert fake_db.event_id in {row["id"] for row in response.json()["events"]}
 
 
-def test_external_events_hidden_when_supports_secretary_events_false() -> None:
+def test_external_events_ignore_secretary_capability_at_exact_posting() -> None:
     fake_db = FakeResidentSession()
     fake_db.external_residents[0]["current_nhg_posting_code"] = "KTPHGerMed"
     fake_db.external_resident_postings = [
@@ -180,8 +180,8 @@ def test_external_events_hidden_when_supports_secretary_events_false() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["events"] == []
-    assert payload["reason"] == "secretary_events_not_supported"
+    assert any(row["posting_code"] == "KTPHGerMed" for row in payload["events"])
+    assert payload["reason"] is None
     assert len(payload["active_reporting_periods"]) == 1
 
 
@@ -226,7 +226,7 @@ def test_external_event_visibility_does_not_require_teaching_name_catalogue() ->
     assert event_id in ids
 
 
-def test_external_explicit_pool_events_require_exact_schedule_programme() -> None:
+def test_external_explicit_pool_events_do_not_require_schedule_programme_match() -> None:
     fake_db = FakeResidentSession()
     fake_db.catalogue = []
     fake_db.teaching_targets = []
@@ -250,7 +250,6 @@ def test_external_explicit_pool_events_require_exact_schedule_programme() -> Non
         source_programme_code="GRM",
     )
     fake_db.events.extend((matching, wrong_programme))
-    before_attendance = list(fake_db.external_attendance)
     client = _client(fake_db)
 
     list_response = client.get("/resident/events", headers=_external_headers(fake_db))
@@ -263,13 +262,12 @@ def test_external_explicit_pool_events_require_exact_schedule_programme() -> Non
     assert list_response.status_code == 200
     event_ids = {row["id"] for row in list_response.json()["events"]}
     assert matching["id"] in event_ids
-    assert wrong_programme["id"] not in event_ids
-    assert submit_response.status_code == 422
-    assert submit_response.json()["detail"] == "Teaching event is outside the Non-NHG Resident scope"
-    assert fake_db.external_attendance == before_attendance
+    assert wrong_programme["id"] in event_ids
+    assert submit_response.status_code == 200
+    assert submit_response.json()["submitted"] == 1
 
 
-def test_external_explicit_pool_event_requires_non_null_schedule_programme() -> None:
+def test_external_explicit_pool_event_allows_null_schedule_programme() -> None:
     fake_db = FakeResidentSession()
     fake_db.external_resident_postings[0]["programme_code"] = None
     event = fake_db._event(  # noqa: SLF001
@@ -282,7 +280,6 @@ def test_external_explicit_pool_event_requires_non_null_schedule_programme() -> 
         source_programme_code="CARDIO",
     )
     fake_db.events.append(event)
-    before_attendance = list(fake_db.external_attendance)
     client = _client(fake_db)
 
     list_response = client.get("/resident/events", headers=_external_headers(fake_db))
@@ -293,10 +290,9 @@ def test_external_explicit_pool_event_requires_non_null_schedule_programme() -> 
     )
 
     assert list_response.status_code == 200
-    assert event["id"] not in {row["id"] for row in list_response.json()["events"]}
-    assert submit_response.status_code == 422
-    assert submit_response.json()["detail"] == "Teaching event is outside the Non-NHG Resident scope"
-    assert fake_db.external_attendance == before_attendance
+    assert event["id"] in {row["id"] for row in list_response.json()["events"]}
+    assert submit_response.status_code == 200
+    assert submit_response.json()["submitted"] == 1
 
 
 def test_external_global_event_is_visible_and_submittable_without_catalogue() -> None:
@@ -541,7 +537,7 @@ def test_external_null_role_programme_event_uses_exact_owner_scope() -> None:
     assert submitted.status_code == 200
 
 
-def test_external_rejects_other_programme_and_other_posting_pc_events() -> None:
+def test_external_accepts_other_programme_but_rejects_other_posting_pc_events() -> None:
     fake_db = FakeResidentSession()
     fake_db.external_resident_postings = [
         _external_schedule_row(
@@ -562,7 +558,6 @@ def test_external_rejects_other_programme_and_other_posting_pc_events() -> None:
         posting_code="TTSHCardio",
         teaching_name="GERI PC Teaching Elsewhere",
     )
-    before_external = list(fake_db.external_attendance)
     client = _client(fake_db)
 
     listed = client.get("/resident/events", headers=_external_headers(fake_db))
@@ -579,11 +574,10 @@ def test_external_rejects_other_programme_and_other_posting_pc_events() -> None:
 
     assert listed.status_code == 200
     listed_ids = {row["id"] for row in listed.json()["events"]}
-    assert other_programme_event["id"] not in listed_ids
+    assert other_programme_event["id"] in listed_ids
     assert other_posting_event["id"] not in listed_ids
-    assert other_programme_submit.status_code == 422
+    assert other_programme_submit.status_code == 200
     assert other_posting_submit.status_code == 422
-    assert fake_db.external_attendance == before_external
 
 
 def test_external_programme_event_outside_schedule_dates_is_unavailable() -> None:
@@ -768,7 +762,7 @@ def test_external_rejects_later_distinct_event_that_overlaps_accepted_event() ->
     assert fake_db.external_attendance == before_external
 
 
-def _assert_shared_posting_programme_isolation(
+def _assert_shared_posting_programme_visibility(
     *,
     resident_programme: str,
     other_programme: str,
@@ -797,7 +791,7 @@ def _assert_shared_posting_programme_isolation(
     client = _client(fake_db)
 
     listed = client.get("/resident/events", headers=_external_headers(fake_db))
-    rejected = client.post(
+    submitted = client.post(
         "/resident/attendance",
         headers=_external_headers(fake_db),
         json={"event_ids": [other_event["id"]]},
@@ -806,27 +800,27 @@ def _assert_shared_posting_programme_isolation(
     assert listed.status_code == 200
     listed_ids = {row["id"] for row in listed.json()["events"]}
     assert own_event["id"] in listed_ids
-    assert other_event["id"] not in listed_ids
-    assert rejected.status_code == 422
+    assert other_event["id"] in listed_ids
+    assert submitted.status_code == 200
 
 
-def test_aim_does_not_see_im_events_at_shared_ttsh_general_medicine_posting() -> None:
-    _assert_shared_posting_programme_isolation(
+def test_aim_sees_im_events_at_shared_ttsh_general_medicine_posting() -> None:
+    _assert_shared_posting_programme_visibility(
         resident_programme="AIM",
         other_programme="IM",
         posting_code="TTSHGenMed",
     )
 
 
-def test_gs_does_not_see_sig_events_at_shared_ttsh_general_surgery_posting() -> None:
-    _assert_shared_posting_programme_isolation(
+def test_gs_sees_sig_events_at_shared_ttsh_general_surgery_posting() -> None:
+    _assert_shared_posting_programme_visibility(
         resident_programme="GS",
         other_programme="SIG",
         posting_code="TTSHGenSrg",
     )
 
 
-def test_unresolved_legacy_programme_keeps_secretary_visibility_but_denies_pc_event() -> None:
+def test_unresolved_legacy_programme_keeps_all_exact_posting_visibility() -> None:
     fake_db = FakeResidentSession()
     fake_db.external_resident_postings = [
         _external_schedule_row(
@@ -855,7 +849,7 @@ def test_unresolved_legacy_programme_keeps_secretary_visibility_but_denies_pc_ev
     assert response.status_code == 200
     listed_ids = {row["id"] for row in response.json()["events"]}
     assert secretary_event["id"] in listed_ids
-    assert programme_event["id"] not in listed_ids
+    assert programme_event["id"] in listed_ids
 
 
 def test_overlapping_legacy_schedule_contexts_fail_closed() -> None:
@@ -1004,7 +998,7 @@ def test_external_cannot_submit_attendance_for_event_outside_current_posting() -
     assert response.status_code == 422
 
 
-def test_external_cannot_submit_secretary_event_when_support_disabled() -> None:
+def test_external_can_submit_exact_posting_event_when_support_disabled() -> None:
     fake_db = FakeResidentSession()
     fake_db.external_residents[0]["current_nhg_posting_code"] = "KTPHGerMed"
     fake_db.external_resident_postings = [
@@ -1030,7 +1024,8 @@ def test_external_cannot_submit_secretary_event_when_support_disabled() -> None:
         json={"event_ids": [event_id]},
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 200
+    assert response.json()["submitted"] == 1
 
 
 def test_external_weekend_non_exception_stores_and_returns_warning() -> None:
