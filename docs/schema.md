@@ -79,12 +79,16 @@ The current final model uses `teaching_name` as the canonical term:
   r_year)`. It may select only the exact `teaching_targets` row from that same
   scope. A null target is **pending** and a non-null target is **mapped**; no
   duplicate status column or manual `excluded` state is permitted.
-- Both an explicitly authorized Department Secretary and Programme PC may
-  create, rename, deactivate, and reactivate names in their shared pool. Phase
-  D exposes a separate Programme-PC mapping queue and mutation API: a PC may
-  assign, change, or explicitly clear only an in-scope mapping, while a Master
-  Admin is read-only and a Secretary has no mapping route. A Secretary/PC may
-  delete only an unused name;
+- An explicitly authorized Department Secretary creates and manages
+  department-shared names at that Secretary's immutable source posting. A
+  Programme PC creates and manages programme-private names in its own native
+  programme. A consuming PC may read and map an admitted host source but may
+  not change its source lifecycle; a native Secretary may schedule with a
+  PC-private name but may not change its lifecycle. Phase D exposes a separate
+  Programme-PC mapping queue and mutation API: a PC may assign, change, or
+  explicitly clear only an in-scope mapping, while a Master Admin is read-only
+  and a Secretary has no mapping route. A source owner may delete only an
+  unused name;
   Master Admin may delete a used name only with current revision, explicit
   force flag, nonblank reason, and `DELETE` confirmation. Secretary management
   authority is a separate explicit
@@ -98,9 +102,10 @@ The current final model uses `teaching_name` as the canonical term:
 - A Phase F pool-backed `teaching_events` row has `teaching_name_id` populated
   and `global_session_type_id` null. A global row has the reverse. Transitional
   legacy rows may have neither, but no row may have both. Source identity is
-  never inferred from display text. Pool-backed events belong to exactly one
-  programme through their Teaching Name; PC event programme must match it, and
-  snapshot-text fan-out across programme pools is forbidden.
+  never inferred from display text. A PC-created event belongs to exactly one
+  native programme. A Secretary-created shared event keeps one stable source
+  identity and may resolve through several admitted native-programme mappings;
+  cloning names or event snapshots per consuming programme is forbidden.
 - A Programme PC may write a pool-backed event only when a
   `teaching_name_mappings` row exists for that exact Teaching Name, source
   reporting period, source programme, and event posting. This is an event
@@ -144,12 +149,25 @@ Teaching Name and no mapping from workbook text. Existing mappings are
 provisioned only from distinct posting/R-year target scopes and active shared
 pool names. Actual all-28 operational onboarding remains Phase R.
 
-## Planned Phase V persistence extension
+## Phase V persistence extension
 
-Phase V must separate a Teaching Name's immutable source ownership from each
-native programme allowed to map that source. This section is a planned schema
-contract; no Phase V migration is present until the corresponding
-implementation branch is approved and verified.
+Revision `20260812_000040` separates a Teaching Name's immutable source
+ownership from each native programme allowed to map that source. The migration
+adds immutable creator/source provenance, durable programme admissions,
+programme-qualified mapping identity, protected cross-posting resolution, and
+staff-envelope timing synchronization.
+Its downgrade is intentionally fail-closed: collapsing programme-qualified
+mapping identity would discard or misattribute admissions and is therefore not
+performed automatically.
+
+Revision `20260813_000041` connects the existing protected cross-programme
+Secretary-event selector to the `teaching_events` Resident SELECT policy. A
+host Secretary's Teaching Name remains owned by its source programme, while an
+admitted native Resident reads and resolves that shared event through the
+Resident programme's exact posting/R-year mapping. It also makes the protected
+resolver's cross-posting `varchar` phase values conform to its declared `text`
+result contract so mapped, pending, and invalid cross-posting outcomes remain
+controlled API results rather than database type errors.
 
 `teaching_names.programme_code` remains the source owner programme. Phase V
 adds immutable provenance sufficient to distinguish:

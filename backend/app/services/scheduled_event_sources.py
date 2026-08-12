@@ -13,6 +13,7 @@ from app.errors import ApiError, ErrorCode
 from app.services.pool_event_timing import (
     PoolEventRYearTiming,
     PoolEventTimingScope,
+    list_pool_event_timings,
     resolve_pool_event_timing,
 )
 from app.services.teaching_name_pool import TeachingNamePoolActor
@@ -160,6 +161,8 @@ async def _resolve_teaching_name_source(
                 reporting_period_id,
                 programme_code,
                 display_name AS teaching_name,
+                visibility_scope,
+                origin_posting_code,
                 is_active
             FROM teaching_names
             WHERE id = :teaching_name_id
@@ -178,6 +181,31 @@ async def _resolve_teaching_name_source(
         actor=actor,
         programme_code=source_programme_code,
     )
+    if actor.kind == "secretary":
+        if source["visibility_scope"] == "department_shared":
+            if str(source.get("origin_posting_code") or "") != actor.posting_code:
+                raise _validation_error(
+                    "Selected Teaching Name belongs to another Department Secretary"
+                )
+        else:
+            native_result = await db.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM programmes
+                    WHERE code = :programme_code
+                      AND native_teaching_posting_code = :posting_code
+                    """
+                ),
+                {
+                    "programme_code": source_programme_code,
+                    "posting_code": actor.posting_code,
+                },
+            )
+            if native_result.scalar_one_or_none() is None:
+                raise _validation_error(
+                    "PC-created Teaching Name is private to its native department"
+                )
     if programme_code is not None and source_programme_code != programme_code:
         raise _validation_error(
             "Selected Teaching Name does not belong to the requested programme"
@@ -189,15 +217,35 @@ async def _resolve_teaching_name_source(
     if not bool(source["is_active"]):
         raise _validation_error("Selected Teaching Name is inactive")
 
-    timing = await resolve_pool_event_timing(
-        db,
-        scope=PoolEventTimingScope(
-            teaching_name_id=source["id"],
+    if actor.kind == "secretary" and source["visibility_scope"] == "department_shared":
+        timings = await list_pool_event_timings(
+            db,
+            teaching_name_ids=[source["id"]],
             reporting_period_id=source["reporting_period_id"],
-            programme_code=source_programme_code,
+            programme_code=None,
             posting_code=posting_code,
-        ),
-    )
+        )
+        timing = timings.get((str(source["id"]), posting_code))
+        if timing is None:
+            timing = await resolve_pool_event_timing(
+                db,
+                scope=PoolEventTimingScope(
+                    teaching_name_id=source["id"],
+                    reporting_period_id=source["reporting_period_id"],
+                    programme_code=source_programme_code,
+                    posting_code=posting_code,
+                ),
+            )
+    else:
+        timing = await resolve_pool_event_timing(
+            db,
+            scope=PoolEventTimingScope(
+                teaching_name_id=source["id"],
+                reporting_period_id=source["reporting_period_id"],
+                programme_code=source_programme_code,
+                posting_code=posting_code,
+            ),
+        )
 
     return ScheduledEventSource(
         teaching_name_id=UUID(str(source["id"])),

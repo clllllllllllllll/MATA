@@ -1,7 +1,7 @@
 # Security Contract
 
 Status: current repository security source of truth. This document describes
-the implemented local contract at Alembic revision `20260812_000039`. Local
+the implemented local contract at Alembic revision `20260813_000041`. Local
 source, test, and disposable-database evidence is not proof of a deployed
 Vercel or Supabase environment.
 
@@ -284,7 +284,7 @@ The lifecycle endpoints use the existing protected mutation boundary:
   count-only audit response, and clears only the optional event identity. Do not expose raw audit values in browser
   storage, URLs, logs, or error details.
 
-#### Planned Phase V cross-posting and PC-private authorization
+#### Phase V cross-posting and PC-private authorization
 
 Phase V must treat source-name ownership, programme admission, mapping
 authority, and event/submission visibility as separate predicates:
@@ -434,10 +434,10 @@ business rows; bounded failure evidence may still be recorded.
 
 ## 9. PostgreSQL roles, RLS, grants, and helpers
 
-At current revision `20260812_000039`:
+At current revision `20260813_000041`:
 
-- 35 application tables have RLS enabled;
-- 89 action policies target only `mata_app_runtime`;
+- 36 application tables have RLS enabled;
+- 90 action policies target only `mata_app_runtime`;
 - application policies do not target `PUBLIC`, `anon`, `authenticated`, or a
   service role;
 - application login roles are non-owner and `NOBYPASSRLS`;
@@ -476,6 +476,24 @@ timing without granting the Secretary direct access to
 has a fixed `pg_catalog, pg_temp` search path, and is revoked from `PUBLIC`,
 browser/service roles, and the authentication helper. Resident and external
 resident contexts return no rows.
+
+Revision `20260812_000040` adds the RLS-protected
+`teaching_name_programme_scopes` admission table and runtime-only reconciliation,
+cross-resident target-resolution, staff-timing, and write-only Secretary-event
+timing helpers. A host source becomes readable to a Programme PC only through a
+durable same-period admission derived from actual usable Resident postings.
+Mapping DML remains confined to the PC's own programme and exact target tuple;
+source lifecycle DML remains with the immutable source owner. PC-private names
+never receive a foreign admission. The helpers have fixed
+`pg_catalog, pg_temp` search paths and are revoked from `PUBLIC`, browser/service
+roles, and the authentication helper.
+
+Revision `20260813_000041` connects the protected event selector used by the
+Phase V cross-posting path to the `teaching_events` Resident SELECT policy and
+corrects the cross-programme resolver's declared PostgreSQL result types. It
+does not add a policy, grant, role, table, or browser-facing database surface;
+the host event still requires exact Resident posting, source admission, and
+native programme posting/R-year mapping evidence.
 
 `mata_app_runtime` and `mata_auth_internal` are stable `NOLOGIN`,
 `NOINHERIT`, `NOSUPERUSER`, `NOCREATEDB`, `NOCREATEROLE`,

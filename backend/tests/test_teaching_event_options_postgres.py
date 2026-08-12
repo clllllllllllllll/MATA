@@ -289,20 +289,25 @@ async def test_programme_and_secretary_options_have_postgres_cardinality_and_sco
                         """
                         INSERT INTO teaching_names (
                             id, reporting_period_id, programme_code,
-                            display_name, normalized_name, is_active
+                            display_name, normalized_name, is_active,
+                            created_by_role, visibility_scope,
+                            origin_posting_code
                         )
                         VALUES
                             (
                                 :pending_id, :period_id, :programme_code,
-                                :pending_name, :pending_normalized, true
+                                :pending_name, :pending_normalized, true,
+                                'secretary', 'department_shared', :posting_code
                             ),
                             (
                                 :mapped_id, :period_id, :programme_code,
-                                :mapped_name, :mapped_normalized, true
+                                :mapped_name, :mapped_normalized, true,
+                                'secretary', 'department_shared', :posting_code
                             ),
                             (
                                 :inactive_id, :period_id, :programme_code,
-                                :inactive_name, :inactive_normalized, false
+                                :inactive_name, :inactive_normalized, false,
+                                'secretary', 'department_shared', :posting_code
                             )
                         """
                     ),
@@ -312,12 +317,38 @@ async def test_programme_and_secretary_options_have_postgres_cardinality_and_sco
                         "inactive_id": inactive_name_id,
                         "period_id": period_id,
                         "programme_code": programme_code,
+                        "posting_code": secretary_posting,
                         "pending_name": pending_keyword,
                         "pending_normalized": pending_keyword.lower(),
                         "mapped_name": mapped_keyword,
                         "mapped_normalized": mapped_keyword.lower(),
                         "inactive_name": inactive_keyword,
                         "inactive_normalized": inactive_keyword.lower(),
+                    },
+                )
+            await owner_db.execute(
+                    text(
+                        """
+                        INSERT INTO teaching_name_programme_scopes (
+                            teaching_name_id, reporting_period_id, programme_code,
+                            admission_reason, admitted_by_user_id
+                        )
+                        VALUES
+                            (:pending_id, :period_id, :programme_code,
+                             'owner_programme', :secretary_id),
+                            (:mapped_id, :period_id, :programme_code,
+                             'owner_programme', :secretary_id),
+                            (:inactive_id, :period_id, :programme_code,
+                             'owner_programme', :secretary_id)
+                        """
+                    ),
+                    {
+                        "pending_id": pending_name_id,
+                        "mapped_id": mapped_name_id,
+                        "inactive_id": inactive_name_id,
+                        "period_id": period_id,
+                        "programme_code": programme_code,
+                        "secretary_id": secretary_user_id,
                     },
                 )
             await owner_db.execute(
@@ -350,15 +381,21 @@ async def test_programme_and_secretary_options_have_postgres_cardinality_and_sco
                             programme_code, posting_code, r_year,
                             teaching_target_id
                         )
-                        VALUES (
-                            :id, :teaching_name_id, :period_id,
-                            :programme_code, :posting_code, 'ALL', :target_id
-                        )
+                        VALUES
+                            (
+                                :id, :teaching_name_id, :period_id,
+                                :programme_code, :posting_code, 'ALL', :target_id
+                            ),
+                            (
+                                gen_random_uuid(), :pending_name_id, :period_id,
+                                :programme_code, :posting_code, 'ALL', NULL
+                            )
                         """
                     ),
                     {
                         "id": mapping_id,
                         "teaching_name_id": mapped_name_id,
+                        "pending_name_id": pending_name_id,
                         "period_id": period_id,
                         "programme_code": programme_code,
                         "posting_code": secretary_posting,

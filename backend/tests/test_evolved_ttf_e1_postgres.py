@@ -47,7 +47,7 @@ from tests.ttf_e1_postgres_harness import (
 _MAPPING_RECONCILIATION_SQL = text(
     """
     SELECT *
-    FROM mata_rls.reconcile_ttf_teaching_name_mappings(
+    FROM mata_rls.reconcile_ttf_teaching_name_mappings_v2(
         CAST(:reporting_period_id AS uuid),
         CAST(:programme_code AS text),
         CAST(:stale_target_ids AS uuid[]),
@@ -617,13 +617,16 @@ async def test_non_rls_master_teaching_name_delete_preserves_used_evidence(
                         """
                         INSERT INTO teaching_names (
                             id, reporting_period_id, programme_code, display_name,
-                            normalized_name, is_active
+                            normalized_name, is_active, created_by_role,
+                            visibility_scope
                         )
                         VALUES
                             (:unused_name_id, :period_id, :programme_code, :unused_name,
-                             :unused_normalized_name, true),
+                             :unused_normalized_name, true, 'programme_pc',
+                             'programme_private'),
                             (:used_name_id, :period_id, :programme_code, :used_name,
-                             :used_normalized_name, true)
+                             :used_normalized_name, true, 'programme_pc',
+                             'programme_private')
                         RETURNING id, revision
                         """
                     ),
@@ -1005,15 +1008,19 @@ async def test_e1_reconciliation_preserves_ids_invalidates_stale_mappings_and_is
                     """
                     INSERT INTO teaching_names (
                         id, reporting_period_id, programme_code, display_name,
-                        normalized_name, is_active
+                        normalized_name, is_active, created_by_role,
+                        visibility_scope
                     )
                     VALUES
                         (:retained_name_id, :period_id, :programme_code, :retained_name,
-                         :retained_normalized, true),
+                         :retained_normalized, true, 'programme_pc',
+                         'programme_private'),
                         (:stale_name_id, :period_id, :programme_code, :stale_name,
-                         :stale_normalized, true),
+                         :stale_normalized, true, 'programme_pc',
+                         'programme_private'),
                         (:inactive_name_id, :period_id, :programme_code, :inactive_name,
-                         :inactive_normalized, false)
+                         :inactive_normalized, false, 'programme_pc',
+                         'programme_private')
                     """
                 ),
                 {
@@ -1028,6 +1035,27 @@ async def test_e1_reconciliation_preserves_ids_invalidates_stale_mappings_and_is
                     "stale_normalized": f"stale name {suffix}".casefold(),
                     "inactive_name": f"Inactive name {suffix}",
                     "inactive_normalized": f"inactive name {suffix}".casefold(),
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_programme_scopes (
+                        teaching_name_id, reporting_period_id, programme_code,
+                        admission_reason
+                    )
+                    VALUES
+                        (:retained_name_id, :period_id, :programme_code, 'pc_private'),
+                        (:stale_name_id, :period_id, :programme_code, 'pc_private'),
+                        (:inactive_name_id, :period_id, :programme_code, 'pc_private')
+                    """
+                ),
+                {
+                    "retained_name_id": retained_name_id,
+                    "stale_name_id": stale_name_id,
+                    "inactive_name_id": inactive_name_id,
+                    "period_id": period_id,
+                    "programme_code": programme_code,
                 },
             )
             await db.execute(
@@ -1361,10 +1389,12 @@ async def test_e1_mapping_reconciliation_uses_verified_restricted_runtime_contex
                     """
                     INSERT INTO teaching_names (
                         id, reporting_period_id, programme_code, display_name,
-                        normalized_name, is_active
+                        normalized_name, is_active, created_by_role,
+                        visibility_scope
                     )
                     VALUES (:id, :period_id, :programme_code, :display_name,
-                            :normalized_name, false)
+                            :normalized_name, false, 'programme_pc',
+                            'programme_private')
                     """
                 ),
                 {
@@ -1464,10 +1494,12 @@ async def test_e1_mapping_reconciliation_uses_verified_restricted_runtime_contex
                     """
                     INSERT INTO teaching_names (
                         id, reporting_period_id, programme_code, display_name,
-                        normalized_name, is_active
+                        normalized_name, is_active, created_by_role,
+                        visibility_scope
                     )
                     VALUES (:id, :period_id, :programme_code, :display_name,
-                            :normalized_name, true)
+                            :normalized_name, true, 'programme_pc',
+                            'programme_private')
                     """
                 ),
                 {
@@ -1476,6 +1508,22 @@ async def test_e1_mapping_reconciliation_uses_verified_restricted_runtime_contex
                     "programme_code": programme_code,
                     "display_name": f"E1 Name {suffix}",
                     "normalized_name": f"e1 name {suffix}".casefold(),
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_programme_scopes (
+                        teaching_name_id, reporting_period_id, programme_code,
+                        admission_reason
+                    )
+                    VALUES (:teaching_name_id, :period_id, :programme_code, 'pc_private')
+                    """
+                ),
+                {
+                    "teaching_name_id": teaching_name_id,
+                    "period_id": period_id,
+                    "programme_code": programme_code,
                 },
             )
             await db.execute(
@@ -1564,7 +1612,7 @@ async def test_e1_mapping_reconciliation_uses_verified_restricted_runtime_contex
                             ) AS public_execute
                         FROM pg_catalog.pg_proc AS procedure
                         WHERE procedure.oid = pg_catalog.to_regprocedure(
-                            'mata_rls.reconcile_ttf_teaching_name_mappings('
+                            'mata_rls.reconcile_ttf_teaching_name_mappings_v2('
                             'uuid,text,uuid[],text[],text[])'
                         )
                         """
@@ -2337,13 +2385,30 @@ async def test_phase_l_real_postgres_journey_from_ttf_to_mapping_clear_and_next_
 
         async with ttf_e1_restricted_runtime_harness.runtime_context_session() as pc_db:
             await _configure_runtime_context(pc_db, pc_context)
+            with pytest.raises(ApiError) as unconfirmed_assignment:
+                await teaching_name_mappings.apply_mapping_change(
+                    pc_db,
+                    actor=pc_actor,
+                    mapping_id=UUID(str(pending_mapping["id"])),
+                    expected_revision=int(pending_mapping["revision"]),
+                    teaching_target_id=target_id,
+                    confirm_impact=False,
+                )
+            assert unconfirmed_assignment.value.status_code == 409
+            assert unconfirmed_assignment.value.metadata == {
+                "impact": {
+                    "affected_event_count": 1,
+                    "affected_attendance_count": 1,
+                },
+                "confirmation_required": True,
+            }
             mapped = await teaching_name_mappings.apply_mapping_change(
                 pc_db,
                 actor=pc_actor,
                 mapping_id=UUID(str(pending_mapping["id"])),
                 expected_revision=int(pending_mapping["revision"]),
                 teaching_target_id=target_id,
-                confirm_impact=False,
+                confirm_impact=True,
             )
             assert mapped["state"] == "mapped"
 

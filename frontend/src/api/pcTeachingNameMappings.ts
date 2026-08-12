@@ -11,6 +11,11 @@ export interface ProgrammePcTeachingName {
   reportingPeriodId: string
   programmeCode: string
   teachingName: string
+  createdByRole: string
+  visibilityScope: string
+  originPostingCode?: string
+  admissionReason: string
+  canManageName: boolean
   isActive: boolean
   revision: number
   createdAt?: string
@@ -44,6 +49,11 @@ export interface ProgrammePcTeachingNameMapping {
   teachingName: string
   teachingNameIsActive: boolean
   teachingNameRevision: number
+  teachingNameOwnerProgrammeCode: string
+  teachingNameCreatedByRole: string
+  teachingNameVisibilityScope: string
+  teachingNameOriginPostingCode?: string
+  teachingNameAdmissionReason: string
   reportingPeriodId: string
   programmeCode: string
   postingCode: string
@@ -106,6 +116,11 @@ const toTeachingName = (value: Record<string, unknown>): ProgrammePcTeachingName
   reportingPeriodId: String(value.reporting_period_id ?? ''),
   programmeCode: String(value.programme_code ?? ''),
   teachingName: String(value.teaching_name ?? ''),
+  createdByRole: String(value.created_by_role ?? ''),
+  visibilityScope: String(value.visibility_scope ?? ''),
+  originPostingCode: optionalString(value.origin_posting_code),
+  admissionReason: String(value.admission_reason ?? ''),
+  canManageName: Boolean(value.can_manage_name),
   isActive: Boolean(value.is_active),
   revision: toNumber(value.revision, 1),
   createdAt: optionalString(value.created_at),
@@ -141,6 +156,11 @@ const toMapping = (value: Record<string, unknown>): ProgrammePcTeachingNameMappi
     teachingName: String(value.teaching_name ?? ''),
     teachingNameIsActive: Boolean(value.teaching_name_is_active),
     teachingNameRevision: toNumber(value.teaching_name_revision, 1),
+    teachingNameOwnerProgrammeCode: String(value.teaching_name_owner_programme_code ?? ''),
+    teachingNameCreatedByRole: String(value.teaching_name_created_by_role ?? ''),
+    teachingNameVisibilityScope: String(value.teaching_name_visibility_scope ?? ''),
+    teachingNameOriginPostingCode: optionalString(value.teaching_name_origin_posting_code),
+    teachingNameAdmissionReason: String(value.teaching_name_admission_reason ?? ''),
     reportingPeriodId: String(value.reporting_period_id ?? ''),
     programmeCode: String(value.programme_code ?? ''),
     postingCode: String(value.posting_code ?? ''),

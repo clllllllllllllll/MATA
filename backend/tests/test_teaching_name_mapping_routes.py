@@ -95,6 +95,11 @@ def _mapping_row(
         "teaching_name": "Journal Club",
         "teaching_name_is_active": True,
         "teaching_name_revision": 2,
+        "teaching_name_owner_programme_code": "DR",
+        "teaching_name_created_by_role": "secretary",
+        "teaching_name_visibility_scope": "department_shared",
+        "teaching_name_origin_posting_code": "TTSHCardio",
+        "teaching_name_admission_reason": "owner_programme",
         "reporting_period_id": uuid4(),
         "programme_code": "DR",
         "posting_code": "TTSHCardio",
@@ -397,6 +402,9 @@ def test_bulk_mapping_prevalidates_every_item_before_any_write(
     async def acquire_scope_lock(_db, *, reporting_period_id, programme_code):  # noqa: ANN001
         lock_calls.append((str(reporting_period_id), programme_code))
 
+    async def require_active_period(_db, **_kwargs):  # noqa: ANN001
+        return None
+
     async def locked_mappings(_db, *, mapping_ids):  # noqa: ANN001
         assert mapping_ids == sorted(mapping_ids, key=str)
         return [rows[mapping_id] for mapping_id in mapping_ids]
@@ -416,6 +424,11 @@ def test_bulk_mapping_prevalidates_every_item_before_any_write(
 
     monkeypatch.setattr(teaching_name_mappings, "_mapping_row", mapping_row)
     monkeypatch.setattr(teaching_name_mappings, "_acquire_scope_lock", acquire_scope_lock)
+    monkeypatch.setattr(
+        teaching_name_mappings,
+        "_require_active_mapping_period",
+        require_active_period,
+    )
     monkeypatch.setattr(teaching_name_mappings, "_locked_mappings_for_bulk", locked_mappings)
     monkeypatch.setattr(teaching_name_mappings, "_locked_targets_for_bulk", locked_targets)
     monkeypatch.setattr(teaching_name_mappings, "_prepare_locked_change", prepare)
@@ -468,6 +481,9 @@ def test_bulk_mapping_locks_and_invalidates_only_after_commit(
     async def acquire_scope_lock(_db, **_kwargs):  # noqa: ANN001
         operation_steps.append("scope")
 
+    async def require_active_period(_db, **_kwargs):  # noqa: ANN001
+        return None
+
     async def locked_mappings(_db, *, mapping_ids):  # noqa: ANN001
         operation_steps.append("mappings")
         assert mapping_ids == sorted(mapping_ids, key=str)
@@ -511,6 +527,11 @@ def test_bulk_mapping_locks_and_invalidates_only_after_commit(
 
     monkeypatch.setattr(teaching_name_mappings, "_mapping_row", mapping_row)
     monkeypatch.setattr(teaching_name_mappings, "_acquire_scope_lock", acquire_scope_lock)
+    monkeypatch.setattr(
+        teaching_name_mappings,
+        "_require_active_mapping_period",
+        require_active_period,
+    )
     monkeypatch.setattr(teaching_name_mappings, "_locked_mappings_for_bulk", locked_mappings)
     monkeypatch.setattr(teaching_name_mappings, "_locked_targets_for_bulk", locked_targets)
     monkeypatch.setattr(teaching_name_mappings, "_prepare_locked_change", prepare)

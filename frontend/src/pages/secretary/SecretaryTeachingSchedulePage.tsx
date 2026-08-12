@@ -146,7 +146,7 @@ const formatDuration = (value?: number) => {
 const formatStaffEventDuration = (
   event: Pick<SecretaryTeachingEvent, 'durationHours' | 'durationVaries'>,
 ) => event.durationVaries
-  ? `Varies by R-year (up to ${formatDuration(event.durationHours)})`
+  ? `Varies by programme/R-year (up to ${formatDuration(event.durationHours)})`
   : formatDuration(event.durationHours)
 
 const sourceProgrammeDisplay = (event: SecretaryTeachingEvent) => {
@@ -1480,6 +1480,9 @@ export const SecretaryTeachingSchedulePage = () => {
                 {drawerSourceOptions.map((option) => (
                   <option key={option.sourceKey} value={option.sourceKey}>
                     {option.keyword}
+                    {option.visibilityScope === 'programme_private'
+                      ? ' (PC-created)'
+                      : ''}
                     {option.sourceKey === retainedInactiveGlobalOption?.sourceKey
                       ? ' (current inactive global source)'
                       : option.sourceKey === retainedPoolSourceOption?.sourceKey
@@ -1515,16 +1518,16 @@ export const SecretaryTeachingSchedulePage = () => {
           ) : selectedPoolNeedsRYearBreakdown ? (
             <div className="secretary-toggle-block" aria-live="polite">
               <span className="secretary-toggle-label">
-                {selectedSourceOption?.durationVaries ? 'Duration varies by R-year' : 'Duration by R-year'}
+                {selectedSourceOption?.durationVaries ? 'Duration varies by programme and R-year' : 'Duration by programme and R-year'}
               </span>
               {selectedPoolRYearDurations.map((timing) => (
-                <strong key={timing.rYear}>
-                  {timing.rYear}: {formatDuration(timing.durationHours)}
+                <strong key={`${timing.programmeCode ?? 'programme'}:${timing.rYear}`}>
+                  {timing.programmeCode ? `${timing.programmeCode} · ` : ''}{timing.rYear}: {formatDuration(timing.durationHours)}
                   {timing.isMapped ? '' : ' (temporary until mapped)'}
                 </strong>
               ))}
               <small>
-                Staff scheduling uses the longest duration. Each native resident receives the duration mapped to their event-date R-year.
+                Staff scheduling uses the longest duration across admitted programmes. Each native resident receives the duration mapped by their own programme for their event-date R-year.
               </small>
             </div>
           ) : selectedSourceOption ? (

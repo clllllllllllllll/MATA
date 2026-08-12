@@ -45,7 +45,7 @@ assert(
 )
 assert(
   apiSource.includes('rYearDurations')
-    && pageSource.includes('Duration varies by R-year')
+    && pageSource.includes('Duration varies by programme and R-year')
     && pageSource.includes('End time by R-year')
     && pageSource.includes('Staff scheduling uses the longest duration'),
   'Secretary form displays R-year timings and the longest staff envelope',

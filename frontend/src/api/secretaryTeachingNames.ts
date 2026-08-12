@@ -12,6 +12,11 @@ export interface SecretaryTeachingName {
   reportingPeriodId: string
   programmeCode: string
   teachingName: string
+  createdByRole: string
+  visibilityScope: string
+  originPostingCode?: string
+  admissionReason: string
+  canManageName: boolean
   isActive: boolean
   revision: number
   createdAt?: string
@@ -47,6 +52,11 @@ const toTeachingName = (value: Record<string, unknown>): SecretaryTeachingName =
   reportingPeriodId: String(value.reporting_period_id ?? ''),
   programmeCode: String(value.programme_code ?? ''),
   teachingName: String(value.teaching_name ?? ''),
+  createdByRole: String(value.created_by_role ?? ''),
+  visibilityScope: String(value.visibility_scope ?? ''),
+  originPostingCode: optionalString(value.origin_posting_code),
+  admissionReason: String(value.admission_reason ?? ''),
+  canManageName: Boolean(value.can_manage_name),
   isActive: Boolean(value.is_active),
   revision: toNumber(value.revision, 1),
   createdAt: optionalString(value.created_at),

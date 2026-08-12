@@ -23,6 +23,7 @@ from app.services.pool_event_timing import (
     PoolEventTimingScope,
     sync_pool_event_timings,
 )
+from app.services.reporting_period_status import resolve_explicit_reporting_period
 from app.services.teaching_name_pool import (
     TeachingNamePoolActor,
     _normalised_scope,
@@ -40,6 +41,11 @@ _MAPPING_COLUMNS = """
     name.display_name AS teaching_name,
     name.is_active AS teaching_name_is_active,
     name.revision AS teaching_name_revision,
+    name.programme_code AS teaching_name_owner_programme_code,
+    name.created_by_role AS teaching_name_created_by_role,
+    name.visibility_scope AS teaching_name_visibility_scope,
+    name.origin_posting_code AS teaching_name_origin_posting_code,
+    programme_scope.admission_reason AS teaching_name_admission_reason,
     mapping.reporting_period_id,
     mapping.programme_code,
     mapping.posting_code,
@@ -133,6 +139,23 @@ def _require_actor_scope(
     _raise_forbidden("Forbidden - programme not in admin scope")
 
 
+async def _require_active_mapping_period(
+    db: AsyncSession,
+    *,
+    actor: TeachingNamePoolActor,
+    reporting_period_id: UUID | str,
+) -> None:
+    if actor.kind == "master_admin":
+        return
+    period = await resolve_explicit_reporting_period(
+        db,
+        reporting_period_id=UUID(str(reporting_period_id)),
+        require_effectively_active=True,
+    )
+    if period is None:
+        _raise_validation("Teaching Name mappings are available only for an active reporting period")
+
+
 async def _acquire_scope_lock(
     db: AsyncSession,
     *,
@@ -184,6 +207,19 @@ def _mapping_response(row: dict[str, Any], *, options: list[dict[str, Any]]) -> 
         "teaching_name": row["teaching_name"],
         "teaching_name_is_active": bool(row["teaching_name_is_active"]),
         "teaching_name_revision": int(row["teaching_name_revision"]),
+        "teaching_name_owner_programme_code": row[
+            "teaching_name_owner_programme_code"
+        ],
+        "teaching_name_created_by_role": row["teaching_name_created_by_role"],
+        "teaching_name_visibility_scope": row[
+            "teaching_name_visibility_scope"
+        ],
+        "teaching_name_origin_posting_code": row.get(
+            "teaching_name_origin_posting_code"
+        ),
+        "teaching_name_admission_reason": row[
+            "teaching_name_admission_reason"
+        ],
         "reporting_period_id": row["reporting_period_id"],
         "programme_code": row["programme_code"],
         "posting_code": row["posting_code"],
@@ -258,6 +294,14 @@ async def list_mappings(
     """Return only exact-scope mapping management data and target candidates."""
 
     _require_mapping_read_actor(actor)
+    if actor.kind != "master_admin" and reporting_period_id is None:
+        _raise_validation("reporting_period_id is required")
+    if reporting_period_id is not None:
+        await _require_active_mapping_period(
+            db,
+            actor=actor,
+            reporting_period_id=reporting_period_id,
+        )
     if state not in {None, "pending", "mapped"}:
         _raise_validation("state must be pending or mapped")
     if programme_code is not None:
@@ -297,6 +341,10 @@ async def list_mappings(
         FROM teaching_name_mappings AS mapping
         JOIN teaching_names AS name
           ON name.id = mapping.teaching_name_id
+        JOIN teaching_name_programme_scopes AS programme_scope
+          ON programme_scope.teaching_name_id = mapping.teaching_name_id
+         AND programme_scope.reporting_period_id = mapping.reporting_period_id
+         AND programme_scope.programme_code = mapping.programme_code
         LEFT JOIN teaching_targets AS target
           ON target.id = mapping.teaching_target_id
         LEFT JOIN session_types AS session_type
@@ -362,6 +410,10 @@ async def _mapping_row(
             SELECT {_MAPPING_COLUMNS}
             FROM teaching_name_mappings AS mapping
             JOIN teaching_names AS name ON name.id = mapping.teaching_name_id
+            JOIN teaching_name_programme_scopes AS programme_scope
+              ON programme_scope.teaching_name_id = mapping.teaching_name_id
+             AND programme_scope.reporting_period_id = mapping.reporting_period_id
+             AND programme_scope.programme_code = mapping.programme_code
             LEFT JOIN teaching_targets AS target ON target.id = mapping.teaching_target_id
             LEFT JOIN session_types AS session_type ON session_type.id = target.session_type_id
             WHERE mapping.id = :mapping_id
@@ -438,9 +490,12 @@ async def _mapping_impact_counts(
                     mapping.id,
                     mapping.teaching_name_id,
                     mapping.reporting_period_id,
-                    mapping.programme_code,
+                    mapping.programme_code AS mapping_programme_code,
+                    name.programme_code AS source_programme_code,
                     mapping.posting_code
                 FROM teaching_name_mappings AS mapping
+                JOIN teaching_names AS name
+                  ON name.id = mapping.teaching_name_id
                 WHERE mapping.id = :mapping_id
             ), safe_events AS (
                 SELECT DISTINCT event.id
@@ -448,10 +503,15 @@ async def _mapping_impact_counts(
                 JOIN teaching_events AS event
                   ON event.teaching_name_id = mapping.teaching_name_id
                   AND event.source_reporting_period_id = mapping.reporting_period_id
-                  AND event.source_programme_code = mapping.programme_code
+                  AND event.source_programme_code = mapping.source_programme_code
                   AND event.posting_code = mapping.posting_code
                   AND event.global_session_type_id IS NULL
                   AND event.is_adhoc = false
+                  AND (
+                      event.created_for_programme_code IS NULL
+                      OR event.created_for_programme_code
+                          = mapping.mapping_programme_code
+                  )
             )
             SELECT
                 COUNT(DISTINCT event.id) AS affected_event_count,
@@ -620,6 +680,11 @@ async def get_mapping_impact(
     _require_mapping_read_actor(actor)
     mapping = await _mapping_row(db, mapping_id=mapping_id)
     _require_actor_scope(actor, programme_code=str(mapping["programme_code"]), id_lookup=True)
+    await _require_active_mapping_period(
+        db,
+        actor=actor,
+        reporting_period_id=mapping["reporting_period_id"],
+    )
     _require_revision(mapping, expected_revision)
     if teaching_target_id is not None:
         # Read validation deliberately uses the same exact-scope predicate as apply.
@@ -757,6 +822,11 @@ async def apply_mapping_change(
             reporting_period_id=before_scope["reporting_period_id"],
             programme_code=str(before_scope["programme_code"]),
         )
+        await _require_active_mapping_period(
+            db,
+            actor=actor,
+            reporting_period_id=before_scope["reporting_period_id"],
+        )
         before = await _mapping_row(db, mapping_id=mapping_id, lock=True)
         impact, confirmation_required = await _prepare_locked_change(
             db,
@@ -818,6 +888,10 @@ async def _locked_mappings_for_bulk(
             SELECT {_MAPPING_COLUMNS}
             FROM teaching_name_mappings AS mapping
             JOIN teaching_names AS name ON name.id = mapping.teaching_name_id
+            JOIN teaching_name_programme_scopes AS programme_scope
+              ON programme_scope.teaching_name_id = mapping.teaching_name_id
+             AND programme_scope.reporting_period_id = mapping.reporting_period_id
+             AND programme_scope.programme_code = mapping.programme_code
             LEFT JOIN teaching_targets AS target ON target.id = mapping.teaching_target_id
             LEFT JOIN session_types AS session_type ON session_type.id = target.session_type_id
             WHERE mapping.id = ANY(CAST(:mapping_ids AS uuid[]))
@@ -913,6 +987,12 @@ async def apply_bulk_mapping_changes(
                 db,
                 reporting_period_id=reporting_period_id,
                 programme_code=programme_code,
+            )
+        for row in preflight:
+            await _require_active_mapping_period(
+                db,
+                actor=actor,
+                reporting_period_id=row["reporting_period_id"],
             )
         locked_rows = await _locked_mappings_for_bulk(
             db,

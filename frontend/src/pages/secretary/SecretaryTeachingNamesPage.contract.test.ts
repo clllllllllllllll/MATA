@@ -125,3 +125,10 @@ test('Secretary Teaching Name page keeps mobile and dialog controls accessible',
   assert.match(drawerSource, /requestAnimationFrame/)
   assert.match(drawerSource, /previousActiveElement\.focus\(\)/)
 })
+
+test('native Secretary sees PC-created provenance without receiving lifecycle authority', () => {
+  assert.match(pageSource, /Created by Programme PC/)
+  assert.match(pageSource, /programme-private/)
+  assert.match(pageSource, /!name\.canManageName/)
+  assert.match(pageSource, /read-only for the Department Secretary/)
+})

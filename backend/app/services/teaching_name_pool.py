@@ -25,6 +25,10 @@ from app.services.audit import write_audit_log
 from app.services.database_context import session_uses_rls
 from app.services.teaching_event_locks import acquire_teaching_event_locks
 from app.services.ttf_scope_lock import acquire_ttf_scope_lock
+from app.services.reporting_period_status import resolve_explicit_reporting_period
+from app.services.teaching_name_programme_scopes import (
+    reconcile_teaching_name_programme_scopes,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -46,6 +50,9 @@ _NAME_COLUMNS = """
     reporting_period_id,
     programme_code,
     display_name AS teaching_name,
+    created_by_role,
+    visibility_scope,
+    origin_posting_code,
     is_active,
     revision,
     created_at,
@@ -59,6 +66,9 @@ _LOCKED_NAME_COLUMNS = """
     programme_code,
     display_name AS teaching_name,
     normalized_name,
+    created_by_role,
+    visibility_scope,
+    origin_posting_code,
     is_active,
     revision,
     created_at,
@@ -166,12 +176,52 @@ def _public_snapshot(row: dict[str, Any]) -> dict[str, Any]:
             "reporting_period_id",
             "programme_code",
             "teaching_name",
+            "created_by_role",
+            "visibility_scope",
+            "origin_posting_code",
             "is_active",
             "revision",
             "created_at",
             "updated_at",
             "deactivated_at",
         )
+    }
+
+
+def _actor_can_manage_name(
+    actor: TeachingNamePoolActor,
+    row: dict[str, Any],
+) -> bool:
+    owner_programme = str(row["programme_code"])
+    if actor.kind == "programme_pc":
+        return owner_programme in _normalised_scope(actor.programme_scope)
+    if actor.kind == "secretary":
+        return (
+            row.get("created_by_role") == "secretary"
+            and actor.posting_code is not None
+            and str(row.get("origin_posting_code") or "") == actor.posting_code
+        )
+    return False
+
+
+def _response_row(
+    row: dict[str, Any],
+    *,
+    actor: TeachingNamePoolActor,
+    admission_reason: str | None = None,
+) -> dict[str, Any]:
+    return {
+        **row,
+        "admission_reason": admission_reason
+        or str(
+            row.get("admission_reason")
+            or (
+                "pc_private"
+                if row.get("visibility_scope") == "programme_private"
+                else "owner_programme"
+            )
+        ),
+        "can_manage_name": _actor_can_manage_name(actor, row),
     }
 
 
@@ -246,6 +296,20 @@ async def _require_scope_exists(
     )
     if programme.scalar_one_or_none() is None:
         _raise_validation("programme_code is invalid")
+
+
+async def _require_active_period(
+    db: AsyncSession,
+    *,
+    reporting_period_id: UUID,
+) -> None:
+    period = await resolve_explicit_reporting_period(
+        db,
+        reporting_period_id=reporting_period_id,
+        require_effectively_active=True,
+    )
+    if period is None:
+        _raise_validation("reporting_period_id must be effectively active")
 
 
 async def _secretary_scope_allowed(
@@ -405,6 +469,10 @@ async def _locked_name(
         programme_code=str(payload["programme_code"]),
         scoped_id_lookup=True,
     )
+    if not _actor_can_manage_name(actor, payload) and actor.kind != "master_admin":
+        _raise_forbidden(
+            "Forbidden - only the Teaching Name source owner may change its lifecycle"
+        )
     return payload
 
 
@@ -554,42 +622,84 @@ async def list_teaching_names(
         reporting_period_id=reporting_period_id,
         programme_code=programme_code,
     )
+    await _require_active_period(db, reporting_period_id=reporting_period_id)
     await _require_actor_scope(db, actor=actor, programme_code=programme_code)
-    where = [
-        "reporting_period_id = :reporting_period_id",
-        "programme_code = :programme_code",
-    ]
+    if actor.kind == "secretary":
+        from_sql = """
+            FROM teaching_names AS name
+            JOIN teaching_name_programme_scopes AS scope
+              ON scope.teaching_name_id = name.id
+             AND scope.reporting_period_id = name.reporting_period_id
+             AND scope.programme_code = name.programme_code
+        """
+        where = [
+            "name.reporting_period_id = :reporting_period_id",
+            "name.programme_code = :programme_code",
+            "(name.origin_posting_code = :actor_posting_code OR "
+            "(name.visibility_scope = 'programme_private' AND EXISTS ("
+            "SELECT 1 FROM programmes AS native_programme "
+            "WHERE native_programme.code = name.programme_code "
+            "AND native_programme.native_teaching_posting_code = :actor_posting_code)))",
+        ]
+    else:
+        from_sql = """
+            FROM teaching_name_programme_scopes AS scope
+            JOIN teaching_names AS name
+              ON name.id = scope.teaching_name_id
+             AND name.reporting_period_id = scope.reporting_period_id
+        """
+        where = [
+            "scope.reporting_period_id = :reporting_period_id",
+            "scope.programme_code = :programme_code",
+        ]
     params: dict[str, Any] = {
         "reporting_period_id": str(reporting_period_id),
         "programme_code": programme_code,
         "limit": limit,
         "offset": offset,
+        "actor_posting_code": actor.posting_code,
     }
     if is_active is not None:
-        where.append("is_active = :is_active")
+        where.append("name.is_active = :is_active")
         params["is_active"] = is_active
     if search is not None and search.strip():
-        where.append("display_name ILIKE :search")
+        where.append("name.display_name ILIKE :search")
         params["search"] = f"%{search.strip()}%"
     predicate = " AND ".join(where)
     rows_result = await db.execute(
         text(
             f"""
-            SELECT {_NAME_COLUMNS}
-            FROM teaching_names
+            SELECT
+                name.id,
+                name.reporting_period_id,
+                name.programme_code,
+                name.display_name AS teaching_name,
+                name.created_by_role,
+                name.visibility_scope,
+                name.origin_posting_code,
+                scope.admission_reason,
+                name.is_active,
+                name.revision,
+                name.created_at,
+                name.updated_at,
+                name.deactivated_at
+            {from_sql}
             WHERE {predicate}
-            ORDER BY display_name ASC, id ASC
+            ORDER BY name.display_name ASC, name.id ASC
             LIMIT :limit OFFSET :offset
             """
         ),
         params,
     )
     count_result = await db.execute(
-        text(f"SELECT COUNT(*) FROM teaching_names WHERE {predicate}"),
+        text(f"SELECT COUNT(*) {from_sql} WHERE {predicate}"),
         params,
     )
     return {
-        "items": [dict(row) for row in rows_result.mappings().all()],
+        "items": [
+            _response_row(dict(row), actor=actor)
+            for row in rows_result.mappings().all()
+        ],
         "total": int(count_result.scalar_one()),
         "limit": limit,
         "offset": offset,
@@ -619,6 +729,7 @@ async def create_teaching_name(
             reporting_period_id=reporting_period_id,
             programme_code=programme_code,
         )
+        await _require_active_period(db, reporting_period_id=reporting_period_id)
         created_result = await db.execute(
             text(
                 f"""
@@ -627,6 +738,9 @@ async def create_teaching_name(
                     programme_code,
                     display_name,
                     normalized_name,
+                    created_by_role,
+                    visibility_scope,
+                    origin_posting_code,
                     created_by_user_id,
                     updated_by_user_id
                 )
@@ -635,6 +749,9 @@ async def create_teaching_name(
                     :programme_code,
                     :display_name,
                     :normalized_name,
+                    :created_by_role,
+                    :visibility_scope,
+                    :origin_posting_code,
                     :actor_user_id,
                     :actor_user_id
                 )
@@ -647,9 +764,23 @@ async def create_teaching_name(
                 "display_name": display_name,
                 "normalized_name": normalized_name,
                 "actor_user_id": str(actor.user_id),
+                "created_by_role": actor.kind,
+                "visibility_scope": (
+                    "department_shared"
+                    if actor.kind == "secretary"
+                    else "programme_private"
+                ),
+                "origin_posting_code": (
+                    actor.posting_code if actor.kind == "secretary" else None
+                ),
             },
         )
         created = dict(created_result.mappings().one())
+        scope_counts = await reconcile_teaching_name_programme_scopes(
+            db,
+            reporting_period_id=reporting_period_id,
+            programme_code=programme_code,
+        )
         data_revalidation = await data_revalidation_service.revalidate_after_config_change(
             context=_revalidation_context(
                 actor=actor,
@@ -666,7 +797,10 @@ async def create_teaching_name(
             before=None,
             after=created,
             data_revalidation=data_revalidation,
-            metadata={"pending_mappings_reconciled_by_trigger": True},
+            metadata={
+                "programme_scopes_created": scope_counts["programme_scopes_created"],
+                "pending_mappings_created": scope_counts["pending_mappings_created"],
+            },
         )
         await db.commit()
     except IntegrityError as exc:
@@ -683,7 +817,10 @@ async def create_teaching_name(
         await db.rollback()
         raise
     _invalidate_after_commit(row=created)
-    return {**created, "data_revalidation": data_revalidation}
+    return {
+        **_response_row(created, actor=actor),
+        "data_revalidation": data_revalidation,
+    }
 
 
 async def update_teaching_name(
@@ -757,7 +894,10 @@ async def update_teaching_name(
         await db.rollback()
         raise
     _invalidate_after_commit(row=updated)
-    return {**updated, "data_revalidation": data_revalidation}
+    return {
+        **_response_row(updated, actor=actor),
+        "data_revalidation": data_revalidation,
+    }
 
 
 async def deactivate_teaching_name(
@@ -820,7 +960,10 @@ async def deactivate_teaching_name(
         await db.rollback()
         raise
     _invalidate_after_commit(row=updated)
-    return {**updated, "data_revalidation": data_revalidation}
+    return {
+        **_response_row(updated, actor=actor),
+        "data_revalidation": data_revalidation,
+    }
 
 
 async def reactivate_teaching_name(
@@ -866,6 +1009,11 @@ async def reactivate_teaching_name(
         if updated_row is None:
             _raise_conflict("Teaching Name has changed; refresh and retry")
         updated = dict(updated_row)
+        scope_counts = await reconcile_teaching_name_programme_scopes(
+            db,
+            reporting_period_id=updated["reporting_period_id"],
+            programme_code=str(updated["programme_code"]),
+        )
         data_revalidation = await data_revalidation_service.revalidate_after_config_change(
             context=_revalidation_context(
                 actor=actor,
@@ -882,14 +1030,20 @@ async def reactivate_teaching_name(
             before=before,
             after=updated,
             data_revalidation=data_revalidation,
-            metadata={"pending_mappings_reconciled_by_trigger": True},
+            metadata={
+                "programme_scopes_created": scope_counts["programme_scopes_created"],
+                "pending_mappings_created": scope_counts["pending_mappings_created"],
+            },
         )
         await db.commit()
     except Exception:
         await db.rollback()
         raise
     _invalidate_after_commit(row=updated)
-    return {**updated, "data_revalidation": data_revalidation}
+    return {
+        **_response_row(updated, actor=actor),
+        "data_revalidation": data_revalidation,
+    }
 
 
 async def _locked_event_ids(

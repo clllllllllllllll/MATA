@@ -21,6 +21,7 @@ class PoolEventRYearTiming:
     r_year: str
     duration_hours: Decimal
     is_mapped: bool
+    programme_code: str | None = None
     teaching_target_id: UUID | None = None
     session_type_id: UUID | None = None
     session_type_name: str | None = None
@@ -55,6 +56,7 @@ def pool_event_timing_payload(timing: PoolEventTiming) -> dict[str, object]:
         "r_year_durations": [
             {
                 "r_year": row.r_year,
+                "programme_code": row.programme_code,
                 "duration_hours": row.duration_hours,
                 "is_mapped": row.is_mapped,
                 "session_type_id": row.session_type_id,
@@ -80,7 +82,9 @@ def _missing_r_year_mapping_error(*, posting_code: str, r_year: str) -> ApiError
 def _timing_envelope(
     rows: Iterable[PoolEventRYearTiming],
 ) -> PoolEventTiming:
-    r_year_timings = tuple(sorted(rows, key=lambda timing: timing.r_year))
+    r_year_timings = tuple(
+        sorted(rows, key=lambda timing: (timing.programme_code or "", timing.r_year))
+    )
     if not r_year_timings:
         return PoolEventTiming(
             duration_hours=DEFAULT_POOL_EVENT_DURATION_HOURS,
@@ -153,6 +157,7 @@ async def resolve_pool_event_timing(
     return _timing_envelope(
         PoolEventRYearTiming(
             r_year=str(row["r_year"]),
+            programme_code=scope.programme_code,
             duration_hours=(
                 Decimal(str(row["duration_hours"]))
                 if row.get("duration_hours") is not None
@@ -221,6 +226,7 @@ async def resolve_pool_event_r_year_timing(
         )
     return PoolEventRYearTiming(
         r_year=str(row["r_year"]),
+        programme_code=scope.programme_code,
         duration_hours=(
             Decimal(str(row["duration_hours"]))
             if row.get("duration_hours") is not None
@@ -246,7 +252,7 @@ async def list_pool_event_timings(
     *,
     teaching_name_ids: Sequence[UUID | str],
     reporting_period_id: UUID | str,
-    programme_code: str,
+    programme_code: str | None,
     posting_code: str | None = None,
 ) -> dict[tuple[str, str], PoolEventTiming]:
     """Resolve all persisted name/posting scopes in one bounded query."""
@@ -272,6 +278,7 @@ async def list_pool_event_timings(
             /* pool_event_timing:list */
             SELECT
                 mapping.teaching_name_id,
+                mapping.programme_code,
                 mapping.posting_code,
                 mapping.r_year,
                 mapping.teaching_target_id,
@@ -285,7 +292,10 @@ async def list_pool_event_timings(
               ON session_type.id = target.session_type_id
             WHERE mapping.teaching_name_id = ANY(CAST(:teaching_name_ids AS uuid[]))
               AND mapping.reporting_period_id = :reporting_period_id
-              AND mapping.programme_code = :programme_code
+              AND (
+                  CAST(:programme_code AS text) IS NULL
+                  OR mapping.programme_code = CAST(:programme_code AS text)
+              )
               AND (
                   CAST(:posting_code AS text) IS NULL
                   OR mapping.posting_code = CAST(:posting_code AS text)
@@ -308,6 +318,11 @@ async def list_pool_event_timings(
         timings_by_scope[key].append(
             PoolEventRYearTiming(
                 r_year=str(row["r_year"]),
+                programme_code=(
+                    str(row["programme_code"])
+                    if row.get("programme_code") is not None
+                    else programme_code
+                ),
                 duration_hours=(
                     Decimal(str(row["duration_hours"]))
                     if row.get("duration_hours") is not None
@@ -343,34 +358,38 @@ async def with_staff_pool_event_timings(
 
     enriched_rows = [dict(row) for row in rows]
     teaching_names_by_scope: defaultdict[
-        tuple[str, str, str], set[str]
+        tuple[str, str | None, str], set[str]
     ] = defaultdict(set)
     for row in enriched_rows:
         teaching_name_id = row.get("teaching_name_id")
         reporting_period_id = row.get("source_reporting_period_id")
-        programme_code = row.get("source_programme_code")
+        programme_code = row.get("created_for_programme_code")
         posting_code = row.get("posting_code")
         if (
             teaching_name_id is None
             or reporting_period_id is None
-            or programme_code is None
             or posting_code is None
         ):
             continue
         teaching_names_by_scope[
             (
                 str(reporting_period_id),
-                str(programme_code),
+                str(programme_code) if programme_code is not None else None,
                 str(posting_code),
             )
         ].add(str(teaching_name_id))
 
-    timings_by_full_scope: dict[tuple[str, str, str, str], PoolEventTiming] = {}
+    timings_by_full_scope: dict[
+        tuple[str, str | None, str, str], PoolEventTiming
+    ] = {}
     for (
         reporting_period_id,
         programme_code,
         posting_code,
-    ), teaching_name_ids in sorted(teaching_names_by_scope.items()):
+    ), teaching_name_ids in sorted(
+        teaching_names_by_scope.items(),
+        key=lambda item: (item[0][0], item[0][1] or "", item[0][2]),
+    ):
         timings = await list_pool_event_timings(
             db,
             teaching_name_ids=sorted(teaching_name_ids),
@@ -394,7 +413,11 @@ async def with_staff_pool_event_timings(
         timing = timings_by_full_scope.get(
             (
                 str(row.get("source_reporting_period_id")),
-                str(row.get("source_programme_code")),
+                (
+                    str(row.get("created_for_programme_code"))
+                    if row.get("created_for_programme_code") is not None
+                    else None
+                ),
                 str(row.get("teaching_name_id")),
                 str(row.get("posting_code")),
             )
@@ -432,7 +455,7 @@ async def sync_pool_event_timings(
         )
         timing = await resolve_pool_event_timing(db, scope=scope)
         duration_seconds = int(timing.duration_hours * Decimal("3600"))
-        result = await db.execute(
+        pc_result = await db.execute(
             text(
                 """
                 /* pool_event_timing:sync */
@@ -444,8 +467,8 @@ async def sync_pool_event_timings(
                     updated_at = now()
                 WHERE teaching_name_id = :teaching_name_id
                   AND source_reporting_period_id = :reporting_period_id
-                  AND source_programme_code = :programme_code
                   AND posting_code = :posting_code
+                  AND created_for_programme_code = :programme_code
                   AND global_session_type_id IS NULL
                   AND is_adhoc = false
                   AND (
@@ -465,7 +488,77 @@ async def sync_pool_event_timings(
                 "duration_seconds": duration_seconds,
             },
         )
-        updated_count += max(int(result.rowcount or 0), 0)
+        updated_count += max(int(pc_result.rowcount or 0), 0)
+
+        if bool(getattr(db, "info", {}).get(RLS_ENABLED_INFO_KEY, False)):
+            secretary_result = await db.execute(
+                text(
+                    """
+                    SELECT mata_rls.sync_secretary_pool_event_timing(
+                        CAST(:teaching_name_id AS uuid),
+                        CAST(:reporting_period_id AS uuid),
+                        CAST(:programme_code AS text),
+                        CAST(:posting_code AS text)
+                    )
+                    """
+                ),
+                {
+                    "teaching_name_id": teaching_name_id,
+                    "reporting_period_id": reporting_period_id,
+                    "programme_code": programme_code,
+                    "posting_code": posting_code,
+                },
+            )
+            updated_count += max(int(secretary_result.scalar_one() or 0), 0)
+            continue
+
+        secretary_timing = await list_pool_event_timings(
+            db,
+            teaching_name_ids=[teaching_name_id],
+            reporting_period_id=reporting_period_id,
+            programme_code=None,
+            posting_code=posting_code,
+        )
+        aggregate = secretary_timing.get((teaching_name_id, posting_code))
+        if aggregate is None:
+            aggregate = PoolEventTiming(
+                duration_hours=DEFAULT_POOL_EVENT_DURATION_HOURS,
+                is_mapped=False,
+            )
+        aggregate_seconds = int(aggregate.duration_hours * Decimal("3600"))
+        secretary_result = await db.execute(
+            text(
+                """
+                /* pool_event_timing:sync_secretary_envelope */
+                UPDATE teaching_events
+                SET duration_hours = :duration_hours,
+                    end_time = (
+                        start_time + make_interval(secs => :duration_seconds)
+                    )::time,
+                    updated_at = now()
+                WHERE teaching_name_id = :teaching_name_id
+                  AND source_reporting_period_id = :reporting_period_id
+                  AND posting_code = :posting_code
+                  AND created_for_programme_code IS NULL
+                  AND global_session_type_id IS NULL
+                  AND is_adhoc = false
+                  AND (
+                      duration_hours IS DISTINCT FROM :duration_hours
+                      OR end_time IS DISTINCT FROM (
+                          start_time + make_interval(secs => :duration_seconds)
+                      )::time
+                  )
+                """
+            ),
+            {
+                "teaching_name_id": teaching_name_id,
+                "reporting_period_id": reporting_period_id,
+                "posting_code": posting_code,
+                "duration_hours": aggregate.duration_hours,
+                "duration_seconds": aggregate_seconds,
+            },
+        )
+        updated_count += max(int(secretary_result.rowcount or 0), 0)
     return updated_count
 
 

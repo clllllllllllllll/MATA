@@ -468,7 +468,7 @@ The SSR (Sub-Specialty Registrar) sheet has a different structure: MCR, Name, SI
 8. Compute and store `working_days_in_month` per row
 9. Call `hibernate_stale_surplus()` after insert. This only updates lifecycle state; it does not carry a stored balance into attendance. On the next compliance read, recompute each ledger value as `max(cumulative raw eligible attendance - cumulative target_100, 0)` and replace it idempotently before tag reallocation.
 
-### Planned Phase V RDB effect on Teaching Name admission
+### Phase V RDB effect on Teaching Name admission
 
 The RDB remains the sole evidence that a native programme has an actual
 Resident posting at another department during a reporting period. After a

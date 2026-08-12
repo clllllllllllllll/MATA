@@ -219,6 +219,7 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
     boundary_teaching_name_id = uuid4()
     period_id = uuid4()
     session_type_id = uuid4()
+    target_id = uuid4()
     event_date = date(2090, 1, 3)
 
     events: dict[UUID, dict[str, Any]] = {
@@ -484,24 +485,29 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
                     """
                     INSERT INTO teaching_names (
                         id, reporting_period_id, programme_code, display_name,
-                        normalized_name, is_active
+                        normalized_name, is_active, created_by_role,
+                        visibility_scope, origin_posting_code
                     )
                     VALUES
                         (
                             :first_id, :period_id, :programme_code,
-                            :first_keyword, :first_normalized_name, true
+                            :first_keyword, :first_normalized_name, true,
+                            'secretary', 'department_shared', :posting_code
                         ),
                         (
                             :second_id, :period_id, :programme_code,
-                            :second_keyword, :second_normalized_name, true
+                            :second_keyword, :second_normalized_name, true,
+                            'secretary', 'department_shared', :posting_code
                         ),
                         (
                             :next_day_id, :period_id, :programme_code,
-                            :next_day_keyword, :next_day_normalized_name, true
+                            :next_day_keyword, :next_day_normalized_name, true,
+                            'secretary', 'department_shared', :posting_code
                         ),
                         (
                             :boundary_id, :period_id, :programme_code,
-                            :boundary_keyword, :boundary_normalized_name, true
+                            :boundary_keyword, :boundary_normalized_name, true,
+                            'secretary', 'department_shared', :posting_code
                         )
                     """
                 ),
@@ -524,6 +530,74 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
                     ].lower(),
                     "programme_code": programme_code,
                     "period_id": period_id,
+                    "posting_code": posting_code,
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_programme_scopes (
+                        teaching_name_id, reporting_period_id, programme_code,
+                        admission_reason
+                    )
+                    SELECT id, reporting_period_id, programme_code,
+                           'owner_programme'
+                    FROM teaching_names
+                    WHERE id = ANY(CAST(:teaching_name_ids AS uuid[]))
+                    """
+                ),
+                {
+                    "teaching_name_ids": [
+                        first_teaching_name_id,
+                        second_teaching_name_id,
+                        next_day_overlap_teaching_name_id,
+                        boundary_teaching_name_id,
+                    ]
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO teaching_targets (
+                        id, reporting_period_id, programme_code, r_year,
+                        posting_code, session_type_id, monthly_target, is_tracked
+                    )
+                    VALUES (
+                        :id, :period_id, :programme_code, 'ALL',
+                        :posting_code, :session_type_id, 1, true
+                    )
+                    """
+                ),
+                {
+                    "id": target_id,
+                    "period_id": period_id,
+                    "programme_code": programme_code,
+                    "posting_code": posting_code,
+                    "session_type_id": session_type_id,
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_mappings (
+                        teaching_name_id, reporting_period_id, programme_code,
+                        posting_code, r_year, teaching_target_id
+                    )
+                    SELECT id, reporting_period_id, programme_code,
+                           :posting_code, 'ALL', :target_id
+                    FROM teaching_names
+                    WHERE id = ANY(CAST(:teaching_name_ids AS uuid[]))
+                    """
+                ),
+                {
+                    "teaching_name_ids": [
+                        first_teaching_name_id,
+                        second_teaching_name_id,
+                        next_day_overlap_teaching_name_id,
+                        boundary_teaching_name_id,
+                    ],
+                    "posting_code": posting_code,
+                    "target_id": target_id,
                 },
             )
             for event in events.values():
@@ -778,6 +852,10 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
             await connection.execute(
                 text("DELETE FROM residents WHERE id = :resident_id"),
                 {"resident_id": resident_id},
+            )
+            await connection.execute(
+                text("DELETE FROM teaching_targets WHERE id = :target_id"),
+                {"target_id": target_id},
             )
             await connection.execute(
                 text("DELETE FROM session_types WHERE id = :session_type_id"),

@@ -183,6 +183,9 @@ class FakeSecretarySession:
                 "display_name": row["keyword"],
                 "programme_code": row["programme_code"],
                 "reporting_period_id": self.reporting_period_id,
+                "created_by_role": "secretary",
+                "visibility_scope": "department_shared",
+                "origin_posting_code": row["posting_code"],
                 "is_active": True,
             }
             for row in self.source_specs
@@ -515,6 +518,9 @@ class FakeSecretarySession:
                     "reporting_period_id": row["reporting_period_id"],
                     "programme_code": row["programme_code"],
                     "teaching_name": row["display_name"],
+                    "created_by_role": row["created_by_role"],
+                    "visibility_scope": row["visibility_scope"],
+                    "origin_posting_code": row["origin_posting_code"],
                     "is_active": row["is_active"],
                 }
                 for row in self.teaching_names
@@ -556,6 +562,7 @@ class FakeSecretarySession:
                     rows.append(
                         {
                             "r_year": "R2",
+                            "programme_code": teaching_name["programme_code"],
                             "teaching_target_id": source["session_type_id"],
                             "session_type_id": source["session_type_id"],
                             "session_type_name": source["session_type"],
@@ -580,6 +587,7 @@ class FakeSecretarySession:
                         "teaching_name_id": teaching_name["id"],
                         "posting_code": source["posting_code"],
                         "r_year": "R2",
+                        "programme_code": teaching_name["programme_code"],
                         "teaching_target_id": source["session_type_id"],
                         "session_type_id": source["session_type_id"],
                         "session_type_name": source["session_type"],
@@ -596,6 +604,9 @@ class FakeSecretarySession:
                     "keyword": name["display_name"],
                     "teaching_name": name["display_name"],
                     "programme_code": name["programme_code"],
+                    "created_by_role": name["created_by_role"],
+                    "visibility_scope": name["visibility_scope"],
+                    "origin_posting_code": name["origin_posting_code"],
                     "duration_hours": Decimal("1.0"),
                     "is_global": False,
                 }
@@ -1461,7 +1472,7 @@ def test_create_event_rejects_display_teaching_name() -> None:
     assert response.status_code == 422
 
 
-def test_multi_capability_secretary_cannot_switch_event_source_programme() -> None:
+def test_multi_capability_secretary_cannot_use_another_department_source() -> None:
     fake_db = FakeSecretarySession()
     fake_db.secretary_programme_pools.append(
         {
@@ -1485,7 +1496,7 @@ def test_multi_capability_secretary_cannot_switch_event_source_programme() -> No
         },
     )
 
-    assert response.status_code == 409
+    assert response.status_code == 422
     assert source_event == before
 
 
@@ -1692,6 +1703,9 @@ def test_teaching_name_options_do_not_leak_from_future_period() -> None:
             "display_name": "Future Test Teaching",
             "programme_code": "CARD",
             "reporting_period_id": future_period_id,
+            "created_by_role": "secretary",
+            "visibility_scope": "department_shared",
+            "origin_posting_code": "TTSHCardio",
             "is_active": True,
         }
     )

@@ -257,6 +257,7 @@ async def teaching_name_options(
                     "r_year_durations": [
                         {
                             "r_year": r_year_timing.r_year,
+                            "programme_code": r_year_timing.programme_code,
                             "duration_hours": r_year_timing.duration_hours,
                             "is_mapped": r_year_timing.is_mapped,
                             "session_type_id": r_year_timing.session_type_id,

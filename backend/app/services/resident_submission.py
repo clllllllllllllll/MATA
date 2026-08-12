@@ -140,7 +140,6 @@ def _resolve_scheduled_event_source(
             global_session_type_id is not None
             or programme_code is None
             or str(source_reporting_period_id) != str(reporting_period_id)
-            or str(source_programme_code) != str(programme_code)
         ):
             return None
         return {

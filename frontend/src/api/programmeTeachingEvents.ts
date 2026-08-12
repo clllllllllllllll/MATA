@@ -54,6 +54,7 @@ export interface ProgrammeTeachingPostingDuration {
 
 export interface ProgrammeTeachingRYearDuration {
   rYear: string
+  programmeCode?: string
   durationHours: number
   isMapped: boolean
   sessionTypeId?: string
@@ -135,6 +136,7 @@ const toTeachingEvent = (value: Record<string, unknown>): ProgrammeTeachingEvent
         ))
         .map((entry) => ({
           rYear: String(entry.r_year ?? ''),
+          programmeCode: optionalString(entry.programme_code),
           durationHours: toNumber(entry.duration_hours) ?? 1,
           isMapped: Boolean(entry.is_mapped),
           sessionTypeId: optionalString(entry.session_type_id),
@@ -192,6 +194,7 @@ const toTeachingNameOption = (value: Record<string, unknown>): ProgrammeTeaching
                   ))
                   .map((timing) => ({
                     rYear: String(timing.r_year ?? ''),
+                    programmeCode: optionalString(timing.programme_code),
                     durationHours: toNumber(timing.duration_hours) ?? 1,
                     isMapped: Boolean(timing.is_mapped),
                     sessionTypeId: optionalString(timing.session_type_id),

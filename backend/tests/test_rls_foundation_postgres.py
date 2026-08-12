@@ -87,7 +87,14 @@ RUNTIME_ONLY_FUNCTIONS = frozenset(
         ),
         "mata_rls.scheduled_event_source_scope(uuid)",
         "mata_rls.resolve_native_teaching_target(uuid,uuid)",
+        "mata_rls.resolve_native_teaching_target_v2(uuid,uuid)",
         "mata_rls.resolve_staff_pool_event_timings(uuid[],uuid,text,text)",
+        (
+            "mata_rls.reconcile_ttf_teaching_name_mappings_v2("
+            "uuid,text,uuid[],text[],text[])"
+        ),
+        "mata_rls.reconcile_teaching_name_programme_scopes(uuid,text)",
+        "mata_rls.sync_secretary_pool_event_timing(uuid,uuid,text,text)",
         "mata_rls.update_own_staff_actor_name(text)",
         "mata_rls.reporting_period_dependency_counts(uuid)",
         "mata_rls.hibernate_stale_surplus(uuid)",
@@ -273,6 +280,25 @@ FINAL_AJ_RETIRED_PRIVATE_FUNCTIONS = frozenset(
         "mata_private.can_submit_external_attendance_000027(uuid,uuid)",
     }
 )
+PHASE_V_PRIVATE_FUNCTIONS = frozenset(
+    {
+        (
+            "mata_private.can_select_cross_programme_secretary_event("
+            "uuid,text,date,text,uuid,text,uuid)"
+        )
+    }
+)
+PHASE_V_RETIRED_PRIVATE_FUNCTIONS = frozenset(
+    {"mata_private.reconcile_teaching_name_pending_mappings()"}
+)
+PHASE_V_RETIRED_RUNTIME_FUNCTIONS = frozenset(
+    {
+        (
+            "mata_rls.reconcile_ttf_teaching_name_mappings("
+            "uuid,text,uuid[],text[],text[])"
+        )
+    }
+)
 
 _INSTALL_CONTEXT_SQL = text(
     """
@@ -349,6 +375,8 @@ POLICY_CUTOVER_REVISIONS = frozenset(
         "20260805_000037",
         "20260806_000038",
         "20260812_000039",
+        "20260812_000040",
+        "20260813_000041",
     }
 )
 FINAL_AJ_CUTOVER_REVISIONS = frozenset(
@@ -357,6 +385,8 @@ FINAL_AJ_CUTOVER_REVISIONS = frozenset(
         "20260805_000037",
         "20260806_000038",
         "20260812_000039",
+        "20260812_000040",
+        "20260813_000041",
     }
 )
 SESSION_LIFECYCLE_REVISIONS = frozenset(
@@ -374,6 +404,8 @@ SESSION_LIFECYCLE_REVISIONS = frozenset(
         "20260805_000037",
         "20260806_000038",
         "20260812_000039",
+        "20260812_000040",
+        "20260813_000041",
     }
 )
 
@@ -2002,9 +2034,15 @@ async def test_foundation_function_acls_search_paths_and_table_denials_are_exact
         }
         policy_helper_functions = POLICY_HELPER_FUNCTIONS
         private_functions = PRIVATE_FUNCTIONS
+        runtime_only_functions = RUNTIME_ONLY_FUNCTIONS
         if harness.revision in FINAL_AJ_CUTOVER_REVISIONS:
             policy_helper_functions -= FINAL_AJ_RETIRED_POLICY_HELPER_FUNCTIONS
             private_functions -= FINAL_AJ_RETIRED_PRIVATE_FUNCTIONS
+        if harness.revision in {"20260812_000040", "20260813_000041"}:
+            private_functions = (
+                private_functions - PHASE_V_RETIRED_PRIVATE_FUNCTIONS
+            ) | PHASE_V_PRIVATE_FUNCTIONS
+            runtime_only_functions -= PHASE_V_RETIRED_RUNTIME_FUNCTIONS
         expected_public_helpers = (
             RUNTIME_ONLY_FUNCTIONS
             | AUTH_ONLY_FUNCTIONS
@@ -2021,9 +2059,13 @@ async def test_foundation_function_acls_search_paths_and_table_denials_are_exact
         assert all(row["authenticated_execute"] is False for row in functions)
         assert all(row["service_role_execute"] is False for row in functions)
 
-        for signature in RUNTIME_ONLY_FUNCTIONS:
+        for signature in runtime_only_functions:
             row = by_signature[signature]
-            assert row["runtime_execute"] is True
+            assert row["runtime_execute"] is True, signature
+            assert row["auth_execute"] is False
+        for signature in PHASE_V_RETIRED_RUNTIME_FUNCTIONS:
+            row = by_signature[signature]
+            assert row["runtime_execute"] is False
             assert row["auth_execute"] is False
 
         for signature in AUTH_ONLY_FUNCTIONS:

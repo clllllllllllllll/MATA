@@ -107,7 +107,7 @@ _RESOLVE_NATIVE_TEACHING_TARGET_SQL = text(
         mapping_revision,
         teaching_target_id,
         session_type_id
-    FROM mata_rls.resolve_native_teaching_target(
+    FROM mata_rls.resolve_native_teaching_target_v2(
         :resident_id,
         :event_id
     )

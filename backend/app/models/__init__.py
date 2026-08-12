@@ -32,6 +32,7 @@ from app.models.teaching import (
     TeachingEvent,
     TeachingName,
     TeachingNameMapping,
+    TeachingNameProgrammeScope,
     TeachingTarget,
 )
 
@@ -66,6 +67,7 @@ __all__ = [
     "TeachingEvent",
     "TeachingName",
     "TeachingNameMapping",
+    "TeachingNameProgrammeScope",
     "TeachingTarget",
     "UploadLog",
     "UploadWarning",

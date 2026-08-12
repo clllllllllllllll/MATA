@@ -40,6 +40,11 @@ const filterValue = (filter: LifecycleFilter): boolean | undefined => {
   return undefined
 }
 
+const sourceLabel = (name: SecretaryTeachingName): string =>
+  name.visibilityScope === 'programme_private'
+    ? 'Created by Programme PC · programme-private'
+    : `Created by Department Secretary${name.originPostingCode ? ` · ${name.originPostingCode}` : ''}`
+
 export const SecretaryTeachingNamesPage = () => {
   const {
     reportingPeriodId,
@@ -247,6 +252,11 @@ export const SecretaryTeachingNamesPage = () => {
   }
 
   const openEditDrawer = (name: SecretaryTeachingName) => {
+    if (!name.canManageName) {
+      setFeedbackTone('warning')
+      setFeedback('This PC-created name is visible for scheduling but its lifecycle is managed by the Programme PC.')
+      return
+    }
     clearFeedback()
     setDrawerMode('edit')
     setEditingName(name)
@@ -330,6 +340,11 @@ export const SecretaryTeachingNamesPage = () => {
     name: SecretaryTeachingName,
     action: 'deactivate' | 'reactivate' | 'delete',
   ) => {
+    if (!name.canManageName) {
+      setFeedbackTone('warning')
+      setFeedback('This PC-created name is read-only for the Department Secretary.')
+      return
+    }
     clearFeedback()
     setMutatingNameId(name.id)
     const requestedScopeKey = selectedScopeRef.current
@@ -564,7 +579,10 @@ export const SecretaryTeachingNamesPage = () => {
                     const isMutating = mutatingNameId === name.id
                     return (
                       <tr key={name.id}>
-                        <td className="secretary-teaching-name safe-wrap">{name.teachingName}</td>
+                        <td className="secretary-teaching-name safe-wrap">
+                          <strong>{name.teachingName}</strong>
+                          <div className="inline-muted">{sourceLabel(name)}</div>
+                        </td>
                         <td className="mono">{name.programmeCode}</td>
                         <td>{selectedPeriod?.label ?? name.reportingPeriodId}</td>
                         <td>
@@ -575,12 +593,12 @@ export const SecretaryTeachingNamesPage = () => {
                         <td className="mono">{name.revision}</td>
                         <td>
                           <div className="secretary-teaching-names-actions">
-                            <button type="button" className="button button-ghost" onClick={() => openEditDrawer(name)} disabled={isMutating}>Rename</button>
+                            <button type="button" className="button button-ghost" onClick={() => openEditDrawer(name)} disabled={isMutating || !name.canManageName}>Rename</button>
                             <button
                               type="button"
                               className="button button-ghost"
                               onClick={() => void runLifecycleAction(name, name.isActive ? 'deactivate' : 'reactivate')}
-                              disabled={isMutating}
+                              disabled={isMutating || !name.canManageName}
                             >
                               {name.isActive ? 'Deactivate' : 'Reactivate'}
                             </button>
@@ -588,7 +606,7 @@ export const SecretaryTeachingNamesPage = () => {
                               type="button"
                               className="button button-ghost danger"
                               onClick={() => void runLifecycleAction(name, 'delete')}
-                              disabled={isMutating}
+                              disabled={isMutating || !name.canManageName}
                             >
                               Delete
                             </button>
@@ -615,14 +633,15 @@ export const SecretaryTeachingNamesPage = () => {
                       {name.isActive ? 'Active' : 'Inactive'}
                     </span>
                   </div>
+                  <p>{sourceLabel(name)}</p>
                   <p>{name.programmeCode} · {selectedPeriod?.label ?? name.reportingPeriodId} · Revision {name.revision}</p>
                   <div className="secretary-teaching-names-mobile-actions">
-                    <button type="button" className="button button-secondary" onClick={() => openEditDrawer(name)} disabled={isMutating}>Rename</button>
+                    <button type="button" className="button button-secondary" onClick={() => openEditDrawer(name)} disabled={isMutating || !name.canManageName}>Rename</button>
                     <button
                       type="button"
                       className="button button-secondary"
                       onClick={() => void runLifecycleAction(name, name.isActive ? 'deactivate' : 'reactivate')}
-                      disabled={isMutating}
+                      disabled={isMutating || !name.canManageName}
                     >
                       {name.isActive ? 'Deactivate' : 'Reactivate'}
                     </button>
@@ -630,7 +649,7 @@ export const SecretaryTeachingNamesPage = () => {
                       type="button"
                       className="button button-ghost danger"
                       onClick={() => void runLifecycleAction(name, 'delete')}
-                      disabled={isMutating}
+                      disabled={isMutating || !name.canManageName}
                     >
                       Delete
                     </button>

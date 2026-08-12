@@ -73,6 +73,9 @@ def _secretary_session(
             "display_name": _pool_name(expectation, "secretary"),
             "programme_code": expectation.code,
             "reporting_period_id": session.reporting_period_id,
+            "created_by_role": "secretary",
+            "visibility_scope": "department_shared",
+            "origin_posting_code": posting_code,
             "is_active": True,
         }
     ]

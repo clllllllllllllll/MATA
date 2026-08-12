@@ -84,6 +84,23 @@ const mappingActionLabel = (mapping: ProgrammePcTeachingNameMapping, targetId: s
 const impactSummary = (impact: TeachingNameMappingImpact): string =>
   `${impact.affectedEventCount} event${impact.affectedEventCount === 1 ? '' : 's'} and ${impact.affectedAttendanceCount} attendance record${impact.affectedAttendanceCount === 1 ? '' : 's'}`
 
+const mappingSourceLabel = (mapping: ProgrammePcTeachingNameMapping): string => {
+  if (mapping.teachingNameVisibilityScope === 'programme_private') {
+    return `PC-created for ${mapping.teachingNameOwnerProgrammeCode}`
+  }
+  return `Secretary source: ${mapping.teachingNameOwnerProgrammeCode}${mapping.teachingNameOriginPostingCode ? ` / ${mapping.teachingNameOriginPostingCode}` : ''}`
+}
+
+const teachingNameSourceLabel = (name: ProgrammePcTeachingName): string => {
+  if (name.visibilityScope === 'programme_private') {
+    return 'PC-created · private to this programme'
+  }
+  if (name.admissionReason === 'resident_host_posting') {
+    return `Host Secretary: ${name.programmeCode}${name.originPostingCode ? ` / ${name.originPostingCode}` : ''}`
+  }
+  return `Native Secretary${name.originPostingCode ? ` · ${name.originPostingCode}` : ''}`
+}
+
 export const PcSessionTypesPage = () => {
   const {
     reportingPeriodId,
@@ -712,6 +729,11 @@ export const PcSessionTypesPage = () => {
   }
 
   const openNameDrawer = (mode: NameDrawerMode, name?: ProgrammePcTeachingName) => {
+    if (mode === 'edit' && name && !name.canManageName) {
+      setNameFeedbackTone('warning')
+      setNameFeedback('This host department name is read-only. You can map it for your programme, but only its source owner can change it.')
+      return
+    }
     if (!canManageScope || !interactionCoordinatorRef.current.openOverlay('name-drawer')) {
       return
     }
@@ -794,6 +816,11 @@ export const PcSessionTypesPage = () => {
     name: ProgrammePcTeachingName,
     action: 'deactivate' | 'reactivate' | 'delete',
   ) => {
+    if (!name.canManageName) {
+      setNameFeedbackTone('warning')
+      setNameFeedback('This host department name is read-only. Only its source owner can change its lifecycle.')
+      return
+    }
     if (!beginInteraction('lifecycle-mutation')) {
       return
     }
@@ -879,7 +906,7 @@ export const PcSessionTypesPage = () => {
     <div className="page pc-session-types-page">
       <PageHero
         title="Map Names of Teaching to Session Types"
-        subtitle="Manage the shared Teaching Name pool and map each exact posting and R-year scope to a TTF session-type target."
+        subtitle="Map every admitted native or host Secretary name to your programme's exact posting and R-year TTF target."
         actions={
           <div className="pc-session-types-hero-actions">
             <button
@@ -901,7 +928,7 @@ export const PcSessionTypesPage = () => {
               title={canManageScope ? 'Create a Name of Teaching.' : 'Select an active reporting period and an in-scope programme first.'}
             >
               <IconPlus size={15} />
-              Update Name of Teaching
+              Add private Name of Teaching
             </button>
           </div>
         }
@@ -974,13 +1001,14 @@ export const PcSessionTypesPage = () => {
             <div className="section-header pc-session-types-section-header">
               <div>
                 <h2>Mapping queue</h2>
-                <p>Pending names remain available for events and attendance. They need an exact target before later compliance classification can occur.</p>
+                <p>Host names appear only after an actual resident posting admits them. Each mapping always uses this programme's own TTF.</p>
               </div>
               <span className="inline-muted">{mappingTotal} mapping{mappingTotal === 1 ? '' : 's'}</span>
             </div>
 
             <div className="inline-callout callout-warning pc-session-types-pending-callout" role="status">
               <span>A mapping updates existing pool-backed event duration and end time for this exact scope. Attendance submissions and historical Name of Teaching text remain unchanged.</span>
+              <span>Pending names remain available for events and attendance. Until mapped, their event timing uses the temporary one-hour duration.</span>
             </div>
 
             <form
@@ -1118,6 +1146,7 @@ export const PcSessionTypesPage = () => {
                           <td className="safe-wrap">
                             <strong>{mapping.teachingName}</strong>
                             {!mapping.teachingNameIsActive ? <span className="inline-muted"> Inactive name</span> : null}
+                            <div className="inline-muted">{mappingSourceLabel(mapping)}</div>
                           </td>
                           <td className="mono">{mapping.postingCode}</td>
                           <td>{mapping.rYear}</td>
@@ -1169,6 +1198,7 @@ export const PcSessionTypesPage = () => {
                     <div className="pc-session-types-mobile-heading">
                       <div>
                         <strong className="safe-wrap">{mapping.teachingName}</strong>
+                        <p>{mappingSourceLabel(mapping)}</p>
                         <p>{mapping.postingCode} · {mapping.rYear} · Revision {mapping.revision}</p>
                       </div>
                       <span className={`status-badge ${mapping.state === 'mapped' ? 'status-badge-success' : 'status-badge-warning'}`}>{mapping.state === 'mapped' ? 'Mapped' : 'Pending'}</span>
@@ -1224,7 +1254,7 @@ export const PcSessionTypesPage = () => {
             <div className="section-header pc-session-types-section-header">
               <div>
                 <h2>Names of Teaching</h2>
-                <p>Lifecycle actions apply only to the selected programme and reporting period. Deleting an in-use name is not available here.</p>
+                <p>PC-created names are private to this programme. Host Secretary names are read-only here but remain available for mapping.</p>
               </div>
               <button type="button" className="button button-secondary" onClick={() => void loadTeachingNames()} disabled={namesLoading || interactionLocked}>
                 <IconRefresh size={14} />
@@ -1312,21 +1342,25 @@ export const PcSessionTypesPage = () => {
                       const isMutating = interactionLocked || mutatingNameId === name.id
                       return (
                         <tr key={name.id}>
-                          <td className="safe-wrap">{name.teachingName}</td>
+                          <td className="safe-wrap">
+                            <strong>{name.teachingName}</strong>
+                            <div className="inline-muted">{teachingNameSourceLabel(name)}</div>
+                          </td>
                           <td><span className={`status-badge ${name.isActive ? 'status-badge-success' : 'status-badge-neutral'}`}>{name.isActive ? 'Active' : 'Inactive'}</span></td>
                           <td className="mono">{name.revision}</td>
                           <td>
                             <div className="pc-session-types-name-actions">
-                              <button type="button" className="button button-ghost" onClick={() => openNameDrawer('edit', name)} disabled={isMutating}>Rename</button>
+                              <button type="button" className="button button-ghost" onClick={() => openNameDrawer('edit', name)} disabled={isMutating || !name.canManageName}>Rename</button>
                               <button
                                 type="button"
                                 className="button button-ghost"
                                 onClick={() => void runLifecycleAction(name, name.isActive ? 'deactivate' : 'reactivate')}
-                                disabled={isMutating}
+                                disabled={isMutating || !name.canManageName}
                               >
                                 {name.isActive ? 'Deactivate' : 'Reactivate'}
                               </button>
-                              <button type="button" className="button button-ghost danger" onClick={() => void runLifecycleAction(name, 'delete')} disabled={isMutating}>Delete unused</button>
+                              <button type="button" className="button button-ghost danger" onClick={() => void runLifecycleAction(name, 'delete')} disabled={isMutating || !name.canManageName}>Delete unused</button>
+                              {!name.canManageName ? <span className="inline-muted">Source owner manages this name</span> : null}
                             </div>
                           </td>
                         </tr>
@@ -1348,11 +1382,11 @@ export const PcSessionTypesPage = () => {
                       <strong className="safe-wrap">{name.teachingName}</strong>
                       <span className={`status-badge ${name.isActive ? 'status-badge-success' : 'status-badge-neutral'}`}>{name.isActive ? 'Active' : 'Inactive'}</span>
                     </div>
-                    <p>Revision {name.revision}</p>
+                    <p>{teachingNameSourceLabel(name)} · Revision {name.revision}</p>
                     <div className="pc-session-types-mobile-actions">
-                      <button type="button" className="button button-secondary" onClick={() => openNameDrawer('edit', name)} disabled={isMutating}>Rename</button>
-                      <button type="button" className="button button-secondary" onClick={() => void runLifecycleAction(name, name.isActive ? 'deactivate' : 'reactivate')} disabled={isMutating}>{name.isActive ? 'Deactivate' : 'Reactivate'}</button>
-                      <button type="button" className="button button-ghost danger" onClick={() => void runLifecycleAction(name, 'delete')} disabled={isMutating}>Delete unused</button>
+                      <button type="button" className="button button-secondary" onClick={() => openNameDrawer('edit', name)} disabled={isMutating || !name.canManageName}>Rename</button>
+                      <button type="button" className="button button-secondary" onClick={() => void runLifecycleAction(name, name.isActive ? 'deactivate' : 'reactivate')} disabled={isMutating || !name.canManageName}>{name.isActive ? 'Deactivate' : 'Reactivate'}</button>
+                      <button type="button" className="button button-ghost danger" onClick={() => void runLifecycleAction(name, 'delete')} disabled={isMutating || !name.canManageName}>Delete unused</button>
                     </div>
                   </article>
                 )
@@ -1390,6 +1424,11 @@ export const PcSessionTypesPage = () => {
             <span>Programme: {selectedPcProgrammeCode}</span>
             <span>Reporting period: {selectedPeriod?.label ?? '-'}</span>
           </div>
+          {nameDrawerMode === 'create' ? (
+            <div className="inline-callout" role="status">
+              This name will be PC-created and visible only to this programme's PCs and native Department Secretary.
+            </div>
+          ) : null}
           <label>
             Name of Teaching
             <input

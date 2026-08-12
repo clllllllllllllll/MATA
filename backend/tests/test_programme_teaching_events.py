@@ -1399,6 +1399,7 @@ def test_pc_pool_event_uses_posting_specific_mapped_duration() -> None:
             "r_year_durations": [
                 {
                     "r_year": "R1",
+                    "programme_code": "DR",
                     "duration_hours": "2.0",
                     "is_mapped": True,
                     "session_type_id": session.teaching_name_mappings[-1][

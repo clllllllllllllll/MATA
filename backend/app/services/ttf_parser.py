@@ -302,6 +302,10 @@ async def _persist_ttf_rows(
     teaching_targets: list[ParsedTeachingTargetRow],
     posting_group_rows: list[ParsedPostingGroupRow],
 ) -> dict[str, Any]:
+    from app.services.teaching_name_programme_scopes import (
+        reconcile_teaching_name_programme_scopes,
+    )
+
     session_type_rows = {
         row.session_type: {
             "name": row.session_type,
@@ -571,6 +575,12 @@ async def _persist_ttf_rows(
     }
     introduced_scopes = sorted(incoming_scopes - existing_scopes)
 
+    admission_reconciliation = await reconcile_teaching_name_programme_scopes(
+        db_session,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+    )
+
     mappings_invalidated = 0
     pending_mappings_created = 0
     if rls_enabled:
@@ -579,7 +589,7 @@ async def _persist_ttf_rows(
                 """
                 /* ttf_e1:reconcile_mappings_rls */
                 SELECT *
-                FROM mata_rls.reconcile_ttf_teaching_name_mappings(
+                FROM mata_rls.reconcile_ttf_teaching_name_mappings_v2(
                     CAST(:reporting_period_id AS uuid),
                     CAST(:programme_code AS text),
                     CAST(:stale_target_ids AS uuid[]),
@@ -640,14 +650,27 @@ async def _persist_ttf_rows(
                         teaching_name.id,
                         teaching_name.reporting_period_id,
                         teaching_name.programme_code,
-                        :posting_code,
-                        :r_year,
-                        NULL
-                    FROM teaching_names AS teaching_name
-                    WHERE teaching_name.reporting_period_id = :reporting_period_id
-                      AND teaching_name.programme_code = :programme_code
+                        CAST(:posting_code AS varchar),
+                        CAST(:r_year AS varchar),
+                        CAST(NULL AS uuid)
+                    FROM teaching_name_programme_scopes AS scope
+                    JOIN teaching_names AS teaching_name
+                      ON teaching_name.id = scope.teaching_name_id
+                     AND teaching_name.reporting_period_id = scope.reporting_period_id
+                    WHERE scope.reporting_period_id = :reporting_period_id
+                      AND scope.programme_code = :programme_code
                       AND teaching_name.is_active
-                    ON CONFLICT (teaching_name_id, posting_code, r_year) DO NOTHING
+                      AND (
+                          scope.admission_reason <> 'resident_host_posting'
+                          OR teaching_name.origin_posting_code =
+                             CAST(:posting_code AS varchar)
+                      )
+                    ON CONFLICT (
+                        teaching_name_id,
+                        programme_code,
+                        posting_code,
+                        r_year
+                    ) DO NOTHING
                     """
                 ),
                 {
@@ -733,7 +756,8 @@ async def _persist_ttf_rows(
         "mappings_preserved": mappings_preserved,
         "mappings_invalidated": mappings_invalidated,
         "mappings_with_target_semantics_changed": mappings_with_target_semantics_changed,
-        "pending_mappings_created": pending_mappings_created,
+        "pending_mappings_created": pending_mappings_created
+        + admission_reconciliation["pending_mappings_created"],
         "affected_event_count": affected_event_count,
         "affected_attendance_count": affected_attendance_count,
         "event_timings_updated": event_timings_updated,

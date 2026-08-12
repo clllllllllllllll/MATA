@@ -122,6 +122,11 @@ class TeachingName(UUIDTimestampMixin, Base):
             "programme_code",
             name="uq_teaching_names_id_pool",
         ),
+        UniqueConstraint(
+            "id",
+            "reporting_period_id",
+            name="uq_teaching_names_id_period",
+        ),
         CheckConstraint(
             "btrim(display_name) <> ''",
             name="ck_teaching_names_display_name_nonblank",
@@ -133,6 +138,15 @@ class TeachingName(UUIDTimestampMixin, Base):
         CheckConstraint(
             "revision > 0",
             name="ck_teaching_names_revision_positive",
+        ),
+        CheckConstraint(
+            "(created_by_role = 'secretary' "
+            "AND visibility_scope = 'department_shared' "
+            "AND origin_posting_code IS NOT NULL) OR "
+            "(created_by_role = 'programme_pc' "
+            "AND visibility_scope = 'programme_private' "
+            "AND origin_posting_code IS NULL)",
+            name="ck_teaching_names_provenance",
         ),
         Index(
             "idx_teaching_names_active_pool",
@@ -160,6 +174,13 @@ class TeachingName(UUIDTimestampMixin, Base):
     )
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
     normalized_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_by_role: Mapped[str] = mapped_column(String(20), nullable=False)
+    visibility_scope: Mapped[str] = mapped_column(String(30), nullable=False)
+    origin_posting_code: Mapped[str | None] = mapped_column(
+        String(50),
+        ForeignKey("posting_codes.code"),
+        nullable=True,
+    )
     is_active: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
@@ -188,11 +209,59 @@ class TeachingName(UUIDTimestampMixin, Base):
     )
 
 
+class TeachingNameProgrammeScope(UUIDTimestampMixin, Base):
+    __tablename__ = "teaching_name_programme_scopes"
+    __table_args__ = (
+        UniqueConstraint(
+            "teaching_name_id",
+            "programme_code",
+            name="uq_teaching_name_programme_scopes_identity",
+        ),
+        UniqueConstraint(
+            "teaching_name_id",
+            "reporting_period_id",
+            "programme_code",
+            name="uq_teaching_name_programme_scopes_mapping_scope",
+        ),
+        ForeignKeyConstraint(
+            ["teaching_name_id", "reporting_period_id"],
+            ["teaching_names.id", "teaching_names.reporting_period_id"],
+            name="fk_teaching_name_programme_scopes_name_period",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "admission_reason IN "
+            "('owner_programme', 'resident_host_posting', 'pc_private')",
+            name="ck_teaching_name_programme_scopes_reason",
+        ),
+        Index(
+            "idx_teaching_name_programme_scopes_programme_period",
+            "programme_code",
+            "reporting_period_id",
+            "teaching_name_id",
+        ),
+    )
+
+    teaching_name_id: Mapped[UUID] = mapped_column(nullable=False)
+    reporting_period_id: Mapped[UUID] = mapped_column(nullable=False)
+    programme_code: Mapped[str] = mapped_column(
+        String(20),
+        ForeignKey("programmes.code"),
+        nullable=False,
+    )
+    admission_reason: Mapped[str] = mapped_column(String(30), nullable=False)
+    admitted_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id"),
+        nullable=True,
+    )
+
+
 class TeachingNameMapping(UUIDTimestampMixin, Base):
     __tablename__ = "teaching_name_mappings"
     __table_args__ = (
         UniqueConstraint(
             "teaching_name_id",
+            "programme_code",
             "posting_code",
             "r_year",
             name="uq_teaching_name_mappings_identity",
@@ -200,11 +269,11 @@ class TeachingNameMapping(UUIDTimestampMixin, Base):
         ForeignKeyConstraint(
             ["teaching_name_id", "reporting_period_id", "programme_code"],
             [
-                "teaching_names.id",
-                "teaching_names.reporting_period_id",
-                "teaching_names.programme_code",
+                "teaching_name_programme_scopes.teaching_name_id",
+                "teaching_name_programme_scopes.reporting_period_id",
+                "teaching_name_programme_scopes.programme_code",
             ],
-            name="fk_teaching_name_mappings_name_pool",
+            name="fk_teaching_name_mappings_programme_scope",
             ondelete="CASCADE",
         ),
         ForeignKeyConstraint(

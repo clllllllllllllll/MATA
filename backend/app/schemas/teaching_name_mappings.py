@@ -32,6 +32,11 @@ class TeachingNameMappingResponse(BaseModel):
     teaching_name: str
     teaching_name_is_active: bool
     teaching_name_revision: int
+    teaching_name_owner_programme_code: str
+    teaching_name_created_by_role: str
+    teaching_name_visibility_scope: str
+    teaching_name_origin_posting_code: str | None = None
+    teaching_name_admission_reason: str
     reporting_period_id: UUID
     programme_code: str
     posting_code: str

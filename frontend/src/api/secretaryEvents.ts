@@ -36,6 +36,9 @@ export interface TeachingNameOption {
   teachingNameId?: string
   globalSessionTypeId?: string
   programmeCode?: string
+  createdByRole?: string
+  visibilityScope?: string
+  originPostingCode?: string
   sessionTypeId?: string
   sessionType?: string
   durationHours?: number
@@ -50,6 +53,7 @@ export interface TeachingNameOption {
 
 export interface TeachingNameRYearDuration {
   rYear: string
+  programmeCode?: string
   durationHours: number
   isMapped: boolean
   sessionTypeId?: string
@@ -109,6 +113,7 @@ export const parseSecretaryTeachingEvent = (value: Record<string, unknown>): Sec
         ))
         .map((entry) => ({
           rYear: String(entry.r_year ?? ''),
+          programmeCode: optionalString(entry.programme_code),
           durationHours: toNumber(entry.duration_hours) ?? 1,
           isMapped: Boolean(entry.is_mapped),
           sessionTypeId: optionalString(entry.session_type_id),
@@ -142,6 +147,9 @@ const toTeachingNameOption = (value: Record<string, unknown>): TeachingNameOptio
     teachingNameId,
     globalSessionTypeId,
     programmeCode: optionalString(value.programme_code),
+    createdByRole: optionalString(value.created_by_role),
+    visibilityScope: optionalString(value.visibility_scope),
+    originPostingCode: optionalString(value.origin_posting_code),
     sessionTypeId: optionalString(value.session_type_id),
     sessionType: optionalString(value.session_type),
     durationHours: toNumber(value.duration_hours),
@@ -157,6 +165,7 @@ const toTeachingNameOption = (value: Record<string, unknown>): TeachingNameOptio
           ))
           .map((entry) => ({
             rYear: String(entry.r_year ?? ''),
+            programmeCode: optionalString(entry.programme_code),
             durationHours: toNumber(entry.duration_hours) ?? 1,
             isMapped: Boolean(entry.is_mapped),
             sessionTypeId: optionalString(entry.session_type_id),

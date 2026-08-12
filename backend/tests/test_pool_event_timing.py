@@ -29,12 +29,24 @@ class _Mappings:
 
 
 class _Result:
-    def __init__(self, *, rows: list[dict] | None = None, rowcount: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        rows: list[dict] | None = None,
+        rowcount: int = 0,
+        scalar: int | None = None,
+    ) -> None:
         self._rows = rows or []
         self.rowcount = rowcount
+        self._scalar = scalar
 
     def mappings(self) -> _Mappings:
         return _Mappings(self._rows)
+
+    def scalar_one(self) -> int:
+        if self._scalar is None:
+            raise AssertionError("Expected one scalar")
+        return self._scalar
 
 
 class _TimingSession:
@@ -63,6 +75,7 @@ class _TimingSession:
                     {
                         **self._timing_row(index, value),
                         "teaching_name_id": teaching_name_id,
+                        "programme_code": payload.get("programme_code") or "GERI",
                         "posting_code": posting_code,
                     }
                     for index, value in enumerate(self.durations, 1)
@@ -75,9 +88,25 @@ class _TimingSession:
             if index < 0 or index >= len(self.durations):
                 return _Result()
             return _Result(rows=[self._timing_row(index + 1, self.durations[index])])
+        if "/* pool_event_timing:list */" in sql:
+            return _Result(
+                rows=[
+                    {
+                        **self._timing_row(index, value),
+                        "teaching_name_id": payload["teaching_name_ids"][0],
+                        "programme_code": payload.get("programme_code") or "GERI",
+                        "posting_code": payload["posting_code"],
+                    }
+                    for index, value in enumerate(self.durations, 1)
+                ]
+            )
         if "/* pool_event_timing:sync */" in sql:
             self.sync_payloads.append(payload)
             return _Result(rowcount=self.sync_rowcount)
+        if "/* pool_event_timing:sync_secretary_envelope */" in sql:
+            return _Result(rowcount=self.sync_rowcount)
+        if "mata_rls.sync_secretary_pool_event_timing" in sql:
+            return _Result(scalar=self.sync_rowcount)
         raise AssertionError(f"Unhandled SQL: {sql}")
 
     @staticmethod
@@ -183,7 +212,25 @@ def test_sync_recalculates_exact_scope_with_mapped_duration() -> None:
         )
     )
 
-    assert updated == 3
+    assert updated == 6
     assert len(session.sync_payloads) == 1
     assert session.sync_payloads[0]["duration_hours"] == Decimal("2.0")
     assert session.sync_payloads[0]["duration_seconds"] == 7200
+
+
+def test_rls_sync_uses_write_only_secretary_envelope_helper() -> None:
+    session = _TimingSession(
+        [Decimal("2.0")],
+        sync_rowcount=2,
+        rls_enabled=True,
+    )
+
+    updated = asyncio.run(
+        sync_pool_event_timings(session, scopes=[_scope()])  # type: ignore[arg-type]
+    )
+
+    assert updated == 4
+    assert any(
+        "mata_rls.sync_secretary_pool_event_timing" in statement
+        for statement in session.statements
+    )

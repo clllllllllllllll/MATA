@@ -295,11 +295,11 @@ def test_events_include_global_session_types_through_normal_posting_rules() -> N
     assert global_event["is_global"] is True
 
 
-def test_explicit_pool_events_require_exact_programme_and_period() -> None:
+def test_explicit_pool_events_allow_admitted_host_source_but_require_exact_period() -> None:
     fake_db = FakeResidentSession()
     fake_db.teaching_targets = []
     matching_event_id = str(uuid4())
-    wrong_programme_event_id = str(uuid4())
+    host_programme_event_id = str(uuid4())
     wrong_period_event_id = str(uuid4())
     event_date = fake_db.today - timedelta(days=5)
     fake_db.events.extend(
@@ -314,7 +314,7 @@ def test_explicit_pool_events_require_exact_programme_and_period() -> None:
                 source_programme_code="GRM",
             ),
             fake_db._event(  # noqa: SLF001
-                wrong_programme_event_id,
+                host_programme_event_id,
                 "TTSHCardio",
                 "Shared Pool Display",
                 event_date,
@@ -340,7 +340,7 @@ def test_explicit_pool_events_require_exact_programme_and_period() -> None:
     assert response.status_code == 200
     event_ids = {row["id"] for row in response.json()["events"]}
     assert matching_event_id in event_ids
-    assert wrong_programme_event_id not in event_ids
+    assert host_programme_event_id in event_ids
     assert wrong_period_event_id not in event_ids
 
 

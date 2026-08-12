@@ -18,8 +18,9 @@ from app.services.rdb_parser import parse_rdb_upload
 
 
 class _FakeScalarResult:
-    def __init__(self, value: object = None) -> None:
+    def __init__(self, value: object = None, *, rowcount: int = 0) -> None:
         self._value = value
+        self.rowcount = rowcount
 
     def scalar_one_or_none(self) -> object:
         return self._value
@@ -333,6 +334,21 @@ class FakeRDBSession:
                 ):
                     row["is_hibernating"] = True
             return _FakeScalarResult()
+
+        if "SELECT DISTINCT resident.programme_code" in sql:
+            programme_codes = sorted(
+                {
+                    str(resident["programme_code"])
+                    for resident in self.residents.values()
+                    if resident.get("programme_code")
+                }
+            )
+            return _FakeMappingResult(
+                [{"programme_code": code} for code in programme_codes]
+            )
+
+        if "/* teaching_name_scopes:" in sql:
+            return _FakeScalarResult(rowcount=0)
 
         if "INSERT INTO upload_logs" in sql:
             self.upload_logs.append(dict(params))

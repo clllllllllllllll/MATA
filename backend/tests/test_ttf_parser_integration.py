@@ -254,6 +254,54 @@ class FakeTTFSession:
                 target[key] = params[key]
             return _FakeScalarResult(rowcount=1)
 
+        if "/* teaching_name_scopes:admit_owner */" in sql:
+            return _FakeScalarResult(rowcount=0)
+
+        if "/* teaching_name_scopes:admit_resident_host */" in sql:
+            return _FakeScalarResult(rowcount=0)
+
+        if "/* teaching_name_scopes:provision_mappings */" in sql:
+            created = 0
+            for teaching_name in self.teaching_names:
+                if not (
+                    teaching_name["reporting_period_id"]
+                    == str(params["reporting_period_id"])
+                    and teaching_name["programme_code"] == params["programme_code"]
+                    and teaching_name.get("is_active", True)
+                ):
+                    continue
+                for target in self.teaching_targets:
+                    if not (
+                        target["reporting_period_id"]
+                        == str(params["reporting_period_id"])
+                        and target["programme_code"] == params["programme_code"]
+                    ):
+                        continue
+                    if any(
+                        mapping["teaching_name_id"] == teaching_name["id"]
+                        and mapping["programme_code"] == params["programme_code"]
+                        and mapping["posting_code"] == target["posting_code"]
+                        and mapping["r_year"] == target["r_year"]
+                        for mapping in self.teaching_name_mappings
+                    ):
+                        continue
+                    self.teaching_name_mappings.append(
+                        {
+                            "id": str(uuid4()),
+                            "teaching_name_id": teaching_name["id"],
+                            "reporting_period_id": teaching_name[
+                                "reporting_period_id"
+                            ],
+                            "programme_code": params["programme_code"],
+                            "posting_code": target["posting_code"],
+                            "r_year": target["r_year"],
+                            "teaching_target_id": None,
+                            "revision": 1,
+                        }
+                    )
+                    created += 1
+            return _FakeScalarResult(rowcount=created)
+
         if "/* ttf_e1:invalidate_stale_mappings */" in sql:
             target_ids = set(params["target_ids"])
             changed = 0
@@ -361,6 +409,57 @@ class FakeTTFSession:
                 rows.append(
                     {
                         "r_year": mapping["r_year"],
+                        "programme_code": mapping["programme_code"],
+                        "teaching_target_id": mapping.get("teaching_target_id"),
+                        "session_type_id": (
+                            target["session_type_id"] if target is not None else None
+                        ),
+                        "session_type_name": (
+                            session_type["name"] if session_type is not None else None
+                        ),
+                        "duration_hours": (
+                            session_type["duration_hours"]
+                            if session_type is not None
+                            else None
+                        ),
+                    }
+                )
+            return _FakeMappingResult(rows)
+
+        if "/* pool_event_timing:list */" in sql:
+            target_by_id = {row["id"]: row for row in self.teaching_targets}
+            session_type_by_id = {
+                str(row["id"]): row for row in self.session_types.values()
+            }
+            requested_ids = {str(value) for value in params["teaching_name_ids"]}
+            rows = []
+            for mapping in self.teaching_name_mappings:
+                if (
+                    mapping["teaching_name_id"] not in requested_ids
+                    or mapping["reporting_period_id"]
+                    != str(params["reporting_period_id"])
+                    or (
+                        params.get("programme_code") is not None
+                        and mapping["programme_code"] != params["programme_code"]
+                    )
+                    or (
+                        params.get("posting_code") is not None
+                        and mapping["posting_code"] != params["posting_code"]
+                    )
+                ):
+                    continue
+                target = target_by_id.get(mapping.get("teaching_target_id"))
+                session_type = (
+                    session_type_by_id.get(str(target["session_type_id"]))
+                    if target is not None
+                    else None
+                )
+                rows.append(
+                    {
+                        "teaching_name_id": mapping["teaching_name_id"],
+                        "programme_code": mapping["programme_code"],
+                        "posting_code": mapping["posting_code"],
+                        "r_year": mapping["r_year"],
                         "teaching_target_id": mapping.get("teaching_target_id"),
                         "session_type_id": (
                             target["session_type_id"] if target is not None else None
@@ -378,6 +477,9 @@ class FakeTTFSession:
             return _FakeMappingResult(rows)
 
         if "/* pool_event_timing:sync */" in sql:
+            return _FakeScalarResult(rowcount=0)
+
+        if "/* pool_event_timing:sync_secretary_envelope */" in sql:
             return _FakeScalarResult(rowcount=0)
 
         if "/* ttf_e1:provision_pending_mappings */" in sql:

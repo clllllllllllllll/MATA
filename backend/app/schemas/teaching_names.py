@@ -21,6 +21,11 @@ class TeachingNameResponse(BaseModel):
     reporting_period_id: UUID
     programme_code: str
     teaching_name: str
+    created_by_role: str
+    visibility_scope: str
+    origin_posting_code: str | None = None
+    admission_reason: str
+    can_manage_name: bool
     is_active: bool
     revision: int
     created_at: datetime

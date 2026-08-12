@@ -818,6 +818,9 @@ async def teaching_name_options(
                 tn.display_name AS keyword,
                 tn.display_name AS teaching_name,
                 tn.programme_code,
+                tn.created_by_role,
+                tn.visibility_scope,
+                tn.origin_posting_code,
                 CAST(NULL AS numeric) AS duration_hours,
                 false AS is_global
             FROM teaching_names tn
@@ -834,6 +837,22 @@ async def teaching_name_options(
                     AND spp.programme_code = tn.programme_code
                     AND spp.is_active = true
                     AND spp.can_manage_teaching_names = true
+              )
+              AND (
+                  (
+                      tn.visibility_scope = 'department_shared'
+                      AND tn.origin_posting_code = :posting_code
+                  )
+                  OR (
+                      tn.visibility_scope = 'programme_private'
+                      AND EXISTS (
+                          SELECT 1
+                          FROM programmes AS native_programme
+                          WHERE native_programme.code = tn.programme_code
+                            AND native_programme.native_teaching_posting_code
+                                = :posting_code
+                      )
+                  )
               )
             ORDER BY tn.display_name ASC, tn.programme_code ASC, tn.id ASC
             """
@@ -859,42 +878,41 @@ async def teaching_name_options(
         )
     )
     options = [dict(row) for row in pool_result.mappings().all()]
-    for option_programme_code in sorted(
-        {str(row["programme_code"]) for row in options}
-    ):
-        programme_options = [
-            row for row in options
-            if str(row["programme_code"]) == option_programme_code
-        ]
+    for row in options:
+        option_programme_code = str(row["programme_code"])
         timings = await list_pool_event_timings(
             db,
-            teaching_name_ids=[row["teaching_name_id"] for row in programme_options],
+            teaching_name_ids=[row["teaching_name_id"]],
             reporting_period_id=period["id"],
-            programme_code=option_programme_code,
+            programme_code=(
+                option_programme_code
+                if row.get("visibility_scope") == "programme_private"
+                else None
+            ),
             posting_code=posting_code,
         )
-        for row in programme_options:
-            timing = timings.get((str(row["teaching_name_id"]), posting_code))
-            row["duration_hours"] = (
-                timing.duration_hours
-                if timing is not None
-                else DEFAULT_POOL_EVENT_DURATION_HOURS
-            )
-            row["duration_is_mapped"] = bool(timing and timing.is_mapped)
-            row["duration_varies"] = bool(timing and timing.duration_varies)
-            row["has_pending_mappings"] = bool(
-                timing and timing.has_pending_mappings
-            )
-            row["r_year_durations"] = [
-                {
-                    "r_year": r_year_timing.r_year,
-                    "duration_hours": r_year_timing.duration_hours,
-                    "is_mapped": r_year_timing.is_mapped,
-                    "session_type_id": r_year_timing.session_type_id,
-                    "session_type_name": r_year_timing.session_type_name,
-                }
-                for r_year_timing in (timing.r_year_timings if timing else ())
-            ]
+        timing = timings.get((str(row["teaching_name_id"]), posting_code))
+        row["duration_hours"] = (
+            timing.duration_hours
+            if timing is not None
+            else DEFAULT_POOL_EVENT_DURATION_HOURS
+        )
+        row["duration_is_mapped"] = bool(timing and timing.is_mapped)
+        row["duration_varies"] = bool(timing and timing.duration_varies)
+        row["has_pending_mappings"] = bool(
+            timing and timing.has_pending_mappings
+        )
+        row["r_year_durations"] = [
+            {
+                "r_year": r_year_timing.r_year,
+                "programme_code": r_year_timing.programme_code,
+                "duration_hours": r_year_timing.duration_hours,
+                "is_mapped": r_year_timing.is_mapped,
+                "session_type_id": r_year_timing.session_type_id,
+                "session_type_name": r_year_timing.session_type_name,
+            }
+            for r_year_timing in (timing.r_year_timings if timing else ())
+        ]
     for row in global_result.mappings().all():
         option = dict(row)
         option["duration_is_mapped"] = True

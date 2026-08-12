@@ -55,7 +55,7 @@ attendance rows remain unchanged. Non-NHG Residents use exact posting
 visibility and the staff envelope because NHG compliance/R-year resolution
 does not apply.
 
-### Planned Phase V: cross-posting Teaching Name mapping and PC-private names
+### Phase V: cross-posting Teaching Name mapping and PC-private names
 
 Phase V separates **Teaching Name ownership** from the **mapping programme**.
 The owner identifies the department/programme that created and manages the

@@ -2156,8 +2156,32 @@ async def _persist_rdb_upload(
             postings_created += 1
 
     from app.services.surplus import hibernate_stale_surplus
+    from app.services.teaching_name_programme_scopes import (
+        reconcile_teaching_name_programme_scopes,
+    )
 
     await hibernate_stale_surplus(session, reporting_period_id)
+    programme_result = await session.execute(
+        text(
+            """
+            SELECT DISTINCT resident.programme_code
+            FROM resident_postings AS posting
+            JOIN residents AS resident ON resident.id = posting.resident_id
+            WHERE posting.reporting_period_id = :reporting_period_id
+              AND posting.status IN ('active', 'loa_working')
+              AND posting.posting_code IS NOT NULL
+              AND resident.programme_code IS NOT NULL
+            ORDER BY resident.programme_code ASC
+            """
+        ),
+        {"reporting_period_id": str(reporting_period_id)},
+    )
+    for programme_row in programme_result.mappings().all():
+        await reconcile_teaching_name_programme_scopes(
+            session,
+            reporting_period_id=reporting_period_id,
+            programme_code=str(programme_row["programme_code"]),
+        )
     return residents_created, residents_updated, postings_created, added_codes
 
 

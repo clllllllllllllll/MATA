@@ -521,7 +521,7 @@ async def _issue_context(
 async def policy_harness(
     rls_postgres_harness: RlsPostgresHarness,
 ) -> AsyncIterator[RlsPostgresHarness]:
-    assert rls_postgres_harness.revision == "20260812_000039"
+    assert rls_postgres_harness.revision == "20260813_000041"
     yield rls_postgres_harness
 
 
@@ -854,16 +854,39 @@ async def policy_seed(
                 """
                 INSERT INTO teaching_names (
                     id, reporting_period_id, programme_code, display_name,
-                    normalized_name, is_active
+                    normalized_name, is_active, created_by_role,
+                    visibility_scope, origin_posting_code
                 )
                 VALUES
                     (
                         :teaching_name_a_id, :period_id, :programme_a,
-                        'RLS Teaching Name A', 'rls teaching name a', false
+                        'RLS Teaching Name A', 'rls teaching name a', false,
+                            'secretary', 'department_shared', :posting_a
                     ),
                     (
                         :teaching_name_b_id, :period_id, :programme_b,
-                        'RLS Teaching Name B', 'rls teaching name b', false
+                        'RLS Teaching Name B', 'rls teaching name b', false,
+                            'secretary', 'department_shared', :posting_b
+                    )
+                """
+            ),
+            values,
+        )
+        await db.execute(
+            text(
+                """
+                INSERT INTO teaching_name_programme_scopes (
+                    teaching_name_id, reporting_period_id, programme_code,
+                    admission_reason, admitted_by_user_id
+                )
+                VALUES
+                    (
+                        :teaching_name_a_id, :period_id, :programme_a,
+                        'owner_programme', :secretary_id
+                    ),
+                    (
+                        :teaching_name_b_id, :period_id, :programme_b,
+                        'owner_programme', NULL
                     )
                 """
             ),
@@ -1947,11 +1970,13 @@ async def test_evolved_teaching_name_pools_and_mappings_stay_role_scoped(
                 """
                 INSERT INTO teaching_names (
                     id, reporting_period_id, programme_code, display_name,
-                    normalized_name, is_active
+                    normalized_name, is_active, created_by_role,
+                    visibility_scope, origin_posting_code
                 )
                 VALUES (
                     :id, :period_id, :programme_code, 'PC Teaching Name',
-                    'pc teaching name', false
+                    'pc teaching name', false, 'programme_pc',
+                    'programme_private', NULL
                 )
                 RETURNING id
                 """
@@ -1962,6 +1987,16 @@ async def test_evolved_teaching_name_pools_and_mappings_stay_role_scoped(
                 "programme_code": values["programme_a"],
             },
         ) == pc_name_id
+        await db.execute(
+            text(
+                "SELECT * FROM mata_rls.reconcile_teaching_name_programme_scopes("
+                ":period_id, :programme_code)"
+            ),
+            {
+                "period_id": values["period_id"],
+                "programme_code": values["programme_a"],
+            },
+        )
         assert await db.scalar(
             text(
                 """
@@ -2012,11 +2047,12 @@ async def test_evolved_teaching_name_pools_and_mappings_stay_role_scoped(
             """
             INSERT INTO teaching_names (
                 id, reporting_period_id, programme_code, display_name,
-                normalized_name
+                normalized_name, created_by_role, visibility_scope,
+                origin_posting_code
             )
             VALUES (
                 :id, :period_id, :programme_code, 'Out of scope',
-                'out of scope'
+                'out of scope', 'programme_pc', 'programme_private', NULL
             )
             """,
             {
@@ -2129,17 +2165,20 @@ async def test_evolved_teaching_name_pools_and_mappings_stay_role_scoped(
             """
             INSERT INTO teaching_names (
                 id, reporting_period_id, programme_code, display_name,
-                normalized_name
+                normalized_name, created_by_role, visibility_scope,
+                origin_posting_code
             )
             VALUES (
                 :id, :period_id, :programme_code, 'Blocked secretary name',
-                'blocked secretary name'
+                'blocked secretary name', 'secretary', 'department_shared',
+                :origin_posting_code
             )
             """,
             {
                 "id": secretary_name_id,
                 "period_id": values["period_id"],
                 "programme_code": values["programme_a"],
+                "origin_posting_code": values["posting_a"],
             },
         )
 
@@ -2179,11 +2218,13 @@ async def test_evolved_teaching_name_pools_and_mappings_stay_role_scoped(
                 """
                 INSERT INTO teaching_names (
                     id, reporting_period_id, programme_code, display_name,
-                    normalized_name
+                    normalized_name, created_by_role, visibility_scope,
+                    origin_posting_code
                 )
                 VALUES (
                     :id, :period_id, :programme_code, 'Secretary Teaching Name',
-                    'secretary teaching name'
+                    'secretary teaching name', 'secretary', 'department_shared',
+                    :origin_posting_code
                 )
                 RETURNING id
                 """
@@ -2192,6 +2233,7 @@ async def test_evolved_teaching_name_pools_and_mappings_stay_role_scoped(
                 "id": secretary_name_id,
                 "period_id": values["period_id"],
                 "programme_code": values["programme_a"],
+                "origin_posting_code": values["posting_a"],
             },
         ) == secretary_name_id
         await _assert_permission_denied(
@@ -5272,11 +5314,13 @@ async def test_phase_d_mapping_service_uses_exact_identity_and_preserves_evidenc
                     """
                     INSERT INTO teaching_names (
                         id, reporting_period_id, programme_code, display_name,
-                        normalized_name, is_active
+                        normalized_name, is_active, created_by_role,
+                        visibility_scope, origin_posting_code
                     )
                     VALUES (
                         :id, :reporting_period_id, :programme_code,
-                        'Phase D zero impact name', 'phase d zero impact name', false
+                        'Phase D zero impact name', 'phase d zero impact name', false,
+                        'programme_pc', 'programme_private', NULL
                     )
                     """
                 ),
@@ -5284,6 +5328,26 @@ async def test_phase_d_mapping_service_uses_exact_identity_and_preserves_evidenc
                     "id": zero_impact_name_id,
                     "reporting_period_id": values["period_id"],
                     "programme_code": values["programme_a"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_programme_scopes (
+                        teaching_name_id, reporting_period_id, programme_code,
+                        admission_reason, admitted_by_user_id
+                    )
+                    VALUES (
+                        :teaching_name_id, :reporting_period_id,
+                        :programme_code, 'pc_private', :pc_id
+                    )
+                    """
+                ),
+                {
+                    "teaching_name_id": zero_impact_name_id,
+                    "reporting_period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                    "pc_id": values["pc_id"],
                 },
             )
             await db.execute(
@@ -5625,11 +5689,13 @@ async def test_phase_d_mapping_shares_ttf_scope_lock_but_other_scopes_proceed(
                     """
                     INSERT INTO teaching_names (
                         id, reporting_period_id, programme_code, display_name,
-                        normalized_name, is_active
+                        normalized_name, is_active, created_by_role,
+                        visibility_scope, origin_posting_code
                     )
                     VALUES (
                         :id, :reporting_period_id, :programme_code,
-                        'Phase D lock independence', 'phase d lock independence', false
+                        'Phase D lock independence', 'phase d lock independence', false,
+                        'programme_pc', 'programme_private', NULL
                     )
                     """
                 ),
@@ -5637,6 +5703,26 @@ async def test_phase_d_mapping_shares_ttf_scope_lock_but_other_scopes_proceed(
                     "id": other_name_id,
                     "reporting_period_id": other_period_id,
                     "programme_code": values["programme_a"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_programme_scopes (
+                        teaching_name_id, reporting_period_id, programme_code,
+                        admission_reason, admitted_by_user_id
+                    )
+                    VALUES (
+                        :teaching_name_id, :reporting_period_id,
+                        :programme_code, 'pc_private', :pc_id
+                    )
+                    """
+                ),
+                {
+                    "teaching_name_id": other_name_id,
+                    "reporting_period_id": other_period_id,
+                    "programme_code": values["programme_a"],
+                    "pc_id": values["pc_id"],
                 },
             )
             await db.execute(
@@ -5769,11 +5855,13 @@ async def test_phase_d_bulk_mapping_service_is_atomic_and_audited(
                     """
                     INSERT INTO teaching_names (
                         id, reporting_period_id, programme_code, display_name,
-                        normalized_name, is_active
+                        normalized_name, is_active, created_by_role,
+                        visibility_scope, origin_posting_code
                     )
                     VALUES (
                         :id, :reporting_period_id, :programme_code,
-                        'Phase D bulk evidence name', 'phase d bulk evidence name', false
+                        'Phase D bulk evidence name', 'phase d bulk evidence name', false,
+                        'programme_pc', 'programme_private', NULL
                     )
                     """
                 ),
@@ -5781,6 +5869,26 @@ async def test_phase_d_bulk_mapping_service_is_atomic_and_audited(
                     "id": extra_name_id,
                     "reporting_period_id": values["period_id"],
                     "programme_code": values["programme_a"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_programme_scopes (
+                        teaching_name_id, reporting_period_id, programme_code,
+                        admission_reason, admitted_by_user_id
+                    )
+                    VALUES (
+                        :teaching_name_id, :reporting_period_id,
+                        :programme_code, 'pc_private', :pc_id
+                    )
+                    """
+                ),
+                {
+                    "teaching_name_id": extra_name_id,
+                    "reporting_period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                    "pc_id": values["pc_id"],
                 },
             )
             await db.execute(
@@ -6419,16 +6527,19 @@ async def test_scheduled_event_source_policy_accepts_pending_ids_and_enforces_sc
                     """
                     INSERT INTO teaching_names (
                         id, reporting_period_id, programme_code, display_name,
-                        normalized_name, is_active
+                        normalized_name, is_active, created_by_role,
+                        visibility_scope, origin_posting_code
                     )
                     VALUES
                         (
                             :pending_name_id, :period_id, :programme_a,
-                            'F pending source', 'f pending source', true
+                            'F pending source', 'f pending source', true,
+                            'secretary', 'department_shared', :posting_a
                         ),
                         (
                             :cross_programme_name_id, :period_id, :programme_b,
-                            'F cross source', 'f cross source', true
+                            'F cross source', 'f cross source', true,
+                            'programme_pc', 'programme_private', NULL
                         )
                     """
                 ),
@@ -6438,6 +6549,63 @@ async def test_scheduled_event_source_policy_accepts_pending_ids_and_enforces_sc
                     "period_id": values["period_id"],
                     "programme_a": values["programme_a"],
                     "programme_b": values["programme_b"],
+                    "posting_a": values["posting_a"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_programme_scopes (
+                        teaching_name_id, reporting_period_id, programme_code,
+                        admission_reason, admitted_by_user_id
+                    )
+                    VALUES
+                        (
+                                :pending_name_id, :period_id, :programme_a,
+                                'owner_programme', :secretary_id
+                        ),
+                        (
+                            :cross_programme_name_id, :period_id, :programme_b,
+                            'pc_private', NULL
+                        )
+                    """
+                ),
+                {
+                    "pending_name_id": pending_name_id,
+                    "cross_programme_name_id": cross_programme_name_id,
+                    "period_id": values["period_id"],
+                    "programme_a": values["programme_a"],
+                    "programme_b": values["programme_b"],
+                        "pc_id": values["pc_id"],
+                        "secretary_id": values["secretary_id"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_mappings (
+                        teaching_name_id, reporting_period_id, programme_code,
+                        posting_code, r_year, teaching_target_id
+                    )
+                    VALUES
+                        (
+                            :pending_name_id, :period_id, :programme_a,
+                            :posting_a, 'R1', NULL
+                        ),
+                        (
+                            :cross_programme_name_id, :period_id, :programme_b,
+                            :posting_b, 'R1', NULL
+                        )
+                    """
+                ),
+                {
+                    "pending_name_id": pending_name_id,
+                    "cross_programme_name_id": cross_programme_name_id,
+                    "period_id": values["period_id"],
+                    "programme_a": values["programme_a"],
+                    "programme_b": values["programme_b"],
+                    "posting_a": values["posting_a"],
+                    "posting_b": values["posting_b"],
                 },
             )
             await db.execute(

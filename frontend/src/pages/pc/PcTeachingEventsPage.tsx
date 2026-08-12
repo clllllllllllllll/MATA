@@ -1159,7 +1159,7 @@ export const PcTeachingEventsPage = () => {
                   {selectedPostingDuration?.durationVaries ? 'Duration varies by R-year' : 'Duration by R-year'}
                 </span>
                 {selectedPostingRYearDurations.map((timing) => (
-                  <strong key={timing.rYear}>
+                  <strong key={`${timing.programmeCode ?? selectedPcProgrammeCode}:${timing.rYear}`}>
                     {timing.rYear}: {formatDuration(timing.durationHours)}
                     {timing.isMapped ? '' : ' (temporary until mapped)'}
                   </strong>

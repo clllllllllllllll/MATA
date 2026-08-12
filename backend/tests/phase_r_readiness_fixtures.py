@@ -392,6 +392,56 @@ class PhaseRInMemoryTTFSession:
             for field in ("monthly_target", "is_tracked", "is_reallocatable", "tag"):
                 target[field] = params[field]
             return PhaseRInMemoryScalarResult(rowcount=1)
+        if "/* teaching_name_scopes:admit_owner */" in sql:
+            return PhaseRInMemoryScalarResult(rowcount=0)
+        if "/* teaching_name_scopes:admit_resident_host */" in sql:
+            return PhaseRInMemoryScalarResult(rowcount=0)
+        if "/* teaching_name_scopes:provision_mappings */" in sql:
+            created = 0
+            reporting_period_id = str(params["reporting_period_id"])
+            programme_code = str(params["programme_code"])
+            for teaching_name in self.teaching_names:
+                if not (
+                    teaching_name["reporting_period_id"] == reporting_period_id
+                    and teaching_name["programme_code"] == programme_code
+                    and bool(teaching_name.get("is_active", True))
+                ):
+                    continue
+                for target in self.teaching_targets:
+                    if not (
+                        target["reporting_period_id"] == reporting_period_id
+                        and target["programme_code"] == programme_code
+                    ):
+                        continue
+                    posting_code = str(target["posting_code"])
+                    r_year = str(target["r_year"])
+                    if any(
+                        mapping["teaching_name_id"] == teaching_name["id"]
+                        and mapping["programme_code"] == programme_code
+                        and mapping["posting_code"] == posting_code
+                        and mapping["r_year"] == r_year
+                        for mapping in self.teaching_name_mappings
+                    ):
+                        continue
+                    self.teaching_name_mappings.append(
+                        {
+                            "id": str(
+                                uuid5(
+                                    _FIXTURE_NAMESPACE,
+                                    f"mapping/{teaching_name['id']}/{programme_code}/{posting_code}/{r_year}",
+                                )
+                            ),
+                            "teaching_name_id": teaching_name["id"],
+                            "reporting_period_id": reporting_period_id,
+                            "programme_code": programme_code,
+                            "posting_code": posting_code,
+                            "r_year": r_year,
+                            "teaching_target_id": None,
+                            "revision": 1,
+                        }
+                    )
+                    created += 1
+            return PhaseRInMemoryScalarResult(rowcount=created)
         if "/* ttf_e1:invalidate_stale_mappings */" in sql:
             target_ids = {str(target_id) for target_id in params["target_ids"]}  # type: ignore[index]
             changed = 0
@@ -489,6 +539,70 @@ class PhaseRInMemoryTTFSession:
                 rows.append(
                     {
                         "r_year": mapping["r_year"],
+                        "programme_code": mapping["programme_code"],
+                        "teaching_target_id": mapping.get("teaching_target_id"),
+                        "session_type_id": (
+                            target["session_type_id"] if target is not None else None
+                        ),
+                        "session_type_name": (
+                            session_type["name"] if session_type is not None else None
+                        ),
+                        "duration_hours": (
+                            session_type["duration_hours"]
+                            if session_type is not None
+                            else None
+                        ),
+                    }
+                )
+            return PhaseRInMemoryMappingResult(rows)
+        if "/* pool_event_timing:list */" in sql:
+            requested_ids = {
+                str(teaching_name_id)
+                for teaching_name_id in params["teaching_name_ids"]  # type: ignore[index]
+            }
+            rows = []
+            for mapping in self.teaching_name_mappings:
+                if (
+                    str(mapping["teaching_name_id"]) not in requested_ids
+                    or mapping["reporting_period_id"]
+                    != str(params["reporting_period_id"])
+                    or (
+                        params.get("programme_code") is not None
+                        and mapping["programme_code"] != params["programme_code"]
+                    )
+                    or (
+                        params.get("posting_code") is not None
+                        and mapping["posting_code"] != params["posting_code"]
+                    )
+                ):
+                    continue
+                target = next(
+                    (
+                        target
+                        for target in self.teaching_targets
+                        if str(target["id"])
+                        == str(mapping.get("teaching_target_id"))
+                    ),
+                    None,
+                )
+                session_type = (
+                    next(
+                        (
+                            row
+                            for row in self.session_types.values()
+                            if str(row["id"]) == str(target["session_type_id"])
+                        ),
+                        None,
+                    )
+                    if target is not None
+                    else None
+                )
+                rows.append(
+                    {
+                        "teaching_name_id": mapping["teaching_name_id"],
+                        "programme_code": mapping["programme_code"],
+                        "posting_code": mapping["posting_code"],
+                        "r_year": mapping["r_year"],
                         "teaching_target_id": mapping.get("teaching_target_id"),
                         "session_type_id": (
                             target["session_type_id"] if target is not None else None
@@ -505,6 +619,8 @@ class PhaseRInMemoryTTFSession:
                 )
             return PhaseRInMemoryMappingResult(rows)
         if "/* pool_event_timing:sync */" in sql:
+            return PhaseRInMemoryScalarResult(rowcount=0)
+        if "/* pool_event_timing:sync_secretary_envelope */" in sql:
             return PhaseRInMemoryScalarResult(rowcount=0)
         if "/* ttf_e1:preserved_mapping_count */" in sql:
             return PhaseRInMemoryScalarResult(

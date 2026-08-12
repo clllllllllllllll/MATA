@@ -92,7 +92,7 @@ def test_attendance_submission_creates_attendance_record() -> None:
     assert "session_type_id" not in inserted
 
 
-def test_attendance_rejects_explicit_pool_event_from_another_programme() -> None:
+def test_attendance_accepts_admitted_host_secretary_pool_event() -> None:
     fake_db = FakeResidentSession()
     event = fake_db._event(  # noqa: SLF001
         str(uuid4()),
@@ -104,6 +104,37 @@ def test_attendance_rejects_explicit_pool_event_from_another_programme() -> None
         source_programme_code="REHAB",
     )
     fake_db.events.append(event)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [event["id"]]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["submitted"] == 1
+    assert any(
+        row["resident_id"] == fake_db.resident_id
+        and row["teaching_event_id"] == event["id"]
+        for row in fake_db.attendance
+    )
+
+
+def test_attendance_rejects_pc_private_pool_event_from_another_programme() -> None:
+    fake_db = FakeResidentSession()
+    event = fake_db._event(  # noqa: SLF001
+        str(uuid4()),
+        "TTSHCardio",
+        "Private Pool Display",
+        fake_db.today - timedelta(days=5),
+        teaching_name_id=str(uuid4()),
+        source_reporting_period_id=fake_db.period_id,
+        source_programme_code="REHAB",
+    )
+    event["created_by_role"] = "programme_pc"
+    event["created_for_programme_code"] = "REHAB"
+    fake_db.events.append(event)
     before_attendance = list(fake_db.attendance)
     client = _client(fake_db)
 
@@ -114,7 +145,7 @@ def test_attendance_rejects_explicit_pool_event_from_another_programme() -> None
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "Teaching event is not visible for this resident"
+    assert response.json()["detail"] == "Teaching event is outside the resident programme scope"
     assert fake_db.attendance == before_attendance
 
 

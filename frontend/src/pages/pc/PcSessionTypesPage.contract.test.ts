@@ -39,6 +39,11 @@ const mapping = (overrides: Record<string, unknown> = {}) => ({
   teachingName: 'Ward teaching',
   teachingNameIsActive: true,
   teachingNameRevision: 1,
+  teachingNameOwnerProgrammeCode: 'PC-1',
+  teachingNameCreatedByRole: 'secretary',
+  teachingNameVisibilityScope: 'department_shared',
+  teachingNameOriginPostingCode: 'POST-1',
+  teachingNameAdmissionReason: 'owner_programme',
   reportingPeriodId: 'period-1',
   programmeCode: 'PC-1',
   postingCode: 'POST-1',
@@ -245,4 +250,14 @@ test('Teaching Name lifecycle, filters, mobile cards, and confirmation drawers r
   assert.match(drawerSource, /setAttribute\('inert', ''\)/)
   assert.match(drawerSource, /focusTrapTargetIndex/)
   assert.match(drawerSource, /previousActiveElement\.focus\(\)/)
+})
+
+test('cross-posting source provenance is visible and host lifecycle controls are read-only', () => {
+  assert.match(apiSource, /teaching_name_owner_programme_code/)
+  assert.match(apiSource, /teaching_name_origin_posting_code/)
+  assert.match(apiSource, /teaching_name_admission_reason/)
+  assert.match(pageSource, /Host Secretary:/)
+  assert.match(pageSource, /Source owner manages this name/)
+  assert.match(pageSource, /!name\.canManageName/)
+  assert.match(pageSource, /Add private Name of Teaching/)
 })

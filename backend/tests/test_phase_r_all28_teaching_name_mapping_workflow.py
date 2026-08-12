@@ -11,7 +11,7 @@ attest that each canonical programme can follow the same workflow.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid5
@@ -45,9 +45,16 @@ def _other_programme(programme_code: str) -> str:
 class _Result:
     """Small SQLAlchemy-result analogue used only by this focused test module."""
 
-    def __init__(self, rows: list[dict[str, Any]] | None = None, *, scalar: Any = None) -> None:
+    def __init__(
+        self,
+        rows: list[dict[str, Any]] | None = None,
+        *,
+        scalar: Any = None,
+        rowcount: int = 0,
+    ) -> None:
         self._rows = [dict(row) for row in rows or []]
         self._scalar = scalar
+        self.rowcount = rowcount
 
     def mappings(self) -> _Result:
         return self
@@ -104,6 +111,9 @@ class _LifecycleSession:
             "reporting_period_id": row["reporting_period_id"],
             "programme_code": row["programme_code"],
             "teaching_name": row["display_name"],
+            "created_by_role": row["created_by_role"],
+            "visibility_scope": row["visibility_scope"],
+            "origin_posting_code": row["origin_posting_code"],
             "is_active": row["is_active"],
             "revision": row["revision"],
             "created_at": row["created_at"],
@@ -125,6 +135,23 @@ class _LifecycleSession:
         if "SELECT id FROM reporting_periods" in sql:
             reporting_period_id = UUID(str(params["reporting_period_id"]))
             return _Result(scalar=reporting_period_id if reporting_period_id in self.reporting_period_ids else None)
+
+        if "/* reporting_period_resolution:explicit */" in sql:
+            reporting_period_id = UUID(str(params["reporting_period_id"]))
+            rows = []
+            if reporting_period_id in self.reporting_period_ids:
+                rows.append(
+                    {
+                        "id": reporting_period_id,
+                        "label": "Phase R active period",
+                        "start_date": date(2026, 1, 1),
+                        "end_date": date(2026, 12, 31),
+                        "status": "active",
+                        "activate_on": None,
+                        "deactivate_on": None,
+                    }
+                )
+            return _Result(rows)
 
         if "SELECT code FROM programmes" in sql:
             programme_code = str(params["programme_code"])
@@ -161,6 +188,9 @@ class _LifecycleSession:
                 "programme_code": programme_code,
                 "display_name": str(params["display_name"]),
                 "normalized_name": normalized_name,
+                "created_by_role": str(params["created_by_role"]),
+                "visibility_scope": str(params["visibility_scope"]),
+                "origin_posting_code": params.get("origin_posting_code"),
                 "is_active": True,
                 "revision": 1,
                 "created_at": _NOW,
@@ -169,6 +199,9 @@ class _LifecycleSession:
             }
             self.names[name_id] = row
             return _Result([self._public_name(row)])
+
+        if "/* teaching_name_scopes:" in sql:
+            return _Result(rowcount=0)
 
         if "FROM teaching_names" in sql and "WHERE id = :teaching_name_id" in sql:
             name_id = UUID(str(params["teaching_name_id"]))
@@ -199,6 +232,25 @@ class _LifecycleSession:
             return _Result(
                 scalar=len(self._filtered_names(params)),
             )
+
+        if "FROM teaching_name_programme_scopes AS scope" in sql:
+            rows = [
+                {
+                    **self._public_name(row),
+                    "admission_reason": (
+                        "pc_private"
+                        if row["visibility_scope"] == "programme_private"
+                        else "owner_programme"
+                    ),
+                }
+                for row in self._filtered_names(params)
+            ]
+            if "COUNT(*)" in sql:
+                return _Result(scalar=len(rows))
+            rows.sort(key=lambda row: (str(row["teaching_name"]), str(row["id"])))
+            offset = int(params.get("offset", 0))
+            limit = int(params.get("limit", len(rows)))
+            return _Result(rows[offset : offset + limit])
 
         if "FROM teaching_names" in sql:
             rows = [self._public_name(row) for row in self._filtered_names(params)]
@@ -450,6 +502,11 @@ def _mapping_row(
         "teaching_name": f"Phase R {programme_code} Pool Teaching",
         "teaching_name_is_active": True,
         "teaching_name_revision": 4,
+        "teaching_name_owner_programme_code": programme_code,
+        "teaching_name_created_by_role": "secretary",
+        "teaching_name_visibility_scope": "department_shared",
+        "teaching_name_origin_posting_code": posting_code,
+        "teaching_name_admission_reason": "owner_programme",
         "reporting_period_id": reporting_period_id,
         "programme_code": programme_code,
         "posting_code": posting_code,
@@ -569,6 +626,29 @@ class _MappingSession:
     def __init__(self) -> None:
         self.commits = 0
         self.rollbacks = 0
+
+    async def execute(
+        self,
+        statement: object,
+        params: dict[str, Any] | None = None,
+    ) -> _Result:
+        sql = str(statement)
+        params = dict(params or {})
+        if "/* reporting_period_resolution:explicit */" in sql:
+            return _Result(
+                [
+                    {
+                        "id": UUID(str(params["reporting_period_id"])),
+                        "label": "Phase R active period",
+                        "start_date": date(2026, 1, 1),
+                        "end_date": date(2026, 12, 31),
+                        "status": "active",
+                        "activate_on": None,
+                        "deactivate_on": None,
+                    }
+                ]
+            )
+        raise AssertionError(f"Unhandled Phase R mapping SQL: {sql}")
 
     async def commit(self) -> None:
         self.commits += 1

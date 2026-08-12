@@ -56,7 +56,7 @@ def test_phase_c_migration_is_linear_and_models_match_pool_cascade() -> None:
     pool_fk = next(
         constraint
         for constraint in TeachingNameMapping.__table__.foreign_key_constraints
-        if constraint.name == "fk_teaching_name_mappings_name_pool"
+        if constraint.name == "fk_teaching_name_mappings_programme_scope"
     )
     assert pool_fk.ondelete == "CASCADE"
 

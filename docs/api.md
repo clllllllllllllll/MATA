@@ -436,13 +436,13 @@ invalidate an existing event.
 | `GET /secretary/teaching-name-programmes` | Secretary | Returns only active, explicitly capable programme pools for the Secretary's current posting. |
 | `GET /secretary/teaching-names` | Secretary | Requires `reporting_period_id` and explicit `programme_code`. |
 | `POST /secretary/teaching-names` | Secretary | Creates a name in an explicitly selected eligible pool. |
-| `PATCH /secretary/teaching-names/{id}` | Secretary | Renames with `expected_revision`. |
-| `POST /secretary/teaching-names/{id}/deactivate` | Secretary | Requires `expected_revision`. |
-| `POST /secretary/teaching-names/{id}/reactivate` | Secretary | Requires `expected_revision`. |
-| `DELETE /secretary/teaching-names/{id}` | Secretary | Deletes only an unused name with `expected_revision`. |
+| `PATCH /secretary/teaching-names/{id}` | Secretary | Renames only a Secretary-created name from the actor's exact source posting, with `expected_revision`. PC-private names are read-only. |
+| `POST /secretary/teaching-names/{id}/deactivate` | Secretary | Source-owner only; requires `expected_revision`. |
+| `POST /secretary/teaching-names/{id}/reactivate` | Secretary | Source-owner only; requires `expected_revision`. |
+| `DELETE /secretary/teaching-names/{id}` | Secretary | Source-owner only; deletes only an unused name with `expected_revision`. |
 | `GET /admin/teaching-names` | Master Admin or Programme PC | Requires `reporting_period_id` and explicit `programme_code`. |
-| `POST`, `PATCH`, `POST .../deactivate`, `POST .../reactivate` under `/admin/teaching-names` | Programme PC only | A Master Admin receives `403` for ordinary lifecycle mutations. |
-| `DELETE /admin/teaching-names/{id}` | Master Admin or Programme PC | A PC may delete an unused in-scope name; Master Admin may perform the guarded used-name deletion below. |
+| `POST`, `PATCH`, `POST .../deactivate`, `POST .../reactivate` under `/admin/teaching-names` | Programme PC only | Create makes a programme-private name. Lifecycle mutations require source ownership; an admitted host Secretary name is read-only. A Master Admin receives `403` for ordinary lifecycle mutations. |
+| `DELETE /admin/teaching-names/{id}` | Master Admin or Programme PC | A PC may delete an unused source owned by its programme, but not an admitted host source; Master Admin may perform the guarded used-name deletion below. |
 
 Both list routes support `is_active`, `search`, `limit`, and `offset`. Name
 responses expose the display value and lifecycle metadata, never the
@@ -608,7 +608,7 @@ event-date R-year duration. Impact confirmation also warns that a longer
 duration may create or expand schedule overlaps; overlap is informational and
 does not prevent the authoritative mapping change.
 
-### Planned Phase V Teaching Name visibility and creation contract
+### Phase V Teaching Name visibility and creation contract
 
 Phase V reuses the protected Teaching Name and mapping route families; it does
 not introduce a client-controlled cross-programme grant endpoint.
@@ -622,12 +622,11 @@ mapping reads return:
   reporting period; and
 - PC-created programme-private names owned by the selected programme.
 
-The response must expose opaque IDs plus bounded provenance needed by the UI:
-source/owner programme, source posting when Secretary-created, immutable
-`created_by_role`, a PC-created/private indicator, and whether the current actor
-may manage the source name. It must not expose Resident identity as evidence for
-the admission. Same display text from two source departments remains two
-options.
+The response exposes opaque IDs plus bounded provenance needed by the UI:
+source/owner `programme_code`, `origin_posting_code` when Secretary-created,
+immutable `created_by_role`, `visibility_scope`, `admission_reason`, and
+`can_manage_name`. It must not expose Resident identity as evidence for the
+admission. Same display text from two source departments remains two options.
 
 `POST /admin/teaching-names` creates a programme-private name for a Programme
 PC. The server derives the owner programme from the authenticated PC scope,
@@ -1947,7 +1946,16 @@ List teaching events available for submission.
      available list. Removing the attendance makes them available again when
      all other eligibility rules still pass.
   9. Apply the event-date-specific effectively active reporting-period check; never resolve historical visibility from today.
-  10. For a source-backed scheduled event, apply an exact `teaching_name_id` source reporting-period/programme match or an explicit `global_session_type_id` first. For a both-null legacy event, use only deterministic persisted event/ownership/posting/date evidence. Do not query the catalogue, target mappings, Column K, or display text to classify an event.
+  10. For a source-backed scheduled event, require the exact
+      `teaching_name_id` and source reporting period. A Secretary-created
+      department-shared source may retain a different owner programme when an
+      exact persisted admission and mapping exist for the Resident's native
+      programme, event posting, and event-date R-year. Resolve its duration
+      through that native mapping. A PC-private source remains restricted to
+      its owner programme. Apply an explicit `global_session_type_id` first.
+      For a both-null legacy event, use only deterministic persisted
+      event/ownership/posting/date evidence. Do not use catalogue, Column K, or
+      display text to classify an event.
   11. Do not show PC-created events for non-native programmes.
   12. Do not show secretary-created events from arbitrary TTSH departments unless they are either the resident's assigned/current posting or the resident's native programme department.
 - **Query params:** `date_from`, `date_to`, `teaching_name`, `posting_code`. Filters apply to the combined cross-period collection and cannot widen resident scope.
@@ -1977,7 +1985,15 @@ Submit attendance for one or more events.
 - **Native Resident backend:**
   1. Validates event exists and is visible through the resident's allowed scheduled-event sources: assigned/current posting secretary event, native programme TTSH department secretary event, or native programme PC-created event
   2. Validates `event_date` falls within a `resident_postings` row with `status IN ('active', 'loa_working')` → `422` if outside tenure
-  3. Validates persisted event evidence: an explicit pool source must match the event-date reporting period and native programme exactly; an explicit global source is global-first; a both-null legacy event is not text-inferred. For an approved native-programme event outside the assigned posting, it validates only the allowed source and does not assign or rewrite a compliance target.
+  3. Validates persisted event evidence: an explicit pool source must match the
+     event-date reporting period. A host Secretary source may keep its source
+     owner programme only when the Resident's native programme has the exact
+     persisted admission and posting/R-year mapping; resident timing comes
+     from that native mapping. A PC-private source must match the native
+     programme. An explicit global source is global-first; a both-null legacy
+     event is not text-inferred. For an approved native-programme event outside
+     the assigned posting, it validates only the allowed source and does not
+     assign or rewrite a compliance target.
   4. Validates programme ownership: events with `created_for_programme_code` set must match the resident's `programme_code`
   5. Validates no active duplicate; a submitted-only unique index on
      `(resident_id, teaching_event_id)` is the database race boundary.
