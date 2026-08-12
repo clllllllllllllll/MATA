@@ -36,7 +36,7 @@ DISPOSABLE_DATABASE_NAME = os.environ.get(
 )
 RUNTIME_GROUP = "mata_app_runtime"
 AUTH_GROUP = "mata_auth_internal"
-REQUIRED_REVISION = "20260806_000038"
+REQUIRED_REVISION = "20260812_000039"
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _TEST_ROLE_RE = re.compile(r"mata_test_(?:runtime|auth)_[0-9a-f]{16}")
 _PHASE_R_ROLE_RE = re.compile(r"mata_phase_(?:r|k|l)_(?:runtime|auth)_[0-9a-f]{16}")

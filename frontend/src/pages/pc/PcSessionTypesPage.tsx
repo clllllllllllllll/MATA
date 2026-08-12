@@ -1437,6 +1437,7 @@ export const PcSessionTypesPage = () => {
           <div className="pc-session-types-confirmation" role="status">
             <p>This change may affect {impactSummary(singleConfirmation.impact)}. Only these aggregate counts are shown.</p>
             <p>Confirm to recalculate duration and end time for existing events in this exact Teaching Name and posting. Attendance submissions will be preserved and will display the updated event duration.</p>
+            <p>A longer mapped duration may create or expand schedule overlaps. Mapping remains authoritative: overlapping events and existing attendance are preserved, and residents must submit only the session they attended.</p>
           </div>
         ) : null}
       </DetailDrawer>
@@ -1470,6 +1471,7 @@ export const PcSessionTypesPage = () => {
           <div className="pc-session-types-confirmation" role="status">
             <p>The {bulkConfirmation.items.length} prepared change{bulkConfirmation.items.length === 1 ? '' : 's'} may affect {impactSummary(bulkConfirmation.impact)}. Only aggregate counts are shown.</p>
             <p>All rows are applied together or none are applied. Existing event durations and end times will be recalculated for the affected exact scopes. Attendance submissions will be preserved and will display the updated event duration.</p>
+            <p>Longer mapped durations may create or expand schedule overlaps. Mapping remains authoritative: overlapping events and existing attendance are preserved, and residents must submit only the session they attended.</p>
           </div>
         ) : null}
       </DetailDrawer>

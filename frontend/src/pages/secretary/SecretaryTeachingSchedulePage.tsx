@@ -3,6 +3,7 @@ import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconCalendar, IconDownload, IconPlus } from '../../components/icons'
 import { frontendConfig } from '../../config/frontendConfig'
 import { useAppState } from '../../context/useAppState'
+import { useAuth } from '../../context/useAuth'
 import { ApiRequestError } from '../../api/http'
 import {
   listSecretaryTeachingNameProgrammes,
@@ -45,6 +46,7 @@ import {
   shouldTemporarilyRetainPoolSource,
 } from '../../utils/secretaryTeachingScheduleState'
 import { createScopedRequestFence } from '../../utils/scopedRequestFence'
+import { countStaffEnvelopeOverlaps } from '../../utils/teachingEventOverlapWarning'
 
 interface TeachingFormState {
   sourceKey: string
@@ -241,6 +243,7 @@ export const SecretaryTeachingSchedulePage = () => {
     reportingPeriodsLoading,
     reportingPeriodsError,
   } = useAppState()
+  const { identity } = useAuth()
 
   const [events, setEvents] = useState<SecretaryTeachingEvent[]>([])
   const [recentCreatedEvents, setRecentCreatedEvents] = useState<SecretaryTeachingEvent[]>([])
@@ -658,6 +661,25 @@ export const SecretaryTeachingSchedulePage = () => {
     && !selectedPoolHasNoMappedDurations
     && (selectedSourceOption.durationVaries || selectedSourceOption.hasPendingMappings),
   )
+  const overlapWarningCount = useMemo(() => countStaffEnvelopeOverlaps(
+    visibleEvents,
+    {
+      postingCode: sourceEvent?.postingCode
+        ?? (identity?.role === 'secretary' ? identity.postingCode : undefined),
+      eventDate: formState.eventDate,
+      startTime: formState.startTime,
+      durationHours: selectedSourceOption?.durationHours,
+      excludedEventId: drawerMode === 'edit' ? sourceEvent?.id : undefined,
+    },
+  ), [
+    drawerMode,
+    formState.eventDate,
+    formState.startTime,
+    identity,
+    selectedSourceOption,
+    sourceEvent,
+    visibleEvents,
+  ])
 
   const toggleSelected = (id: string) => {
     setSelectedIds((previous) => {
@@ -1591,6 +1613,12 @@ export const SecretaryTeachingSchedulePage = () => {
               <span className="secretary-toggle-label">End time</span>
               <strong>{selectedPoolEndTime ?? 'Select a valid start time'}</strong>
               <small>Server-computed from the posting-specific TTF mapping.</small>
+            </div>
+          ) : null}
+
+          {overlapWarningCount > 0 ? (
+            <div className="inline-callout callout-warning" role="status">
+              This time overlaps {overlapWarningCount} existing scheduled event{overlapWarningCount === 1 ? '' : 's'} within the staff scheduling envelope. Overlapping sessions are allowed. Residents will see eligible alternatives and should submit only the session they attended.
             </div>
           ) : null}
 

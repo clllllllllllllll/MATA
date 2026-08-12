@@ -37,6 +37,7 @@ import {
   resolveTeachingNameOptionsState,
 } from '../../utils/teachingNameOptionsState'
 import { serverComputedPoolEndTime } from '../../utils/secretaryTeachingScheduleState'
+import { countStaffEnvelopeOverlaps } from '../../utils/teachingEventOverlapWarning'
 
 type DrawerMode = 'create' | 'edit' | 'duplicate'
 
@@ -250,6 +251,16 @@ export const PcTeachingEventsPage = () => {
     selectedPostingDuration
     && !selectedPostingHasNoMappedDurations
     && (selectedPostingDuration.durationVaries || selectedPostingDuration.hasPendingMappings),
+  )
+  const overlapWarningCount = countStaffEnvelopeOverlaps(
+    events,
+    {
+      postingCode: formState.postingCode,
+      eventDate: formState.eventDate,
+      startTime: formState.startTime,
+      durationHours: selectedPostingDuration?.durationHours ?? selectedSourceOption?.durationHours,
+      excludedEventId: drawerMode === 'edit' ? sourceEvent?.id : undefined,
+    },
   )
   const isSelectedSourceOption = Boolean(selectedSourceOption)
   const canSubmitTeaching = canAddTeaching || Boolean(retainedInactiveGlobalOption)
@@ -1224,6 +1235,12 @@ export const PcTeachingEventsPage = () => {
               <span className="secretary-toggle-label">End time</span>
               <strong>{selectedMappedPoolEndTime ?? 'Select a valid start time'}</strong>
               <small>Server-computed from the posting-specific TTF mapping.</small>
+            </div>
+          ) : null}
+
+          {overlapWarningCount > 0 ? (
+            <div className="inline-callout callout-warning" role="status">
+              This time overlaps {overlapWarningCount} existing scheduled event{overlapWarningCount === 1 ? '' : 's'} within the staff scheduling envelope. Overlapping sessions are allowed. Residents will see eligible alternatives and should submit only the session they attended.
             </div>
           ) : null}
 

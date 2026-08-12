@@ -1740,6 +1740,31 @@ def test_create_event_accepts_source_id_from_mapped_programme_pool() -> None:
     assert payload["created_for_programme_code"] is None
 
 
+def test_secretary_pool_event_creation_allows_schedule_overlap() -> None:
+    fake_db = FakeSecretarySession()
+    client = _client(fake_db)
+    payload = {
+        **_pool_source(fake_db, "GERI Demo Row 22", "GERI"),
+        "event_date": "2026-05-18",
+        "start_time": "10:00",
+    }
+
+    first = client.post(
+        "/secretary/teaching-events",
+        headers=_headers(fake_db, site="TTSHGerMed"),
+        json=payload,
+    )
+    second = client.post(
+        "/secretary/teaching-events",
+        headers=_headers(fake_db, site="TTSHGerMed"),
+        json={**payload, "start_time": "10:30"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["id"] != second.json()["id"]
+
+
 def test_other_secretary_posting_cannot_use_ttshgermed_pool_identity() -> None:
     fake_db = FakeSecretarySession()
     client = _client(fake_db)

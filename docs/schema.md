@@ -56,6 +56,12 @@ mapping for the source reporting period, source programme, and event posting.
 Pending mappings are valid; a missing mapping scope is not. Secretary and
 Master branches are unchanged.
 
+Revision `20260812_000039` adds no table or policy. It adds a protected,
+read-only staff timing resolver so an authorized Secretary can derive exact
+Teaching Name/reporting-period/programme/posting mapping durations without a
+direct grant on Programme-PC mapping rows. The resolver is runtime-only and
+does not expose mappings to Resident or Non-NHG contexts.
+
 The current final model uses `teaching_name` as the canonical term:
 
 - The `teaching_names` relation is scoped by
@@ -733,6 +739,12 @@ than or equal to `start_time` belongs to the following date, so `23:00–00:00`
 is valid and is compared against rows on both dates. Exact boundary contact is
 not overlap. The earlier accepted attendance is preserved unchanged. This rule
 is separate from same-event uniqueness and applies to native and Non-NHG rows.
+Scheduled events themselves may overlap: staff creation and later
+mapping-driven envelope changes warn but are not rejected. Resident available
+event reads hide directly overlapping alternatives only while a submitted
+attendance exists; removal restores them if otherwise eligible. Existing
+attendance is never rewritten or deleted when later timing changes create an
+overlap.
 
 **Session type is NOT stored here.** The Phase 6 compliance resolver is deferred. When implemented, it must resolve through the event's persisted source identity and a scoped mapping for the resident/posting/r-year context; the immutable `teaching_name` display snapshot is never a matching input.
 

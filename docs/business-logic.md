@@ -479,6 +479,18 @@ boundary contact is not overlap.
 
 **Submission-time outcome for distinct events:** For the same resident, compare a later submission against already accepted distinct events. If the later interval overlaps an earlier accepted interval, reject the later submission and preserve the earlier attendance unchanged. Do not delete, replace, or retroactively flag the earlier record. This rule applies to native and Non-NHG sequential/concurrent submissions and atomic ad-hoc creation, before compliance calculation, and is separate from the database uniqueness rule for submitting the same `teaching_event_id` twice.
 
+**Availability and staff scheduling outcome:** Scheduled-event overlap is
+permitted. Before attendance, a resident sees every otherwise eligible event,
+including overlapping alternatives. After one attendance is accepted, the
+submitted event and every other candidate that directly overlaps that
+resident's effective interval are hidden from the available list; overlap is
+not propagated transitively through a chain. Removing the attendance restores
+all otherwise eligible alternatives. Native Residents use their exact
+event-date R-year timing for this test; Non-NHG Residents use the staff event
+envelope. Staff Add Teaching and mapping-impact confirmation warn about staff
+envelope overlap but do not block creation or authoritative mapping changes.
+Mapping-driven timing expansion preserves existing events and attendance.
+
 ---
 
 ## BL-5A: Academic-Year Month Bucketing (AY Dates)
@@ -832,6 +844,12 @@ For each candidate event date, use the one `external_resident_postings` row whos
 2. **Programme PC event:** `event.posting_code = schedule.posting_code`, regardless of the PC event's programme owner.
 
 Both listing and `POST /resident/attendance` enforce the same exact posting rule. Non-NHG Residents may see every normal scheduled event created at their date-matched posting because they do not participate in NHG compliance or R-year target resolution. `posting_codes.supports_secretary_events`, Teaching Name source programme, and PC programme ownership do not narrow this resident-facing list. Exclude events at another posting, events outside a schedule range or in a gap, resident-created ad-hoc events, and events already submitted by that Non-NHG Resident. Successful attendance writes only `external_attendance_records` and uses the event's longest-duration staff envelope for display and overlap checks.
+
+Overlapping eligible events all appear before submission. After one is
+submitted, the available list hides that event and every candidate that
+directly overlaps its staff envelope. Removing the attendance restores the
+alternatives when their posting/date/status rules still pass; a stale or direct
+attempt to submit another overlapping event remains a controlled conflict.
 
 Do not hardcode TTSH or another institution in service logic. Never infer or broaden posting access from a posting-code prefix, institution name, teaching target, teaching-name catalogue row, `programmes.native_teaching_posting_code`, fuzzy match, or first mapping candidate.
 

@@ -1365,7 +1365,11 @@ async def list_available_events(
                         today=today,
                         already_attended=bool(event.get("already_attended")),
                     )
-                    if reason is None:
+                    if reason is None and not await _overlapping_external_attendance_exists(
+                        db,
+                        external_resident_id=external_resident_id,
+                        event=event,
+                    ):
                         event_rows[str(event["id"])] = _event_row(
                             event,
                             reporting_period=resolved_period,
@@ -1509,6 +1513,12 @@ async def list_available_events(
                     event=event,
                     resident_id=resident_id,
                 )
+                if await _overlapping_native_attendance_exists(
+                    db,
+                    resident_id=resident_id,
+                    event=event,
+                ):
+                    continue
                 resolved.update(resident_timing)
                 event_rows[str(event["id"])] = _available_event_row(
                     event,
@@ -1549,7 +1559,17 @@ async def list_available_events(
                 programme_code=resident["programme_code"],
             )
             if resolved is not None:
-                option_names.add(event["teaching_name"])
+                event, _ = await _native_resident_event_view(
+                    db,
+                    event=event,
+                    resident_id=resident_id,
+                )
+                if not await _overlapping_native_attendance_exists(
+                    db,
+                    resident_id=resident_id,
+                    event=event,
+                ):
+                    option_names.add(event["teaching_name"])
 
     if not has_posting_context:
         return {

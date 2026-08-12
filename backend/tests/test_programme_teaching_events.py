@@ -1414,6 +1414,38 @@ def test_pc_pool_event_uses_posting_specific_mapped_duration() -> None:
     assert created.json()["end_time"] == "12:00:00"
 
 
+def test_pc_pool_event_creation_allows_schedule_overlap() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    client = _client(session)
+    headers = _headers(scope="DR")
+    payload = {
+        "programme_code": "DR",
+        "posting_code": "TTSHCardio",
+        "teaching_name_id": session.teaching_name_id_for("Journal Club", "DR"),
+        "event_date": "2026-05-20",
+        "start_time": "10:00",
+    }
+
+    first = client.post(
+        "/admin/programme-teaching-events",
+        headers=headers,
+        json=payload,
+    )
+    second = client.post(
+        "/admin/programme-teaching-events",
+        headers=headers,
+        json={**payload, "start_time": "10:30"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["id"] != second.json()["id"]
+    assert {first.json()["end_time"], second.json()["end_time"]} == {
+        "11:00:00",
+        "11:30:00",
+    }
+
+
 def test_pc_pool_event_requires_exact_persisted_mapping_posting_scope() -> None:
     session = FakeProgrammeTeachingEventsSession()
     original_events = deepcopy(session.events)

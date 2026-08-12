@@ -521,7 +521,7 @@ async def _issue_context(
 async def policy_harness(
     rls_postgres_harness: RlsPostgresHarness,
 ) -> AsyncIterator[RlsPostgresHarness]:
-    assert rls_postgres_harness.revision == "20260806_000038"
+    assert rls_postgres_harness.revision == "20260812_000039"
     yield rls_postgres_harness
 
 

@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError, ErrorCode
+from app.services.database_context import RLS_ENABLED_INFO_KEY
 
 
 DEFAULT_POOL_EVENT_DURATION_HOURS = Decimal("1.00")
@@ -101,9 +102,27 @@ async def resolve_pool_event_timing(
 ) -> PoolEventTiming:
     """Resolve the staff envelope across the scope's R-year mapping rows."""
 
+    rls_enabled = bool(
+        getattr(db, "info", {}).get(RLS_ENABLED_INFO_KEY, False)
+    )
     result = await db.execute(
         text(
             """
+            SELECT
+                r_year,
+                teaching_target_id,
+                session_type_id,
+                session_type_name,
+                duration_hours
+            FROM mata_rls.resolve_staff_pool_event_timings(
+                CAST(:teaching_name_ids AS uuid[]),
+                CAST(:reporting_period_id AS uuid),
+                CAST(:programme_code AS text),
+                CAST(:posting_code AS text)
+            )
+            """
+            if rls_enabled
+            else """
             /* pool_event_timing:resolve */
             SELECT
                 mapping.r_year,
@@ -125,6 +144,7 @@ async def resolve_pool_event_timing(
         ),
         {
             "teaching_name_id": str(scope.teaching_name_id),
+            "teaching_name_ids": [str(scope.teaching_name_id)],
             "reporting_period_id": str(scope.reporting_period_id),
             "programme_code": scope.programme_code,
             "posting_code": scope.posting_code,
@@ -233,9 +253,22 @@ async def list_pool_event_timings(
 
     if not teaching_name_ids:
         return {}
+    rls_enabled = bool(
+        getattr(db, "info", {}).get(RLS_ENABLED_INFO_KEY, False)
+    )
     result = await db.execute(
         text(
             """
+            SELECT *
+            FROM mata_rls.resolve_staff_pool_event_timings(
+                CAST(:teaching_name_ids AS uuid[]),
+                CAST(:reporting_period_id AS uuid),
+                CAST(:programme_code AS text),
+                CAST(:posting_code AS text)
+            )
+            """
+            if rls_enabled
+            else """
             /* pool_event_timing:list */
             SELECT
                 mapping.teaching_name_id,
@@ -309,30 +342,41 @@ async def with_staff_pool_event_timings(
     """Attach staff timing metadata with one query per period/programme scope."""
 
     enriched_rows = [dict(row) for row in rows]
-    teaching_names_by_scope: defaultdict[tuple[str, str], set[str]] = defaultdict(set)
+    teaching_names_by_scope: defaultdict[
+        tuple[str, str, str], set[str]
+    ] = defaultdict(set)
     for row in enriched_rows:
         teaching_name_id = row.get("teaching_name_id")
         reporting_period_id = row.get("source_reporting_period_id")
         programme_code = row.get("source_programme_code")
+        posting_code = row.get("posting_code")
         if (
             teaching_name_id is None
             or reporting_period_id is None
             or programme_code is None
+            or posting_code is None
         ):
             continue
         teaching_names_by_scope[
-            (str(reporting_period_id), str(programme_code))
+            (
+                str(reporting_period_id),
+                str(programme_code),
+                str(posting_code),
+            )
         ].add(str(teaching_name_id))
 
     timings_by_full_scope: dict[tuple[str, str, str, str], PoolEventTiming] = {}
-    for (reporting_period_id, programme_code), teaching_name_ids in sorted(
-        teaching_names_by_scope.items()
-    ):
+    for (
+        reporting_period_id,
+        programme_code,
+        posting_code,
+    ), teaching_name_ids in sorted(teaching_names_by_scope.items()):
         timings = await list_pool_event_timings(
             db,
             teaching_name_ids=sorted(teaching_name_ids),
             reporting_period_id=reporting_period_id,
             programme_code=programme_code,
+            posting_code=posting_code,
         )
         timings_by_full_scope.update(
             {

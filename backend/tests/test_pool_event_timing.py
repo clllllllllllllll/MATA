@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from app.services.pool_event_timing import (
     PoolEventTimingScope,
+    list_pool_event_timings,
     resolve_pool_event_r_year_timing,
     resolve_pool_event_timing,
     sync_pool_event_timings,
@@ -37,14 +38,36 @@ class _Result:
 
 
 class _TimingSession:
-    def __init__(self, durations: list[Decimal | None], *, sync_rowcount: int = 0) -> None:
+    def __init__(
+        self,
+        durations: list[Decimal | None],
+        *,
+        sync_rowcount: int = 0,
+        rls_enabled: bool = False,
+    ) -> None:
         self.durations = durations
         self.sync_rowcount = sync_rowcount
         self.sync_payloads: list[dict] = []
+        self.info = {"mata_rls_enabled": rls_enabled}
+        self.statements: list[str] = []
 
     async def execute(self, statement, params=None):  # noqa: ANN001
         sql = str(statement)
+        self.statements.append(sql)
         payload = dict(params or {})
+        if "mata_rls.resolve_staff_pool_event_timings" in sql:
+            teaching_name_id = payload["teaching_name_ids"][0]
+            posting_code = payload["posting_code"]
+            return _Result(
+                rows=[
+                    {
+                        **self._timing_row(index, value),
+                        "teaching_name_id": teaching_name_id,
+                        "posting_code": posting_code,
+                    }
+                    for index, value in enumerate(self.durations, 1)
+                ]
+            )
         if "/* pool_event_timing:resolve */" in sql:
             return _Result(rows=[self._timing_row(index, value) for index, value in enumerate(self.durations, 1)])
         if "/* pool_event_timing:resolve_r_year */" in sql:
@@ -113,6 +136,40 @@ def test_resident_timing_uses_exact_r_year_mapping() -> None:
     assert timing.r_year == "R1"
     assert timing.duration_hours == Decimal("1.0")
     assert timing.is_mapped is True
+
+
+def test_rls_staff_timing_uses_protected_exact_scope_resolver() -> None:
+    session = _TimingSession(
+        [Decimal("1.0"), Decimal("2.0")],
+        rls_enabled=True,
+    )
+    scope = _scope()
+
+    timing = asyncio.run(
+        resolve_pool_event_timing(session, scope=scope)  # type: ignore[arg-type]
+    )
+    listed = asyncio.run(
+        list_pool_event_timings(  # type: ignore[arg-type]
+            session,
+            teaching_name_ids=[scope.teaching_name_id],
+            reporting_period_id=scope.reporting_period_id,
+            programme_code=scope.programme_code,
+            posting_code=scope.posting_code,
+        )
+    )
+
+    assert timing.duration_hours == Decimal("2.0")
+    assert listed[(str(scope.teaching_name_id), scope.posting_code)].duration_varies
+    assert len(session.statements) == 2
+    assert all(
+        "mata_rls.resolve_staff_pool_event_timings" in statement
+        for statement in session.statements
+    )
+    assert all(
+        "pool_event_timing:list" not in statement
+        and "pool_event_timing:resolve */" not in statement
+        for statement in session.statements
+    )
 
 
 def test_sync_recalculates_exact_scope_with_mapped_duration() -> None:

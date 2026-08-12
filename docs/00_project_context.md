@@ -91,6 +91,13 @@ Teaching Name mapping for its source period/programme and requested posting.
 Pending mappings remain valid. Secretary, Master, Resident, and
 cross-programme boundaries do not change.
 
+**Phase U local authorization update (2026-08-12):** Revision
+`20260812_000039` preserves the 35-table/89-policy inventory and adds a
+runtime-only staff timing resolver. It permits only an authorized
+Master/Programme PC or the exact Secretary posting/programme capability, so
+Secretary Add Teaching can use mapped R-year duration envelopes without direct
+mapping-table access. Resident and external contexts receive no rows.
+
 Local code and disposable-database verification are not proof of deployed Supabase behavior.
 
 **AUD-M-06 reliable-logout local state (2026-07-28):** Logout clears local

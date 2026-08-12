@@ -542,6 +542,13 @@ each event occurred. Resident overlap checks use those resident-specific event
 intervals; staff and Non-NHG overlap/display use the longest-duration event
 envelope.
 
+Scheduled events may legitimately overlap. When staff select a posting, date,
+and start time that overlaps an existing staff event envelope, Add Teaching
+shows a non-blocking warning and still permits creation. A mapping change may
+also create or expand an overlap after events or attendance exist; the mapping
+remains authoritative, event timings update atomically, and neither event nor
+attendance evidence is deleted or rewritten.
+
 #### Protected mutation boundary
 
 - Every Teaching Name mutation uses the current protected-mutation
@@ -597,7 +604,9 @@ snapshots while recalculating `duration_hours` and `end_time` on pool events in
 the exact Teaching Name/posting/programme/period scope. Different R-years may
 map to different durations; the stored staff event timing is the longest
 effective R-year duration, while native Resident reads resolve their exact
-event-date R-year duration.
+event-date R-year duration. Impact confirmation also warns that a longer
+duration may create or expand schedule overlaps; overlap is informational and
+does not prevent the authoritative mapping change.
 
 ## Admin Endpoints
 
@@ -1516,6 +1525,10 @@ Create a programme-owned scheduled teaching event.
 ```
 - **Backend writes:** `teaching_events.created_for_programme_code = programme_code`, `created_by_role = 'programme_pc'`, `is_adhoc = false`, the selected source ID, and the immutable display snapshot. A pool write also persists exact immutable `source_programme_code` and `source_reporting_period_id`, and the owner must equal the source programme. `created_by_role` is role/source metadata only; actor names are not stored on the event. Event and audit evidence commit atomically, then scoped caches are invalidated.
 - **Resident visibility:** Residents can see the event only when their `programme_code` matches `created_for_programme_code` and the event also passes posting/date and persisted-source eligibility rules.
+- **Schedule overlap:** An overlap with another scheduled event at the same
+  posting is allowed. Add Teaching warns against the staff event envelopes so
+  the creator can review the slot; the warning does not disable or reject the
+  create request.
 
 ### PUT `/admin/programme-teaching-events/{id}`
 
@@ -1864,10 +1877,17 @@ List teaching events available for submission.
   5. Deduplicate rows by `teaching_events.id` across all sources.
   6. Filter to `event_date <= today` (no future events).
   7. Exclude events already submitted by this resident.
-  8. Apply the event-date-specific effectively active reporting-period check; never resolve historical visibility from today.
-   9. For a source-backed scheduled event, apply an exact `teaching_name_id` source reporting-period/programme match or an explicit `global_session_type_id` first. For a both-null legacy event, use only deterministic persisted event/ownership/posting/date evidence. Do not query the catalogue, target mappings, Column K, or display text to classify an event.
-  10. Do not show PC-created events for non-native programmes.
-  11. Do not show secretary-created events from arbitrary TTSH departments unless they are either the resident's assigned/current posting or the resident's native programme department.
+  8. Exclude every other candidate whose resident-specific interval directly
+     overlaps a submitted attendance interval. This is a direct interval test,
+     not transitive suppression through an overlap chain. Before submission all
+     eligible overlapping alternatives remain visible; after one is submitted,
+     that event and its directly overlapping alternatives are absent from the
+     available list. Removing the attendance makes them available again when
+     all other eligibility rules still pass.
+  9. Apply the event-date-specific effectively active reporting-period check; never resolve historical visibility from today.
+  10. For a source-backed scheduled event, apply an exact `teaching_name_id` source reporting-period/programme match or an explicit `global_session_type_id` first. For a both-null legacy event, use only deterministic persisted event/ownership/posting/date evidence. Do not query the catalogue, target mappings, Column K, or display text to classify an event.
+  11. Do not show PC-created events for non-native programmes.
+  12. Do not show secretary-created events from arbitrary TTSH departments unless they are either the resident's assigned/current posting or the resident's native programme department.
 - **Query params:** `date_from`, `date_to`, `teaching_name`, `posting_code`. Filters apply to the combined cross-period collection and cannot widen resident scope.
 - **Response metadata:** each event includes the server-resolved `reporting_period_id` / `reporting_period_label`. The top-level `active_reporting_periods[]` lists the periods considered, allowing the frontend to distinguish no active submission period from an active-period empty result without presenting a selector.
 
@@ -1920,6 +1940,11 @@ Submit attendance for one or more events.
 `compliance_warning` is `null` when all submitted sessions are either weekdays or match a weekend exception rule.
 
 An overlapping distinct event is returned as a submission conflict for the later event. No delete or replacement is performed, and the earlier accepted attendance remains available in history and compliance reads.
+The available-event list normally hides that directly overlapping alternative
+after the first attendance is accepted, but the submission-time conflict
+remains the server boundary for stale clients, direct API requests, and atomic
+batches. Removing the first attendance restores both alternatives when they
+remain otherwise eligible.
 
 ### DELETE `/resident/attendance/{attendance_id}`
 
@@ -2395,6 +2420,9 @@ The same route may support NHG and Non-NHG Residents through identity branching.
 - Return normal scheduled events only. Exclude resident-created ad-hoc events, events outside the schedule date range or in a schedule gap, and events blocked by existing reporting-period or status rules.
 - Filter `event_date <= today`.
 - Exclude events already submitted by that Non-NHG Resident in `external_attendance_records`.
+- After one attendance is submitted, also exclude other candidates whose staff
+  event envelope directly overlaps it. Removing that attendance restores all
+  otherwise eligible alternatives.
 - Do not apply native NHG compliance catalogue/denominator logic to Non-NHG Residents.
 
 ### POST `/resident/attendance` for Non-NHG Residents

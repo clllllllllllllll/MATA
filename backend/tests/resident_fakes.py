@@ -1478,9 +1478,21 @@ class FakeResidentSession:
                 if existing["event_date"] in set(payload.get("candidate_dates") or []):
                     rows.append(
                         {
+                            "id": existing["id"],
+                            "posting_code": existing["posting_code"],
                             "event_date": existing["event_date"],
                             "start_time": existing["start_time"],
                             "end_time": existing.get("end_time"),
+                            "duration_hours": existing.get("duration_hours"),
+                            "teaching_name_id": existing.get("teaching_name_id"),
+                            "global_session_type_id": existing.get("global_session_type_id"),
+                            "is_adhoc": existing.get("is_adhoc", False),
+                            "source_reporting_period_id": existing.get(
+                                "source_reporting_period_id"
+                            ),
+                            "source_programme_code": existing.get(
+                                "source_programme_code"
+                            ),
                         }
                     )
             return FakeResult(rows=rows)

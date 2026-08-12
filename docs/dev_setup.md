@@ -112,7 +112,7 @@ python -B -m tests.run_rls_restricted_pytest -q --tb=short -p no:cacheprovider t
 Never substitute `mata_db`, the earlier H-D/H-E database, or a remote target.
 
 For Phase R local verification, use only the dedicated
-`mata_evolved_ttf_r_verify` runner at head `20260806_000038`. Its explicit
+`mata_evolved_ttf_r_verify` runner at head `20260812_000039`. Its explicit
 owner and maintenance URLs must name localhost and the runner verifies the
 exact target, authorized owner (`mata_phase_r_owner`), and port (`5432`) before
 it recreates the disposable database. It derives separate temporary

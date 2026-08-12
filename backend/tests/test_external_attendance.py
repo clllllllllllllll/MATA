@@ -196,6 +196,67 @@ def test_external_events_exclude_already_submitted_records() -> None:
     assert fake_db.second_event_id not in ids
 
 
+def test_external_overlapping_events_reappear_after_attendance_is_removed() -> None:
+    fake_db = FakeResidentSession()
+    event_date = fake_db.today - timedelta(days=1)
+    first = fake_db._event(  # noqa: SLF001
+        str(uuid4()),
+        "TTSHCardio",
+        "Parallel External Teaching A",
+        event_date,
+        start_time=time(10, 0),
+    )
+    second = fake_db._event(  # noqa: SLF001
+        str(uuid4()),
+        "TTSHCardio",
+        "Parallel External Teaching B",
+        event_date,
+        start_time=time(10, 30),
+    )
+    second["end_time"] = time(11, 30)
+    fake_db.events = [first, second]
+    fake_db.external_attendance = []
+    client = _client(fake_db)
+
+    initially_available = client.get(
+        "/resident/events",
+        headers=_external_headers(fake_db),
+    )
+    assert initially_available.status_code == 200
+    assert {row["id"] for row in initially_available.json()["events"]} == {
+        first["id"],
+        second["id"],
+    }
+
+    fake_db.external_attendance.append(
+        {
+            "id": str(uuid4()),
+            "external_resident_id": fake_db.external_resident_id,
+            "teaching_event_id": first["id"],
+            "status": "submitted",
+            "posting_code": "TTSHCardio",
+            "submitted_at": fake_db.now,
+        }
+    )
+    after_submission = client.get(
+        "/resident/events",
+        headers=_external_headers(fake_db),
+    )
+    assert after_submission.status_code == 200
+    assert after_submission.json()["events"] == []
+
+    fake_db.external_attendance[0]["status"] = "removed"
+    after_removal = client.get(
+        "/resident/events",
+        headers=_external_headers(fake_db),
+    )
+    assert after_removal.status_code == 200
+    assert {row["id"] for row in after_removal.json()["events"]} == {
+        first["id"],
+        second["id"],
+    }
+
+
 def test_external_event_visibility_does_not_require_teaching_name_catalogue() -> None:
     fake_db = FakeResidentSession()
     fake_db.external_residents[0]["current_nhg_posting_code"] = "KTPHGerMed"

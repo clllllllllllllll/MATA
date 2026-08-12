@@ -596,6 +596,128 @@ def test_events_exclude_submitted_event_in_active_period_window() -> None:
     assert payload["reason"] == "no_eligible_scheduled_events"
 
 
+@pytest.mark.asyncio
+async def test_overlapping_events_reappear_after_attendance_is_removed() -> None:
+    fake_db = FakeResidentSession()
+    event_date = fake_db.today - timedelta(days=1)
+    first_event_id = str(uuid4())
+    second_event_id = str(uuid4())
+    first = fake_db._event(  # noqa: SLF001
+        first_event_id,
+        "TTSHCardio",
+        "Parallel Teaching A",
+        event_date,
+        start_time=time(10, 0),
+        teaching_name_id=str(uuid4()),
+        source_reporting_period_id=fake_db.period_id,
+        source_programme_code="GRM",
+    )
+    second = fake_db._event(  # noqa: SLF001
+        second_event_id,
+        "TTSHCardio",
+        "Parallel Teaching B",
+        event_date,
+        start_time=time(11, 30),
+    )
+    second["end_time"] = time(12, 30)
+    fake_db.events = [first, second]
+    fake_db.attendance = []
+    r1_session_type_id = str(uuid4())
+    fake_db.pool_event_r_year_timings[
+        (
+            first["teaching_name_id"],
+            fake_db.period_id,
+            "GRM",
+            "TTSHCardio",
+            "R2",
+        )
+    ] = {
+        "r_year": "R2",
+        "teaching_target_id": fake_db.session_type_id,
+        "session_type_id": fake_db.session_type_id,
+        "session_type_name": "Parallel Teaching A [2h]",
+        "duration_hours": Decimal("2.0"),
+    }
+    fake_db.pool_event_r_year_timings[
+        (
+            first["teaching_name_id"],
+            fake_db.period_id,
+            "GRM",
+            "TTSHCardio",
+            "R1",
+        )
+    ] = {
+        "r_year": "R1",
+        "teaching_target_id": r1_session_type_id,
+        "session_type_id": r1_session_type_id,
+        "session_type_name": "Parallel Teaching A [1h]",
+        "duration_hours": Decimal("1.0"),
+    }
+
+    initially_available = await resident_submission.list_available_events(
+        fake_db,
+        resident_id=fake_db.residents[0]["id"],
+        today=fake_db.today,
+    )
+    assert {row["id"] for row in initially_available["events"]} == {
+        first_event_id,
+        second_event_id,
+    }
+    first_available = next(
+        row for row in initially_available["events"] if row["id"] == first_event_id
+    )
+    assert first_available["duration_hours"] == Decimal("2.0")
+    assert first_available["end_time"] == time(12, 0)
+
+    attendance_id = str(uuid4())
+    fake_db.attendance.append(
+        {
+            "id": attendance_id,
+            "resident_id": fake_db.resident_id,
+            "teaching_event_id": first_event_id,
+            "status": "submitted",
+            "posting_code": "TTSHCardio",
+        }
+    )
+    after_submission = await resident_submission.list_available_events(
+        fake_db,
+        resident_id=fake_db.residents[0]["id"],
+        today=fake_db.today,
+    )
+    assert after_submission["events"] == []
+    assert after_submission["filter_options"]["teaching_name_options"] == []
+
+    fake_db.resident_postings[1].update(
+        {
+            "posting_code": "TTSHCardio",
+            "r_year": "R1",
+        }
+    )
+    other_r_year_view = await resident_submission.list_available_events(
+        fake_db,
+        resident_id=fake_db.residents[1]["id"],
+        today=fake_db.today,
+    )
+    assert {row["id"] for row in other_r_year_view["events"]} == {
+        first_event_id,
+        second_event_id,
+    }
+    assert next(
+        row for row in other_r_year_view["events"] if row["id"] == first_event_id
+    )["end_time"] == time(11, 0)
+
+    fake_db.attendance[0]["status"] = "removed"
+    after_removal = await resident_submission.list_available_events(
+        fake_db,
+        resident_id=fake_db.residents[0]["id"],
+        today=fake_db.today,
+    )
+    assert {row["id"] for row in after_removal["events"]} == {
+        first_event_id,
+        second_event_id,
+    }
+
+
 def test_events_support_scheduled_filters_without_widening_visibility() -> None:
     fake_db = FakeResidentSession()
     fake_db.resident_postings.append(
