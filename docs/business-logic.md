@@ -55,6 +55,77 @@ attendance rows remain unchanged. Non-NHG Residents use exact posting
 visibility and the staff envelope because NHG compliance/R-year resolution
 does not apply.
 
+### Planned Phase V: cross-posting Teaching Name mapping and PC-private names
+
+Phase V separates **Teaching Name ownership** from the **mapping programme**.
+The owner identifies the department/programme that created and manages the
+name. The mapping programme is the native programme whose PC maps that name to
+its own TTF targets for its own Residents. The same Secretary-created Teaching
+Name may therefore be mapped independently by several native programmes without
+copying display text or sharing a target selection.
+
+For one effectively active reporting period, a Programme PC's mapping list is
+the union of:
+
+1. active Teaching Names created by the PC's own native Department Secretary;
+2. active Teaching Names created by a host Department Secretary when at least
+   one native Resident from the PC's programme has an actual usable
+   `resident_postings` assignment to that host posting anywhere in the same
+   reporting period; and
+3. programme-private Teaching Names created by a PC in that same native
+   programme.
+
+Cross-posting eligibility comes only from actual RDB-backed Resident posting
+rows anywhere in the selected reporting period; an actual RDB-scheduled
+assignment may be earlier, current, or later within that period. A generally
+allowed rotation without an actual assignment,
+`secretary_programme_pools`, `programmes.native_teaching_posting_code`, a TTF
+target, posting-code text, or a client-supplied programme/posting pair is not
+sufficient evidence. Once a Secretary-created name has been admitted to a
+native programme's mapping list in a reporting period, its pending or mapped
+configuration remains available for the remainder of that period even after
+the last relevant Resident leaves the host posting or a later RDB correction
+removes that assignment. This avoids erasing reviewed configuration during a
+period. It does not grant eligibility in another reporting period.
+
+A cross-posting PC maps the admitted name only to targets from the PC's own
+programme TTF, at the exact host posting and R-year scope. The host department's
+TTF is never selected merely because its Secretary created the name. The PC may
+read the source name and manage its own mapping, but cannot rename, deactivate,
+reactivate, delete, or otherwise manage the host department's source name.
+Names with identical normalized display text but different source identities
+remain distinct.
+
+A PC may also create a programme-private Teaching Name. The server fixes its
+owner programme to the authenticated PC scope, records immutable PC creator
+provenance, and makes it visible only to PCs of that programme and the
+Department Secretary explicitly authorized for that programme's native pool.
+It is labelled as PC-created. It may be mapped only to that programme's TTF and
+is never exposed to another programme's PC or to a Secretary at an external
+host posting.
+
+Only effectively active reporting periods participate in the active name and
+mapping workflows. When a period becomes inactive, its source visibility,
+programme admissions, pending mappings, and completed mappings disappear from
+active work queues and are never copied automatically into a later period.
+They remain stored as historical configuration and continue to support audit,
+past event timing, attendance history, and historical reads. Explicitly
+reopening the same reporting period follows the ordinary effective-status
+rules; it does not create or copy a new period's configuration.
+
+**Intended valid case:** REHAB Residents have actual reporting-period postings
+at `TTSHGerMed` and `TTSHAnaes`. The REHAB PC sees active names created by the
+REHAB, GERI, and ANAES Department Secretaries, but maps every admitted name to
+the exact REHAB TTF target for its relevant posting/R-year. A GERI PC may map
+the same GERI Secretary source differently against the GERI TTF.
+
+**Prohibited cases:** do not expose a host department's names when the native
+programme has no actual Resident posting there in that reporting period; do not
+map a host name to the host programme's TTF on behalf of another programme; do
+not expose a PC-private name outside its native programme and native Department
+Secretary; and do not delete historical rows merely because the reporting
+period became inactive or the last Resident left the host posting.
+
 Global session types stay Admin-managed and, for source-backed scheduled
 events, are identified by `global_session_type_id` before ordinary Teaching
 Name mapping. Resident ad-hoc teaching remains fixed to

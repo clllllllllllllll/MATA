@@ -608,6 +608,68 @@ event-date R-year duration. Impact confirmation also warns that a longer
 duration may create or expand schedule overlaps; overlap is informational and
 does not prevent the authoritative mapping change.
 
+### Planned Phase V Teaching Name visibility and creation contract
+
+Phase V reuses the protected Teaching Name and mapping route families; it does
+not introduce a client-controlled cross-programme grant endpoint.
+
+For an effectively active reporting period, Programme-PC Teaching Name and
+mapping reads return:
+
+- names owned by the PC's native programme;
+- Secretary-created names admitted from a host posting because the selected
+  programme has at least one actual RDB-backed Resident posting there in that
+  reporting period; and
+- PC-created programme-private names owned by the selected programme.
+
+The response must expose opaque IDs plus bounded provenance needed by the UI:
+source/owner programme, source posting when Secretary-created, immutable
+`created_by_role`, a PC-created/private indicator, and whether the current actor
+may manage the source name. It must not expose Resident identity as evidence for
+the admission. Same display text from two source departments remains two
+options.
+
+`POST /admin/teaching-names` creates a programme-private name for a Programme
+PC. The server derives the owner programme from the authenticated PC scope,
+sets PC creator provenance and private visibility, and provisions only
+in-programme mapping work. Request fields attempting to select another owner,
+source posting, creator role, or broader visibility are rejected. Master Admin
+ordinary creation remains forbidden.
+
+An external host name is read-only as a source to the consuming Programme PC:
+the PC may assign, change, or clear mappings belonging to its own programme,
+but source-name rename, deactivate, reactivate, and delete routes return `403`
+unless the existing owner-side lifecycle authorization independently permits
+the operation. A mapping target must always belong to the authenticated PC's
+programme TTF and exact reporting-period/posting/R-year scope; it is never
+selected from the source department's TTF.
+
+Secretary Teaching Name reads continue to require the exact Secretary posting
+and explicit programme capability. A native Department Secretary additionally
+sees PC-private names owned by that same programme, labelled as PC-created.
+Secretaries at external host postings and unrelated programme PCs never see
+those private names. A Secretary-created department-shared name remains
+available to eligible external Programme PCs only through server-derived
+programme admission; no Secretary request can nominate external programmes.
+
+Cross-posting admission is based on actual usable `resident_postings` rows
+anywhere in the selected reporting period, not merely on a generally permitted
+rotation. An actual RDB-scheduled assignment may be earlier, current, or later
+within that same period. Once admitted, the name and any pending or completed
+mappings remain in that programme's active queue for the rest of the period
+even if the last Resident leaves. Effectively inactive periods are excluded
+from active routes; their rows remain available only to explicitly
+historical/audit reads and are not copied into a new period.
+
+**Valid:** a REHAB PC maps a GERI Secretary source at `TTSHGerMed` to a REHAB
+TTF target because a REHAB Resident has an actual reporting-period posting at
+that site.
+
+**Rejected:** the same read/mutation when no REHAB Resident posting has admitted
+that source; a mapping target from the GERI TTF; a request that broadens a
+PC-private name to another programme; or a cross-programme lifecycle mutation
+against the source name.
+
 ## Admin Endpoints
 
 ### POST `/admin/upload/rdb`

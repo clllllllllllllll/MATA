@@ -284,6 +284,39 @@ The lifecycle endpoints use the existing protected mutation boundary:
   count-only audit response, and clears only the optional event identity. Do not expose raw audit values in browser
   storage, URLs, logs, or error details.
 
+#### Planned Phase V cross-posting and PC-private authorization
+
+Phase V must treat source-name ownership, programme admission, mapping
+authority, and event/submission visibility as separate predicates:
+
+- A Programme PC may read an external Secretary-created source name only when
+  a durable server-owned admission exists for one of the PC's current programme
+  scopes and the same reporting period.
+- Admission may be created only from actual RDB-backed `resident_postings`
+  evidence for a native Resident of that programme at the source Secretary's
+  posting in that reporting period. Request parameters, TTF rows, configured
+  rotation possibilities, Secretary capabilities, display text, and posting
+  prefixes cannot create admission.
+- Admission grants read access to the source identity and mapping DML only for
+  the PC's own programme. It grants no cross-programme source-name lifecycle
+  DML and no access to the source programme's targets.
+- A PC-created private name is readable only by PCs in its immutable owner
+  programme and the Department Secretary holding the exact native-programme
+  Teaching Name capability. It is denied to other PCs and external-posting
+  Secretaries even when their Residents or events share a posting.
+- Creator role, owner programme, source posting, visibility class, admission
+  reason, and mapping programme are server-owned. Unsafe requests cannot set or
+  widen them.
+- Period deactivation removes names and mappings from active workflows without
+  deleting RLS-protected history. Historical access continues to require the
+  existing explicit administrative/subject scope.
+
+RLS and runtime helper changes must validate the complete tuple rather than
+granting broader `SELECT` on Teaching Name or mapping tables. Cross-posting
+resolution must not expose the Resident row or MCR that established admission.
+Mapping mutations remain revision-fenced, audited, exact-target validated, and
+atomic. A same-text name in another source department never confers access.
+
 Phase C, Phase D, Phase F, and Phase G remain additive historical milestones.
 E2+B2 is the single destructive cutover: it removes the physical A–K parser,
 catalogue, and target-details path without backfilling workbook text or

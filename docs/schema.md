@@ -144,6 +144,76 @@ Teaching Name and no mapping from workbook text. Existing mappings are
 provisioned only from distinct posting/R-year target scopes and active shared
 pool names. Actual all-28 operational onboarding remains Phase R.
 
+## Planned Phase V persistence extension
+
+Phase V must separate a Teaching Name's immutable source ownership from each
+native programme allowed to map that source. This section is a planned schema
+contract; no Phase V migration is present until the corresponding
+implementation branch is approved and verified.
+
+`teaching_names.programme_code` remains the source owner programme. Phase V
+adds immutable provenance sufficient to distinguish:
+
+- a department-shared name created by a Department Secretary, including the
+  exact source posting snapshot; and
+- a programme-private name created by a Programme PC.
+
+Creator provenance must be stored as immutable role/scope evidence rather than
+derived later from the user's current role. Existing actor UUID audit fields
+remain. A PC-private row is owned by the authenticated PC programme and has no
+cross-programme audience. A Secretary-created row may be admitted to other
+native programmes only through the actual Resident-posting rule below.
+
+Phase V introduces a durable Teaching Name-to-programme admission relation
+(working name `teaching_name_programme_scopes`) with at least:
+
+| Column | Required contract |
+|--------|-------------------|
+| `teaching_name_id` | FK to the immutable source Teaching Name identity. |
+| `reporting_period_id` | Must equal the Teaching Name's reporting period. |
+| `programme_code` | Native/audience programme whose PC may map the name. |
+| `admission_reason` | Server-owned owner-programme, resident-host-posting, or PC-private provenance. |
+| audit timestamps/actor | Preserve when and how the scope became eligible without storing Resident identity in the scope row. |
+
+The relation is unique per `(teaching_name_id, programme_code)`. An admission
+is additive for its reporting period: a later Resident rotation end or RDB
+replacement does not delete it. Period deactivation excludes it from active
+queries but does not delete it, and no row is copied into a later reporting
+period.
+
+`teaching_name_mappings.programme_code` becomes explicitly the **mapping/native
+programme**, not necessarily the Teaching Name owner programme. Its identity
+must include that programme:
+`(teaching_name_id, programme_code, posting_code, r_year)`. A mapping must have
+a matching Teaching Name programme-admission row and may select only an exact
+`teaching_targets` row from the same reporting period, mapping programme,
+posting, and R-year. The current composite FK that forces the name owner and
+mapping programme to be equal must be replaced by equivalent period/admission
+integrity; target-scope integrity remains fail closed.
+
+For Secretary-created source names, the exact source posting is the mapping
+posting admitted by actual RDB-backed `resident_postings` evidence. For
+PC-private names, existing in-programme target-scope provisioning remains
+programme-local. Duplicate display text never merges source identities or
+mapping rows.
+
+Scheduled events continue to store one stable `teaching_name_id` and immutable
+source snapshots. Under Phase V, a Secretary-created source event may resolve
+against different admitted native-programme mappings for different Residents;
+the Resident's native programme and event-date R-year select the mapping. A
+PC-private source remains programme-owned. The stored staff envelope is the
+longest effective duration across the admitted mapping audiences for that
+source event, while each native Resident sees the exact duration for their own
+programme and event-date R-year. Mapping changes recalculate affected event
+timing without rewriting attendance evidence.
+
+**Database prohibitions:** no trigger or migration may infer cross-programme
+admission from display text, a generally configured rotation, Secretary
+capability, native-posting configuration, or TTF presence alone. A PC-private
+name cannot acquire a foreign programme admission. Reporting-period
+deactivation must not cascade-delete source names, admission rows, mappings,
+events, or attendance.
+
 ## Entity Relationship Summary
 
 ```

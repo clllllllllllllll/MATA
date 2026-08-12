@@ -468,6 +468,24 @@ The SSR (Sub-Specialty Registrar) sheet has a different structure: MCR, Name, SI
 8. Compute and store `working_days_in_month` per row
 9. Call `hibernate_stale_surplus()` after insert. This only updates lifecycle state; it does not carry a stored balance into attendance. On the next compliance read, recompute each ledger value as `max(cumulative raw eligible attendance - cumulative target_100, 0)` and replace it idempotently before tag reallocation.
 
+### Planned Phase V RDB effect on Teaching Name admission
+
+The RDB remains the sole evidence that a native programme has an actual
+Resident posting at another department during a reporting period. After a
+successful reporting-period replacement, Phase V reconciles additive Teaching
+Name programme admissions for every distinct usable
+`(resident.programme_code, resident_postings.posting_code)` pair represented in
+that period. It admits active Secretary-created names from the exact host
+posting to the Resident programme's mapping workflow.
+
+This reconciliation never admits PC-private names, never infers a department
+from posting text, and never uses a generally permitted rotation or TTF target
+as posting evidence. It is additive within the reporting period: a later RDB
+replacement that removes the last matching Resident posting does not delete a
+previously admitted name or its pending/completed mappings. Failed RDB uploads
+make no admission changes. Reporting-period deactivation hides the retained
+configuration from active workflows but does not delete historical rows.
+
 ---
 
 ## Evolved TTF format (implemented E2+B2)
@@ -693,7 +711,14 @@ direct stable Teaching Name target links and unambiguous structured event
 evidence; no fuzzy text matching is used, and transitional text-only or
 unresolved evidence is excluded.
 
-TTF does not create Teaching Names, mappings, or warnings from workbook name text. Pending mappings are provisioned solely from new distinct posting/R-year target scopes and active Teaching Names already in the shared pool.
+TTF does not create Teaching Names, programme admissions, mappings, or warnings
+from workbook name text. Under planned Phase V, pending mappings are provisioned
+only from the intersection of exact TTF posting/R-year target scopes and active
+Teaching Names already admitted to the uploaded programme. A
+Secretary-created external source must have server-owned RDB-backed admission;
+a PC-private source must be owned by the uploaded programme. TTF re-upload may
+reconcile missing pending rows for those admitted scopes but cannot broaden
+visibility or source-name lifecycle authority.
 
 **Concurrency:** The programme-global `posting_groups` PostgreSQL advisory lock is acquired before the reporting-period/programme scope advisory lock. A second upload for the same programme returns `409`, including a different reporting period; different programmes remain independent.
 
