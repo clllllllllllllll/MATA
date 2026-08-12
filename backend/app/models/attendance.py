@@ -61,6 +61,21 @@ class AttendanceRecord(UUIDTimestampMixin, Base):
         server_default=text("'submitted'"),
     )
     posting_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    submitted_during_loa: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    )
+    loa_resident_posting_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("resident_postings.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    loa_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    loa_classified_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
 
 
 class ExternalAttendanceRecord(UUIDTimestampMixin, Base):

@@ -627,6 +627,24 @@ Multiple reporting periods may be administratively/effectively active at once. A
 
 Resident scheduled-event discovery enumerates all effectively active periods, then uses the date-aware resolver for every candidate event. The event must fall inside exactly one active period, and its posting/persisted-source checks use that period ID; a period containing today is not required. New attendance and ad-hoc submissions continue to resolve exactly one effectively active period from the event/selected teaching date. If no effectively active period exists, the event list is empty with `reason = "active_reporting_period_unavailable"` and ad-hoc submission is disabled; attendance and ad-hoc submission attempts return `422` when their date has no matching period. Existing attendance records remain stored and auditable.
 
+**LOA attendance availability and classification:** Every RDB-backed LOA type
+remains attendance-capable. A `loa_working` phase keeps its assigned-host and
+native-programme visibility. A pure `loa` phase has no host posting, so it may
+see and submit only through the programme's explicitly configured native
+teaching posting; the system must not infer a host from adjacent months or
+display text. Ad-hoc teaching uses that same native posting. Each native
+attendance is classified from the teaching event date, never submission time,
+as `submitted_during_loa` when an authoritative `loa` or `loa_working` range
+covers that date. RDB full replacement and authorized posting corrections
+recompute existing rows in both directions without changing their attendance
+identity, event relationship, status, or submission timestamp.
+
+The compliance engine change remains deferred. When implemented, its native
+attendance numerator must first require `submitted_during_loa = false`, then
+apply the existing Form F1 active/inactive gate and all other eligibility
+rules. If LOA evidence is later removed or shortened, the reclassified false
+row becomes eligible for that future calculation, subject to Form F1.
+
 New reporting periods default `deactivate_on` to `end_date + 14 calendar days` unless an explicit value is supplied. A past period can be reopened only by a new effective inactive-to-active transition that supplies a future `deactivate_on`; this includes a newly scheduled future `activate_on`, for which `deactivate_on` must be strictly later than `activate_on`. Its historical start/end dates are not extended by reopening. Ordinary edits to an already effectively active reopened period preserve its existing future `deactivate_on` and do not require it to be resubmitted.
 
 ### PC-created teaching event visibility (planned 4B)

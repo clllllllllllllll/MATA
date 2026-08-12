@@ -29,6 +29,8 @@ const apiSource = readFileSync(
   fileURLToPath(new URL('../../api/residentSubmissions.ts', import.meta.url)),
   'utf8',
 )
+
+assert(pageSource.includes('During LOA'), 'recent submissions display the durable LOA classification')
 const appSource = readFileSync(fileURLToPath(new URL('../../App.tsx', import.meta.url)), 'utf8')
 const navigationSource = readFileSync(
   fileURLToPath(new URL('../../config/navigation.ts', import.meta.url)),

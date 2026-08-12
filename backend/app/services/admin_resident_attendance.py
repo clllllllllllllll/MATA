@@ -374,6 +374,8 @@ async def get_resident_attendance(
                 COALESCE(event_posting.display_name, te.posting_code) AS posting_label,
                 {EVENT_SOURCE_SQL} AS source,
                 ar.status,
+                ar.submitted_during_loa,
+                ar.loa_type,
                 ar.submitted_at
             {from_sql}
             WHERE {where_sql}

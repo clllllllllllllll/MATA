@@ -65,6 +65,12 @@ _RUNTIME_ONLY_HELPERS = frozenset(
         "resolve_native_teaching_target_v2(uuid,uuid)",
         "resolve_staff_pool_event_timings(uuid[],uuid,text,text)",
         "sync_secretary_pool_event_timing(uuid,uuid,text,text)",
+        "reclassify_native_attendance_loa(uuid,uuid)",
+        (
+            "create_native_loa_adhoc_attendance("
+            "text,text,text,date,time without time zone,"
+            "time without time zone,numeric)"
+        ),
         "update_own_staff_actor_name(text)",
         "reporting_period_dependency_counts(uuid)",
         "hibernate_stale_surplus(uuid)",

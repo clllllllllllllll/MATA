@@ -821,6 +821,9 @@ export const ResidentSubmissionPage = () => {
                           <span>
                             <span className="mono">{row.postingCode}</span> | {sourceLabel}
                           </span>
+                          {row.submittedDuringLoa ? (
+                            <span>During LOA{row.loaType ? ` - ${row.loaType}` : ''}</span>
+                          ) : null}
                         </div>
                       </div>
                       <div className="resident-history-side">

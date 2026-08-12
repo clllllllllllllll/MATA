@@ -206,6 +206,15 @@ class FakeRDBSession:
         sql = str(statement)
         params = dict(params or {})
 
+        if "mata_rls.reclassify_native_attendance_loa" in sql:
+            return _FakeScalarResult(
+                {
+                    "affected_count": 0,
+                    "during_loa_count": 0,
+                    "non_loa_count": 0,
+                }
+            )
+
         if "INSERT INTO rate_limit_buckets" in sql:
             key = (
                 params["scope"],

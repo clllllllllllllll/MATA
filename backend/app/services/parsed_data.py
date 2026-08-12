@@ -22,6 +22,7 @@ from app.schemas.data_revalidation import (
 )
 from app.services import cache_invalidation
 from app.services import data_revalidation_service
+from app.services.attendance_loa import reclassify_attendance_loa
 from app.services.audit import write_audit_log
 from app.services.rdb_parser import (
     ProgrammeConfig,
@@ -1790,6 +1791,11 @@ async def correct_resident_posting(
         programme_scope=programme_scope,
         master_admin=master_admin,
     )
+    await reclassify_attendance_loa(
+        db,
+        reporting_period_id=after["reporting_period_id"],
+        resident_id=after["resident_id"],
+    )
     updated_fields = sorted(changed)
     data_revalidation = await _revalidate_live_data_correction(
         db,
@@ -2568,6 +2574,11 @@ async def replace_resident_posting_source_cell(
             {"id": row_id, **row},
         )
     after_rows = await _fetch_resident_posting_rows_by_ids(db, row_ids=inserted_ids)
+    await reclassify_attendance_loa(
+        db,
+        reporting_period_id=before_rows[0]["reporting_period_id"],
+        resident_id=before_rows[0]["resident_id"],
+    )
     verified_source_metadata = source_metadata.get("verified_source_metadata")
     if not isinstance(verified_source_metadata, dict):
         verified_source_metadata = source_metadata.get("source")
@@ -3395,6 +3406,11 @@ async def apply_warning_source_cell_replacement(
         )
 
     after_rows = await _fetch_resident_posting_rows_by_ids(db, row_ids=inserted_ids)
+    await reclassify_attendance_loa(
+        db,
+        reporting_period_id=reporting_period_id,
+        resident_id=resident["id"],
+    )
     data_revalidation = await _revalidate_live_data_correction(
         db,
         actor=actor,

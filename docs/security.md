@@ -1,7 +1,7 @@
 # Security Contract
 
 Status: current repository security source of truth. This document describes
-the implemented local contract at Alembic revision `20260813_000041`. Local
+the implemented local contract at Alembic revision `20260813_000042`. Local
 source, test, and disposable-database evidence is not proof of a deployed
 Vercel or Supabase environment.
 
@@ -434,7 +434,7 @@ business rows; bounded failure evidence may still be recorded.
 
 ## 9. PostgreSQL roles, RLS, grants, and helpers
 
-At current revision `20260813_000041`:
+At current revision `20260813_000042`:
 
 - 36 application tables have RLS enabled;
 - 90 action policies target only `mata_app_runtime`;
@@ -494,6 +494,15 @@ corrects the cross-programme resolver's declared PostgreSQL result types. It
 does not add a policy, grant, role, table, or browser-facing database surface;
 the host event still requires exact Resident posting, source admission, and
 native programme posting/R-year mapping evidence.
+
+Revision `20260813_000042` adds pure-LOA native teaching visibility, a narrow
+native-LOA ad-hoc creator, automatic event-date classification on native
+attendance inserts, and an admin-scoped reclassification helper used after RDB
+replacement/correction. Pure LOA never grants an inferred host posting: it is
+limited to the programme's configured native teaching posting. The runtime
+helpers validate signed resident/admin context, expose no resident lookup
+surface, use fixed `pg_catalog, pg_temp` search paths, and are revoked from
+`PUBLIC`, browser/service roles, and the authentication helper.
 
 `mata_app_runtime` and `mata_auth_internal` are stable `NOLOGIN`,
 `NOINHERIT`, `NOSUPERUSER`, `NOCREATEDB`, `NOCREATEROLE`,

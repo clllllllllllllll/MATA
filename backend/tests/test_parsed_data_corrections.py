@@ -242,6 +242,17 @@ class FakeParsedDataCorrectionSession:
         sql = str(statement)
         payload = dict(params or {})
 
+        if "mata_rls.reclassify_native_attendance_loa" in sql:
+            return _FakeResult(
+                rows=[
+                    {
+                        "affected_count": 0,
+                        "during_loa_count": 0,
+                        "non_loa_count": 0,
+                    }
+                ]
+            )
+
         if "pg_try_advisory_xact_lock" in sql:
             return _FakeResult(scalar=self.lock_available)
 

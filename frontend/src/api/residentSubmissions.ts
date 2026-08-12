@@ -128,6 +128,8 @@ export interface ResidentAttendanceHistoryRow {
   source: 'scheduled' | 'adhoc'
   postingCode: string
   status: string
+  submittedDuringLoa: boolean
+  loaType?: string
   submittedAt?: string
 }
 
@@ -196,6 +198,8 @@ const toHistoryRow = (value: Record<string, unknown>): ResidentAttendanceHistory
   source: value.source === 'adhoc' || Boolean(value.is_adhoc) ? 'adhoc' : 'scheduled',
   postingCode: String(value.posting_code ?? ''),
   status: String(value.status ?? ''),
+  submittedDuringLoa: Boolean(value.submitted_during_loa),
+  loaType: value.loa_type ? String(value.loa_type) : undefined,
   submittedAt: value.submitted_at ? String(value.submitted_at) : undefined,
 })
 

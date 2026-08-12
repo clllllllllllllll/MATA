@@ -466,7 +466,12 @@ The SSR (Sub-Specialty Registrar) sheet has a different structure: MCR, Name, SI
    - Apply multi-posting rule lookup from `multi_posting_rules` table
 7. Insert `resident_postings` rows with resolved `r_year` per row
 8. Compute and store `working_days_in_month` per row
-9. Call `hibernate_stale_surplus()` after insert. This only updates lifecycle state; it does not carry a stored balance into attendance. On the next compliance read, recompute each ledger value as `max(cumulative raw eligible attendance - cumulative target_100, 0)` and replace it idempotently before tag reallocation.
+9. Reclassify native attendance in the reporting period from each teaching
+   event's date after all replacement `resident_postings` rows are present.
+   The upload and reclassification are one transaction: any `loa` or
+   `loa_working` range covering the event sets `submitted_during_loa`; removing
+   or shortening LOA clears it. Submission time is not used.
+10. Call `hibernate_stale_surplus()` after insert. This only updates lifecycle state; it does not carry a stored balance into attendance. On the next compliance read, recompute each ledger value as `max(cumulative raw eligible attendance - cumulative target_100, 0)` and replace it idempotently before tag reallocation.
 
 ### Phase V RDB effect on Teaching Name admission
 

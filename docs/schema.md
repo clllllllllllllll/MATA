@@ -811,6 +811,10 @@ retained and a later resubmission receives a new row.
 | submitted_at | TIMESTAMPTZ | DEFAULT now() | |
 | status | VARCHAR(20) | DEFAULT 'submitted' | `submitted`, `flagged`, `removed` |
 | posting_code | VARCHAR(50) | | Audit copy of event posting at submission time. **Never used for compliance attribution** — compliance always uses teaching_events.posting_code. |
+| submitted_during_loa | BOOLEAN | NOT NULL, DEFAULT false | Current event-date classification. Recomputed when authoritative RDB posting/LOA evidence changes. Future compliance must exclude rows where true. |
+| loa_resident_posting_id | UUID | FK → resident_postings.id, nullable, ON DELETE SET NULL | Current matching LOA evidence. Full RDB replacement may clear this reference before the new rows are inserted and reclassification runs in the same transaction. |
+| loa_type | VARCHAR(100) | nullable | Current matching LOA type for audit/display. |
+| loa_classified_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Last classification or reclassification time. |
 
 **Active uniqueness and history:** A submitted-only unique index on
 `(resident_id, teaching_event_id)` prevents two active submissions while
@@ -835,6 +839,13 @@ attendance is never rewritten or deleted when later timing changes create an
 overlap.
 
 **Session type is NOT stored here.** The Phase 6 compliance resolver is deferred. When implemented, it must resolve through the event's persisted source identity and a scoped mapping for the resident/posting/r-year context; the immutable `teaching_name` display snapshot is never a matching input.
+
+**LOA classification is mutable derived evidence, not submission-time history.**
+The event date, not `submitted_at`, is compared with authoritative `loa` or
+`loa_working` posting evidence and its LOA date range. Adding/backdating LOA
+reclassifies existing attendance to `submitted_during_loa = true`; removing,
+cancelling, or shortening that evidence reclassifies it to false. Attendance
+status, identity, event relationship, and timestamps are otherwise preserved.
 
 
 ---

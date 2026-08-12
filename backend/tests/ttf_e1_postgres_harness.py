@@ -26,7 +26,7 @@ from tests.postgres_disposable_database import configured_disposable_database_na
 
 
 E1_DISPOSABLE_DATABASE_NAME = configured_disposable_database_name()
-E1_REQUIRED_REVISION = "20260813_000041"
+E1_REQUIRED_REVISION = "20260813_000042"
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _RUNTIME_GROUP = "mata_app_runtime"
 _AUTH_GROUP = "mata_auth_internal"

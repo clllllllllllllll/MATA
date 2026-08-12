@@ -521,7 +521,7 @@ async def _issue_context(
 async def policy_harness(
     rls_postgres_harness: RlsPostgresHarness,
 ) -> AsyncIterator[RlsPostgresHarness]:
-    assert rls_postgres_harness.revision == "20260813_000041"
+    assert rls_postgres_harness.revision == "20260813_000042"
     yield rls_postgres_harness
 
 
@@ -1538,6 +1538,235 @@ async def test_phase_h_native_target_resolution_requires_native_adhoc_and_exclud
                 {"id": fixed_session_type_id},
             )
             await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_pure_loa_resident_can_view_submit_and_reclassify_attendance(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+) -> None:
+    values = policy_seed.values
+    loa_type = "RLS Test Medical Leave"
+
+    async with policy_harness.owner_session() as db:
+        await db.execute(
+            text(
+                """
+                UPDATE programmes
+                SET native_teaching_posting_code = :posting_a
+                WHERE id = :programme_a_id
+                """
+            ),
+            values,
+        )
+        await db.execute(
+            text(
+                """
+                UPDATE resident_postings
+                SET posting_code = NULL,
+                    status = 'loa',
+                    loa_type = :loa_type,
+                    loa_start_date = DATE '2035-03-01',
+                    loa_end_date = DATE '2035-03-31'
+                WHERE id = :resident_posting_a_id
+                """
+            ),
+            {**values, "loa_type": loa_type},
+        )
+        await db.commit()
+
+    async with _runtime_context(
+        policy_harness,
+        policy_seed.contexts["master"],
+    ) as db:
+        counts = (
+            await db.execute(
+                text(
+                    """
+                    SELECT affected_count, during_loa_count, non_loa_count
+                    FROM mata_rls.reclassify_native_attendance_loa(
+                        CAST(:period_id AS uuid),
+                        CAST(:resident_id AS uuid)
+                    )
+                    """
+                ),
+                {
+                    "period_id": values["period_id"],
+                    "resident_id": values["resident_a_id"],
+                },
+            )
+        ).mappings().one()
+        assert dict(counts) == {
+            "affected_count": 1,
+            "during_loa_count": 1,
+            "non_loa_count": 0,
+        }
+        await db.commit()
+
+    async with _runtime_context(
+        policy_harness,
+        policy_seed.contexts["resident"],
+    ) as db:
+        available = await resident_submission.list_available_events(
+            db,
+            resident_id=values["resident_a_id"],
+            today=date(2035, 3, 6),
+            date_from=date(2035, 3, 6),
+            date_to=date(2035, 3, 6),
+        )
+        assert {row["id"] for row in available["events"]} == {
+            values["event_action_a_id"]
+        }
+
+        submitted = (
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO attendance_records (
+                        resident_id, teaching_event_id, status, posting_code
+                    ) VALUES (
+                        :resident_id, :event_id, 'submitted', :posting_code
+                    )
+                    RETURNING submitted_during_loa,
+                              loa_resident_posting_id,
+                              loa_type
+                    """
+                ),
+                {
+                    "resident_id": values["resident_a_id"],
+                    "event_id": values["event_action_a_id"],
+                    "posting_code": values["posting_a"],
+                },
+            )
+        ).mappings().one()
+        assert submitted["submitted_during_loa"] is True
+        assert (
+            submitted["loa_resident_posting_id"]
+            == values["resident_posting_a_id"]
+        )
+        assert submitted["loa_type"] == loa_type
+
+        with pytest.raises(DBAPIError) as inconsistent:
+            async with db.begin_nested():
+                await db.execute(
+                    text(
+                        """
+                        UPDATE attendance_records
+                        SET submitted_during_loa = false,
+                            loa_resident_posting_id = NULL,
+                            loa_type = NULL
+                        WHERE resident_id = :resident_id
+                          AND teaching_event_id = :event_id
+                        """
+                    ),
+                    {
+                        "resident_id": values["resident_a_id"],
+                        "event_id": values["event_action_a_id"],
+                    },
+                )
+        assert _sqlstate(inconsistent.value) == "23514"
+
+        adhoc = (
+            await db.execute(
+                text(
+                    """
+                    SELECT event_id, attendance_id
+                    FROM mata_rls.create_native_loa_adhoc_attendance(
+                        :posting_code,
+                        'Department/Programme Teaching [1h]',
+                        'RLS pure LOA ad-hoc',
+                        DATE '2035-03-07',
+                        TIME '11:00',
+                        TIME '12:00',
+                        1.00
+                    )
+                    """
+                ),
+                {"posting_code": values["posting_a"]},
+            )
+        ).mappings().one()
+        adhoc_classification = (
+            await db.execute(
+                text(
+                    """
+                    SELECT submitted_during_loa, loa_type
+                    FROM attendance_records
+                    WHERE id = :attendance_id
+                    """
+                ),
+                {"attendance_id": adhoc["attendance_id"]},
+            )
+        ).mappings().one()
+        assert dict(adhoc_classification) == {
+            "submitted_during_loa": True,
+            "loa_type": loa_type,
+        }
+
+    async with policy_harness.owner_session() as db:
+        await db.execute(
+            text(
+                """
+                UPDATE resident_postings
+                SET posting_code = :posting_a,
+                    status = 'active',
+                    loa_type = NULL,
+                    loa_start_date = NULL,
+                    loa_end_date = NULL
+                WHERE id = :resident_posting_a_id
+                """
+            ),
+            values,
+        )
+        await db.commit()
+
+    async with _runtime_context(
+        policy_harness,
+        policy_seed.contexts["master"],
+    ) as db:
+        counts = (
+            await db.execute(
+                text(
+                    """
+                    SELECT affected_count, during_loa_count, non_loa_count
+                    FROM mata_rls.reclassify_native_attendance_loa(
+                        CAST(:period_id AS uuid),
+                        CAST(:resident_id AS uuid)
+                    )
+                    """
+                ),
+                {
+                    "period_id": values["period_id"],
+                    "resident_id": values["resident_a_id"],
+                },
+            )
+        ).mappings().one()
+        assert dict(counts) == {
+            "affected_count": 1,
+            "during_loa_count": 0,
+            "non_loa_count": 1,
+        }
+        await db.commit()
+
+    async with policy_harness.owner_session() as db:
+        classification = (
+            await db.execute(
+                text(
+                    """
+                    SELECT submitted_during_loa,
+                           loa_resident_posting_id,
+                           loa_type
+                    FROM attendance_records
+                    WHERE id = :attendance_id
+                    """
+                ),
+                {"attendance_id": values["attendance_a_id"]},
+            )
+        ).mappings().one()
+        assert dict(classification) == {
+            "submitted_during_loa": False,
+            "loa_resident_posting_id": None,
+            "loa_type": None,
+        }
 
 
 @pytest.mark.asyncio

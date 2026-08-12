@@ -46,6 +46,8 @@ export interface PcResidentAttendanceHistoryItem {
   postingLabel?: string | null
   source: string
   status: string
+  submittedDuringLoa: boolean
+  loaType?: string | null
   submittedAt: string
 }
 
@@ -125,6 +127,8 @@ export const toPcResidentAttendanceHistoryItem = (
   postingLabel: optionalString(value.posting_label),
   source: String(value.source ?? ''),
   status: String(value.status ?? ''),
+  submittedDuringLoa: Boolean(value.submitted_during_loa),
+  loaType: optionalString(value.loa_type),
   submittedAt: String(value.submitted_at ?? ''),
 })
 

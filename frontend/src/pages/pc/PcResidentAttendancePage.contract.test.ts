@@ -29,6 +29,7 @@ const nonNhgSource = read('../admin/AdminExternalAttendancePage.tsx')
 const residentId = '11111111-2222-3333-4444-555555555555'
 const detailPath = `/pc/residents/${residentId}/attendance`
 
+assert(detailSource.includes('During LOA'), 'PC attendance detail displays LOA classification')
 assert.equal(
   pcResidentAttendanceDetailPath(residentId),
   detailPath,

@@ -17,3 +17,5 @@ assert(source.includes('active_reporting_periods'), 'parser consumes active-peri
 assert(source.includes('reporting_period_id'), 'parser preserves the event reporting-period id')
 assert(source.includes('reporting_period_label'), 'parser preserves the event reporting-period label')
 assert(source.includes('filter_options'), 'parser consumes merged backend filter options')
+assert(source.includes('submitted_during_loa'), 'history preserves event-date LOA classification')
+assert(source.includes('loa_type'), 'history preserves the classified LOA type')

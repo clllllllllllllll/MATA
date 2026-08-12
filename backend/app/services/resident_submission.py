@@ -37,7 +37,6 @@ from app.services.teaching_target_resolution import (
 
 logger = logging.getLogger(__name__)
 
-ACTIVE_POSTING_STATUSES = {"active", "loa_working"}
 WEEKEND_WARNING = (
     "{count} session(s) submitted on a weekend will not count toward your PTT compliance "
     "as they do not meet the weekend exception rules for your programme."
@@ -188,6 +187,8 @@ def _attendance_row(row: dict[str, Any]) -> dict[str, Any]:
         "teaching_event_id": row["teaching_event_id"],
         "status": row["status"],
         "posting_code": row.get("posting_code"),
+        "submitted_during_loa": bool(row.get("submitted_during_loa", False)),
+        "loa_type": row.get("loa_type"),
         "submitted_at": row.get("submitted_at"),
     }
 
@@ -437,15 +438,24 @@ async def _posting_contexts(
                 reporting_period_id,
                 posting_code,
                 r_year,
-                start_date,
-                end_date,
+                CASE WHEN status = 'loa'
+                     THEN GREATEST(start_date, COALESCE(loa_start_date, start_date))
+                     ELSE start_date END AS start_date,
+                CASE WHEN status = 'loa'
+                     THEN LEAST(end_date, COALESCE(loa_end_date, end_date))
+                     ELSE end_date END AS end_date,
                 status
             FROM resident_postings
             WHERE resident_id = :resident_id
               AND reporting_period_id = :reporting_period_id
               AND start_date <= :on_date
               AND end_date >= :on_date
-              AND status IN ('active', 'loa_working')
+              AND status IN ('active', 'loa', 'loa_working')
+              AND (
+                  status <> 'loa'
+                  OR :on_date BETWEEN COALESCE(loa_start_date, start_date)
+                                      AND COALESCE(loa_end_date, end_date)
+              )
             ORDER BY start_date DESC
             """
         ),
@@ -472,13 +482,17 @@ async def _posting_contexts_for_period(
                 reporting_period_id,
                 posting_code,
                 r_year,
-                start_date,
-                end_date,
+                CASE WHEN status = 'loa'
+                     THEN GREATEST(start_date, COALESCE(loa_start_date, start_date))
+                     ELSE start_date END AS start_date,
+                CASE WHEN status = 'loa'
+                     THEN LEAST(end_date, COALESCE(loa_end_date, end_date))
+                     ELSE end_date END AS end_date,
                 status
             FROM resident_postings
             WHERE resident_id = :resident_id
               AND reporting_period_id = :reporting_period_id
-              AND status IN ('active', 'loa_working')
+              AND status IN ('active', 'loa', 'loa_working')
             ORDER BY start_date DESC
             """
         ),
@@ -686,7 +700,7 @@ async def list_adhoc_teaching_options(
     today: date | None = None,
 ) -> dict[str, Any]:
     today = today or date.today()
-    await _resident(db, resident_id)
+    resident = await _resident(db, resident_id)
     period = await _active_reporting_period(
         db,
         relevant_date=teaching_date,
@@ -724,7 +738,20 @@ async def list_adhoc_teaching_options(
         )
 
     context = contexts[0]
-    assigned_posting_code = context["posting_code"]
+    assigned_posting_code = context.get("posting_code")
+    if assigned_posting_code is None and context.get("status") == "loa":
+        assigned_posting_code = await _native_teaching_posting_code(
+            db,
+            programme_code=resident["programme_code"],
+        )
+    if assigned_posting_code is None:
+        return _adhoc_options_response(
+            teaching_date=teaching_date,
+            available=False,
+            reason="posting_unavailable",
+            message="No teaching posting is available for the selected teaching date.",
+            reporting_period_id=period["id"],
+        )
     posting_label = await _posting_display_label(db, assigned_posting_code)
     attended_posting_options = [
         {
@@ -1244,7 +1271,7 @@ def _native_visibility_contexts(
             "posting_code": native_posting_code,
         }
         for context in contexts
-        if context.get("posting_code")
+        if context.get("posting_code") or context.get("status") == "loa"
     ]
 
 
@@ -1661,7 +1688,8 @@ async def _submitted_attendance_for_event(
     result = await db.execute(
         text(
             """
-            SELECT id, resident_id, teaching_event_id, status, posting_code, submitted_at
+            SELECT id, resident_id, teaching_event_id, status, posting_code,
+                   submitted_at, submitted_during_loa, loa_type
             FROM attendance_records
             WHERE resident_id = :resident_id
               AND teaching_event_id = :event_id
@@ -1752,7 +1780,8 @@ async def _insert_attendance(
                 'submitted',
                 :posting_code
             )
-            RETURNING id, resident_id, teaching_event_id, status, posting_code, submitted_at
+            RETURNING id, resident_id, teaching_event_id, status, posting_code,
+                      submitted_at, submitted_during_loa, loa_type
             """
         ),
         {
@@ -2131,6 +2160,45 @@ async def _create_adhoc_attendance(
             "session_type_id": (
                 str(session_type_id) if session_type_id is not None else None
             ),
+        },
+    )
+    return dict(result.mappings().one())
+
+
+async def _create_loa_adhoc_attendance(
+    db: AsyncSession,
+    *,
+    posting_code: str,
+    teaching_name: str,
+    details_of_session: str | None,
+    event_date: date,
+    start_time: time,
+    end_time: time,
+    duration_hours: Decimal,
+) -> dict[str, Any]:
+    result = await db.execute(
+        text(
+            """
+            SELECT event_id, attendance_id
+            FROM mata_rls.create_native_loa_adhoc_attendance(
+                :posting_code,
+                :teaching_name,
+                :details_of_session,
+                :event_date,
+                :start_time,
+                :end_time,
+                :duration_hours
+            )
+            """
+        ),
+        {
+            "posting_code": posting_code,
+            "teaching_name": teaching_name,
+            "details_of_session": details_of_session,
+            "event_date": event_date,
+            "start_time": start_time,
+            "end_time": end_time,
+            "duration_hours": duration_hours,
         },
     )
     return dict(result.mappings().one())
@@ -2776,11 +2844,23 @@ async def submit_adhoc_teaching(
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
     context = contexts[0]
-    attended_posting_options = [{"posting_code": context["posting_code"]}]
+    assigned_posting_code = context.get("posting_code")
+    if assigned_posting_code is None and context.get("status") == "loa":
+        assigned_posting_code = await _native_teaching_posting_code(
+            db,
+            programme_code=resident["programme_code"],
+        )
+    if assigned_posting_code is None:
+        raise ApiError(
+            status_code=422,
+            detail="No teaching posting is available for the submitted teaching date",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
+    attended_posting_options = [{"posting_code": assigned_posting_code}]
     selected_attended_posting = _select_attended_posting(
         attended_posting_options,
         requested_posting_code=attended_posting_code,
-        default_posting_code=context["posting_code"],
+        default_posting_code=assigned_posting_code,
     )
     if selected_attended_posting is None:
         raise RuntimeError("Assigned posting option invariant was not established")
@@ -2811,19 +2891,31 @@ async def submit_adhoc_teaching(
             error_code=ErrorCode.CONFLICT.value,
         )
     try:
-        created = await _create_adhoc_attendance(
-            db,
-            posting_code=context["posting_code"],
-            attended_posting_code=selected_attended_posting["posting_code"],
-            attended_teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
-            teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
-            details_of_session=details_of_session,
-            event_date=event_date,
-            start_time=start_time,
-            end_time=end_time,
-            duration_hours=duration_hours,
-            session_type_id=None,
-        )
+        if context.get("status") == "loa" and context.get("posting_code") is None:
+            created = await _create_loa_adhoc_attendance(
+                db,
+                posting_code=assigned_posting_code,
+                teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
+                details_of_session=details_of_session,
+                event_date=event_date,
+                start_time=start_time,
+                end_time=end_time,
+                duration_hours=duration_hours,
+            )
+        else:
+            created = await _create_adhoc_attendance(
+                db,
+                posting_code=assigned_posting_code,
+                attended_posting_code=selected_attended_posting["posting_code"],
+                attended_teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
+                teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
+                details_of_session=details_of_session,
+                event_date=event_date,
+                start_time=start_time,
+                end_time=end_time,
+                duration_hours=duration_hours,
+                session_type_id=None,
+            )
     except DBAPIError as exc:
         await _raise_adhoc_helper_error(db, exc)
     event = _event_row(await _get_event(db, created["event_id"]))
@@ -3106,6 +3198,9 @@ async def list_attendance_records(
         await _external_resident(db, external_resident_id)
         table_name = "external_attendance_records"
         id_column = "external_resident_id"
+        loa_projection = (
+            "false AS submitted_during_loa, NULL::text AS loa_type"
+        )
         params["subject_id"] = str(external_resident_id)
     else:
         if resident_id is None:
@@ -3117,6 +3212,7 @@ async def list_attendance_records(
         await _resident(db, resident_id)
         table_name = "attendance_records"
         id_column = "resident_id"
+        loa_projection = "attendance.submitted_during_loa, attendance.loa_type"
         params["subject_id"] = str(resident_id)
     where.append(f"attendance.{id_column} = :subject_id")
     if status:
@@ -3164,7 +3260,8 @@ async def list_attendance_records(
                 source_scope.reporting_period_id AS source_reporting_period_id,
                 source_scope.programme_code AS source_programme_code,
                 attendance.status,
-                attendance.submitted_at
+                attendance.submitted_at,
+                {loa_projection}
             FROM {table_name} attendance
             JOIN teaching_events events
               ON events.id = attendance.teaching_event_id

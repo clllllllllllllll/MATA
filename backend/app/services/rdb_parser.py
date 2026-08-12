@@ -2182,6 +2182,12 @@ async def _persist_rdb_upload(
             reporting_period_id=reporting_period_id,
             programme_code=str(programme_row["programme_code"]),
         )
+    from app.services.attendance_loa import reclassify_attendance_loa
+
+    await reclassify_attendance_loa(
+        session,
+        reporting_period_id=reporting_period_id,
+    )
     return residents_created, residents_updated, postings_created, added_codes
 
 

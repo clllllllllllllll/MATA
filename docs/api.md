@@ -1470,7 +1470,7 @@ Raw flat export of all submitted attendance records.
 
 - **Auth:** admin only
 - **Query params:** `reporting_period_id`, `programme_code`, `posting_code`, `resident_id`, `date_from`, `date_to`, `format` (`json` | `xlsx` | `csv`)
-- **Response columns:** Resident Name, MCR, Programme, R Year, Posting (RDB), Posting Month, Event Date, Teaching Name, Session Type (resolved per resident), Duration, Tracked, Is Adhoc, Achieved, Target (monthly), Shortage, Tag, Submitted At, Status
+- **Response columns:** Resident Name, MCR, Programme, R Year, Posting (RDB), Posting Month, Event Date, Teaching Name, Session Type (resolved per resident), Duration, Tracked, Is Adhoc, During LOA, LOA Type, Achieved, Target (monthly), Shortage, Tag, Submitted At, Status
 
 ### GET `/admin/reports/clawback`
 
@@ -1932,7 +1932,7 @@ List teaching events available for submission.
 - **Period resolution:** enumerate every effectively active reporting period using stored `status` plus due `activate_on` / `deactivate_on` transitions. Residents do not select a period. Each candidate event must fall inside exactly one of those periods; its persisted-source and posting checks use that same period ID. Events in inactive/expired periods are excluded, and overlapping active periods for an event date fail closed with `409`.
 - **Visibility gating:**
   1. If the resident has no `resident_postings` rows in any effectively active period → no assigned-posting visibility; return empty list with `reason: "posting_schedule_unavailable"` if no other allowed source can produce events. A missing posting covering today does not suppress historical rows.
-  2. Assigned posting secretary events: derive assigned posting from `resident_postings` covering each event date with `status IN ('active', 'loa_working')`. Secretary-created events at that `posting_code` are eligible.
+  2. Assigned posting secretary events: derive assigned posting from `resident_postings` covering each event date with `status IN ('active', 'loa_working')`. Secretary-created events at that `posting_code` are eligible. A pure `loa` row has no host posting and therefore cannot invent host-department access.
   3. Native programme TTSH department secretary events: derive the native programme teaching posting from explicit config/mapping, for example `programmes.native_teaching_posting_code` or `programme_teaching_posting_map`. Do not infer this mapping by string manipulation.
   4. Native programme PC-created events: include events where `teaching_events.created_for_programme_code = resident.programme_code`.
   5. Deduplicate rows by `teaching_events.id` across all sources.
@@ -1958,6 +1958,9 @@ List teaching events available for submission.
       display text to classify an event.
   11. Do not show PC-created events for non-native programmes.
   12. Do not show secretary-created events from arbitrary TTSH departments unless they are either the resident's assigned/current posting or the resident's native programme department.
+  13. A pure `loa` row covering the event date remains submission-capable for
+      the resident's explicitly configured native programme teaching posting.
+      A `loa_working` row retains its normal assigned-host plus native access.
 - **Query params:** `date_from`, `date_to`, `teaching_name`, `posting_code`. Filters apply to the combined cross-period collection and cannot widen resident scope.
 - **Response metadata:** each event includes the server-resolved `reporting_period_id` / `reporting_period_label`. The top-level `active_reporting_periods[]` lists the periods considered, allowing the frontend to distinguish no active submission period from an active-period empty result without presenting a selector.
 
@@ -1984,7 +1987,7 @@ Submit attendance for one or more events.
 - **Body:** `{ "event_ids": ["uuid1", "uuid2"] }`
 - **Native Resident backend:**
   1. Validates event exists and is visible through the resident's allowed scheduled-event sources: assigned/current posting secretary event, native programme TTSH department secretary event, or native programme PC-created event
-  2. Validates `event_date` falls within a `resident_postings` row with `status IN ('active', 'loa_working')` → `422` if outside tenure
+  2. Validates `event_date` falls within a submission-capable `resident_postings` row. `active` and `loa_working` use the assigned posting; pure `loa` uses only the configured native programme teaching posting and the exact LOA date range.
   3. Validates persisted event evidence: an explicit pool source must match the
      event-date reporting period. A host Secretary source may keep its source
      owner programme only when the Resident's native programme has the exact
@@ -1998,7 +2001,7 @@ Submit attendance for one or more events.
   5. Validates no active duplicate; a submitted-only unique index on
      `(resident_id, teaching_event_id)` is the database race boundary.
   6. Before insert, rejects a later submission whose distinct event interval overlaps an already accepted event for the same resident. The earlier accepted attendance remains unchanged; this check is separate from same-event uniqueness.
-  7. Creates accepted `attendance_records` rows — **does NOT store `session_type_id`**
+  7. Creates accepted `attendance_records` rows — **does NOT store `session_type_id`**. A database trigger classifies the row from the event date as `submitted_during_loa`, with current LOA reference/type metadata.
   8. Checks each submitted event against `weekend_exceptions` — if a weekend session has no matching rule, adds a `compliance_warning` to the response
 - **Non-NHG Resident backend:** requires one exact date-matched `external_resident_postings` row and accepts every normal scheduled event at that posting. It does not resolve Teaching Name R-year mappings and does not use source programme, PC programme ownership, or Secretary capability as a submission gate. It stores only `external_attendance_records` and uses the staff event envelope for display and overlap checks.
 - **Transaction/concurrency:** The complete `event_ids` list is one atomic
@@ -2046,7 +2049,7 @@ Return date-derived posting context and one fixed ad-hoc option.
   - `attended_posting_code` optional. If supplied, it must equal the sole
     server-derived posting; alternate values return `422`.
 - **NHG Resident backend:**
-  1. Derives `assigned_posting_code` from `resident_postings` for `teaching_date` with `status IN ('active', 'loa_working')`.
+  1. Derives `assigned_posting_code` from `resident_postings` for `teaching_date`. `active`/`loa_working` use their assigned posting; pure `loa` uses the resident programme's explicitly configured native teaching posting for dates inside the LOA range.
   2. Requires exactly one matching posting. It returns that posting as both the
     assigned and attended option; it never infers a different department/site.
   3. Returns exactly one option: `Department/Programme Teaching [1h]`, duration
@@ -2117,7 +2120,7 @@ Submit an ad-hoc teaching not pre-created by a secretary.
 - **Backend:**
   1. Validates `teaching_date` is not a public holiday → `422` if PH.
   2. Derives assigned posting for the selected date:
-     - NHG Resident: `resident_postings` date match with `status IN ('active', 'loa_working')`.
+     - NHG Resident: `resident_postings` date match; `active`/`loa_working` use their assigned posting and pure `loa` uses the configured native teaching posting within the exact LOA range.
      - Non-NHG Resident: `external_resident_postings` date match.
   3. Accepts no `teaching_name`; unknown request fields, including arbitrary
      names and targets, return `422`.
@@ -2551,6 +2554,11 @@ Return the authenticated resident's past submitted attendance.
 
 - **Auth:** NHG Resident or Non-NHG Resident (`resident` or `external_resident` role)
 - **NHG Resident:** read from `attendance_records` scoped by `resident_id`.
+- **LOA fields:** native rows include `submitted_during_loa` and `loa_type`.
+  These fields reflect the current event-date classification and may change
+  after an RDB re-upload or authorized resident-posting correction without
+  rewriting the attendance identity, event relationship, status, or submission
+  time.
 - **Non-NHG Resident:** read from `external_attendance_records` scoped by `external_resident_id`.
 - **Filters:** `date_from`, `date_to`, `status` optional.
 
