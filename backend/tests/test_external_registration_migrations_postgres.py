@@ -2132,7 +2132,7 @@ def test_adhoc_definer_accepts_exact_pg16_creator_membership(
 
 
 @pytest.mark.migration_mutation
-def test_adhoc_definer_non_superuser_creator_can_downgrade(
+def test_adhoc_definer_non_superuser_creator_lifecycle_through_phase_g(
     clean_migration_database: MigrationHarness,
 ) -> None:
     harness = clean_migration_database
@@ -2235,6 +2235,41 @@ def test_adhoc_definer_non_superuser_creator_can_downgrade(
                 False,
             )
 
+        _run_success(migration_harness, "upgrade", "20260804_000034")
+        with migration_engine.connect() as connection:
+            assert _revision(connection) == "20260804_000034"
+            assert connection.scalar(
+                text(
+                    "SELECT owner_role.rolname "
+                    "FROM pg_catalog.pg_proc AS procedure "
+                    "JOIN pg_catalog.pg_roles AS owner_role "
+                    "ON owner_role.oid = procedure.proowner "
+                    "WHERE procedure.oid = "
+                    "pg_catalog.to_regprocedure(:helper_signature)"
+                ),
+                {"helper_signature": ADHOC_HELPER_SIGNATURE},
+            ) == ADHOC_DEFINER_ROLE
+            assert connection.scalar(
+                text(
+                    "SELECT pg_catalog.has_function_privilege("
+                    ":runtime_role, :helper_signature, 'EXECUTE')"
+                ),
+                {
+                    "runtime_role": "mata_app_runtime",
+                    "helper_signature": ADHOC_HELPER_SIGNATURE,
+                },
+            ) is True
+            assert connection.scalar(
+                text(
+                    "SELECT pg_catalog.has_function_privilege("
+                    ":auth_role, :helper_signature, 'EXECUTE')"
+                ),
+                {
+                    "auth_role": "mata_auth_internal",
+                    "helper_signature": ADHOC_HELPER_SIGNATURE,
+                },
+            ) is False
+
         _run_success(migration_harness, "downgrade", "20260727_000027")
         with migration_engine.connect() as connection:
             assert _revision(connection) == "20260727_000027"
@@ -2268,7 +2303,7 @@ def test_adhoc_definer_non_superuser_creator_can_downgrade(
 
             with harness.engine.connect() as connection:
                 revision = _revision(connection)
-            if revision == "20260728_000028":
+            if revision != "20260727_000027":
                 _run_success(harness, "downgrade", "20260727_000027")
 
             with harness.engine.begin() as connection:
