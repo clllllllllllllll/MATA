@@ -194,10 +194,13 @@ Phase V introduces a durable Teaching Name-to-programme admission relation
 | audit timestamps/actor | Preserve when and how the scope became eligible without storing Resident identity in the scope row. |
 
 The relation is unique per `(teaching_name_id, programme_code)`. An admission
-is additive for its reporting period: a later Resident rotation end or RDB
-replacement does not delete it. Period deactivation excludes it from active
-queries but does not delete it, and no row is copied into a later reporting
-period.
+is additive for its reporting period: a later Resident rotation end, RDB
+replacement, or Live Data correction does not delete it. Successful RDB
+replacement and relevant Live Data Resident/programme/posting mutations run the
+same reconciliation before commit, so newly evidenced host postings add the
+missing scope and exact pending mappings without resetting existing mapping
+rows. Period deactivation excludes admissions from active queries but does not
+delete them, and no row is copied into a later reporting period.
 
 `teaching_name_mappings.programme_code` becomes explicitly the **mapping/native
 programme**, not necessarily the Teaching Name owner programme. Its identity

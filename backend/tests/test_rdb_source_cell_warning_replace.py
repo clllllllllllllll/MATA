@@ -184,6 +184,7 @@ class FakeRdbSourceCellWarningSession:
         ]
         self.original_upload_logs = deepcopy(self.upload_logs)
         self.audit_logs: list[dict] = []
+        self.teaching_name_reconciliations: list[dict[str, str]] = []
         self.new_posting_ids: list[str] = []
         self.executed_sql: list[str] = []
         self.commits = 0
@@ -438,6 +439,49 @@ class FakeRdbSourceCellWarningSession:
                 for row in self.resident_postings
             )
             return _FakeResult(scalar=1 if duplicate else None)
+
+        if "/* parsed_data_reconciliation:resident_programme_periods */" in sql:
+            rows = []
+            seen: set[tuple[str, str]] = set()
+            for posting in self.resident_postings:
+                if str(posting["resident_id"]) != str(payload["resident_id"]):
+                    continue
+                if (
+                    payload.get("reporting_period_id") is not None
+                    and str(posting["reporting_period_id"])
+                    != str(payload["reporting_period_id"])
+                ):
+                    continue
+                resident = next(
+                    item
+                    for item in self.residents
+                    if str(item["id"]) == str(posting["resident_id"])
+                )
+                key = (str(posting["reporting_period_id"]), resident["programme_code"])
+                if key not in seen:
+                    seen.add(key)
+                    rows.append(
+                        {
+                            "reporting_period_id": key[0],
+                            "programme_code": key[1],
+                        }
+                    )
+            return _FakeResult(rows=rows)
+
+        if "/* teaching_name_scopes:admit_owner */" in sql:
+            self.teaching_name_reconciliations.append(
+                {
+                    "reporting_period_id": str(payload["reporting_period_id"]),
+                    "programme_code": payload["programme_code"],
+                }
+            )
+            return _FakeResult(rowcount=0)
+
+        if "/* teaching_name_scopes:admit_resident_host */" in sql:
+            return _FakeResult(rowcount=0)
+
+        if "/* teaching_name_scopes:provision_mappings */" in sql:
+            return _FakeResult(rowcount=0)
 
         if "DELETE FROM resident_postings" in sql:
             ids = {str(value) for value in payload["ids"]}
@@ -765,6 +809,13 @@ def test_apply_simple_posting_replacement_is_narrow_audited_and_keeps_warning_un
     assert metadata["upload_warning_id"] == session.upload_warning_id
     assert metadata["fingerprint"] == session.warning_issues[0]["fingerprint"]
     assert metadata["after_raw_cell_value"] == "TTSHGerMed"
+    assert metadata["teaching_name_reconciliation"]["reconciled_programme_periods"] == 1
+    assert session.teaching_name_reconciliations == [
+        {
+            "reporting_period_id": session.period_id,
+            "programme_code": "GERI",
+        }
+    ]
 
 
 def test_apply_source_cell_replacement_invalidates_scoped_caches(monkeypatch) -> None:

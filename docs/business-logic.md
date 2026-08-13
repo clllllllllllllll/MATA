@@ -88,6 +88,15 @@ the last relevant Resident leaves the host posting or a later RDB correction
 removes that assignment. This avoids erasing reviewed configuration during a
 period. It does not grant eligibility in another reporting period.
 
+Admission reconciliation runs after both supported ways of changing current
+Resident posting data: a successful RDB reporting-period replacement and a
+successful relevant Live Data correction. Live Data changes to a Resident's
+native programme, a posting row, a posting source-cell group, or a durable
+warning's posting source cell reconcile the affected programme/reporting-period
+scope in the same transaction. Reconciliation only adds missing admissions and
+pending mappings; correcting or removing a posting never deletes mapping work
+already retained for that reporting period.
+
 A cross-posting PC maps the admitted name only to targets from the PC's own
 programme TTF, at the exact host posting and R-year scope. The host department's
 TTF is never selected merely because its Secretary created the name. The PC may

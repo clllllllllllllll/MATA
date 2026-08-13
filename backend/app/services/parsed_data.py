@@ -31,6 +31,9 @@ from app.services.rdb_parser import (
     resolve_r_year,
 )
 from app.services.teaching_target_impacts import stable_target_mapping_impact_counts
+from app.services.teaching_name_programme_scopes import (
+    reconcile_teaching_name_programme_scopes,
+)
 from app.services.ttf_scope_lock import acquire_ttf_scope_lock
 
 
@@ -1661,6 +1664,57 @@ async def _revalidate_live_data_correction(
     return summary.model_dump(mode="json")
 
 
+async def _reconcile_teaching_name_scopes_for_resident(
+    db: AsyncSession,
+    *,
+    resident_id: UUID | str,
+    reporting_period_id: UUID | str | None = None,
+) -> dict[str, int]:
+    """Apply the additive Teaching Name admission rules to current Live Data."""
+
+    params: dict[str, Any] = {
+        "resident_id": str(resident_id),
+        "reporting_period_id": (
+            str(reporting_period_id) if reporting_period_id is not None else None
+        ),
+    }
+    result = await db.execute(
+        text(
+            """
+            /* parsed_data_reconciliation:resident_programme_periods */
+            SELECT DISTINCT
+                posting.reporting_period_id,
+                resident.programme_code
+            FROM resident_postings AS posting
+            JOIN residents AS resident ON resident.id = posting.resident_id
+            WHERE posting.resident_id = CAST(:resident_id AS uuid)
+              AND resident.programme_code IS NOT NULL
+              AND (
+                  CAST(:reporting_period_id AS uuid) IS NULL
+                  OR posting.reporting_period_id = CAST(:reporting_period_id AS uuid)
+              )
+            ORDER BY posting.reporting_period_id, resident.programme_code
+            """
+        ),
+        params,
+    )
+    totals = {
+        "reconciled_programme_periods": 0,
+        "programme_scopes_created": 0,
+        "pending_mappings_created": 0,
+    }
+    for row in result.mappings().all():
+        counts = await reconcile_teaching_name_programme_scopes(
+            db,
+            reporting_period_id=row["reporting_period_id"],
+            programme_code=row["programme_code"],
+        )
+        totals["reconciled_programme_periods"] += 1
+        totals["programme_scopes_created"] += counts["programme_scopes_created"]
+        totals["pending_mappings_created"] += counts["pending_mappings_created"]
+    return totals
+
+
 async def correct_resident(
     db: AsyncSession,
     *,
@@ -1700,6 +1754,12 @@ async def correct_resident(
         master_admin=master_admin,
     )
     updated_fields = sorted(changed)
+    teaching_name_reconciliation = None
+    if "programme_code" in changed:
+        teaching_name_reconciliation = await _reconcile_teaching_name_scopes_for_resident(
+            db,
+            resident_id=row_id,
+        )
     data_revalidation = await _revalidate_live_data_correction(
         db,
         actor=actor,
@@ -1725,6 +1785,11 @@ async def correct_resident(
             "updated_fields": updated_fields,
             "programme_code": after.get("programme_code"),
             "data_revalidation": data_revalidation,
+            **(
+                {"teaching_name_reconciliation": teaching_name_reconciliation}
+                if teaching_name_reconciliation is not None
+                else {}
+            ),
         },
     )
     await db.commit()
@@ -1796,6 +1861,11 @@ async def correct_resident_posting(
         reporting_period_id=after["reporting_period_id"],
         resident_id=after["resident_id"],
     )
+    teaching_name_reconciliation = await _reconcile_teaching_name_scopes_for_resident(
+        db,
+        resident_id=after["resident_id"],
+        reporting_period_id=after["reporting_period_id"],
+    )
     updated_fields = sorted(changed)
     data_revalidation = await _revalidate_live_data_correction(
         db,
@@ -1825,6 +1895,7 @@ async def correct_resident_posting(
             "resident_id": str(after.get("resident_id")),
             "reporting_period_id": str(after.get("reporting_period_id")),
             "data_revalidation": data_revalidation,
+            "teaching_name_reconciliation": teaching_name_reconciliation,
         },
     )
     await db.commit()
@@ -2579,6 +2650,11 @@ async def replace_resident_posting_source_cell(
         reporting_period_id=before_rows[0]["reporting_period_id"],
         resident_id=before_rows[0]["resident_id"],
     )
+    teaching_name_reconciliation = await _reconcile_teaching_name_scopes_for_resident(
+        db,
+        resident_id=before_rows[0]["resident_id"],
+        reporting_period_id=before_rows[0]["reporting_period_id"],
+    )
     verified_source_metadata = source_metadata.get("verified_source_metadata")
     if not isinstance(verified_source_metadata, dict):
         verified_source_metadata = source_metadata.get("source")
@@ -2611,6 +2687,7 @@ async def replace_resident_posting_source_cell(
         "resident_id": str(before_rows[0].get("resident_id")),
         "reporting_period_id": str(before_rows[0].get("reporting_period_id")),
         "data_revalidation": data_revalidation,
+        "teaching_name_reconciliation": teaching_name_reconciliation,
         **source_metadata,
     }
     audit = await _write_correction_audit(
@@ -3411,6 +3488,11 @@ async def apply_warning_source_cell_replacement(
         reporting_period_id=reporting_period_id,
         resident_id=resident["id"],
     )
+    teaching_name_reconciliation = await _reconcile_teaching_name_scopes_for_resident(
+        db,
+        resident_id=resident["id"],
+        reporting_period_id=reporting_period_id,
+    )
     data_revalidation = await _revalidate_live_data_correction(
         db,
         actor=actor,
@@ -3450,6 +3532,7 @@ async def apply_warning_source_cell_replacement(
         "source_trace": source_trace,
         "parser_warnings": _json_ready(parse_result.warnings),
         "data_revalidation": data_revalidation,
+        "teaching_name_reconciliation": teaching_name_reconciliation,
     }
     audit = await _write_correction_audit(
         db,

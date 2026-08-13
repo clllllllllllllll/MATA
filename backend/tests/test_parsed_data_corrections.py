@@ -74,6 +74,7 @@ class FakeParsedDataCorrectionSession:
         self.lock_available = True
         self.commits = 0
         self.audit_logs: list[dict] = []
+        self.teaching_name_reconciliations: list[dict[str, str]] = []
         self.programme_codes = {"GERI", "DR"}
         self.upload_logs = [
             {
@@ -269,6 +270,49 @@ class FakeParsedDataCorrectionSession:
                     }
                 ]
             )
+
+        if "/* parsed_data_reconciliation:resident_programme_periods */" in sql:
+            rows = []
+            seen: set[tuple[str, str]] = set()
+            for posting in self.resident_postings:
+                if str(posting["resident_id"]) != str(payload["resident_id"]):
+                    continue
+                if (
+                    payload.get("reporting_period_id") is not None
+                    and str(posting["reporting_period_id"])
+                    != str(payload["reporting_period_id"])
+                ):
+                    continue
+                resident = next(
+                    item
+                    for item in self.residents
+                    if str(item["id"]) == str(posting["resident_id"])
+                )
+                key = (str(posting["reporting_period_id"]), resident["programme_code"])
+                if key not in seen:
+                    seen.add(key)
+                    rows.append(
+                        {
+                            "reporting_period_id": key[0],
+                            "programme_code": key[1],
+                        }
+                    )
+            return _FakeResult(rows=rows)
+
+        if "/* teaching_name_scopes:admit_owner */" in sql:
+            self.teaching_name_reconciliations.append(
+                {
+                    "reporting_period_id": str(payload["reporting_period_id"]),
+                    "programme_code": payload["programme_code"],
+                }
+            )
+            return _FakeResult(rowcount=0)
+
+        if "/* teaching_name_scopes:admit_resident_host */" in sql:
+            return _FakeResult(rowcount=0)
+
+        if "/* teaching_name_scopes:provision_mappings */" in sql:
+            return _FakeResult(rowcount=0)
 
         if "INSERT INTO audit_logs" in sql:
             row = {"id": payload["id"], "created_at": self.after_now, **payload}
@@ -866,6 +910,12 @@ def test_resident_programme_change_requires_existing_programme_in_admin_scope() 
     assert out_of_scope.status_code == 403
     assert master_allowed.status_code == 200
     assert session.residents[0]["programme_code"] == "DR"
+    assert session.teaching_name_reconciliations == [
+        {
+            "reporting_period_id": session.period_id,
+            "programme_code": "DR",
+        }
+    ]
 
 
 def test_correction_rejects_stale_last_seen_timestamp() -> None:
@@ -916,6 +966,12 @@ def test_resident_posting_patch_uses_documented_status_values() -> None:
     assert impact["scope"] == "resident_month"
     assert impact["warnings_created"] == 0
     assert session.resident_postings[0]["status"] == "loa_working"
+    assert session.teaching_name_reconciliations == [
+        {
+            "reporting_period_id": session.period_id,
+            "programme_code": "GERI",
+        }
+    ]
     assert blocked.status_code == 422
     assert session.resident_postings[1]["status"] == "active"
     assert len(session.audit_logs) == 1
@@ -1165,6 +1221,13 @@ def test_resident_posting_source_cell_replace_rewrites_rows_and_audits_original_
     assert metadata["verified_source_metadata"]["cell_ref"] == "J42"
     assert metadata["data_revalidation"]["changed_entity"] == "resident_posting_source_fragment"
     assert metadata["data_revalidation"]["details"]["replacement_row_count"] == 1
+    assert metadata["teaching_name_reconciliation"]["reconciled_programme_periods"] == 1
+    assert session.teaching_name_reconciliations == [
+        {
+            "reporting_period_id": session.period_id,
+            "programme_code": "GERI",
+        }
+    ]
 
 
 def test_source_cell_replace_uses_documented_status_values() -> None:

@@ -473,7 +473,7 @@ The SSR (Sub-Specialty Registrar) sheet has a different structure: MCR, Name, SI
    or shortening LOA clears it. Submission time is not used.
 10. Call `hibernate_stale_surplus()` after insert. This only updates lifecycle state; it does not carry a stored balance into attendance. On the next compliance read, recompute each ledger value as `max(cumulative raw eligible attendance - cumulative target_100, 0)` and replace it idempotently before tag reallocation.
 
-### Phase V RDB effect on Teaching Name admission
+### Phase V RDB and Live Data effect on Teaching Name admission
 
 The RDB remains the sole evidence that a native programme has an actual
 Resident posting at another department during a reporting period. After a
@@ -488,8 +488,13 @@ from posting text, and never uses a generally permitted rotation or TTF target
 as posting evidence. It is additive within the reporting period: a later RDB
 replacement that removes the last matching Resident posting does not delete a
 previously admitted name or its pending/completed mappings. Failed RDB uploads
-make no admission changes. Reporting-period deactivation hides the retained
-configuration from active workflows but does not delete historical rows.
+make no admission changes. A successful Live Data correction to a Resident's
+native programme, a Resident posting, a posting source-cell group, or a durable
+warning's posting source cell runs the same additive reconciliation for the
+affected current rows before commit. Live Data removal does not erase an
+admission or mapping retained for that reporting period. Reporting-period
+deactivation hides the retained configuration from active workflows but does
+not delete historical rows.
 
 ---
 

@@ -660,6 +660,16 @@ even if the last Resident leaves. Effectively inactive periods are excluded
 from active routes; their rows remain available only to explicitly
 historical/audit reads and are not copied into a new period.
 
+The server reconciles these durable admissions after both a successful RDB
+reporting-period replacement and successful relevant Live Data mutations. The
+Live Data paths are Resident native-programme correction, Resident Posting
+correction, Resident Posting source-cell replacement, and durable-warning source
+cell apply. Reconciliation occurs in the mutation transaction, only inserts
+missing admission/pending-mapping rows, and records aggregate reconciliation
+counts in correction audit metadata. Preview and failed mutations remain
+read-only; removing or changing posting evidence does not delete mappings
+already admitted for that reporting period.
+
 **Valid:** a REHAB PC maps a GERI Secretary source at `TTSHGerMed` to a REHAB
 TTF target because a REHAB Resident has an actual reporting-period posting at
 that site.
