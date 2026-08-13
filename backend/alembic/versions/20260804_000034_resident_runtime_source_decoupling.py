@@ -145,9 +145,8 @@ def _replace_atomic_helper(sql: str) -> None:
     _grant_definer_ownership()
     _execute(f"SET LOCAL ROLE {DEFINER_ROLE}")
     _execute(sql)
-    _execute("SET LOCAL ROLE NONE")
-    _execute(f"REVOKE CREATE ON SCHEMA mata_rls FROM {DEFINER_ROLE}")
-    _revoke_definer_ownership()
+    # Hosted migration logins are non-superusers, so apply the function ACL
+    # while the session is still acting as the function owner.
     _execute(
         f"REVOKE ALL PRIVILEGES ON FUNCTION mata_rls.{ATOMIC_HELPER_SIGNATURE} "
         f"FROM PUBLIC, {RUNTIME_ROLE}, {AUTH_ROLE}"
@@ -157,6 +156,9 @@ def _replace_atomic_helper(sql: str) -> None:
         f"TO {RUNTIME_ROLE}"
     )
     _revoke_optional_function_privileges(ATOMIC_HELPER_SIGNATURE)
+    _execute("SET LOCAL ROLE NONE")
+    _execute(f"REVOKE CREATE ON SCHEMA mata_rls FROM {DEFINER_ROLE}")
+    _revoke_definer_ownership()
 
 
 def _create_scheduled_event_selection_helper() -> None:
