@@ -188,6 +188,13 @@ const pageSource = readFileSync(
   fileURLToPath(new URL('./PcTeachingEventsPage.tsx', import.meta.url)),
   'utf8',
 )
+assert(
+  pageSource.includes('today.getFullYear()')
+    && pageSource.includes('today.getMonth() + 1')
+    && pageSource.includes('today.getDate()')
+    && !pageSource.includes('new Date().toISOString().slice(0, 10)'),
+  'Add Teaching defaults to the browser local calendar date rather than UTC',
+)
 const stylesheetSource = readFileSync(
   fileURLToPath(new URL('../../index.css', import.meta.url)),
   'utf8',

@@ -20,7 +20,10 @@ from app.services import cache_invalidation
 from app.services import scheduled_event_sources
 from app.services.audit import write_audit_log
 from app.services.pool_event_timing import (
+    PoolEventTiming,
     list_pool_event_timings,
+    pool_event_timing_payload,
+    staff_pool_event_session_type_label,
     with_staff_pool_event_timings,
 )
 from app.services.teaching_event_locks import acquire_teaching_event_locks
@@ -80,6 +83,24 @@ def _event_row(row: dict[str, Any]) -> dict[str, Any]:
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
+
+
+def _with_resolved_source_timing(
+    event: dict[str, Any],
+    source: scheduled_event_sources.ScheduledEventSource,
+) -> dict[str, Any]:
+    if source.is_pool_backed:
+        timing = PoolEventTiming(
+            duration_hours=source.duration_hours,
+            is_mapped=source.duration_is_mapped,
+            duration_varies=source.duration_varies,
+            r_year_timings=source.r_year_timings,
+        )
+        event.update(pool_event_timing_payload(timing))
+        event["session_type"] = staff_pool_event_session_type_label(timing)
+    else:
+        event["session_type"] = source.teaching_name
+    return event
 
 
 def _compute_end_time(event_date: date, start_time: time, duration_hours: Decimal) -> time:
@@ -180,12 +201,15 @@ async def teaching_name_options(
                      AND spp.is_active = true
                     WHERE mapping.teaching_name_id = tn.id
                       AND mapping.reporting_period_id = tn.reporting_period_id
-                      AND mapping.programme_code = tn.programme_code
+                      AND mapping.programme_code = :programme_code
                     ORDER BY mapping.posting_code
                 ) AS posting_codes
             FROM teaching_names tn
-            WHERE tn.programme_code = :programme_code
-              AND tn.reporting_period_id = :reporting_period_id
+            JOIN teaching_name_programme_scopes AS scope
+              ON scope.teaching_name_id = tn.id
+             AND scope.reporting_period_id = tn.reporting_period_id
+             AND scope.programme_code = :programme_code
+            WHERE tn.reporting_period_id = :reporting_period_id
               AND tn.is_active = true
             ORDER BY tn.display_name ASC, tn.id ASC
             """
@@ -325,7 +349,7 @@ async def _ensure_pool_source_mapping_scope(
     if (
         source.teaching_name_id is None
         or source.reporting_period_id is None
-        or source.programme_code is None
+        or source.mapping_programme_code is None
     ):
         raise RuntimeError("Pool-backed scheduled event source is missing its scope")
 
@@ -346,7 +370,7 @@ async def _ensure_pool_source_mapping_scope(
         {
             "teaching_name_id": str(source.teaching_name_id),
             "reporting_period_id": str(source.reporting_period_id),
-            "programme_code": source.programme_code,
+            "programme_code": source.mapping_programme_code,
             "posting_code": posting_code,
         },
     )
@@ -416,11 +440,19 @@ async def list_teaching_events(
             (
                 te.source_programme_code IS NOT NULL
                 AND te.source_reporting_period_id = :reporting_period_id
-                AND te.source_programme_code = ANY(:programme_scope)
                 AND te.global_session_type_id IS NULL
                 AND (
-                    te.created_for_programme_code IS NULL
-                    OR te.created_for_programme_code = te.source_programme_code
+                    te.created_for_programme_code = ANY(:programme_scope)
+                    OR (
+                        te.created_for_programme_code IS NULL
+                        AND EXISTS (
+                            SELECT 1
+                            FROM teaching_name_programme_scopes AS scope
+                            WHERE scope.teaching_name_id = te.teaching_name_id
+                              AND scope.reporting_period_id = te.source_reporting_period_id
+                              AND scope.programme_code = ANY(:programme_scope)
+                        )
+                    )
                 )
             )
             OR (
@@ -475,12 +507,21 @@ async def list_teaching_events(
         where.append(
             """
             (
-                te.source_programme_code = :programme_code
+                te.source_programme_code IS NOT NULL
                 AND te.source_reporting_period_id = :reporting_period_id
                 AND te.global_session_type_id IS NULL
                 AND (
-                    te.created_for_programme_code IS NULL
-                    OR te.created_for_programme_code = te.source_programme_code
+                    te.created_for_programme_code = :programme_code
+                    OR (
+                        te.created_for_programme_code IS NULL
+                        AND EXISTS (
+                            SELECT 1
+                            FROM teaching_name_programme_scopes AS scope
+                            WHERE scope.teaching_name_id = te.teaching_name_id
+                              AND scope.reporting_period_id = te.source_reporting_period_id
+                              AND scope.programme_code = :programme_code
+                        )
+                    )
                 )
             )
             OR (
@@ -590,6 +631,7 @@ async def list_teaching_events(
     rows = await with_staff_pool_event_timings(
         db,
         rows=[dict(row) for row in result.mappings().all()],
+        programme_code=programme_code,
     )
     return [_event_row(row) for row in rows]
 
@@ -660,12 +702,32 @@ async def _event_matches_programme(
     if (source_programme is None) != (source_period is None):
         return False
     if source_programme is not None:
-        return (
-            event.get("global_session_type_id") is None
-            and str(source_programme) == programme_code
-            and str(source_period) == str(reporting_period_id)
-            and (owner is None or owner == source_programme)
+        if (
+            event.get("global_session_type_id") is not None
+            or str(source_period) != str(reporting_period_id)
+        ):
+            return False
+        if owner is not None and owner != programme_code:
+            return False
+        result = await db.execute(
+            text(
+                """
+                /* programme_teaching_events:event_programme_pool_match */
+                SELECT 1
+                FROM teaching_name_programme_scopes AS scope
+                WHERE scope.teaching_name_id = :teaching_name_id
+                  AND scope.reporting_period_id = :reporting_period_id
+                  AND scope.programme_code = :programme_code
+                LIMIT 1
+                """
+            ),
+            {
+                "teaching_name_id": str(event["teaching_name_id"]),
+                "reporting_period_id": str(reporting_period_id),
+                "programme_code": programme_code,
+            },
         )
+        return result.scalar_one_or_none() is not None
     if event.get("teaching_name_id") is not None:
         return False
     if event.get("global_session_type_id") is not None:
@@ -918,7 +980,8 @@ async def _insert_event(
             "created_by_role": created_by_role,
         },
     )
-    return _event_row(dict(result.mappings().one()))
+    event = _with_resolved_source_timing(dict(result.mappings().one()), source)
+    return _event_row(event)
 
 
 async def _write_programme_event_audit(
@@ -1174,7 +1237,9 @@ async def update_teaching_event(
                 detail="Teaching event could not be updated",
                 error_code=ErrorCode.CONFLICT.value,
             )
-        event_payload = _event_row(dict(event))
+        event_payload = _event_row(
+            _with_resolved_source_timing(dict(event), source_identity)
+        )
         await _write_programme_event_audit(
             db,
             actor=audit_actor,

@@ -164,6 +164,8 @@ class FakeProgrammeTeachingEventsSession:
             "display_name": display_name,
             "programme_code": programme_code,
             "reporting_period_id": self.period_id,
+            "visibility_scope": "programme_private",
+            "origin_posting_code": None,
             "is_active": True,
         }
 
@@ -185,6 +187,7 @@ class FakeProgrammeTeachingEventsSession:
         posting_code: str,
         teaching_target_id: str | None = None,
         duration_hours: Decimal | None = None,
+        programme_code: str | None = None,
     ) -> dict:
         teaching_name = next(
             row for row in self.teaching_names if row["id"] == teaching_name_id
@@ -192,7 +195,7 @@ class FakeProgrammeTeachingEventsSession:
         return {
             "teaching_name_id": teaching_name_id,
             "reporting_period_id": teaching_name["reporting_period_id"],
-            "programme_code": teaching_name["programme_code"],
+            "programme_code": programme_code or teaching_name["programme_code"],
             "posting_code": posting_code,
             "r_year": "R1",
             "teaching_target_id": teaching_target_id,
@@ -210,6 +213,7 @@ class FakeProgrammeTeachingEventsSession:
         posting_code: str,
         teaching_target_id: str | None = None,
         duration_hours: Decimal | None = None,
+        programme_code: str | None = None,
     ) -> None:
         self.teaching_name_mappings.append(
             self._mapping_scope(
@@ -217,6 +221,7 @@ class FakeProgrammeTeachingEventsSession:
                 posting_code=posting_code,
                 teaching_target_id=teaching_target_id,
                 duration_hours=duration_hours,
+                programme_code=programme_code,
             )
         )
 
@@ -305,12 +310,32 @@ class FakeProgrammeTeachingEventsSession:
                     "reporting_period_id": row["reporting_period_id"],
                     "programme_code": row["programme_code"],
                     "teaching_name": row["display_name"],
+                    "visibility_scope": row["visibility_scope"],
+                    "origin_posting_code": row["origin_posting_code"],
                     "is_active": row["is_active"],
                 }
                 for row in self.teaching_names
                 if row["id"] == str(payload["teaching_name_id"])
             ]
             return _FakeResult(rows=rows)
+
+        if "/* scheduled_event_sources:programme_admission */" in sql:
+            source = next(
+                (
+                    row
+                    for row in self.teaching_names
+                    if row["id"] == str(payload["teaching_name_id"])
+                    and row["reporting_period_id"] == str(payload["reporting_period_id"])
+                ),
+                None,
+            )
+            is_admitted = any(
+                mapping["teaching_name_id"] == str(payload["teaching_name_id"])
+                and mapping["reporting_period_id"] == str(payload["reporting_period_id"])
+                and mapping["programme_code"] == payload["programme_code"]
+                for mapping in self.teaching_name_mappings
+            ) or bool(source and source["programme_code"] == payload["programme_code"])
+            return _FakeResult(scalar=1 if is_admitted else None)
 
         if "/* scheduled_event_sources:global_session_type */" in sql:
             rows = [
@@ -416,11 +441,11 @@ class FakeProgrammeTeachingEventsSession:
                             if mapping["teaching_name_id"] == row["id"]
                             and mapping["reporting_period_id"]
                             == row["reporting_period_id"]
-                            and mapping["programme_code"] == row["programme_code"]
+                            and mapping["programme_code"] == payload["programme_code"]
                             and any(
                                 pool["posting_code"] == mapping["posting_code"]
                                 and pool["programme_code"]
-                                == mapping["programme_code"]
+                                == payload["programme_code"]
                                 and pool["is_active"]
                                 for pool in self.secretary_programme_pools
                             )
@@ -428,8 +453,16 @@ class FakeProgrammeTeachingEventsSession:
                     ),
                 }
                 for row in self.teaching_names
-                if row["programme_code"] == payload["programme_code"]
-                and row["reporting_period_id"] == str(payload["reporting_period_id"])
+                if row["reporting_period_id"] == str(payload["reporting_period_id"])
+                and (
+                    row["programme_code"] == payload["programme_code"]
+                    or any(
+                        mapping["teaching_name_id"] == row["id"]
+                        and mapping["reporting_period_id"] == row["reporting_period_id"]
+                        and mapping["programme_code"] == payload["programme_code"]
+                        for mapping in self.teaching_name_mappings
+                    )
+                )
                 and row["is_active"]
             ]
             return _FakeResult(rows=rows)
@@ -524,12 +557,19 @@ class FakeProgrammeTeachingEventsSession:
             return _FakeResult(scalar=is_match)
 
         if "/* programme_teaching_events:event_programme_pool_match */" in sql:
-            is_match = any(
+            owner_match = any(
                 row["id"] == str(payload["teaching_name_id"])
                 and row["programme_code"] == payload["programme_code"]
                 and row["reporting_period_id"] == str(payload["reporting_period_id"])
                 for row in self.teaching_names
             )
+            mapping_match = any(
+                row["teaching_name_id"] == str(payload["teaching_name_id"])
+                and row["programme_code"] == payload["programme_code"]
+                and row["reporting_period_id"] == str(payload["reporting_period_id"])
+                for row in self.teaching_name_mappings
+            )
+            is_match = owner_match or mapping_match
             return _FakeResult(scalar=1 if is_match else None)
 
         if "/* programme_teaching_events:event_programme_global_match */" in sql:
@@ -600,11 +640,23 @@ class FakeProgrammeTeachingEventsSession:
         *,
         reporting_period_id: str,
     ) -> set[str]:
-        source_programme = event.get("source_programme_code")
+        teaching_name_id = event.get("teaching_name_id")
         source_period = event.get("source_reporting_period_id")
-        if source_programme is None or str(source_period) != reporting_period_id:
+        if teaching_name_id is None or str(source_period) != reporting_period_id:
             return set()
-        return {str(source_programme)}
+        programmes = {
+            mapping["programme_code"]
+            for mapping in self.teaching_name_mappings
+            if mapping["teaching_name_id"] == str(teaching_name_id)
+            and mapping["reporting_period_id"] == reporting_period_id
+        }
+        source = next(
+            (row for row in self.teaching_names if row["id"] == str(teaching_name_id)),
+            None,
+        )
+        if source is not None:
+            programmes.add(source["programme_code"])
+        return programmes
 
     def _scope_events(self, programme_scope: list[str], *, reporting_period_id: str) -> list[dict]:
         scope = set(programme_scope)
@@ -729,6 +781,53 @@ def test_geri_pc_creates_programme_owned_event_from_teaching_name_pool() -> None
     )
     assert session.events[-1]["created_for_programme_code"] == "GERI"
     assert unsupported.status_code == 422
+
+
+def test_pc_can_schedule_an_admitted_department_secretary_name_using_own_ttf() -> None:
+    session = FakeProgrammeTeachingEventsSession()
+    teaching_name_id = session.teaching_name_id_for("Geri Teaching", "GERI")
+    source = next(row for row in session.teaching_names if row["id"] == teaching_name_id)
+    source["visibility_scope"] = "department_shared"
+    source["origin_posting_code"] = "TTSHGerMed"
+    session.secretary_programme_pools.append(
+        {"posting_code": "TTSHGerMed", "programme_code": "DR", "is_active": True}
+    )
+    session.add_mapping_scope(
+        teaching_name_id=teaching_name_id,
+        programme_code="DR",
+        posting_code="TTSHGerMed",
+        teaching_target_id=str(uuid4()),
+        duration_hours=Decimal("2.0"),
+    )
+    client = _client(session)
+
+    options = client.get(
+        "/admin/programme-teaching-name-options",
+        headers=_headers(scope="DR"),
+        params={"programme_code": "DR", "reporting_period_id": session.period_id},
+    )
+    created = client.post(
+        "/admin/programme-teaching-events",
+        headers=_headers(scope="DR"),
+        json={
+            "programme_code": "DR",
+            "posting_code": "TTSHGerMed",
+            "teaching_name_id": teaching_name_id,
+            "event_date": "2026-05-20",
+            "start_time": "10:00",
+        },
+    )
+
+    assert options.status_code == 200
+    option = next(row for row in options.json()["options"] if row["teaching_name_id"] == teaching_name_id)
+    assert option["posting_codes"] == ["TTSHGerMed"]
+    assert option["programme_code"] == "GERI"
+    assert created.status_code == 200
+    assert created.json()["created_for_programme_code"] == "DR"
+    assert created.json()["source_programme_code"] == "GERI"
+    assert created.json()["duration_hours"] == "2.0"
+    assert created.json()["end_time"] == "12:00:00"
+    assert created.json()["session_type"] == "Mapped session"
 
 
 def test_pc_can_create_global_department_meeting_for_safe_programme_posting() -> None:
@@ -1644,7 +1743,7 @@ def test_pc_pool_source_enforces_scope_period_activity_and_time_boundary() -> No
     assert at_limit.status_code == 200
     assert at_limit.json()["end_time"] == "00:00:00"
     assert after_limit.status_code == 422
-    assert cross_programme.status_code == 403
+    assert cross_programme.status_code == 422
     assert inactive.status_code == 422
     assert wrong_period.status_code == 422
 

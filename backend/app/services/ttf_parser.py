@@ -956,7 +956,10 @@ async def parse_ttf_upload(
             errors.append(
                 {
                     "row": row_idx,
-                    "message": "Column A reporting period does not match the selected reporting period.",
+                    "message": (
+                        "Column A reporting period does not match the selected "
+                        f"reporting period. Expected '{selected_reporting_period_label}'."
+                    ),
                 }
             )
             continue

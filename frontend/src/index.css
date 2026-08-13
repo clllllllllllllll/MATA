@@ -2504,6 +2504,14 @@ tr:last-child td {
   min-width: 0;
 }
 
+.secretary-teaching-names-scope-card {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(320px, 1.3fr);
+  align-items: end;
+  gap: 20px;
+  padding: 18px 20px;
+}
+
 .secretary-teaching-names-scope-row,
 .secretary-teaching-names-list-header,
 .secretary-teaching-names-mobile-heading,
@@ -2534,7 +2542,7 @@ tr:last-child td {
   align-items: end;
   flex-wrap: wrap;
   gap: 12px;
-  margin-top: 16px;
+  margin-top: 0;
 }
 
 .secretary-teaching-names-select,
@@ -2586,7 +2594,7 @@ tr:last-child td {
   align-items: end;
   flex-wrap: wrap;
   gap: 10px;
-  margin: 0 16px 14px;
+  margin: 0 20px 14px;
 }
 
 .secretary-teaching-names-filters .filter-row {
@@ -2614,7 +2622,7 @@ tr:last-child td {
 }
 
 .secretary-teaching-names-table-wrap .table {
-  min-width: 860px;
+  min-width: 760px;
 }
 
 .secretary-teaching-names-actions {
@@ -2675,6 +2683,14 @@ tr:last-child td {
   min-width: 0;
 }
 
+.pc-session-types-scope-card {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(320px, 1.3fr);
+  align-items: end;
+  gap: 20px;
+  padding: 18px 20px;
+}
+
 .pc-session-types-hero-actions,
 .pc-session-types-scope-header,
 .pc-session-types-section-header,
@@ -2713,7 +2729,7 @@ tr:last-child td {
   align-items: end;
   flex-wrap: wrap;
   gap: 10px;
-  margin-top: 16px;
+  margin-top: 0;
 }
 
 .pc-session-types-select,
@@ -2764,7 +2780,7 @@ tr:last-child td {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 10px;
-  margin: 0 16px 12px;
+  margin: 0 20px 12px;
 }
 
 .pc-session-types-pending-callout {
@@ -2772,7 +2788,7 @@ tr:last-child td {
 }
 
 .pc-session-types-filters {
-  margin: 0 16px 14px;
+  margin: 0 20px 14px;
 }
 
 .pc-session-types-filters .filter-row {
@@ -2804,7 +2820,7 @@ tr:last-child td {
 }
 
 .pc-session-types-table-wrap .table {
-  min-width: 1280px;
+  min-width: 980px;
 }
 
 .pc-session-types-names-table-wrap .table {
@@ -2812,7 +2828,71 @@ tr:last-child td {
 }
 
 .pc-session-types-target-select {
-  min-width: 240px;
+  width: 100%;
+  min-width: 260px;
+}
+
+.pc-session-types-group-summary-row td {
+  padding: 0;
+  background: var(--bg);
+}
+
+.pc-session-types-group-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  min-height: 58px;
+  padding: 10px 16px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.pc-session-types-group-toggle::after {
+  content: '›';
+  color: var(--ink-3);
+  font-size: 22px;
+  line-height: 1;
+  transform: rotate(90deg);
+  transition: transform 120ms ease;
+}
+
+.pc-session-types-group-toggle[aria-expanded='true']::after {
+  transform: rotate(-90deg);
+}
+
+.pc-session-types-group-toggle > span:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pc-session-types-group-toggle small,
+.pc-session-types-group-toggle > span:nth-child(2) {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.pc-session-types-group-toggle > span:nth-child(2) {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.pc-session-types-mobile-group {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.pc-session-types-mobile-group .pc-session-types-mobile-card {
+  margin: 0 10px 10px;
 }
 
 .pc-session-types-name-actions,
@@ -2876,6 +2956,10 @@ tr:last-child td {
 }
 
 @media (max-width: 720px) {
+  .secretary-teaching-names-scope-card {
+    grid-template-columns: 1fr;
+  }
+
   .secretary-teaching-names-scope-row,
   .secretary-teaching-names-list-header,
   .secretary-teaching-names-pagination {
@@ -2953,6 +3037,10 @@ tr:last-child td {
   .pc-session-types-filters {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .pc-session-types-scope-card {
+    grid-template-columns: 1fr;
   }
 
   .pc-session-types-scope-controls > *,
@@ -5441,7 +5529,6 @@ tr:last-child td {
 }
 
 .warning-results-card {
-  min-height: 460px;
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -5475,8 +5562,8 @@ tr:last-child td {
 }
 
 .warning-results-state {
-  min-height: 360px;
-  align-content: center;
+  min-height: 140px;
+  align-content: start;
   box-shadow: none;
 }
 

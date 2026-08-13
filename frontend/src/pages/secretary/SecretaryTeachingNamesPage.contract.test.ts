@@ -55,7 +55,7 @@ test('Secretary management uses only backend-derived capability and scoped lifec
   assert.match(pageSource, /isSingleProgramme \? \(/)
   assert.match(pageSource, /programmes\.length > 1 \? \(/)
   assert.match(pageSource, /setSelectedProgrammeCode\(event\.target\.value\)/)
-  assert.match(pageSource, /setReportingPeriodId\(period\.id\)/)
+  assert.match(pageSource, /setReportingPeriodId\(event\.target\.value\)/)
   assert.equal(pageSource.includes('native_teaching_posting_code'), false)
   assert.equal(pageSource.includes('mapping'), false)
 })
@@ -126,9 +126,9 @@ test('Secretary Teaching Name page keeps mobile and dialog controls accessible',
   assert.match(drawerSource, /previousActiveElement\.focus\(\)/)
 })
 
-test('native Secretary sees PC-created provenance without receiving lifecycle authority', () => {
-  assert.match(pageSource, /Created by Programme PC/)
-  assert.match(pageSource, /programme-private/)
+test('Department Secretary sees PC NHG provenance without receiving lifecycle authority', () => {
+  assert.match(pageSource, /PC NHG/)
   assert.match(pageSource, /!name\.canManageName/)
   assert.match(pageSource, /read-only for the Department Secretary/)
+  assert.doesNotMatch(pageSource, /<th>Revision<\/th>/)
 })

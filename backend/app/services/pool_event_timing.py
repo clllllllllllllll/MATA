@@ -67,6 +67,23 @@ def pool_event_timing_payload(timing: PoolEventTiming) -> dict[str, object]:
     }
 
 
+def staff_pool_event_session_type_label(timing: PoolEventTiming) -> str:
+    """Return the staff-facing session-type label for one mapping envelope."""
+
+    if not timing.r_year_timings or all(
+        not row.is_mapped for row in timing.r_year_timings
+    ):
+        return "Pending mapping"
+    mapped_names = {
+        row.session_type_name
+        for row in timing.r_year_timings
+        if row.is_mapped and row.session_type_name
+    }
+    if timing.has_pending_mappings or len(mapped_names) != 1:
+        return "Varies by R-year"
+    return next(iter(mapped_names))
+
+
 def _missing_r_year_mapping_error(*, posting_code: str, r_year: str) -> ApiError:
     return ApiError(
         status_code=409,
@@ -353,6 +370,7 @@ async def with_staff_pool_event_timings(
     db: AsyncSession,
     *,
     rows: Sequence[dict[str, Any]],
+    programme_code: str | None = None,
 ) -> list[dict[str, Any]]:
     """Attach staff timing metadata with one query per period/programme scope."""
 
@@ -363,7 +381,11 @@ async def with_staff_pool_event_timings(
     for row in enriched_rows:
         teaching_name_id = row.get("teaching_name_id")
         reporting_period_id = row.get("source_reporting_period_id")
-        programme_code = row.get("created_for_programme_code")
+        timing_programme_code = (
+            programme_code
+            if programme_code is not None
+            else row.get("created_for_programme_code")
+        )
         posting_code = row.get("posting_code")
         if (
             teaching_name_id is None
@@ -374,7 +396,11 @@ async def with_staff_pool_event_timings(
         teaching_names_by_scope[
             (
                 str(reporting_period_id),
-                str(programme_code) if programme_code is not None else None,
+                (
+                    str(timing_programme_code)
+                    if timing_programme_code is not None
+                    else None
+                ),
                 str(posting_code),
             )
         ].add(str(teaching_name_id))
@@ -410,12 +436,17 @@ async def with_staff_pool_event_timings(
         )
 
     for row in enriched_rows:
+        timing_programme_code = (
+            programme_code
+            if programme_code is not None
+            else row.get("created_for_programme_code")
+        )
         timing = timings_by_full_scope.get(
             (
                 str(row.get("source_reporting_period_id")),
                 (
-                    str(row.get("created_for_programme_code"))
-                    if row.get("created_for_programme_code") is not None
+                    str(timing_programme_code)
+                    if timing_programme_code is not None
                     else None
                 ),
                 str(row.get("teaching_name_id")),
@@ -424,6 +455,7 @@ async def with_staff_pool_event_timings(
         )
         if timing is not None:
             row.update(pool_event_timing_payload(timing))
+            row["session_type"] = staff_pool_event_session_type_label(timing)
     return enriched_rows
 
 

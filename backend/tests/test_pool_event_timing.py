@@ -9,6 +9,7 @@ from app.services.pool_event_timing import (
     list_pool_event_timings,
     resolve_pool_event_r_year_timing,
     resolve_pool_event_timing,
+    staff_pool_event_session_type_label,
     sync_pool_event_timings,
 )
 
@@ -151,6 +152,28 @@ def test_different_r_year_durations_use_longest_staff_envelope() -> None:
     assert timing.is_mapped is True
     assert timing.duration_varies is True
     assert [row.r_year for row in timing.r_year_timings] == ["R1", "R2"]
+
+
+def test_staff_session_type_label_reflects_mapping_state() -> None:
+    pending = asyncio.run(
+        resolve_pool_event_timing(_TimingSession([]), scope=_scope())  # type: ignore[arg-type]
+    )
+    common = asyncio.run(
+        resolve_pool_event_timing(  # type: ignore[arg-type]
+            _TimingSession([Decimal("1.0"), Decimal("1.0")]),
+            scope=_scope(),
+        )
+    )
+    varying = asyncio.run(
+        resolve_pool_event_timing(  # type: ignore[arg-type]
+            _TimingSession([Decimal("1.0"), Decimal("2.0")]),
+            scope=_scope(),
+        )
+    )
+
+    assert staff_pool_event_session_type_label(pending) == "Pending mapping"
+    assert staff_pool_event_session_type_label(common) == "Session [1.0h]"
+    assert staff_pool_event_session_type_label(varying) == "Varies by R-year"
 
 
 def test_resident_timing_uses_exact_r_year_mapping() -> None:

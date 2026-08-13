@@ -474,7 +474,7 @@ test('pending logout blocks hydration and protected dispatch while preserving ex
   )
   assert.match(loginSource, /role=\{[\s\S]*'alert'[\s\S]*aria-live=/)
   assert.match(loginSource, /Retry server sign-out/)
-  assert.match(loginSource, /Server sign-out confirmed/)
+  assert.doesNotMatch(loginSource, /Server sign-out confirmed/)
   assert.match(loginSource, /tabIndex=\{-1\}/)
   assert.match(
     reliabilitySource,

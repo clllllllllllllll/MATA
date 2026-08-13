@@ -105,10 +105,15 @@ export const selectCurrentReportingPeriodId = (
   periods: ReportingPeriodOption[],
   asOf: Date = new Date(),
 ): string => {
-  const matches = periods.filter((period) =>
-    isEffectivelyActiveReportingPeriod(period, asOf) && reportingPeriodContainsDate(period, asOf),
-  )
-  return matches.length === 1 ? matches[0].id : ''
+  const active = periods.filter((period) => isEffectivelyActiveReportingPeriod(period, asOf))
+  const containingToday = active.filter((period) => reportingPeriodContainsDate(period, asOf))
+  const candidates = containingToday.length > 0 ? containingToday : active
+  return [...candidates]
+    .sort((left, right) => (
+      right.startDate.localeCompare(left.startDate)
+      || right.endDate.localeCompare(left.endDate)
+      || right.id.localeCompare(left.id)
+    ))[0]?.id ?? ''
 }
 
 export const retainOrSelectReportingPeriodId = (
@@ -116,7 +121,9 @@ export const retainOrSelectReportingPeriodId = (
   selectedId: string,
   asOf: Date = new Date(),
 ): string =>
-  selectedId && periods.some((period) => period.id === selectedId)
+  selectedId && periods.some((period) => (
+    period.id === selectedId && isEffectivelyActiveReportingPeriod(period, asOf)
+  ))
     ? selectedId
     : selectCurrentReportingPeriodId(periods, asOf)
 

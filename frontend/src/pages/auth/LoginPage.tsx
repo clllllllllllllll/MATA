@@ -57,7 +57,7 @@ export const LoginPage = () => {
     isLogoutRetrying || logoutRetryReason === 'retry-scheduled'
 
   useEffect(() => {
-    if (logoutStatus !== 'none') {
+    if (logoutStatus === 'pending') {
       logoutStatusHeadingRef.current?.focus()
     }
   }, [logoutStatus])
@@ -226,19 +226,6 @@ export const LoginPage = () => {
                 Use either sign-in form below to establish a replacement session.
               </p>
             )}
-          </section>
-        ) : null}
-
-        {logoutStatus === 'confirmed' ? (
-          <section
-            className="auth-logout-status auth-logout-status-confirmed"
-            role="status"
-            aria-live="polite"
-          >
-            <h2 ref={logoutStatusHeadingRef} tabIndex={-1}>
-              Server sign-out confirmed
-            </h2>
-            <p>Your local data was cleared and the server revoked the presented session family.</p>
           </section>
         ) : null}
 
