@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from dataclasses import dataclass
 from decimal import Decimal
@@ -22,6 +23,7 @@ from app.dependencies.staff_actor import (
 )
 from app.errors import ApiError, ErrorCode, UploadValidationApiError
 from app.middleware.auth_stub import AuthIdentity
+from app.security import log_safe_exception
 from app.routers.upload_multipart import (
     BoundedAdminUploadRoute,
     bounded_admin_upload,
@@ -64,7 +66,6 @@ from app.schemas import (
     ParsedPublicHolidayListResponse,
     ParsedResidentListResponse,
     ParsedResidentPostingListResponse,
-    ParsedTeachingNameCatalogueListResponse,
     ParsedTeachingTargetListResponse,
     ResidentPostingSourceCellReplaceRequest,
     PostingGroupMutationRequest,
@@ -96,7 +97,6 @@ from app.schemas import (
     StaffAccountResetPasswordRequest,
     StaffAccountResponse,
     StaffAccountUpdateRequest,
-    TeachingNameCatalogueResponse,
     TeachingTargetResponse,
     UploadLogDetailResponse,
     UploadLogListResponse,
@@ -115,6 +115,23 @@ from app.schemas.data_revalidation import (
     DataRevalidationScope,
     DataRevalidationTriggerSource,
 )
+from app.schemas.teaching_names import (
+    TeachingNameCreateRequest,
+    TeachingNameDeleteRequest,
+    TeachingNameDeleteResponse,
+    TeachingNameListResponse,
+    TeachingNameMutationResponse,
+    TeachingNameRevisionRequest,
+    TeachingNameUpdateRequest,
+)
+from app.schemas.teaching_name_mappings import (
+    TeachingNameMappingBulkMutationRequest,
+    TeachingNameMappingBulkMutationResponse,
+    TeachingNameMappingImpactCounts,
+    TeachingNameMappingListResponse,
+    TeachingNameMappingMutationRequest,
+    TeachingNameMappingMutationResponse,
+)
 from app.services import (
     admin_config,
     admin_external_attendance,
@@ -126,6 +143,8 @@ from app.services import (
     parsed_data,
     programme_teaching_events,
     staff_accounts,
+    teaching_name_mappings,
+    teaching_name_pool,
 )
 from app.services.admin_logs_service import (
     get_admin_log as get_admin_log_read_model,
@@ -159,6 +178,9 @@ from app.services.reporting_period_status import REPORTING_PERIOD_ACTIVE
 from app.services.formf1_parser import parse_formf1_upload
 from app.services.public_holiday_parser import parse_public_holiday_upload
 from app.services.ttf_parser import TTFUploadLockError, parse_ttf_upload
+
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(
@@ -195,6 +217,17 @@ def _admin_actor_context(admin_context: AdminContext) -> StaffActorContext:
         actor_programme=",".join(sorted(admin_context.programme_scope)) or None,
         actor_admin_level="master" if admin_context.is_master_admin else None,
         raw_scope_metadata=scope_metadata,
+    )
+
+
+def _teaching_name_pool_actor(
+    admin_context: AdminContext,
+) -> teaching_name_pool.TeachingNamePoolActor:
+    return teaching_name_pool.TeachingNamePoolActor(
+        kind="master_admin" if admin_context.is_master_admin else "programme_pc",
+        user_id=admin_context.user_id,
+        staff_actor=_admin_actor_context(admin_context),
+        programme_scope=frozenset(admin_context.programme_scope),
     )
 
 
@@ -389,9 +422,22 @@ def _format_ttf_response(result: ParserResult) -> dict[str, Any]:
     metadata = result.metadata or {}
     return {
         "targets_created": metadata.get("targets_created", result.created_count),
+        "targets_inserted": metadata.get("targets_inserted", 0),
+        "targets_updated": metadata.get("targets_updated", 0),
+        "targets_removed": metadata.get("targets_removed", 0),
+        "targets_unchanged": metadata.get("targets_unchanged", 0),
+        "mappings_preserved": metadata.get("mappings_preserved", 0),
+        "mappings_invalidated": metadata.get("mappings_invalidated", 0),
+        "mappings_with_target_semantics_changed": metadata.get(
+            "mappings_with_target_semantics_changed", 0
+        ),
+        "pending_mappings_created": metadata.get("pending_mappings_created", 0),
+        "affected_event_count": metadata.get("affected_event_count", 0),
+        "affected_attendance_count": metadata.get("affected_attendance_count", 0),
         "session_types_upserted": metadata.get("session_types_upserted", result.updated_count),
         "posting_codes_added": metadata.get("posting_codes_added", []),
-        "catalogue_rows_seeded": metadata.get("catalogue_rows_seeded", 0),
+        "posting_groups_upserted": metadata.get("posting_groups_upserted", 0),
+        "posting_groups_removed": metadata.get("posting_groups_removed", 0),
         "rows_exploded": metadata.get("rows_exploded", 0),
         "warnings": result.warnings,
         "errors": result.errors,
@@ -440,14 +486,14 @@ def _format_public_holiday_response(result: ParserResult) -> dict[str, Any]:
 async def _require_active_upload_reporting_period(
     db: AsyncSession | None,
     reporting_period_id: UUID,
-) -> None:
+) -> str | None:
     if db is None:
-        return
+        return None
     result = await db.execute(
         text(
             """
             /* upload:reporting_period_status */
-            SELECT status
+            SELECT label, status
             FROM reporting_periods
             WHERE id = :reporting_period_id
             """
@@ -456,9 +502,9 @@ async def _require_active_upload_reporting_period(
     )
     row = result.mappings().one_or_none()
     if row is None:
-        return
+        return None
     if str(row.get("status") or "").strip().lower() == REPORTING_PERIOD_ACTIVE:
-        return
+        return str(row.get("label") or "").strip() or None
     raise ApiError(
         status_code=422,
         detail="Selected reporting period is inactive. Activate the reporting period before uploading.",
@@ -697,9 +743,11 @@ async def _write_upload_log_and_audit(
     actor: StaffActorContext,
     reporting_period_id: UUID | None = None,
     programme_code: str | None = None,
-) -> None:
+    commit: bool = True,
+    invalidate_cache: bool = True,
+) -> dict[str, Any] | None:
     if db is None:
-        return
+        return None
 
     upload_log = await write_upload_log(
         db,
@@ -710,6 +758,7 @@ async def _write_upload_log_and_audit(
         uploaded_by=uploaded_by,
         reporting_period_id=reporting_period_id,
         programme_code=programme_code,
+        commit=commit,
     )
     try:
         await derive_upload_warnings_from_summary(
@@ -717,6 +766,8 @@ async def _write_upload_log_and_audit(
             upload_log,
             parser_result.to_summary(),
             actor_id=uploaded_by,
+            commit=commit,
+            invalidate_cache=invalidate_cache,
         )
     except DurableWarningStoreUnavailable:
         pass
@@ -737,13 +788,16 @@ async def _write_upload_log_and_audit(
         after=after,
         metadata=metadata,
     )
-    await db.commit()
-    cache_invalidation.invalidate_after_upload(
-        upload_type=parser_result.upload_type,
-        upload_log_id=upload_log.get("id"),
-        reporting_period_id=reporting_period_id or upload_log.get("reporting_period_id"),
-        programme_code=programme_code or upload_log.get("programme_code"),
-    )
+    if commit:
+        await db.commit()
+    if invalidate_cache:
+        cache_invalidation.invalidate_after_upload(
+            upload_type=parser_result.upload_type,
+            upload_log_id=upload_log.get("id"),
+            reporting_period_id=reporting_period_id or upload_log.get("reporting_period_id"),
+            programme_code=programme_code or upload_log.get("programme_code"),
+        )
+    return upload_log
 
 
 def _compact_snapshot(row: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1185,7 +1239,10 @@ async def upload_ttf(
             errors=[str(exc)],
         ) from exc
 
-    await _require_active_upload_reporting_period(db, reporting_period_id)
+    selected_reporting_period_label = await _require_active_upload_reporting_period(
+        db,
+        reporting_period_id,
+    )
 
     await enforce_upload_persistent_rate_limit(
         db,
@@ -1201,29 +1258,115 @@ async def upload_ttf(
             original_filename=validated.original_filename,
             reporting_period_id=reporting_period_id,
             programme_code=programme_code,
+            reporting_period_label=selected_reporting_period_label,
             db_session=db,
+            manage_transaction=False,
         )
     except TTFUploadLockError as exc:
+        if db is not None:
+            await db.rollback()
         raise ApiError(
             status_code=409,
             detail="Another TTF upload for this scope is in progress",
             error_code=ErrorCode.CONFLICT.value,
             errors=[str(exc)],
         ) from exc
+    except Exception:
+        if db is not None:
+            await db.rollback()
+        raise
 
-    await _write_upload_log_and_audit(
-        db=db,
-        parser_result=parser_result,
-        original_filename=validated.original_filename,
-        uploaded_by=admin_context.user_id,
-        actor=staff_actor,
-        reporting_period_id=reporting_period_id,
-        programme_code=programme_code,
-    )
-    _raise_upload_validation_error_if_needed(
-        upload_label="TTF",
-        parser_result=parser_result,
-    )
+    # Parsing is fully validated before the parser opens the scope-locked
+    # persistence path. A failed workbook therefore has no target or mapping
+    # mutations, but still retains the established bounded failure evidence.
+    if parser_result.errors:
+        await _write_upload_log_and_audit(
+            db=db,
+            parser_result=parser_result,
+            original_filename=validated.original_filename,
+            uploaded_by=admin_context.user_id,
+            actor=staff_actor,
+            reporting_period_id=reporting_period_id,
+            programme_code=programme_code,
+        )
+        _raise_upload_validation_error_if_needed(
+            upload_label="TTF",
+            parser_result=parser_result,
+        )
+
+    if parser_result.metadata is None:
+        parser_result.metadata = {}
+
+    try:
+        data_revalidation = await data_revalidation_service.revalidate_after_upload(
+            context=DataRevalidationContext(
+                trigger_source=DataRevalidationTriggerSource.UPLOAD,
+                changed_entity=DataRevalidationChangedEntity.TEACHING_TARGET,
+                action=DataRevalidationAction.UPLOAD,
+                scope=DataRevalidationScope.PROGRAMME_REPORTING_PERIOD,
+                programme_code=programme_code,
+                reporting_period_id=str(reporting_period_id),
+                changed_fields=[
+                    "monthly_target",
+                    "is_tracked",
+                    "is_reallocatable",
+                    "tag",
+                ],
+                source_metadata={
+                    key: parser_result.metadata.get(key, 0)
+                    for key in (
+                        "targets_inserted",
+                        "targets_updated",
+                        "targets_removed",
+                        "targets_unchanged",
+                        "mappings_preserved",
+                        "mappings_invalidated",
+                        "mappings_with_target_semantics_changed",
+                        "pending_mappings_created",
+                        "affected_event_count",
+                        "affected_attendance_count",
+                    )
+                },
+                actor_user_id=str(admin_context.user_id),
+                actor_role=staff_actor.actor_role,
+            ),
+            db_session=db,
+        )
+        parser_result.metadata["data_revalidation"] = data_revalidation.model_dump(
+            mode="json"
+        )
+        upload_log = await _write_upload_log_and_audit(
+            db=db,
+            parser_result=parser_result,
+            original_filename=validated.original_filename,
+            uploaded_by=admin_context.user_id,
+            actor=staff_actor,
+            reporting_period_id=reporting_period_id,
+            programme_code=programme_code,
+            commit=False,
+            invalidate_cache=False,
+        )
+        if db is not None:
+            await db.commit()
+    except Exception:
+        if db is not None:
+            await db.rollback()
+        raise
+
+    try:
+        cache_invalidation.invalidate_after_upload(
+            upload_type=parser_result.upload_type,
+            upload_log_id=upload_log.get("id") if upload_log else None,
+            reporting_period_id=reporting_period_id,
+            programme_code=programme_code,
+        )
+    except Exception as exc:
+        log_safe_exception(
+            logger,
+            "ttf_upload_cache_invalidation_failed",
+            exc,
+            category="cache_invalidation",
+        )
 
     return _format_ttf_response(parser_result)
 
@@ -2762,6 +2905,216 @@ async def delete_global_session_type(
     )
 
 
+@router.get("/teaching-names", response_model=TeachingNameListResponse)
+async def list_teaching_names(
+    reporting_period_id: UUID = Query(...),
+    programme_code: str = Query(..., min_length=1, max_length=20),
+    is_active: bool | None = Query(default=None),
+    search: str | None = Query(default=None, max_length=200),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_db_session),
+) -> TeachingNameListResponse:
+    payload = await teaching_name_pool.list_teaching_names(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        is_active=is_active,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    return TeachingNameListResponse.model_validate(payload)
+
+
+@router.post("/teaching-names", response_model=TeachingNameMutationResponse)
+async def create_teaching_name(
+    request: TeachingNameCreateRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameMutationResponse:
+    _require_programme_pc_context(admin_context)
+    payload = await teaching_name_pool.create_teaching_name(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        **request.model_dump(mode="python"),
+    )
+    return TeachingNameMutationResponse.model_validate(payload)
+
+
+@router.patch(
+    "/teaching-names/{teaching_name_id}",
+    response_model=TeachingNameMutationResponse,
+)
+async def update_teaching_name(
+    teaching_name_id: UUID,
+    request: TeachingNameUpdateRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameMutationResponse:
+    _require_programme_pc_context(admin_context)
+    payload = await teaching_name_pool.update_teaching_name(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        teaching_name_id=teaching_name_id,
+        **request.model_dump(mode="python"),
+    )
+    return TeachingNameMutationResponse.model_validate(payload)
+
+
+@router.post(
+    "/teaching-names/{teaching_name_id}/deactivate",
+    response_model=TeachingNameMutationResponse,
+)
+async def deactivate_teaching_name(
+    teaching_name_id: UUID,
+    request: TeachingNameRevisionRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameMutationResponse:
+    _require_programme_pc_context(admin_context)
+    payload = await teaching_name_pool.deactivate_teaching_name(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        teaching_name_id=teaching_name_id,
+        expected_revision=request.expected_revision,
+    )
+    return TeachingNameMutationResponse.model_validate(payload)
+
+
+@router.post(
+    "/teaching-names/{teaching_name_id}/reactivate",
+    response_model=TeachingNameMutationResponse,
+)
+async def reactivate_teaching_name(
+    teaching_name_id: UUID,
+    request: TeachingNameRevisionRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameMutationResponse:
+    _require_programme_pc_context(admin_context)
+    payload = await teaching_name_pool.reactivate_teaching_name(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        teaching_name_id=teaching_name_id,
+        expected_revision=request.expected_revision,
+    )
+    return TeachingNameMutationResponse.model_validate(payload)
+
+
+@router.delete(
+    "/teaching-names/{teaching_name_id}",
+    response_model=TeachingNameDeleteResponse,
+)
+async def delete_teaching_name(
+    teaching_name_id: UUID,
+    request: TeachingNameDeleteRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameDeleteResponse:
+    if not admin_context.is_master_admin:
+        _require_programme_pc_context(admin_context)
+    payload = await teaching_name_pool.delete_teaching_name(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        teaching_name_id=teaching_name_id,
+        **request.model_dump(mode="python"),
+    )
+    return TeachingNameDeleteResponse.model_validate(payload)
+
+
+@router.get(
+    "/teaching-name-mappings",
+    response_model=TeachingNameMappingListResponse,
+)
+async def list_teaching_name_mappings(
+    reporting_period_id: UUID | None = Query(default=None),
+    programme_code: str | None = Query(default=None, min_length=1, max_length=20),
+    posting_code: str | None = Query(default=None, min_length=1, max_length=50),
+    r_year: str | None = Query(default=None, min_length=1, max_length=10),
+    state: str | None = Query(default=None, pattern="^(pending|mapped)$"),
+    search: str | None = Query(default=None, max_length=200),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_db_session),
+) -> TeachingNameMappingListResponse:
+    payload = await teaching_name_mappings.list_mappings(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        posting_code=posting_code,
+        r_year=r_year,
+        state=state,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    return TeachingNameMappingListResponse.model_validate(payload)
+
+
+@router.post(
+    "/teaching-name-mappings/bulk",
+    response_model=TeachingNameMappingBulkMutationResponse,
+)
+async def apply_bulk_teaching_name_mapping_changes(
+    request: TeachingNameMappingBulkMutationRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameMappingBulkMutationResponse:
+    _require_programme_pc_context(admin_context)
+    payload = await teaching_name_mappings.apply_bulk_mapping_changes(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        items=request.items,
+    )
+    return TeachingNameMappingBulkMutationResponse.model_validate(payload)
+
+
+@router.get(
+    "/teaching-name-mappings/{mapping_id}/impact",
+    response_model=TeachingNameMappingImpactCounts,
+)
+async def get_teaching_name_mapping_impact(
+    mapping_id: UUID,
+    expected_revision: int = Query(..., ge=1),
+    teaching_target_id: UUID | None = Query(default=None),
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_db_session),
+) -> TeachingNameMappingImpactCounts:
+    payload = await teaching_name_mappings.get_mapping_impact(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        mapping_id=mapping_id,
+        expected_revision=expected_revision,
+        teaching_target_id=teaching_target_id,
+    )
+    return TeachingNameMappingImpactCounts.model_validate(payload)
+
+
+@router.patch(
+    "/teaching-name-mappings/{mapping_id}",
+    response_model=TeachingNameMappingMutationResponse,
+)
+async def apply_teaching_name_mapping_change(
+    mapping_id: UUID,
+    request: TeachingNameMappingMutationRequest,
+    admin_context: AdminContext = Depends(require_admin_context),
+    db: AsyncSession = Depends(get_exclusive_db_session),
+) -> TeachingNameMappingMutationResponse:
+    _require_programme_pc_context(admin_context)
+    payload = await teaching_name_mappings.apply_mapping_change(
+        db,
+        actor=_teaching_name_pool_actor(admin_context),
+        mapping_id=mapping_id,
+        **request.model_dump(mode="python"),
+    )
+    return TeachingNameMappingMutationResponse.model_validate(payload)
+
+
 @router.get("/programme-teaching-events")
 async def list_programme_teaching_events(
     programme_code: str | None = Query(default=None),
@@ -2804,6 +3157,8 @@ async def create_programme_teaching_event(
         )
     return await programme_teaching_events.create_teaching_event(
         db,
+        source_actor=_teaching_name_pool_actor(admin_context),
+        audit_actor=_admin_actor_context(admin_context),
         **request.model_dump(mode="python"),
     )
 
@@ -2825,6 +3180,8 @@ async def update_programme_teaching_event(
     return await programme_teaching_events.update_teaching_event(
         db,
         event_id=event_id,
+        source_actor=_teaching_name_pool_actor(admin_context),
+        audit_actor=_admin_actor_context(admin_context),
         **request.model_dump(mode="python"),
     )
 
@@ -2846,6 +3203,8 @@ async def duplicate_programme_teaching_event(
     return await programme_teaching_events.duplicate_teaching_event(
         db,
         event_id=event_id,
+        source_actor=_teaching_name_pool_actor(admin_context),
+        audit_actor=_admin_actor_context(admin_context),
         **request.model_dump(mode="python"),
     )
 
@@ -3762,42 +4121,6 @@ async def list_parsed_teaching_targets(
     return ParsedTeachingTargetListResponse.model_validate(payload)
 
 
-@router.get(
-    "/parsed-data/teaching-name-catalogue",
-    response_model=ParsedTeachingNameCatalogueListResponse,
-)
-async def list_parsed_teaching_name_catalogue(
-    reporting_period_id: UUID | None = Query(default=None),
-    programme_code: str | None = Query(default=None),
-    posting_code: str | None = Query(default=None),
-    r_year: str | None = Query(default=None),
-    keyword: str | None = Query(default=None),
-    is_tracked: bool | None = Query(default=None),
-    search: str | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
-    admin_context: AdminContext = Depends(require_admin_context),
-    db: AsyncSession | None = Depends(get_db_session),
-) -> ParsedTeachingNameCatalogueListResponse:
-    if db is None:
-        return ParsedTeachingNameCatalogueListResponse(items=[], total=0, limit=limit, offset=offset)
-    payload = await parsed_data.list_teaching_name_catalogue(
-        db,
-        programme_scope=admin_context.programme_scope,
-        master_admin=admin_context.is_master_admin,
-        reporting_period_id=reporting_period_id,
-        programme_code=programme_code,
-        posting_code=posting_code,
-        r_year=r_year,
-        keyword=keyword,
-        is_tracked=is_tracked,
-        search=search,
-        limit=limit,
-        offset=offset,
-    )
-    return ParsedTeachingNameCatalogueListResponse.model_validate(payload)
-
-
 @router.get("/parsed-data/form-f1-records", response_model=ParsedFormF1RecordListResponse)
 async def list_parsed_form_f1_records(
     reporting_period_id: UUID | None = Query(default=None),
@@ -4264,39 +4587,6 @@ async def list_teaching_targets(
         limit=limit,
     )
     return [TeachingTargetResponse.model_validate(row) for row in rows]
-
-
-@router.get(
-    "/teaching-name-catalogue",
-    response_model=list[TeachingNameCatalogueResponse],
-)
-async def list_teaching_name_catalogue(
-    reporting_period_id: UUID | None = Query(default=None),
-    programme_code: str | None = Query(default=None),
-    posting_code: str | None = Query(default=None),
-    r_year: str | None = Query(default=None),
-    keyword: str | None = Query(default=None),
-    session_type_id: UUID | None = Query(default=None),
-    is_tracked: bool | None = Query(default=None),
-    limit: int = Query(default=100, ge=1, le=500),
-    admin_context: AdminContext = Depends(require_admin_context),
-    db: AsyncSession | None = Depends(get_db_session),
-) -> list[TeachingNameCatalogueResponse]:
-    if db is None:
-        return []
-    rows = await admin_config.list_teaching_name_catalogue(
-        db,
-        programme_scope=admin_context.programme_scope,
-        reporting_period_id=reporting_period_id,
-        programme_code=programme_code,
-        posting_code=posting_code,
-        r_year=r_year,
-        keyword=keyword,
-        session_type_id=session_type_id,
-        is_tracked=is_tracked,
-        limit=limit,
-    )
-    return [TeachingNameCatalogueResponse.model_validate(row) for row in rows]
 
 
 @router.get(

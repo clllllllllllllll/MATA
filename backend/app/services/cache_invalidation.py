@@ -48,7 +48,6 @@ _CONFIG_DOMAINS_BY_ENTITY = {
     ),
     "global_session_type": (
         "config",
-        "teaching_name_catalogue",
         "secretary_events",
         "resident_events",
         "resident_dashboard",
@@ -69,8 +68,13 @@ _UPLOAD_DOMAINS_BY_TYPE = {
     "ttf": (
         "upload_logs",
         "upload_warnings",
+        "config",
+        "parsed_data",
         "teaching_targets",
-        "teaching_name_catalogue",
+        "teaching_name_pool",
+        "teaching_name_mappings",
+        "teaching_name_options",
+        "programme_teaching_events",
         "secretary_events",
         "resident_events",
         "resident_dashboard",
@@ -115,7 +119,9 @@ _LIVE_DATA_DOMAINS_BY_ENTITY = {
     "teaching_target": (
         "parsed_data",
         "teaching_targets",
-        "teaching_name_catalogue",
+        "teaching_name_mappings",
+        "teaching_name_options",
+        "programme_teaching_events",
         "secretary_events",
         "resident_events",
         "resident_dashboard",
@@ -313,6 +319,67 @@ def invalidate_after_secretary_event_mutation(
         ("secretary_events", "resident_events", "resident_dashboard", "admin_reports"),
         posting_code=posting_code,
         reporting_period_id=reporting_period_id,
+    )
+
+
+def invalidate_after_teaching_name_pool_change(
+    *,
+    teaching_name_id: Any,
+    reporting_period_id: Any,
+    programme_code: Any,
+    event_references_cleared: bool = False,
+) -> list[CacheInvalidationCall]:
+    domains: tuple[str, ...] = (
+        "teaching_name_pool",
+        "teaching_name_mappings",
+        "teaching_name_options",
+        "programme_teaching_events",
+    )
+    if event_references_cleared:
+        domains += (
+            "teaching_events",
+            "secretary_events",
+            "resident_events",
+            "resident_dashboard",
+            "admin_reports",
+        )
+    return invalidate_cache(
+        domains,
+        teaching_name_id=teaching_name_id,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+    )
+
+
+def invalidate_after_teaching_name_mapping_change(
+    *,
+    mapping_id: Any,
+    teaching_name_id: Any,
+    reporting_period_id: Any,
+    programme_code: Any,
+    posting_code: Any,
+) -> list[CacheInvalidationCall]:
+    """Invalidate only configuration reads affected by one mapping change."""
+
+    return invalidate_cache(
+        (
+            "teaching_name_mappings",
+            "teaching_name_pool",
+            "teaching_name_options",
+            "teaching_target_resolution",
+            "programme_teaching_events",
+            "secretary_events",
+            "resident_events",
+            "resident_attendance",
+            "resident_dashboard",
+            "external_attendance",
+            "admin_reports",
+        ),
+        mapping_id=mapping_id,
+        teaching_name_id=teaching_name_id,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+        posting_code=posting_code,
     )
 
 

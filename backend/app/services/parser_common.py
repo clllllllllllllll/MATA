@@ -247,6 +247,7 @@ async def write_upload_log(
     uploaded_by: UUID | str | None = None,
     reporting_period_id: UUID | str | None = None,
     programme_code: str | None = None,
+    commit: bool = True,
 ) -> dict[str, Any]:
     summary_payload = dict(summary)
     summary_payload["original_filename"] = original_filename
@@ -289,7 +290,8 @@ async def write_upload_log(
         ),
         params,
     )
-    await session.commit()
+    if commit:
+        await session.commit()
     return params
 
 

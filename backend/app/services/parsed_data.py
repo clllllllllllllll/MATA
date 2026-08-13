@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import json
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.staff_actor import StaffActorContext
 from app.errors import ApiError, ErrorCode
+from app.security import log_safe_exception
 from app.schemas.data_revalidation import (
     DataRevalidationAction,
     DataRevalidationChangedEntity,
@@ -20,6 +22,7 @@ from app.schemas.data_revalidation import (
 )
 from app.services import cache_invalidation
 from app.services import data_revalidation_service
+from app.services.attendance_loa import reclassify_attendance_loa
 from app.services.audit import write_audit_log
 from app.services.rdb_parser import (
     ProgrammeConfig,
@@ -27,7 +30,14 @@ from app.services.rdb_parser import (
     parse_rdb_source_cell_replacement,
     resolve_r_year,
 )
-from app.services.ttf_parser import split_keywords
+from app.services.teaching_target_impacts import stable_target_mapping_impact_counts
+from app.services.teaching_name_programme_scopes import (
+    reconcile_teaching_name_programme_scopes,
+)
+from app.services.ttf_scope_lock import acquire_ttf_scope_lock
+
+
+logger = logging.getLogger(__name__)
 
 
 _ALLOWED_SCOPE_COLUMN_SQL = frozenset(
@@ -35,7 +45,6 @@ _ALLOWED_SCOPE_COLUMN_SQL = frozenset(
         "al.metadata_json ->> 'programme_code'",
         "programme_code",
         "r.programme_code",
-        "tnc.programme_code",
         "tt.programme_code",
         "wi.programme_code",
     }
@@ -64,11 +73,6 @@ _ALLOWED_SEARCH_COLUMN_SQL = frozenset(
         "rp.month_label",
         "rp.posting_code",
         "st.name",
-        "tnc.keyword",
-        "tnc.posting_code",
-        "tnc.programme_code",
-        "tnc.r_year",
-        "tt.details_of_training",
         "tt.posting_code",
         "tt.programme_code",
         "tt.r_year",
@@ -82,12 +86,11 @@ _ALLOWED_PARTIAL_TEXT_COLUMNS_BY_KEY = {
     "posting_code": frozenset(
         {
             "rp.posting_code",
-            "tnc.posting_code",
             "tt.posting_code",
         }
     ),
     "programme_code": _ALLOWED_SCOPE_COLUMN_SQL,
-    "r_year": frozenset({"tnc.r_year", "tt.r_year"}),
+    "r_year": frozenset({"tt.r_year"}),
 }
 
 
@@ -483,7 +486,7 @@ async def list_teaching_targets(
         where_clauses,
         params,
         search=search,
-        columns_sql=["tt.programme_code", "tt.posting_code", "tt.r_year", "st.name", "tt.tag", "tt.details_of_training"],
+        columns_sql=["tt.programme_code", "tt.posting_code", "tt.r_year", "st.name", "tt.tag"],
     )
     return await _page(
         db,
@@ -502,7 +505,6 @@ async def list_teaching_targets(
                 tt.is_tracked,
                 tt.is_reallocatable,
                 tt.tag,
-                tt.details_of_training,
                 tt.updated_at
         """,
         from_sql="""
@@ -520,93 +522,6 @@ async def list_teaching_targets(
                 tt.r_year ASC,
                 st.name ASC,
                 tt.id ASC
-        """,
-        limit=limit,
-        offset=offset,
-    )
-
-
-async def list_teaching_name_catalogue(
-    db: AsyncSession,
-    *,
-    programme_scope: set[str],
-    master_admin: bool,
-    reporting_period_id: UUID | None = None,
-    programme_code: str | None = None,
-    posting_code: str | None = None,
-    r_year: str | None = None,
-    keyword: str | None = None,
-    is_tracked: bool | None = None,
-    search: str | None = None,
-    limit: int = 50,
-    offset: int = 0,
-) -> dict[str, Any]:
-    params: dict[str, Any] = {}
-    where_clauses: list[str] = []
-    _add_programme_scope_filter(
-        where_clauses,
-        params,
-        column_sql="tnc.programme_code",
-        programme_scope=programme_scope,
-        master_admin=master_admin,
-        programme_code=programme_code,
-    )
-    if reporting_period_id:
-        params["reporting_period_id"] = str(reporting_period_id)
-        where_clauses.append("tnc.reporting_period_id = :reporting_period_id")
-    if posting_code:
-        _add_partial_text_filter(
-            where_clauses,
-            params,
-            key="posting_code",
-            column_sql="tnc.posting_code",
-            value=posting_code,
-        )
-    if r_year:
-        _add_partial_text_filter(where_clauses, params, key="r_year", column_sql="tnc.r_year", value=r_year)
-    if keyword:
-        params["keyword"] = f"%{keyword.strip()}%"
-        where_clauses.append("tnc.keyword ILIKE :keyword")
-    if is_tracked is not None:
-        params["is_tracked"] = is_tracked
-        where_clauses.append("tnc.is_tracked = :is_tracked")
-    _add_search_filter(
-        where_clauses,
-        params,
-        search=search,
-        columns_sql=["tnc.keyword", "tnc.programme_code", "tnc.posting_code", "tnc.r_year", "st.name"],
-    )
-    return await _page(
-        db,
-        select_sql="""
-            SELECT
-                tnc.id,
-                tnc.keyword,
-                tnc.programme_code,
-                tnc.posting_code,
-                tnc.r_year,
-                tnc.reporting_period_id,
-                rper.label AS reporting_period_label,
-                tnc.session_type_id,
-                st.name AS session_type_name,
-                tnc.duration_hours,
-                tnc.is_tracked
-        """,
-        from_sql="""
-            FROM teaching_name_catalogue tnc
-            JOIN session_types st ON st.id = tnc.session_type_id
-            LEFT JOIN reporting_periods rper ON rper.id = tnc.reporting_period_id
-        """,
-        where_clauses=where_clauses,
-        params=params,
-        order_sql="""
-            ORDER BY
-                tnc.reporting_period_id ASC,
-                tnc.programme_code ASC,
-                tnc.posting_code ASC,
-                tnc.r_year ASC,
-                tnc.keyword ASC,
-                tnc.id ASC
         """,
         limit=limit,
         offset=offset,
@@ -846,7 +761,6 @@ _TEACHING_TARGET_ALLOWED_FIELDS = {
     "is_tracked",
     "is_reallocatable",
     "tag",
-    "details_of_training",
 }
 
 _FORM_F1_ALLOWED_FIELDS = {
@@ -898,7 +812,6 @@ _REQUIRED_TEXT_FIELDS = {
     "academic_year_label",
     "ay_date_category",
     "month_label",
-    "details_of_training",
 }
 
 _RESIDENT_STATUS_VALUES = {"active", "inactive", "loa", "employed"}
@@ -1279,7 +1192,6 @@ async def _snapshot_teaching_target(
                 tt.is_tracked,
                 tt.is_reallocatable,
                 tt.tag,
-                tt.details_of_training,
                 tt.created_at,
                 tt.updated_at
             FROM teaching_targets tt
@@ -1550,7 +1462,7 @@ async def _validate_teaching_target_changes(
     *,
     merged: dict[str, Any],
     changed: dict[str, Any],
-) -> list[str] | None:
+) -> None:
     if "monthly_target" in changed and int(merged["monthly_target"]) < 0:
         _raise_validation("monthly_target must be a non-negative whole number")
     if bool(merged.get("is_reallocatable")) and not (merged.get("tag") or "").strip():
@@ -1583,54 +1495,6 @@ async def _validate_teaching_target_changes(
     if session_type is None:
         _raise_validation("session_type_id does not exist")
     merged["duration_hours"] = session_type["duration_hours"]
-
-    catalogue_changed = bool(
-        set(changed)
-        & {
-            "details_of_training",
-            "reporting_period_id",
-            "programme_code",
-            "posting_code",
-            "r_year",
-            "session_type_id",
-            "is_tracked",
-        }
-    )
-    if not catalogue_changed:
-        return None
-
-    keywords = split_keywords(str(merged.get("details_of_training") or ""))
-    if not keywords:
-        _raise_validation("details_of_training must include at least one keyword")
-    for keyword in keywords:
-        if await _scalar_exists(
-            db,
-            """
-            /* parsed_data_validation:catalogue_keyword_conflict */
-            SELECT 1
-            FROM teaching_name_catalogue
-            WHERE reporting_period_id = :reporting_period_id
-              AND programme_code = :programme_code
-              AND posting_code = :posting_code
-              AND r_year = :r_year
-              AND LOWER(keyword) = LOWER(:keyword)
-              AND session_type_id <> :session_type_id
-            LIMIT 1
-            """,
-            {
-                "reporting_period_id": str(merged["reporting_period_id"]),
-                "programme_code": merged["programme_code"],
-                "posting_code": merged["posting_code"],
-                "r_year": merged["r_year"],
-                "keyword": keyword,
-                "session_type_id": str(merged["session_type_id"]),
-            },
-        ):
-            _raise_validation(
-                f"keyword already maps to another session type in this target scope: {keyword}"
-            )
-    return keywords
-
 
 def _validate_form_f1_changes(changed: dict[str, Any], merged: dict[str, Any]) -> None:
     if "status_raw" not in changed and "is_active" not in changed:
@@ -1800,6 +1664,57 @@ async def _revalidate_live_data_correction(
     return summary.model_dump(mode="json")
 
 
+async def _reconcile_teaching_name_scopes_for_resident(
+    db: AsyncSession,
+    *,
+    resident_id: UUID | str,
+    reporting_period_id: UUID | str | None = None,
+) -> dict[str, int]:
+    """Apply the additive Teaching Name admission rules to current Live Data."""
+
+    params: dict[str, Any] = {
+        "resident_id": str(resident_id),
+        "reporting_period_id": (
+            str(reporting_period_id) if reporting_period_id is not None else None
+        ),
+    }
+    result = await db.execute(
+        text(
+            """
+            /* parsed_data_reconciliation:resident_programme_periods */
+            SELECT DISTINCT
+                posting.reporting_period_id,
+                resident.programme_code
+            FROM resident_postings AS posting
+            JOIN residents AS resident ON resident.id = posting.resident_id
+            WHERE posting.resident_id = CAST(:resident_id AS uuid)
+              AND resident.programme_code IS NOT NULL
+              AND (
+                  CAST(:reporting_period_id AS uuid) IS NULL
+                  OR posting.reporting_period_id = CAST(:reporting_period_id AS uuid)
+              )
+            ORDER BY posting.reporting_period_id, resident.programme_code
+            """
+        ),
+        params,
+    )
+    totals = {
+        "reconciled_programme_periods": 0,
+        "programme_scopes_created": 0,
+        "pending_mappings_created": 0,
+    }
+    for row in result.mappings().all():
+        counts = await reconcile_teaching_name_programme_scopes(
+            db,
+            reporting_period_id=row["reporting_period_id"],
+            programme_code=row["programme_code"],
+        )
+        totals["reconciled_programme_periods"] += 1
+        totals["programme_scopes_created"] += counts["programme_scopes_created"]
+        totals["pending_mappings_created"] += counts["pending_mappings_created"]
+    return totals
+
+
 async def correct_resident(
     db: AsyncSession,
     *,
@@ -1839,6 +1754,12 @@ async def correct_resident(
         master_admin=master_admin,
     )
     updated_fields = sorted(changed)
+    teaching_name_reconciliation = None
+    if "programme_code" in changed:
+        teaching_name_reconciliation = await _reconcile_teaching_name_scopes_for_resident(
+            db,
+            resident_id=row_id,
+        )
     data_revalidation = await _revalidate_live_data_correction(
         db,
         actor=actor,
@@ -1864,6 +1785,11 @@ async def correct_resident(
             "updated_fields": updated_fields,
             "programme_code": after.get("programme_code"),
             "data_revalidation": data_revalidation,
+            **(
+                {"teaching_name_reconciliation": teaching_name_reconciliation}
+                if teaching_name_reconciliation is not None
+                else {}
+            ),
         },
     )
     await db.commit()
@@ -1930,6 +1856,16 @@ async def correct_resident_posting(
         programme_scope=programme_scope,
         master_admin=master_admin,
     )
+    await reclassify_attendance_loa(
+        db,
+        reporting_period_id=after["reporting_period_id"],
+        resident_id=after["resident_id"],
+    )
+    teaching_name_reconciliation = await _reconcile_teaching_name_scopes_for_resident(
+        db,
+        resident_id=after["resident_id"],
+        reporting_period_id=after["reporting_period_id"],
+    )
     updated_fields = sorted(changed)
     data_revalidation = await _revalidate_live_data_correction(
         db,
@@ -1959,6 +1895,7 @@ async def correct_resident_posting(
             "resident_id": str(after.get("resident_id")),
             "reporting_period_id": str(after.get("reporting_period_id")),
             "data_revalidation": data_revalidation,
+            "teaching_name_reconciliation": teaching_name_reconciliation,
         },
     )
     await db.commit()
@@ -1980,77 +1917,6 @@ async def correct_resident_posting(
     }
 
 
-async def _regenerate_target_catalogue(
-    db: AsyncSession,
-    *,
-    target_id: UUID,
-    before_target: dict[str, Any],
-    target: dict[str, Any],
-    keywords: list[str],
-) -> None:
-    for scope in (before_target, target):
-        await db.execute(
-            text(
-                """
-                DELETE FROM teaching_name_catalogue
-                WHERE reporting_period_id = :reporting_period_id
-                  AND programme_code = :programme_code
-                  AND posting_code = :posting_code
-                  AND r_year = :r_year
-                  AND session_type_id = :session_type_id
-                  AND EXISTS (
-                    SELECT 1 FROM teaching_targets tt WHERE tt.id = :target_id
-                  )
-                """
-            ),
-            {
-                "target_id": str(target_id),
-                "reporting_period_id": str(scope["reporting_period_id"]),
-                "programme_code": scope["programme_code"],
-                "posting_code": scope["posting_code"],
-                "r_year": scope["r_year"],
-                "session_type_id": str(scope["session_type_id"]),
-            },
-        )
-    for keyword in keywords:
-        await db.execute(
-            text(
-                """
-                INSERT INTO teaching_name_catalogue (
-                    keyword,
-                    session_type_id,
-                    posting_code,
-                    programme_code,
-                    r_year,
-                    reporting_period_id,
-                    duration_hours,
-                    is_tracked
-                )
-                VALUES (
-                    :keyword,
-                    :session_type_id,
-                    :posting_code,
-                    :programme_code,
-                    :r_year,
-                    :reporting_period_id,
-                    :duration_hours,
-                    :is_tracked
-                )
-                """
-            ),
-            {
-                "keyword": keyword,
-                "session_type_id": str(target["session_type_id"]),
-                "posting_code": target["posting_code"],
-                "programme_code": target["programme_code"],
-                "r_year": target["r_year"],
-                "reporting_period_id": str(target["reporting_period_id"]),
-                "duration_hours": target["duration_hours"],
-                "is_tracked": target["is_tracked"],
-            },
-        )
-
-
 async def correct_teaching_target(
     db: AsyncSession,
     *,
@@ -2062,77 +1928,138 @@ async def correct_teaching_target(
     programme_scope: set[str],
     master_admin: bool,
 ) -> dict[str, Any]:
-    before = await _snapshot_teaching_target(
+    scope_row = await _snapshot_teaching_target(
         db,
         row_id=row_id,
         programme_scope=programme_scope,
         master_admin=master_admin,
     )
-    _validate_last_seen(before, last_seen_updated_at)
-    coerced = _allowlisted_changes(changes, allowed_fields=_TEACHING_TARGET_ALLOWED_FIELDS)
-    changed = _changed_values(before, coerced)
-    if not changed:
-        _raise_validation("changes do not modify the teaching target row")
-    merged = _merged_row(before, changed)
-    keywords = await _validate_teaching_target_changes(db, merged=merged, changed=changed)
-    await _apply_update(
-        db,
-        table_name="teaching_targets",
-        row_id=row_id,
-        changed=changed,
-    )
-    after = await _snapshot_teaching_target(
-        db,
-        row_id=row_id,
-        programme_scope=programme_scope,
-        master_admin=master_admin,
-    )
-    if keywords is not None:
-        await _regenerate_target_catalogue(
+    try:
+        if not await acquire_ttf_scope_lock(
             db,
-            target_id=row_id,
-            before_target=before,
-            target=after,
-            keywords=keywords,
+            reporting_period_id=scope_row["reporting_period_id"],
+            programme_code=str(scope_row["programme_code"]),
+        ):
+            _raise_validation(
+                "A TTF target change for this reporting period and programme is already in progress",
+                status_code=409,
+            )
+
+        # Re-read under the shared lock so an upload or another correction that
+        # completed while this request was waiting cannot be overwritten from a
+        # stale snapshot.
+        before = await _snapshot_teaching_target(
+            db,
+            row_id=row_id,
+            programme_scope=programme_scope,
+            master_admin=master_admin,
         )
-    updated_fields = sorted(changed)
-    data_revalidation = await _revalidate_live_data_correction(
-        db,
-        actor=actor,
-        changed_entity=DataRevalidationChangedEntity.TEACHING_TARGET,
-        action=DataRevalidationAction.UPDATE,
-        scope=DataRevalidationScope.PROGRAMME_REPORTING_PERIOD,
-        entity_id=row_id,
-        programme_code=after.get("programme_code"),
-        reporting_period_id=after.get("reporting_period_id"),
-        changed_fields=updated_fields,
-        correction_reason=correction_reason,
-    )
-    audit = await _write_correction_audit(
-        db,
-        actor=actor,
-        action="admin.parsed_data.teaching_target.update",
-        entity_type="teaching_target",
-        entity_id=row_id,
-        before=before,
-        after=after,
-        metadata={
-            "correction_reason": correction_reason,
-            "updated_fields": updated_fields,
-            "programme_code": after.get("programme_code"),
-            "reporting_period_id": str(after.get("reporting_period_id")),
-            "catalogue_keywords": keywords,
-            "data_revalidation": data_revalidation,
-        },
-    )
-    await db.commit()
-    cache_invalidation.invalidate_after_live_data_correction(
-        entity_type="teaching_target",
-        entity_id=row_id,
-        reporting_period_id=after.get("reporting_period_id"),
-        programme_code=after.get("programme_code"),
-        posting_code=after.get("posting_code"),
-    )
+        _validate_last_seen(before, last_seen_updated_at)
+        coerced = _allowlisted_changes(changes, allowed_fields=_TEACHING_TARGET_ALLOWED_FIELDS)
+        changed = _changed_values(before, coerced)
+        if not changed:
+            _raise_validation("changes do not modify the teaching target row")
+        merged = _merged_row(before, changed)
+        await _validate_teaching_target_changes(
+            db,
+            merged=merged,
+            changed=changed,
+        )
+        semantic_changed_fields = sorted(
+            {
+                "monthly_target",
+                "is_tracked",
+                "is_reallocatable",
+                "tag",
+            }
+            & set(changed)
+        )
+        target_semantic_impact = {
+            "mappings_with_target_semantics_changed": 0,
+            "affected_event_count": 0,
+            "affected_attendance_count": 0,
+        }
+        if semantic_changed_fields:
+            raw_target_impact = await stable_target_mapping_impact_counts(
+                db,
+                target_ids=[row_id],
+            )
+            target_semantic_impact = {
+                "mappings_with_target_semantics_changed": raw_target_impact[
+                    "mapped_target_count"
+                ],
+                "affected_event_count": raw_target_impact["affected_event_count"],
+                "affected_attendance_count": raw_target_impact[
+                    "affected_attendance_count"
+                ],
+            }
+        await _apply_update(
+            db,
+            table_name="teaching_targets",
+            row_id=row_id,
+            changed=changed,
+        )
+        after = await _snapshot_teaching_target(
+            db,
+            row_id=row_id,
+            programme_scope=programme_scope,
+            master_admin=master_admin,
+        )
+        updated_fields = sorted(changed)
+        data_revalidation = await _revalidate_live_data_correction(
+            db,
+            actor=actor,
+            changed_entity=DataRevalidationChangedEntity.TEACHING_TARGET,
+            action=DataRevalidationAction.UPDATE,
+            scope=DataRevalidationScope.PROGRAMME_REPORTING_PERIOD,
+            entity_id=row_id,
+            programme_code=after.get("programme_code"),
+            reporting_period_id=after.get("reporting_period_id"),
+            changed_fields=updated_fields,
+            correction_reason=correction_reason,
+            source_metadata={
+                "target_semantic_changed_fields": semantic_changed_fields,
+                "target_semantic_impact": target_semantic_impact,
+            },
+        )
+        audit = await _write_correction_audit(
+            db,
+            actor=actor,
+            action="admin.parsed_data.teaching_target.update",
+            entity_type="teaching_target",
+            entity_id=row_id,
+            before=before,
+            after=after,
+            metadata={
+                "correction_reason": correction_reason,
+                "updated_fields": updated_fields,
+                "programme_code": after.get("programme_code"),
+                "reporting_period_id": str(after.get("reporting_period_id")),
+                "target_semantic_changed_fields": semantic_changed_fields,
+                "target_semantic_impact": target_semantic_impact,
+                "data_revalidation": data_revalidation,
+            },
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+
+    try:
+        cache_invalidation.invalidate_after_live_data_correction(
+            entity_type="teaching_target",
+            entity_id=row_id,
+            reporting_period_id=after.get("reporting_period_id"),
+            programme_code=after.get("programme_code"),
+            posting_code=after.get("posting_code"),
+        )
+    except Exception as exc:
+        log_safe_exception(
+            logger,
+            "teaching_target_correction_cache_invalidation_failed",
+            exc,
+            category="cache_invalidation",
+        )
     return {
         "item": _row_dict(after),
         "audit_log_id": audit["id"],
@@ -2718,6 +2645,16 @@ async def replace_resident_posting_source_cell(
             {"id": row_id, **row},
         )
     after_rows = await _fetch_resident_posting_rows_by_ids(db, row_ids=inserted_ids)
+    await reclassify_attendance_loa(
+        db,
+        reporting_period_id=before_rows[0]["reporting_period_id"],
+        resident_id=before_rows[0]["resident_id"],
+    )
+    teaching_name_reconciliation = await _reconcile_teaching_name_scopes_for_resident(
+        db,
+        resident_id=before_rows[0]["resident_id"],
+        reporting_period_id=before_rows[0]["reporting_period_id"],
+    )
     verified_source_metadata = source_metadata.get("verified_source_metadata")
     if not isinstance(verified_source_metadata, dict):
         verified_source_metadata = source_metadata.get("source")
@@ -2750,6 +2687,7 @@ async def replace_resident_posting_source_cell(
         "resident_id": str(before_rows[0].get("resident_id")),
         "reporting_period_id": str(before_rows[0].get("reporting_period_id")),
         "data_revalidation": data_revalidation,
+        "teaching_name_reconciliation": teaching_name_reconciliation,
         **source_metadata,
     }
     audit = await _write_correction_audit(
@@ -3545,6 +3483,16 @@ async def apply_warning_source_cell_replacement(
         )
 
     after_rows = await _fetch_resident_posting_rows_by_ids(db, row_ids=inserted_ids)
+    await reclassify_attendance_loa(
+        db,
+        reporting_period_id=reporting_period_id,
+        resident_id=resident["id"],
+    )
+    teaching_name_reconciliation = await _reconcile_teaching_name_scopes_for_resident(
+        db,
+        resident_id=resident["id"],
+        reporting_period_id=reporting_period_id,
+    )
     data_revalidation = await _revalidate_live_data_correction(
         db,
         actor=actor,
@@ -3584,6 +3532,7 @@ async def apply_warning_source_cell_replacement(
         "source_trace": source_trace,
         "parser_warnings": _json_ready(parse_result.warnings),
         "data_revalidation": data_revalidation,
+        "teaching_name_reconciliation": teaching_name_reconciliation,
     }
     audit = await _write_correction_audit(
         db,

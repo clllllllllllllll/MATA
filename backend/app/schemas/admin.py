@@ -565,33 +565,11 @@ class ParsedTeachingTargetRow(BaseModel):
     is_tracked: bool
     is_reallocatable: bool
     tag: str | None = None
-    details_of_training: str | None = None
     updated_at: datetime | None = None
 
 
 class ParsedTeachingTargetListResponse(BaseModel):
     items: list[ParsedTeachingTargetRow]
-    total: int
-    limit: int
-    offset: int
-
-
-class ParsedTeachingNameCatalogueRow(BaseModel):
-    id: UUID
-    keyword: str
-    programme_code: str
-    posting_code: str
-    r_year: str
-    reporting_period_id: UUID
-    reporting_period_label: str | None = None
-    session_type_id: UUID
-    session_type_name: str | None = None
-    duration_hours: Decimal
-    is_tracked: bool
-
-
-class ParsedTeachingNameCatalogueListResponse(BaseModel):
-    items: list[ParsedTeachingNameCatalogueRow]
     total: int
     limit: int
     offset: int
@@ -875,21 +853,6 @@ class TeachingTargetResponse(BaseModel):
     is_tracked: bool
     is_reallocatable: bool
     tag: str | None
-    details_of_training: str | None
-    created_at: datetime
-    updated_at: datetime
-
-
-class TeachingNameCatalogueResponse(BaseModel):
-    id: UUID
-    keyword: str
-    session_type_id: UUID
-    posting_code: str
-    programme_code: str
-    r_year: str
-    reporting_period_id: UUID
-    duration_hours: Decimal
-    is_tracked: bool
     created_at: datetime
     updated_at: datetime
 
@@ -924,19 +887,28 @@ class ProgrammeTeachingEventCreateRequest(BaseModel):
 
     programme_code: str = Field(min_length=1, max_length=20)
     posting_code: str = Field(min_length=1, max_length=50)
-    teaching_name: str = Field(min_length=1, max_length=200)
+    teaching_name_id: UUID | None = None
+    global_session_type_id: UUID | None = None
     event_date: date
     start_time: time
     cme_points_awarded: bool = False
     smc_event_code: str | None = Field(default=None, max_length=50)
 
-    @field_validator("programme_code", "posting_code", "teaching_name", "smc_event_code")
+    @field_validator("programme_code", "posting_code", "smc_event_code")
     @classmethod
     def _trim_text_fields(cls, value: str | None) -> str | None:
         if value is None:
             return None
         trimmed = value.strip()
         return trimmed or None
+
+    @model_validator(mode="after")
+    def _require_explicit_source(self) -> "ProgrammeTeachingEventCreateRequest":
+        if (self.teaching_name_id is None) == (self.global_session_type_id is None):
+            raise ValueError(
+                "exactly one of teaching_name_id or global_session_type_id is required"
+            )
+        return self
 
 
 class ProgrammeTeachingEventUpdateRequest(ProgrammeTeachingEventCreateRequest):
@@ -950,17 +922,26 @@ class ProgrammeTeachingEventDuplicateRequest(BaseModel):
     event_date: date
     start_time: time | None = None
     posting_code: str | None = Field(default=None, max_length=50)
-    teaching_name: str | None = Field(default=None, max_length=200)
+    teaching_name_id: UUID | None = None
+    global_session_type_id: UUID | None = None
     cme_points_awarded: bool | None = None
     smc_event_code: str | None = Field(default=None, max_length=50)
 
-    @field_validator("programme_code", "posting_code", "teaching_name", "smc_event_code")
+    @field_validator("programme_code", "posting_code", "smc_event_code")
     @classmethod
     def _trim_text_fields(cls, value: str | None) -> str | None:
         if value is None:
             return None
         trimmed = value.strip()
         return trimmed or None
+
+    @model_validator(mode="after")
+    def _allow_one_source_override(self) -> "ProgrammeTeachingEventDuplicateRequest":
+        if self.teaching_name_id is not None and self.global_session_type_id is not None:
+            raise ValueError(
+                "only one of teaching_name_id or global_session_type_id may be supplied"
+            )
+        return self
 
 
 class AdminSecretaryEventListItem(BaseModel):
@@ -975,6 +956,8 @@ class AdminSecretaryEventListItem(BaseModel):
     cme_points_awarded: bool
     smc_event_code: str | None = None
     session_type_id: UUID | None = None
+    teaching_name_id: UUID | None = None
+    global_session_type_id: UUID | None = None
     session_type_name: str | None = None
     series_id: UUID | None = None
     is_recurring: bool

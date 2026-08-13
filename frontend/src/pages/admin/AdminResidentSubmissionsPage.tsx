@@ -912,6 +912,9 @@ export const AdminResidentSubmissionsPage = () => {
                     <td>
                       <div className="secretary-event-stack">
                         <strong>{submission.teachingName}</strong>
+                        {submission.submittedDuringLoa ? (
+                          <span>During LOA{submission.loaType ? ` - ${submission.loaType}` : ''}</span>
+                        ) : null}
                       </div>
                     </td>
                     <td>
@@ -975,6 +978,11 @@ export const AdminResidentSubmissionsPage = () => {
                   <span className="admin-mobile-card-source admin-mobile-card-subtitle safe-wrap">
                     {submission.teachingName}
                   </span>
+                  {submission.submittedDuringLoa ? (
+                    <span className="admin-mobile-card-source safe-wrap">
+                      During LOA{submission.loaType ? ` - ${submission.loaType}` : ''}
+                    </span>
+                  ) : null}
                   <span>
                     {compactParts([
                       formatDate(submission.eventDate),
@@ -1068,6 +1076,12 @@ export const AdminResidentSubmissionsPage = () => {
               <div className="parsed-data-detail-grid">
                 <DetailField label="Submission ID" value={activeDetail.id} />
                 <DetailField label="Status" value={activeDetail.status} />
+                <DetailField
+                  label="LOA classification"
+                  value={activeDetail.submittedDuringLoa
+                    ? `During LOA${activeDetail.loaType ? ` - ${activeDetail.loaType}` : ''}`
+                    : 'Outside LOA'}
+                />
                 <DetailField label="Submitted at" value={formatDateTime(activeDetail.submittedAt)} />
                 <DetailField label="Audit posting copy" value={currentDetail?.attendanceRecord.attendancePostingCode ?? activeDetail.attendancePostingCode} />
                 <DetailField label="Created at" value={formatDateTime(currentDetail?.attendanceRecord.createdAt)} />

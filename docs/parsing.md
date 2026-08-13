@@ -466,11 +466,66 @@ The SSR (Sub-Specialty Registrar) sheet has a different structure: MCR, Name, SI
    - Apply multi-posting rule lookup from `multi_posting_rules` table
 7. Insert `resident_postings` rows with resolved `r_year` per row
 8. Compute and store `working_days_in_month` per row
-9. Call `hibernate_stale_surplus()` after insert. This only updates lifecycle state; it does not carry a stored balance into attendance. On the next compliance read, recompute each ledger value as `max(cumulative raw eligible attendance - cumulative target_100, 0)` and replace it idempotently before tag reallocation.
+9. Reclassify native attendance in the reporting period from each teaching
+   event's date after all replacement `resident_postings` rows are present.
+   The upload and reclassification are one transaction: any `loa` or
+   `loa_working` range covering the event sets `submitted_during_loa`; removing
+   or shortening LOA clears it. Submission time is not used.
+10. Call `hibernate_stale_surplus()` after insert. This only updates lifecycle state; it does not carry a stored balance into attendance. On the next compliance read, recompute each ledger value as `max(cumulative raw eligible attendance - cumulative target_100, 0)` and replace it idempotently before tag reallocation.
+
+### Phase V RDB and Live Data effect on Teaching Name admission
+
+The RDB remains the sole evidence that a native programme has an actual
+Resident posting at another department during a reporting period. After a
+successful reporting-period replacement, Phase V reconciles additive Teaching
+Name programme admissions for every distinct usable
+`(resident.programme_code, resident_postings.posting_code)` pair represented in
+that period. It admits active Secretary-created names from the exact host
+posting to the Resident programme's mapping workflow.
+
+This reconciliation never admits PC-private names, never infers a department
+from posting text, and never uses a generally permitted rotation or TTF target
+as posting evidence. It is additive within the reporting period: a later RDB
+replacement that removes the last matching Resident posting does not delete a
+previously admitted name or its pending/completed mappings. Failed RDB uploads
+make no admission changes. A successful Live Data correction to a Resident's
+native programme, a Resident posting, a posting source-cell group, or a durable
+warning's posting source cell runs the same additive reconciliation for the
+affected current rows before commit. Live Data removal does not erase an
+admission or mapping retained for that reporting period. Reporting-period
+deactivation hides the retained configuration from active workflows but does
+not delete historical rows.
 
 ---
 
-## TTF Parser
+## Evolved TTF format (implemented E2+B2)
+
+Revision `20260805_000036` makes the final TTF contract **A–J only**. The
+parser does not support a dual format, backfill Column K, seed Teaching Names,
+or infer mappings from workbook text. A populated Column K or any later
+unsupported column returns controlled `422`; empty formatted unused cells do
+not by themselves cause rejection. Historical A–K descriptions retained below
+are evidence of the pre-cutover format only.
+
+Phase D mapping mutations still use the same scoped lock as TTF reconciliation.
+Phase F/G scheduled-event and attendance behavior still uses persisted Teaching
+Name or Global Session Type identity and source provenance, never a workbook
+name, catalogue, Column K, or display-text match.
+
+## TTF Parser (final A–J behavior)
+
+The upload remains one programme per request. All 28 seeded programmes use the
+same parser/runtime path: AIM, CARDIO, EM, ENDO, ENT, EYE, GASTRO, GERI, GS,
+ID, IM, MEDONCO, ORTHO, PATH, REHAB, RENAL, RHEUM, SIG, URO, and MICROB
+normalize a valid Column C value to `ALL`; ANAES, DERM, DR, FM, PSY, RESPI,
+SPORTSMED, and PALLMED retain exact `R1`–`R7` values. SPORTSMED and PALLMED
+are operationally covered with `R4`, `R5`, and `R6` and are never remapped to
+SS values. Actual onboarding of 28 operational workbooks remains Phase R.
+
+Valid TTF readiness does not activate Non-NHG availability. That remains
+controlled independently by `programme_institution_posting_map`; the parser
+does not create mappings, infer external posting codes, or alter external
+registration options.
 
 **Upload slot:** Admin uploads via the dedicated **Teaching Target File (TTF)** file input on the admin upload page. The upload form also requires a **programme selector** (e.g. DR, GRM) — this is a required parameter alongside the file. The filename is not used for parsing.
 **Accepted format:** `.xlsx` only
@@ -480,7 +535,7 @@ The SSR (Sub-Specialty Registrar) sheet has a different structure: MCR, Name, SI
 ### TTF Sheet Detection
 
 Iterate over all sheets in the workbook. The first sheet where:
-- Row 1 contains expected column headers (columns A–K contain header-like text)
+- One row within the bounded header scan contains all expected A–J headers
 - At least one data row (row 2+) has a non-empty value in column B that matches a known `programme_code` format
 
 ...is treated as the data sheet. All other sheets are skipped.
@@ -504,26 +559,31 @@ def detect_ttf_sheet(workbook) -> str | None:
 | B | programme_code | e.g. `DR`, `GERI` |
 | C | r_year | Single (`R2`) or multi (`R4, R5, R6`) — must be exploded. Set to `'ALL'` for programmes with `r_year_required = false`. SPORTSMED/PALLMED accept R4–R6 unchanged. |
 | D | posting_code | Bare code (e.g. `KTPHDiagRd`) or legacy bracket format |
-| E | dashboard_posting | Ordinary-compliance grouping key. When non-empty, this value seeds `posting_groups.group_code`; the resolved Column D posting code becomes `posting_groups.posting_code`. Group members aggregate only after physical-posting reallocation/capping. When empty, no posting group row is created and the posting remains standalone. Grouped-posting clawback identity remains deferred. |
+| E | dashboard_posting | Ordinary-compliance grouping key. When non-empty, this value seeds `posting_groups.group_code`; the resolved Column D posting code becomes `posting_groups.posting_code`. Group members aggregate only after physical-posting reallocation/capping. Each successful TTF replaces the programme's posting-group configuration, so an empty or omitted Column E membership removes the prior group row and leaves the posting standalone. Grouped-posting clawback identity remains deferred. |
 | F | session_type | Full name with duration, e.g. `Department/Programme Teaching [1h]` |
 | G | monthly_target | Non-negative integer frequency target at 100%; `0` is valid |
 | H | is_tracked | `Yes` → true, anything else → false |
 | I | is_reallocatable | `Y` → true, anything else → false |
 | J | tag | Reallocation tier label, e.g. `A1`, `A2`, `A3`. Empty = no reallocation |
-| K | details_of_training | Comma-separated canonical event-option names (e.g. `Journal Club, Grand Round, M&M`). Exact resolution is scoped by period, programme, posting, R-year, and canonical name. |
 
 ### TTF Column E — Posting Group / Dashboard Posting
 
 Column E is not display-only. It is the source of `posting_groups`.
 
-For each TTF row:
-- Column D remains the posting code used by `teaching_targets` and `teaching_name_catalogue`.
+Each successful TTF is a full replacement of `posting_groups` for the requested
+programme, performed in the same transaction as target reconciliation. Before
+the non-empty Column E rows are upserted, the existing programme rows are
+deleted. Therefore a blank Column E row, or a posting omitted from the upload,
+removes any previous group membership for that posting.
+
+For each non-empty Column E row:
+- Column D remains the posting code used by `teaching_targets`.
 - Column G remains the monthly target for that specific Column D row.
 - If Column E is non-empty, create/upsert a `posting_groups` row:
   - `group_code = Column E`
   - `posting_code = resolved Column D`
   - `programme_code = TTF programme`
-- If Column E is empty, do not create a `posting_groups` row.
+- Empty Column E creates no replacement row after the programme-scoped delete.
 
 Compliance impact:
 - Events/attendance still match through the actual posting code from Column D.
@@ -607,8 +667,10 @@ Before inserting, validate:
 5. No duplicate `(reporting_period_id, programme_code, r_year, posting_code, session_type_id)` after explosion
 6. If `is_reallocatable = true`, `tag` must not be empty
 7. If a tag is set, there must be at least one other reallocatable row in the same R-year context at the same physical posting and in the same configured tag prefix so alphabetical flow can occur; do not treat posting-group membership or another R-year context as transfer eligibility
-8. **Canonical-name deduplication:** Within one `(reporting_period_id, programme_code, posting_code, r_year, canonical teaching name)` scope, the name must resolve to exactly one session type. The same canonical name at another posting is valid and may map differently. Case/spacing variants are upload/event-option data quality to reject or clean within scope; runtime compliance uses exact canonical names and never fuzzy-matches.
-9. **Tag order vs duration warning (not block):** For each tag group at a posting, check that tag label alphabetical order aligns with duration descending (e.g. `A1` should map to longer duration than `A2`). If misaligned, add a warning to the upload response: `"tag_order_warnings": ["Posting TTSHGerMed: tag A1 maps to [1h] but A2 maps to [2h] — reallocation will flow A1→A2, which is shorter→longer. Verify tag assignment is intentional."]`. Upload still proceeds.
+8. **Tag order vs duration warning (not block):** For each tag group at a posting, check that tag label alphabetical order aligns with duration descending. The warning is bounded and does not expose unsafe workbook values in a validation error. Upload still proceeds.
+
+The parser reports controlled, bounded errors with sheet/row/cell information
+where available. It does not echo untrusted cell values in unsafe errors.
 
 ### Column E — Posting Groups
 
@@ -640,25 +702,47 @@ def seed_posting_groups(ttf_row: dict, db_session):
 
 ### Upload Behaviour
 
-The TTF upload is always a **full replace** within `(reporting_period_id, programme_code)` scope — regardless of whether attendance records exist. There is no attendance guard blocking re-uploads.
+The TTF upload reconciles targets within `(reporting_period_id, programme_code)` scope — regardless of whether attendance records exist. There is no attendance guard blocking re-uploads. A target's stable identity is `(reporting_period_id, programme_code, r_year, posting_code, session_type_id)`: matching rows retain their UUID and update only mutable target values; new rows are inserted; absent rows are made stale.
 
-**Orphan detection (post-write):** After the delete-and-reinsert cycle, query for attendance records whose resolved session_type will no longer match any catalogue row. These are returned as warnings in the upload response — the upload still returns `200`.
+When a stale target has Teaching Name mappings, each mapping retains its UUID and becomes pending (`teaching_target_id = NULL`) before the target is deleted. Matching targets never redirect mappings. A change to `monthly_target`, `is_tracked`, `is_reallocatable`, or `tag` preserves mapped links and is reported as a target-semantic change.
 
-**Concurrency:** A scope-level PostgreSQL advisory lock is acquired at the start of the transaction. A second upload for the same scope returns `409`.
+After target/mapping reconciliation, pool-backed event timing is recalculated
+for every Teaching Name/posting scope in the uploaded programme and period.
+Each R-year mapping contributes its selected session-type duration, or a
+temporary one hour while pending, and the longest effective duration becomes
+the stored staff event envelope. Different mapped R-years may legitimately
+have different durations. The prohibited case remains more than one target for
+the same exact Teaching Name/posting/R-year mapping identity.
+
+For a newly introduced `(posting_code, r_year)` target scope, every active Teaching Name in the programme/period receives at most one pending mapping. Inactive names receive none, and re-upload is idempotent.
+
+Mapping, event, and attendance impact counters are aggregate only. They count
+direct stable Teaching Name target links and unambiguous structured event
+evidence; no fuzzy text matching is used, and transitional text-only or
+unresolved evidence is excluded.
+
+TTF does not create Teaching Names, programme admissions, mappings, or warnings
+from workbook name text. Under planned Phase V, pending mappings are provisioned
+only from the intersection of exact TTF posting/R-year target scopes and active
+Teaching Names already admitted to the uploaded programme. A
+Secretary-created external source must have server-owned RDB-backed admission;
+a PC-private source must be owned by the uploaded programme. TTF re-upload may
+reconcile missing pending rows for those admitted scopes but cannot broaden
+visibility or source-name lifecycle authority.
+
+**Concurrency:** The programme-global `posting_groups` PostgreSQL advisory lock is acquired before the reporting-period/programme scope advisory lock. A second upload for the same programme returns `409`, including a different reporting period; different programmes remain independent.
 
 #### Step order
 
-1. Acquire scope-level advisory lock (409 if contended)
-2. Validate all rows — abort before any writes if errors
-3. `DELETE` all existing `teaching_targets` within scope
-4. `DELETE` all existing `teaching_name_catalogue` rows within scope
-5. `INSERT` into `teaching_targets`
-6. Parse column K keywords and `INSERT` into `teaching_name_catalogue` — one row per keyword per TTF row. Non-tracked rows (`is_tracked = false`) are still seeded into `teaching_name_catalogue` for event visibility.
-7. `ON CONFLICT DO NOTHING` into `session_types`
-8. `ON CONFLICT DO UPDATE` into `posting_codes`
-9. Upsert `posting_groups` from column E (where non-empty)
-10. Commit
-11. Run orphan detection — include results in response `warnings`
+1. Validate all rows — abort before any business writes if errors
+2. Acquire the programme-global posting-group advisory lock, then the shared scope-level advisory lock (409 if either is contended)
+3. Upsert session types and posting codes, then load/lock existing target rows
+4. Reconcile targets by their stable natural identity; clear stale mapping links before deleting only stale targets
+5. Provision missing pending mappings for newly introduced target scopes and preserve existing matching links
+6. Recalculate exact-scope pool-event duration and end time from the reconciled mappings
+7. Replace the programme's `posting_groups`: delete current programme rows, then upsert non-empty Column E rows
+8. Record the successful upload log, relevant warnings, audit evidence, and Data Revalidation outcome in the same transaction as the reconciliation
+9. Commit once, then invalidate scoped caches
 
 #### `ON CONFLICT` upserts
 
@@ -900,11 +984,11 @@ Deduplicate by MCR — use the later sheet's data if there's a conflict.
 
 ### TTF frequency target of 0
 
-**Confirmed rule:** A zero-target row and its teaching-name catalogue entries remain persisted, so the session type remains available for event visibility, event creation, and attendance capture. It contributes to neither the compliance numerator nor denominator and creates no target, percentage, shortage, surplus, reallocation, or clawback contribution.
+**Confirmed rule:** A zero-target row remains a valid final A–J target. It does not control Phase G event visibility, scheduled-event creation, or attendance capture, which use persisted source evidence. The zero target contributes to neither the deferred compliance numerator nor denominator and creates no target, percentage, shortage, surplus, reallocation, or clawback contribution.
 
 
 ### TTF "No" in Tracked column
-The session type exists and events can be created, but attendance does NOT count toward compliance. The row is still seeded into `teaching_name_catalogue` so events are visible to residents. Both numerator and denominator exclude these sessions.
+The session type exists and events can be created, but attendance does NOT count toward compliance. TTF does not seed a Teaching Name or a mapping from this row. Both numerator and denominator exclude these sessions.
 
 ### Posting code with parenthetical suffix in RDB
 Examples: `TTSHCardio (CCU)`, `TTSHRespir(MICU)`, `KTPHOrtSrg(SportsMed)`

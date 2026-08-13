@@ -133,5 +133,5 @@ def test_page_and_update_structural_arguments_remain_source_literals() -> None:
             assert isinstance(table_name, ast.Constant)
             assert table_name.value in parsed_data._UPDATE_ALLOWED_FIELDS_BY_TABLE
 
-    assert page_call_count == 7
+    assert page_call_count == 6
     assert update_call_count == len(parsed_data._UPDATE_ALLOWED_FIELDS_BY_TABLE)

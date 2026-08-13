@@ -196,6 +196,7 @@ _MULTI_POSTING_DATE_RANGE_PATTERN = re.compile(
 )
 _RDB_RED_LINE_MARKER = "please do not insert any row beyond this red line"
 _POSTING_CODE_MAX_LENGTH = 50
+_VALID_R_YEAR_VALUES = frozenset({f"R{year}" for year in range(1, 8)})
 _DASH_TRANSLATION = str.maketrans(
     {
         "\u2010": "-",
@@ -584,12 +585,17 @@ def compute_working_days(
 
 
 def resolve_r_year(raw_r_year: str, programme: ProgrammeConfig) -> str:
-    normalized_raw = (raw_r_year or "").strip()
     if not programme.r_year_required:
         return "ALL"
-    if programme.is_subspecialty:
-        return {"R4": "SS1", "R5": "SS2", "R6": "SS3"}.get(
-            normalized_raw, normalized_raw
+
+    normalized_raw = (raw_r_year or "").strip().upper()
+    if not normalized_raw:
+        raise RDBParserError(
+            "RDB validation failed: R-year is required for a programme that uses R-year scope."
+        )
+    if normalized_raw not in _VALID_R_YEAR_VALUES:
+        raise RDBParserError(
+            "RDB validation failed: R-year must be one of R1 through R7 for a programme that uses R-year scope."
         )
     return normalized_raw
 
@@ -1248,7 +1254,7 @@ def _base_posting_from_cell(
         end_date=header.end_date,
         day_part=None,
         month_label=header.month_label,
-        r_year=r_year or "ALL",
+        r_year=r_year,
         status=parsed_cell.status,
         loa_type=parsed_cell.loa_type,
         loa_start_date=parsed_cell.loa_start,
@@ -1335,7 +1341,7 @@ def _apply_multi_posting_cell(
             resident_mcr=resident_mcr,
             resident_name=resident_name,
             programme_code=programme_code,
-            r_year=r_year or "ALL",
+            r_year=r_year,
             sheet_name=sheet_name,
             row_number=row_number,
             cell_ref=cell_ref,
@@ -1358,7 +1364,7 @@ def _apply_multi_posting_cell(
                 end_date=fragment.end_date,
                 day_part=fragment.day_part,
                 month_label=header.month_label,
-                r_year=r_year or "ALL",
+                r_year=r_year,
                 status="active",
                 active_months_weight=Decimal("1.0"),
                 working_days_in_month=_working_days_for_phase(
@@ -1383,7 +1389,7 @@ def _apply_multi_posting_cell(
             resident_mcr=resident_mcr,
             resident_name=resident_name,
             programme_code=programme_code,
-            r_year=r_year or "ALL",
+            r_year=r_year,
             sheet_name=sheet_name,
             row_number=row_number,
             cell_ref=cell_ref,
@@ -1425,7 +1431,7 @@ def _apply_multi_posting_cell(
                 end_date=fragment.end_date,
                 day_part=fragment.day_part,
                 month_label=header.month_label,
-                r_year=r_year or "ALL",
+                r_year=r_year,
                 status="active",
                 active_months_weight=Decimal("1.0"),
                 working_days_in_month=_working_days_for_phase(
@@ -1447,7 +1453,7 @@ def _apply_multi_posting_cell(
             resident_mcr=resident_mcr,
             resident_name=resident_name,
             programme_code=programme_code,
-            r_year=r_year or "ALL",
+            r_year=r_year,
             sheet_name=sheet_name,
             row_number=row_number,
             cell_ref=cell_ref,
@@ -1469,7 +1475,7 @@ def _apply_multi_posting_cell(
                 end_date=end_date,
                 day_part=None,
                 month_label=header.month_label,
-                r_year=r_year or "ALL",
+                r_year=r_year,
                 status="active",
                 active_months_weight=Decimal("1.0"),
                 working_days_in_month=_working_days_for_phase(start_date, end_date),
@@ -1482,7 +1488,7 @@ def _apply_multi_posting_cell(
             resident_mcr=resident_mcr,
             resident_name=resident_name,
             programme_code=programme_code,
-            r_year=r_year or "ALL",
+            r_year=r_year,
             sheet_name=sheet_name,
             row_number=row_number,
             cell_ref=cell_ref,
@@ -1505,7 +1511,7 @@ def _apply_multi_posting_cell(
                 end_date=_fragment_bounds(fragments, code)[1],
                 day_part=_fragment_day_part(fragments, code),
                 month_label=header.month_label,
-                r_year=r_year or "ALL",
+                r_year=r_year,
                 status="active",
                 active_months_weight=Decimal("0.5"),
                 working_days_in_month=_working_days_for_phase(
@@ -1524,7 +1530,7 @@ def _apply_multi_posting_cell(
         resident_mcr=resident_mcr,
         resident_name=resident_name,
         programme_code=programme_code,
-        r_year=r_year or "ALL",
+        r_year=r_year,
         sheet_name=sheet_name,
         row_number=row_number,
         cell_ref=cell_ref,
@@ -1546,7 +1552,7 @@ def _apply_multi_posting_cell(
             end_date=end_date,
             day_part=None,
             month_label=header.month_label,
-            r_year=r_year or "ALL",
+            r_year=r_year,
             status="active",
             active_months_weight=Decimal("1.0"),
             working_days_in_month=_working_days_for_phase(start_date, end_date),
@@ -2081,7 +2087,7 @@ async def _insert_resident_posting(
             "end_date": posting.end_date,
             "day_part": posting.day_part,
             "month_label": posting.month_label,
-            "r_year": posting.r_year or "ALL",
+            "r_year": posting.r_year,
             "status": posting.status,
             "loa_type": posting.loa_type,
             "loa_start_date": posting.loa_start_date,
@@ -2150,8 +2156,38 @@ async def _persist_rdb_upload(
             postings_created += 1
 
     from app.services.surplus import hibernate_stale_surplus
+    from app.services.teaching_name_programme_scopes import (
+        reconcile_teaching_name_programme_scopes,
+    )
 
     await hibernate_stale_surplus(session, reporting_period_id)
+    programme_result = await session.execute(
+        text(
+            """
+            SELECT DISTINCT resident.programme_code
+            FROM resident_postings AS posting
+            JOIN residents AS resident ON resident.id = posting.resident_id
+            WHERE posting.reporting_period_id = :reporting_period_id
+              AND posting.status IN ('active', 'loa_working')
+              AND posting.posting_code IS NOT NULL
+              AND resident.programme_code IS NOT NULL
+            ORDER BY resident.programme_code ASC
+            """
+        ),
+        {"reporting_period_id": str(reporting_period_id)},
+    )
+    for programme_row in programme_result.mappings().all():
+        await reconcile_teaching_name_programme_scopes(
+            session,
+            reporting_period_id=reporting_period_id,
+            programme_code=str(programme_row["programme_code"]),
+        )
+    from app.services.attendance_loa import reclassify_attendance_loa
+
+    await reclassify_attendance_loa(
+        session,
+        reporting_period_id=reporting_period_id,
+    )
     return residents_created, residents_updated, postings_created, added_codes
 
 
@@ -2256,6 +2292,9 @@ async def _parse_workbook_to_accumulator(
 
                 raw_r_year = _cell_text(sheet, row_index, 6)
                 resolved_r_year = resolve_r_year(raw_r_year, programme)
+                resident_r_year = (
+                    resolved_r_year if programme.r_year_required else raw_r_year
+                )
                 parsed_resident = ParsedRDBResident(
                     employee_code=employee_code,
                     name=_cell_text(sheet, row_index, 2),
@@ -2266,9 +2305,9 @@ async def _parse_workbook_to_accumulator(
                     base_institution=_normalize_optional_text(
                         _cell_text(sheet, row_index, 5)
                     ),
-                    raw_r_year=raw_r_year,
+                    raw_r_year=resident_r_year,
                     programme_code=programme.code,
-                    resolved_r_year=resolved_r_year or "ALL",
+                    resolved_r_year=resolved_r_year,
                     reg_type=_normalize_optional_text(_cell_text(sheet, row_index, 8)),
                     employer_tag=row_employer_tag,
                     postings=[],

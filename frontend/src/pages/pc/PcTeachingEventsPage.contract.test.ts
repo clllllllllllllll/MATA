@@ -4,7 +4,7 @@ import {
   buildProgrammeTeachingEventPayload,
   canMutateProgrammeTeachingEvent,
   createdByRoleLabel,
-  postingOptionsForTeachingName,
+  postingOptionsForSource,
 } from './pcTeachingEventsPageLogic.ts'
 import { resolvePcProgrammeScope } from './pcUploadTtfPageLogic.ts'
 import type { Programme } from '../../api/programmes'
@@ -97,43 +97,60 @@ assertEqual(
 const payload = buildProgrammeTeachingEventPayload({
   programmeCode: 'GERI',
   postingCode: 'TTSHGerMed',
-  teachingName: ' Journal Club ',
+  sourceKey: 'teaching-name:tn-1',
   eventDate: '2026-05-20',
   startTime: '10:00',
   cmePointsAwarded: true,
   smcEventCode: ' SMC-1 ',
+}, {
+  sourceKey: 'teaching-name:tn-1',
+  keyword: 'Journal Club',
+  teachingNameId: 'tn-1',
+  isGlobal: false,
+  postingCodes: ['TTSHGerMed'],
 })
 assertEqual(payload.programmeCode, 'GERI', 'PC payload sends raw programme code')
-assertEqual(payload.teachingName, 'Journal Club', 'PC payload trims catalogue teaching name')
+assertEqual(payload.teachingNameId, 'tn-1', 'PC payload sends the selected Teaching Name ID')
+assertEqual(payload.globalSessionTypeId, undefined, 'PC payload does not send a second event source')
 assertEqual(payload.smcEventCode, 'SMC-1', 'PC payload trims optional SMC code')
 
-const postingOptions = postingOptionsForTeachingName(
+const postingOptions = postingOptionsForSource(
   [
     {
+      sourceKey: 'teaching-name:tn-1',
       keyword: 'Journal Club',
+      teachingNameId: 'tn-1',
       sessionType: 'Department Teaching [1h]',
       isGlobal: false,
       postingCodes: ['TTSHDr', 'NUHDr'],
     },
     {
+      sourceKey: 'teaching-name:tn-2',
       keyword: 'Grand Round',
+      teachingNameId: 'tn-2',
       sessionType: 'Grand Round [1h]',
       isGlobal: false,
       postingCodes: ['TTSHGerMed'],
     },
   ],
-  ' Journal Club ',
+  'teaching-name:tn-1',
 )
-assertEqual(postingOptions.join(','), 'TTSHDr,NUHDr', 'posting dropdown options are filtered by selected teaching name')
+assertEqual(postingOptions.join(','), 'TTSHDr,NUHDr', 'posting dropdown options are filtered by selected source ID')
 assertEqual(
   buildProgrammeTeachingEventPayload({
     programmeCode: 'DR',
     postingCode: postingOptions[0] ?? '',
-    teachingName: 'Journal Club',
+    sourceKey: 'teaching-name:tn-1',
     eventDate: '2026-05-20',
     startTime: '10:00',
     cmePointsAwarded: false,
     smcEventCode: '',
+  }, {
+    sourceKey: 'teaching-name:tn-1',
+    keyword: 'Journal Club',
+    teachingNameId: 'tn-1',
+    isGlobal: false,
+    postingCodes: postingOptions,
   }).postingCode,
   'TTSHDr',
   'PC event payload sends the raw selected posting code',
@@ -162,6 +179,10 @@ const apiSource = readFileSync(
 )
 assert(!apiSource.includes('X-Actor-Name'), 'PC teaching events API does not send actor-name headers')
 assert(!apiSource.includes('created_by_name'), 'PC teaching events API does not map created-by names')
+assert(apiSource.includes('teaching_name_id: payload.teachingNameId'), 'PC API sends explicit Teaching Name IDs')
+assert(apiSource.includes('global_session_type_id: payload.globalSessionTypeId'), 'PC API sends explicit global-session IDs')
+assert(!apiSource.includes('teaching_name: payload.'), 'PC API never posts display text as an event source')
+assert(apiSource.includes('postingDurations'), 'PC API preserves posting-specific mapping durations')
 
 const pageSource = readFileSync(
   fileURLToPath(new URL('./PcTeachingEventsPage.tsx', import.meta.url)),
@@ -192,6 +213,24 @@ assert(
 assert(pageSource.includes('Created By'), 'PC teaching-events table still renders Created By')
 assert(pageSource.includes('<h2>Teaching schedule</h2>'), 'PC teaching-events table uses Secretary-style title')
 assert(pageSource.includes('Add Teaching'), 'PC teaching-events primary action follows Secretary wording')
+assert(
+  pageSource.includes('selectedPostingDuration')
+    && pageSource.includes('temporary one-hour duration')
+    && pageSource.includes('automatically update its duration and end time'),
+  'PC Add Teaching explains the temporary duration without showing unmapped timing fields',
+)
+assert(
+  pageSource.includes('(TTF mapping)')
+    && pageSource.includes('selectedMappedPoolEndTime'),
+  'PC Add Teaching shows mapped posting-specific duration and end time',
+)
+assert(
+  apiSource.includes('rYearDurations')
+    && pageSource.includes('Duration varies by R-year')
+    && pageSource.includes('End time by R-year')
+    && pageSource.includes('Staff scheduling uses the longest duration'),
+  'PC Add Teaching shows R-year timings and the longest staff envelope',
+)
 assertOrdered(
   pageSource,
   ['className="button button-secondary"', '<IconRefresh size={14} />', 'className="button button-primary"', '<IconPlus size={14} />'],
@@ -228,6 +267,7 @@ assert(pageSource.includes('selectedIds'), 'PC teaching-events page tracks row s
 assert(pageSource.includes('secretary-selection-toolbar'), 'PC selected-row actions use Secretary-style toolbar')
 assert(pageSource.includes('toggleSelected(event.id)'), 'PC rows and cards can toggle selection')
 assert(pageSource.includes('aria-label={`Select ${event.teachingName}`}'), 'PC desktop rows expose checkbox selection')
+assert(!pageSource.includes('optionsByKeyword.get(event.teachingName)'), 'PC event rendering does not resolve types from display text')
 assert(pageSource.includes('showEditButton'), 'PC selected eligible row exposes edit action')
 assert(pageSource.includes('showDeleteButton'), 'PC selected eligible rows expose delete action')
 assert(pageSource.includes('showDuplicateButton'), 'PC selected row exposes duplicate action')
@@ -245,8 +285,20 @@ assert(pageSource.includes('secretary-toggle-block'), 'PC drawer uses Secretary 
 assert(pageSource.includes('pc-drawer-programme-field'), 'PC drawer includes a scoped programme field at the top')
 assert(pageSource.includes('pc-drawer-posting-select'), 'PC drawer uses a posting dropdown when options exist')
 assert(
-  pageSource.includes('disabled={!formState.teachingName || selectedOptionPostingCodes.length === 0}'),
-  'PC drawer does not allow arbitrary posting entry when catalogue posting options are required',
+  pageSource.includes('disabled={!formState.sourceKey || selectedOptionPostingCodes.length === 0}'),
+  'PC drawer does not allow arbitrary posting entry when source posting options are required',
+)
+assert(
+  pageSource.includes('const retainedInactiveGlobalOption')
+    && pageSource.includes("drawerMode !== 'edit'")
+    && pageSource.includes('sourceEvent?.globalSessionTypeId'),
+  'PC edit mode retains only the current inactive global source',
+)
+assert(
+  pageSource.includes('drawerSourceOptions.map')
+    && pageSource.includes('current inactive global source')
+    && pageSource.includes('canSubmitTeaching'),
+  'PC retained inactive global source is selectable and saveable only in edit mode',
 )
 assert(
   pageSource.includes('pc-teaching-events-posting-cell pc-teaching-events-nowrap'),

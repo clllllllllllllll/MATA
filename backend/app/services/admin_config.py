@@ -19,9 +19,14 @@ from app.services.reporting_period_status import (
     get_effective_reporting_period_status,
     normalise_reporting_period_status,
 )
+from app.services.ttf_scope_lock import acquire_ttf_programme_lock
 
 
 ALLOWED_MULTI_POSTING_RULE_TYPES = {"main_posting", "combine", "half_month"}
+_IMMUTABLE_R_YEAR_PROGRAMME_FLAGS = {
+    "SPORTSMED": (True, False),
+    "PALLMED": (True, False),
+}
 _ALLOWED_SCOPE_FIELD_NAMES = frozenset(
     {
         "code",
@@ -34,7 +39,6 @@ _REPORTING_PERIOD_DEPENDENCY_NAMES = frozenset(
         "upload_logs",
         "resident_postings",
         "teaching_targets",
-        "teaching_name_catalogue",
         "form_f1_records",
         "academic_month_boundaries",
         "period_snapshots",
@@ -881,7 +885,6 @@ async def list_teaching_targets(
             is_tracked,
             is_reallocatable,
             tag,
-            details_of_training,
             created_at,
             updated_at
         FROM teaching_targets
@@ -895,85 +898,6 @@ async def list_teaching_targets(
             posting_code ASC,
             r_year ASC,
             session_type_id ASC,
-            id ASC
-        LIMIT :limit
-    """
-    result = await db.execute(text(sql), params)
-    return list(result.mappings().all())
-
-
-async def list_teaching_name_catalogue(
-    db: AsyncSession,
-    *,
-    programme_scope: set[str],
-    reporting_period_id: UUID | None,
-    programme_code: str | None,
-    posting_code: str | None,
-    r_year: str | None,
-    keyword: str | None,
-    session_type_id: UUID | None,
-    is_tracked: bool | None,
-    limit: int,
-) -> list[dict[str, Any]]:
-    codes = _scoped_programmes(
-        programme_scope=programme_scope,
-        programme_code=programme_code,
-    )
-    if not codes:
-        return []
-
-    params: dict[str, Any] = {"limit": limit}
-    where_clauses: list[str] = [
-        _scope_or_clause(
-            field_name="programme_code",
-            values=codes,
-            params=params,
-            param_prefix="programme_code",
-        )
-    ]
-    if reporting_period_id is not None:
-        params["reporting_period_id"] = str(reporting_period_id)
-        where_clauses.append("reporting_period_id = :reporting_period_id")
-    if posting_code is not None:
-        params["posting_code"] = posting_code.strip()
-        where_clauses.append("posting_code = :posting_code")
-    if r_year is not None:
-        params["r_year"] = r_year.strip().upper()
-        where_clauses.append("UPPER(r_year) = :r_year")
-    if keyword is not None:
-        params["keyword"] = f"%{keyword.strip()}%"
-        where_clauses.append("keyword ILIKE :keyword")
-    if session_type_id is not None:
-        params["session_type_id"] = str(session_type_id)
-        where_clauses.append("session_type_id = :session_type_id")
-    if is_tracked is not None:
-        params["is_tracked"] = is_tracked
-        where_clauses.append("is_tracked = :is_tracked")
-
-    sql = """
-        SELECT
-            id,
-            keyword,
-            session_type_id,
-            posting_code,
-            programme_code,
-            r_year,
-            reporting_period_id,
-            duration_hours,
-            is_tracked,
-            created_at,
-            updated_at
-        FROM teaching_name_catalogue
-        WHERE
-    """
-    sql += " AND ".join(where_clauses)
-    sql += """
-        ORDER BY
-            reporting_period_id ASC,
-            programme_code ASC,
-            posting_code ASC,
-            r_year ASC,
-            keyword ASC,
             id ASC
         LIMIT :limit
     """
@@ -1112,6 +1036,34 @@ def _raise_conflict(detail: str) -> None:
         detail=detail,
         error_code=ErrorCode.CONFLICT.value,
     )
+
+
+async def _require_posting_group_programme_lock(
+    db: AsyncSession,
+    *,
+    programme_code: str,
+) -> None:
+    """Keep manual posting-group writes coherent with TTF replacement."""
+    if not await acquire_ttf_programme_lock(db, programme_code=programme_code):
+        _raise_conflict("A posting-group change for this programme is already in progress")
+
+
+async def _require_unchanged_posting_group_programme(
+    db: AsyncSession,
+    *,
+    posting_group_id: UUID,
+    programme_code: str,
+) -> None:
+    """Reject a row moved before its original programme lock was acquired."""
+    result = await db.execute(
+        text("SELECT id, programme_code FROM posting_groups WHERE id = :id FOR UPDATE"),
+        {"id": str(posting_group_id)},
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        _raise_not_found("Posting group not found")
+    if str(row["programme_code"]) != programme_code:
+        _raise_conflict("Posting group changed while its programme lock was acquired")
 
 
 def _raise_validation(detail: str) -> None:
@@ -1564,11 +1516,6 @@ async def _reporting_period_dependency_counts(
             FROM teaching_targets
             WHERE reporting_period_id = :id
         """,
-        "teaching_name_catalogue": """
-            SELECT COUNT(*) AS count
-            FROM teaching_name_catalogue
-            WHERE reporting_period_id = :id
-        """,
         "form_f1_records": """
             SELECT COUNT(*) AS count
             FROM form_f1_records
@@ -1736,6 +1683,17 @@ async def update_programme(
         programme_scope=programme_scope,
         programme_code=programme_code,
     )
+    immutable_flags = _IMMUTABLE_R_YEAR_PROGRAMME_FLAGS.get(programme_code)
+    if immutable_flags is not None:
+        required_r_year, is_subspecialty_value = immutable_flags
+        if (
+            r_year_required is not None and r_year_required != required_r_year
+        ) or (
+            is_subspecialty is not None and is_subspecialty != is_subspecialty_value
+        ):
+            _raise_validation(
+                "SPORTSMED and PALLMED must retain r_year_required=true and is_subspecialty=false."
+            )
     result = await db.execute(
         text(
             """
@@ -2232,6 +2190,7 @@ async def create_posting_group(
         _raise_validation(f"Unknown programme code: {programme_code}")
     if not await _posting_code_exists(db, posting_code):
         _raise_validation(f"Unknown posting code: {posting_code}")
+    await _require_posting_group_programme_lock(db, programme_code=programme_code)
     try:
         result = await db.execute(
             text(
@@ -2285,6 +2244,18 @@ async def update_posting_group(
         _raise_validation(f"Unknown programme code: {programme_code}")
     if not await _posting_code_exists(db, posting_code):
         _raise_validation(f"Unknown posting code: {posting_code}")
+    # A cross-programme edit takes only its two relevant programme locks, in a
+    # stable order, so independent programmes remain concurrent.
+    for locked_programme_code in sorted({str(row["programme_code"]), programme_code}):
+        await _require_posting_group_programme_lock(
+            db,
+            programme_code=locked_programme_code,
+        )
+    await _require_unchanged_posting_group_programme(
+        db,
+        posting_group_id=posting_group_id,
+        programme_code=str(row["programme_code"]),
+    )
     try:
         result = await db.execute(
             text(
@@ -2333,6 +2304,15 @@ async def delete_posting_group(
             programme_scope=programme_scope,
             programme_code=row["programme_code"],
         )
+    await _require_posting_group_programme_lock(
+        db,
+        programme_code=str(row["programme_code"]),
+    )
+    await _require_unchanged_posting_group_programme(
+        db,
+        posting_group_id=posting_group_id,
+        programme_code=str(row["programme_code"]),
+    )
     await db.execute(
         text("DELETE FROM posting_groups WHERE id = :id"),
         {"id": str(posting_group_id)},

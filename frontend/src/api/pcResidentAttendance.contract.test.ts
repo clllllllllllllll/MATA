@@ -25,6 +25,8 @@ for (const field of [
   'end_time',
   'posting_label',
   'submitted_at',
+  'submitted_during_loa',
+  'loa_type',
 ]) {
   assert(source.includes(field), `PC resident attendance mapper consumes ${field}`)
 }

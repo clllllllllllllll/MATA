@@ -8,6 +8,7 @@ MIGRATION_MUTATION_FIXTURES = frozenset(
     {
         "clean_migration_database",
         "in_place_migration_database",
+        "post_boundary_migration_database",
     }
 )
 

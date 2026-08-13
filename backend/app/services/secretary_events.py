@@ -16,7 +16,14 @@ from app.services.reporting_period_status import (
     resolve_explicit_reporting_period,
 )
 from app.services import cache_invalidation
+from app.services import scheduled_event_sources
+from app.services.pool_event_timing import (
+    DEFAULT_POOL_EVENT_DURATION_HOURS,
+    list_pool_event_timings,
+    with_staff_pool_event_timings,
+)
 from app.services.teaching_event_locks import acquire_teaching_event_locks
+from app.services.teaching_name_pool import TeachingNamePoolActor
 
 
 DAY_INDEX = {
@@ -44,7 +51,14 @@ def _event_row(row: dict[str, Any]) -> dict[str, Any]:
         "start_time": row["start_time"],
         "end_time": row["end_time"],
         "duration_hours": row.get("duration_hours"),
+        "duration_varies": bool(row.get("duration_varies", False)),
+        "has_pending_mappings": bool(row.get("has_pending_mappings", False)),
+        "r_year_durations": row.get("r_year_durations", []),
         "session_type_id": row.get("session_type_id"),
+        "teaching_name_id": row.get("teaching_name_id"),
+        "global_session_type_id": row.get("global_session_type_id"),
+        "source_programme_code": row.get("source_programme_code"),
+        "source_reporting_period_id": row.get("source_reporting_period_id"),
         "session_type": row.get("session_type"),
         "series_id": row.get("series_id"),
         "cme_points_awarded": row.get("cme_points_awarded", False),
@@ -80,25 +94,6 @@ async def _public_holiday_name(db: AsyncSession, event_date: date) -> str | None
     return row.get("name") or "Public holiday"
 
 
-async def _resolve_secretary_programme_pool(
-    db: AsyncSession,
-    posting_code: str,
-) -> list[str]:
-    result = await db.execute(
-        text(
-            """
-            SELECT programme_code
-            FROM secretary_programme_pools
-            WHERE posting_code = :posting_code
-              AND is_active = true
-            ORDER BY programme_code ASC
-            """
-        ),
-        {"posting_code": posting_code},
-    )
-    return [str(row["programme_code"]) for row in result.mappings().all()]
-
-
 async def _programme_owned_event_in_secretary_scope(
     db: AsyncSession,
     *,
@@ -127,118 +122,41 @@ async def _programme_owned_event_in_secretary_scope(
     return result.mappings().one_or_none() is not None
 
 
-async def _catalogue_rows_for_secretary_posting(
+async def _pool_source_in_secretary_scope(
     db: AsyncSession,
     *,
-    posting_code: str,
-    reporting_period_id: UUID | str,
-    teaching_name: str | None = None,
-) -> list[dict[str, Any]]:
-    programme_codes = await _resolve_secretary_programme_pool(db, posting_code)
-    if programme_codes:
-        if teaching_name is None:
-            result = await db.execute(
-                text(
-                    """
-                    SELECT
-                        tnc.keyword,
-                        tnc.session_type_id,
-                        st.name AS session_type,
-                        tnc.duration_hours,
-                        tnc.is_tracked,
-                        false AS is_global,
-                        tnc.posting_code
-                    FROM teaching_name_catalogue tnc
-                    JOIN session_types st ON st.id = tnc.session_type_id
-                    WHERE tnc.programme_code = ANY(:programme_codes)
-                      AND tnc.reporting_period_id = :reporting_period_id
-                    ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
-                    """
-                ),
-                {
-                    "programme_codes": programme_codes,
-                    "reporting_period_id": str(reporting_period_id),
-                },
-            )
-        else:
-            result = await db.execute(
-                text(
-                    """
-                    SELECT
-                        tnc.keyword,
-                        tnc.session_type_id,
-                        st.name AS session_type,
-                        tnc.duration_hours,
-                        tnc.is_tracked,
-                        false AS is_global,
-                        tnc.posting_code
-                    FROM teaching_name_catalogue tnc
-                    JOIN session_types st ON st.id = tnc.session_type_id
-                    WHERE tnc.programme_code = ANY(:programme_codes)
-                      AND tnc.reporting_period_id = :reporting_period_id
-                      AND tnc.keyword = :teaching_name
-                    ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
-                    """
-                ),
-                {
-                    "programme_codes": programme_codes,
-                    "reporting_period_id": str(reporting_period_id),
-                    "teaching_name": teaching_name,
-                },
-            )
-        return [dict(row) for row in result.mappings().all()]
-
-    if teaching_name is None:
-        result = await db.execute(
-            text(
-                """
-                SELECT
-                    tnc.keyword,
-                    tnc.session_type_id,
-                    st.name AS session_type,
-                    tnc.duration_hours,
-                    tnc.is_tracked,
-                    false AS is_global,
-                    tnc.posting_code
-                FROM teaching_name_catalogue tnc
-                JOIN session_types st ON st.id = tnc.session_type_id
-                WHERE tnc.posting_code = :posting_code
-                  AND tnc.reporting_period_id = :reporting_period_id
-                ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
-                """
-            ),
-            {
-                "posting_code": posting_code,
-                "reporting_period_id": str(reporting_period_id),
-            },
-        )
-    else:
-        result = await db.execute(
-            text(
-                """
-                SELECT
-                    tnc.keyword,
-                    tnc.session_type_id,
-                    st.name AS session_type,
-                    tnc.duration_hours,
-                    tnc.is_tracked,
-                    false AS is_global,
-                    tnc.posting_code
-                FROM teaching_name_catalogue tnc
-                JOIN session_types st ON st.id = tnc.session_type_id
-                WHERE tnc.posting_code = :posting_code
-                  AND tnc.reporting_period_id = :reporting_period_id
-                  AND tnc.keyword = :teaching_name
-                ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
-                """
-            ),
-            {
-                "posting_code": posting_code,
-                "reporting_period_id": str(reporting_period_id),
-                "teaching_name": teaching_name,
-            },
-        )
-    return [dict(row) for row in result.mappings().all()]
+    event: dict[str, Any],
+) -> bool:
+    source_programme = event.get("source_programme_code")
+    source_period = event.get("source_reporting_period_id")
+    if (source_programme is None) != (source_period is None):
+        return False
+    if source_programme is None:
+        return event.get("teaching_name_id") is None
+    if event.get("global_session_type_id") is not None:
+        return False
+    owner = event.get("created_for_programme_code")
+    if owner is not None and owner != source_programme:
+        return False
+    result = await db.execute(
+        text(
+            """
+            /* scheduled_event_sources:secretary_capability */
+            SELECT 1
+            FROM secretary_programme_pools
+            WHERE posting_code = :posting_code
+              AND programme_code = :programme_code
+              AND is_active = true
+              AND can_manage_teaching_names = true
+            LIMIT 1
+            """
+        ),
+        {
+            "posting_code": event["posting_code"],
+            "programme_code": source_programme,
+        },
+    )
+    return result.scalar_one_or_none() is not None
 
 
 def _natural_sort_key(value: str) -> tuple[str | int, ...]:
@@ -264,49 +182,6 @@ async def _ensure_not_public_holiday(db: AsyncSession, event_date: date) -> None
         error_code=ErrorCode.VALIDATION_FAILED.value,
         metadata={"holiday_date": event_date.isoformat(), "holiday_name": holiday_name},
     )
-
-
-async def resolve_teaching_name(
-    db: AsyncSession,
-    *,
-    posting_code: str,
-    teaching_name: str,
-    reporting_period_id: UUID | str,
-) -> dict[str, Any]:
-    global_result = await db.execute(
-        text(
-            """
-            SELECT
-                name AS keyword,
-                NULL AS session_type_id,
-                name AS session_type,
-                duration_hours,
-                false AS is_tracked,
-                true AS is_global
-            FROM global_session_types
-            WHERE is_active = true AND name = :teaching_name
-            ORDER BY name ASC
-            """
-        ),
-        {"teaching_name": teaching_name},
-    )
-    global_row = global_result.mappings().one_or_none()
-    if global_row is not None:
-        return dict(global_row)
-
-    rows = await _catalogue_rows_for_secretary_posting(
-        db,
-        posting_code=posting_code,
-        reporting_period_id=reporting_period_id,
-        teaching_name=teaching_name,
-    )
-    if not rows:
-        raise ApiError(
-            status_code=422,
-            detail="teaching_name is not available for this secretary posting",
-            error_code=ErrorCode.VALIDATION_FAILED.value,
-        )
-    return rows[0]
 
 
 async def list_teaching_events(
@@ -358,6 +233,10 @@ async def list_teaching_events(
                 te.end_time,
                 te.duration_hours,
                 te.session_type_id,
+                te.teaching_name_id,
+                te.global_session_type_id,
+                te.source_programme_code,
+                te.source_reporting_period_id,
                 st.name AS session_type,
                 te.series_id,
                 te.cme_points_awarded,
@@ -385,14 +264,20 @@ async def list_teaching_events(
         ),
         params,
     )
-    return [_event_row(dict(row)) for row in result.mappings().all()]
+    rows = await with_staff_pool_event_timings(
+        db,
+        rows=[dict(row) for row in result.mappings().all()],
+    )
+    return [_event_row(row) for row in rows]
 
 
 async def _insert_event(
     db: AsyncSession,
     *,
+    source_actor: TeachingNamePoolActor,
     posting_code: str,
-    teaching_name: str,
+    teaching_name_id: UUID | None,
+    global_session_type_id: UUID | None,
     event_date: date,
     start_time: time,
     cme_points_awarded: bool,
@@ -409,17 +294,24 @@ async def _insert_event(
             detail="No active reporting period is available for the teaching event date",
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
-    resolved = await resolve_teaching_name(
+    source = await scheduled_event_sources.resolve_scheduled_event_source(
         db,
-        posting_code=posting_code,
-        teaching_name=teaching_name,
+        actor=source_actor,
         reporting_period_id=period["id"],
+        teaching_name_id=teaching_name_id,
+        global_session_type_id=global_session_type_id,
+        posting_code=posting_code,
     )
-    duration_hours = resolved["duration_hours"]
+    scheduled_event_sources.validate_scheduled_event_start_time(
+        source=source,
+        start_time=start_time,
+    )
+    duration_hours = source.duration_hours
     end_time = _compute_end_time(event_date, start_time, duration_hours)
     result = await db.execute(
         text(
             """
+            /* secretary_events:insert */
             INSERT INTO teaching_events (
                 posting_code,
                 teaching_name,
@@ -428,6 +320,10 @@ async def _insert_event(
                 end_time,
                 duration_hours,
                 session_type_id,
+                teaching_name_id,
+                global_session_type_id,
+                source_programme_code,
+                source_reporting_period_id,
                 series_id,
                 cme_points_awarded,
                 smc_event_code,
@@ -442,6 +338,10 @@ async def _insert_event(
                 :end_time,
                 :duration_hours,
                 :session_type_id,
+                :teaching_name_id,
+                :global_session_type_id,
+                :source_programme_code,
+                :source_reporting_period_id,
                 :series_id,
                 :cme_points_awarded,
                 :smc_event_code,
@@ -458,6 +358,10 @@ async def _insert_event(
                 end_time,
                 duration_hours,
                 session_type_id,
+                teaching_name_id,
+                global_session_type_id,
+                source_programme_code,
+                source_reporting_period_id,
                 series_id,
                 cme_points_awarded,
                 smc_event_code,
@@ -469,12 +373,24 @@ async def _insert_event(
         ),
         {
             "posting_code": posting_code,
-            "teaching_name": teaching_name,
+            "teaching_name": source.teaching_name,
             "event_date": event_date,
             "start_time": start_time,
             "end_time": end_time,
             "duration_hours": duration_hours,
-            "session_type_id": resolved.get("session_type_id"),
+            "session_type_id": None,
+            "teaching_name_id": str(source.teaching_name_id)
+            if source.teaching_name_id is not None
+            else None,
+            "global_session_type_id": str(source.global_session_type_id)
+            if source.global_session_type_id is not None
+            else None,
+            "source_programme_code": source.programme_code,
+            "source_reporting_period_id": (
+                str(source.reporting_period_id)
+                if source.reporting_period_id is not None
+                else None
+            ),
             "series_id": series_id,
             "cme_points_awarded": cme_points_awarded,
             "smc_event_code": smc_event_code,
@@ -486,8 +402,10 @@ async def _insert_event(
 async def create_teaching_event(
     db: AsyncSession,
     *,
+    source_actor: TeachingNamePoolActor,
     posting_code: str,
-    teaching_name: str,
+    teaching_name_id: UUID | None,
+    global_session_type_id: UUID | None,
     event_date: date,
     start_time: time,
     cme_points_awarded: bool,
@@ -496,8 +414,10 @@ async def create_teaching_event(
     await _ensure_not_public_holiday(db, event_date)
     event = await _insert_event(
         db,
+        source_actor=source_actor,
         posting_code=posting_code,
-        teaching_name=teaching_name,
+        teaching_name_id=teaching_name_id,
+        global_session_type_id=global_session_type_id,
         event_date=event_date,
         start_time=start_time,
         cme_points_awarded=cme_points_awarded,
@@ -532,6 +452,10 @@ async def _get_event_for_posting(
                 end_time,
                 duration_hours,
                 session_type_id,
+                teaching_name_id,
+                global_session_type_id,
+                source_programme_code,
+                source_reporting_period_id,
                 series_id,
                 cme_points_awarded,
                 smc_event_code,
@@ -565,17 +489,25 @@ async def _get_event_for_posting(
             detail="Teaching event not found",
             error_code=ErrorCode.NOT_FOUND.value,
         )
+    if not await _pool_source_in_secretary_scope(db, event=event):
+        raise ApiError(
+            status_code=404,
+            detail="Teaching event not found",
+            error_code=ErrorCode.NOT_FOUND.value,
+        )
     return event
 
 
 async def duplicate_teaching_event(
     db: AsyncSession,
     *,
+    source_actor: TeachingNamePoolActor,
     posting_code: str,
     source_event_id: UUID,
     event_date: date,
     start_time: time | None,
-    teaching_name: str | None,
+    teaching_name_id: UUID | None,
+    global_session_type_id: UUID | None,
 ) -> dict[str, Any]:
     source = await _get_event_for_posting(
         db,
@@ -584,13 +516,36 @@ async def duplicate_teaching_event(
         source=True,
         for_update=True,
     )
-    new_teaching_name = teaching_name or source["teaching_name"]
+    if (
+        source.get("teaching_name_id") is None
+        and source.get("global_session_type_id") is None
+        and source.get("source_programme_code") is None
+        and source.get("source_reporting_period_id") is None
+        and teaching_name_id is None
+        and global_session_type_id is None
+    ):
+        raise ApiError(
+            status_code=409,
+            detail="Legacy teaching events require an explicit source to be duplicated",
+            error_code=ErrorCode.CONFLICT.value,
+        )
+    scheduled_event_sources.require_at_most_one_source(
+        teaching_name_id=teaching_name_id,
+        global_session_type_id=global_session_type_id,
+    )
+    new_teaching_name_id = teaching_name_id
+    new_global_session_type_id = global_session_type_id
+    if new_teaching_name_id is None and new_global_session_type_id is None:
+        new_teaching_name_id = source.get("teaching_name_id")
+        new_global_session_type_id = source.get("global_session_type_id")
     new_start_time = start_time or source["start_time"]
     await _ensure_not_public_holiday(db, event_date)
     event = await _insert_event(
         db,
+        source_actor=source_actor,
         posting_code=posting_code,
-        teaching_name=new_teaching_name,
+        teaching_name_id=new_teaching_name_id,
+        global_session_type_id=new_global_session_type_id,
         event_date=event_date,
         start_time=new_start_time,
         cme_points_awarded=source.get("cme_points_awarded", False),
@@ -602,9 +557,11 @@ async def duplicate_teaching_event(
 async def update_teaching_event(
     db: AsyncSession,
     *,
+    source_actor: TeachingNamePoolActor,
     posting_code: str,
     event_id: UUID,
-    teaching_name: str,
+    teaching_name_id: UUID | None,
+    global_session_type_id: UUID | None,
     event_date: date,
     start_time: time,
     cme_points_awarded: bool,
@@ -620,6 +577,17 @@ async def update_teaching_event(
         raise ApiError(
             status_code=409,
             detail="Teaching event cannot be edited because it is not a scheduled teaching event",
+            error_code=ErrorCode.CONFLICT.value,
+        )
+    if (
+        source.get("teaching_name_id") is None
+        and source.get("global_session_type_id") is None
+        and source.get("source_programme_code") is None
+        and source.get("source_reporting_period_id") is None
+    ):
+        raise ApiError(
+            status_code=409,
+            detail="Legacy teaching events cannot be updated through source-identity routes",
             error_code=ErrorCode.CONFLICT.value,
         )
     if await _has_attendance(db, event_ids=[str(event_id)]):
@@ -640,13 +608,37 @@ async def update_teaching_event(
             detail="No active reporting period is available for the teaching event date",
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
-    resolved = await resolve_teaching_name(
+    source_identity = await scheduled_event_sources.resolve_scheduled_event_source(
         db,
-        posting_code=posting_code,
-        teaching_name=teaching_name,
+        actor=source_actor,
         reporting_period_id=period["id"],
+        teaching_name_id=teaching_name_id,
+        global_session_type_id=global_session_type_id,
+        posting_code=posting_code,
+        allow_inactive_global_session_type_id=source.get("global_session_type_id"),
     )
-    duration_hours = resolved["duration_hours"]
+    if source.get("source_programme_code") is not None and (
+        not source_identity.is_pool_backed
+        or source_identity.programme_code != source.get("source_programme_code")
+        or str(source_identity.reporting_period_id)
+        != str(source.get("source_reporting_period_id"))
+    ):
+        raise ApiError(
+            status_code=409,
+            detail="Teaching event source programme and reporting period are immutable",
+            error_code=ErrorCode.CONFLICT.value,
+        )
+    if source.get("global_session_type_id") is not None and source_identity.is_pool_backed:
+        raise ApiError(
+            status_code=409,
+            detail="Teaching event source family is immutable",
+            error_code=ErrorCode.CONFLICT.value,
+        )
+    scheduled_event_sources.validate_scheduled_event_start_time(
+        source=source_identity,
+        start_time=start_time,
+    )
+    duration_hours = source_identity.duration_hours
     end_time = _compute_end_time(event_date, start_time, duration_hours)
     result = await db.execute(
         text(
@@ -659,6 +651,8 @@ async def update_teaching_event(
                 end_time = :end_time,
                 duration_hours = :duration_hours,
                 session_type_id = :session_type_id,
+                teaching_name_id = :teaching_name_id,
+                global_session_type_id = :global_session_type_id,
                 cme_points_awarded = :cme_points_awarded,
                 smc_event_code = :smc_event_code,
                 updated_at = now()
@@ -676,6 +670,10 @@ async def update_teaching_event(
                 end_time,
                 duration_hours,
                 session_type_id,
+                teaching_name_id,
+                global_session_type_id,
+                source_programme_code,
+                source_reporting_period_id,
                 series_id,
                 cme_points_awarded,
                 smc_event_code,
@@ -686,12 +684,18 @@ async def update_teaching_event(
             """
         ),
         {
-            "teaching_name": teaching_name,
+            "teaching_name": source_identity.teaching_name,
             "event_date": event_date,
             "start_time": start_time,
             "end_time": end_time,
             "duration_hours": duration_hours,
-            "session_type_id": resolved.get("session_type_id"),
+            "session_type_id": None,
+            "teaching_name_id": str(source_identity.teaching_name_id)
+            if source_identity.teaching_name_id is not None
+            else None,
+            "global_session_type_id": str(source_identity.global_session_type_id)
+            if source_identity.global_session_type_id is not None
+            else None,
             "cme_points_awarded": cme_points_awarded,
             "smc_event_code": smc_event_code,
             "event_id": str(event_id),
@@ -781,6 +785,7 @@ async def teaching_name_options(
     posting_code: str,
     reporting_period_id: UUID | str | None = None,
     relevant_date: date | None = None,
+    programme_code: str | None = None,
 ) -> list[dict[str, Any]]:
     period = (
         await resolve_explicit_reporting_period(
@@ -797,100 +802,132 @@ async def teaching_name_options(
     )
     if period is None:
         return []
-    catalogue_rows = await _catalogue_rows_for_secretary_posting(
-        db,
-        posting_code=posting_code,
-        reporting_period_id=period["id"],
+    pool_params: dict[str, Any] = {
+        "posting_code": posting_code,
+        "reporting_period_id": str(period["id"]),
+        "programme_code": programme_code,
+    }
+
+    pool_result = await db.execute(
+        text(
+            """
+            /* secretary_events:options_teaching_names */
+            SELECT
+                tn.id AS teaching_name_id,
+                CAST(NULL AS uuid) AS global_session_type_id,
+                tn.display_name AS keyword,
+                tn.display_name AS teaching_name,
+                tn.programme_code,
+                tn.created_by_role,
+                tn.visibility_scope,
+                tn.origin_posting_code,
+                CAST(NULL AS numeric) AS duration_hours,
+                false AS is_global
+            FROM teaching_names tn
+            WHERE tn.reporting_period_id = :reporting_period_id
+              AND tn.is_active = true
+              AND (
+                  CAST(:programme_code AS text) IS NULL
+                  OR tn.programme_code = CAST(:programme_code AS text)
+              )
+              AND EXISTS (
+                  SELECT 1
+                  FROM secretary_programme_pools spp
+                  WHERE spp.posting_code = :posting_code
+                    AND spp.programme_code = tn.programme_code
+                    AND spp.is_active = true
+                    AND spp.can_manage_teaching_names = true
+              )
+              AND (
+                  (
+                      tn.visibility_scope = 'department_shared'
+                      AND tn.origin_posting_code = :posting_code
+                  )
+                  OR (
+                      tn.visibility_scope = 'programme_private'
+                      AND EXISTS (
+                          SELECT 1
+                          FROM programmes AS native_programme
+                          WHERE native_programme.code = tn.programme_code
+                            AND native_programme.native_teaching_posting_code
+                                = :posting_code
+                      )
+                  )
+              )
+            ORDER BY tn.display_name ASC, tn.programme_code ASC, tn.id ASC
+            """
+        ),
+        pool_params,
     )
     global_result = await db.execute(
         text(
             """
+            /* secretary_events:options_global */
             SELECT
+                CAST(NULL AS uuid) AS teaching_name_id,
+                id AS global_session_type_id,
                 name AS keyword,
-                NULL AS session_type_id,
-                name AS session_type,
+                name AS teaching_name,
+                NULL AS programme_code,
                 duration_hours,
-                false AS is_tracked,
                 true AS is_global
             FROM global_session_types
             WHERE is_active = true
-            ORDER BY name ASC
+            ORDER BY name ASC, id ASC
             """
         )
     )
-
-    options_by_keyword: dict[str, dict[str, Any]] = {}
-
-    for row in catalogue_rows:
-        keyword = str(row.get("keyword") or "").strip()
-        if not keyword:
-            continue
-        posting_code_value = row.get("posting_code")
-        aggregate = options_by_keyword.setdefault(
-            keyword,
-            {
-                "keyword": keyword,
-                "session_type_id": row.get("session_type_id"),
-                "session_type": row.get("session_type"),
-                "duration_hours": row.get("duration_hours"),
-                "is_tracked": row.get("is_tracked"),
-                "is_global": False,
-                "posting_codes": [],
-                "_session_type_ids": set(),
-                "_session_types": set(),
-                "_durations": set(),
-                "_tracked_values": set(),
-            },
+    options = [dict(row) for row in pool_result.mappings().all()]
+    for row in options:
+        option_programme_code = str(row["programme_code"])
+        timings = await list_pool_event_timings(
+            db,
+            teaching_name_ids=[row["teaching_name_id"]],
+            reporting_period_id=period["id"],
+            programme_code=(
+                option_programme_code
+                if row.get("visibility_scope") == "programme_private"
+                else None
+            ),
+            posting_code=posting_code,
         )
-
-        if posting_code_value and posting_code_value not in aggregate["posting_codes"]:
-            aggregate["posting_codes"].append(posting_code_value)
-        aggregate["_session_type_ids"].add(str(row.get("session_type_id")))
-        if row.get("session_type") is not None:
-            aggregate["_session_types"].add(str(row.get("session_type")))
-        if row.get("duration_hours") is not None:
-            aggregate["_durations"].add(str(row.get("duration_hours")))
-        aggregate["_tracked_values"].add(bool(row.get("is_tracked")))
-
-    options: list[dict[str, Any]] = []
-    for keyword in sorted(options_by_keyword.keys()):
-        aggregate = options_by_keyword[keyword]
-        session_type_ids = {
-            value for value in aggregate.pop("_session_type_ids") if value and value != "None"
-        }
-        session_types = aggregate.pop("_session_types")
-        durations = aggregate.pop("_durations")
-        tracked_values = aggregate.pop("_tracked_values")
-
-        if len(session_type_ids) != 1 or len(session_types) != 1:
-            aggregate["session_type_id"] = None
-            aggregate["session_type"] = None
-        if len(durations) != 1:
-            aggregate["duration_hours"] = None
-        if len(tracked_values) != 1:
-            aggregate["is_tracked"] = None
-        aggregate["posting_codes"] = sorted(aggregate["posting_codes"])
-        options.append(aggregate)
-
-    for row in global_result.mappings().all():
-        keyword = str(row.get("keyword") or "").strip()
-        if not keyword:
-            continue
-        if keyword in options_by_keyword:
-            continue
-        options.append(
+        timing = timings.get((str(row["teaching_name_id"]), posting_code))
+        row["duration_hours"] = (
+            timing.duration_hours
+            if timing is not None
+            else DEFAULT_POOL_EVENT_DURATION_HOURS
+        )
+        row["duration_is_mapped"] = bool(timing and timing.is_mapped)
+        row["duration_varies"] = bool(timing and timing.duration_varies)
+        row["has_pending_mappings"] = bool(
+            timing and timing.has_pending_mappings
+        )
+        row["r_year_durations"] = [
             {
-                "keyword": keyword,
-                "session_type_id": row.get("session_type_id"),
-                "session_type": row.get("session_type"),
-                "duration_hours": row.get("duration_hours"),
-                "is_tracked": row.get("is_tracked"),
-                "is_global": True,
-                "posting_codes": [],
+                "r_year": r_year_timing.r_year,
+                "programme_code": r_year_timing.programme_code,
+                "duration_hours": r_year_timing.duration_hours,
+                "is_mapped": r_year_timing.is_mapped,
+                "session_type_id": r_year_timing.session_type_id,
+                "session_type_name": r_year_timing.session_type_name,
             }
-        )
-
-    return sorted(options, key=lambda row: (_natural_sort_key(row["keyword"]), row["is_global"]))
+            for r_year_timing in (timing.r_year_timings if timing else ())
+        ]
+    for row in global_result.mappings().all():
+        option = dict(row)
+        option["duration_is_mapped"] = True
+        option["duration_varies"] = False
+        option["has_pending_mappings"] = False
+        option["r_year_durations"] = []
+        options.append(option)
+    return sorted(
+        options,
+        key=lambda row: (
+            _natural_sort_key(str(row["keyword"])),
+            bool(row["is_global"]),
+            str(row.get("programme_code") or ""),
+        ),
+    )
 
 
 async def list_reporting_periods(db: AsyncSession) -> list[dict[str, Any]]:
@@ -1022,8 +1059,10 @@ def _series_occurrences(
 async def create_event_series(
     db: AsyncSession,
     *,
+    source_actor: TeachingNamePoolActor,
     posting_code: str,
-    teaching_name: str,
+    teaching_name_id: UUID | None,
+    global_session_type_id: UUID | None,
     start_date: date,
     start_time: time,
     cme_points_awarded: bool,
@@ -1101,8 +1140,10 @@ async def create_event_series(
         created_events.append(
             await _insert_event(
                 db,
+                source_actor=source_actor,
                 posting_code=posting_code,
-                teaching_name=teaching_name,
+                teaching_name_id=teaching_name_id,
+                global_session_type_id=global_session_type_id,
                 event_date=occurrence_date,
                 start_time=start_time,
                 cme_points_awarded=cme_points_awarded,
@@ -1167,6 +1208,10 @@ async def _series_events_for_scope(
                 end_time,
                 duration_hours,
                 session_type_id,
+                teaching_name_id,
+                global_session_type_id,
+                source_programme_code,
+                source_reporting_period_id,
                 series_id,
                 cme_points_awarded,
                 smc_event_code,

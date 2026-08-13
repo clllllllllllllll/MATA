@@ -171,7 +171,6 @@ class FakeUploadOutputReadSession:
                 "is_tracked": True,
                 "is_reallocatable": False,
                 "tag": None,
-                "details_of_training": "Journal Club",
                 "created_at": now,
                 "updated_at": now,
             },
@@ -186,35 +185,6 @@ class FakeUploadOutputReadSession:
                 "is_tracked": False,
                 "is_reallocatable": False,
                 "tag": None,
-                "details_of_training": "Ward teaching",
-                "created_at": now,
-                "updated_at": now,
-            },
-        ]
-        self.teaching_name_catalogue = [
-            {
-                "id": str(uuid4()),
-                "keyword": "Journal Club",
-                "session_type_id": self.session_type_dr,
-                "posting_code": "TTSHDR",
-                "programme_code": "DR",
-                "r_year": "R3",
-                "reporting_period_id": self.period_id,
-                "duration_hours": Decimal("1.0"),
-                "is_tracked": True,
-                "created_at": now,
-                "updated_at": now,
-            },
-            {
-                "id": str(uuid4()),
-                "keyword": "Ward Teaching",
-                "session_type_id": self.session_type_grm,
-                "posting_code": "TTSHGRM",
-                "programme_code": "GRM",
-                "r_year": "R2",
-                "reporting_period_id": self.period_id,
-                "duration_hours": Decimal("2.0"),
-                "is_tracked": False,
                 "created_at": now,
                 "updated_at": now,
             },
@@ -383,37 +353,6 @@ class FakeUploadOutputReadSession:
                 ]
             return _FakeMappingResult(rows[: int(payload["limit"])])
 
-        if "FROM teaching_name_catalogue" in sql:
-            rows = list(self.teaching_name_catalogue)
-            scope_codes = {
-                value for key, value in payload.items() if key.startswith("programme_code_")
-            }
-            rows = [row for row in rows if row["programme_code"] in scope_codes]
-            if "reporting_period_id" in payload:
-                rows = [
-                    row
-                    for row in rows
-                    if row["reporting_period_id"] == payload["reporting_period_id"]
-                ]
-            if "posting_code" in payload:
-                rows = [row for row in rows if row["posting_code"] == payload["posting_code"]]
-            if "r_year" in payload:
-                rows = [row for row in rows if row["r_year"].upper() == payload["r_year"]]
-            if "keyword" in payload:
-                token = payload["keyword"].strip("%").lower()
-                rows = [row for row in rows if token in row["keyword"].lower()]
-            if "session_type_id" in payload:
-                rows = [
-                    row
-                    for row in rows
-                    if row["session_type_id"] == payload["session_type_id"]
-                ]
-            if "is_tracked" in payload:
-                rows = [
-                    row for row in rows if row["is_tracked"] == payload["is_tracked"]
-                ]
-            return _FakeMappingResult(rows[: int(payload["limit"])])
-
         if "FROM academic_month_boundaries" in sql:
             rows = list(self.academic_month_boundaries)
             if "ay_date_category" in payload:
@@ -467,12 +406,22 @@ def test_new_upload_output_reads_are_admin_only() -> None:
         "/admin/posting-codes",
         "/admin/session-types",
         "/admin/teaching-targets",
-        "/admin/teaching-name-catalogue",
         "/admin/academic-month-boundaries",
     ]
     for path in paths:
         response = client.get(path, headers=headers)
         assert response.status_code == 403
+
+
+def test_legacy_teaching_name_catalogue_read_is_not_exposed() -> None:
+    client = _build_client_with_session(FakeUploadOutputReadSession())
+
+    response = client.get(
+        "/admin/teaching-name-catalogue",
+        headers=_admin_headers("DR"),
+    )
+
+    assert response.status_code == 404
 
 
 def test_residents_and_resident_postings_scoped_reads() -> None:
@@ -496,7 +445,6 @@ def test_scoped_reads_reject_out_of_scope_programme_filter() -> None:
         "/admin/residents",
         "/admin/resident-postings",
         "/admin/teaching-targets",
-        "/admin/teaching-name-catalogue",
     ]:
         response = client.get(path, headers=headers, params={"programme_code": "GRM"})
         assert response.status_code == 403
@@ -510,7 +458,6 @@ def test_programme_scope_null_returns_no_scoped_upload_output_data() -> None:
         "/admin/residents",
         "/admin/resident-postings",
         "/admin/teaching-targets",
-        "/admin/teaching-name-catalogue",
     ]:
         response = client.get(path, headers=headers)
         assert response.status_code == 200
@@ -574,15 +521,6 @@ def test_read_filters_and_limits_work_for_upload_outputs() -> None:
     assert len(targets.json()) == 1
     assert targets.json()[0]["programme_code"] == "DR"
 
-    catalogue = client.get(
-        "/admin/teaching-name-catalogue",
-        headers=headers,
-        params={"keyword": "journal", "is_tracked": "true"},
-    )
-    assert catalogue.status_code == 200
-    assert len(catalogue.json()) == 1
-    assert catalogue.json()[0]["keyword"] == "Journal Club"
-
     assert (
         client.get("/admin/residents", headers=headers, params={"limit": 501}).status_code == 422
     )
@@ -637,7 +575,6 @@ def test_new_upload_output_resources_are_read_only() -> None:
         "/admin/posting-codes",
         "/admin/session-types",
         "/admin/teaching-targets",
-        "/admin/teaching-name-catalogue",
         "/admin/academic-month-boundaries",
     ]
     for path in paths:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.services.reporting_period_status import is_reporting_period_effectively_active
 
@@ -139,6 +139,7 @@ class FakeResidentSession:
         self.other_posting_event_id = str(uuid4())
         self.invisible_event_id = str(uuid4())
         self.global_event_id = str(uuid4())
+        self.global_session_type_id = str(uuid4())
         self.weekend_event_id = str(uuid4())
         self.external_resident_id = str(uuid4())
         self.other_external_resident_id = str(uuid4())
@@ -333,15 +334,16 @@ class FakeResidentSession:
                 "status": "active",
             },
         ]
-        self.catalogue = [
-            self._catalogue("Journal Club", "TTSHCardio", self.session_type_id, Decimal("1.0")),
-            self._catalogue("Skills Teaching", "TTSHNeuro", self.second_session_type_id, Decimal("2.0")),
-        ]
         self.teaching_targets = [
             self._target("TTSHCardio", self.adhoc_session_type_id),
         ]
         self.global_session_types = [
-            {"name": "Department Meeting [1h]", "duration_hours": Decimal("1.0"), "is_active": True}
+            {
+                "id": self.global_session_type_id,
+                "name": "Department Meeting [1h]",
+                "duration_hours": Decimal("1.0"),
+                "is_active": True,
+            }
         ]
         self.public_holidays = [
             {"holiday_date": date(2026, 5, 1), "name": "Labour Day"},
@@ -353,7 +355,13 @@ class FakeResidentSession:
             self._event(self.future_event_id, "TTSHCardio", "Journal Club", future_event_day),
             self._event(self.other_posting_event_id, "TTSHNeuro", "Skills Teaching", recent_event_day),
             self._event(self.invisible_event_id, "TTSHCardio", "Unmapped Teaching", recent_event_day),
-            self._event(self.global_event_id, "TTSHCardio", "Department Meeting [1h]", recent_event_day),
+            self._event(
+                self.global_event_id,
+                "TTSHCardio",
+                "Department Meeting [1h]",
+                recent_event_day,
+                global_session_type_id=self.global_session_type_id,
+            ),
             self._event(self.weekend_event_id, "TTSHCardio", "Journal Club", weekend_event_day),
         ]
         self.attendance = [
@@ -393,30 +401,9 @@ class FakeResidentSession:
         self.external_attendance_removal_lock_calls: list[str] = []
         self.adhoc_helper_calls: list[dict] = []
         self._adhoc_attendance_family: str | None = None
-
-    def _catalogue(
-        self,
-        keyword: str,
-        posting_code: str,
-        session_type_id: str,
-        duration_hours: Decimal,
-        *,
-        programme_code: str = "GRM",
-        r_year: str = "R2",
-        session_type: str | None = None,
-        is_tracked: bool = True,
-    ) -> dict:
-        return {
-            "keyword": keyword,
-            "posting_code": posting_code,
-            "programme_code": programme_code,
-            "r_year": r_year,
-            "reporting_period_id": self.period_id,
-            "session_type_id": session_type_id,
-            "session_type": session_type or f"{keyword} [{duration_hours}h]",
-            "duration_hours": duration_hours,
-            "is_tracked": is_tracked,
-        }
+        self.pool_event_r_year_timings: dict[
+            tuple[str, str, str, str, str], dict | None
+        ] = {}
 
     def _target(
         self,
@@ -449,6 +436,10 @@ class FakeResidentSession:
         *,
         start_time: time = time(10, 0),
         duration_hours: Decimal = Decimal("1.0"),
+        teaching_name_id: str | None = None,
+        global_session_type_id: str | None = None,
+        source_reporting_period_id: str | None = None,
+        source_programme_code: str | None = None,
     ) -> dict:
         return {
             "id": event_id,
@@ -461,6 +452,11 @@ class FakeResidentSession:
             "end_time": time(11, 0),
             "duration_hours": duration_hours,
             "session_type_id": self.session_type_id,
+            "teaching_name_id": teaching_name_id,
+            "global_session_type_id": global_session_type_id,
+            "source_reporting_period_id": source_reporting_period_id,
+            "source_programme_code": source_programme_code,
+            "session_type": f"{teaching_name} [{duration_hours}h]",
             "series_id": None,
             "cme_points_awarded": False,
             "smc_event_code": None,
@@ -612,6 +608,130 @@ class FakeResidentSession:
     async def execute(self, statement, params=None):  # noqa: C901, PLR0912, PLR0915
         sql = str(statement)
         payload = dict(params or {})
+
+        if "mata_rls.resolve_native_teaching_target" in sql:
+            event = next(
+                (
+                    row
+                    for row in self.events
+                    if row["id"] == str(payload.get("event_id"))
+                ),
+                None,
+            )
+            if event is None:
+                return FakeResult(rows=[])
+            posting = next(
+                (
+                    row
+                    for row in self.resident_postings
+                    if row["resident_id"] == str(payload.get("resident_id"))
+                    and row["start_date"] <= event["event_date"] <= row["end_date"]
+                    and row["status"] in {"active", "loa_working"}
+                ),
+                None,
+            )
+            if posting is None:
+                return FakeResult(
+                    rows=[{"outcome": None, "unavailable_reason": "native_phase_unavailable"}]
+                )
+            key = (
+                str(event.get("teaching_name_id")),
+                str(event.get("source_reporting_period_id")),
+                str(event.get("source_programme_code")),
+                str(posting["posting_code"]),
+                str(posting["r_year"]),
+            )
+            timing = self.pool_event_r_year_timings.get(key)
+            if key in self.pool_event_r_year_timings and timing is None:
+                return FakeResult(
+                    rows=[{"outcome": None, "unavailable_reason": "mapping_unavailable"}]
+                )
+            if timing is None:
+                target = next(
+                    (
+                        row
+                        for row in self.teaching_targets
+                        if row["posting_code"] == posting["posting_code"]
+                        and row["programme_code"] == event.get("source_programme_code")
+                        and row["r_year"] == posting["r_year"]
+                        and row["reporting_period_id"]
+                        == str(event.get("source_reporting_period_id"))
+                    ),
+                    None,
+                )
+                timing = {
+                    "teaching_target_id": (
+                        target["session_type_id"] if target else self.session_type_id
+                    ),
+                    "session_type_id": (
+                        target["session_type_id"] if target else self.session_type_id
+                    ),
+                }
+            mapped = timing.get("teaching_target_id") is not None
+            return FakeResult(
+                rows=[
+                    {
+                        "outcome": "mapped_target" if mapped else "pending_mapping",
+                        "unavailable_reason": None,
+                        "event_id": UUID(str(event["id"])),
+                        "reporting_period_id": UUID(
+                            str(event["source_reporting_period_id"])
+                        ),
+                        "programme_code": event["source_programme_code"],
+                        "posting_code": posting["posting_code"],
+                        "r_year": posting["r_year"],
+                        "global_session_type_id": None,
+                        "teaching_name_id": UUID(str(event["teaching_name_id"])),
+                        "mapping_id": UUID(str(self.session_type_id)),
+                        "mapping_revision": 1,
+                        "teaching_target_id": (
+                            UUID(str(timing["teaching_target_id"])) if mapped else None
+                        ),
+                        "session_type_id": (
+                            UUID(str(timing["session_type_id"])) if mapped else None
+                        ),
+                    }
+                ]
+            )
+
+        if "/* native_resident_event_session_timing */" in sql:
+            session_type_id = str(payload.get("session_type_id"))
+            timing = next(
+                (
+                    row
+                    for row in self.pool_event_r_year_timings.values()
+                    if row is not None
+                    and str(row.get("session_type_id")) == session_type_id
+                ),
+                None,
+            )
+            target = next(
+                (
+                    row
+                    for row in self.teaching_targets
+                    if str(row["session_type_id"]) == session_type_id
+                ),
+                None,
+            )
+            source = timing or target
+            return FakeResult(
+                rows=(
+                    [
+                        {
+                            "name": source.get("session_type_name")
+                            or source.get("session_type"),
+                            "duration_hours": source["duration_hours"],
+                        }
+                    ]
+                    if source is not None
+                    else [
+                        {
+                            "name": "Department/Programme Teaching [1h]",
+                            "duration_hours": Decimal("1.0"),
+                        }
+                    ]
+                )
+            )
 
         if "INSERT INTO rate_limit_buckets" in sql:
             return self._execute_rate_limit_bucket(payload)
@@ -1028,6 +1148,53 @@ class FakeResidentSession:
             rows.sort(key=lambda row: (0 if row["r_year"] == payload.get("r_year") else 1, row["session_type"]))
             return FakeResult(rows=rows[:1])
 
+        if "/* pool_event_timing:resolve_r_year */" in sql:
+            key = (
+                str(payload["teaching_name_id"]),
+                str(payload["reporting_period_id"]),
+                str(payload["programme_code"]),
+                str(payload["posting_code"]),
+                str(payload["r_year"]),
+            )
+            if key in self.pool_event_r_year_timings:
+                row = self.pool_event_r_year_timings[key]
+                return FakeResult(rows=[] if row is None else [row])
+            target = next(
+                (
+                    row
+                    for row in self.teaching_targets
+                    if row["posting_code"] == payload.get("posting_code")
+                    and row["programme_code"] == payload.get("programme_code")
+                    and row["r_year"] == payload.get("r_year")
+                    and row["reporting_period_id"]
+                    == str(payload.get("reporting_period_id"))
+                ),
+                None,
+            )
+            if target is None:
+                return FakeResult(
+                    rows=[
+                        {
+                            "r_year": payload["r_year"],
+                            "teaching_target_id": self.session_type_id,
+                            "session_type_id": self.session_type_id,
+                            "session_type_name": "Department/Programme Teaching [1h]",
+                            "duration_hours": Decimal("1.0"),
+                        }
+                    ]
+                )
+            return FakeResult(
+                rows=[
+                    {
+                        "r_year": target["r_year"],
+                        "teaching_target_id": target["session_type_id"],
+                        "session_type_id": target["session_type_id"],
+                        "session_type_name": target["session_type"],
+                        "duration_hours": target["duration_hours"],
+                    }
+                ]
+            )
+
         if "FROM teaching_targets" in sql and "JOIN posting_codes" in sql:
             rows = []
             seen: set[str] = set()
@@ -1124,96 +1291,6 @@ class FakeResidentSession:
             ]
             return FakeResult(rows=rows)
 
-        if "pc.code AS posting_code" in sql and "FROM teaching_name_catalogue" in sql:
-            if "programme_code" in payload:
-                catalogue_rows = [
-                    row
-                    for row in self.catalogue
-                    if row["programme_code"] == payload.get("programme_code")
-                    and row["r_year"] in {payload.get("r_year"), "ALL"}
-                    and row["reporting_period_id"] == str(payload.get("reporting_period_id"))
-                ]
-            else:
-                catalogue_rows = [
-                    row
-                    for row in self.catalogue
-                    if row["reporting_period_id"] == str(payload.get("reporting_period_id"))
-                ]
-            rows = []
-            seen: set[tuple[str, str]] = set()
-            for catalogue_row in catalogue_rows:
-                posting = next(
-                    (
-                        row
-                        for row in self.posting_codes
-                        if row["code"] == catalogue_row["posting_code"]
-                    ),
-                    None,
-                )
-                if posting is None:
-                    continue
-                key = (posting["code"], catalogue_row["programme_code"])
-                if key in seen:
-                    continue
-                seen.add(key)
-                programme = next(
-                    (
-                        row
-                        for row in self.programmes
-                        if row["code"] == catalogue_row["programme_code"]
-                    ),
-                    None,
-                )
-                rows.append(
-                    {
-                        "posting_code": posting["code"],
-                        "label": posting.get("display_name") or posting["code"],
-                        "programme_code": catalogue_row["programme_code"],
-                        "programme_name": programme.get("name") if programme else None,
-                    }
-                )
-            rows.sort(key=lambda row: (row["label"], row["posting_code"], row["programme_code"]))
-            return FakeResult(rows=rows)
-
-        if "FROM teaching_name_catalogue" in sql:
-            if "programme_code" in payload:
-                rows = [
-                    {
-                        "teaching_name": row["keyword"],
-                        "keyword": row["keyword"],
-                        "session_type_id": row["session_type_id"],
-                        "session_type": row["session_type"],
-                        "session_type_name": row["session_type"],
-                        "duration_hours": row["duration_hours"],
-                        "is_tracked": row["is_tracked"],
-                        "is_global": False,
-                    }
-                    for row in self.catalogue
-                    if row["posting_code"] == payload.get("posting_code")
-                    and row["programme_code"] == payload.get("programme_code")
-                    and row["r_year"] in {payload.get("r_year"), "ALL"}
-                    and row["reporting_period_id"] == str(payload.get("reporting_period_id"))
-                    and ("teaching_name" not in payload or row["keyword"] == payload["teaching_name"])
-                ]
-            else:
-                rows = [
-                    {
-                        "teaching_name": row["keyword"],
-                        "keyword": row["keyword"],
-                        "session_type_id": row["session_type_id"],
-                        "session_type": row["session_type"],
-                        "session_type_name": row["session_type"],
-                        "duration_hours": row["duration_hours"],
-                        "is_tracked": row["is_tracked"],
-                        "is_global": False,
-                    }
-                    for row in self.catalogue
-                    if row["posting_code"] == payload.get("posting_code")
-                    and row["reporting_period_id"] == str(payload.get("reporting_period_id"))
-                    and ("teaching_name" not in payload or row["keyword"] == payload["teaching_name"])
-                ]
-            return FakeResult(rows=rows)
-
         if "mata_rls.create_adhoc_attendance" in sql:
             self.adhoc_helper_calls.append(payload)
             event = self._event(
@@ -1285,7 +1362,13 @@ class FakeResidentSession:
             )
             return FakeResult()
 
-        if "FROM teaching_events" in sql and "WHERE id = :event_id" in sql:
+        if (
+            "FROM teaching_events" in sql
+            and (
+                "WHERE id = :event_id" in sql
+                or "WHERE teaching_events.id = :event_id" in sql
+            )
+        ):
             rows = [row for row in self.events if row["id"] == str(payload["event_id"])]
             return FakeResult(rows=rows)
 
@@ -1392,11 +1475,24 @@ class FakeResidentSession:
                     for event in self.events
                     if event["id"] == attendance["teaching_event_id"]
                 )
-                if existing["event_date"] == payload.get("event_date"):
+                if existing["event_date"] in set(payload.get("candidate_dates") or []):
                     rows.append(
                         {
+                            "id": existing["id"],
+                            "posting_code": existing["posting_code"],
+                            "event_date": existing["event_date"],
                             "start_time": existing["start_time"],
                             "end_time": existing.get("end_time"),
+                            "duration_hours": existing.get("duration_hours"),
+                            "teaching_name_id": existing.get("teaching_name_id"),
+                            "global_session_type_id": existing.get("global_session_type_id"),
+                            "is_adhoc": existing.get("is_adhoc", False),
+                            "source_reporting_period_id": existing.get(
+                                "source_reporting_period_id"
+                            ),
+                            "source_programme_code": existing.get(
+                                "source_programme_code"
+                            ),
                         }
                     )
             return FakeResult(rows=rows)
@@ -1461,9 +1557,10 @@ class FakeResidentSession:
                     for event in self.events
                     if event["id"] == attendance["teaching_event_id"]
                 )
-                if existing["event_date"] == payload.get("event_date"):
+                if existing["event_date"] in set(payload.get("candidate_dates") or []):
                     rows.append(
                         {
+                            "event_date": existing["event_date"],
                             "start_time": existing["start_time"],
                             "end_time": existing.get("end_time"),
                         }

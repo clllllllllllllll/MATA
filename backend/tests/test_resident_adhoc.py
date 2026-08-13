@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from decimal import Decimal
 
 import pytest
 from fastapi import FastAPI
@@ -56,13 +55,7 @@ def _headers(fake_db: FakeResidentSession) -> dict[str, str]:
     }
 
 
-def _configure_geri_tts_ger_med_run_club(
-    fake_db: FakeResidentSession,
-    *,
-    catalogue_r_year: str = "ALL",
-    target_r_year: str = "ALL",
-    target_posting_code: str = "TTSHGerMed",
-) -> None:
+def _configure_geri_tts_ger_med(fake_db: FakeResidentSession) -> None:
     fake_db.residents[0]["programme_code"] = "GERI"
     fake_db.residents[0]["r_year"] = "R3"
     fake_db.resident_postings[0]["posting_code"] = "TTSHGerMed"
@@ -76,25 +69,6 @@ def _configure_geri_tts_ger_med_run_club(
                 "supports_secretary_events": True,
             }
         )
-    fake_db.catalogue.append(
-        fake_db._catalogue(  # noqa: SLF001
-            "Run Club",
-            "TTSHGerMed",
-            fake_db.adhoc_session_type_id,
-            Decimal("1.0"),
-            programme_code="GERI",
-            r_year=catalogue_r_year,
-            session_type="Department/Programme Teaching [1h]",
-        )
-    )
-    fake_db.teaching_targets.append(
-        fake_db._target(  # noqa: SLF001
-            target_posting_code,
-            fake_db.adhoc_session_type_id,
-            programme_code="GERI",
-            r_year=target_r_year,
-        )
-    )
 
 
 def test_adhoc_teaching_derives_posting_from_submitted_date() -> None:
@@ -107,7 +81,6 @@ def test_adhoc_teaching_derives_posting_from_submitted_date() -> None:
         json={
             "date": "2026-05-18",
             "start_time": "10:00",
-            "teaching_name": "Journal Club",
         },
     )
 
@@ -115,12 +88,20 @@ def test_adhoc_teaching_derives_posting_from_submitted_date() -> None:
     payload = response.json()
     assert payload["event"]["posting_code"] == "TTSHCardio"
     assert payload["event"]["teaching_name"] == "Department/Programme Teaching [1h]"
-    assert payload["event"]["session_type_id"] == fake_db.adhoc_session_type_id
+    assert payload["event"]["session_type_id"] is None
     assert payload["event"]["is_adhoc"] is True
     assert payload["attendance"]["posting_code"] == "TTSHCardio"
     assert any(row["is_adhoc"] for row in fake_db.events)
     assert len(fake_db.native_attendance_lock_calls) == 1
     assert len(fake_db.adhoc_helper_calls) == 1
+    assert fake_db.adhoc_helper_calls[0]["attended_teaching_name"] == (
+        "Department/Programme Teaching [1h]"
+    )
+    assert fake_db.adhoc_helper_calls[0]["teaching_name"] == (
+        "Department/Programme Teaching [1h]"
+    )
+    assert str(fake_db.adhoc_helper_calls[0]["duration_hours"]) == "1.00"
+    assert fake_db.adhoc_helper_calls[0]["session_type_id"] is None
     assert set(fake_db.adhoc_helper_calls[0]) == {
         "posting_code",
         "attended_posting_code",
@@ -133,6 +114,60 @@ def test_adhoc_teaching_derives_posting_from_submitted_date() -> None:
         "duration_hours",
         "session_type_id",
     }
+
+
+def test_adhoc_teaching_accepts_canonical_teaching_date() -> None:
+    fake_db = _fake_db()
+    response = _client(fake_db).post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={"teaching_date": "2026-05-18", "start_time": "12:00"},
+    )
+
+    assert response.status_code == 200
+
+
+def test_adhoc_teaching_accepts_equal_date_aliases() -> None:
+    fake_db = _fake_db()
+    response = _client(fake_db).post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "teaching_date": "2026-05-18",
+            "date": "2026-05-18",
+            "start_time": "12:00",
+        },
+    )
+
+    assert response.status_code == 200
+
+
+def test_adhoc_teaching_rejects_mismatched_date_aliases() -> None:
+    fake_db = _fake_db()
+    response = _client(fake_db).post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "teaching_date": "2026-05-18",
+            "date": "2026-05-19",
+            "start_time": "12:00",
+        },
+    )
+
+    assert response.status_code == 422
+    assert not fake_db.adhoc_helper_calls
+
+
+def test_adhoc_teaching_rejects_missing_date_aliases() -> None:
+    fake_db = _fake_db()
+    response = _client(fake_db).post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={"start_time": "12:00"},
+    )
+
+    assert response.status_code == 422
+    assert not fake_db.adhoc_helper_calls
 
 
 def test_native_adhoc_commit_failure_rolls_back_event_and_attendance_and_returns_no_success(
@@ -158,7 +193,6 @@ def test_native_adhoc_commit_failure_rolls_back_event_and_attendance_and_returns
         json={
             "date": ADHOC_FIXTURE_TODAY.isoformat(),
             "start_time": "14:00",
-            "teaching_name": "Journal Club",
         },
     )
 
@@ -173,9 +207,11 @@ def test_native_adhoc_commit_failure_rolls_back_event_and_attendance_and_returns
     assert cache_calls == []
 
 
-def test_adhoc_teaching_accepts_all_r_year_catalogue_and_target_for_assigned_posting() -> None:
+def test_adhoc_teaching_uses_fixed_contract_without_catalogue_or_target() -> None:
     fake_db = _fake_db()
-    _configure_geri_tts_ger_med_run_club(fake_db)
+    _configure_geri_tts_ger_med(fake_db)
+    fake_db.catalogue = []
+    fake_db.teaching_targets = []
     before_attendance = len(fake_db.attendance)
     client = _client(fake_db)
 
@@ -186,7 +222,6 @@ def test_adhoc_teaching_accepts_all_r_year_catalogue_and_target_for_assigned_pos
             "teaching_date": "2026-05-18",
             "start_time": "16:15",
             "attended_posting_code": "TTSHGerMed",
-            "teaching_name": "Run Club",
         },
     )
 
@@ -194,12 +229,12 @@ def test_adhoc_teaching_accepts_all_r_year_catalogue_and_target_for_assigned_pos
     payload = response.json()
     assert payload["event"]["posting_code"] == "TTSHGerMed"
     assert payload["event"]["teaching_name"] == "Department/Programme Teaching [1h]"
-    assert payload["event"]["session_type_id"] == fake_db.adhoc_session_type_id
+    assert payload["event"]["session_type_id"] is None
     assert payload["attendance"]["posting_code"] == "TTSHGerMed"
     assert len(fake_db.attendance) == before_attendance + 1
 
 
-def test_adhoc_options_are_date_first_and_catalogue_backed() -> None:
+def test_adhoc_options_are_date_first_and_use_one_fixed_option() -> None:
     fake_db = _fake_db()
     client = _client(fake_db)
 
@@ -214,9 +249,10 @@ def test_adhoc_options_are_date_first_and_catalogue_backed() -> None:
     assert payload["available"] is True
     assert payload["posting_code"] == "TTSHCardio"
     assert payload["r_year"] == "R2"
-    option_names = {row["teaching_name"] for row in payload["options"]}
-    assert "Journal Club" in option_names
-    assert "" not in option_names
+    assert len(payload["options"]) == 1
+    assert payload["options"][0]["teaching_name"] == "Department/Programme Teaching [1h]"
+    assert payload["options"][0]["session_type_id"] is None
+    assert str(payload["options"][0]["duration_hours"]) == "1.00"
     assert "created_by_role" not in payload["options"][0]
 
 
@@ -235,11 +271,11 @@ def test_adhoc_options_include_attended_posting_options() -> None:
     posting_codes = {
         row["posting_code"] for row in payload["attended_posting_options"]
     }
-    assert {"TTSHCardio", "TTSHNeuro"} <= posting_codes
+    assert posting_codes == {"TTSHCardio"}
     assert payload["selected_attended_posting_code"] == "TTSHCardio"
 
 
-def test_adhoc_options_filter_teaching_by_selected_attended_posting() -> None:
+def test_adhoc_options_reject_client_selected_non_assigned_posting() -> None:
     fake_db = _fake_db()
     client = _client(fake_db)
 
@@ -249,16 +285,11 @@ def test_adhoc_options_filter_teaching_by_selected_attended_posting() -> None:
         params={"date": "2026-05-18", "attended_posting_code": "TTSHNeuro"},
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["posting_code"] == "TTSHCardio"
-    assert payload["selected_attended_posting_code"] == "TTSHNeuro"
-    option_names = {row["teaching_name"] for row in payload["options"]}
-    assert "Skills Teaching" in option_names
-    assert "Journal Club" not in option_names
+    assert response.status_code == 422
+    assert "attended_posting_code" in response.json()["detail"]
 
 
-def test_adhoc_teaching_uses_selected_attended_posting_for_catalogue_evidence() -> None:
+def test_adhoc_teaching_rejects_client_selected_non_assigned_posting() -> None:
     fake_db = _fake_db()
     before_attendance = len(fake_db.attendance)
     client = _client(fake_db)
@@ -270,19 +301,14 @@ def test_adhoc_teaching_uses_selected_attended_posting_for_catalogue_evidence() 
             "date": "2026-05-18",
             "start_time": "10:00",
             "attended_posting_code": "TTSHNeuro",
-            "teaching_name": "Skills Teaching",
         },
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["event"]["posting_code"] == "TTSHCardio"
-    assert payload["event"]["teaching_name"] == "Department/Programme Teaching [1h]"
-    assert payload["event"]["session_type_id"] == fake_db.adhoc_session_type_id
-    assert len(fake_db.attendance) == before_attendance + 1
+    assert response.status_code == 422
+    assert len(fake_db.attendance) == before_attendance
 
 
-def test_adhoc_teaching_selected_attended_posting_does_not_replace_assigned_target() -> None:
+def test_adhoc_teaching_rejects_client_selected_posting_even_without_legacy_target() -> None:
     fake_db = _fake_db()
     fake_db.teaching_targets = []
     before_events = len(fake_db.events)
@@ -296,12 +322,11 @@ def test_adhoc_teaching_selected_attended_posting_does_not_replace_assigned_targ
             "date": "2026-05-18",
             "start_time": "10:00",
             "attended_posting_code": "TTSHNeuro",
-            "teaching_name": "Skills Teaching",
         },
     )
 
     assert response.status_code == 422
-    assert "department/programme teaching [1h]" in response.json()["detail"].lower()
+    assert "attended_posting_code" in response.json()["detail"]
     assert len(fake_db.events) == before_events
     assert len(fake_db.attendance) == before_attendance
 
@@ -319,7 +344,6 @@ def test_adhoc_teaching_rejects_unknown_attended_posting_code() -> None:
             "date": "2026-05-18",
             "start_time": "10:00",
             "attended_posting_code": "TTSHMissing",
-            "teaching_name": "Skills Teaching",
         },
     )
 
@@ -332,7 +356,7 @@ def test_adhoc_teaching_rejects_unknown_attended_posting_code() -> None:
 def test_adhoc_options_use_resident_posting_r_year_not_resident_r_year() -> None:
     fake_db = _fake_db()
     fake_db.residents[0]["r_year"] = "R3"
-    fake_db.catalogue[0]["r_year"] = "R2"
+    fake_db.catalogue = []
     client = _client(fake_db)
 
     response = client.get(
@@ -344,7 +368,7 @@ def test_adhoc_options_use_resident_posting_r_year_not_resident_r_year() -> None
     assert response.status_code == 200
     payload = response.json()
     assert payload["r_year"] == "R2"
-    assert any(row["teaching_name"] == "Journal Club" for row in payload["options"])
+    assert payload["options"][0]["teaching_name"] == "Department/Programme Teaching [1h]"
 
 
 def test_adhoc_options_public_holiday_is_blocked() -> None:
@@ -415,7 +439,6 @@ def test_adhoc_teaching_stores_optional_details_of_session() -> None:
         json={
             "teaching_date": "2026-05-18",
             "start_time": "10:00",
-            "teaching_name": "Journal Club",
             "details_of_session": "Ward case discussion",
         },
     )
@@ -430,7 +453,7 @@ def test_adhoc_teaching_stores_optional_details_of_session() -> None:
     assert created_event["details_of_session"] == "Ward case discussion"
 
 
-def test_adhoc_teaching_rejects_uncatalogued_teaching_name() -> None:
+def test_adhoc_teaching_rejects_client_supplied_teaching_name() -> None:
     fake_db = _fake_db()
     before_events = len(fake_db.events)
     before_attendance = len(fake_db.attendance)
@@ -442,40 +465,16 @@ def test_adhoc_teaching_rejects_uncatalogued_teaching_name() -> None:
         json={
             "teaching_date": "2026-05-18",
             "start_time": "10:00",
-            "teaching_name": "Completely New Topic",
+            "teaching_name": "Anything else",
         },
     )
 
     assert response.status_code == 422
-    assert "catalogue-backed" in response.json()["detail"].lower()
     assert len(fake_db.events) == before_events
     assert len(fake_db.attendance) == before_attendance
 
 
-def test_adhoc_teaching_rejects_untracked_catalogue_teaching_name() -> None:
-    fake_db = _fake_db()
-    fake_db.catalogue[0]["is_tracked"] = False
-    before_events = len(fake_db.events)
-    before_attendance = len(fake_db.attendance)
-    client = _client(fake_db)
-
-    response = client.post(
-        "/resident/adhoc-teaching",
-        headers=_headers(fake_db),
-        json={
-            "teaching_date": "2026-05-18",
-            "start_time": "10:00",
-            "teaching_name": "Journal Club",
-        },
-    )
-
-    assert response.status_code == 422
-    assert "tracked" in response.json()["detail"].lower()
-    assert len(fake_db.events) == before_events
-    assert len(fake_db.attendance) == before_attendance
-
-
-def test_adhoc_teaching_rejects_when_fixed_department_programme_target_unavailable() -> None:
+def test_adhoc_teaching_ignores_target_tracking_state() -> None:
     fake_db = _fake_db()
     fake_db.teaching_targets = []
     before_events = len(fake_db.events)
@@ -488,21 +487,40 @@ def test_adhoc_teaching_rejects_when_fixed_department_programme_target_unavailab
         json={
             "teaching_date": "2026-05-18",
             "start_time": "10:00",
-            "teaching_name": "Journal Club",
         },
     )
 
-    assert response.status_code == 422
-    detail = response.json()["detail"].lower()
-    assert "department/programme teaching [1h]" in detail
-    assert "unavailable" in detail
-    assert len(fake_db.events) == before_events
-    assert len(fake_db.attendance) == before_attendance
+    assert response.status_code == 200
+    assert len(fake_db.events) == before_events + 1
+    assert len(fake_db.attendance) == before_attendance + 1
 
 
-def test_adhoc_teaching_rejects_when_department_programme_target_is_for_wrong_posting() -> None:
+def test_adhoc_teaching_works_when_fixed_department_programme_target_is_unavailable() -> None:
     fake_db = _fake_db()
-    _configure_geri_tts_ger_med_run_club(fake_db, target_posting_code="KTPHGerMed")
+    fake_db.teaching_targets = []
+    before_events = len(fake_db.events)
+    before_attendance = len(fake_db.attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_headers(fake_db),
+        json={
+            "teaching_date": "2026-05-18",
+            "start_time": "10:00",
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(fake_db.events) == before_events + 1
+    assert len(fake_db.attendance) == before_attendance + 1
+
+
+def test_adhoc_teaching_ignores_legacy_target_posting_configuration() -> None:
+    fake_db = _fake_db()
+    _configure_geri_tts_ger_med(fake_db)
+    fake_db.catalogue = []
+    fake_db.teaching_targets = []
     before_events = len(fake_db.events)
     before_attendance = len(fake_db.attendance)
     client = _client(fake_db)
@@ -514,16 +532,12 @@ def test_adhoc_teaching_rejects_when_department_programme_target_is_for_wrong_po
             "teaching_date": "2026-05-18",
             "start_time": "16:15",
             "attended_posting_code": "TTSHGerMed",
-            "teaching_name": "Run Club",
         },
     )
 
-    assert response.status_code == 422
-    detail = response.json()["detail"].lower()
-    assert "department/programme teaching [1h]" in detail
-    assert "unavailable" in detail
-    assert len(fake_db.events) == before_events
-    assert len(fake_db.attendance) == before_attendance
+    assert response.status_code == 200
+    assert len(fake_db.events) == before_events + 1
+    assert len(fake_db.attendance) == before_attendance + 1
 
 
 def test_adhoc_teaching_rejects_frontend_posting_code_authority() -> None:
@@ -537,7 +551,6 @@ def test_adhoc_teaching_rejects_frontend_posting_code_authority() -> None:
             "teaching_date": "2026-05-18",
             "posting_code": "TTSHNeuro",
             "start_time": "10:00",
-            "teaching_name": "Journal Club",
         },
     )
 
@@ -556,7 +569,6 @@ def test_adhoc_teaching_on_public_holiday_returns_422_and_writes_nothing() -> No
         json={
             "date": "2026-05-01",
             "start_time": "10:00",
-            "teaching_name": "Journal Club",
         },
     )
 
@@ -586,7 +598,6 @@ def test_adhoc_teaching_rejects_multiple_matching_postings_without_disambiguatio
         json={
             "date": "2026-05-18",
             "start_time": "10:00",
-            "teaching_name": "Journal Club",
         },
     )
 
@@ -604,7 +615,6 @@ def test_adhoc_teaching_rejects_when_no_posting_exists_for_date() -> None:
         json={
             "date": "2030-01-15",
             "start_time": "10:00",
-            "teaching_name": "Journal Club",
         },
     )
 
@@ -628,7 +638,6 @@ def test_native_adhoc_teaching_rejects_overlap_before_writing_event_or_attendanc
         json={
             "date": existing_event["event_date"].isoformat(),
             "start_time": existing_event["start_time"].isoformat(),
-            "teaching_name": "Journal Club",
         },
     )
 
@@ -653,7 +662,6 @@ def test_adhoc_weekend_non_exception_returns_warning() -> None:
         json={
             "date": weekend_date.isoformat(),
             "start_time": "12:00",
-            "teaching_name": "Journal Club",
         },
     )
 
@@ -676,7 +684,6 @@ def test_adhoc_teaching_is_blocked_when_reporting_period_is_inactive() -> None:
         json={
             "date": "2026-05-18",
             "start_time": "10:00",
-            "teaching_name": "Journal Club",
         },
     )
 
@@ -698,7 +705,6 @@ def test_adhoc_teaching_uses_effectively_active_scheduled_reporting_period() -> 
         json={
             "date": "2026-05-18",
             "start_time": "10:00",
-            "teaching_name": "Journal Club",
         },
     )
 
@@ -737,7 +743,7 @@ def test_adhoc_options_resolve_reopened_historical_period_and_selected_date_post
     assert payload["available"] is True
     assert payload["reporting_period_id"] == fake_db.period_id
     assert payload["posting_code"] == "TTSHCardio"
-    assert any(row["teaching_name"] == "Journal Club" for row in payload["options"])
+    assert payload["options"][0]["teaching_name"] == "Department/Programme Teaching [1h]"
     assert not any(
         row["start_date"] <= date.today() <= row["end_date"]
         for row in fake_db.resident_postings
@@ -852,7 +858,6 @@ def test_adhoc_helper_sqlstates_use_expected_api_contract(
         json={
             "date": "2026-05-18",
             "start_time": "10:00",
-            "teaching_name": "Journal Club",
         },
     )
 

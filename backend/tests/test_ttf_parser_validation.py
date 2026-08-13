@@ -5,12 +5,31 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill
 
 from app.services.ttf_parser import parse_ttf_upload
+from tests.phase_r_readiness_manifest import (
+    ACTUAL_R_YEAR_PROGRAMME_CODES,
+    ALL_R_YEAR_PROGRAMME_CODES,
+    PROGRAMME_CONFIGS,
+)
 
 
-def _make_ttf_bytes(sheet_name: str = "TTF", headers: bool = True, rows: list[list[object]] | None = None) -> bytes:
+_DR_PROGRAMME_CONFIG = {
+    "DR": PROGRAMME_CONFIGS["DR"],
+}
+
+
+def _make_ttf_bytes(
+    sheet_name: str = "TTF",
+    headers: bool = True,
+    rows: list[list[object]] | None = None,
+    *,
+    extra_headers: list[object] | None = None,
+    formatted_blank_extra_columns: int = 0,
+    sparse_cells: dict[str, object] | None = None,
+) -> bytes:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = sheet_name
@@ -26,25 +45,49 @@ def _make_ttf_bytes(sheet_name: str = "TTF", headers: bool = True, rows: list[li
             "is_tracked",
             "is_reallocatable",
             "tag",
-            "details_of_training",
         ]
+        header_values.extend(extra_headers or [])
         for idx, value in enumerate(header_values, start=1):
             sheet.cell(row=1, column=idx, value=value)
     for row_index, row in enumerate(rows or [], start=2):
         for col_index, value in enumerate(row, start=1):
             sheet.cell(row=row_index, column=col_index, value=value)
+    for col_index in range(11, 11 + formatted_blank_extra_columns):
+        for row_index in (1, 2):
+            sheet.cell(row=row_index, column=col_index).fill = PatternFill(
+                fill_type="solid",
+                fgColor="FFFF00",
+            )
+    for coordinate, value in (sparse_cells or {}).items():
+        sheet[coordinate] = value
     payload = BytesIO()
     workbook.save(payload)
     workbook.close()
     return payload.getvalue()
 
 
-async def _parse(rows: list[list[object]], *, sheet_name: str = "TTF"):
+async def _parse(
+    rows: list[list[object]],
+    *,
+    sheet_name: str = "TTF",
+    extra_headers: list[object] | None = None,
+    formatted_blank_extra_columns: int = 0,
+    sparse_cells: dict[str, object] | None = None,
+    reporting_period_label: str | None = None,
+):
     return await parse_ttf_upload(
-        file_bytes=_make_ttf_bytes(sheet_name=sheet_name, rows=rows),
+        file_bytes=_make_ttf_bytes(
+            sheet_name=sheet_name,
+            rows=rows,
+            extra_headers=extra_headers,
+            formatted_blank_extra_columns=formatted_blank_extra_columns,
+            sparse_cells=sparse_cells,
+        ),
         original_filename="Teaching_Target_File_DR.xlsx",
         reporting_period_id=uuid4(),
         programme_code="DR",
+        reporting_period_label=reporting_period_label,
+        programme_configs=_DR_PROGRAMME_CONFIG,
     )
 
 
@@ -54,6 +97,7 @@ async def _parse_for_programme(rows: list[list[object]], programme_code: str):
         original_filename=f"Teaching_Target_File_{programme_code}.xlsx",
         reporting_period_id=uuid4(),
         programme_code=programme_code,
+        programme_configs={programme_code: PROGRAMME_CONFIGS[programme_code]},
     )
 
 
@@ -81,7 +125,6 @@ def _base_row(**overrides: object) -> list[object]:
         "Yes",
         "N",
         "",
-        "Journal Club, Bedside Teaching, Case Discussion",
     ]
     mapping = {
         "period": 0,
@@ -94,7 +137,6 @@ def _base_row(**overrides: object) -> list[object]:
         "is_tracked": 7,
         "is_reallocatable": 8,
         "tag": 9,
-        "details": 10,
     }
     for key, value in overrides.items():
         row[mapping[key]] = value
@@ -113,6 +155,7 @@ async def test_ttf_workbook_read_error_is_sanitized_and_logged(monkeypatch, capl
         original_filename="ttf.xlsx",
         reporting_period_id=uuid4(),
         programme_code="DR",
+        programme_configs=_DR_PROGRAMME_CONFIG,
     )
 
     assert result.errors == [
@@ -153,7 +196,7 @@ async def test_monthly_target_rejects_non_numeric_text() -> None:
 
     assert result.metadata["targets"] == []
     assert result.errors == [
-        {"row": 2, "message": "Monthly target 'not numeric' is not numeric."}
+        {"row": 2, "message": "Column G monthly target must be numeric."}
     ]
 
 
@@ -176,7 +219,6 @@ async def test_dynamic_sheet_detection() -> None:
             "is_tracked",
             "is_reallocatable",
             "tag",
-            "details_of_training",
         ],
         start=1,
     ):
@@ -193,6 +235,7 @@ async def test_dynamic_sheet_detection() -> None:
         original_filename="ttf.xlsx",
         reporting_period_id=uuid4(),
         programme_code="DR",
+        programme_configs=_DR_PROGRAMME_CONFIG,
     )
     assert result.metadata is not None
     assert result.metadata["ttf_sheet"] == "Real TTF"
@@ -217,7 +260,6 @@ async def test_dynamic_sheet_detection_wrapped_header_non_first_row() -> None:
         "Tracked?",
         "Can session be reallocated?",
         "Tag",
-        "Details of Training",
     ]
     for col, value in enumerate(wrapped_headers, start=1):
         sheet.cell(row=3, column=col, value=value)
@@ -233,6 +275,7 @@ async def test_dynamic_sheet_detection_wrapped_header_non_first_row() -> None:
         original_filename="Teaching_Target_File_DR.xlsx",
         reporting_period_id=uuid4(),
         programme_code="DR",
+        programme_configs=_DR_PROGRAMME_CONFIG,
     )
     assert result.errors == []
     assert result.metadata["ttf_sheet"] == "DR TTF"
@@ -289,9 +332,72 @@ async def test_r_year_required_false_maps_to_all() -> None:
         original_filename="ttf.xlsx",
         reporting_period_id=uuid4(),
         programme_code="GERI",
+        programme_configs={
+            "GERI": PROGRAMME_CONFIGS["GERI"],
+        },
     )
     assert result.errors == []
     assert [row["r_year"] for row in result.metadata["targets"]] == ["ALL"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("programme_code", ALL_R_YEAR_PROGRAMME_CODES)
+async def test_all_programmes_store_all_r_year(
+    programme_code: str,
+) -> None:
+    result = await _parse_for_programme(
+        [_base_row(programme=programme_code, r_year="R2, R3")],
+        programme_code,
+    )
+
+    assert result.errors == []
+    assert [row["r_year"] for row in result.metadata["targets"]] == ["ALL"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("programme_code", ACTUAL_R_YEAR_PROGRAMME_CODES)
+async def test_r_year_programmes_preserve_uploaded_years(
+    programme_code: str,
+) -> None:
+    result = await _parse_for_programme(
+        [_base_row(programme=programme_code, r_year="R4, R5, R6")],
+        programme_code,
+    )
+
+    assert result.errors == []
+    assert [row["r_year"] for row in result.metadata["targets"]] == ["R4", "R5", "R6"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("programme_code", ("SPORTSMED", "PALLMED"))
+async def test_sportsmed_and_pallmed_never_remap_r_years(
+    programme_code: str,
+) -> None:
+    result = await _parse_for_programme(
+        [_base_row(programme=programme_code, r_year="R4, R5, R6")],
+        programme_code,
+    )
+
+    assert result.errors == []
+    years = [row["r_year"] for row in result.metadata["targets"]]
+    assert years == ["R4", "R5", "R6"]
+    assert not {"ALL", "SS1", "SS2", "SS3"}.intersection(years)
+
+
+@pytest.mark.asyncio
+async def test_selected_reporting_period_label_must_match_every_data_row() -> None:
+    matching = await _parse(
+        [_base_row(period="Jan - June")],
+        reporting_period_label="Jan - June",
+    )
+    mismatching = await _parse(
+        [_base_row(period="July - December")],
+        reporting_period_label="Jan - June",
+    )
+
+    assert matching.errors == []
+    assert mismatching.errors
+    assert any("reporting period" in error["message"].casefold() for error in mismatching.errors)
 
 
 @pytest.mark.asyncio
@@ -303,25 +409,123 @@ async def test_combined_posting_label_not_exploded() -> None:
 
 
 @pytest.mark.asyncio
-async def test_column_k_blank_fails_validation() -> None:
-    result = await _parse([_base_row(details="")])
-    assert any("Column K" in error["message"] for error in result.errors)
+async def test_populated_legacy_column_k_header_is_rejected_without_echoing_text() -> None:
+    result = await _parse(
+        [_base_row()],
+        extra_headers=["Details of Training"],
+    )
+
+    assert result.errors
+    assert any(
+        error["column"] == "K" and "TTF accepts columns A–J only" in error["message"]
+        for error in result.errors
+    )
+    assert "Details of Training" not in str(result.errors)
 
 
 @pytest.mark.asyncio
-async def test_non_tracked_rows_still_seed_catalogue() -> None:
-    result = await _parse([_base_row(is_tracked="No")])
+@pytest.mark.parametrize(
+    ("row", "extra_headers", "expected_column"),
+    [
+        (_base_row() + ["legacy teaching text"], None, "K"),
+        (_base_row() + ["", "unsupported value"], [None, None], "L"),
+    ],
+)
+async def test_populated_columns_beyond_j_are_rejected_without_echoing_values(
+    row: list[object],
+    extra_headers: list[object] | None,
+    expected_column: str,
+) -> None:
+    result = await _parse([row], extra_headers=extra_headers)
+
+    assert result.errors
+    assert any(
+        error["column"] == expected_column
+        and "TTF accepts columns A–J only" in error["message"]
+        for error in result.errors
+    )
+    assert "legacy teaching text" not in str(result.errors)
+    assert "unsupported value" not in str(result.errors)
+
+
+@pytest.mark.asyncio
+async def test_formula_in_column_k_is_rejected_without_echoing_formula_text() -> None:
+    result = await _parse([_base_row() + ['="legacy teaching text"']])
+
+    assert any(
+        error["column"] == "K" and "TTF accepts columns A–J only" in error["message"]
+        for error in result.errors
+    )
+    assert "legacy teaching text" not in str(result.errors)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("column", ("E", "H", "I", "J"))
+async def test_formula_in_final_schema_is_rejected_without_echoing_formula_text(
+    column: str,
+) -> None:
+    result = await _parse(
+        [_base_row()],
+        sparse_cells={f"{column}2": '="untrusted formula text"'},
+    )
+
+    assert any(
+        error["column"] == column
+        and error["message"] == "Formula cells are not allowed in final A–J TTF content."
+        for error in result.errors
+    )
+    assert "untrusted formula text" not in str(result.errors)
+
+
+@pytest.mark.asyncio
+async def test_parse_only_mode_requires_explicit_programme_configuration() -> None:
+    result = await parse_ttf_upload(
+        file_bytes=_make_ttf_bytes(rows=[_base_row()]),
+        original_filename="ttf.xlsx",
+        reporting_period_id=uuid4(),
+        programme_code="DR",
+    )
+
+    assert result.errors == [
+        "TTF parser requires persisted or explicitly supplied programme configuration."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sparse_later_column_is_rejected_without_scanning_worksheet_bounds() -> None:
+    result = await _parse(
+        [_base_row()],
+        sparse_cells={"XFD1048576": "unsupported sparse value"},
+    )
+
+    assert any(
+        error["row"] == 1048576
+        and error["column"] == "XFD"
+        and "TTF accepts columns A–J only" in error["message"]
+        for error in result.errors
+    )
+    assert "unsupported sparse value" not in str(result.errors)
+
+
+@pytest.mark.asyncio
+async def test_formatting_only_blank_columns_beyond_j_are_accepted() -> None:
+    result = await _parse(
+        [_base_row()],
+        formatted_blank_extra_columns=2,
+    )
+
     assert result.errors == []
-    assert result.metadata["counts"]["catalogue_rows"] == 3
-    assert all(row["is_tracked"] is False for row in result.metadata["catalogue_rows"])
+    assert result.metadata["counts"]["targets"] == 1
 
 
 @pytest.mark.asyncio
-async def test_keyword_conflict_blocks() -> None:
-    row_a = _base_row(session_type="Type A [1h]", details="Journal Club")
-    row_b = _base_row(session_type="Type B [1h]", details="Journal Club")
-    result = await _parse([row_a, row_b])
-    assert any("Keyword+duration conflict" in error["message"] for error in result.errors)
+async def test_parser_output_has_no_legacy_catalogue_or_details_fields() -> None:
+    result = await _parse([_base_row(is_tracked="No")])
+
+    assert result.errors == []
+    assert "catalogue_rows" not in result.metadata
+    assert "catalogue_rows" not in result.metadata["counts"]
+    assert "details_of_training" not in result.metadata["targets"][0]
 
 
 @pytest.mark.asyncio
@@ -394,8 +598,8 @@ async def test_parser_output_has_no_compliance_aggregate_fields() -> None:
 @pytest.mark.asyncio
 async def test_grouped_postings_preserved_as_separate_rows() -> None:
     rows = [
-        _base_row(posting="P1", group="G1", session_type="S1 [1h]", details="K1,K2,K3"),
-        _base_row(posting="P2", group="G1", session_type="S2 [1h]", details="K4,K5,K6"),
+        _base_row(posting="P1", group="G1", session_type="S1 [1h]"),
+        _base_row(posting="P2", group="G1", session_type="S2 [1h]"),
     ]
     result = await _parse(rows)
     postings = [row["posting_code"] for row in result.metadata["targets"]]
@@ -411,17 +615,13 @@ async def test_sample_data_grouped_dr_posting() -> None:
                 group="TTSHDiagRd",
                 session_type="Department Learning Events [1h]",
                 monthly_target=7,
-                details="Journal Club2, Bedside Teaching2, Case Discussion2",
             )
         ]
     )
     target = result.metadata["targets"][0]
-    catalogue_rows = result.metadata["catalogue_rows"]
     posting_groups = result.metadata["posting_groups"]
     assert target["posting_code"] == "TTSHDiagRd"
     assert target["monthly_target"] == 7.0
-    assert len(catalogue_rows) == 3
-    assert all(row["posting_code"] == "TTSHDiagRd" for row in catalogue_rows)
     assert posting_groups[0]["group_code"] == "TTSHDiagRd"
     assert posting_groups[0]["posting_code"] == "TTSHDiagRd"
     assert posting_groups[0]["programme_code"] == "DR"
@@ -436,17 +636,13 @@ async def test_sample_data_dr_subgroup_under_parent() -> None:
                 group="TTSHDiagRd",
                 session_type="National Teaching [3h]",
                 monthly_target=3,
-                details="Journal Club2, Bedside Teaching2, Case Discussion2",
             )
         ]
     )
     target = result.metadata["targets"][0]
-    catalogue_rows = result.metadata["catalogue_rows"]
     posting_groups = result.metadata["posting_groups"]
     assert target["posting_code"] == "TTSHDiagRd(Body)"
     assert target["monthly_target"] == 3.0
-    assert len(catalogue_rows) == 3
-    assert all(row["posting_code"] == "TTSHDiagRd(Body)" for row in catalogue_rows)
     assert posting_groups[0]["group_code"] == "TTSHDiagRd"
     assert posting_groups[0]["posting_code"] == "TTSHDiagRd(Body)"
     assert posting_groups[0]["programme_code"] == "DR"
@@ -461,33 +657,13 @@ async def test_sample_data_subgroup_like_with_blank_column_e() -> None:
                 group="",
                 session_type="Department Learning Events [1h]",
                 monthly_target=7,
-                details="Journal Club3, Bedside Teaching3, Case Discussion3",
             )
         ]
     )
     target = result.metadata["targets"][0]
-    catalogue_rows = result.metadata["catalogue_rows"]
     assert target["posting_code"] == "WHDiagRd(Body)"
     assert target["monthly_target"] == 7.0
-    assert len(catalogue_rows) == 3
-    assert all(row["posting_code"] == "WHDiagRd(Body)" for row in catalogue_rows)
     assert result.metadata["counts"]["posting_groups"] == 0
-
-
-@pytest.mark.asyncio
-async def test_keyword_expansion_shape_and_trimmed_fields() -> None:
-    result = await _parse([_base_row(details=" Journal Club , Bedside Teaching , Case Discussion ")])
-    rows = result.metadata["catalogue_rows"]
-    assert len(rows) == 3
-    for row in rows:
-        assert row["keyword"] in {"Journal Club", "Bedside Teaching", "Case Discussion"}
-        assert row["session_type"] == "Department Learning Events [1h]"
-        assert row["posting_code"] == "TTSHDiagRd"
-        assert row["programme_code"] == "DR"
-        assert row["r_year"] == "R2"
-        assert "reporting_period_id" in row
-        assert row["duration_hours"] == 1.0
-        assert row["is_tracked"] is True
 
 
 @pytest.mark.asyncio
@@ -499,7 +675,6 @@ async def test_valid_same_r_year_tag_group_passes() -> None:
             session_type="National Teaching [3h]",
             is_reallocatable="Y",
             tag="A1",
-            details="National Journal Club",
         ),
         _base_row(
             r_year="R4",
@@ -507,7 +682,6 @@ async def test_valid_same_r_year_tag_group_passes() -> None:
             session_type="Department Learning Events [1h]",
             is_reallocatable="Y",
             tag="A2",
-            details="Journal Club",
         ),
     ]
     result = await _parse(rows)
@@ -526,7 +700,6 @@ async def test_cross_r_year_tag_group_fails_singleton_validation() -> None:
             session_type="National Teaching [3h]",
             is_reallocatable="Y",
             tag="A1",
-            details="National Journal Club",
         ),
         _base_row(
             r_year="R5",
@@ -534,7 +707,6 @@ async def test_cross_r_year_tag_group_fails_singleton_validation() -> None:
             session_type="Department Learning Events [1h]",
             is_reallocatable="Y",
             tag="A2",
-            details="Journal Club",
         ),
     ]
     result = await _parse(rows)
@@ -544,8 +716,8 @@ async def test_cross_r_year_tag_group_fails_singleton_validation() -> None:
         if "effective_r_year/tag_family scope" in error["message"]
     ]
     assert len(singleton_errors) == 2
-    assert {error["r_year"] for error in singleton_errors} == {"R4", "R5"}
-    assert {error["tag_family"] for error in singleton_errors} == {"A"}
+    assert {error["row"] for error in singleton_errors} == {2, 3}
+    assert all("r_year" not in error and "tag_family" not in error for error in singleton_errors)
 
 
 @pytest.mark.asyncio
@@ -558,7 +730,6 @@ async def test_r_year_required_false_groups_under_all() -> None:
             session_type="National Teaching [3h]",
             is_reallocatable="Y",
             tag="A1",
-            details="National Journal Club",
         ),
         _base_row(
             programme="GERI",
@@ -567,46 +738,39 @@ async def test_r_year_required_false_groups_under_all() -> None:
             session_type="Department Learning Events [1h]",
             is_reallocatable="Y",
             tag="A2",
-            details="Journal Club",
         ),
     ]
     result = await _parse_for_programme(rows, "GERI")
     assert result.errors == []
     assert [target["r_year"] for target in result.metadata["targets"]] == ["ALL", "ALL"]
-    assert [row["r_year"] for row in result.metadata["catalogue_rows"]] == ["ALL", "ALL"]
 
 
 @pytest.mark.asyncio
-async def test_custom_programme_config_r_year_required_false_maps_targets_and_catalogue_to_all() -> None:
+async def test_custom_programme_config_r_year_required_false_maps_targets_to_all() -> None:
     result = await _parse_for_programme_config(
-        [_base_row(programme="XALL", r_year="R2,R3", details="Config Topic")],
+        [_base_row(programme="XALL", r_year="R2,R3")],
         "XALL",
         {"code": "XALL", "r_year_required": False, "is_subspecialty": False},
     )
 
     assert result.errors == []
     assert [target["r_year"] for target in result.metadata["targets"]] == ["ALL"]
-    assert [row["r_year"] for row in result.metadata["catalogue_rows"]] == ["ALL"]
 
 
 @pytest.mark.asyncio
-async def test_custom_programme_config_subspecialty_remaps_r_years() -> None:
+async def test_custom_programme_config_subspecialty_flag_does_not_remap_r_years() -> None:
     result = await _parse_for_programme_config(
-        [_base_row(programme="XSS", r_year="R4, R5, R6", details="Config Topic")],
+        [_base_row(programme="XSS", r_year="R4, R5, R6")],
         "XSS",
         {"code": "XSS", "r_year_required": True, "is_subspecialty": True},
     )
 
     assert result.errors == []
-    assert [target["r_year"] for target in result.metadata["targets"]] == [
-        "SS1",
-        "SS2",
-        "SS3",
-    ]
+    assert [target["r_year"] for target in result.metadata["targets"]] == ["R4", "R5", "R6"]
 
 
 @pytest.mark.asyncio
-async def test_real_dr_ttf_excel_mapping_regression() -> None:
+async def test_legacy_a_k_fixture_is_rejected_when_available() -> None:
     candidate_paths = [
         Path("Teaching_Target_File_DR__CL.xlsx"),
         Path("tests/data/Teaching_Target_File_DR__CL.xlsx"),
@@ -616,144 +780,12 @@ async def test_real_dr_ttf_excel_mapping_regression() -> None:
     if workbook_path is None:
         pytest.skip("Teaching_Target_File_DR__CL.xlsx not found at repo root or test fixture path.")
 
-    # Explicitly open with openpyxl to satisfy the real-file verification requirement.
-    wb = load_workbook(workbook_path, data_only=True)
-    wb.close()
-    file_bytes = workbook_path.read_bytes()
-
     result = await parse_ttf_upload(
-        file_bytes=file_bytes,
+        file_bytes=workbook_path.read_bytes(),
         original_filename=workbook_path.name,
         reporting_period_id=uuid4(),
         programme_code="DR",
+        programme_configs=_DR_PROGRAMME_CONFIG,
     )
-    assert result.metadata is not None
-    if "catalogue_rows" not in result.metadata or "posting_groups" not in result.metadata or "targets" not in result.metadata:
-        pytest.skip("Real DR sample did not parse into Phase 2.4 intermediate shape in this environment.")
-
-    keywords_of_interest = {
-        "DR Demo Row 44",
-        "DR Demo Row 45",
-        "DR Demo Row 46",
-        "DR Demo Row 47",
-    }
-    postings_of_interest = {"TTSHDiagRd", "TTSHDiagRd(Body)"}
-
-    filtered_catalogue = [
-        row
-        for row in result.metadata["catalogue_rows"]
-        if row["posting_code"] in postings_of_interest or row["keyword"] in keywords_of_interest
-    ]
-    filtered_groups = [
-        row
-        for row in result.metadata["posting_groups"]
-        if row["posting_code"] in postings_of_interest or row["group_code"] == "TTSHDiagRd"
-    ]
-    filtered_targets = [
-        row for row in result.metadata["targets"] if row["posting_code"] in postings_of_interest
-    ]
-
-    # Keyword mapping checks against current DR fixture labels.
-    keyword_map = {row["keyword"]: row for row in filtered_catalogue}
-    assert "DR Demo Row 44" in keyword_map
-    assert keyword_map["DR Demo Row 44"]["posting_code"] == "TTSHDiagRd"
-    assert keyword_map["DR Demo Row 44"]["programme_code"] == "DR"
-    assert keyword_map["DR Demo Row 44"]["r_year"] == "R1"
-    assert keyword_map["DR Demo Row 44"]["session_type"] == "Department Learning Events [1h]"
-    assert keyword_map["DR Demo Row 44"]["duration_hours"] == 1.0
-
-    assert "DR Demo Row 45" in keyword_map
-    assert keyword_map["DR Demo Row 45"]["posting_code"] == "TTSHDiagRd(Body)"
-    assert keyword_map["DR Demo Row 45"]["programme_code"] == "DR"
-    assert keyword_map["DR Demo Row 45"]["r_year"] == "R1"
-    assert keyword_map["DR Demo Row 45"]["session_type"] == "National Teaching [3h]"
-    assert keyword_map["DR Demo Row 45"]["duration_hours"] == 3.0
-
-    assert "DR Demo Row 46" in keyword_map
-    assert keyword_map["DR Demo Row 46"]["posting_code"] == "TTSHDiagRd"
-    assert keyword_map["DR Demo Row 46"]["programme_code"] == "DR"
-    assert keyword_map["DR Demo Row 46"]["r_year"] == "R2"
-    assert keyword_map["DR Demo Row 46"]["session_type"] == "Department Learning Events [1h]"
-    assert keyword_map["DR Demo Row 46"]["duration_hours"] == 1.0
-
-    assert "DR Demo Row 47" in keyword_map
-    assert keyword_map["DR Demo Row 47"]["posting_code"] == "TTSHDiagRd"
-    assert keyword_map["DR Demo Row 47"]["programme_code"] == "DR"
-    assert keyword_map["DR Demo Row 47"]["r_year"] == "R2"
-    assert keyword_map["DR Demo Row 47"]["session_type"] == "National Teaching [3h]"
-    assert keyword_map["DR Demo Row 47"]["duration_hours"] == 3.0
-
-    # Monthly targets remain row-specific on teaching targets.
-    target_index = {
-        (row["posting_code"], row["r_year"], row["session_type"]): row
-        for row in result.metadata["targets"]
-    }
-    assert target_index[("TTSHDiagRd", "R1", "Department Learning Events [1h]")]["monthly_target"] == 7.0
-    assert target_index[("TTSHDiagRd(Body)", "R1", "National Teaching [3h]")]["monthly_target"] == 3.0
-    assert target_index[("TTSHDiagRd", "R2", "Department Learning Events [1h]")]["monthly_target"] == 7.0
-    assert target_index[("TTSHDiagRd", "R2", "National Teaching [3h]")]["monthly_target"] == 3.0
-
-    # Posting groups checks
-    assert any(
-        row["group_code"] == "TTSHDiagRd"
-        and row["posting_code"] == "TTSHDiagRd"
-        and row["programme_code"] == "DR"
-        for row in filtered_groups
-    )
-    assert any(
-        row["group_code"] == "TTSHDiagRd"
-        and row["posting_code"] == "TTSHDiagRd(Body)"
-        and row["programme_code"] == "DR"
-        for row in filtered_groups
-    )
-    assert not any(row["posting_code"] == "WHDiagRd(Body)" for row in result.metadata["posting_groups"])
-
-    # Column E must not replace Column D in targets/catalogue
-    assert any(row["posting_code"] == "TTSHDiagRd(Body)" for row in filtered_targets)
-    assert target_index[("TTSHDiagRd(Body)", "R1", "National Teaching [3h]")]["posting_code"] == "TTSHDiagRd(Body)"
-
-    # Real workbook A1/A2 verification
-    a1_rows = [
-        row
-        for row in result.metadata["targets"]
-        if isinstance(row.get("tag"), str) and row["tag"].strip() == "A1"
-    ]
-    a2_rows = [
-        row
-        for row in result.metadata["targets"]
-        if isinstance(row.get("tag"), str) and row["tag"].strip() == "A2"
-    ]
-    assert a1_rows, "Expected at least one A1 row in real DR workbook."
-    assert a2_rows, "Expected at least one A2 row in real DR workbook."
-
-    matched_pair_found = False
-    for a1_row in a1_rows:
-        for a2_row in a2_rows:
-            if (
-                a1_row["posting_code"] == a2_row["posting_code"]
-                and a1_row["programme_code"] == a2_row["programme_code"]
-                and a1_row["r_year"] == a2_row["r_year"]
-            ):
-                matched_pair_found = True
-                assert a1_row["posting_code"] == "TTSHDiagRd"
-                assert a1_row["programme_code"] == "DR"
-                assert a1_row["r_year"] == "R4"
-                assert a2_row["posting_code"] == "TTSHDiagRd"
-                assert a2_row["programme_code"] == "DR"
-                assert a2_row["r_year"] == "R4"
-                assert float(a1_row["duration_hours"]) > float(a2_row["duration_hours"])
-                singleton_errors = [
-                    error
-                    for error in result.errors
-                    if isinstance(error, dict)
-                    and "effective_r_year/tag_family scope" in error.get("message", "")
-                    and error.get("posting_code") == a1_row["posting_code"]
-                    and error.get("programme_code") == a1_row["programme_code"]
-                    and error.get("r_year") == a1_row["r_year"]
-                    and error.get("tag_family") == "A"
-                ]
-                assert singleton_errors == []
-                break
-        if matched_pair_found:
-            break
-    assert matched_pair_found, "Expected at least one A1/A2 pair sharing posting/programme/r_year."
+    assert result.errors
+    assert any(error["column"] == "K" for error in result.errors)

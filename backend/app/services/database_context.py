@@ -51,11 +51,25 @@ _RUNTIME_ONLY_HELPERS = frozenset(
         "set_external_resident_current_posting(uuid,text,text)",
         "resolve_ttf_session_type(text,numeric,text,text)",
         "ensure_ttf_posting_code(text,text)",
+        "reconcile_ttf_teaching_name_mappings_v2(uuid,text,uuid[],text[],text[])",
+        "reconcile_teaching_name_programme_scopes(uuid,text)",
+        "lock_master_teaching_name_delete(uuid)",
         "append_audit_log(text,text,text,jsonb,jsonb,jsonb)",
         (
             "create_adhoc_attendance("
             "text,text,text,text,text,date,time without time zone,"
             "time without time zone,numeric,uuid)"
+        ),
+        "scheduled_event_source_scope(uuid)",
+        "resolve_native_teaching_target(uuid,uuid)",
+        "resolve_native_teaching_target_v2(uuid,uuid)",
+        "resolve_staff_pool_event_timings(uuid[],uuid,text,text)",
+        "sync_secretary_pool_event_timing(uuid,uuid,text,text)",
+        "reclassify_native_attendance_loa(uuid,uuid)",
+        (
+            "create_native_loa_adhoc_attendance("
+            "text,text,text,date,time without time zone,"
+            "time without time zone,numeric)"
         ),
         "update_own_staff_actor_name(text)",
         "reporting_period_dependency_counts(uuid)",
@@ -101,10 +115,22 @@ _POLICY_HELPERS = frozenset(
         "can_manage_resident(uuid)",
         "can_access_form_f1(text)",
         "native_assignment_matches(text,text,uuid)",
-        "can_access_teaching_catalogue(text,text,uuid)",
         "can_select_teaching_event(uuid)",
+        (
+            "can_select_teaching_event_row("
+            "uuid,boolean,text,date,text,text,uuid,uuid,uuid,uuid,text,uuid)"
+        ),
         "can_insert_teaching_event(text,text,text,date,boolean,text)",
+        (
+            "can_insert_scheduled_event_source("
+            "text,text,uuid,uuid,text,uuid,date,boolean,text)"
+        ),
+        "can_manage_scheduled_event_source(text,uuid,uuid,date,boolean)",
         "can_manage_teaching_event(text,text,text,date,boolean,text)",
+        (
+            "can_manage_teaching_event_row("
+            "text,text,date,boolean,text,uuid,uuid,text,uuid)"
+        ),
         "can_submit_native_attendance(uuid,uuid)",
         "can_access_external_attendance(uuid,uuid)",
         "can_submit_external_attendance(uuid,uuid)",
@@ -136,7 +162,9 @@ _RUNTIME_TABLE_PRIVILEGES = {
     "secretary_programme_pools": {"SELECT"},
     "session_types": {"SELECT"},
     "teaching_events": {"SELECT", "INSERT", "UPDATE", "DELETE"},
-    "teaching_name_catalogue": {"SELECT", "INSERT", "DELETE"},
+    "teaching_name_mappings": {"SELECT", "INSERT", "UPDATE", "DELETE"},
+    "teaching_name_programme_scopes": {"SELECT"},
+    "teaching_names": {"SELECT", "INSERT", "UPDATE", "DELETE"},
     "teaching_targets": {"SELECT", "INSERT", "UPDATE", "DELETE"},
     "upload_logs": {"SELECT", "INSERT"},
     "upload_warnings": {"SELECT", "INSERT"},
@@ -192,7 +220,9 @@ _APPLICATION_TABLES = frozenset(
         "session_types",
         "surplus_ledger",
         "teaching_events",
-        "teaching_name_catalogue",
+        "teaching_name_mappings",
+        "teaching_name_programme_scopes",
+        "teaching_names",
         "teaching_targets",
         "upload_logs",
         "upload_warnings",
@@ -856,7 +886,9 @@ _ROLE_ATTESTATION_SQL = text(
                           'session_types',
                           'surplus_ledger',
                           'teaching_events',
-                          'teaching_name_catalogue',
+                          'teaching_name_mappings',
+                          'teaching_name_programme_scopes',
+                          'teaching_names',
                           'teaching_targets',
                           'upload_logs',
                           'upload_warnings',
@@ -909,7 +941,9 @@ _ROLE_ATTESTATION_SQL = text(
                           'session_types',
                           'surplus_ledger',
                           'teaching_events',
-                          'teaching_name_catalogue',
+                          'teaching_name_mappings',
+                          'teaching_name_programme_scopes',
+                          'teaching_names',
                           'teaching_targets',
                           'upload_logs',
                           'upload_warnings',
@@ -971,7 +1005,9 @@ _ROLE_ATTESTATION_SQL = text(
                           'session_types',
                           'surplus_ledger',
                           'teaching_events',
-                          'teaching_name_catalogue',
+                          'teaching_name_mappings',
+                          'teaching_name_programme_scopes',
+                          'teaching_names',
                           'teaching_targets',
                           'upload_logs',
                           'upload_warnings',
@@ -1020,7 +1056,9 @@ _ROLE_ATTESTATION_SQL = text(
                       'session_types',
                       'surplus_ledger',
                       'teaching_events',
-                      'teaching_name_catalogue',
+                      'teaching_name_mappings',
+                      'teaching_name_programme_scopes',
+                      'teaching_names',
                       'teaching_targets',
                       'upload_logs',
                       'upload_warnings',
@@ -1131,16 +1169,12 @@ _ADHOC_DEFINER_ACL_ATTESTATION_SQL = text(
             ('external_attendance_records', 'INSERT'),
             ('external_resident_postings', 'SELECT'),
             ('external_residents', 'SELECT'),
-            ('global_session_types', 'SELECT'),
             ('public_holidays', 'SELECT'),
             ('reporting_periods', 'SELECT'),
             ('resident_postings', 'SELECT'),
             ('residents', 'SELECT'),
-            ('session_types', 'SELECT'),
             ('teaching_events', 'SELECT'),
-            ('teaching_events', 'INSERT'),
-            ('teaching_name_catalogue', 'SELECT'),
-            ('teaching_targets', 'SELECT')
+            ('teaching_events', 'INSERT')
     ),
     actual_table AS (
         SELECT relation.relname AS table_name, privilege.action

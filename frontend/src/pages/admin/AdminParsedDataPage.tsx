@@ -130,7 +130,7 @@ interface RawFragmentSourceGroup {
 }
 
 type CorrectionMode = 'none' | 'row'
-type CorrectionFieldType = 'text' | 'textarea' | 'number' | 'boolean' | 'date' | 'select'
+type CorrectionFieldType = 'text' | 'number' | 'boolean' | 'date' | 'select'
 type FragmentDraftDayPart = '' | 'AM' | 'PM'
 
 interface CorrectionFieldDefinition {
@@ -827,7 +827,7 @@ const tabDefinitions: ParsedTabDefinition[] = [
       { key: 'postingCode', label: 'Posting code', placeholder: 'TTSHGerMed' },
       { key: 'rYear', label: 'R Year', placeholder: 'R1 or ALL' },
       { key: 'sessionType', label: 'Session type', placeholder: 'Department Teaching' },
-      { key: 'search', label: 'Search', type: 'search', placeholder: 'Session, tag, details...' },
+       { key: 'search', label: 'Search', type: 'search', placeholder: 'Session or tag...' },
       { key: 'isTracked', label: 'Tracked', type: 'select' },
     ],
     columns: [
@@ -855,9 +855,8 @@ const tabDefinitions: ParsedTabDefinition[] = [
       {
         label: 'Reallocatable',
         value: (row) => boolBadge((row as ParsedTeachingTargetRow).is_reallocatable),
-      },
-      { label: 'Tag', value: (row) => formatValue((row as ParsedTeachingTargetRow).tag) },
-      { label: 'Details of Training', value: (row) => formatValue((row as ParsedTeachingTargetRow).details_of_training) },
+       },
+       { label: 'Tag', value: (row) => formatValue((row as ParsedTeachingTargetRow).tag) },
     ],
   },
   {
@@ -1075,7 +1074,6 @@ const correctionFieldLabels: Record<string, string> = {
   is_tracked: 'Tracked',
   is_reallocatable: 'Reallocatable',
   tag: 'Tag',
-  details_of_training: 'Details of Training',
   status_raw: 'FormF1 Status',
   is_active: 'Active',
   promotion_date: 'Promotion Date',
@@ -1473,12 +1471,6 @@ const correctionFieldsByTab: Partial<Record<ParsedDataTabId, CorrectionFieldDefi
     { key: 'is_tracked', label: 'Tracked', type: 'boolean' },
     { key: 'is_reallocatable', label: 'Reallocatable', type: 'boolean' },
     { key: 'tag', label: 'Tag', type: 'text' },
-    {
-      key: 'details_of_training',
-      label: 'Details of Training',
-      type: 'textarea',
-      helper: 'Teaching names are derived from this box',
-    },
   ],
   'form-f1-records': [
     { key: 'status_raw', label: 'Status Raw', type: 'select', options: formF1StatusOptions },
@@ -2777,13 +2769,6 @@ export const AdminParsedDataPage = () => {
               </option>
             ))}
           </select>
-        ) : field.type === 'textarea' ? (
-          <textarea
-            value={String(value)}
-            onChange={(event) => setCorrectionDraftField(field, event.target.value)}
-            rows={4}
-            disabled={isCorrectionSubmitting}
-          />
         ) : (
           <input
             type={field.type === 'date' ? 'date' : field.type === 'number' ? 'number' : 'text'}
@@ -2805,17 +2790,13 @@ export const AdminParsedDataPage = () => {
     const trackedField = fieldByKey.get('is_tracked')
     const reallocatableField = fieldByKey.get('is_reallocatable')
     const tagField = fieldByKey.get('tag')
-    const detailsField = fieldByKey.get('details_of_training')
 
     return (
       <div className="correction-form-grid teaching-target-correction-grid">
         {monthlyTargetField ? renderCorrectionField(monthlyTargetField) : null}
         {trackedField ? renderCorrectionField(trackedField) : null}
         {reallocatableField ? renderCorrectionField(reallocatableField) : null}
-        <div className={`teaching-target-details-row ${isTeachingTargetReallocatableDraft ? 'has-tag' : 'no-tag'}`}>
-          {isTeachingTargetReallocatableDraft && tagField ? renderCorrectionField(tagField) : null}
-          {detailsField ? renderCorrectionField(detailsField) : null}
-        </div>
+        {isTeachingTargetReallocatableDraft && tagField ? renderCorrectionField(tagField) : null}
       </div>
     )
   }

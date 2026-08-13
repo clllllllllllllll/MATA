@@ -101,7 +101,7 @@ class FakeSecretarySession:
                 "name": "Labour Day",
             }
         ]
-        self.catalogue = [
+        self.source_specs = [
             {
                 "keyword": "Journal Club",
                 "posting_code": "TTSHCardio",
@@ -175,8 +175,21 @@ class FakeSecretarySession:
                 "is_tracked": True,
             },
         ]
-        for row in self.catalogue:
+        for row in self.source_specs:
             row["reporting_period_id"] = self.reporting_period_id
+        self.teaching_names = [
+            {
+                "id": str(uuid4()),
+                "display_name": row["keyword"],
+                "programme_code": row["programme_code"],
+                "reporting_period_id": self.reporting_period_id,
+                "created_by_role": "secretary",
+                "visibility_scope": "department_shared",
+                "origin_posting_code": row["posting_code"],
+                "is_active": True,
+            }
+            for row in self.source_specs
+        ]
         self.global_session_types = [
             {
                 "id": str(uuid4()),
@@ -193,14 +206,22 @@ class FakeSecretarySession:
         ]
         self.secretary_programme_pools = [
             {
+                "posting_code": "TTSHCardio",
+                "programme_code": "CARD",
+                "is_active": True,
+                "can_manage_teaching_names": True,
+            },
+            {
                 "posting_code": "TTSHGerMed",
                 "programme_code": "GERI",
                 "is_active": True,
+                "can_manage_teaching_names": True,
             },
             {
                 "posting_code": "TTSHGerMed",
                 "programme_code": "CARD",
                 "is_active": False,
+                "can_manage_teaching_names": False,
             },
         ]
         self.residents = [
@@ -276,6 +297,10 @@ class FakeSecretarySession:
                 "end_time": time(11, 0),
                 "duration_hours": Decimal("1.0"),
                 "session_type_id": self.session_type_id,
+                "teaching_name_id": self.teaching_name_id_for("Journal Club", "CARD"),
+                "global_session_type_id": None,
+                "source_programme_code": "CARD",
+                "source_reporting_period_id": self.reporting_period_id,
                 "session_type": "Department Teaching [1h]",
                 "series_id": None,
                 "cme_points_awarded": False,
@@ -294,6 +319,8 @@ class FakeSecretarySession:
                 "end_time": time(10, 0),
                 "duration_hours": Decimal("1.0"),
                 "session_type_id": self.session_type_id,
+                "teaching_name_id": None,
+                "global_session_type_id": None,
                 "session_type": "Department Teaching [1h]",
                 "series_id": None,
                 "cme_points_awarded": False,
@@ -334,7 +361,22 @@ class FakeSecretarySession:
         series_id: str | None = None,
         session_type_id: str | None = None,
         duration_hours: Decimal = Decimal("1.0"),
+        teaching_name_id: str | None = None,
+        global_session_type_id: str | None = None,
     ) -> dict:
+        if teaching_name_id is None and global_session_type_id is None:
+            teaching_name_id = self._teaching_name_id_for_posting(
+                teaching_name,
+                posting_code,
+            )
+        source_name = next(
+            (
+                row
+                for row in self.teaching_names
+                if row["id"] == str(teaching_name_id)
+            ),
+            None,
+        )
         return {
             "id": event_id,
             "posting_code": posting_code,
@@ -344,6 +386,14 @@ class FakeSecretarySession:
             "end_time": end_time,
             "duration_hours": duration_hours,
             "session_type_id": session_type_id or self.session_type_id,
+            "teaching_name_id": teaching_name_id,
+            "global_session_type_id": global_session_type_id,
+            "source_programme_code": (
+                source_name["programme_code"] if source_name is not None else None
+            ),
+            "source_reporting_period_id": (
+                source_name["reporting_period_id"] if source_name is not None else None
+            ),
             "session_type": "Department Teaching [1h]",
             "series_id": series_id,
             "cme_points_awarded": False,
@@ -361,7 +411,35 @@ class FakeSecretarySession:
                 "posting_code": "TTSHCardio",
                 "programme_code": "CARD",
                 "is_active": True,
+                "can_manage_teaching_names": True,
             }
+        )
+
+    def teaching_name_id_for(self, display_name: str, programme_code: str) -> str:
+        return next(
+            row["id"]
+            for row in self.teaching_names
+            if row["display_name"] == display_name
+            and row["programme_code"] == programme_code
+        )
+
+    def global_session_type_id_for(self, name: str) -> str:
+        return next(row["id"] for row in self.global_session_types if row["name"] == name)
+
+    def _teaching_name_id_for_posting(self, display_name: str, posting_code: str) -> str | None:
+        source_spec = next(
+            (
+                row
+                for row in self.source_specs
+                if row["keyword"] == display_name and row["posting_code"] == posting_code
+            ),
+            None,
+        )
+        if source_spec is None:
+            return None
+        return self.teaching_name_id_for(
+            display_name,
+            source_spec["programme_code"],
         )
 
     def add_unrelated_pc_event_for_cardio(self) -> None:
@@ -384,6 +462,7 @@ class FakeSecretarySession:
             "series": deepcopy(self.series),
             "audit_logs": deepcopy(self.audit_logs),
             "deleted_event_ids": deepcopy(self.deleted_event_ids),
+            "teaching_names": deepcopy(self.teaching_names),
         }
 
     def _restore(self, snapshot: dict) -> None:
@@ -391,6 +470,7 @@ class FakeSecretarySession:
         self.series = deepcopy(snapshot["series"])
         self.audit_logs = deepcopy(snapshot["audit_logs"])
         self.deleted_event_ids = deepcopy(snapshot["deleted_event_ids"])
+        self.teaching_names = deepcopy(snapshot["teaching_names"])
 
     async def commit(self) -> None:
         self.operations.append("commit")
@@ -430,6 +510,139 @@ class FakeSecretarySession:
                 if row["id"] == str(payload["reporting_period_id"])
             ]
             return _FakeResult(rows=rows)
+
+        if "/* scheduled_event_sources:teaching_name */" in sql:
+            rows = [
+                {
+                    "id": row["id"],
+                    "reporting_period_id": row["reporting_period_id"],
+                    "programme_code": row["programme_code"],
+                    "teaching_name": row["display_name"],
+                    "created_by_role": row["created_by_role"],
+                    "visibility_scope": row["visibility_scope"],
+                    "origin_posting_code": row["origin_posting_code"],
+                    "is_active": row["is_active"],
+                }
+                for row in self.teaching_names
+                if row["id"] == str(payload["teaching_name_id"])
+            ]
+            return _FakeResult(rows=rows)
+
+        if "/* scheduled_event_sources:secretary_capability */" in sql:
+            allowed = any(
+                row["posting_code"] == payload["posting_code"]
+                and row["programme_code"] == payload["programme_code"]
+                and row["is_active"]
+                and row.get("can_manage_teaching_names", False)
+                for row in self.secretary_programme_pools
+            )
+            return _FakeResult(scalar=1 if allowed else None)
+
+        if "/* scheduled_event_sources:global_session_type */" in sql:
+            rows = [
+                {
+                    "id": row["id"],
+                    "teaching_name": row["name"],
+                    "duration_hours": row["duration_hours"],
+                    "is_active": row["is_active"],
+                }
+                for row in self.global_session_types
+                if row["id"] == str(payload["global_session_type_id"])
+            ]
+            return _FakeResult(rows=rows)
+
+        if "/* pool_event_timing:resolve */" in sql:
+            teaching_name_id = str(payload["teaching_name_id"])
+            rows = []
+            for index, teaching_name in enumerate(self.teaching_names):
+                if teaching_name["id"] != teaching_name_id:
+                    continue
+                source = self.source_specs[index] if index < len(self.source_specs) else None
+                if source and source["posting_code"] == payload["posting_code"]:
+                    rows.append(
+                        {
+                            "r_year": "R2",
+                            "programme_code": teaching_name["programme_code"],
+                            "teaching_target_id": source["session_type_id"],
+                            "session_type_id": source["session_type_id"],
+                            "session_type_name": source["session_type"],
+                            "duration_hours": source["duration_hours"],
+                        }
+                    )
+            return _FakeResult(rows=rows)
+
+        if "/* pool_event_timing:list */" in sql:
+            requested_ids = {str(value) for value in payload["teaching_name_ids"]}
+            rows = []
+            for index, teaching_name in enumerate(self.teaching_names):
+                if teaching_name["id"] not in requested_ids:
+                    continue
+                source = self.source_specs[index] if index < len(self.source_specs) else None
+                if source is None:
+                    continue
+                if payload.get("posting_code") and source["posting_code"] != payload["posting_code"]:
+                    continue
+                rows.append(
+                    {
+                        "teaching_name_id": teaching_name["id"],
+                        "posting_code": source["posting_code"],
+                        "r_year": "R2",
+                        "programme_code": teaching_name["programme_code"],
+                        "teaching_target_id": source["session_type_id"],
+                        "session_type_id": source["session_type_id"],
+                        "session_type_name": source["session_type"],
+                        "duration_hours": source["duration_hours"],
+                    }
+                )
+            return _FakeResult(rows=rows)
+
+        if "/* secretary_events:options_teaching_names */" in sql:
+            rows = [
+                {
+                    "teaching_name_id": name["id"],
+                    "global_session_type_id": None,
+                    "keyword": name["display_name"],
+                    "teaching_name": name["display_name"],
+                    "programme_code": name["programme_code"],
+                    "created_by_role": name["created_by_role"],
+                    "visibility_scope": name["visibility_scope"],
+                    "origin_posting_code": name["origin_posting_code"],
+                    "duration_hours": Decimal("1.0"),
+                    "is_global": False,
+                }
+                for name in self.teaching_names
+                if name["reporting_period_id"] == str(payload["reporting_period_id"])
+                and name["is_active"]
+                and (
+                    payload.get("programme_code") is None
+                    or name["programme_code"] == payload["programme_code"]
+                )
+                and any(
+                    pool["posting_code"] == payload["posting_code"]
+                    and pool["programme_code"] == name["programme_code"]
+                    and pool["is_active"]
+                    and pool.get("can_manage_teaching_names", False)
+                    for pool in self.secretary_programme_pools
+                )
+            ]
+            return _FakeResult(rows=rows)
+
+        if "/* secretary_events:options_global */" in sql:
+            return _FakeResult(
+                rows=[
+                    {
+                        "teaching_name_id": None,
+                        "global_session_type_id": row["id"],
+                        "keyword": row["name"],
+                        "teaching_name": row["name"],
+                        "programme_code": None,
+                        "duration_hours": row["duration_hours"],
+                        "is_global": True,
+                    }
+                    for row in self.global_session_types
+                    if row["is_active"]
+                ]
+            )
 
         if "INSERT INTO audit_logs" in sql:
             self.operations.append("write_audit")
@@ -489,33 +702,6 @@ class FakeSecretarySession:
                 None,
             )
             return _FakeResult(rows=[holiday] if holiday else [], scalar=1 if holiday else None)
-
-        if "FROM teaching_name_catalogue" in sql and "JOIN session_types" in sql:
-            programme_codes = payload.get("programme_codes") or []
-            use_programme_pool = bool(programme_codes)
-            rows = [
-                {
-                    "keyword": row["keyword"],
-                    "session_type_id": row["session_type_id"],
-                    "session_type": row["session_type"],
-                    "duration_hours": row["duration_hours"],
-                    "is_tracked": row["is_tracked"],
-                    "is_global": False,
-                    "posting_code": row["posting_code"],
-                }
-                for row in self.catalogue
-                if (
-                    row["programme_code"] in set(programme_codes)
-                    if use_programme_pool
-                    else row["posting_code"] == payload["posting_code"]
-                )
-                and row["reporting_period_id"] == str(payload["reporting_period_id"])
-                and (
-                    payload.get("teaching_name") in {None, ""}
-                    or row["keyword"] == payload.get("teaching_name")
-                )
-            ]
-            return _FakeResult(rows=rows)
 
         if "FROM secretary_programme_pools" in sql and "FROM teaching_events" not in sql:
             rows = [
@@ -739,7 +925,13 @@ class FakeSecretarySession:
                 session_type_id=str(payload["session_type_id"])
                 if payload.get("session_type_id")
                 else None,
+                teaching_name_id=payload.get("teaching_name_id"),
+                global_session_type_id=payload.get("global_session_type_id"),
                 series_id=str(payload["series_id"]) if payload.get("series_id") else None,
+            )
+            row["source_programme_code"] = payload.get("source_programme_code")
+            row["source_reporting_period_id"] = payload.get(
+                "source_reporting_period_id"
             )
             row["cme_points_awarded"] = payload["cme_points_awarded"]
             row["smc_event_code"] = payload.get("smc_event_code")
@@ -770,6 +962,8 @@ class FakeSecretarySession:
                     "session_type_id": str(payload["session_type_id"])
                     if payload.get("session_type_id")
                     else None,
+                    "teaching_name_id": payload.get("teaching_name_id"),
+                    "global_session_type_id": payload.get("global_session_type_id"),
                     "cme_points_awarded": payload["cme_points_awarded"],
                     "smc_event_code": payload.get("smc_event_code"),
                     "updated_at": self.now,
@@ -803,6 +997,19 @@ def _headers(fake_db: FakeSecretarySession, *, role: str = "secretary", site: st
         "X-User-Role": role,
         "X-User-Id": fake_db.secretary_id if role == "secretary" else fake_db.admin_id,
         "X-User-Site": site,
+    }
+
+
+def _pool_source(
+    fake_db: FakeSecretarySession,
+    display_name: str = "Journal Club",
+    programme_code: str = "CARD",
+) -> dict[str, str]:
+    return {
+        "teaching_name_id": fake_db.teaching_name_id_for(
+            display_name,
+            programme_code,
+        )
     }
 
 
@@ -849,7 +1056,7 @@ def test_secretary_mutation_endpoint_allows_missing_actor_name_and_writes_audit(
     response = client.post(
         "/secretary/teaching-events",
         headers=headers,
-        json={"teaching_name": "Journal Club", "event_date": "2026-05-18", "start_time": "10:00"},
+        json={**_pool_source(fake_db), "event_date": "2026-05-18", "start_time": "10:00"},
     )
 
     assert response.status_code == 200
@@ -866,7 +1073,7 @@ def test_secretary_mutation_endpoint_allows_blank_actor_name() -> None:
     response = client.post(
         "/secretary/teaching-events",
         headers=headers,
-        json={"teaching_name": "Journal Club", "event_date": "2026-05-18", "start_time": "10:00"},
+        json={**_pool_source(fake_db), "event_date": "2026-05-18", "start_time": "10:00"},
     )
 
     assert response.status_code == 200
@@ -917,7 +1124,7 @@ def test_secretary_teaching_event_mutations_write_audit_logs() -> None:
         "/secretary/teaching-events",
         headers=headers,
         json={
-            "teaching_name": "Journal Club",
+            **_pool_source(fake_db),
             "event_date": "2026-05-18",
             "start_time": "10:00",
             "cme_points_awarded": True,
@@ -942,7 +1149,7 @@ def test_secretary_teaching_event_mutations_write_audit_logs() -> None:
         f"/secretary/teaching-events/{duplicated_id}",
         headers=headers,
         json={
-            "teaching_name": "Journal Club",
+            **_pool_source(fake_db),
             "event_date": "2026-05-26",
             "start_time": "11:00",
             "cme_points_awarded": False,
@@ -961,7 +1168,7 @@ def test_secretary_teaching_event_mutations_write_audit_logs() -> None:
         "/secretary/teaching-events/series",
         headers=headers,
         json={
-            "teaching_name": "Journal Club",
+            **_pool_source(fake_db),
             "start_date": "2026-04-24",
             "start_time": "10:00",
             "recurrence_pattern": "weekly",
@@ -1043,7 +1250,7 @@ def test_secretary_audit_failure_rolls_back_business_mutation_and_skips_cache(
             "/secretary/teaching-events",
             headers=headers,
             json={
-                "teaching_name": "Journal Club",
+                **_pool_source(fake_db),
                 "event_date": "2026-05-18",
                 "start_time": "10:00",
             },
@@ -1063,7 +1270,7 @@ def test_secretary_audit_failure_rolls_back_business_mutation_and_skips_cache(
             f"/secretary/teaching-events/{fake_db.events[1]['id']}",
             headers=headers,
             json={
-                "teaching_name": "Journal Club",
+                **_pool_source(fake_db),
                 "event_date": "2026-05-26",
                 "start_time": "11:00",
             },
@@ -1078,7 +1285,7 @@ def test_secretary_audit_failure_rolls_back_business_mutation_and_skips_cache(
             "/secretary/teaching-events/series",
             headers=headers,
             json={
-                "teaching_name": "Journal Club",
+                **_pool_source(fake_db),
                 "start_date": "2026-04-24",
                 "start_time": "10:00",
                 "recurrence_pattern": "weekly",
@@ -1120,7 +1327,7 @@ def test_secretary_commit_failure_rolls_back_event_and_audit_and_skips_cache(
         "/secretary/teaching-events",
         headers=_headers(fake_db),
         json={
-            "teaching_name": "Journal Club",
+            **_pool_source(fake_db),
             "event_date": "2026-05-18",
             "start_time": "10:00",
         },
@@ -1154,7 +1361,7 @@ def test_secretary_cache_failure_does_not_misreport_committed_mutation(
         "/secretary/teaching-events",
         headers=_headers(fake_db),
         json={
-            "teaching_name": "Journal Club",
+            **_pool_source(fake_db),
             "event_date": "2026-05-18",
             "start_time": "10:00",
         },
@@ -1207,7 +1414,7 @@ def test_create_event_derives_posting_scope_and_computes_end_time() -> None:
         "/secretary/teaching-events",
         headers=_headers(fake_db),
         json={
-            "teaching_name": "Journal Club",
+            **_pool_source(fake_db),
             "event_date": "2026-05-18",
             "start_time": "10:00",
             "cme_points_awarded": True,
@@ -1227,7 +1434,7 @@ def test_create_event_rejects_client_posting_code_and_end_time() -> None:
     fake_db = FakeSecretarySession()
     client = _client(fake_db)
     base_payload = {
-        "teaching_name": "Journal Club",
+        **_pool_source(fake_db),
         "event_date": "2026-05-18",
         "start_time": "10:00",
     }
@@ -1247,6 +1454,52 @@ def test_create_event_rejects_client_posting_code_and_end_time() -> None:
     assert end_time_response.status_code == 422
 
 
+def test_create_event_rejects_display_teaching_name() -> None:
+    fake_db = FakeSecretarySession()
+    client = _client(fake_db)
+
+    response = client.post(
+        "/secretary/teaching-events",
+        headers=_headers(fake_db),
+        json={
+            **_pool_source(fake_db),
+            "event_date": "2026-05-18",
+            "start_time": "10:00",
+            "teaching_name": "Journal Club",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_multi_capability_secretary_cannot_use_another_department_source() -> None:
+    fake_db = FakeSecretarySession()
+    fake_db.secretary_programme_pools.append(
+        {
+            "posting_code": "TTSHCardio",
+            "programme_code": "GERI",
+            "is_active": True,
+            "can_manage_teaching_names": True,
+        }
+    )
+    source_event = fake_db.events[1]
+    before = deepcopy(source_event)
+    client = _client(fake_db)
+
+    response = client.put(
+        f"/secretary/teaching-events/{source_event['id']}",
+        headers=_headers(fake_db),
+        json={
+            **_pool_source(fake_db, "GERI Demo Row 22", "GERI"),
+            "event_date": "2026-05-26",
+            "start_time": "11:00",
+        },
+    )
+
+    assert response.status_code == 422
+    assert source_event == before
+
+
 def test_create_event_on_public_holiday_returns_422() -> None:
     fake_db = FakeSecretarySession()
     client = _client(fake_db)
@@ -1255,7 +1508,7 @@ def test_create_event_on_public_holiday_returns_422() -> None:
         "/secretary/teaching-events",
         headers=_headers(fake_db),
         json={
-            "teaching_name": "Journal Club",
+            **_pool_source(fake_db),
             "event_date": "2026-05-01",
             "start_time": "10:00",
         },
@@ -1321,7 +1574,7 @@ def test_secretary_cannot_mutate_pc_event_outside_active_programme_pool() -> Non
         f"/secretary/teaching-events/{fake_db.unrelated_pc_event_id}",
         headers=_headers(fake_db),
         json={
-            "teaching_name": "Journal Club",
+            **_pool_source(fake_db),
             "event_date": "2026-05-26",
             "start_time": "10:00",
         },
@@ -1361,21 +1614,73 @@ def test_teaching_name_options_use_programme_pool_and_include_active_globals() -
     keywords = [row["keyword"] for row in options]
 
     assert "GERI Demo Row 22" in keywords
-    assert keywords.count("GERI Shared Teaching") == 1
+    assert keywords.count("GERI Shared Teaching") == 2
     assert "Department Meeting [1h]" in keywords
     assert "Wrong Site Teaching" not in keywords
     assert "Journal Club" not in keywords
     assert "Inactive Global [1h]" not in keywords
 
-    shared = next(row for row in options if row["keyword"] == "GERI Shared Teaching")
-    assert shared["posting_codes"] == ["TTSHContCC", "TTSHGerMed"]
-    assert shared["session_type_id"] is None
-    assert shared["session_type"] is None
+    shared = [row for row in options if row["keyword"] == "GERI Shared Teaching"]
+    assert {row["teaching_name_id"] for row in shared} == {
+        fake_db.teaching_name_id_for("GERI Shared Teaching", "GERI"),
+        fake_db.teaching_names[-1]["id"],
+    }
+    assert all(row["global_session_type_id"] is None for row in shared)
+    shared_by_id = {row["teaching_name_id"]: row for row in shared}
+    mapped_shared = shared_by_id[
+        fake_db.teaching_name_id_for("GERI Shared Teaching", "GERI")
+    ]
+    pending_shared = shared_by_id[fake_db.teaching_names[-1]["id"]]
+    assert Decimal(str(mapped_shared["duration_hours"])) == Decimal("2.0")
+    assert mapped_shared["duration_is_mapped"] is True
+    assert Decimal(str(pending_shared["duration_hours"])) == Decimal("1.0")
+    assert pending_shared["duration_is_mapped"] is False
 
     row2_index = keywords.index("GERI Demo Row 2")
     row10_index = keywords.index("GERI Demo Row 10")
     row11_index = keywords.index("GERI Demo Row 11")
     assert row2_index < row10_index < row11_index
+
+
+def test_teaching_name_options_filter_pool_rows_to_the_selected_programme() -> None:
+    fake_db = FakeSecretarySession()
+    fake_db.secretary_programme_pools.append(
+        {
+            "posting_code": "TTSHGerMed",
+            "programme_code": "CARD",
+            "is_active": True,
+            "can_manage_teaching_names": True,
+        }
+    )
+    client = _client(fake_db)
+
+    response = client.get(
+        "/secretary/teaching-name-options",
+        headers=_headers(fake_db, site="TTSHGerMed"),
+        params={"programme_code": "GERI"},
+    )
+
+    assert response.status_code == 200
+    options = response.json()["options"]
+    pool_rows = [row for row in options if not row["is_global"]]
+    global_rows = [row for row in options if row["is_global"]]
+    assert pool_rows
+    assert {row["programme_code"] for row in pool_rows} == {"GERI"}
+    assert "Journal Club" not in {row["keyword"] for row in pool_rows}
+    assert {row["keyword"] for row in global_rows} == {"Department Meeting [1h]"}
+
+    unauthorised_response = client.get(
+        "/secretary/teaching-name-options",
+        headers=_headers(fake_db, site="TTSHGerMed"),
+        params={"programme_code": "NEURO"},
+    )
+
+    assert unauthorised_response.status_code == 200
+    unauthorised_options = unauthorised_response.json()["options"]
+    assert [row for row in unauthorised_options if not row["is_global"]] == []
+    assert {row["keyword"] for row in unauthorised_options if row["is_global"]} == {
+        "Department Meeting [1h]"
+    }
 
 
 def test_teaching_name_options_do_not_leak_from_future_period() -> None:
@@ -1392,16 +1697,16 @@ def test_teaching_name_options_do_not_leak_from_future_period() -> None:
             "deactivate_on": None,
         }
     )
-    fake_db.catalogue.append(
+    fake_db.teaching_names.append(
         {
-            "keyword": "Future Test Teaching",
-            "posting_code": "TTSHCardio",
+            "id": str(uuid4()),
+            "display_name": "Future Test Teaching",
             "programme_code": "CARD",
-            "session_type_id": fake_db.session_type_id,
-            "session_type": "Future Test Teaching [1h]",
-            "duration_hours": Decimal("1.0"),
-            "is_tracked": True,
             "reporting_period_id": future_period_id,
+            "created_by_role": "secretary",
+            "visibility_scope": "department_shared",
+            "origin_posting_code": "TTSHCardio",
+            "is_active": True,
         }
     )
     client = _client(fake_db)
@@ -1428,7 +1733,7 @@ def test_teaching_name_options_do_not_leak_from_future_period() -> None:
     assert mismatched_date.status_code == 422
 
 
-def test_create_event_accepts_keyword_from_mapped_programme_pool() -> None:
+def test_create_event_accepts_source_id_from_mapped_programme_pool() -> None:
     fake_db = FakeSecretarySession()
     client = _client(fake_db)
 
@@ -1436,7 +1741,7 @@ def test_create_event_accepts_keyword_from_mapped_programme_pool() -> None:
         "/secretary/teaching-events",
         headers=_headers(fake_db, site="TTSHGerMed"),
         json={
-            "teaching_name": "GERI Demo Row 22",
+            **_pool_source(fake_db, "GERI Demo Row 22", "GERI"),
             "event_date": "2026-05-18",
             "start_time": "10:00",
         },
@@ -1449,7 +1754,32 @@ def test_create_event_accepts_keyword_from_mapped_programme_pool() -> None:
     assert payload["created_for_programme_code"] is None
 
 
-def test_other_secretary_posting_cannot_use_ttshgermed_catalogue_option() -> None:
+def test_secretary_pool_event_creation_allows_schedule_overlap() -> None:
+    fake_db = FakeSecretarySession()
+    client = _client(fake_db)
+    payload = {
+        **_pool_source(fake_db, "GERI Demo Row 22", "GERI"),
+        "event_date": "2026-05-18",
+        "start_time": "10:00",
+    }
+
+    first = client.post(
+        "/secretary/teaching-events",
+        headers=_headers(fake_db, site="TTSHGerMed"),
+        json=payload,
+    )
+    second = client.post(
+        "/secretary/teaching-events",
+        headers=_headers(fake_db, site="TTSHGerMed"),
+        json={**payload, "start_time": "10:30"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["id"] != second.json()["id"]
+
+
+def test_other_secretary_posting_cannot_use_ttshgermed_pool_identity() -> None:
     fake_db = FakeSecretarySession()
     client = _client(fake_db)
 
@@ -1457,13 +1787,13 @@ def test_other_secretary_posting_cannot_use_ttshgermed_catalogue_option() -> Non
         "/secretary/teaching-events",
         headers=_headers(fake_db, site="TTSHCardio"),
         json={
-            "teaching_name": "GERI Demo Row 22",
+            **_pool_source(fake_db, "GERI Demo Row 22", "GERI"),
             "event_date": "2026-05-18",
             "start_time": "10:00",
         },
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 403
     assert all(
         row["teaching_name"] != "GERI Demo Row 22" or row["posting_code"] != "TTSHCardio"
         for row in fake_db.events
@@ -1587,7 +1917,7 @@ def test_duplicate_event_respects_scope_and_rejects_client_posting_code() -> Non
             "source_event_id": fake_db.attended_event_id,
             "event_date": "2026-05-25",
             "start_time": "10:00",
-            "teaching_name": "Journal Club",
+            **_pool_source(fake_db),
         },
     )
     forbidden_body = client.post(
@@ -1655,7 +1985,7 @@ def test_secretary_event_mutation_locks_and_rejects_any_attendance_status(
             f"/secretary/teaching-events/{event_id}",
             headers=_headers(fake_db),
             json={
-                "teaching_name": "Journal Club",
+                **_pool_source(fake_db),
                 "event_date": "2026-05-26",
                 "start_time": "11:00",
             },
@@ -1685,7 +2015,7 @@ def test_recurring_series_create_scopes_events_and_skips_public_holidays() -> No
         "/secretary/teaching-events/series",
         headers=_headers(fake_db),
         json={
-            "teaching_name": "Journal Club",
+            **_pool_source(fake_db),
             "start_date": "2026-04-24",
             "start_time": "10:00",
             "recurrence_pattern": "weekly",
@@ -1699,7 +2029,7 @@ def test_recurring_series_create_scopes_events_and_skips_public_holidays() -> No
         "/secretary/teaching-events/series",
         headers=_headers(fake_db),
         json={
-            "teaching_name": "Journal Club",
+            **_pool_source(fake_db),
             "posting_code": "TTSHNeuro",
             "start_date": "2026-04-24",
             "start_time": "10:00",
@@ -1804,7 +2134,7 @@ def test_cache_invalidation_called_after_event_mutations(monkeypatch) -> None:
         "/secretary/teaching-events",
         headers=_headers(fake_db),
         json={
-            "teaching_name": "Journal Club",
+            **_pool_source(fake_db),
             "event_date": "2026-05-18",
             "start_time": "10:00",
         },
@@ -1826,7 +2156,7 @@ def test_cache_invalidation_called_after_event_mutations(monkeypatch) -> None:
         "/secretary/teaching-events/series",
         headers=_headers(fake_db),
         json={
-            "teaching_name": "Journal Club",
+            **_pool_source(fake_db),
             "start_date": "2026-04-24",
             "start_time": "10:00",
             "recurrence_pattern": "weekly",
@@ -1862,7 +2192,7 @@ def test_secretary_event_mutation_invalidates_scoped_event_domains(monkeypatch) 
         "/secretary/teaching-events",
         headers=_headers(fake_db),
         json={
-            "teaching_name": "Journal Club",
+            **_pool_source(fake_db),
             "event_date": "2026-05-18",
             "start_time": "10:00",
         },

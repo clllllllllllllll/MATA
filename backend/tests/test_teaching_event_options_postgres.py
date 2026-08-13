@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -18,9 +17,10 @@ from app.services.database_context import (
     MataSyncSession,
     configure_request_context,
 )
+from tests.postgres_disposable_database import configured_disposable_database_name
 
 
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_final_security_review"
+DISPOSABLE_DATABASE_NAME = configured_disposable_database_name()
 _TEST_SESSION_HASH_KEY = "rls-event-options-test-session-key-32-bytes"
 
 
@@ -140,7 +140,9 @@ async def test_programme_and_secretary_options_have_postgres_cardinality_and_sco
     programme_code = f"PG{suffix}".upper()[:20]
     secretary_posting = f"PGSec{suffix}"
     second_posting = f"PGAlt{suffix}"
-    keyword = f"PG Shared {suffix}"
+    pending_keyword = f"PG Pending {suffix}"
+    mapped_keyword = f"PG Mapped {suffix}"
+    inactive_keyword = f"PG Inactive {suffix}"
     period_id = uuid4()
     session_type_one = uuid4()
     session_type_two = uuid4()
@@ -148,6 +150,13 @@ async def test_programme_and_secretary_options_have_postgres_cardinality_and_sco
     second_posting_id = uuid4()
     programme_id = uuid4()
     pool_id = uuid4()
+    pending_name_id = uuid4()
+    mapped_name_id = uuid4()
+    inactive_name_id = uuid4()
+    target_id = uuid4()
+    mapping_id = uuid4()
+    active_global_id = uuid4()
+    inactive_global_id = uuid4()
     pc_user_id = uuid4()
     pc_supabase_user_id = uuid4()
     secretary_user_id = uuid4()
@@ -262,9 +271,10 @@ async def test_programme_and_secretary_options_have_postgres_cardinality_and_sco
                     text(
                         """
                         INSERT INTO secretary_programme_pools (
-                            id, posting_code, programme_code, is_active
+                            id, posting_code, programme_code, is_active,
+                            can_manage_teaching_names
                         )
-                        VALUES (:id, :posting_code, :programme_code, true)
+                        VALUES (:id, :posting_code, :programme_code, true, true)
                         """
                     ),
                     {
@@ -276,43 +286,139 @@ async def test_programme_and_secretary_options_have_postgres_cardinality_and_sco
             await owner_db.execute(
                     text(
                         """
-                        INSERT INTO teaching_name_catalogue (
-                            id,
-                            keyword,
-                            session_type_id,
-                            posting_code,
-                            programme_code,
-                            r_year,
-                            reporting_period_id,
-                            duration_hours,
-                            is_tracked
+                        INSERT INTO teaching_names (
+                            id, reporting_period_id, programme_code,
+                            display_name, normalized_name, is_active,
+                            created_by_role, visibility_scope,
+                            origin_posting_code
                         )
                         VALUES
                             (
-                                :first_id, :keyword, :first_session_type_id,
-                                :first_posting, :programme_code, 'ALL',
-                                :reporting_period_id, 2.0, true
+                                :pending_id, :period_id, :programme_code,
+                                :pending_name, :pending_normalized, true,
+                                'secretary', 'department_shared', :posting_code
                             ),
                             (
-                                :second_id, :keyword, :second_session_type_id,
-                                :second_posting, :programme_code, 'ALL',
-                                :reporting_period_id, 1.0, false
+                                :mapped_id, :period_id, :programme_code,
+                                :mapped_name, :mapped_normalized, true,
+                                'secretary', 'department_shared', :posting_code
+                            ),
+                            (
+                                :inactive_id, :period_id, :programme_code,
+                                :inactive_name, :inactive_normalized, false,
+                                'secretary', 'department_shared', :posting_code
                             )
                         """
                     ),
                     {
-                        "first_id": uuid4(),
-                        "second_id": uuid4(),
-                        "keyword": keyword,
-                        "first_session_type_id": session_type_one,
-                        "second_session_type_id": session_type_two,
-                        "first_posting": secretary_posting,
-                        "second_posting": second_posting,
+                        "pending_id": pending_name_id,
+                        "mapped_id": mapped_name_id,
+                        "inactive_id": inactive_name_id,
+                        "period_id": period_id,
                         "programme_code": programme_code,
-                        "reporting_period_id": period_id,
+                        "posting_code": secretary_posting,
+                        "pending_name": pending_keyword,
+                        "pending_normalized": pending_keyword.lower(),
+                        "mapped_name": mapped_keyword,
+                        "mapped_normalized": mapped_keyword.lower(),
+                        "inactive_name": inactive_keyword,
+                        "inactive_normalized": inactive_keyword.lower(),
                     },
                 )
-
+            await owner_db.execute(
+                text(
+                    """
+                        INSERT INTO teaching_name_programme_scopes (
+                            teaching_name_id, reporting_period_id, programme_code,
+                            admission_reason, admitted_by_user_id
+                        )
+                        VALUES
+                            (:pending_id, :period_id, :programme_code,
+                             'owner_programme', :secretary_id),
+                            (:mapped_id, :period_id, :programme_code,
+                             'owner_programme', :secretary_id),
+                            (:inactive_id, :period_id, :programme_code,
+                             'owner_programme', :secretary_id)
+                    """
+                ),
+                {
+                    "pending_id": pending_name_id,
+                    "mapped_id": mapped_name_id,
+                    "inactive_id": inactive_name_id,
+                    "period_id": period_id,
+                    "programme_code": programme_code,
+                    "secretary_id": secretary_user_id,
+                },
+            )
+            await owner_db.execute(
+                    text(
+                        """
+                        INSERT INTO teaching_targets (
+                            id, reporting_period_id, programme_code, r_year,
+                            posting_code, session_type_id, monthly_target,
+                            is_tracked
+                        )
+                        VALUES (
+                            :id, :period_id, :programme_code, 'ALL',
+                            :posting_code, :session_type_id, 1, true
+                        )
+                        """
+                    ),
+                    {
+                        "id": target_id,
+                        "period_id": period_id,
+                        "programme_code": programme_code,
+                        "posting_code": secretary_posting,
+                        "session_type_id": session_type_one,
+                    },
+                )
+            await owner_db.execute(
+                    text(
+                        """
+                        INSERT INTO teaching_name_mappings (
+                            id, teaching_name_id, reporting_period_id,
+                            programme_code, posting_code, r_year,
+                            teaching_target_id
+                        )
+                        VALUES
+                            (
+                                :id, :teaching_name_id, :period_id,
+                                :programme_code, :posting_code, 'ALL', :target_id
+                            ),
+                            (
+                                gen_random_uuid(), :pending_name_id, :period_id,
+                                :programme_code, :posting_code, 'ALL', NULL
+                            )
+                        """
+                    ),
+                    {
+                        "id": mapping_id,
+                        "teaching_name_id": mapped_name_id,
+                        "pending_name_id": pending_name_id,
+                        "period_id": period_id,
+                        "programme_code": programme_code,
+                        "posting_code": secretary_posting,
+                        "target_id": target_id,
+                    },
+                )
+            await owner_db.execute(
+                    text(
+                        """
+                        INSERT INTO global_session_types (
+                            id, name, duration_hours, is_active
+                        )
+                        VALUES
+                            (:active_id, :active_name, 1.0, true),
+                            (:inactive_id, :inactive_name, 1.0, false)
+                        """
+                    ),
+                    {
+                        "active_id": active_global_id,
+                        "active_name": f"PG Global Active {suffix}",
+                        "inactive_id": inactive_global_id,
+                        "inactive_name": f"PG Global Inactive {suffix}",
+                    },
+                )
             await owner_db.commit()
 
         pc_session = await _issue_staff_session(
@@ -348,16 +454,19 @@ async def test_programme_and_secretary_options_have_postgres_cardinality_and_sco
                 reporting_period_id=period_id,
             )
 
-        pc_option = next(row for row in pc_options if row["keyword"] == keyword)
-        secretary_option = next(
-            row for row in secretary_options if row["keyword"] == keyword
-        )
-        expected_postings = sorted([secretary_posting, second_posting])
-        assert pc_option["posting_codes"] == expected_postings
-        assert secretary_option["posting_codes"] == expected_postings
-        assert pc_option["session_type_id"] is None
-        assert secretary_option["session_type_id"] is None
-        assert secretary_option["is_tracked"] is None
+        for options in (pc_options, secretary_options):
+            by_keyword = {row["keyword"]: row for row in options}
+            assert by_keyword[pending_keyword]["teaching_name_id"] == pending_name_id
+            assert by_keyword[mapped_keyword]["teaching_name_id"] == mapped_name_id
+            assert by_keyword[pending_keyword]["programme_code"] == programme_code
+            assert by_keyword[mapped_keyword]["programme_code"] == programme_code
+            assert by_keyword[pending_keyword]["global_session_type_id"] is None
+            assert by_keyword[mapped_keyword]["global_session_type_id"] is None
+            assert by_keyword[f"PG Global Active {suffix}"][
+                "global_session_type_id"
+            ] == active_global_id
+            assert inactive_keyword not in by_keyword
+            assert f"PG Global Inactive {suffix}" not in by_keyword
     finally:
         async with AsyncSession(owner_engine, expire_on_commit=False) as owner_db:
             await owner_db.execute(
@@ -370,11 +479,20 @@ async def test_programme_and_secretary_options_have_postgres_cardinality_and_sco
                 {"pc_id": pc_user_id, "secretary_id": secretary_user_id},
             )
             await owner_db.execute(
-                text(
-                    "DELETE FROM teaching_name_catalogue "
-                    "WHERE reporting_period_id = :period_id"
-                ),
+                text("DELETE FROM teaching_name_mappings WHERE id = :id"),
+                {"id": mapping_id},
+            )
+            await owner_db.execute(
+                text("DELETE FROM teaching_names WHERE reporting_period_id = :period_id"),
                 {"period_id": period_id},
+            )
+            await owner_db.execute(
+                text("DELETE FROM teaching_targets WHERE id = :id"),
+                {"id": target_id},
+            )
+            await owner_db.execute(
+                text("DELETE FROM global_session_types WHERE id IN (:active_id, :inactive_id)"),
+                {"active_id": active_global_id, "inactive_id": inactive_global_id},
             )
             await owner_db.execute(
                 text(

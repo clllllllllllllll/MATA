@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from http.cookies import SimpleCookie
+import os
 from uuid import UUID, uuid4
 
 import pytest
@@ -64,8 +65,15 @@ from app.services.staff_accounts import (
 
 SESSION_KEY = "postgres-session-integration-key-at-least-32-characters"
 RATE_KEY = "postgres-rate-integration-key-at-least-32-characters"
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_final_security_review"
-EXPECTED_ALEMBIC_REVISION = "20260728_000028"
+DEFAULT_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_e2b2_verify"
+PHASE_R_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_r_verify"
+PHASE_K_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_k_verify"
+PHASE_L_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_l_verify"
+DISPOSABLE_DATABASE_NAME = os.environ.get(
+    "MATA_RLS_DISPOSABLE_DATABASE_NAME",
+    DEFAULT_DISPOSABLE_DATABASE_NAME,
+)
+EXPECTED_ALEMBIC_REVISION = "20260813_000042"
 CONCURRENCY_TIMEOUT_SECONDS = 10
 
 
@@ -106,6 +114,13 @@ def _assert_disposable_database(database_url: str) -> None:
     if (
         url.drivername != "postgresql+asyncpg"
         or url.host not in {"localhost", "127.0.0.1", "::1"}
+        or DISPOSABLE_DATABASE_NAME
+        not in {
+            DEFAULT_DISPOSABLE_DATABASE_NAME,
+            PHASE_R_DISPOSABLE_DATABASE_NAME,
+            PHASE_K_DISPOSABLE_DATABASE_NAME,
+            PHASE_L_DISPOSABLE_DATABASE_NAME,
+        }
         or url.database != DISPOSABLE_DATABASE_NAME
         or bool(url.query)
     ):

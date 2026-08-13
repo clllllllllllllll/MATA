@@ -454,6 +454,9 @@ export const PcResidentAttendanceDetailPage = () => {
                         <td>
                           <strong>{row.teachingName}</strong>
                           {row.detailsOfSession ? <span className="pc-resident-attendance-cell-note">{row.detailsOfSession}</span> : null}
+                          {row.submittedDuringLoa ? (
+                            <span className="pc-resident-attendance-cell-note">During LOA{row.loaType ? ` - ${row.loaType}` : ''}</span>
+                          ) : null}
                         </td>
                         <td className="mono">{formatAttendanceDate(row.eventDate)}</td>
                         <td className="mono">{formatAttendanceTimeRange(row.startTime, row.endTime)}</td>
@@ -496,6 +499,9 @@ export const PcResidentAttendanceDetailPage = () => {
                     </div>
                     {row.detailsOfSession ? (
                       <p className="pc-resident-attendance-card-note">{row.detailsOfSession}</p>
+                    ) : null}
+                    {row.submittedDuringLoa ? (
+                      <p className="pc-resident-attendance-card-note">During LOA{row.loaType ? ` - ${row.loaType}` : ''}</p>
                     ) : null}
                     <dl className="pc-attendance-card-details pc-resident-attendance-card-details">
                       <div><dt>Date</dt><dd>{formatAttendanceDate(row.eventDate)}</dd></div>

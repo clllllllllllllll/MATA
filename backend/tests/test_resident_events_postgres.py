@@ -18,9 +18,10 @@ from app.services.database_context import (
     MataSyncSession,
     configure_request_context,
 )
+from tests.postgres_disposable_database import configured_disposable_database_name
 
 
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_final_security_review"
+DISPOSABLE_DATABASE_NAME = configured_disposable_database_name()
 _TEST_SESSION_HASH_KEY = "rls-resident-events-test-session-key-32-bytes"
 
 
@@ -253,35 +254,6 @@ async def test_resident_event_discovery_merges_active_periods_and_deduplicates_o
                     {"id": session_type_id, "name": f"Resident type {suffix} [1h]"},
                 )
             await owner_db.execute(
-                    text(
-                        """
-                        INSERT INTO teaching_name_catalogue (
-                            id, keyword, session_type_id, posting_code, programme_code,
-                            r_year, reporting_period_id, duration_hours, is_tracked
-                        )
-                        VALUES
-                            (:first_id, :keyword, :session_type_id, :posting_code,
-                             :programme_code, 'ALL', :first_period_id, 1.0, true),
-                            (:second_id, :keyword, :session_type_id, :posting_code,
-                             :programme_code, 'ALL', :second_period_id, 1.0, true),
-                            (:inactive_id, :keyword, :session_type_id, :posting_code,
-                             :programme_code, 'ALL', :inactive_period_id, 1.0, true)
-                        """
-                    ),
-                    {
-                        "first_id": uuid4(),
-                        "second_id": uuid4(),
-                        "inactive_id": uuid4(),
-                        "keyword": keyword,
-                        "session_type_id": session_type_id,
-                        "posting_code": posting_code,
-                        "programme_code": programme_code,
-                        "first_period_id": first_period_id,
-                        "second_period_id": second_period_id,
-                        "inactive_period_id": inactive_period_id,
-                    },
-                )
-            await owner_db.execute(
                 text(
                     """
                     INSERT INTO teaching_events (
@@ -390,42 +362,6 @@ async def test_resident_event_discovery_merges_active_periods_and_deduplicates_o
                 "posting_code": posting_code,
             },
         ) is True
-        assert await runtime_db.scalar(
-            text(
-                """
-                SELECT mata_rls.can_access_teaching_catalogue(
-                    :programme_code,
-                    :posting_code,
-                    :period_id
-                )
-                """
-            ),
-            {
-                "programme_code": programme_code,
-                "posting_code": posting_code,
-                "period_id": first_period_id,
-            },
-        ) is True
-        visible_catalogue_periods = set(
-            (
-                await runtime_db.scalars(
-                    text(
-                        """
-                        SELECT reporting_period_id
-                        FROM teaching_name_catalogue
-                        WHERE keyword = :keyword
-                        """
-                    ),
-                    {"keyword": keyword},
-                )
-            ).all()
-        )
-        assert visible_catalogue_periods == {
-            first_period_id,
-            second_period_id,
-            inactive_period_id,
-        }
-
         payload = await resident_submission.list_available_events(
             runtime_db,
             resident_id=resident_id,
@@ -476,21 +412,6 @@ async def test_resident_event_discovery_merges_active_periods_and_deduplicates_o
                     "first_id": first_event_id,
                     "second_id": second_event_id,
                     "inactive_id": inactive_event_id,
-                },
-            )
-            await owner_db.execute(
-                text(
-                    """
-                    DELETE FROM teaching_name_catalogue
-                    WHERE reporting_period_id IN (
-                        :first_id, :second_id, :inactive_id
-                    )
-                    """
-                ),
-                {
-                    "first_id": first_period_id,
-                    "second_id": second_period_id,
-                    "inactive_id": inactive_period_id,
                 },
             )
             await owner_db.execute(

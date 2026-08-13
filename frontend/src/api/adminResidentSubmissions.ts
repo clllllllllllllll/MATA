@@ -22,6 +22,8 @@ export interface AdminResidentSubmissionListItem {
   source: string
   isAdhoc: boolean
   status: string
+  submittedDuringLoa: boolean
+  loaType?: string | null
   submittedAt: string
   sessionTypeId?: string | null
   sessionTypeName?: string | null
@@ -52,6 +54,8 @@ export interface AdminResidentSubmissionAttendanceMetadata {
   residentId: string
   teachingEventId: string
   status: string
+  submittedDuringLoa: boolean
+  loaType?: string | null
   attendancePostingCode?: string | null
   submittedAt: string
   createdAt?: string | null
@@ -208,6 +212,8 @@ const toListItem = (value: Record<string, unknown>): AdminResidentSubmissionList
   source: String(value.source ?? ''),
   isAdhoc: toBoolean(value.is_adhoc),
   status: String(value.status ?? ''),
+  submittedDuringLoa: toBoolean(value.submitted_during_loa),
+  loaType: optionalString(value.loa_type),
   submittedAt: String(value.submitted_at ?? ''),
   sessionTypeId: optionalString(value.session_type_id),
   sessionTypeName: optionalString(value.session_type_name),
@@ -235,6 +241,8 @@ const toAttendanceRecord = (value: unknown): AdminResidentSubmissionAttendanceMe
     residentId: String(record.resident_id ?? ''),
     teachingEventId: String(record.teaching_event_id ?? ''),
     status: String(record.status ?? ''),
+    submittedDuringLoa: toBoolean(record.submitted_during_loa),
+    loaType: optionalString(record.loa_type),
     attendancePostingCode: optionalString(record.attendance_posting_code),
     submittedAt: String(record.submitted_at ?? ''),
     createdAt: optionalString(record.created_at),

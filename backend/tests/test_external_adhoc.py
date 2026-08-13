@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -58,7 +57,6 @@ def test_external_adhoc_creates_event_and_external_attendance() -> None:
         json={
             "date": "2026-05-18",
             "start_time": "10:00",
-            "teaching_name": "Journal Club",
         },
     )
 
@@ -71,6 +69,11 @@ def test_external_adhoc_creates_event_and_external_attendance() -> None:
     assert len(fake_db.external_attendance) == before_attendance + 1
     assert len(fake_db.external_attendance_lock_calls) == 1
     assert len(fake_db.adhoc_helper_calls) == 1
+    assert fake_db.adhoc_helper_calls[0]["teaching_name"] == (
+        "Department/Programme Teaching [1h]"
+    )
+    assert str(fake_db.adhoc_helper_calls[0]["duration_hours"]) == "1.00"
+    assert fake_db.adhoc_helper_calls[0]["session_type_id"] is None
     assert set(fake_db.adhoc_helper_calls[0]) == {
         "posting_code",
         "attended_posting_code",
@@ -108,7 +111,6 @@ def test_external_adhoc_commit_failure_rolls_back_event_and_attendance_and_retur
         json={
             "date": "2026-05-18",
             "start_time": "14:00",
-            "teaching_name": "Journal Club",
         },
     )
 
@@ -138,7 +140,6 @@ def test_external_adhoc_rejects_overlap_before_calling_atomic_helper() -> None:
         json={
             "date": existing_event["event_date"].isoformat(),
             "start_time": existing_event["start_time"].isoformat(),
-            "teaching_name": "Journal Club",
         },
     )
 
@@ -152,14 +153,7 @@ def test_external_adhoc_rejects_overlap_before_calling_atomic_helper() -> None:
 
 def test_external_adhoc_options_use_date_matched_posting_schedule() -> None:
     fake_db = FakeResidentSession()
-    fake_db.catalogue.append(
-        fake_db._catalogue(  # noqa: SLF001
-            "KTPH Case Teaching",
-            "KTPHGerMed",
-            fake_db.session_type_id,
-            Decimal("1.0"),
-        )
-    )
+    fake_db.teaching_targets = []
     fake_db.external_residents[0]["current_nhg_posting_code"] = "TTSHCardio"
     fake_db.external_resident_postings = [
         {
@@ -183,12 +177,13 @@ def test_external_adhoc_options_use_date_matched_posting_schedule() -> None:
     payload = response.json()
     assert payload["available"] is True
     assert payload["posting_code"] == "KTPHGerMed"
+    assert payload["reporting_period_id"] == fake_db.period_id
     assert payload["r_year"] is None
-    option_names = {row["teaching_name"] for row in payload["options"]}
-    assert "KTPH Case Teaching" in option_names
+    assert payload["options"][0]["teaching_name"] == "Department/Programme Teaching [1h]"
+    assert payload["options"][0]["session_type_id"] is None
 
 
-def test_external_adhoc_options_filter_by_selected_attended_posting() -> None:
+def test_external_adhoc_options_reject_client_selected_non_schedule_posting() -> None:
     fake_db = FakeResidentSession()
     fake_db.external_residents[0]["current_nhg_posting_code"] = "KTPHGerMed"
     fake_db.external_resident_postings = [
@@ -209,15 +204,11 @@ def test_external_adhoc_options_filter_by_selected_attended_posting() -> None:
         params={"date": "2026-05-18", "attended_posting_code": "TTSHCardio"},
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["posting_code"] == "KTPHGerMed"
-    assert payload["selected_attended_posting_code"] == "TTSHCardio"
-    option_names = {row["teaching_name"] for row in payload["options"]}
-    assert "Journal Club" in option_names
+    assert response.status_code == 422
+    assert "attended_posting_code" in response.json()["detail"]
 
 
-def test_external_adhoc_options_do_not_leak_future_period_catalogue() -> None:
+def test_external_adhoc_options_ignore_future_period() -> None:
     fake_db = FakeResidentSession()
     future_period_id = str(uuid4())
     fake_db.reporting_periods.append(
@@ -231,14 +222,6 @@ def test_external_adhoc_options_do_not_leak_future_period_catalogue() -> None:
             "deactivate_on": None,
         }
     )
-    future_row = fake_db._catalogue(  # noqa: SLF001
-        "Future Test Teaching",
-        "TTSHCardio",
-        fake_db.session_type_id,
-        Decimal("1.0"),
-    )
-    future_row["reporting_period_id"] = future_period_id
-    fake_db.catalogue.append(future_row)
     client = _client(fake_db)
 
     response = client.get(
@@ -248,7 +231,11 @@ def test_external_adhoc_options_do_not_leak_future_period_catalogue() -> None:
     )
 
     assert response.status_code == 200
-    assert "Future Test Teaching" not in {row["teaching_name"] for row in response.json()["options"]}
+    assert len(response.json()["options"]) == 1
+    option = response.json()["options"][0]
+    assert option["teaching_name"] == "Department/Programme Teaching [1h]"
+    assert option["session_type_id"] is None
+    assert str(option["duration_hours"]) == "1.00"
 
 
 def test_external_adhoc_options_no_schedule_row_returns_unavailable() -> None:
@@ -268,6 +255,39 @@ def test_external_adhoc_options_no_schedule_row_returns_unavailable() -> None:
     assert payload["options"] == []
 
 
+def test_external_adhoc_overlapping_schedule_rows_fail_closed() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.external_resident_postings.append(
+        {
+            **fake_db.external_resident_postings[0],
+            "id": str(uuid4()),
+            "posting_code": "TTSHNeuro",
+        }
+    )
+    before_events = len(fake_db.events)
+    before_external_attendance = len(fake_db.external_attendance)
+    client = _client(fake_db)
+
+    options_response = client.get(
+        "/resident/adhoc-teaching-options",
+        headers=_external_headers(fake_db),
+        params={"date": "2026-05-18"},
+    )
+    submit_response = client.post(
+        "/resident/adhoc-teaching",
+        headers=_external_headers(fake_db),
+        json={"date": "2026-05-18", "start_time": "10:00"},
+    )
+
+    assert options_response.status_code == 200
+    assert options_response.json()["available"] is False
+    assert options_response.json()["reason"] == "posting_unavailable"
+    assert submit_response.status_code == 422
+    assert "Non-NHG Resident posting" in submit_response.json()["detail"]
+    assert len(fake_db.events) == before_events
+    assert len(fake_db.external_attendance) == before_external_attendance
+
+
 def test_external_adhoc_missing_schedule_error_uses_non_nhg_label() -> None:
     fake_db = FakeResidentSession()
     before_events = len(fake_db.events)
@@ -280,7 +300,6 @@ def test_external_adhoc_missing_schedule_error_uses_non_nhg_label() -> None:
         json={
             "date": "2026-04-15",
             "start_time": "10:00",
-            "teaching_name": "Journal Club",
         },
     )
 
@@ -292,14 +311,7 @@ def test_external_adhoc_missing_schedule_error_uses_non_nhg_label() -> None:
 
 def test_external_adhoc_uses_date_matched_posting_schedule() -> None:
     fake_db = FakeResidentSession()
-    fake_db.catalogue.append(
-        fake_db._catalogue(  # noqa: SLF001
-            "Journal Club",
-            "KTPHGerMed",
-            fake_db.session_type_id,
-            Decimal("1.0"),
-        )
-    )
+    fake_db.teaching_targets = []
     fake_db.external_residents[0]["current_nhg_posting_code"] = "TTSHCardio"
     fake_db.external_resident_postings = [
         {
@@ -319,7 +331,6 @@ def test_external_adhoc_uses_date_matched_posting_schedule() -> None:
         json={
             "date": "2026-05-18",
             "start_time": "10:00",
-            "teaching_name": "Journal Club",
         },
     )
 
@@ -327,7 +338,7 @@ def test_external_adhoc_uses_date_matched_posting_schedule() -> None:
     assert response.json()["event"]["posting_code"] == "KTPHGerMed"
 
 
-def test_external_adhoc_uses_attended_posting_options_but_writes_external_only() -> None:
+def test_external_adhoc_rejects_client_selected_non_schedule_posting() -> None:
     fake_db = FakeResidentSession()
     fake_db.external_residents[0]["current_nhg_posting_code"] = "KTPHGerMed"
     fake_db.external_resident_postings = [
@@ -351,19 +362,15 @@ def test_external_adhoc_uses_attended_posting_options_but_writes_external_only()
             "date": "2026-05-18",
             "start_time": "10:00",
             "attended_posting_code": "TTSHCardio",
-            "teaching_name": "Journal Club",
         },
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["event"]["posting_code"] == "KTPHGerMed"
-    assert payload["event"]["teaching_name"] == "Journal Club"
-    assert len(fake_db.external_attendance) == before_external_attendance + 1
+    assert response.status_code == 422
+    assert len(fake_db.external_attendance) == before_external_attendance
     assert len(fake_db.attendance) == before_native_attendance
 
 
-def test_external_adhoc_requires_teaching_name_catalogue() -> None:
+def test_external_adhoc_works_without_teaching_target() -> None:
     fake_db = FakeResidentSession()
     before_events = len(fake_db.events)
     before_attendance = len(fake_db.external_attendance)
@@ -378,6 +385,7 @@ def test_external_adhoc_requires_teaching_name_catalogue() -> None:
             "is_current": True,
         }
     ]
+    fake_db.teaching_targets = []
     client = _client(fake_db)
 
     response = client.post(
@@ -386,14 +394,13 @@ def test_external_adhoc_requires_teaching_name_catalogue() -> None:
         json={
             "date": "2026-05-18",
             "start_time": "10:00",
-            "teaching_name": "Completely New Topic",
         },
     )
 
-    assert response.status_code == 422
-    assert "catalogue-backed" in response.json()["detail"].lower()
-    assert len(fake_db.events) == before_events
-    assert len(fake_db.external_attendance) == before_attendance
+    assert response.status_code == 200
+    assert response.json()["event"]["teaching_name"] == "Department/Programme Teaching [1h]"
+    assert len(fake_db.events) == before_events + 1
+    assert len(fake_db.external_attendance) == before_attendance + 1
 
 
 def test_external_adhoc_public_holiday_returns_422_and_writes_nothing() -> None:
@@ -408,7 +415,6 @@ def test_external_adhoc_public_holiday_returns_422_and_writes_nothing() -> None:
         json={
             "date": "2026-05-01",
             "start_time": "10:00",
-            "teaching_name": "Journal Club",
         },
     )
 
@@ -427,7 +433,6 @@ def test_external_adhoc_weekend_non_exception_returns_warning() -> None:
         json={
             "date": date(2026, 5, 16).isoformat(),
             "start_time": "10:00",
-            "teaching_name": "Journal Club",
         },
     )
 

@@ -185,7 +185,7 @@ redeployed build.
 Each step is a hard dependency on the previous:
 
 1. **Admin uploads RDB** (Posting Schedule) → residents, postings, and rotation schedule are created
-2. **Admin uploads TTF** (Teaching Target File) → session types, compliance targets, and secretary dropdowns are seeded per programme
+2. **Admin uploads TTF** (Teaching Target File) → session types and compliance targets are reconciled per programme; scheduled-event choices come from separately managed Teaching Name and global-session pools
 3. **Secretary creates teaching events** → events become visible in the resident portal
 4. **Resident submits attendance** → compliance engine calculates targets and traffic light status
 
@@ -193,7 +193,7 @@ Each step is a hard dependency on the previous:
 
 - Compliance is measured in **session counts, not hours** — 1 session = 1 session regardless of duration
 - The **70% threshold is at the posting level**, aggregated across all session types for that posting
-- Session type is **not stored on attendance records**. It is resolved at compliance read time via teaching_name_catalogue using full context (posting, programme, r_year, reporting period).
+- Session type is **not stored on attendance records**. Scheduled events retain explicit source IDs; the future Phase 6 read-time compliance resolver remains deferred and must not use display text or the retired catalogue.
 - Surplus sessions accumulate per `(resident, posting, session_type)` and hibernate when the resident rotates away; they resume on return and reset at each reporting period boundary
 - Tag-based reallocation allows longer-duration surplus to fill shorter-duration shortfall within the same tag group at a posting
 
@@ -212,7 +212,7 @@ All technical specifications live in `docs/`:
 | `docs/parsing.md` | RDB and TTF Excel upload parsing rules and edge cases |
 | `docs/auth-account-contract.md` | Current identity, account, and session-lifecycle contract |
 | `docs/security.md` | Current cross-cutting security contract, locally verified controls, deployment assumptions, and deferred debt |
-| `docs/deployed_auth_transport_uat.md` | Current deployed-auth root-cause record, Vercel configuration plan, and post-deployment verification checklist |
+| `docs/archive/deployed_auth_transport_uat.md` | Historical deployed-auth root-cause record, Vercel configuration plan, and post-deployment verification checklist |
 | `docs/99_decision_log_and_gap_audit.md` | Architectural decisions, accepted trade-offs, unresolved gaps, and superseded history |
 | `docs/archive/security/phase-5b/README.md` | Historical Phase 5B security, migration, UAT, and verification records |
 | `AGENTS.md` | Architectural rules, TBD items, confirmed decisions — read before coding |
@@ -329,7 +329,7 @@ not the current merged source. The historical backend also returned
 configuration cutover is now deployed: both Vercel projects are READY on the
 same reviewed `main` commit, the database is at `20260728_000028`, and the
 current backend returns controlled health/auth responses without a current
-startup failure. See `docs/deployed_auth_transport_uat.md` for the deployed
+startup failure. See `docs/archive/deployed_auth_transport_uat.md` for the deployed
 evidence and remaining timed/manual UAT rows.
 
 ---

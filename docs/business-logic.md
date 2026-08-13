@@ -2,6 +2,150 @@
 
 This document covers the compliance engine, surplus chain, tag-based reallocation, and exception handling. All logic operates on **session counts, not hours**.
 
+## Phase 6 and evolved TTF status
+
+BL-1 through BL-12 are the future non-clawback compliance specification. They
+do not establish that `compliance.py`, `surplus.py`, or a full Phase 6 engine is
+implemented today. Clawback and final close remain separately deferred. Revision
+`20260805_000036` implements the final A–J parser and removes the former
+catalogue/details path. Phase C activates shared Teaching Name configuration
+lifecycle and pending-mapping reconciliation; Phase D adds only guarded
+Programme-PC mapping configuration. Phase F changes
+scheduled-event writes to use an explicit Teaching Name or Global Session Type
+identity plus an immutable display snapshot. Phase G uses those persisted
+identities for Resident/Non-NHG discovery and attendance where present, uses
+only deterministic persisted evidence for both-null legacy events, and never
+infers an identity from display text. It does not implement compliance,
+surplus, warning, or attendance reclassification.
+
+Phase H adds a read-only native target-resolution seam, not a compliance
+calculation. Given an authorized native Resident/event context—only the native
+Resident themself, a scoped Programme PC, or an explicit Master—it uses only
+the persisted source identity, immutable source scope, the date-matched
+resident phase, and an exact Teaching Name mapping scope. Its only outcomes
+are `global_excluded`, `fixed_adhoc_target`, `mapped_target`, and
+`pending_mapping`. Explicit global identity takes precedence without consulting
+the current active flag, so an inactive historical global remains excluded.
+Native ad-hoc rows resolve only the server-owned exact
+`Department/Programme Teaching [1h]` target for the assigned phase after the
+event date is also proven within that phase's reporting-period boundaries; they
+do not consult mappings. A true legacy row, deleted/malformed pool identity,
+missing exact mapping, ambiguous phase, or target-scope mismatch is an internal
+unsupported/data-quality failure, not a fifth resolver outcome and never a
+display-text, session-type, posting, or first-target fallback. The seam does
+not write events or attendance and does not calculate counts, targets,
+percentages, reallocation, Form F1, snapshots, surplus, or clawback.
+
+The evolved TTF foundation uses `teaching_name` pools scoped by reporting
+period and programme. Phase C creates pending configuration rows for each
+distinct existing `(posting_code, r_year)` target scope and preserves them on
+rename/deactivation. Phase D lets only an in-scope Programme PC assign, change,
+or clear one existing mapping to an exact target using its persisted revision;
+Master Admin oversight is read-only. A null target is pending and a non-null
+exact target is mapped, with no manual excluded state. The later JIT calculation
+must not rewrite attendance records, and a Phase D mapping change does not
+activate that calculation. Scheduling is the narrow exception: mapping changes
+recalculate the longest effective R-year duration and end time stored as the
+staff envelope on existing pool events in the exact Teaching
+Name/posting/programme/period scope. Native Resident views and overlap checks
+instead resolve the exact event-date R-year mapping, so R1 and R2 may receive
+different durations from the same event. Each exact R-year mapping still
+selects only one target. Immutable display and source snapshots and linked
+attendance rows remain unchanged. Non-NHG Residents use exact posting
+visibility and the staff envelope because NHG compliance/R-year resolution
+does not apply.
+
+### Phase V: cross-posting Teaching Name mapping and PC-private names
+
+Phase V separates **Teaching Name ownership** from the **mapping programme**.
+The owner identifies the department/programme that created and manages the
+name. The mapping programme is the native programme whose PC maps that name to
+its own TTF targets for its own Residents. The same Secretary-created Teaching
+Name may therefore be mapped independently by several native programmes without
+copying display text or sharing a target selection.
+
+For one effectively active reporting period, a Programme PC's mapping list is
+the union of:
+
+1. active Teaching Names created by the PC's own native Department Secretary;
+2. active Teaching Names created by a host Department Secretary when at least
+   one native Resident from the PC's programme has an actual usable
+   `resident_postings` assignment to that host posting anywhere in the same
+   reporting period; and
+3. programme-private Teaching Names created by a PC in that same native
+   programme.
+
+Cross-posting eligibility comes only from actual RDB-backed Resident posting
+rows anywhere in the selected reporting period; an actual RDB-scheduled
+assignment may be earlier, current, or later within that period. A generally
+allowed rotation without an actual assignment,
+`secretary_programme_pools`, `programmes.native_teaching_posting_code`, a TTF
+target, posting-code text, or a client-supplied programme/posting pair is not
+sufficient evidence. Once a Secretary-created name has been admitted to a
+native programme's mapping list in a reporting period, its pending or mapped
+configuration remains available for the remainder of that period even after
+the last relevant Resident leaves the host posting or a later RDB correction
+removes that assignment. This avoids erasing reviewed configuration during a
+period. It does not grant eligibility in another reporting period.
+
+Admission reconciliation runs after both supported ways of changing current
+Resident posting data: a successful RDB reporting-period replacement and a
+successful relevant Live Data correction. Live Data changes to a Resident's
+native programme, a posting row, a posting source-cell group, or a durable
+warning's posting source cell reconcile the affected programme/reporting-period
+scope in the same transaction. Reconciliation only adds missing admissions and
+pending mappings; correcting or removing a posting never deletes mapping work
+already retained for that reporting period.
+
+A cross-posting PC maps the admitted name only to targets from the PC's own
+programme TTF, at the exact host posting and R-year scope. The host department's
+TTF is never selected merely because its Secretary created the name. The PC may
+read the source name and manage its own mapping, but cannot rename, deactivate,
+reactivate, delete, or otherwise manage the host department's source name.
+Names with identical normalized display text but different source identities
+remain distinct.
+
+A PC may also create a programme-private Teaching Name. The server fixes its
+owner programme to the authenticated PC scope, records immutable PC creator
+provenance, and makes it visible only to PCs of that programme and the
+Department Secretary explicitly authorized for that programme's native pool.
+It is labelled as PC-created. It may be mapped only to that programme's TTF and
+is never exposed to another programme's PC or to a Secretary at an external
+host posting.
+
+Only effectively active reporting periods participate in the active name and
+mapping workflows. When a period becomes inactive, its source visibility,
+programme admissions, pending mappings, and completed mappings disappear from
+active work queues and are never copied automatically into a later period.
+They remain stored as historical configuration and continue to support audit,
+past event timing, attendance history, and historical reads. Explicitly
+reopening the same reporting period follows the ordinary effective-status
+rules; it does not create or copy a new period's configuration.
+
+**Intended valid case:** REHAB Residents have actual reporting-period postings
+at `TTSHGerMed` and `TTSHAnaes`. The REHAB PC sees active names created by the
+REHAB, GERI, and ANAES Department Secretaries, but maps every admitted name to
+the exact REHAB TTF target for its relevant posting/R-year. A GERI PC may map
+the same GERI Secretary source differently against the GERI TTF.
+
+**Prohibited cases:** do not expose a host department's names when the native
+programme has no actual Resident posting there in that reporting period; do not
+map a host name to the host programme's TTF on behalf of another programme; do
+not expose a PC-private name outside its native programme and native Department
+Secretary; and do not delete historical rows merely because the reporting
+period became inactive or the last Resident left the host posting.
+
+Global session types stay Admin-managed and, for source-backed scheduled
+events, are identified by `global_session_type_id` before ordinary Teaching
+Name mapping. Resident ad-hoc teaching remains fixed to
+`Department/Programme Teaching [1h]`; Non-NHG attendance is excluded from NHG
+compliance. The final A–J TTF is the only accepted format. It removes Column K,
+`teaching_name_catalogue`, and `details_of_training`; a populated legacy
+Column K receives controlled `422`, with no dual-format fallback, backfill, or
+historical-data restoration. TTF does not seed Teaching Names or infer mappings
+from workbook text. Phase G Resident/Non-NHG discovery, attendance, and ad-hoc
+flows remain based on persisted source evidence.
+
 ---
 
 ## BL-1: Session Count Capping
@@ -402,13 +546,30 @@ URO accepts Saturday sessions under two independent conditions (OR logic). Since
 
 ```python
 def intervals_overlap(earlier_event: dict, later_event: dict) -> bool:
-    return (
-        later_event['start_time'] < earlier_event['end_time']
-        and earlier_event['start_time'] < later_event['end_time']
-    )
+    earlier_start, earlier_end = full_datetime_interval(earlier_event)
+    later_start, later_end = full_datetime_interval(later_event)
+    return later_start < earlier_end and earlier_start < later_end
 ```
 
-**Submission-time outcome for distinct events:** For the same resident, compare a later submission against already accepted distinct events. If the later interval overlaps an earlier accepted interval, reject the later submission and preserve the earlier attendance unchanged. Do not delete, replace, or retroactively flag the earlier record. This rule applies before compliance calculation and is separate from the database uniqueness rule for submitting the same `teaching_event_id` twice. Do not infer any additional overlap behavior beyond this confirmed rule.
+The interval combines `event_date` with `start_time` and `end_time`. An end less
+than or equal to the start is on the next calendar date; therefore
+`23:00–00:00` is a valid one-hour interval. Candidate searches and locks include
+every spanned date plus the prior date needed to detect a wrapped event. Exact
+boundary contact is not overlap.
+
+**Submission-time outcome for distinct events:** For the same resident, compare a later submission against already accepted distinct events. If the later interval overlaps an earlier accepted interval, reject the later submission and preserve the earlier attendance unchanged. Do not delete, replace, or retroactively flag the earlier record. This rule applies to native and Non-NHG sequential/concurrent submissions and atomic ad-hoc creation, before compliance calculation, and is separate from the database uniqueness rule for submitting the same `teaching_event_id` twice.
+
+**Availability and staff scheduling outcome:** Scheduled-event overlap is
+permitted. Before attendance, a resident sees every otherwise eligible event,
+including overlapping alternatives. After one attendance is accepted, the
+submitted event and every other candidate that directly overlaps that
+resident's effective interval are hidden from the available list; overlap is
+not propagated transitively through a chain. Removing the attendance restores
+all otherwise eligible alternatives. Native Residents use their exact
+event-date R-year timing for this test; Non-NHG Residents use the staff event
+envelope. Staff Add Teaching and mapping-impact confirmation warn about staff
+envelope overlap but do not block creation or authoritative mapping changes.
+Mapping-driven timing expansion preserves existing events and attendance.
 
 ---
 
@@ -455,8 +616,8 @@ The compliance engine runs **JIT (just-in-time)** — recalculated on read, not 
 4. Reject later distinct-event overlaps at submission time under BL-5; the accepted row set reaching compliance therefore preserves the earlier event only.
 5. Resolve the resident's assigned physical posting and phase R-year for the event date. Apply configured `main_posting`, `combine`, `half_month`, and FM projection semantics without conflating their identities.
 6. For an approved native-programme event outside the assigned posting, preserve the raw event but project exactly one compliance session to `Department/Programme Teaching [1h]` under the assigned posting. Use the assigned posting's target; never use the creator posting or `programmes.native_teaching_posting_code` as a compliance result.
-7. **First check `global_session_types`.** Matching rows remain auditable but are excluded from all compliance, surplus, and reallocation math before catalogue lookup.
-8. For normal assigned-posting events, resolve the canonical `teaching_name` by `(reporting_period, resident programme, assigned/compliance posting, phase r_year, canonical name)`. The same name may exist at other postings and map differently. Do not use fuzzy matching. Missing mappings or a catalogue row without its required target remain stored/auditable but excluded and surfaced as configuration data quality; never invent a target. Case/spacing option cleanup is upload/event-option data quality, not unresolved compliance logic.
+7. **First check explicit global evidence.** A source-backed `global_session_type_id` remains auditable but is excluded from all compliance, surplus, and reallocation math before an ordinary Teaching Name mapping. A both-null legacy row is never treated as global from display text.
+8. For a source-backed pool event, use its exact persisted Teaching Name identity and never fan out by a duplicate display name. A future compliance calculation may then resolve its mapping in the resident's own assigned context. Missing mappings remain stored/auditable and are surfaced as configuration data quality; never invent a target. Phase G discovery and attendance do not perform that mapping lookup.
 9. Apply weekend acceptance and the exact-type ORTHO adjusted-time projection from BL-5 without mutating raw rows.
 10. Exclude untracked and zero-target rows. Count remaining eligible sessions one-for-one by `(resident, physical posting, session_type, r_year context)`; duration never multiplies count.
 11. Calculate each context's correctly weighted `target_100`. A half-month leaves `monthly_target` unchanged and applies `active_months_weight = 0.5` once.
@@ -473,19 +634,49 @@ The compliance engine runs **JIT (just-in-time)** — recalculated on read, not 
 
 Multiple reporting periods may be administratively/effectively active at once. Administrative status is separate from date applicability: a current-date workflow resolves exactly one effectively active period containing today; an event or submission resolves exactly one effectively active period containing that event/submission date. A future active period must not become a current default, and a reopened past period remains explicitly selectable for its historical date range. If two effectively active periods contain the same relevant date, the workflow fails closed with a configuration conflict rather than choosing by row order.
 
-Resident scheduled-event discovery enumerates all effectively active periods, then uses the date-aware resolver for every candidate event. The event must fall inside exactly one active period, and its posting/catalogue checks use that period ID; a period containing today is not required. New attendance and ad-hoc submissions continue to resolve exactly one effectively active period from the event/selected teaching date. If no effectively active period exists, the event list is empty with `reason = "active_reporting_period_unavailable"` and ad-hoc submission is disabled; attendance and ad-hoc submission attempts return `422` when their date has no matching period. Existing attendance records remain stored and auditable.
+Resident scheduled-event discovery enumerates all effectively active periods, then uses the date-aware resolver for every candidate event. The event must fall inside exactly one active period, and its posting/persisted-source checks use that period ID; a period containing today is not required. New attendance and ad-hoc submissions continue to resolve exactly one effectively active period from the event/selected teaching date. If no effectively active period exists, the event list is empty with `reason = "active_reporting_period_unavailable"` and ad-hoc submission is disabled; attendance and ad-hoc submission attempts return `422` when their date has no matching period. Existing attendance records remain stored and auditable.
+
+**LOA attendance availability and classification:** Every RDB-backed LOA type
+remains attendance-capable. A `loa_working` phase keeps its assigned-host and
+native-programme visibility. A pure `loa` phase has no host posting, so it may
+see and submit only through the programme's explicitly configured native
+teaching posting; the system must not infer a host from adjacent months or
+display text. Ad-hoc teaching uses that same native posting. Each native
+attendance is classified from the teaching event date, never submission time,
+as `submitted_during_loa` when an authoritative `loa` or `loa_working` range
+covers that date. RDB full replacement and authorized posting corrections
+recompute existing rows in both directions without changing their attendance
+identity, event relationship, status, or submission timestamp.
+
+The compliance engine change remains deferred. When implemented, its native
+attendance numerator must first require `submitted_during_loa = false`, then
+apply the existing Form F1 active/inactive gate and all other eligibility
+rules. If LOA evidence is later removed or shortened, the reclassified false
+row becomes eligible for that future calculation, subject to Form F1.
 
 New reporting periods default `deactivate_on` to `end_date + 14 calendar days` unless an explicit value is supplied. A past period can be reopened only by a new effective inactive-to-active transition that supplies a future `deactivate_on`; this includes a newly scheduled future `activate_on`, for which `deactivate_on` must be strictly later than `activate_on`. Its historical start/end dates are not extended by reopening. Ordinary edits to an already effectively active reopened period preserve its existing future `deactivate_on` and do not require it to be resubmitted.
 
 ### PC-created teaching event visibility (planned 4B)
 
-Secretary-created scheduled events remain posting-owned and programme-neutral: `teaching_events.created_for_programme_code IS NULL`. They are visible to eligible residents only after the normal posting/date/catalogue checks pass.
+Secretary-created scheduled events remain posting-owned and programme-neutral: `teaching_events.created_for_programme_code IS NULL`. They are visible to eligible residents only after the normal posting/date/persisted-source checks pass.
 
-Programme PC-created scheduled events are programme-owned: planned `teaching_events.created_for_programme_code` is set to the PC's programme. Resident event discovery must show these events only to residents whose `resident.programme_code` equals `created_for_programme_code`, and only if the event also passes posting/date/catalogue visibility checks.
+Pool-backed events persist immutable `source_programme_code` and
+`source_reporting_period_id` snapshots. A used Teaching Name may later be
+deleted and clear `teaching_name_id`, but those snapshots, the display snapshot,
+and all attendance remain. Rename does not rewrite them; a mapping change may
+recalculate only `duration_hours` and `end_time` for the exact pool scope. A PC-owned
+pool event requires exact owner/source programme equality; Secretary updates
+require capability for that exact immutable source programme.
+
+Programme PC-created scheduled events are programme-owned: `teaching_events.created_for_programme_code` is set to the PC's programme. Resident event discovery must show these events only to residents whose `resident.programme_code` equals `created_for_programme_code`, and only if the event also passes posting/date/persisted-source visibility checks.
 
 Null or empty admin `programme_scope` grants no programme access. Master admin all-programme access must be explicit; never infer master access from null programme scope.
 
 PC-created events are scheduled teaching events, not ad-hoc submissions. Public holiday hard-block and ordinary delete-with-attendance guardrails apply.
+
+Global type activity controls only new-event options and writes. Deactivating a
+type does not hide, rewrite, or invalidate existing global events or otherwise
+eligible native/Non-NHG attendance.
 
 ### Master Admin scheduled-event force-delete override
 
@@ -516,14 +707,14 @@ NHG Resident scheduled-event discovery uses three allowed sources:
 
 Deduplicate final event rows by `teaching_events.id`.
 
-Do not show PC-created events for non-native programmes. Do not show secretary-created events from arbitrary TTSH departments unless they are either the resident's assigned/current posting or the resident's native programme department. Existing TTF/catalogue/date/reporting-period filters still apply. No RDB upload or no `resident_postings` still means no assigned-posting visibility for NHG Residents.
+Do not show PC-created events for non-native programmes. Do not show secretary-created events from arbitrary TTSH departments unless they are either the resident's assigned/current posting or the resident's native programme department. Existing date/reporting-period and persisted-source checks (or deterministic both-null legacy evidence) still apply; no runtime catalogue or display-text classification is permitted. No RDB upload or no `resident_postings` still means no assigned-posting visibility for NHG Residents.
 
 **Scenarios:**
 - Native GRM Resident John posted to TTSH Geriatric Medicine sees TTSH GRM Department Secretary events because he is posted there and GRM PC events because GRM is his native programme. The TTSH GRM secretary source is not duplicated if it qualifies through both assigned posting and native programme department.
 - Native GRM Resident John posted to TTSH Rehab sees TTSH Rehab Department Secretary events, TTSH GRM Department Secretary events, and GRM PC events.
 - Native Rehab Resident Mary posted to TTSH GRM sees TTSH GRM Department Secretary events, TTSH Rehab Department Secretary events, and Rehab PC events.
 
-Visibility source does not determine compliance attribution. An approved native-programme event outside the assigned posting is projected at read time as exactly one `Department/Programme Teaching [1h]` session under the resident's assigned posting and its TTF target. The event creator posting and `programmes.native_teaching_posting_code` are never separate compliance identities. Events held at the assigned posting continue through normal catalogue resolution unless another explicit rule applies.
+Visibility source does not determine compliance attribution. Phase G preserves the raw event and attendance evidence only; it does not project events, resolve targets, or run compliance. A future Phase 6 resolver must use persisted source identity plus a scoped mapping for any permitted native-programme attribution, never the event display snapshot or a runtime catalogue lookup. The event creator posting and `programmes.native_teaching_posting_code` are never separate compliance identities.
 
 Operational deactivation is not period close/freeze. It does not generate `period_snapshots`, `clawback_records`, or surplus hibernation, and it does not run compliance calculation. Admin JIT reports may still calculate a selected inactive period explicitly.
 
@@ -574,7 +765,7 @@ Seed refreshes must be idempotent. Re-running a seed or data migration must not 
 
 ### combine type
 
-Multiple source postings resolve to one configured canonical combined posting code/name that already exists in `posting_codes` and has corresponding TTF rows. Persist one `resident_postings` row using that combined posting code (for example, `TTSHDiagRd` + `NNINeuRad` → `TTSHDiagRd & NNINeuRad`). Compliance target and catalogue lookup use the canonical combined code. Do not create separate component compliance results and do not treat the display label as a newly invented posting identity.
+Multiple source postings resolve to one configured canonical combined posting code/name that already exists in `posting_codes` and has corresponding TTF rows. Persist one `resident_postings` row using that combined posting code (for example, `TTSHDiagRd` + `NNINeuRad` → `TTSHDiagRd & NNINeuRad`). Any future compliance target and scoped source-mapping resolution uses that canonical combined code. Do not create separate component compliance results and do not treat the display label as a newly invented posting identity.
 
 ### half_month type
 
@@ -628,38 +819,54 @@ FM is not in the confirmed `weekend_exceptions` seed list. Saturday FM sessions 
 
 Residents can submit ad-hoc teachings not pre-created by secretaries via `POST /resident/adhoc-teaching`.
 
+The canonical request field is `teaching_date`. Legacy `date` is temporary
+compatibility input: either is accepted, both equal are accepted, both different
+or both absent return controlled `422`.
+
 **Flow:**
 1. Resident first selects teaching date.
-2. System derives assigned posting for that selected date:
+2. System derives the sole permitted posting for that selected date:
    - NHG Resident: from `resident_postings` for the date (`status IN ('active', 'loa_working')`).
-   - Non-NHG Resident: from `external_resident_postings` for the date after forecast posting schedule support is implemented.
-3. Resident selects the attended TTSH department/programme from an additional dropdown backed by validated `posting_codes` / explicit config. This supports cases where residents attend teaching outside both their assigned posting and native programme. Do not create posting codes by string concatenation or regex.
-4. System returns teaching/session names from TTF Column K / `teaching_name_catalogue`, filtered by selected attended TTSH department posting, resident native programme where applicable, selected date, r_year/reporting-period context, and normal catalogue rules.
-5. Resident selects a catalogue-backed teaching option and provides `start_time`. Optional `details_of_session` may be captured as display/audit-only text.
-6. System validates the selected teaching option still exists in the same catalogue context at submit time. Arbitrary free-text teaching names must not drive compliance mapping.
-7. System creates a `teaching_events` row with `is_adhoc = true`, `posting_code = assigned/compliance posting for NHG Resident ad-hoc`, `created_by_role = 'resident'` or `'external_resident'`, the matching immutable typed creator foreign key, `cme_points_awarded = false`, `smc_event_code = null`, and `details_of_session` if provided.
-8. A narrow PostgreSQL function derives the trusted subject and storage family
+   - Non-NHG Resident: from one date-matched `external_resident_postings` row.
+3. The options endpoint returns only that server-derived posting and exactly one
+   fixed option: `Department/Programme Teaching [1h]`, duration `1.00`, with no
+   session-type identity. A client may omit `attended_posting_code` or repeat
+   that sole value; another value is rejected.
+4. The request has no `teaching_name` field. Arbitrary names, Teaching Name pool
+   choices, catalogue keywords, target mappings, `details_of_training`, and
+   Column K do not determine an ad-hoc record.
+5. Resident provides `start_time`; optional `details_of_session` is
+   display/audit-only text.
+6. System creates a `teaching_events` row with `is_adhoc = true`, the
+   server-derived posting, fixed display snapshot and duration, null
+   `session_type_id`, `created_by_role = 'resident'` or `'external_resident'`,
+   the matching immutable typed creator foreign key, `cme_points_awarded = false`,
+   `smc_event_code = null`, and `details_of_session` if provided.
+7. A narrow PostgreSQL function derives the trusted subject and storage family
    from the verified transaction-local context and creates that event plus an
    `attendance_records` row for an NHG Resident, or an
    `external_attendance_records` row for a Non-NHG Resident. The function does
    not commit; the service commits the complete operation once.
-9. For countable NHG ad-hoc compliance attribution, `end_time`/duration is fixed to `Department/Programme Teaching [1h]` semantics; the attended teaching's original session type does not drive compliance attribution.
+8. `end_time` is exactly `start_time + 1 hour`; the helper independently rejects
+   a different display value, duration, session type, posting, or interval.
 
 **UI helper copy:** `Please ensure your current submission is not an already scheduled event. There are no CME Pts tagged to adhoc teachings.`
 
 **NHG Resident compliance treatment:** All countable NHG Resident ad-hoc sessions map to `Department/Programme Teaching [1h]`. Count is attributed to the resident's assigned posting for the selected date, not the attended TTSH department unless that is also the assigned posting.
 
-The fixed session type must resolve against a tracked `Department/Programme Teaching [1h]` target for assigned posting, resident native programme, `resident_postings.r_year`, and active/effectively active `reporting_period_id`. If that required target cannot be resolved, return a clear unavailable/not-countable state rather than guessing.
+This fixed attribution is independent of Teaching Name mappings and legacy TTF
+catalogue/target data. It does not activate or define the later compliance
+resolver.
 
-This supersedes any interpretation that ad-hoc compliance session type is resolved from the attended teaching's original session type. Selected teaching name is controlled catalogue/display evidence only for ad-hoc compliance.
-
-**Non-NHG treatment:** Non-NHG ad-hoc sessions are recording/export-only. They write `external_attendance_records`, never native `attendance_records`, and never enter NHG numerator, denominator, surplus, snapshots, clawback, or native resident compliance reports. Host programme/department selection is option-filtering/export context only.
+**Non-NHG treatment:** Non-NHG ad-hoc sessions are recording/export-only. They write `external_attendance_records`, never native `attendance_records`, and never enter NHG numerator, denominator, surplus, snapshots, clawback, or native resident compliance reports. The one exact date-matched schedule row supplies server-owned posting/export context only; there is no client host programme/department selection. Missing or overlapping schedule evidence fails closed.
 
 **Validation:**
-- Date must not be a public holiday (422 if PH)
-- Teaching name must be selected from the catalogue-backed dropdown for the selected attended department posting + resident programme where applicable + r_year/reporting period (422 if not found)
-- Required assigned-posting `Department/Programme Teaching [1h]` target must exist for countable NHG ad-hoc compliance; otherwise return unavailable/not-countable
-- Duplicate detection (BL-5) applies
+- Date must not be a public holiday (422 if PH).
+- Exactly one eligible date-derived posting must exist; another client-supplied
+  attended posting is rejected.
+- The persisted display snapshot, duration, session type, and interval are
+  fixed by the server/database helper.
+- Duplicate detection (BL-5) applies.
 
 **Ownership, history, and concurrency:** PostgreSQL permits an ad-hoc event to
 belong to exactly one native or external creator and rejects the other storage
@@ -731,12 +938,18 @@ New registration, schedule replacement, and current-posting compatibility writes
 **Scheduled-event visibility and submission:**
 For each candidate event date, use the one `external_resident_postings` row whose date range covers that event. A gap produces no eligible event. The allowed scheduled-event sources are:
 
-1. **Department Secretary event:** `event.posting_code = schedule.posting_code` and `event.created_for_programme_code IS NULL`. `posting_codes.supports_secretary_events` must be true, and the normal scheduled-event, reporting-period, status, date, duplicate/submission, and other existing filters continue to apply.
-2. **Programme PC event:** the schedule `programme_code` must be present, `event.posting_code = schedule.posting_code`, and `event.created_for_programme_code = schedule.programme_code`. The normal scheduled-event, reporting-period, status, date, and duplicate/submission filters continue to apply. This source does not depend on the Secretary capability flag.
+1. **Department Secretary event:** `event.posting_code = schedule.posting_code`.
+2. **Programme PC event:** `event.posting_code = schedule.posting_code`, regardless of the PC event's programme owner.
 
-Both listing and `POST /resident/attendance` enforce the same exact source rule. Exclude another programme's PC event even when it shares the posting, a matching-programme event at another posting, events outside a schedule range or in a gap, any resident ad-hoc event, and events already submitted by that Non-NHG Resident. Successful attendance writes only `external_attendance_records`.
+Both listing and `POST /resident/attendance` enforce the same exact posting rule. Non-NHG Residents may see every normal scheduled event created at their date-matched posting because they do not participate in NHG compliance or R-year target resolution. `posting_codes.supports_secretary_events`, Teaching Name source programme, and PC programme ownership do not narrow this resident-facing list. Exclude events at another posting, events outside a schedule range or in a gap, resident-created ad-hoc events, and events already submitted by that Non-NHG Resident. Successful attendance writes only `external_attendance_records` and uses the event's longest-duration staff envelope for display and overlap checks.
 
-Do not hardcode TTSH or another institution in service logic. Never infer programme ownership from a posting-code prefix, institution name, teaching target, teaching-name catalogue row, `programmes.native_teaching_posting_code`, fuzzy match, or first mapping candidate. AIM and IM may share `TTSHGenMed`; GS and SIG may share `TTSHGenSrg`, so the persisted schedule programme is mandatory for PC-event authorization. Current TTSH pilot postings can enable Secretary listings through the capability flag; future hospitals such as KTPH can be onboarded through data.
+Overlapping eligible events all appear before submission. After one is
+submitted, the available list hides that event and every candidate that
+directly overlaps its staff envelope. Removing the attendance restores the
+alternatives when their posting/date/status rules still pass; a stale or direct
+attempt to submit another overlapping event remains a controlled conflict.
+
+Do not hardcode TTSH or another institution in service logic. Never infer or broaden posting access from a posting-code prefix, institution name, teaching target, teaching-name catalogue row, `programmes.native_teaching_posting_code`, fuzzy match, or first mapping candidate.
 
 **Compliance exclusion:**
 Non-NHG Residents are excluded from all NHG compliance surfaces:
@@ -753,8 +966,8 @@ Non-NHG Residents are excluded from all NHG compliance surfaces:
 **Phase 6 guardrail:** Compliance reads native `attendance_records` only. It must never join `external_attendance_records`, even for reporting convenience.
 
 **Submission behaviour:**
-- Non-NHG Residents can submit attendance for eligible Department Secretary events and exact-programme Programme PC events at their date-matched schedule posting.
-- Non-NHG Residents can submit ad-hoc teaching using the revised catalogue-backed dropdown model.
+- Non-NHG Residents can submit attendance for every normal scheduled Department Secretary or Programme PC event at their exact date-matched schedule posting.
+- Non-NHG Residents can submit the fixed, server-owned one-hour ad-hoc record for one exact date-matched schedule posting.
 - PH ad-hoc teaching is hard-blocked with `422`.
 - Weekend non-exception submissions are stored and return `compliance_warning`.
 - Session type is not stored on external attendance.
@@ -764,14 +977,18 @@ Non-NHG Residents are excluded from all NHG compliance surfaces:
 - Non-NHG upcoming NHG posting schedule update
 - Non-NHG event listing
 - Non-NHG attendance submission
-- Non-NHG ad-hoc teaching submission using the revised dropdown model
+- Non-NHG fixed one-hour ad-hoc teaching submission
 - Non-NHG past attendance
 - admin/PC external attendance list/read endpoint
 - Excel export endpoint for external attendance
 - frontend export preview/download flow where the roadmap UI scope includes it
 
-**Non-NHG ad-hoc attended department selection:**
-Non-NHG ad-hoc teaching uses the same date-first UI concept as NHG Residents. After the selected date resolves a date-matched `external_resident_postings` row, the attended TTSH department/programme dropdown filters catalogue-backed teaching options. Host programme/department selection is for option filtering/export context only. It must not make Non-NHG Residents part of native NHG compliance.
+**Non-NHG ad-hoc posting selection:**
+Non-NHG ad-hoc teaching uses the same date-first, server-derived fixed contract
+as NHG Residents. One date-matched `external_resident_postings` row supplies
+the only allowed posting; no catalogue, target, mapping, Teaching Name, or
+Column K choice is used. It must not make Non-NHG Residents part of native NHG
+compliance.
 
 **Export status:**
 External attendance must be queryable by authorized admin/PC users and exportable to Excel for forwarding to NUH/SingHealth PCs before Phase 6 compliance. Exported records are for recording/audit/forwarding only and must never write to native compliance, surplus, snapshots, or clawback outputs.
@@ -816,7 +1033,7 @@ Both programmes require R-year matching and are not configured as subspecialties
 - `r_year_required = true`
 - `is_subspecialty = false`
 - RDB R4, R5, and R6 remain R4, R5, and R6
-- TTF target and catalogue rows use R4, R5, and R6
+- TTF targets use R4, R5, and R6
 - Do not use `ALL` and do not remap these values to SS1, SS2, or SS3
 
 ### RDB alias normalisation
@@ -875,9 +1092,13 @@ Both are handled automatically via FormF1 values. No special-case code needed.
 
 ---
 
-## TBD-MIGRATION: Historical Data Migration Strategy
+## TBD-MIGRATION: Historical Data Migration Strategy (superseded — settled)
 
-**Status:** Awaiting stakeholder decision before the future final close/freeze workflow.
+**Status:** **Settled — no historical data migration.** The 2026-08-02 evolved TTF transition contract supersedes this former TBD. The alternatives below are retained only as audit history.
+
+**Settled rule:** Do not import, backfill, or migrate historical data. Retain legacy workbooks as legacy structural references only; do not build migration tooling.
+
+**Historical options (superseded; not actionable):**
 
 **Option A — Archive only (recommended default):**
 Legacy Excel files remain accessible. New system holds data from cutover period onwards. Zero migration effort.
@@ -888,7 +1109,7 @@ One-time script reads legacy Programme Reporting View Excel files and inserts su
 **Option C — Full migration:**
 Parse original FormSG CSVs and legacy `.rds` snapshot files. Highest fidelity, highest effort.
 
-**Developer instruction:** Do not build any migration tooling until the option is confirmed.
+**Developer instruction:** Do not build migration tooling. No option remains to be confirmed.
 
 ---
 

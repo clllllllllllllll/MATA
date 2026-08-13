@@ -17,6 +17,7 @@ const apiSource = readFileSync(
 )
 const appSource = readFileSync(fileURLToPath(new URL('../../App.tsx', import.meta.url)), 'utf8')
 
+assert(pageSource.includes('During LOA'), 'attendance history displays the durable LOA classification')
 assert(pageSource.includes('title="Past Submissions"'), 'Past Submissions page hero title is present')
 assert(pageSource.includes('NHG Resident - Your submitted teachings'), 'Past Submissions subtitle uses NHG Resident wording')
 assert(pageSource.includes('filter'), 'Past Submissions page includes a filter bar')

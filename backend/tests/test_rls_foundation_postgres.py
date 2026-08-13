@@ -77,12 +77,24 @@ RUNTIME_ONLY_FUNCTIONS = frozenset(
         "mata_rls.set_external_resident_current_posting(uuid,text,text)",
         "mata_rls.resolve_ttf_session_type(text,numeric,text,text)",
         "mata_rls.ensure_ttf_posting_code(text,text)",
+        "mata_rls.reconcile_ttf_teaching_name_mappings(uuid,text,uuid[],text[],text[])",
+        "mata_rls.lock_master_teaching_name_delete(uuid)",
         "mata_rls.append_audit_log(text,text,text,jsonb,jsonb,jsonb)",
         (
             "mata_rls.create_adhoc_attendance("
             "text,text,text,text,text,date,time without time zone,"
             "time without time zone,numeric,uuid)"
         ),
+        "mata_rls.scheduled_event_source_scope(uuid)",
+        "mata_rls.resolve_native_teaching_target(uuid,uuid)",
+        "mata_rls.resolve_native_teaching_target_v2(uuid,uuid)",
+        "mata_rls.resolve_staff_pool_event_timings(uuid[],uuid,text,text)",
+        (
+            "mata_rls.reconcile_ttf_teaching_name_mappings_v2("
+            "uuid,text,uuid[],text[],text[])"
+        ),
+        "mata_rls.reconcile_teaching_name_programme_scopes(uuid,text)",
+        "mata_rls.sync_secretary_pool_event_timing(uuid,uuid,text,text)",
         "mata_rls.update_own_staff_actor_name(text)",
         "mata_rls.reporting_period_dependency_counts(uuid)",
         "mata_rls.hibernate_stale_surplus(uuid)",
@@ -155,12 +167,32 @@ POLICY_HELPER_FUNCTIONS = frozenset(
         "mata_rls.can_access_teaching_catalogue(text,text,uuid)",
         "mata_rls.can_select_teaching_event(uuid)",
         (
+            "mata_rls.can_select_teaching_event_row("
+            "uuid,boolean,text,date,text,text,uuid,uuid,uuid,uuid,text,uuid)"
+        ),
+        (
             "mata_rls.can_insert_teaching_event("
             "text,text,text,date,boolean,text)"
         ),
         (
+            "mata_rls.can_insert_scheduled_event_source("
+            "text,text,uuid,uuid,date,boolean,text)"
+        ),
+        (
+            "mata_rls.can_insert_scheduled_event_source("
+            "text,text,uuid,uuid,text,uuid,date,boolean,text)"
+        ),
+        (
+            "mata_rls.can_manage_scheduled_event_source("
+            "text,uuid,uuid,date,boolean)"
+        ),
+        (
             "mata_rls.can_manage_teaching_event("
             "text,text,text,date,boolean,text)"
+        ),
+        (
+            "mata_rls.can_manage_teaching_event_row("
+            "text,text,date,boolean,text,uuid,uuid,text,uuid)"
         ),
         "mata_rls.can_submit_native_attendance(uuid,uuid)",
         "mata_rls.can_access_external_attendance(uuid,uuid)",
@@ -208,7 +240,82 @@ PRIVATE_FUNCTIONS = frozenset(
             "mata_private."
             "enforce_teaching_event_creator_immutability()"
         ),
+        "mata_private.enforce_teaching_name_scope_immutability()",
         "mata_private.enforce_attendance_integrity()",
+        "mata_private.reconcile_teaching_name_pending_mappings()",
+        "mata_private.guard_used_teaching_name_delete()",
+        (
+            "mata_private."
+            "enforce_teaching_event_source_provenance_immutable()"
+        ),
+        (
+            "mata_private.scheduled_event_source_is_valid("
+            "date,uuid,uuid,text,uuid)"
+        ),
+        "mata_private.enforce_attendance_no_overlap()",
+    }
+)
+
+# The final A-J cutover removes the catalogue boundary and the obsolete
+# catalogue-backed helper implementations.  Keep the preceding policy-cutover
+# inventory intact for historical revisions, then subtract only the functions
+# deliberately retired by revision 000036.
+FINAL_AJ_RETIRED_POLICY_HELPER_FUNCTIONS = frozenset(
+    {
+        "mata_rls.can_access_teaching_catalogue(text,text,uuid)",
+        (
+            "mata_rls.can_insert_scheduled_event_source("
+            "text,text,uuid,uuid,date,boolean,text)"
+        ),
+    }
+)
+FINAL_AJ_RETIRED_PRIVATE_FUNCTIONS = frozenset(
+    {
+        "mata_private.can_select_teaching_event_000027(uuid)",
+        (
+            "mata_private.can_insert_teaching_event_000027("
+            "text,text,text,date,boolean,text)"
+        ),
+        "mata_private.can_submit_native_attendance_000027(uuid,uuid)",
+        "mata_private.can_submit_external_attendance_000027(uuid,uuid)",
+    }
+)
+PHASE_V_PRIVATE_FUNCTIONS = frozenset(
+    {
+        (
+            "mata_private.can_select_cross_programme_secretary_event("
+            "uuid,text,date,text,uuid,text,uuid)"
+        )
+    }
+)
+PHASE_V_RETIRED_PRIVATE_FUNCTIONS = frozenset(
+    {"mata_private.reconcile_teaching_name_pending_mappings()"}
+)
+PHASE_V_RETIRED_RUNTIME_FUNCTIONS = frozenset(
+    {
+        (
+            "mata_rls.reconcile_ttf_teaching_name_mappings("
+            "uuid,text,uuid[],text[],text[])"
+        )
+    }
+)
+PHASE_LOA_RUNTIME_FUNCTIONS = frozenset(
+    {
+        "mata_rls.reclassify_native_attendance_loa(uuid,uuid)",
+        (
+            "mata_rls.create_native_loa_adhoc_attendance("
+            "text,text,text,date,time without time zone,"
+            "time without time zone,numeric)"
+        ),
+    }
+)
+PHASE_LOA_PRIVATE_FUNCTIONS = frozenset(
+    {
+        "mata_private.classify_native_attendance_loa()",
+        (
+            "mata_private.can_select_native_loa_event("
+            "uuid,boolean,text,date,text,text,uuid,uuid,uuid,uuid,text,uuid)"
+        ),
     }
 )
 
@@ -276,10 +383,52 @@ POLICY_CUTOVER_REVISIONS = frozenset(
         "20260726_000026",
         "20260727_000027",
         "20260728_000028",
+        "20260802_000029",
+        "20260803_000030",
+        "20260803_000031",
+        "20260803_000032",
+        "20260804_000033",
+        "20260804_000034",
+        "20260804_000035",
+        "20260805_000036",
+        "20260805_000037",
+        "20260806_000038",
+        "20260812_000039",
+        "20260812_000040",
+        "20260813_000041",
+        "20260813_000042",
+    }
+)
+FINAL_AJ_CUTOVER_REVISIONS = frozenset(
+    {
+        "20260805_000036",
+        "20260805_000037",
+        "20260806_000038",
+        "20260812_000039",
+        "20260812_000040",
+        "20260813_000041",
+        "20260813_000042",
     }
 )
 SESSION_LIFECYCLE_REVISIONS = frozenset(
-    {"20260727_000027", "20260728_000028"}
+    {
+        "20260727_000027",
+        "20260728_000028",
+        "20260802_000029",
+        "20260803_000030",
+        "20260803_000031",
+        "20260803_000032",
+        "20260804_000033",
+        "20260804_000034",
+        "20260804_000035",
+        "20260805_000036",
+        "20260805_000037",
+        "20260806_000038",
+        "20260812_000039",
+        "20260812_000040",
+        "20260813_000041",
+        "20260813_000042",
+    }
 )
 
 ISSUE_LIFECYCLE_RESULT_COLUMNS = frozenset(
@@ -785,8 +934,8 @@ async def test_startup_attestation_accepts_bounded_adhoc_definer_creator_edge(
     rls_postgres_harness: RlsPostgresHarness,
 ) -> None:
     harness = rls_postgres_harness
-    if harness.revision != "20260728_000028":
-        pytest.skip("Ad-hoc definer requires revision 000028")
+    if harness.revision not in SESSION_LIFECYCLE_REVISIONS:
+        pytest.skip("Ad-hoc definer requires a session-lifecycle revision")
 
     async with harness.owner_engine.connect() as connection:
         transaction = await connection.begin()
@@ -1058,9 +1207,9 @@ async def test_startup_attestation_rejects_transactional_privilege_injection(
                 "adhoc_definer_foreign_membership",
                 "adhoc_definer_additional_membership",
             }:
-                if harness.revision != "20260728_000028":
+                if harness.revision not in SESSION_LIFECYCLE_REVISIONS:
                     pytest.skip(
-                        "Ad-hoc definer requires revision 000028"
+                        "Ad-hoc definer requires a session-lifecycle revision"
                     )
                 if mutation_kind == "adhoc_definer_membership":
                     third_role = f"mata_test_auth_{uuid4().hex[:16]}"
@@ -1108,9 +1257,9 @@ async def test_startup_attestation_rejects_transactional_privilege_injection(
                             member_role=third_role,
                         )
             elif mutation_kind.startswith("adhoc_definer_"):
-                if harness.revision != "20260728_000028":
+                if harness.revision not in SESSION_LIFECYCLE_REVISIONS:
                     pytest.skip(
-                        "Ad-hoc definer requires revision 000028"
+                        "Ad-hoc definer requires a session-lifecycle revision"
                     )
                 if mutation_kind == "adhoc_definer_schema_grant":
                     statement = (
@@ -1905,25 +2054,47 @@ async def test_foundation_function_acls_search_paths_and_table_denials_are_exact
             for row in functions
             if row["schema_name"] == "mata_private"
         }
+        policy_helper_functions = POLICY_HELPER_FUNCTIONS
+        private_functions = PRIVATE_FUNCTIONS
+        runtime_only_functions = RUNTIME_ONLY_FUNCTIONS
+        if harness.revision in FINAL_AJ_CUTOVER_REVISIONS:
+            policy_helper_functions -= FINAL_AJ_RETIRED_POLICY_HELPER_FUNCTIONS
+            private_functions -= FINAL_AJ_RETIRED_PRIVATE_FUNCTIONS
+        if harness.revision in {"20260812_000040", "20260813_000041", "20260813_000042"}:
+            private_functions = (
+                private_functions - PHASE_V_RETIRED_PRIVATE_FUNCTIONS
+            ) | PHASE_V_PRIVATE_FUNCTIONS
+            runtime_only_functions -= PHASE_V_RETIRED_RUNTIME_FUNCTIONS
+        if harness.revision == "20260813_000042":
+            runtime_only_functions |= PHASE_LOA_RUNTIME_FUNCTIONS
+            private_functions |= PHASE_LOA_PRIVATE_FUNCTIONS
         expected_public_helpers = (
-            RUNTIME_ONLY_FUNCTIONS
+            runtime_only_functions
             | AUTH_ONLY_FUNCTIONS
             | BOTH_GROUP_FUNCTIONS
         )
+        if harness.revision in {"20260812_000040", "20260813_000041", "20260813_000042"}:
+            # The pre-v2 reconciliation entry point remains present for a
+            # bounded compatibility window, but runtime EXECUTE is revoked.
+            expected_public_helpers |= PHASE_V_RETIRED_RUNTIME_FUNCTIONS
         if harness.revision in POLICY_CUTOVER_REVISIONS:
-            expected_public_helpers |= POLICY_HELPER_FUNCTIONS
+            expected_public_helpers |= policy_helper_functions
         if harness.revision in SESSION_LIFECYCLE_REVISIONS:
             expected_public_helpers |= RETIRED_SESSION_FUNCTIONS
         assert mata_rls_signatures == expected_public_helpers
-        assert mata_private_signatures == PRIVATE_FUNCTIONS
+        assert mata_private_signatures == private_functions
         assert all(row["public_denied"] is True for row in functions)
         assert all(row["anon_execute"] is False for row in functions)
         assert all(row["authenticated_execute"] is False for row in functions)
         assert all(row["service_role_execute"] is False for row in functions)
 
-        for signature in RUNTIME_ONLY_FUNCTIONS:
+        for signature in runtime_only_functions:
             row = by_signature[signature]
-            assert row["runtime_execute"] is True
+            assert row["runtime_execute"] is True, signature
+            assert row["auth_execute"] is False
+        for signature in PHASE_V_RETIRED_RUNTIME_FUNCTIONS:
+            row = by_signature[signature]
+            assert row["runtime_execute"] is False
             assert row["auth_execute"] is False
 
         for signature in AUTH_ONLY_FUNCTIONS:
@@ -1937,7 +2108,7 @@ async def test_foundation_function_acls_search_paths_and_table_denials_are_exact
             assert row["auth_execute"] is True
 
         if harness.revision in POLICY_CUTOVER_REVISIONS:
-            for signature in POLICY_HELPER_FUNCTIONS:
+            for signature in policy_helper_functions:
                 row = by_signature[signature]
                 assert row["runtime_execute"] is True
                 assert row["auth_execute"] is False

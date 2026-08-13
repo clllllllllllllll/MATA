@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date, time
+from datetime import date, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
@@ -25,9 +25,10 @@ from app.services.database_context import (
     configure_request_context,
 )
 from app.services.teaching_event_locks import acquire_teaching_event_locks
+from tests.postgres_disposable_database import configured_disposable_database_name
 
 
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_final_security_review"
+DISPOSABLE_DATABASE_NAME = configured_disposable_database_name()
 _TEST_SESSION_HASH_KEY = "rls-resident-attendance-test-session-key-32-bytes"
 
 
@@ -210,8 +211,15 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
     programme_id = uuid4()
     first_event_id = uuid4()
     second_event_id = uuid4()
+    next_day_overlap_event_id = uuid4()
+    boundary_event_id = uuid4()
+    first_teaching_name_id = uuid4()
+    second_teaching_name_id = uuid4()
+    next_day_overlap_teaching_name_id = uuid4()
+    boundary_teaching_name_id = uuid4()
     period_id = uuid4()
     session_type_id = uuid4()
+    target_id = uuid4()
     event_date = date(2090, 1, 3)
 
     events: dict[UUID, dict[str, Any]] = {
@@ -222,8 +230,8 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
             "teaching_name": "Synthetic concurrency teaching A",
             "details_of_session": None,
             "event_date": event_date,
-            "start_time": time(10, 0),
-            "end_time": time(11, 0),
+            "start_time": time(23, 0),
+            "end_time": time(0, 0),
             "duration_hours": Decimal("1.0"),
             "session_type_id": None,
             "series_id": None,
@@ -231,6 +239,9 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
             "smc_event_code": None,
             "is_adhoc": False,
             "created_by_role": "secretary",
+            "teaching_name_id": first_teaching_name_id,
+            "source_programme_code": programme_code,
+            "source_reporting_period_id": period_id,
         },
         second_event_id: {
             "id": second_event_id,
@@ -239,8 +250,8 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
             "teaching_name": "Synthetic concurrency teaching B",
             "details_of_session": None,
             "event_date": event_date,
-            "start_time": time(10, 30),
-            "end_time": time(11, 30),
+            "start_time": time(23, 30),
+            "end_time": time(0, 30),
             "duration_hours": Decimal("1.0"),
             "session_type_id": None,
             "series_id": None,
@@ -248,23 +259,57 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
             "smc_event_code": None,
             "is_adhoc": False,
             "created_by_role": "secretary",
+            "teaching_name_id": second_teaching_name_id,
+            "source_programme_code": programme_code,
+            "source_reporting_period_id": period_id,
+        },
+        next_day_overlap_event_id: {
+            "id": next_day_overlap_event_id,
+            "posting_code": posting_code,
+            "created_for_programme_code": None,
+            "teaching_name": "Synthetic next-day overlap",
+            "details_of_session": None,
+            "event_date": event_date + timedelta(days=1),
+            "start_time": time(0, 0),
+            "end_time": time(1, 0),
+            "duration_hours": Decimal("1.0"),
+            "session_type_id": None,
+            "series_id": None,
+            "cme_points_awarded": False,
+            "smc_event_code": None,
+            "is_adhoc": False,
+            "created_by_role": "secretary",
+            "teaching_name_id": next_day_overlap_teaching_name_id,
+            "source_programme_code": programme_code,
+            "source_reporting_period_id": period_id,
+        },
+        boundary_event_id: {
+            "id": boundary_event_id,
+            "posting_code": posting_code,
+            "created_for_programme_code": None,
+            "teaching_name": "Synthetic midnight boundary",
+            "details_of_session": None,
+            "event_date": event_date + timedelta(days=1),
+            "start_time": time(0, 30),
+            "end_time": time(1, 0),
+            "duration_hours": Decimal("0.5"),
+            "session_type_id": None,
+            "series_id": None,
+            "cme_points_awarded": False,
+            "smc_event_code": None,
+            "is_adhoc": False,
+            "created_by_role": "secretary",
+            "teaching_name_id": boundary_teaching_name_id,
+            "source_programme_code": programme_code,
+            "source_reporting_period_id": period_id,
         },
     }
     context = {
         "posting_code": posting_code,
         "r_year": "ALL",
         "start_date": event_date,
-        "end_date": event_date,
+        "end_date": event_date + timedelta(days=1),
     }
-    resolved = {
-        "keyword": "Synthetic concurrency teaching",
-        "session_type_id": None,
-        "session_type": "Synthetic concurrency teaching [1h]",
-        "duration_hours": Decimal("1.0"),
-        "is_tracked": True,
-        "is_global": False,
-    }
-
     async def _resident(_db: AsyncSession, requested_id: UUID) -> dict[str, Any]:
         assert requested_id == resident_id
         return {
@@ -280,7 +325,7 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
             "id": period_id,
             "label": "Synthetic concurrency period",
             "start_date": event_date,
-            "end_date": event_date,
+            "end_date": event_date + timedelta(days=1),
         }
 
     async def _visibility_contexts(
@@ -288,9 +333,6 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
         **_kwargs: Any,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         return [dict(context)], [dict(context)]
-
-    async def _resolve_name(_db: AsyncSession, **_kwargs: Any) -> dict[str, Any]:
-        return dict(resolved)
 
     async def _weekend_accepted(_db: AsyncSession, **_kwargs: Any) -> bool:
         return True
@@ -302,7 +344,6 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
         "_resident_visibility_contexts",
         _visibility_contexts,
     )
-    monkeypatch.setattr(resident_submission, "_resolve_teaching_name", _resolve_name)
     monkeypatch.setattr(resident_submission, "_weekend_is_accepted", _weekend_accepted)
     monkeypatch.setattr(resident_submission, "invalidate_resident_caches", lambda **_kwargs: None)
 
@@ -412,7 +453,7 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
                     )
                     VALUES (
                         :id, :resident_id, :posting_code, :period_id,
-                        :event_date, :event_date, 'ALL', 'active'
+                        :event_date, :end_date, 'ALL', 'active'
                     )
                     """
                 ),
@@ -422,6 +463,7 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
                     "posting_code": posting_code,
                     "period_id": period_id,
                     "event_date": event_date,
+                    "end_date": event_date + timedelta(days=1),
                 },
             )
             await connection.execute(
@@ -441,33 +483,121 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
             await connection.execute(
                 text(
                     """
-                    INSERT INTO teaching_name_catalogue (
-                        id, keyword, session_type_id, posting_code,
-                        programme_code, r_year, reporting_period_id,
-                        duration_hours, is_tracked
+                    INSERT INTO teaching_names (
+                        id, reporting_period_id, programme_code, display_name,
+                        normalized_name, is_active, created_by_role,
+                        visibility_scope, origin_posting_code
                     )
                     VALUES
                         (
-                            :first_id, :first_keyword, :session_type_id,
-                            :posting_code, :programme_code, 'ALL',
-                            :period_id, 1.0, true
+                            :first_id, :period_id, :programme_code,
+                            :first_keyword, :first_normalized_name, true,
+                            'secretary', 'department_shared', :posting_code
                         ),
                         (
-                            :second_id, :second_keyword, :session_type_id,
-                            :posting_code, :programme_code, 'ALL',
-                            :period_id, 1.0, true
+                            :second_id, :period_id, :programme_code,
+                            :second_keyword, :second_normalized_name, true,
+                            'secretary', 'department_shared', :posting_code
+                        ),
+                        (
+                            :next_day_id, :period_id, :programme_code,
+                            :next_day_keyword, :next_day_normalized_name, true,
+                            'secretary', 'department_shared', :posting_code
+                        ),
+                        (
+                            :boundary_id, :period_id, :programme_code,
+                            :boundary_keyword, :boundary_normalized_name, true,
+                            'secretary', 'department_shared', :posting_code
                         )
                     """
                 ),
                 {
-                    "first_id": uuid4(),
+                    "first_id": first_teaching_name_id,
                     "first_keyword": events[first_event_id]["teaching_name"],
-                    "second_id": uuid4(),
+                    "first_normalized_name": events[first_event_id]["teaching_name"].lower(),
+                    "second_id": second_teaching_name_id,
                     "second_keyword": events[second_event_id]["teaching_name"],
-                    "session_type_id": session_type_id,
-                    "posting_code": posting_code,
+                    "second_normalized_name": events[second_event_id]["teaching_name"].lower(),
+                    "next_day_id": next_day_overlap_teaching_name_id,
+                    "next_day_keyword": events[next_day_overlap_event_id]["teaching_name"],
+                    "next_day_normalized_name": events[next_day_overlap_event_id][
+                        "teaching_name"
+                    ].lower(),
+                    "boundary_id": boundary_teaching_name_id,
+                    "boundary_keyword": events[boundary_event_id]["teaching_name"],
+                    "boundary_normalized_name": events[boundary_event_id][
+                        "teaching_name"
+                    ].lower(),
                     "programme_code": programme_code,
                     "period_id": period_id,
+                    "posting_code": posting_code,
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_programme_scopes (
+                        teaching_name_id, reporting_period_id, programme_code,
+                        admission_reason
+                    )
+                    SELECT id, reporting_period_id, programme_code,
+                           'owner_programme'
+                    FROM teaching_names
+                    WHERE id = ANY(CAST(:teaching_name_ids AS uuid[]))
+                    """
+                ),
+                {
+                    "teaching_name_ids": [
+                        first_teaching_name_id,
+                        second_teaching_name_id,
+                        next_day_overlap_teaching_name_id,
+                        boundary_teaching_name_id,
+                    ]
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO teaching_targets (
+                        id, reporting_period_id, programme_code, r_year,
+                        posting_code, session_type_id, monthly_target, is_tracked
+                    )
+                    VALUES (
+                        :id, :period_id, :programme_code, 'ALL',
+                        :posting_code, :session_type_id, 1, true
+                    )
+                    """
+                ),
+                {
+                    "id": target_id,
+                    "period_id": period_id,
+                    "programme_code": programme_code,
+                    "posting_code": posting_code,
+                    "session_type_id": session_type_id,
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_mappings (
+                        teaching_name_id, reporting_period_id, programme_code,
+                        posting_code, r_year, teaching_target_id
+                    )
+                    SELECT id, reporting_period_id, programme_code,
+                           :posting_code, 'ALL', :target_id
+                    FROM teaching_names
+                    WHERE id = ANY(CAST(:teaching_name_ids AS uuid[]))
+                    """
+                ),
+                {
+                    "teaching_name_ids": [
+                        first_teaching_name_id,
+                        second_teaching_name_id,
+                        next_day_overlap_teaching_name_id,
+                        boundary_teaching_name_id,
+                    ],
+                    "posting_code": posting_code,
+                    "target_id": target_id,
                 },
             )
             for event in events.values():
@@ -483,7 +613,10 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
                             end_time,
                             duration_hours,
                             is_adhoc,
-                            created_by_role
+                            created_by_role,
+                            teaching_name_id,
+                            source_programme_code,
+                            source_reporting_period_id
                         )
                         VALUES (
                             :id,
@@ -494,7 +627,10 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
                             :end_time,
                             :duration_hours,
                             false,
-                            'secretary'
+                            'secretary',
+                            :teaching_name_id,
+                            :source_programme_code,
+                            :source_reporting_period_id
                         )
                         """
                     ),
@@ -519,7 +655,7 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
                         db,
                         resident_id=resident_id,
                         event_ids=[event_id],
-                        today=event_date,
+                        today=event_date + timedelta(days=1),
                     )
                 except ApiError as exc:
                     await db.rollback()
@@ -547,6 +683,51 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
                     {"event_id": first_event_id},
                 )
                 await db.commit()
+
+        first_sequential = await _submit(first_event_id)
+        assert isinstance(first_sequential, dict)
+        same_date_conflict = await _submit(second_event_id)
+        assert isinstance(same_date_conflict, ApiError)
+        assert same_date_conflict.status_code == 409
+
+        async with owner_engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM attendance_records WHERE resident_id = :resident_id"),
+                {"resident_id": resident_id},
+            )
+
+        wrapped_sequential = await _submit(second_event_id)
+        assert isinstance(wrapped_sequential, dict)
+        next_day_conflict = await _submit(next_day_overlap_event_id)
+        assert isinstance(next_day_conflict, ApiError)
+        assert next_day_conflict.status_code == 409
+        touching_boundary = await _submit(boundary_event_id)
+        assert isinstance(touching_boundary, dict)
+
+        async with owner_engine.connect() as connection:
+            sequential_rows = await connection.execute(
+                text(
+                    """
+                    SELECT teaching_event_id
+                    FROM attendance_records
+                    WHERE resident_id = :resident_id
+                      AND status = 'submitted'
+                    """
+                ),
+                {"resident_id": resident_id},
+            )
+        assert set(sequential_rows.scalars()) == {
+            second_event_id,
+            boundary_event_id,
+        }
+
+        async with owner_engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM attendance_records WHERE resident_id = :resident_id"),
+                {"resident_id": resident_id},
+            )
+        workers_at_lock = 0
+        both_workers_at_lock = asyncio.Event()
 
         key1, key2 = resident_submission._native_attendance_lock_keys(
             resident_id=resident_id,
@@ -638,20 +819,31 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
                 text(
                     """
                     DELETE FROM teaching_events
-                    WHERE id IN (:first_event_id, :second_event_id)
+                    WHERE id IN (
+                        :first_event_id, :second_event_id,
+                        :next_day_overlap_event_id, :boundary_event_id
+                    )
                     """
                 ),
                 {
                     "first_event_id": first_event_id,
                     "second_event_id": second_event_id,
+                    "next_day_overlap_event_id": next_day_overlap_event_id,
+                    "boundary_event_id": boundary_event_id,
                 },
             )
             await connection.execute(
                 text(
-                    "DELETE FROM teaching_name_catalogue "
-                    "WHERE reporting_period_id = :period_id"
+                    "DELETE FROM teaching_names "
+                    "WHERE id IN ("
+                    ":first_id, :second_id, :next_day_id, :boundary_id)"
                 ),
-                {"period_id": period_id},
+                {
+                    "first_id": first_teaching_name_id,
+                    "second_id": second_teaching_name_id,
+                    "next_day_id": next_day_overlap_teaching_name_id,
+                    "boundary_id": boundary_teaching_name_id,
+                },
             )
             await connection.execute(
                 text("DELETE FROM resident_postings WHERE resident_id = :resident_id"),
@@ -660,6 +852,10 @@ async def test_concurrent_overlapping_native_submissions_cannot_both_succeed(
             await connection.execute(
                 text("DELETE FROM residents WHERE id = :resident_id"),
                 {"resident_id": resident_id},
+            )
+            await connection.execute(
+                text("DELETE FROM teaching_targets WHERE id = :target_id"),
+                {"target_id": target_id},
             )
             await connection.execute(
                 text("DELETE FROM session_types WHERE id = :session_type_id"),
@@ -726,6 +922,8 @@ async def test_external_overlap_concurrency_and_stale_resubmission_id(
     mcr = f"EC{suffix.upper()}"[:20]
     first_event_id = uuid4()
     second_event_id = uuid4()
+    next_day_overlap_event_id = uuid4()
+    boundary_event_id = uuid4()
     event_date = date(2091, 1, 3)
     period_id = uuid4()
 
@@ -737,8 +935,8 @@ async def test_external_overlap_concurrency_and_stale_resubmission_id(
             "teaching_name": teaching_name,
             "details_of_session": None,
             "event_date": event_date,
-            "start_time": time(10, 0),
-            "end_time": time(11, 0),
+            "start_time": time(23, 0),
+            "end_time": time(0, 0),
             "duration_hours": Decimal("1.0"),
             "session_type_id": None,
             "series_id": None,
@@ -746,6 +944,52 @@ async def test_external_overlap_concurrency_and_stale_resubmission_id(
             "smc_event_code": None,
             "is_adhoc": False,
             "created_by_role": "secretary",
+            "teaching_name_id": None,
+            "global_session_type_id": global_session_type_id,
+            "source_programme_code": None,
+            "source_reporting_period_id": None,
+        },
+        next_day_overlap_event_id: {
+            "id": next_day_overlap_event_id,
+            "posting_code": posting_code,
+            "created_for_programme_code": None,
+            "teaching_name": teaching_name,
+            "details_of_session": None,
+            "event_date": event_date + timedelta(days=1),
+            "start_time": time(0, 0),
+            "end_time": time(1, 0),
+            "duration_hours": Decimal("1.0"),
+            "session_type_id": None,
+            "series_id": None,
+            "cme_points_awarded": False,
+            "smc_event_code": None,
+            "is_adhoc": False,
+            "created_by_role": "secretary",
+            "teaching_name_id": None,
+            "global_session_type_id": global_session_type_id,
+            "source_programme_code": None,
+            "source_reporting_period_id": None,
+        },
+        boundary_event_id: {
+            "id": boundary_event_id,
+            "posting_code": posting_code,
+            "created_for_programme_code": None,
+            "teaching_name": teaching_name,
+            "details_of_session": None,
+            "event_date": event_date + timedelta(days=1),
+            "start_time": time(0, 30),
+            "end_time": time(1, 0),
+            "duration_hours": Decimal("0.5"),
+            "session_type_id": None,
+            "series_id": None,
+            "cme_points_awarded": False,
+            "smc_event_code": None,
+            "is_adhoc": False,
+            "created_by_role": "secretary",
+            "teaching_name_id": None,
+            "global_session_type_id": global_session_type_id,
+            "source_programme_code": None,
+            "source_reporting_period_id": None,
         },
         second_event_id: {
             "id": second_event_id,
@@ -754,8 +998,8 @@ async def test_external_overlap_concurrency_and_stale_resubmission_id(
             "teaching_name": teaching_name,
             "details_of_session": None,
             "event_date": event_date,
-            "start_time": time(10, 30),
-            "end_time": time(11, 30),
+            "start_time": time(23, 30),
+            "end_time": time(0, 30),
             "duration_hours": Decimal("1.0"),
             "session_type_id": None,
             "series_id": None,
@@ -763,6 +1007,10 @@ async def test_external_overlap_concurrency_and_stale_resubmission_id(
             "smc_event_code": None,
             "is_adhoc": False,
             "created_by_role": "secretary",
+            "teaching_name_id": None,
+            "global_session_type_id": global_session_type_id,
+            "source_programme_code": None,
+            "source_reporting_period_id": None,
         },
     }
     posting_context = {
@@ -770,7 +1018,7 @@ async def test_external_overlap_concurrency_and_stale_resubmission_id(
         "programme_code": None,
         "posting_code": posting_code,
         "start_date": event_date,
-        "end_date": event_date,
+        "end_date": event_date + timedelta(days=1),
         "is_current": True,
     }
 
@@ -801,7 +1049,7 @@ async def test_external_overlap_concurrency_and_stale_resubmission_id(
             "id": period_id,
             "label": "Synthetic external concurrency period",
             "start_date": event_date,
-            "end_date": event_date,
+            "end_date": event_date + timedelta(days=1),
         }
 
     async def _posting_contexts(
@@ -963,7 +1211,7 @@ async def test_external_overlap_concurrency_and_stale_resubmission_id(
                         NULL,
                         :posting_code,
                         :event_date,
-                        :event_date,
+                        :end_date,
                         true
                     )
                     """
@@ -973,6 +1221,7 @@ async def test_external_overlap_concurrency_and_stale_resubmission_id(
                     "external_resident_id": external_resident_id,
                     "posting_code": posting_code,
                     "event_date": event_date,
+                    "end_date": event_date + timedelta(days=1),
                 },
             )
             for event in events.values():
@@ -988,7 +1237,8 @@ async def test_external_overlap_concurrency_and_stale_resubmission_id(
                             end_time,
                             duration_hours,
                             is_adhoc,
-                            created_by_role
+                            created_by_role,
+                            global_session_type_id
                         )
                         VALUES (
                             :id,
@@ -999,7 +1249,8 @@ async def test_external_overlap_concurrency_and_stale_resubmission_id(
                             :end_time,
                             :duration_hours,
                             false,
-                            'secretary'
+                            'secretary',
+                            :global_session_type_id
                         )
                         """
                     ),
@@ -1027,11 +1278,62 @@ async def test_external_overlap_concurrency_and_stale_resubmission_id(
                         role="external_resident",
                         external_resident_id=external_resident_id,
                         event_ids=[event_id],
-                        today=event_date,
+                        today=event_date + timedelta(days=1),
                     )
                 except ApiError as exc:
                     await db.rollback()
                     return exc
+
+        first_sequential = await _submit(first_event_id)
+        assert isinstance(first_sequential, dict)
+        same_date_conflict = await _submit(second_event_id)
+        assert isinstance(same_date_conflict, ApiError)
+        assert same_date_conflict.status_code == 409
+
+        async with owner_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM external_attendance_records "
+                    "WHERE external_resident_id = :external_resident_id"
+                ),
+                {"external_resident_id": external_resident_id},
+            )
+
+        wrapped_sequential = await _submit(second_event_id)
+        assert isinstance(wrapped_sequential, dict)
+        next_day_conflict = await _submit(next_day_overlap_event_id)
+        assert isinstance(next_day_conflict, ApiError)
+        assert next_day_conflict.status_code == 409
+        touching_boundary = await _submit(boundary_event_id)
+        assert isinstance(touching_boundary, dict)
+
+        async with owner_engine.connect() as connection:
+            sequential_rows = await connection.execute(
+                text(
+                    """
+                    SELECT teaching_event_id
+                    FROM external_attendance_records
+                    WHERE external_resident_id = :external_resident_id
+                      AND status = 'submitted'
+                    """
+                ),
+                {"external_resident_id": external_resident_id},
+            )
+        assert set(sequential_rows.scalars()) == {
+            second_event_id,
+            boundary_event_id,
+        }
+
+        async with owner_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM external_attendance_records "
+                    "WHERE external_resident_id = :external_resident_id"
+                ),
+                {"external_resident_id": external_resident_id},
+            )
+        workers_at_lock = 0
+        both_workers_at_lock = asyncio.Event()
 
         key1, key2 = resident_submission._external_attendance_lock_keys(
             external_resident_id=external_resident_id,
@@ -1107,7 +1409,7 @@ async def test_external_overlap_concurrency_and_stale_resubmission_id(
                 role="external_resident",
                 external_resident_id=external_resident_id,
                 event_ids=[winning_event_id],
-                today=event_date,
+                today=event_date + timedelta(days=1),
             )
         assert resubmitted["submitted"] == 1
 
@@ -1198,12 +1500,17 @@ async def test_external_overlap_concurrency_and_stale_resubmission_id(
                 text(
                     """
                     DELETE FROM teaching_events
-                    WHERE id IN (:first_event_id, :second_event_id)
+                    WHERE id IN (
+                        :first_event_id, :second_event_id,
+                        :next_day_overlap_event_id, :boundary_event_id
+                    )
                     """
                 ),
                 {
                     "first_event_id": first_event_id,
                     "second_event_id": second_event_id,
+                    "next_day_overlap_event_id": next_day_overlap_event_id,
+                    "boundary_event_id": boundary_event_id,
                 },
             )
             await connection.execute(

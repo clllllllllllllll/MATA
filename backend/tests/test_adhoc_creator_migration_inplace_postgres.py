@@ -7,7 +7,7 @@ import os
 import re
 from time import sleep
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -17,9 +17,8 @@ from sqlalchemy.pool import NullPool
 from app.config import Settings
 from app.models import Base
 from tests.test_external_registration_migrations_postgres import (
-    ALEMBIC_INI,
-    BACKEND_ROOT,
     H_E_DISPOSABLE_DATABASE_NAME,
+    HISTORICAL_MIGRATION_CEILING_REVISION,
     MigrationHarness,
     _adhoc_creator_columns,
     _assert_local_postgres_source,
@@ -31,7 +30,10 @@ from tests.test_external_registration_migrations_postgres import (
 
 
 PREVIOUS_REVISION = "20260727_000027"
-HEAD_REVISION = "20260728_000028"
+ADHOC_REVISION = "20260728_000028"
+REPOSITORY_HEAD_REVISION = "20260813_000042"
+PHASE_G_PREVIOUS_REVISION = "20260804_000033"
+DFG_PREVIOUS_REVISION = "20260804_000034"
 RUNTIME_ROLE = "mata_app_runtime"
 AUTH_ROLE = "mata_auth_internal"
 DEFINER_ROLE = "mata_adhoc_attendance_definer"
@@ -39,6 +41,13 @@ ATOMIC_HELPER = (
     "mata_rls.create_adhoc_attendance("
     "text,text,text,text,text,date,time without time zone,"
     "time without time zone,numeric,uuid)"
+)
+SOURCE_SCOPE_HELPER = "mata_rls.scheduled_event_source_scope(uuid)"
+TARGET_RESOLUTION_HELPER = "mata_rls.resolve_native_teaching_target(uuid,uuid)"
+EXTERNAL_ACCESS_HELPER = "mata_rls.can_access_external_attendance(uuid,uuid)"
+DFG_SELECT_ROW_HELPER = (
+    "mata_rls.can_select_teaching_event_row("
+    "uuid,boolean,text,date,text,text,uuid,uuid,uuid,uuid,text,uuid)"
 )
 _SAFE_IDENTIFIER = re.compile(r"[a-z][a-z0-9_]*")
 _EPHEMERAL_ROLE = re.compile(r"mata_test_(?:runtime|auth)_[0-9a-f]{16}")
@@ -69,6 +78,12 @@ DEFINER_SELECT_TABLES = {
     "residents",
     "session_types",
     "teaching_events",
+    "teaching_name_catalogue",
+    "teaching_targets",
+}
+PHASE_G_DEFINER_SELECT_TABLES = DEFINER_SELECT_TABLES - {
+    "global_session_types",
+    "session_types",
     "teaching_name_catalogue",
     "teaching_targets",
 }
@@ -175,9 +190,10 @@ def _expected_restricted_runner_roles() -> set[str]:
     return expected
 
 
-def _assert_seed_only_head(connection: Connection) -> None:
-    assert _revision(connection) == HEAD_REVISION
+def _assert_seed_only_ceiling(connection: Connection) -> None:
+    assert _revision(connection) == HISTORICAL_MIGRATION_CEILING_REVISION
     model_tables = {table.name for table in Base.metadata.tables.values()}
+    model_tables.remove("teaching_name_programme_scopes")
     assert _public_tables(connection) == {*model_tables, "alembic_version"}
     for table_name in sorted(model_tables):
         assert _SAFE_IDENTIFIER.fullmatch(table_name)
@@ -502,7 +518,7 @@ def _assert_000027(connection: Connection) -> None:
 
 
 def _assert_000028(connection: Connection, *, owner: str) -> None:
-    assert _revision(connection) == HEAD_REVISION
+    assert _revision(connection) == ADHOC_REVISION
     assert _adhoc_creator_columns(connection) == {
         "created_by_resident_id",
         "created_by_external_resident_id",
@@ -796,13 +812,12 @@ def _cleanup(engine: Engine) -> None:
             )
 
 
-def _recover_head(harness: InPlaceHarness) -> None:
+def _recover_ceiling(harness: InPlaceHarness) -> None:
     _cleanup(harness.engine)
-    _migrate(harness, "upgrade", "head")
+    _migrate(harness, "upgrade", HISTORICAL_MIGRATION_CEILING_REVISION)
     _cleanup(harness.engine)
     with harness.engine.connect() as connection:
-        _assert_seed_only_head(connection)
-        _assert_000028(connection, owner=harness.owner)
+        _assert_seed_only_ceiling(connection)
 
 
 @pytest.fixture
@@ -817,7 +832,7 @@ def in_place_migration_database(
     settings = Settings(_env_file=None)
     source_url = make_url(settings.sync_database_url)
     _assert_local_postgres_source(source_url)
-    assert _repository_head_revision() == HEAD_REVISION
+    assert _repository_head_revision() == REPOSITORY_HEAD_REVISION
     environment = _migration_environment(source_url)
     engine = create_engine(source_url, poolclass=NullPool)
     try:
@@ -828,7 +843,7 @@ def in_place_migration_database(
             assert identity["session_role"] == identity["database_owner"]
             assert identity["session_role"] == source_url.username
             assert identity["login_is_superuser"] is True
-            _assert_seed_only_head(connection)
+            _assert_seed_only_ceiling(connection)
         _assert_exclusive(engine)
         migration = MigrationHarness(
             database_name=H_E_DISPOSABLE_DATABASE_NAME,
@@ -845,6 +860,375 @@ def in_place_migration_database(
 
 
 @pytest.mark.migration_mutation
+def test_phase_g_runtime_source_decoupling_migration_lifecycle_in_place(
+    in_place_migration_database: InPlaceHarness,
+) -> None:
+    harness = in_place_migration_database
+    try:
+        _migrate(harness, "downgrade", PHASE_G_PREVIOUS_REVISION)
+        with harness.engine.connect() as connection:
+            assert _revision(connection) == PHASE_G_PREVIOUS_REVISION
+            assert connection.scalar(
+                text("SELECT pg_catalog.to_regprocedure(:signature)"),
+                {"signature": SOURCE_SCOPE_HELPER},
+            ) is None
+            assert set(_catalogue(connection)["table_acl"]) == {
+                *((table_name, "SELECT") for table_name in DEFINER_SELECT_TABLES),
+                ("attendance_records", "INSERT"),
+                ("external_attendance_records", "INSERT"),
+                ("teaching_events", "INSERT"),
+            }
+            pre_phase_g_external_access = str(
+                connection.scalar(
+                    text(
+                        "SELECT pg_catalog.pg_get_functiondef("
+                        "pg_catalog.to_regprocedure(:signature))"
+                    ),
+                    {"signature": EXTERNAL_ACCESS_HELPER},
+                )
+            )
+
+        _migrate(harness, "upgrade", HISTORICAL_MIGRATION_CEILING_REVISION)
+        with harness.engine.connect() as connection:
+            assert _revision(connection) == HISTORICAL_MIGRATION_CEILING_REVISION
+            for helper_signature in (SOURCE_SCOPE_HELPER, TARGET_RESOLUTION_HELPER):
+                runtime_helper = connection.execute(
+                    text(
+                        """
+                    SELECT owner_role.rolname,
+                           procedure.prosecdef,
+                           procedure.proconfig,
+                           pg_catalog.has_function_privilege(
+                               :runtime_role, procedure.oid, 'EXECUTE'
+                           ),
+                           pg_catalog.has_function_privilege(
+                               :auth_role, procedure.oid, 'EXECUTE'
+                           ),
+                           NOT EXISTS (
+                               SELECT 1
+                               FROM pg_catalog.aclexplode(
+                                   COALESCE(
+                                       procedure.proacl,
+                                       pg_catalog.acldefault(
+                                           'f', procedure.proowner
+                                       )
+                                   )
+                               ) AS privilege
+                               WHERE privilege.grantee = 0
+                                 AND privilege.privilege_type = 'EXECUTE'
+                           )
+                    FROM pg_catalog.pg_proc AS procedure
+                    JOIN pg_catalog.pg_roles AS owner_role
+                      ON owner_role.oid = procedure.proowner
+                    WHERE procedure.oid = pg_catalog.to_regprocedure(:signature)
+                    """
+                    ),
+                    {
+                        "signature": helper_signature,
+                        "runtime_role": RUNTIME_ROLE,
+                        "auth_role": AUTH_ROLE,
+                    },
+                ).one()
+                assert runtime_helper[0] == harness.owner
+                assert runtime_helper[1] is True
+                assert list(runtime_helper[2] or []) == [
+                    "search_path=pg_catalog, pg_temp"
+                ]
+                assert runtime_helper[3:] == (True, False, True)
+
+            phase_g_acl = set(_catalogue(connection)["table_acl"])
+            assert phase_g_acl == {
+                *(
+                    (table_name, "SELECT")
+                    for table_name in PHASE_G_DEFINER_SELECT_TABLES
+                ),
+                ("attendance_records", "INSERT"),
+                ("external_attendance_records", "INSERT"),
+                ("teaching_events", "INSERT"),
+            }
+            atomic_definition = str(
+                connection.scalar(
+                    text(
+                        "SELECT pg_catalog.pg_get_functiondef("
+                        "pg_catalog.to_regprocedure(:signature))"
+                    ),
+                    {"signature": ATOMIC_HELPER},
+                )
+            )
+            assert "Department/Programme Teaching [1h]" in atomic_definition
+            assert "teaching_name_catalogue" not in atomic_definition
+            assert "teaching_targets" not in atomic_definition
+            phase_g_external_access = str(
+                connection.scalar(
+                    text(
+                        "SELECT pg_catalog.pg_get_functiondef("
+                        "pg_catalog.to_regprocedure(:signature))"
+                    ),
+                    {"signature": EXTERNAL_ACCESS_HELPER},
+                )
+            )
+            assert phase_g_external_access != pre_phase_g_external_access
+            assert (
+                "current_app_role() IN ('admin', 'secretary')"
+                in phase_g_external_access
+            )
+            assert "external_resident_postings AS competing" in phase_g_external_access
+
+        _migrate(harness, "downgrade", PHASE_G_PREVIOUS_REVISION)
+        with harness.engine.connect() as connection:
+            assert connection.scalar(
+                text("SELECT pg_catalog.to_regprocedure(:signature)"),
+                {"signature": SOURCE_SCOPE_HELPER},
+            ) is None
+            assert set(_catalogue(connection)["table_acl"]) == {
+                *((table_name, "SELECT") for table_name in DEFINER_SELECT_TABLES),
+                ("attendance_records", "INSERT"),
+                ("external_attendance_records", "INSERT"),
+                ("teaching_events", "INSERT"),
+            }
+            assert str(
+                connection.scalar(
+                    text(
+                        "SELECT pg_catalog.pg_get_functiondef("
+                        "pg_catalog.to_regprocedure(:signature))"
+                    ),
+                    {"signature": EXTERNAL_ACCESS_HELPER},
+                )
+            ) == pre_phase_g_external_access
+    finally:
+        _recover_ceiling(harness)
+
+
+@pytest.mark.migration_mutation
+def test_dfg_source_provenance_migration_lifecycle_in_place(
+    in_place_migration_database: InPlaceHarness,
+) -> None:
+    harness = in_place_migration_database
+    suffix = uuid4().hex[:10]
+    programme_code = f"DFG{suffix}".upper()[:20]
+    posting_code = f"DFG{suffix}"
+    programme_id = uuid4()
+    posting_id = uuid4()
+    period_id = uuid4()
+    teaching_name_id = uuid4()
+    event_id = uuid4()
+    contradictory_event_id = uuid4()
+    try:
+        _migrate(harness, "downgrade", DFG_PREVIOUS_REVISION)
+        with harness.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO posting_codes (id, code, display_name)
+                    VALUES (:id, :code, :code)
+                    """
+                ),
+                {"id": posting_id, "code": posting_code},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO programmes (
+                        id, code, name, ay_date_category, r_year_required
+                    ) VALUES (
+                        :id, :code, :name, 'non_im_subspec', false
+                    )
+                    """
+                ),
+                {
+                    "id": programme_id,
+                    "code": programme_code,
+                    "name": f"DFG migration {suffix}",
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO reporting_periods (
+                        id, label, start_date, end_date, status
+                    ) VALUES (
+                        :id, :label, DATE '2088-01-01', DATE '2088-12-31',
+                        'active'
+                    )
+                    """
+                ),
+                {"id": period_id, "label": f"DFG migration {suffix}"},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO teaching_names (
+                        id, reporting_period_id, programme_code, display_name,
+                        normalized_name, is_active
+                    ) VALUES (
+                        :id, :period_id, :programme_code,
+                        'DFG explicit source', 'dfg explicit source', true
+                    )
+                    """
+                ),
+                {
+                    "id": teaching_name_id,
+                    "period_id": period_id,
+                    "programme_code": programme_code,
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO teaching_events (
+                        id, posting_code, created_for_programme_code,
+                        teaching_name, event_date, start_time, end_time,
+                        duration_hours, is_adhoc, created_by_role,
+                        teaching_name_id
+                    ) VALUES (
+                        :id, :posting_code, :programme_code,
+                        'DFG explicit source', DATE '2088-05-05',
+                        TIME '23:00', TIME '00:00', 1.00, false,
+                        'programme_pc', :teaching_name_id
+                    )
+                    """
+                ),
+                {
+                    "id": event_id,
+                    "posting_code": posting_code,
+                    "programme_code": programme_code,
+                    "teaching_name_id": teaching_name_id,
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO teaching_events (
+                        id, posting_code, created_for_programme_code,
+                        teaching_name, event_date, start_time, end_time,
+                        duration_hours, is_adhoc, created_by_role,
+                        teaching_name_id
+                    ) VALUES (
+                        :id, :posting_code, :programme_code,
+                        'DFG contradictory source', DATE '2089-05-05',
+                        TIME '10:00', TIME '11:00', 1.00, false,
+                        'programme_pc', :teaching_name_id
+                    )
+                    """
+                ),
+                {
+                    "id": contradictory_event_id,
+                    "posting_code": posting_code,
+                    "programme_code": programme_code,
+                    "teaching_name_id": teaching_name_id,
+                },
+            )
+
+        failed_upgrade = _migrate(
+            harness,
+            "upgrade",
+            HISTORICAL_MIGRATION_CEILING_REVISION,
+            succeeds=False,
+        )
+        assert "Explicit Teaching Name event provenance is contradictory" in failed_upgrade
+        with harness.engine.begin() as connection:
+            assert _revision(connection) == DFG_PREVIOUS_REVISION
+            connection.execute(
+                text("DELETE FROM teaching_events WHERE id = :id"),
+                {"id": contradictory_event_id},
+            )
+        _migrate(harness, "upgrade", HISTORICAL_MIGRATION_CEILING_REVISION)
+        with harness.engine.begin() as connection:
+            assert _revision(connection) == HISTORICAL_MIGRATION_CEILING_REVISION
+            snapshot = (
+                connection.execute(
+                    text(
+                        """
+                        SELECT source_programme_code,
+                               source_reporting_period_id
+                        FROM teaching_events WHERE id = :id
+                        """
+                    ),
+                    {"id": event_id},
+                )
+            ).mappings().one()
+            assert snapshot["source_programme_code"] == programme_code
+            assert snapshot["source_reporting_period_id"] == period_id
+            assert connection.scalar(
+                text("SELECT pg_catalog.to_regprocedure(:signature)"),
+                {"signature": DFG_SELECT_ROW_HELPER},
+            ) is not None
+            assert "character varying" in str(
+                connection.scalar(
+                    text(
+                        "SELECT pg_catalog.pg_get_function_result("
+                        "pg_catalog.to_regprocedure(:signature))"
+                    ),
+                    {"signature": SOURCE_SCOPE_HELPER},
+                )
+            )
+            connection.execute(
+                text("DELETE FROM teaching_names WHERE id = :id"),
+                {"id": teaching_name_id},
+            )
+            preserved = (
+                connection.execute(
+                    text(
+                        """
+                        SELECT teaching_name_id, source_programme_code,
+                               source_reporting_period_id
+                        FROM teaching_events WHERE id = :id
+                        """
+                    ),
+                    {"id": event_id},
+                )
+            ).mappings().one()
+            assert preserved["teaching_name_id"] is None
+            assert preserved["source_programme_code"] == programme_code
+            assert preserved["source_reporting_period_id"] == period_id
+
+        _migrate(harness, "downgrade", DFG_PREVIOUS_REVISION)
+        with harness.engine.connect() as connection:
+            assert _revision(connection) == DFG_PREVIOUS_REVISION
+            assert connection.scalar(
+                text("SELECT pg_catalog.to_regprocedure(:signature)"),
+                {"signature": DFG_SELECT_ROW_HELPER},
+            ) is None
+            assert not connection.scalar(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_catalog.pg_attribute
+                        WHERE attrelid = 'public.teaching_events'::regclass
+                          AND attname IN (
+                              'source_programme_code',
+                              'source_reporting_period_id'
+                          )
+                          AND NOT attisdropped
+                    )
+                    """
+                )
+            )
+
+        _migrate(harness, "upgrade", HISTORICAL_MIGRATION_CEILING_REVISION)
+        with harness.engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM teaching_events WHERE id = :id"),
+                {"id": event_id},
+            )
+            connection.execute(
+                text("DELETE FROM reporting_periods WHERE id = :id"),
+                {"id": period_id},
+            )
+            connection.execute(
+                text("DELETE FROM programmes WHERE id = :id"),
+                {"id": programme_id},
+            )
+            connection.execute(
+                text("DELETE FROM posting_codes WHERE id = :id"),
+                {"id": posting_id},
+            )
+    finally:
+        _recover_ceiling(harness)
+
+
+@pytest.mark.migration_mutation
 def test_adhoc_creator_migration_lifecycle_in_place(
     in_place_migration_database: InPlaceHarness,
 ) -> None:
@@ -853,9 +1237,8 @@ def test_adhoc_creator_migration_lifecycle_in_place(
         _migrate(harness, "downgrade", "base")
         with harness.engine.connect() as connection:
             _assert_base(connection)
-        _migrate(harness, "upgrade", "head")
+        _migrate(harness, "upgrade", ADHOC_REVISION)
         with harness.engine.connect() as connection:
-            _assert_seed_only_head(connection)
             _assert_000028(connection, owner=harness.owner)
             head_catalogue = _catalogue(connection)
 
@@ -867,14 +1250,14 @@ def test_adhoc_creator_migration_lifecycle_in_place(
             previous_catalogue = _catalogue(connection)
 
         for action, revision in (
-            ("upgrade", HEAD_REVISION),
+            ("upgrade", ADHOC_REVISION),
             ("downgrade", PREVIOUS_REVISION),
-            ("upgrade", HEAD_REVISION),
+            ("upgrade", ADHOC_REVISION),
         ):
             _migrate(harness, action, revision)
             with harness.engine.connect() as connection:
                 assert _data_snapshot(connection) == valid_data
-                if revision == HEAD_REVISION:
+                if revision == ADHOC_REVISION:
                     _assert_000028(connection, owner=harness.owner)
                     assert _catalogue(connection) == head_catalogue
                     _assert_creators(connection)
@@ -893,7 +1276,7 @@ def test_adhoc_creator_migration_lifecycle_in_place(
         output = _migrate(
             harness,
             "upgrade",
-            HEAD_REVISION,
+            ADHOC_REVISION,
             succeeds=False,
         )
         assert "Cannot infer immutable ad-hoc creator" in output
@@ -903,4 +1286,4 @@ def test_adhoc_creator_migration_lifecycle_in_place(
             assert _catalogue(connection) == previous_catalogue
             assert _data_snapshot(connection) == ambiguous_data
     finally:
-        _recover_head(harness)
+        _recover_ceiling(harness)

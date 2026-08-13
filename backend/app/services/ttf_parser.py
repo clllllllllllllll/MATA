@@ -4,7 +4,6 @@ import re
 import logging
 import math
 from decimal import Decimal
-from hashlib import blake2b
 from dataclasses import asdict, dataclass
 from io import BytesIO
 from typing import Any, Mapping
@@ -15,65 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.security import log_safe_exception
 from app.services.parser_common import ParserResult
+from app.services.pool_event_timing import sync_programme_period_pool_event_timings
+from app.services.teaching_target_impacts import stable_target_mapping_impact_counts
+from app.services.ttf_scope_lock import acquire_ttf_programme_lock, acquire_ttf_scope_lock
 
 logger = logging.getLogger(__name__)
 
-_PARSER_ONLY_FALLBACK_PROGRAMME_CODES = {
-    "AIM",
-    "ANAES",
-    "CARDIO",
-    "DERM",
-    "DR",
-    "EM",
-    "ENDO",
-    "ENT",
-    "EYE",
-    "FM",
-    "GASTRO",
-    "GERI",
-    "GS",
-    "ID",
-    "IM",
-    "MEDONCO",
-    "ORTHO",
-    "PATH",
-    "PSY",
-    "REHAB",
-    "RENAL",
-    "RESPI",
-    "RHEUM",
-    "SPORTSMED",
-    "SIG",
-    "URO",
-    "MICROB",
-    "PALLMED",
-}
-_PARSER_ONLY_FALLBACK_R_YEAR_NOT_REQUIRED = {
-    "AIM",
-    "CARDIO",
-    "EM",
-    "ENDO",
-    "ENT",
-    "EYE",
-    "GASTRO",
-    "GERI",
-    "GS",
-    "ID",
-    "IM",
-    "MEDONCO",
-    "ORTHO",
-    "PATH",
-    "REHAB",
-    "RENAL",
-    "RHEUM",
-    "SPORTSMED",
-    "SIG",
-    "URO",
-    "MICROB",
-    "PALLMED",
-}
-_PARSER_ONLY_FALLBACK_SUBSPECIALTY_PROGRAMMES = {"SPORTSMED", "PALLMED"}
-_SUBSPECIALTY_R_YEAR_MAP = {"R4": "SS1", "R5": "SS2", "R6": "SS3"}
 _TTF_HEADERS = {
     1: "reporting_period",
     2: "programme_code",
@@ -85,12 +31,12 @@ _TTF_HEADERS = {
     8: "is_tracked",
     9: "is_reallocatable",
     10: "tag",
-    11: "details_of_training",
 }
 _DURATION_PATTERN = re.compile(r"\[(\d+(?:\.\d+)?)h\]")
 _POSTING_BRACKET_PATTERN = re.compile(r"\[([^\]]+)\]\s*$")
 _TAG_FAMILY_PATTERN = re.compile(r"^(?P<prefix>[A-Za-z]+)(?P<suffix>\d+)$")
 _HEADER_WORD_RE = re.compile(r"[a-z0-9]+")
+_VALID_R_YEAR_VALUES = frozenset({f"R{year}" for year in range(1, 8)})
 
 _HEADER_ALIASES: dict[int, tuple[tuple[str, ...], ...]] = {
     1: (("reporting", "period"),),
@@ -103,7 +49,6 @@ _HEADER_ALIASES: dict[int, tuple[tuple[str, ...], ...]] = {
     8: (("tracked",),),
     9: (("reallocated",), ("reallocatable",), ("can", "session", "reallocated")),
     10: (("tag",),),
-    11: (("details", "training"), ("detail", "training")),
 }
 
 
@@ -129,21 +74,6 @@ class ParsedTeachingTargetRow:
     is_tracked: bool
     is_reallocatable: bool
     tag: str | None
-    details_of_training: str
-    keywords: list[str]
-
-
-@dataclass(slots=True, frozen=True)
-class ParsedCatalogueRow:
-    source_row: int
-    keyword: str
-    session_type: str
-    posting_code: str
-    programme_code: str
-    r_year: str
-    reporting_period_id: str
-    duration_hours: float
-    is_tracked: bool
 
 
 @dataclass(slots=True, frozen=True)
@@ -155,13 +85,44 @@ class ParsedPostingGroupRow:
 
 
 class TTFUploadLockError(RuntimeError):
-    """Raised when a same-scope TTF upload is already in progress."""
+    """Raised when a TTF upload conflicts with an active TTF write lock."""
 
 
 def _cell_text(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _excel_column_name(column_index: int) -> str:
+    name = ""
+    while column_index:
+        column_index, remainder = divmod(column_index - 1, 26)
+        name = chr(ord("A") + remainder) + name
+    return name
+
+
+def _stored_populated_cells(
+    worksheet: Any,
+    *,
+    minimum_row: int,
+    minimum_column: int,
+    maximum_column: int | None = None,
+) -> set[tuple[int, int]]:
+    """Return meaningful stored cells without materialising sparse worksheet bounds."""
+
+    stored_cells = getattr(worksheet, "_cells", {})
+    return {
+        (row_index, column_index)
+        for (row_index, column_index), cell in stored_cells.items()
+        if row_index >= minimum_row
+        and column_index >= minimum_column
+        and (maximum_column is None or column_index <= maximum_column)
+        and (
+            _cell_text(getattr(cell, "value", None))
+            or getattr(cell, "data_type", None) == "f"
+        )
+    }
 
 
 def _normalise_header_text(value: Any) -> str:
@@ -182,13 +143,13 @@ def _header_cell_matches(column_index: int, value: Any) -> bool:
 def _row_looks_like_ttf_header(ws: Any, row_idx: int) -> bool:
     matched_columns = [
         col_idx
-        for col_idx in range(1, 12)
+        for col_idx in range(1, 11)
         if _header_cell_matches(col_idx, ws.cell(row=row_idx, column=col_idx).value)
     ]
-    if len(matched_columns) < 9:
+    if len(matched_columns) != len(_TTF_HEADERS):
         return False
     # Anchor columns reduce false positives on unrelated sheets.
-    for required_col in (2, 4, 6, 11):
+    for required_col in (2, 4, 6, 10):
         if required_col not in matched_columns:
             return False
     return True
@@ -265,22 +226,6 @@ def _normalise_programme_config(value: ProgrammeConfig | Mapping[str, Any]) -> P
     )
 
 
-def _parser_only_fallback_programme_configs(
-    known_programmes: set[str] | None,
-) -> dict[str, ProgrammeConfig]:
-    programme_codes = known_programmes or _PARSER_ONLY_FALLBACK_PROGRAMME_CODES
-    configs: dict[str, ProgrammeConfig] = {}
-    for code in programme_codes:
-        normalised_code = _normalise_programme_code(code)
-        configs[normalised_code] = ProgrammeConfig(
-            code=normalised_code,
-            r_year_required=normalised_code not in _PARSER_ONLY_FALLBACK_R_YEAR_NOT_REQUIRED,
-            is_subspecialty=normalised_code
-            in _PARSER_ONLY_FALLBACK_SUBSPECIALTY_PROGRAMMES,
-        )
-    return configs
-
-
 def _explicit_programme_configs(
     programme_configs: Mapping[str, ProgrammeConfig | Mapping[str, Any]],
 ) -> dict[str, ProgrammeConfig]:
@@ -321,16 +266,10 @@ async def _load_programme_configs(
 def explode_r_years(raw_r_year: str, programme: ProgrammeConfig) -> list[str]:
     if not programme.r_year_required:
         return ["ALL"]
-    tokens = [token.strip() for token in raw_r_year.split(",") if token.strip()]
+    tokens = [token.strip().upper() for token in raw_r_year.split(",") if token.strip()]
     if not tokens:
         return []
-    if programme.is_subspecialty:
-        return [_SUBSPECIALTY_R_YEAR_MAP.get(token, token) for token in tokens]
     return tokens
-
-
-def split_keywords(raw: str) -> list[str]:
-    return [keyword.strip() for keyword in raw.split(",") if keyword.strip()]
 
 
 def extract_tag_family(tag: str) -> str:
@@ -355,41 +294,18 @@ def _mata_rls_enabled(db_session: AsyncSession) -> bool:
     return bool(getattr(db_session, "info", {}).get("mata_rls_enabled", False))
 
 
-def _advisory_lock_keys(reporting_period_id: UUID, programme_code: str) -> tuple[int, int]:
-    scope_key = f"{reporting_period_id}:{programme_code}".encode("utf-8")
-    digest = blake2b(scope_key, digest_size=8).digest()
-    signed = int.from_bytes(digest, byteorder="big", signed=True)
-    key1 = signed >> 32
-    key2 = signed & 0xFFFFFFFF
-    if key2 >= 2**31:
-        key2 -= 2**32
-    return key1, key2
-
-
-async def _acquire_ttf_scope_lock(
-    db_session: AsyncSession,
-    *,
-    reporting_period_id: UUID,
-    programme_code: str,
-) -> bool:
-    key1, key2 = _advisory_lock_keys(reporting_period_id, programme_code)
-    result = await db_session.execute(
-        text("SELECT pg_try_advisory_xact_lock(:key1, :key2) AS acquired"),
-        {"key1": key1, "key2": key2},
-    )
-    acquired = result.scalar()
-    return bool(acquired)
-
-
 async def _persist_ttf_rows(
     *,
     db_session: AsyncSession,
     reporting_period_id: UUID,
     programme_code: str,
     teaching_targets: list[ParsedTeachingTargetRow],
-    catalogue_rows: list[ParsedCatalogueRow],
     posting_group_rows: list[ParsedPostingGroupRow],
 ) -> dict[str, Any]:
+    from app.services.teaching_name_programme_scopes import (
+        reconcile_teaching_name_programme_scopes,
+    )
+
     session_type_rows = {
         row.session_type: {
             "name": row.session_type,
@@ -486,115 +402,332 @@ async def _persist_ttf_rows(
             )
         posting_codes_added = sorted(set(posting_codes) - existing_codes)
 
-    await db_session.execute(
+    scope_params = {
+        "reporting_period_id": str(reporting_period_id),
+        "programme_code": programme_code,
+    }
+    existing_result = await db_session.execute(
         text(
             """
-            DELETE FROM teaching_name_catalogue
+            /* ttf_e1:existing_targets */
+            SELECT
+                id,
+                r_year,
+                posting_code,
+                session_type_id,
+                monthly_target,
+                is_tracked,
+                is_reallocatable,
+                tag
+            FROM teaching_targets
             WHERE reporting_period_id = :reporting_period_id
               AND programme_code = :programme_code
+            FOR UPDATE
             """
         ),
-        {
-            "reporting_period_id": str(reporting_period_id),
-            "programme_code": programme_code,
-        },
+        scope_params,
     )
-    await db_session.execute(
-        text(
-            """
-            DELETE FROM teaching_targets
-            WHERE reporting_period_id = :reporting_period_id
-              AND programme_code = :programme_code
-            """
-        ),
-        {
-            "reporting_period_id": str(reporting_period_id),
-            "programme_code": programme_code,
-        },
-    )
+    existing_targets = [dict(row) for row in existing_result.mappings().all()]
+    existing_by_identity = {
+        (
+            str(row["r_year"]),
+            str(row["posting_code"]),
+            str(row["session_type_id"]),
+        ): row
+        for row in existing_targets
+    }
 
+    incoming_rows: list[tuple[ParsedTeachingTargetRow, dict[str, Any], tuple[str, str, str]]] = []
     for row in teaching_targets:
-        await db_session.execute(
+        session_type_id = session_type_id_by_name[row.session_type]
+        identity = (row.r_year, row.posting_code, str(session_type_id))
+        incoming_rows.append(
+            (
+                row,
+                {
+                    "reporting_period_id": row.reporting_period_id,
+                    "programme_code": row.programme_code,
+                    "r_year": row.r_year,
+                    "posting_code": row.posting_code,
+                    "session_type_id": session_type_id,
+                    "monthly_target": int(row.monthly_target),
+                    "is_tracked": row.is_tracked,
+                    "is_reallocatable": row.is_reallocatable,
+                    "tag": row.tag,
+                },
+                identity,
+            )
+        )
+
+    incoming_identities = {identity for _, _, identity in incoming_rows}
+    stale_targets = [
+        row
+        for identity, row in existing_by_identity.items()
+        if identity not in incoming_identities
+    ]
+    semantic_fields = (
+        "monthly_target",
+        "is_tracked",
+        "is_reallocatable",
+        "tag",
+    )
+    mutable_fields = semantic_fields
+    semantic_target_ids: list[str] = []
+    targets_inserted = 0
+    targets_updated = 0
+    targets_unchanged = 0
+
+    for _, payload, identity in incoming_rows:
+        existing = existing_by_identity.get(identity)
+        if existing is None:
+            targets_inserted += 1
+            continue
+        changed_fields = [
+            field
+            for field in mutable_fields
+            if existing.get(field) != payload[field]
+        ]
+        if not changed_fields:
+            targets_unchanged += 1
+            continue
+        targets_updated += 1
+        if any(field in semantic_fields for field in changed_fields):
+            semantic_target_ids.append(str(existing["id"]))
+
+    stale_target_ids = [str(row["id"]) for row in stale_targets]
+    affected_target_ids = sorted(set(stale_target_ids + semantic_target_ids))
+    semantic_impact = await stable_target_mapping_impact_counts(
+        db_session,
+        target_ids=semantic_target_ids,
+        include_events=False,
+    )
+    affected_impact = await stable_target_mapping_impact_counts(
+        db_session,
+        target_ids=affected_target_ids,
+    )
+    mappings_with_target_semantics_changed = semantic_impact[
+        "mapped_target_count"
+    ]
+    affected_event_count = affected_impact["affected_event_count"]
+    affected_attendance_count = affected_impact["affected_attendance_count"]
+
+    for _, payload, identity in incoming_rows:
+        existing = existing_by_identity.get(identity)
+        if existing is None:
+            await db_session.execute(
+                text(
+                    """
+                    /* ttf_e1:insert_target */
+                    INSERT INTO teaching_targets (
+                        reporting_period_id,
+                        programme_code,
+                        r_year,
+                        posting_code,
+                        session_type_id,
+                        monthly_target,
+                        is_tracked,
+                        is_reallocatable,
+                        tag
+                    )
+                    VALUES (
+                        :reporting_period_id,
+                        :programme_code,
+                        :r_year,
+                        :posting_code,
+                        :session_type_id,
+                        :monthly_target,
+                        :is_tracked,
+                        :is_reallocatable,
+                        :tag
+                    )
+                    """
+                ),
+                payload,
+            )
+            continue
+        if any(existing.get(field) != payload[field] for field in mutable_fields):
+            await db_session.execute(
+                text(
+                    """
+                    /* ttf_e1:update_target */
+                    UPDATE teaching_targets
+                    SET monthly_target = :monthly_target,
+                        is_tracked = :is_tracked,
+                        is_reallocatable = :is_reallocatable,
+                        tag = :tag,
+                        updated_at = now()
+                    WHERE id = :id
+                    """
+                ),
+                {
+                    **payload,
+                    "id": str(existing["id"]),
+                },
+            )
+
+    existing_scopes = {
+        (str(row["posting_code"]), str(row["r_year"]))
+        for row in existing_targets
+    }
+    incoming_scopes = {
+        (row.posting_code, row.r_year)
+        for row in teaching_targets
+    }
+    introduced_scopes = sorted(incoming_scopes - existing_scopes)
+
+    admission_reconciliation = await reconcile_teaching_name_programme_scopes(
+        db_session,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+    )
+
+    mappings_invalidated = 0
+    pending_mappings_created = 0
+    if rls_enabled:
+        reconciliation_result = await db_session.execute(
             text(
                 """
-                INSERT INTO teaching_targets (
-                    reporting_period_id,
-                    programme_code,
-                    r_year,
-                    posting_code,
-                    session_type_id,
-                    monthly_target,
-                    is_tracked,
-                    is_reallocatable,
-                    tag,
-                    details_of_training
-                )
-                VALUES (
-                    :reporting_period_id,
-                    :programme_code,
-                    :r_year,
-                    :posting_code,
-                    :session_type_id,
-                    :monthly_target,
-                    :is_tracked,
-                    :is_reallocatable,
-                    :tag,
-                    :details_of_training
+                /* ttf_e1:reconcile_mappings_rls */
+                SELECT *
+                FROM mata_rls.reconcile_ttf_teaching_name_mappings_v2(
+                    CAST(:reporting_period_id AS uuid),
+                    CAST(:programme_code AS text),
+                    CAST(:stale_target_ids AS uuid[]),
+                    CAST(:introduced_posting_codes AS text[]),
+                    CAST(:introduced_r_years AS text[])
                 )
                 """
             ),
             {
-                "reporting_period_id": row.reporting_period_id,
-                "programme_code": row.programme_code,
-                "r_year": row.r_year,
-                "posting_code": row.posting_code,
-                "session_type_id": session_type_id_by_name[row.session_type],
-                "monthly_target": int(row.monthly_target),
-                "is_tracked": row.is_tracked,
-                "is_reallocatable": row.is_reallocatable,
-                "tag": row.tag,
-                "details_of_training": row.details_of_training,
+                **scope_params,
+                "stale_target_ids": stale_target_ids,
+                "introduced_posting_codes": [
+                    posting_code for posting_code, _ in introduced_scopes
+                ],
+                "introduced_r_years": [r_year for _, r_year in introduced_scopes],
             },
         )
+        reconciliation_counts = reconciliation_result.mappings().one()
+        mappings_invalidated = max(
+            int(reconciliation_counts["mappings_invalidated"] or 0),
+            0,
+        )
+        pending_mappings_created = max(
+            int(reconciliation_counts["pending_mappings_created"] or 0),
+            0,
+        )
+    else:
+        if stale_target_ids:
+            invalidated_result = await db_session.execute(
+                text(
+                    """
+                    /* ttf_e1:invalidate_stale_mappings */
+                    UPDATE teaching_name_mappings
+                    SET teaching_target_id = NULL,
+                        revision = revision + 1,
+                        updated_at = now()
+                    WHERE teaching_target_id = ANY(CAST(:target_ids AS uuid[]))
+                    """
+                ),
+                {"target_ids": stale_target_ids},
+            )
+            mappings_invalidated = max(int(invalidated_result.rowcount or 0), 0)
 
-    for row in catalogue_rows:
+        for posting_code, r_year in introduced_scopes:
+            pending_result = await db_session.execute(
+                text(
+                    """
+                    /* ttf_e1:provision_pending_mappings */
+                    INSERT INTO teaching_name_mappings (
+                        teaching_name_id,
+                        reporting_period_id,
+                        programme_code,
+                        posting_code,
+                        r_year,
+                        teaching_target_id
+                    )
+                    SELECT
+                        teaching_name.id,
+                        teaching_name.reporting_period_id,
+                        teaching_name.programme_code,
+                        CAST(:posting_code AS varchar),
+                        CAST(:r_year AS varchar),
+                        CAST(NULL AS uuid)
+                    FROM teaching_name_programme_scopes AS scope
+                    JOIN teaching_names AS teaching_name
+                      ON teaching_name.id = scope.teaching_name_id
+                     AND teaching_name.reporting_period_id = scope.reporting_period_id
+                    WHERE scope.reporting_period_id = :reporting_period_id
+                      AND scope.programme_code = :programme_code
+                      AND teaching_name.is_active
+                      AND (
+                          scope.admission_reason <> 'resident_host_posting'
+                          OR teaching_name.origin_posting_code =
+                             CAST(:posting_code AS varchar)
+                      )
+                    ON CONFLICT (
+                        teaching_name_id,
+                        programme_code,
+                        posting_code,
+                        r_year
+                    ) DO NOTHING
+                    """
+                ),
+                {
+                    **scope_params,
+                    "posting_code": posting_code,
+                    "r_year": r_year,
+                },
+            )
+            pending_mappings_created += max(int(pending_result.rowcount or 0), 0)
+
+    if stale_target_ids:
         await db_session.execute(
             text(
                 """
-                INSERT INTO teaching_name_catalogue (
-                    keyword,
-                    session_type_id,
-                    posting_code,
-                    programme_code,
-                    r_year,
-                    reporting_period_id,
-                    duration_hours,
-                    is_tracked
-                )
-                VALUES (
-                    :keyword,
-                    :session_type_id,
-                    :posting_code,
-                    :programme_code,
-                    :r_year,
-                    :reporting_period_id,
-                    :duration_hours,
-                    :is_tracked
-                )
+                /* ttf_e1:delete_stale_targets */
+                DELETE FROM teaching_targets
+                WHERE id = ANY(CAST(:target_ids AS uuid[]))
                 """
             ),
-            {
-                "keyword": row.keyword,
-                "session_type_id": session_type_id_by_name[row.session_type],
-                "posting_code": row.posting_code,
-                "programme_code": row.programme_code,
-                "r_year": row.r_year,
-                "reporting_period_id": row.reporting_period_id,
-                "duration_hours": Decimal(str(row.duration_hours)),
-                "is_tracked": row.is_tracked,
-            },
+            {"target_ids": stale_target_ids},
         )
 
+    event_timings_updated = await sync_programme_period_pool_event_timings(
+        db_session,
+        reporting_period_id=reporting_period_id,
+        programme_code=programme_code,
+    )
+
+    preserved_result = await db_session.execute(
+        text(
+            """
+            /* ttf_e1:preserved_mapping_count */
+            SELECT COUNT(*)
+            FROM teaching_name_mappings
+            WHERE reporting_period_id = :reporting_period_id
+              AND programme_code = :programme_code
+              AND teaching_target_id IS NOT NULL
+            """
+        ),
+        scope_params,
+    )
+    mappings_preserved = int(preserved_result.scalar() or 0)
+
+    posting_groups_removed_result = await db_session.execute(
+        text(
+            """
+            /* ttf_e1:replace_posting_groups */
+            DELETE FROM posting_groups
+            WHERE programme_code = :programme_code
+            """
+        ),
+        {"programme_code": programme_code},
+    )
+    posting_groups_removed = max(
+        int(posting_groups_removed_result.rowcount or 0),
+        0,
+    )
     for row in posting_group_rows:
         await db_session.execute(
             text(
@@ -612,38 +745,27 @@ async def _persist_ttf_rows(
             },
         )
 
-    orphan_result = await db_session.execute(
-        text(
-            """
-            SELECT COUNT(*) AS orphan_count
-            FROM attendance_records ar
-            JOIN residents r ON r.id = ar.resident_id
-            JOIN teaching_events te ON te.id = ar.teaching_event_id
-            LEFT JOIN teaching_name_catalogue tnc
-              ON tnc.keyword = te.teaching_name
-             AND tnc.posting_code = te.posting_code
-             AND tnc.programme_code = :programme_code
-             AND tnc.reporting_period_id = :reporting_period_id
-            WHERE tnc.id IS NULL
-              AND r.programme_code = :programme_code
-              AND ar.status = 'submitted'
-            """
-        ),
-        {
-            "programme_code": programme_code,
-            "reporting_period_id": str(reporting_period_id),
-        },
-    )
-    orphan_count = int(orphan_result.scalar() or 0)
-
     return {
+        # The generic parser summary predates reconciliation and means target
+        # rows processed by this upload, not only newly inserted rows.
         "targets_created": len(teaching_targets),
+        "targets_inserted": targets_inserted,
+        "targets_updated": targets_updated,
+        "targets_removed": len(stale_target_ids),
+        "targets_unchanged": targets_unchanged,
+        "mappings_preserved": mappings_preserved,
+        "mappings_invalidated": mappings_invalidated,
+        "mappings_with_target_semantics_changed": mappings_with_target_semantics_changed,
+        "pending_mappings_created": pending_mappings_created
+        + admission_reconciliation["pending_mappings_created"],
+        "affected_event_count": affected_event_count,
+        "affected_attendance_count": affected_attendance_count,
+        "event_timings_updated": event_timings_updated,
         "session_types_upserted": len(session_type_rows),
         "posting_codes_added": posting_codes_added,
-        "catalogue_rows_seeded": len(catalogue_rows),
         "posting_groups_upserted": len(posting_group_rows),
+        "posting_groups_removed": posting_groups_removed,
         "rows_exploded": len(teaching_targets),
-        "orphaned_attendance_count": orphan_count,
     }
 
 
@@ -653,9 +775,10 @@ async def parse_ttf_upload(
     original_filename: str,
     reporting_period_id: UUID | None,
     programme_code: str | None = None,
-    known_programmes: set[str] | None = None,
+    reporting_period_label: str | None = None,
     programme_configs: Mapping[str, ProgrammeConfig | Mapping[str, Any]] | None = None,
     db_session: AsyncSession | None = None,
+    manage_transaction: bool = True,
 ) -> ParserResult:
     metadata: dict[str, Any] = {
         "original_filename": original_filename,
@@ -694,13 +817,17 @@ async def parse_ttf_upload(
     elif programme_configs is not None:
         programme_config_by_code = _explicit_programme_configs(programme_configs)
     else:
-        programme_config_by_code = _parser_only_fallback_programme_configs(
-            known_programmes
+        workbook.close()
+        return ParserResult(
+            upload_type="ttf",
+            errors=[
+                "TTF parser requires persisted or explicitly supplied programme configuration."
+            ],
+            metadata=metadata,
         )
     warnings: list[Any] = []
     errors: list[Any] = []
     teaching_targets: list[ParsedTeachingTargetRow] = []
-    catalogue_rows: list[ParsedCatalogueRow] = []
     posting_group_rows: list[ParsedPostingGroupRow] = []
     detected_layout = detect_ttf_sheet_layout(workbook)
     if detected_layout is None:
@@ -713,12 +840,125 @@ async def parse_ttf_upload(
     sheet_name, header_row = detected_layout
     ws = workbook[sheet_name]
     period_id_str = str(reporting_period_id)
-    for row_idx in range(header_row + 1, ws.max_row + 1):
+    selected_reporting_period_label = _cell_text(reporting_period_label)
+    if db_session is not None and not selected_reporting_period_label:
+        reporting_period_result = await db_session.execute(
+            text(
+                """
+                SELECT label
+                FROM reporting_periods
+                WHERE id = :reporting_period_id
+                """
+            ),
+            {"reporting_period_id": period_id_str},
+        )
+        selected_reporting_period_label = _cell_text(
+            reporting_period_result.scalar_one_or_none()
+        )
+    if db_session is not None and not selected_reporting_period_label:
+        workbook.close()
+        return ParserResult(
+            upload_type="ttf",
+            errors=["Selected reporting period was not found."],
+            metadata=metadata,
+        )
+
+    try:
+        formula_workbook = load_workbook(filename=BytesIO(file_bytes), data_only=False)
+        formula_worksheet = formula_workbook[sheet_name]
+    except Exception as exc:
+        workbook.close()
+        log_safe_exception(
+            logger,
+            "ttf_formula_workbook_read_failed",
+            exc,
+            category="workbook_read",
+        )
+        return ParserResult(
+            upload_type="ttf",
+            errors=[
+                "Workbook could not be read. Please upload a valid, non-password-protected Excel file."
+            ],
+            metadata=metadata,
+        )
+
+    unsupported_cells = _stored_populated_cells(
+        ws,
+        minimum_row=header_row,
+        minimum_column=11,
+    ) | _stored_populated_cells(
+        formula_worksheet,
+        minimum_row=header_row,
+        minimum_column=11,
+    )
+    rows_with_unsupported_columns = {row_idx for row_idx, _ in unsupported_cells}
+    for row_idx, column_idx in sorted(unsupported_cells):
+        errors.append(
+            {
+                "row": row_idx,
+                "column": _excel_column_name(column_idx),
+                "message": (
+                    f"Unsupported populated column {_excel_column_name(column_idx)} at row {row_idx}. "
+                    "TTF accepts columns A–J only."
+                ),
+            }
+        )
+
+    formula_cells = {
+        (row_idx, column_idx)
+        for row_idx, column_idx in _stored_populated_cells(
+            formula_worksheet,
+            minimum_row=header_row,
+            minimum_column=1,
+            maximum_column=10,
+        )
+        if getattr(formula_worksheet.cell(row=row_idx, column=column_idx), "data_type", None)
+        == "f"
+    }
+    rows_with_formula_cells = {row_idx for row_idx, _ in formula_cells}
+    for row_idx, column_idx in sorted(formula_cells):
+        errors.append(
+            {
+                "row": row_idx,
+                "column": _excel_column_name(column_idx),
+                "message": "Formula cells are not allowed in final A–J TTF content.",
+            }
+        )
+
+    data_row_indexes = sorted(
+        {
+            row_idx
+            for row_idx, _ in _stored_populated_cells(
+                ws,
+                minimum_row=header_row + 1,
+                minimum_column=1,
+                maximum_column=10,
+            )
+        }
+    )
+    for row_idx in data_row_indexes:
+        if row_idx in rows_with_unsupported_columns or row_idx in rows_with_formula_cells:
+            continue
         period_label = _cell_text(ws.cell(row=row_idx, column=1).value)
         row_programme = _cell_text(ws.cell(row=row_idx, column=2).value).upper()
         if not any(
-            _cell_text(ws.cell(row=row_idx, column=c).value) for c in range(1, 12)
+            _cell_text(ws.cell(row=row_idx, column=c).value) for c in range(1, 11)
         ):
+            continue
+
+        if not period_label:
+            errors.append({"row": row_idx, "message": "Reporting period is required in column A."})
+            continue
+        if (
+            selected_reporting_period_label
+            and period_label != selected_reporting_period_label
+        ):
+            errors.append(
+                {
+                    "row": row_idx,
+                    "message": "Column A reporting period does not match the selected reporting period.",
+                }
+            )
             continue
 
         if not row_programme:
@@ -726,13 +966,18 @@ async def parse_ttf_upload(
             continue
         row_programme_config = programme_config_by_code.get(row_programme)
         if row_programme_config is None:
-            errors.append({"row": row_idx, "message": f"Unknown programme code: {row_programme}"})
+            errors.append(
+                {
+                    "row": row_idx,
+                    "message": "Column B contains an unknown programme code.",
+                }
+            )
             continue
         if programme_code and row_programme != programme_code:
             errors.append(
                 {
                     "row": row_idx,
-                    "message": f"Row programme_code {row_programme} does not match selected programme {programme_code}.",
+                    "message": "Column B programme code does not match the selected programme.",
                 }
             )
             continue
@@ -745,7 +990,6 @@ async def parse_ttf_upload(
         is_tracked_raw = _cell_text(ws.cell(row=row_idx, column=8).value)
         is_reallocatable_raw = _cell_text(ws.cell(row=row_idx, column=9).value)
         tag = _cell_text(ws.cell(row=row_idx, column=10).value) or None
-        details_of_training = _cell_text(ws.cell(row=row_idx, column=11).value)
 
         if not raw_posting:
             errors.append({"row": row_idx, "message": "Posting code (column D) is required."})
@@ -755,13 +999,23 @@ async def parse_ttf_upload(
         try:
             duration_hours = parse_session_type_duration(session_type)
         except Exception:
-            errors.append({"row": row_idx, "message": f"Session type '{session_type}' has invalid or missing [Xh]."})
+            errors.append(
+                {
+                    "row": row_idx,
+                    "message": "Column F session type has an invalid or missing [Xh] duration.",
+                }
+            )
             continue
 
         try:
             monthly_target = float(monthly_target_raw)
         except Exception:
-            errors.append({"row": row_idx, "message": f"Monthly target '{monthly_target_raw}' is not numeric."})
+            errors.append(
+                {
+                    "row": row_idx,
+                    "message": "Column G monthly target must be numeric.",
+                }
+            )
             continue
         if (
             not math.isfinite(monthly_target)
@@ -776,20 +1030,30 @@ async def parse_ttf_upload(
             )
             continue
 
-        exploded_years = explode_r_years(raw_r_year, row_programme_config)
-        if not exploded_years:
+        if not raw_r_year:
             errors.append({"row": row_idx, "message": "Column C r_year is required."})
             continue
+        raw_r_year_tokens = [
+            token.strip().upper()
+            for token in raw_r_year.split(",")
+            if token.strip()
+        ]
+        if not raw_r_year_tokens or any(
+            token not in _VALID_R_YEAR_VALUES for token in raw_r_year_tokens
+        ):
+            errors.append(
+                {
+                    "row": row_idx,
+                    "message": "Column C r_year contains an unsupported value.",
+                }
+            )
+            continue
+        exploded_years = explode_r_years(raw_r_year, row_programme_config)
 
         is_tracked = parse_bool_cell(is_tracked_raw, true_values={"yes", "y", "true"})
         is_reallocatable = parse_bool_cell(is_reallocatable_raw, true_values={"y", "yes", "true"})
         if is_reallocatable and not tag:
             errors.append({"row": row_idx, "message": "Reallocatable rows must include a tag (column J)."})
-            continue
-
-        keywords = split_keywords(details_of_training)
-        if not keywords:
-            errors.append({"row": row_idx, "message": "Column K details_of_training is mandatory and must contain at least one keyword."})
             continue
 
         for exploded_r_year in exploded_years:
@@ -807,24 +1071,8 @@ async def parse_ttf_upload(
                 is_tracked=is_tracked,
                 is_reallocatable=is_reallocatable,
                 tag=tag,
-                details_of_training=details_of_training,
-                keywords=keywords,
             )
             teaching_targets.append(target_row)
-            for keyword in keywords:
-                catalogue_rows.append(
-                    ParsedCatalogueRow(
-                        source_row=row_idx,
-                        keyword=keyword,
-                        session_type=session_type,
-                        posting_code=posting_code,
-                        programme_code=row_programme,
-                        r_year=exploded_r_year,
-                        reporting_period_id=period_id_str,
-                        duration_hours=duration_hours,
-                        is_tracked=is_tracked,
-                    )
-                )
             if dashboard_posting:
                 posting_group_rows.append(
                     ParsedPostingGroupRow(
@@ -835,9 +1083,10 @@ async def parse_ttf_upload(
                     )
                 )
 
+    formula_workbook.close()
     workbook.close()
 
-    duplicate_key_seen: dict[tuple[str, str, str, str, str], int] = {}
+    duplicate_key_rows: dict[tuple[str, str, str, str, str], list[int]] = {}
     for row in teaching_targets:
         dedupe_key = (
             row.reporting_period_id,
@@ -846,19 +1095,13 @@ async def parse_ttf_upload(
             row.posting_code,
             row.session_type,
         )
-        duplicate_key_seen[dedupe_key] = duplicate_key_seen.get(dedupe_key, 0) + 1
-    for key, count in duplicate_key_seen.items():
-        if count > 1:
+        duplicate_key_rows.setdefault(dedupe_key, []).append(row.source_row)
+    for source_rows in duplicate_key_rows.values():
+        if len(source_rows) > 1:
             errors.append(
                 {
+                    "row": min(source_rows),
                     "message": "Duplicate teaching target after row explosion.",
-                    "key": {
-                        "reporting_period_id": key[0],
-                        "programme_code": key[1],
-                        "r_year": key[2],
-                        "posting_code": key[3],
-                        "session_type": key[4],
-                    },
                 }
             )
 
@@ -892,39 +1135,8 @@ async def parse_ttf_upload(
                             "Tag group must contain at least two rows in the same posting/programme/"
                             "effective_r_year/tag_family scope."
                         ),
-                        "tag": row.tag,
-                        "tag_family": tag_family,
-                        "posting_code": row.posting_code,
-                        "programme_code": row.programme_code,
-                        "r_year": row.r_year,
                     }
                 )
-
-    keyword_duration_map: dict[tuple[str, str, str, str, str, float], str] = {}
-    for row in catalogue_rows:
-        key = (
-            row.reporting_period_id,
-            row.programme_code,
-            row.r_year,
-            row.posting_code,
-            row.keyword.casefold(),
-            row.duration_hours,
-        )
-        existing_session = keyword_duration_map.get(key)
-        if existing_session and existing_session != row.session_type:
-            errors.append(
-                {
-                    "row": row.source_row,
-                    "message": "Keyword+duration conflict maps to multiple session types.",
-                    "keyword": row.keyword,
-                    "posting_code": row.posting_code,
-                    "r_year": row.r_year,
-                    "session_type_a": existing_session,
-                    "session_type_b": row.session_type,
-                }
-            )
-        else:
-            keyword_duration_map[key] = row.session_type
 
     posting_tag_durations: dict[tuple[str, str, str, str, str], dict[str, float]] = {}
     for row in teaching_targets:
@@ -972,11 +1184,9 @@ async def parse_ttf_upload(
                 "ttf_sheet": sheet_name,
                 "ttf_header_row": header_row,
                 "targets": [asdict(row) for row in teaching_targets],
-                "catalogue_rows": [asdict(row) for row in catalogue_rows],
                 "posting_groups": [asdict(row) for row in deduped_posting_group_rows],
                 "counts": {
                     "targets": len(teaching_targets),
-                    "catalogue_rows": len(catalogue_rows),
                     "posting_groups": len(deduped_posting_group_rows),
                 },
             }
@@ -990,12 +1200,22 @@ async def parse_ttf_upload(
 
     persistence_counts: dict[str, Any] = {}
     if db_session is not None:
-        lock_acquired = await _acquire_ttf_scope_lock(
+        # Posting groups are programme-global while targets remain period/programme
+        # scoped. Always take the programme lock before the existing scope lock.
+        programme_lock_acquired = await acquire_ttf_programme_lock(
+            db_session,
+            programme_code=programme_code or "",
+        )
+        if not programme_lock_acquired:
+            raise TTFUploadLockError(
+                "A TTF upload or posting-group replacement for this programme is already in progress."
+            )
+        scope_lock_acquired = await acquire_ttf_scope_lock(
             db_session,
             reporting_period_id=reporting_period_id,
             programme_code=programme_code or "",
         )
-        if not lock_acquired:
+        if not scope_lock_acquired:
             raise TTFUploadLockError(
                 "A TTF upload for this reporting_period_id and programme_code is already in progress."
             )
@@ -1005,44 +1225,46 @@ async def parse_ttf_upload(
                 reporting_period_id=reporting_period_id,
                 programme_code=programme_code or "",
                 teaching_targets=teaching_targets,
-                catalogue_rows=catalogue_rows,
                 posting_group_rows=deduped_posting_group_rows,
             )
-            await db_session.commit()
+            if manage_transaction:
+                await db_session.commit()
         except Exception:
-            await db_session.rollback()
+            if manage_transaction:
+                await db_session.rollback()
             raise
-        orphan_count = persistence_counts.get("orphaned_attendance_count", 0)
-        if orphan_count > 0:
-            warnings.append(
-                {
-                    "type": "orphaned_attendance",
-                    "reporting_period_id": period_id_str,
-                    "programme_code": programme_code,
-                    "count": orphan_count,
-                    "message": (
-                        "Attendance exists for events whose teaching_name/posting_code no longer "
-                        "maps to teaching_name_catalogue in this uploaded scope."
-                    ),
-                }
-            )
-
     metadata.update(
         {
             "ttf_sheet": sheet_name,
             "ttf_header_row": header_row,
             "targets": [asdict(row) for row in teaching_targets],
-            "catalogue_rows": [asdict(row) for row in catalogue_rows],
             "posting_groups": [asdict(row) for row in deduped_posting_group_rows],
             "counts": {
                 "targets": len(teaching_targets),
-                "catalogue_rows": len(catalogue_rows),
                 "posting_groups": len(deduped_posting_group_rows),
             },
             "targets_created": persistence_counts.get("targets_created", 0),
+            "targets_inserted": persistence_counts.get("targets_inserted", 0),
+            "targets_updated": persistence_counts.get("targets_updated", 0),
+            "targets_removed": persistence_counts.get("targets_removed", 0),
+            "targets_unchanged": persistence_counts.get("targets_unchanged", 0),
+            "mappings_preserved": persistence_counts.get("mappings_preserved", 0),
+            "mappings_invalidated": persistence_counts.get("mappings_invalidated", 0),
+            "mappings_with_target_semantics_changed": persistence_counts.get(
+                "mappings_with_target_semantics_changed", 0
+            ),
+            "pending_mappings_created": persistence_counts.get("pending_mappings_created", 0),
+            "affected_event_count": persistence_counts.get("affected_event_count", 0),
+            "affected_attendance_count": persistence_counts.get(
+                "affected_attendance_count", 0
+            ),
+            "event_timings_updated": persistence_counts.get(
+                "event_timings_updated", 0
+            ),
             "session_types_upserted": persistence_counts.get("session_types_upserted", 0),
             "posting_codes_added": persistence_counts.get("posting_codes_added", []),
-            "catalogue_rows_seeded": persistence_counts.get("catalogue_rows_seeded", 0),
+            "posting_groups_upserted": persistence_counts.get("posting_groups_upserted", 0),
+            "posting_groups_removed": persistence_counts.get("posting_groups_removed", 0),
             "rows_exploded": persistence_counts.get("rows_exploded", len(teaching_targets)),
         }
     )

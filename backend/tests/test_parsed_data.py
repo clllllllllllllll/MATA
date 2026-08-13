@@ -203,7 +203,6 @@ class FakeParsedDataSession:
                 "is_tracked": True,
                 "is_reallocatable": True,
                 "tag": "A1",
-                "details_of_training": "Journal Club",
                 "created_at": now,
                 "updated_at": now,
             },
@@ -218,35 +217,6 @@ class FakeParsedDataSession:
                 "is_tracked": False,
                 "is_reallocatable": False,
                 "tag": None,
-                "details_of_training": "X-Ray Meeting",
-                "created_at": now,
-                "updated_at": now,
-            },
-        ]
-        self.teaching_name_catalogue = [
-            {
-                "id": str(uuid4()),
-                "keyword": "Journal Club",
-                "programme_code": "GERI",
-                "posting_code": "TTSHGerMed",
-                "r_year": "ALL",
-                "reporting_period_id": self.period_id,
-                "session_type_id": self.geri_session_type_id,
-                "duration_hours": Decimal("1.00"),
-                "is_tracked": True,
-                "created_at": now,
-                "updated_at": now,
-            },
-            {
-                "id": str(uuid4()),
-                "keyword": "X-Ray Meeting",
-                "programme_code": "DR",
-                "posting_code": "KTPHDiagRd",
-                "r_year": "R2",
-                "reporting_period_id": self.period_id,
-                "session_type_id": self.dr_session_type_id,
-                "duration_hours": Decimal("2.00"),
-                "is_tracked": False,
                 "created_at": now,
                 "updated_at": now,
             },
@@ -341,7 +311,6 @@ class FakeParsedDataSession:
             "residents": deepcopy(self.residents),
             "resident_postings": deepcopy(self.resident_postings),
             "teaching_targets": deepcopy(self.teaching_targets),
-            "teaching_name_catalogue": deepcopy(self.teaching_name_catalogue),
             "form_f1_records": deepcopy(self.form_f1_records),
             "public_holidays": deepcopy(self.public_holidays),
             "academic_month_boundaries": deepcopy(self.academic_month_boundaries),
@@ -368,8 +337,6 @@ class FakeParsedDataSession:
             return self._resident_posting_rows(payload)
         if "FROM teaching_targets tt" in sql:
             return self._teaching_target_rows(payload)
-        if "FROM teaching_name_catalogue tnc" in sql:
-            return self._catalogue_rows(payload)
         if "FROM form_f1_records f" in sql:
             return self._form_f1_rows(payload)
         if "FROM public_holidays ph" in sql:
@@ -483,7 +450,7 @@ class FakeParsedDataSession:
         rows = self._filter_search(
             rows,
             payload,
-            fields=("programme_code", "posting_code", "session_type_name", "details_of_training"),
+            fields=("programme_code", "posting_code", "session_type_name", "tag"),
         )
         return sorted(
             rows,
@@ -493,45 +460,6 @@ class FakeParsedDataSession:
                 row["posting_code"],
                 row["r_year"],
                 row["session_type_name"] or "",
-            ),
-        )
-
-    def _catalogue_rows(self, payload: dict) -> list[dict]:
-        rows: list[dict] = []
-        for catalogue_row in self.teaching_name_catalogue:
-            session_type = self._session_type(catalogue_row["session_type_id"])
-            rows.append(
-                {
-                    **catalogue_row,
-                    "reporting_period_label": self._period_label(catalogue_row["reporting_period_id"]),
-                    "session_type_name": session_type["name"] if session_type else None,
-                }
-            )
-        scope_codes = self._scope_codes(payload)
-        if scope_codes:
-            rows = [row for row in rows if row["programme_code"] in scope_codes]
-        rows = self._filter_programme(rows, payload, key="programme_code")
-        rows = self._filter_exact(rows, payload, "reporting_period_id")
-        rows = self._filter_partial(rows, payload, "posting_code")
-        rows = self._filter_partial(rows, payload, "r_year")
-        if "keyword" in payload:
-            token = payload["keyword"].strip("%").lower()
-            rows = [row for row in rows if token in row["keyword"].lower()]
-        if "is_tracked" in payload:
-            rows = [row for row in rows if row["is_tracked"] == payload["is_tracked"]]
-        rows = self._filter_search(
-            rows,
-            payload,
-            fields=("keyword", "programme_code", "posting_code", "session_type_name"),
-        )
-        return sorted(
-            rows,
-            key=lambda row: (
-                row["reporting_period_id"],
-                row["programme_code"],
-                row["posting_code"],
-                row["r_year"],
-                row["keyword"],
             ),
         )
 
@@ -768,7 +696,7 @@ def test_programme_pc_sees_only_teaching_targets_in_scope() -> None:
     assert response.json()["items"][0]["programme_code"] == "GERI"
 
 
-def test_master_admin_can_list_teaching_name_catalogue_rows() -> None:
+def test_parsed_data_does_not_expose_legacy_teaching_name_catalogue() -> None:
     client = _build_client_with_session(FakeParsedDataSession())
 
     response = client.get(
@@ -776,19 +704,7 @@ def test_master_admin_can_list_teaching_name_catalogue_rows() -> None:
         headers=_admin_headers(scope=None, master=True),
     )
 
-    assert response.status_code == 200
-    assert response.json()["total"] == 2
-    assert {item["keyword"] for item in response.json()["items"]} == {"Journal Club", "X-Ray Meeting"}
-
-
-def test_programme_pc_sees_only_catalogue_rows_in_scope() -> None:
-    client = _build_client_with_session(FakeParsedDataSession())
-
-    response = client.get("/admin/parsed-data/teaching-name-catalogue", headers=_admin_headers("DR"))
-
-    assert response.status_code == 200
-    assert response.json()["total"] == 1
-    assert response.json()["items"][0]["programme_code"] == "DR"
+    assert response.status_code == 404
 
 
 def test_master_admin_can_list_form_f1_records_including_unknown_mcr_rows() -> None:
@@ -909,11 +825,6 @@ def test_parsed_data_text_filters_are_partial_and_case_insensitive() -> None:
         headers=headers,
         params={"programme_code": "ge", "posting_code": "ttsh", "r_year": "al"},
     )
-    catalogue = client.get(
-        "/admin/parsed-data/teaching-name-catalogue",
-        headers=headers,
-        params={"programme_code": "d", "posting_code": "ktph", "r_year": "r2", "keyword": "x-ray"},
-    )
     form_f1 = client.get(
         "/admin/parsed-data/form-f1-records",
         headers=headers,
@@ -938,9 +849,6 @@ def test_parsed_data_text_filters_are_partial_and_case_insensitive() -> None:
     assert targets.status_code == 200
     assert targets.json()["total"] == 1
     assert targets.json()["items"][0]["programme_code"] == "GERI"
-    assert catalogue.status_code == 200
-    assert catalogue.json()["total"] == 1
-    assert catalogue.json()["items"][0]["programme_code"] == "DR"
     assert form_f1.status_code == 200
     assert form_f1.json()["total"] == 1
     assert form_f1.json()["items"][0]["mcr"] == "M22222B"
@@ -952,7 +860,6 @@ def test_parsed_data_text_filters_are_partial_and_case_insensitive() -> None:
     assert "LOWER(COALESCE(r.programme_code, '')) LIKE :programme_code" in executed_sql
     assert "LOWER(COALESCE(rp.posting_code, '')) LIKE :posting_code" in executed_sql
     assert "LOWER(COALESCE(tt.r_year, '')) LIKE :r_year" in executed_sql
-    assert "LOWER(COALESCE(tnc.posting_code, '')) LIKE :posting_code" in executed_sql
     assert "LOWER(COALESCE(f.mcr, '')) LIKE :mcr" in executed_sql
     assert "CAST(COALESCE(ph.year, EXTRACT(YEAR FROM ph.holiday_date)::int) AS TEXT)" in executed_sql
     assert "LOWER(COALESCE(amb.academic_year_label, '')) LIKE :academic_year_label" in executed_sql
@@ -1020,7 +927,6 @@ def test_parsed_data_read_endpoints_do_not_mutate_database() -> None:
         "/admin/parsed-data/residents",
         "/admin/parsed-data/resident-postings",
         "/admin/parsed-data/teaching-targets",
-        "/admin/parsed-data/teaching-name-catalogue",
         "/admin/parsed-data/form-f1-records",
         "/admin/parsed-data/public-holidays",
         "/admin/parsed-data/academic-month-boundaries",

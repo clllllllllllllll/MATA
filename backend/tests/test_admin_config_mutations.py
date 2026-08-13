@@ -16,7 +16,7 @@ from app.schemas.data_revalidation import (
     DataRevalidationImpactSummary,
     DataRevalidationOutcome,
 )
-from app.services import data_revalidation_service
+from app.services import admin_config, data_revalidation_service
 
 
 class _FakeMutationResult:
@@ -47,6 +47,9 @@ class _FakeMutationResult:
         return self._rows[0] if self._rows else None
 
     def scalar_one_or_none(self):
+        return self._scalar
+
+    def scalar(self):
         return self._scalar
 
 
@@ -134,6 +137,9 @@ class FakeMutationSession:
     async def execute(self, statement, params=None):  # noqa: C901, PLR0912, PLR0915
         sql = str(statement)
         payload = dict(params or {})
+
+        if "pg_try_advisory_xact_lock" in sql:
+            return _FakeMutationResult(scalar=True)
 
         if "/* data_revalidation:warning_candidates */" in sql:
             statuses = set(payload.get("statuses") or [])
@@ -384,10 +390,6 @@ class FakeMutationSession:
         if "FROM teaching_targets" in sql and "reporting_period_id = :id" in sql:
             period_counts = self.reporting_period_dependencies.get(payload["id"], {})
             return _FakeMutationResult(rows=[{"count": period_counts.get("teaching_targets", 0)}])
-
-        if "FROM teaching_name_catalogue" in sql and "reporting_period_id = :id" in sql:
-            period_counts = self.reporting_period_dependencies.get(payload["id"], {})
-            return _FakeMutationResult(rows=[{"count": period_counts.get("teaching_name_catalogue", 0)}])
 
         if "FROM form_f1_records" in sql and "reporting_period_id = :id" in sql:
             period_counts = self.reporting_period_dependencies.get(payload["id"], {})
@@ -1696,7 +1698,16 @@ def test_null_scope_cannot_mutate_scoped_resources() -> None:
     assert response.status_code == 403
 
 
-def test_master_admin_can_mutate_posting_groups_without_programme_scope() -> None:
+def test_master_admin_can_mutate_posting_groups_without_programme_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    locked_programmes: list[str] = []
+
+    async def record_programme_lock(_db, *, programme_code: str):  # noqa: ANN001
+        locked_programmes.append(programme_code)
+        return True
+
+    monkeypatch.setattr(admin_config, "acquire_ttf_programme_lock", record_programme_lock)
     client = _build_client_with_session(FakeMutationSession())
     created = client.post(
         "/admin/posting-groups",
@@ -1716,7 +1727,7 @@ def test_master_admin_can_mutate_posting_groups_without_programme_scope() -> Non
         json={
             "group_code": "DR-GROUP-UPDATED",
             "posting_code": "TTSHRespi(MICU)",
-            "programme_code": "DR",
+            "programme_code": "GRM",
         },
     )
     assert updated.status_code == 200
@@ -1729,6 +1740,7 @@ def test_master_admin_can_mutate_posting_groups_without_programme_scope() -> Non
     )
     assert deleted.status_code == 200
     assert deleted.json()["deleted"] is True
+    assert locked_programmes == ["DR", "DR", "GRM", "GRM"]
 
 
 def test_null_scope_cannot_mutate_reporting_periods() -> None:
@@ -2522,6 +2534,40 @@ def test_programme_update_can_clear_rdb_alias_and_persist_false_booleans() -> No
     )
     assert whitespace_clear.status_code == 200
     assert whitespace_clear.json()["rdb_alias"] is None
+
+
+@pytest.mark.parametrize("programme_code", ("SPORTSMED", "PALLMED"))
+def test_programme_update_preserves_protected_actual_r_year_flags(
+    programme_code: str,
+) -> None:
+    session = FakeMutationSession()
+    protected_programme = {
+        "id": str(uuid4()),
+        "code": programme_code,
+        "name": programme_code,
+        "classification": "senior",
+        "ay_date_category": "non_im_subspec",
+        "r_year_required": True,
+        "is_subspecialty": False,
+        "rdb_alias": None,
+        "created_at": session.now,
+        "updated_at": session.now,
+    }
+    session.programmes.append(protected_programme)
+    client = _build_client_with_session(session)
+
+    response = client.put(
+        f"/admin/programmes/{programme_code}",
+        headers=_master_admin_headers(programme_code),
+        json={"r_year_required": False, "is_subspecialty": True},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "SPORTSMED and PALLMED must retain r_year_required=true and is_subspecialty=false."
+    )
+    assert protected_programme["r_year_required"] is True
+    assert protected_programme["is_subspecialty"] is False
 
 
 def test_programme_update_out_of_scope_rejected() -> None:

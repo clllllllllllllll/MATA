@@ -92,6 +92,83 @@ def test_attendance_submission_creates_attendance_record() -> None:
     assert "session_type_id" not in inserted
 
 
+def test_attendance_accepts_admitted_host_secretary_pool_event() -> None:
+    fake_db = FakeResidentSession()
+    event = fake_db._event(  # noqa: SLF001
+        str(uuid4()),
+        "TTSHCardio",
+        "Shared Pool Display",
+        fake_db.today - timedelta(days=5),
+        teaching_name_id=str(uuid4()),
+        source_reporting_period_id=fake_db.period_id,
+        source_programme_code="REHAB",
+    )
+    fake_db.events.append(event)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [event["id"]]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["submitted"] == 1
+    assert any(
+        row["resident_id"] == fake_db.resident_id
+        and row["teaching_event_id"] == event["id"]
+        for row in fake_db.attendance
+    )
+
+
+def test_attendance_rejects_pc_private_pool_event_from_another_programme() -> None:
+    fake_db = FakeResidentSession()
+    event = fake_db._event(  # noqa: SLF001
+        str(uuid4()),
+        "TTSHCardio",
+        "Private Pool Display",
+        fake_db.today - timedelta(days=5),
+        teaching_name_id=str(uuid4()),
+        source_reporting_period_id=fake_db.period_id,
+        source_programme_code="REHAB",
+    )
+    event["created_by_role"] = "programme_pc"
+    event["created_for_programme_code"] = "REHAB"
+    fake_db.events.append(event)
+    before_attendance = list(fake_db.attendance)
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [event["id"]]},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Teaching event is outside the resident programme scope"
+    assert fake_db.attendance == before_attendance
+
+
+def test_attendance_accepts_explicit_global_event_without_teaching_target() -> None:
+    fake_db = FakeResidentSession()
+    fake_db.teaching_targets = []
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [fake_db.global_event_id]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["submitted"] == 1
+    assert any(
+        row["resident_id"] == fake_db.resident_id
+        and row["teaching_event_id"] == fake_db.global_event_id
+        for row in fake_db.attendance
+    )
+
+
 def test_scheduled_attendance_commit_failure_rolls_back_full_batch_and_returns_no_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -607,17 +684,14 @@ def test_attendance_accepts_rehab_native_department_event_when_posted_to_grm() -
             "native_teaching_posting_code": "TTSHNeuro",
         }
     )
-    fake_db.catalogue.append(
+    event = next(
+        row for row in fake_db.events if row["id"] == fake_db.other_posting_event_id
+    )
+    event.update(
         {
-            "keyword": "Skills Teaching",
-            "posting_code": "TTSHNeuro",
-            "programme_code": "REHAB",
-            "r_year": "R2",
-            "reporting_period_id": fake_db.period_id,
-            "session_type_id": fake_db.second_session_type_id,
-            "session_type": "Skills Teaching [2.0h]",
-            "duration_hours": 2.0,
-            "is_tracked": True,
+            "teaching_name_id": str(uuid4()),
+            "source_reporting_period_id": fake_db.period_id,
+            "source_programme_code": "REHAB",
         }
     )
     client = _client(fake_db)
@@ -676,19 +750,6 @@ def test_attendance_rejects_arbitrary_ttsh_secretary_event() -> None:
             "supports_secretary_events": True,
         }
     )
-    fake_db.catalogue.append(
-        {
-            "keyword": "Ortho Teaching",
-            "posting_code": "TTSHOrtho",
-            "programme_code": "GRM",
-            "r_year": "R2",
-            "reporting_period_id": fake_db.period_id,
-            "session_type_id": fake_db.session_type_id,
-            "session_type": "Ortho Teaching [1.0h]",
-            "duration_hours": 1.0,
-            "is_tracked": True,
-        }
-    )
     arbitrary_event = fake_db._event(  # noqa: SLF001
         str(uuid4()),
         "TTSHOrtho",
@@ -737,24 +798,14 @@ def test_attendance_duplicate_native_event_remains_blocked() -> None:
 def test_attendance_accepts_valid_secretary_event_even_when_supports_flag_is_false() -> None:
     fake_db = FakeResidentSession()
     fake_db.resident_postings[0]["posting_code"] = "KTPHGerMed"
-    fake_db.catalogue.append(
-        {
-            "keyword": "KTPH Teaching",
-            "posting_code": "KTPHGerMed",
-            "programme_code": "GRM",
-            "r_year": "R2",
-            "reporting_period_id": fake_db.period_id,
-            "session_type_id": fake_db.session_type_id,
-            "session_type": "KTPH Teaching [1.0h]",
-            "duration_hours": 1.0,
-            "is_tracked": True,
-        }
-    )
     ktph_event = fake_db._event(  # noqa: SLF001
         str(uuid4()),
         "KTPHGerMed",
         "KTPH Teaching",
         fake_db.today - timedelta(days=1),
+        teaching_name_id=str(uuid4()),
+        source_reporting_period_id=fake_db.period_id,
+        source_programme_code="GRM",
     )
     fake_db.events.append(ktph_event)
     client = _client(fake_db)
@@ -789,6 +840,39 @@ def test_weekend_non_exception_attendance_is_stored_with_warning() -> None:
     assert payload["submitted"] == 1
     assert payload["compliance_warning"].startswith("1 session(s) submitted on a weekend")
     assert any(row["teaching_event_id"] == fake_db.weekend_event_id for row in fake_db.attendance)
+
+
+def test_legacy_weekend_exception_uses_persisted_session_type() -> None:
+    fake_db = FakeResidentSession(today=date(2026, 7, 29))
+    legacy_event = next(
+        event for event in fake_db.events if event["id"] == fake_db.weekend_event_id
+    )
+    assert legacy_event["teaching_name_id"] is None
+    assert legacy_event["global_session_type_id"] is None
+    fake_db.weekend_exceptions.append(
+        {
+            "programme_code": "GRM",
+            "posting_code": "TTSHCardio",
+            "day_type": "sat",
+            "start_time_min": None,
+            "end_time_max": None,
+            "session_type_id": fake_db.session_type_id,
+            "session_name_pattern": None,
+            "mutates_to_session_type_id": None,
+            "adjusted_duration_hours": None,
+        }
+    )
+    client = _client(fake_db)
+
+    response = client.post(
+        "/resident/attendance",
+        headers=_headers(fake_db),
+        json={"event_ids": [fake_db.weekend_event_id]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["submitted"] == 1
+    assert response.json()["compliance_warning"] is None
 
 
 def test_resident_cannot_delete_another_residents_attendance() -> None:

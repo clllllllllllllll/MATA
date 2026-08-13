@@ -29,7 +29,7 @@ Residents submit attendance via FormSG / Google Forms
   → Output Excel files distributed manually to Programme Coordinators
 ```
 
-**Why it is being replaced:** The legacy system relies on free-text form submissions requiring extensive string matching, manual CSV export, and batch R script processing. It is fragile, error-prone, and cannot scale. The new system eliminates free-text input via structured web forms, processes compliance in real time, and persists all data in a relational database.
+**Why it is being replaced:** The legacy system relies on free-text form submissions requiring extensive string matching, manual CSV export, and batch R script processing. It is fragile, error-prone, and cannot scale. The new system eliminates free-text input via structured web forms and persists data in a relational database; its full/JIT Phase 6 compliance engine is specified for a later phase and is not currently implemented.
 
 ### The New Architecture
 
@@ -44,13 +44,59 @@ Residents log in via React frontend (MCR-only auth in Phase 1)
   → Future Admin/PC compliance dashboard requirements remain a separate phase
 ```
 
+### Evolved TTF final A-J cutover
+
+E2+B2 is implemented at revision `20260805_000036`. The current TTF parser is
+**A-J only**: reporting period, programme, R-year,
+posting, dashboard posting/posting group, session type, monthly target,
+tracked, reallocatable, and tag. Its canonical domain term is
+`teaching_name`. `teaching_name_catalogue` and
+`teaching_targets.details_of_training` have been removed. A populated legacy
+Column K or any populated unsupported column beyond J receives a controlled
+`422`; there is no dual-format support, Column K backfill, or historical-data
+migration. TTF does not create Teaching Names or infer mappings from workbook
+text. Mapping rows are provisioned only from newly introduced posting/R-year
+target scopes and active Teaching Names in the shared pool. Actual operational
+onboarding of the 28 final programme workbooks remains Phase R.
+
+Phase F writes an explicit Teaching Name or Global Session Type UUID plus an
+immutable display snapshot to new scheduled events. Revision `20260804_000035`
+also persists immutable pool-source programme and reporting-period snapshots,
+so source authorization survives Teaching Name deletion. Phase G uses that
+persisted source identity (or deterministic both-null legacy evidence) for
+Resident/Non-NHG discovery and attendance, and fixes ad-hoc creation without a
+catalogue or target lookup. E2+B2 does not add compliance resolution, full
+compliance, or evolved Secretary/PC frontend pages.
+
 **5B-H-D current state (2026-07-26):** Production/Supabase mode uses backend-owned opaque PostgreSQL sessions. The browser receives the `HttpOnly`, `Secure`, `SameSite=Strict`, host-only `__Host-mata_session` cookie and retains only identity plus the non-secret CSRF synchronizer value in memory. Unsafe methods require `X-CSRF-Token` and an approved `Origin`; production frontend API traffic uses same-origin relative `/api/v1` requests with credentials.
 
 Staff password authentication is backend-mediated through Supabase, and no Supabase access/refresh token is returned to or persisted by the browser. Login, Non-NHG registration, and registration-options routes are intentionally public application entry points; a Vercel outer gate is not an application-auth requirement.
 
 Session rotation is serialized by subject, transaction-scoped family advisory lock, and locked/refreshed database row. Subject generation fencing invalidates sessions after authorization change, password reset, or deactivation. Revision `20260722_000024` revokes browser-role object privileges.
 
-**5B-H-E/current lifecycle local state (2026-07-27):** Revisions `20260726_000025` and `20260726_000026` add separate non-owner runtime and auth-helper capabilities, database-revalidated signed transaction context, reviewed service helpers, database-enforced global MCR uniqueness, and the full policy/grant cutover. Revision `20260727_000027` narrows restricted session-helper results, adds interval-gated activity, and denies signed RLS context after session expiry/revocation. All 34 application tables have RLS enabled locally; 84 policies target only `mata_app_runtime`. The runtime, auth-helper, and migration/ownership credentials must be distinct, and startup attestation fails closed on unsafe roles, ownership, grants, helpers, policies, schema access, sequences, PUBLIC, or browser-role state. FastAPI authorization remains mandatory.
+**5B-H-E/B1/Phase D/Phase F/G current lifecycle local state (2026-08-04):** Revisions `20260726_000025` and `20260726_000026` add separate non-owner runtime and auth-helper capabilities, database-revalidated signed transaction context, reviewed service helpers, database-enforced global MCR uniqueness, and the full policy/grant cutover. Revision `20260727_000027` narrows restricted session-helper results, adds interval-gated activity, and denies signed RLS context after session expiry/revocation. Revisions `20260802_000029`, `20260803_000030`, and `20260803_000031` add the Teaching Name pool/mapping foundation, stable optional event identities, and the explicit Secretary pilot capability without changing the legacy A-K workflow. Revision `20260803_000032` adds the narrow E1 TTF mapping-reconciliation helper. Revision `20260804_000033` adds the narrow, runtime-only scheduled-event source helper and replaces only the scheduled-event insert policy so valid pending Teaching Names can be used without display-text matching. Revision `20260804_000034` moves Resident/Non-NHG scheduled-event and attendance authorization to explicit persisted source evidence (or deterministic both-null legacy evidence), exposes only authorized source scope through a runtime helper, and fixes atomic ad-hoc creation to a server-owned one-hour record without catalogue or target reads. Revision `20260804_000035` adds immutable pool-source programme/period snapshots, row-local restricted `INSERT ... RETURNING` authorization, exact owner/source and external-schedule equality, historical global-type visibility, and full-datetime overlap enforcement including midnight. Phase D uses the existing RLS boundary for a PC-only mapping API, revision fencing, explicit count-only impact confirmation, atomic audit/Data Revalidation evidence, and post-commit scoped cache invalidation. All 36 application tables have RLS enabled locally; 92 policies target only `mata_app_runtime`. The runtime, auth-helper, and migration/ownership credentials must be distinct, and startup attestation fails closed on unsafe roles, ownership, grants, helpers, policies, schema access, sequences, PUBLIC, or browser-role state. FastAPI authorization remains mandatory.
+
+**E2+B2 current update (2026-08-05):** Revision `20260805_000036` removes the
+legacy catalogue and `details_of_training`, retains stable target/mapping IDs
+and D/F/G source provenance, and corrects SPORTSMED/PALLMED to exact R-years
+without SS remapping. The preceding 36-table/92-policy statement is historical
+pre-cutover evidence. The current local attestation inventory is 35 application
+tables and 89 policies, all scoped to `mata_app_runtime`.
+
+**Phase R local authorization update (2026-08-06):** Revision
+`20260806_000038` preserves that 35-table/89-policy inventory and narrows the
+existing pool-event write helpers to the Programme-PC authorization already
+enforced by the application: a pool source must have an exact persisted
+Teaching Name mapping for its source period/programme and requested posting.
+Pending mappings remain valid. Secretary, Master, Resident, and
+cross-programme boundaries do not change.
+
+**Phase U local authorization update (2026-08-12):** Revision
+`20260812_000039` preserves the 35-table/89-policy inventory and adds a
+runtime-only staff timing resolver. It permits only an authorized
+Master/Programme PC or the exact Secretary posting/programme capability, so
+Secretary Add Teaching can use mapped R-year duration envelopes without direct
+mapping-table access. Resident and external contexts receive no rows.
 
 Local code and disposable-database verification are not proof of deployed Supabase behavior.
 
@@ -98,17 +144,26 @@ Six-month windows (H1: Jan–June, H2: Jul–Dec) stored in the `reporting_perio
 | File | Uploaded By | What It Contains | Tables Written |
 |------|------------|-----------------|----------------|
 | **RDB** (Resident Database / Posting Schedule) | Master Admin | Which resident is at which posting site by month | `residents`, `resident_postings`, `posting_codes` |
-| **TTF** (Teaching Target File) | Master Admin, or Programme PC for a normalized programme in scope (PC creates from STP) | Compliance targets: session types, monthly targets, keywords, tags | `teaching_targets`, `session_types`, `teaching_name_catalogue`, `posting_codes`, `posting_groups` |
+| **TTF** (Teaching Target File) | Master Admin, or Programme PC for a normalized programme in scope (PC creates from STP) | **Final A-J:** compliance targets, session types, and posting groups | `teaching_targets`, `session_types`, `posting_codes`, `posting_groups`, and pending mapping scopes for active shared-pool Teaching Names |
 | **FormF1** | Master Admin | Active/inactive status per resident per calendar month | `form_f1_records` |
 | **Academic Calendar / Public Holidays** | Master Admin | Public holiday dates plus AY date boundaries (`Public Holidays` + `AY Dates` sheets; `Fr RMT` ignored) | `public_holidays`, `academic_month_boundaries` |
 
+**Final TTF clarification:** The following historical STP/Column K transition
+text records the pre-E2+B2 workflow only. Today an STP remains a planning
+document and is never uploaded; one programme-scoped A-J TTF is prepared for
+upload, with no Column K, Teaching Name seeding, or mapping inference.
+
 **STP (Structured Teaching Plan):** Created by Secretary. A planning document only. **STP is never uploaded to the system.** The PC manually converts STP to TTF before a Master Admin or Programme PC for that normalized in-scope programme uploads it. Column K (Details of Training / tag info) is absent from STP and must be added manually by PC — this is why conversion cannot be automated.
+
+**TTF transition clarification:** The preceding STP-to-TTF conversion and its
+Column K requirement describe only the historical legacy A-K workflow. It was
+replaced by the final A-J/E2+B2 cutover.
 
 ### Legacy Cutover
 
 Hard cutover at a period boundary. FormSG and Google Forms submission channels are closed at that date. No hybrid operation — all attendance flows through this system only after cutover.
 
-> **⚠️ Most likely LLM mistake:** Assuming STP is uploaded to the system, or that an STP parser exists. STP is never uploaded. TTF is the compliance input. If an LLM builds an STP upload endpoint, it wastes effort and creates confusion. The silent consequence is that column K (Details of Training) — which is mandatory for `teaching_name_catalogue` seeding — would be missing, breaking event visibility and session type resolution for all residents.
+> **⚠️ Most likely LLM mistake:** Assuming STP is uploaded to the system, or that an STP parser exists. STP is never uploaded. Historical legacy A-K transition material required Column K for `teaching_name_catalogue` seeding; the final A-J/E2+B2 architecture removes that dependency.
 
 ---
 
@@ -161,7 +216,7 @@ The source-of-truth files began as build specifications, but substantial pre-com
 4. **Posting codes come from trusted database configuration only.** They are not derivable by regex or string pattern. Non-NHG registration resolves exact programme/institution pairs through `programme_institution_posting_map`; it must not reuse native teaching, Secretary, target, or posting metadata as a fallback.
 5. **R scripts A–F are legacy reference only.** Do not port their logic unless explicitly listed in Section 4A of `99_decision_log_and_gap_audit.md`. Logic in Section 4B must not be re-implemented.
 6. **Active/inactive source is resolved.** FormF1 is final. The AY bucket label selects the stored calendar-month FormF1 row that gates both numerator and denominator for the whole bucket; do not use an event's raw calendar month or split/prorate the bucket.
-7. **TBD-MIGRATION (Historical data migration strategy) is open.** Do not build migration tooling until the option is confirmed.
+7. **TBD-MIGRATION is superseded and settled: no historical data migration.** Retain legacy workbooks as structural references only; do not import, backfill, or build migration tooling.
 8. **For full detail on any rule, go to the authoritative source-of-truth file.** Do not rely on this navigation document alone.
 9. **Database performance, caching, and rate limiting are explicit implementation concerns.** Implement indexes from `schema.md`, cache only scoped derived/reference reads, invalidate caches on writes/uploads, and rate-limit auth/upload/mutation/report endpoints.
 10. **Percentage is the canonical status predicate.** Use the unrounded posting percentage for `met_70pct` and colour. `target_70 = ceil(target_100 × 0.70)` is a displayed whole-session target.
@@ -191,8 +246,8 @@ The source-of-truth files began as build specifications, but substantial pre-com
 | **RDB parser** (`rdb_parser.py`) | ✅ Implemented | Contract and edge cases remain governed by `parsing.md` |
 | **TTF parser** (`ttf_parser.py`) | ✅ Implemented | Contract and edge cases remain governed by `parsing.md` |
 | **FormF1 parser** (`formf1_parser.py`) | ✅ Implemented | Contract and edge cases remain governed by `parsing.md` |
-| **Compliance engine** (`compliance.py`) | ✅ Implemented | BL-1 through BL-11, grouping, global exclusions, ORTHO mutation, and FormF1 gate |
-| **Surplus chain + reallocation** (`surplus.py`) | ✅ Implemented | BL-3 and BL-4 |
+| **Compliance engine** (`compliance.py`) | 📋 Specified, not implemented | BL-1 through BL-11 are the future non-clawback contract; no full Phase 6 engine currently exists |
+| **Surplus chain + reallocation** (`surplus.py`) | 📋 Specified, not implemented | BL-3 and BL-4 are future Phase 6 specification, not current application code |
 | **Clawback engine** (`clawback.py`) | ⏸ Deferred | Financial and final-close rules are not implementation-ready |
 | **Validation service** (`validation.py`) | ✅ Implemented | Duplicate and later-distinct-event overlap rejection |
 | **Frontend (React/Vite/TypeScript)** | ✅ Implemented pre-compliance surfaces | Cookie/CSRF transport and all current role workflows |
@@ -208,7 +263,7 @@ This file is navigation only. Detailed contracts live in `99_decision_log_and_ga
 - `3I-B` Unified Admin Logs backend endpoints: complete / committed.
 - `3I-C` Unified Admin Logs frontend page: complete / committed.
 - `4B` Programme PC Teaching Event CRUD is implemented: PCs manage scheduled, programme-owned teaching events through scoped admin endpoints.
-- `5A` NHG Resident workflow hardening is implemented, including the date-first, catalogue-backed ad-hoc teaching flow. `details_of_session` remains separately pending where the schema contract still says so.
+- `5A` NHG Resident workflow hardening is implemented. Phase G refines ad-hoc teaching to the date-first fixed server-owned record; `details_of_session` is optional display/audit-only context.
 - `5B` Non-NHG Resident workflow and visibility are implemented: registration/login, upcoming posting schedule, event listing, attendance/ad-hoc submission, past attendance, admin/PC list/read, Excel export, native programme department visibility, and fixed ad-hoc attribution.
 - `5B-G` Supabase readiness is complete as documentation/audit work: staff bootstrap runbook, RLS/grants/Data API planning matrix, Supabase migration smoke plan, service-role access review, and readiness audit. It did not enable RLS, write policy SQL, implement cookie/BFF/CSRF, or implement compliance.
 - `5B-H-A`, `5B-H-B`, and `5B-H-C` are retained as historical deployment-security/UAT phases.
@@ -217,12 +272,12 @@ This file is navigation only. Detailed contracts live in `99_decision_log_and_ga
 - Programme PC NHG Resident Attendance is implemented as a pre-compliance, read-only overview plus a dedicated resident history page. Backend scope is `residents.programme_code IN users.programme_scope`; reads use native `attendance_records` only. Non-NHG Attendance remains separate, and no attendance mutation or compliance/target-progress UI is part of this feature.
 - Phase 6 compliance remains the next major feature phase after the protected deployment/security baseline is acceptable. Phase 6 compliance must read native `attendance_records` only and never join `external_attendance_records`.
 
-### Open TBDs
+### Current TBD Status
 
 | TBD | Status | Summary |
 |-----|--------|---------|
 | TBD-7 | ✅ Resolved | FormF1 is the final authoritative active/inactive source for compliance. |
-| TBD-MIGRATION | ❓ Open | Historical data migration strategy: archive only / summary / full migration |
+| TBD-MIGRATION | ✅ Settled / superseded | No historical data migration; legacy workbooks remain structural references only. |
 
 ### Resolved TBDs
 
@@ -288,16 +343,24 @@ RDB Excel upload
   → rdb_parser.py (uses programmes.rdb_alias and r_year_required; no SS remapping)
   → residents, resident_postings, posting_codes tables
 
-TTF Excel upload
-  → ttf_parser.py (seeds teaching_name_catalogue from col K, posting_groups from col E)
-  → teaching_targets, session_types, teaching_name_catalogue, posting_codes tables
+Final A-J TTF Excel upload
+  → ttf_parser.py (A-J target reconciliation and Column E posting groups)
+  → teaching_targets, session_types, posting_codes, posting_groups, teaching_name_mappings tables
 
 FormF1 Excel upload
   → form_f1_parser.py
   → form_f1_records table (is_active gate for compliance denominator)
 
+Phase F scheduled-event write path (the legacy catalogue-resolution arrows
+immediately below are historical and do not govern new scheduled events):
+  -> select exactly one active `teaching_name_id` or `global_session_type_id`
+  -> preserve its immutable `teaching_name` display snapshot
+  -> pool sources use one hour and reject starts after 23:00; global sources use configured duration
+  -> server computes `end_time`; no request text or client end time is accepted
+
 Secretary creates teaching_events via /secretary/teaching-events endpoints
-  → teaching_name resolved against teaching_name_catalogue for display session_type_id
+  → select exactly one persisted Teaching Name or global source ID; the legacy
+    catalogue-resolution wording from before Phase F is historical only
   → end_time = start_time + session_type.duration_hours (server-computed)
   → PH dates hard-blocked (422)
 
@@ -309,12 +372,14 @@ NHG Resident logs in (MCR only) → sees assigned posting secretary events, nati
     [PH dates hard-blocked (422); countable ad-hoc maps to Department/Programme Teaching [1h] under assigned posting]
   → attendance_records table (session_type_id is NOT stored)
 
-Compliance read (GET /resident/dashboard, GET /admin/reports/*)
-  → compliance.py BL-6 steps:
+Future Phase 6 compliance read (specified only; no current compliance.py engine;
+it must consume persisted source identity or a later scoped mapping, never infer
+classification from an event display snapshot)
+  → intended BL-6 steps:
     1. Resolve physical posting, phase R-year, AY bucket label, and that label's FormF1 gate
     2. Project approved out-of-posting native-programme events to one assigned-posting Department/Programme Teaching [1h] session
-    3. global_session_types check → exclude before catalogue lookup (PRIORITY)
-    4. Exact canonical teaching_name_catalogue lookup in resident/period/posting/R-year scope
+    3. Explicit global-source identity → exclude before any scoped compliance mapping
+    4. Resolve the applicable compliance identity through persisted source/mapping evidence in resident/period/posting/R-year scope; no display-text fallback
     5. Apply exact-type ORTHO adjusted-time Saturday mutation if applicable
     6. Count raw eligible sessions; compute correctly weighted targets by R-year context
     7. Recompute/replace BL-4 surplus as cumulative raw eligible attendance minus cumulative target_100
@@ -366,7 +431,7 @@ mata/
 │   │   │   ├── resident.py    # residents table
 │   │   │   ├── posting.py     # posting_codes, resident_postings
 │   │   │   ├── programme.py   # programmes, posting_groups, multi_posting_rules
-│   │   │   ├── teaching.py    # teaching_targets, session_types, teaching_events, teaching_name_catalogue
+│   │   │   ├── teaching.py    # teaching_targets, session_types, teaching_names, teaching_name_mappings, teaching_events
 │   │   │   ├── attendance.py  # attendance_records
 │   │   │   └── reporting.py   # reporting_periods, surplus_ledger, form_f1_records, period_snapshots, clawback_records
 │   │   ├── routers/           # FastAPI routers (one file per domain)
@@ -375,8 +440,8 @@ mata/
 │   │   │   ├── resident.py    # Submission portal, dashboard, attendance, ad-hoc teaching
 │   │   │   └── auth.py        # Backend-owned app-session auth and local/demo compatibility
 │   │   ├── services/          # Business logic (no HTTP concerns)
-│   │   │   ├── compliance.py  # BL-1 through BL-11, posting_groups, global_session_types
-│   │   │   ├── surplus.py     # Surplus chain, tag-based reallocation, hibernation
+│   │   │   ├── compliance.py  # Future Phase 6 specification module; not an implemented engine
+│   │   │   ├── surplus.py     # Future Phase 6 specification module; not implemented application behavior
 │   │   │   ├── clawback.py    # Deferred Phase 10 placeholder; BL-10 has no financial contract yet
 │   │   │   ├── rdb_parser.py  # RDB Excel upload parser
 │   │   │   ├── ttf_parser.py  # TTF Excel upload parser
@@ -412,7 +477,7 @@ mata/
 |------|--------|----------------------|-------------|----------------------------|
 | `schema.md` | Current schema contract plus explicitly deferred tables | Implemented contract; verify current migrations/models | Any model, migration, or database query | `session_type_id` is NOT stored on `attendance_records` — it is resolved at compliance read time. If stored, compliance becomes stale when TTF is re-uploaded. |
 | `api.md` | Current FastAPI endpoints, request/response shapes, auth model, error codes | Implemented pre-compliance contract with explicit future items | Any router, endpoint, or Pydantic schema | Three separate server-owned identity tables converge on one opaque application-session envelope; role/scope is reloaded from the current subject row. |
-| `business-logic.md` | Non-clawback engine (BL-1–BL-11), surplus, raw-count reallocation, exceptions, FM rules, and deferred clawback register | Implemented non-clawback rules plus explicit deferrals | Compliance engine, surplus chain, reallocation, any calculation | Reallocation sorts alphabetically by tag and transfers raw session counts before final capping; duration never drives the arithmetic. |
+| `business-logic.md` | Future non-clawback specification (BL-1–BL-11), surplus, raw-count reallocation, exceptions, FM rules, and deferred clawback register | Specified, not implemented | Compliance engine, surplus chain, reallocation, any calculation | Reallocation sorts alphabetically by tag and transfers raw session counts before final capping; duration never drives the arithmetic. |
 | `parsing.md` | RDB, TTF, FormF1, and Academic Calendar / PH upload parsing rules, cell format variants, edge cases, validation rules | Implemented parser contract | Any upload endpoint or Excel parsing work | RDB posting columns are NOT at a fixed column range (I–T). The parser must detect them dynamically by scanning row 2 for date-range headers. Hardcoding column positions silently misses months. |
 | `security.md` | Current cross-cutting security contract, local/deployed evidence boundary, and deferred debt | Implemented local contract; deployed verification remains separate | Any authentication, authorization, session, CSRF, RLS, privacy, deployment, CI, or rollback change | Local passing tests do not prove the deployed database, proxy, cookie, environment, or role catalogue. |
 | `AGENTS.md` | Coding-agent behaviour, repo structure, tech stack, roles, initialisation order, key architectural rules, confirmed decisions, security rules | Current project instructions and architecture authority | Every coding task (alongside this document) | Multi-posting cell with explicit date ranges applies to ALL RDB sheets, not FM only. Assuming it's FM-only causes silent parsing failures for non-FM programmes. |
@@ -439,7 +504,7 @@ Phase 5B uses a confirmed two-stage rollout. Stage 1 implemented the generic map
 
 External-registration mappings are isolated from native teaching visibility, `supports_secretary_events`, Secretary event creation/visibility, and compliance attribution.
 
-For each event date, Non-NHG scheduled-event listing and attendance submission authorize against the matching external posting row. Secretary-created events require the exact schedule `posting_code`, a null `created_for_programme_code`, and `posting_codes.supports_secretary_events = true`. Programme PC-created events require exact equality with both the schedule `programme_code` and `posting_code`; an unresolved/null schedule programme fails closed for this source. Both sources remain subject to the normal scheduled-event, date-range, reporting-period, status, and already-submitted rules. Programme identity is never inferred from a posting code, institution, target, catalogue row, native teaching mapping, fuzzy match, or first candidate. Ad-hoc submission remains available even when secretary-created event lists are not supported, and all Non-NHG attendance remains recording/export-only.
+For each event date, Non-NHG scheduled-event listing and attendance submission authorize against the matching external posting row. Secretary-created events require the exact schedule `posting_code`, a null `created_for_programme_code`, and `posting_codes.supports_secretary_events = true`. Programme PC-created events require exact equality with both the schedule `programme_code` and `posting_code`; an unresolved/null schedule programme fails closed for this source. An explicit Teaching Name source must also match the event-date reporting period and exact schedule programme; an explicit global source is global-first; a both-null legacy event uses deterministic persisted evidence only. Both sources remain subject to the normal scheduled-event, date-range, reporting-period, status, and already-submitted rules. Programme identity is never inferred from a posting code, institution, target, catalogue row, native teaching mapping, fuzzy match, or first candidate. Ad-hoc submission remains available even when secretary-created event lists are not supported, and all Non-NHG attendance remains recording/export-only.
 
 
 ### Admin / Programme Coordinator (PC)
@@ -459,16 +524,25 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 7. Writes `upload_logs` row with `upload_type = 'rdb'`
 8. Re-upload: safe — treats upload as complete snapshot and replaces all `resident_postings` within the selected `reporting_period_id` after successful parse/validation
 
-**TTF Upload Flow:**
+**TTF Upload Flow (current final A-J behavior):**
+1. Master Admin selects any programme, or a Programme PC selects one normalized programme in scope, then uploads `.xlsx` via `POST /admin/upload/ttf`.
+2. The parser validates the exact selected reporting-period label and programme on every data row, accepts only A-J, and rejects a populated K-or-later cell without returning its value.
+3. The programme-global posting-group advisory lock is acquired before the reporting-period/programme target lock.
+4. Stable target reconciliation preserves unchanged target UUIDs, updates mutable target fields in place, and invalidates stale mappings to pending before deleting stale targets.
+5. Newly introduced posting/R-year scopes provision pending mappings only for active Teaching Names already in the shared pool. TTF does not create names or mappings from workbook text.
+6. The transaction replaces programme posting groups from non-empty Column E rows, records upload/audit/Data Revalidation evidence, commits once, then invalidates scoped caches.
+7. Non-NHG availability remains separately configured by `programme_institution_posting_map`; TTF cannot activate, create, or infer an external mapping.
+
+**Historical TTF Upload Flow (legacy A-K behavior before E2+B2):**
 1. Master Admin selects any programme, or a Programme PC selects a normalized programme in their scope, then uploads `.xlsx` via `POST /admin/upload/ttf`
-2. Acquires scope-level PostgreSQL advisory lock (returns 409 if contended)
+2. Acquires the programme-global `posting_groups` PostgreSQL advisory lock, then the reporting-period/programme scope lock (returns 409 if either is contended)
 3. `ttf_parser.py` validates all rows before any writes
-4. Full replace within `(reporting_period_id, programme_code)` scope: deletes existing `teaching_targets` and `teaching_name_catalogue` rows, then inserts new ones
-5. Seeds `teaching_name_catalogue` from column K (Details of Training) — one row per keyword per TTF row
-6. Seeds `posting_groups` from column E when non-empty
-7. Non-tracked rows (`is_tracked = false`) are still seeded into `teaching_name_catalogue` for event visibility
-8. **No 422 attendance guard on re-upload.** If existing attendance records reference teaching names that no longer map to a catalogue row, they are returned as warnings — upload still returns 200
-9. Admin uses `PUT /admin/teaching-targets/{id}` CRUD for mid-period corrections (updates `details_of_training` and re-seeds catalogue rows for that specific target)
+4. Logically replaces the `(reporting_period_id, programme_code)` target scope through stable reconciliation: matching target UUIDs survive, mutable values update, and only stale targets are removed after their mappings become pending
+5. Regenerates `teaching_name_catalogue` from legacy Column K (Details of Training) — one row per keyword per TTF row
+6. Replaces the programme-wide `posting_groups` configuration from non-empty Column E rows
+7. Non-tracked rows (`is_tracked = false`) are still seeded into `teaching_name_catalogue` for the physical parser path, not Phase G event visibility
+8. **No 422 attendance guard on re-upload.** If legacy parser/configuration references no longer map to a catalogue row, they are returned as warnings — upload still returns 200 and Phase G runtime eligibility is unchanged
+9. Admin uses `PATCH /admin/parsed-data/teaching-targets/{id}` for permitted mid-period corrections; structural target identity changes require TTF re-upload
 
 **FormF1 Upload Flow:**
 1. Master Admin selects reporting period and uploads `.xlsx` via `POST /admin/upload/form-f1`
@@ -516,14 +590,26 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 
 **Teaching Event CRUD:**
 - Create events via `POST /secretary/teaching-events`
-- Teaching name picked from unified dropdown populated by `GET /secretary/teaching-name-options` — combines `teaching_name_catalogue` keywords (TTF-derived) AND active `global_session_types` entries
-- `session_type_id` auto-resolved from `teaching_name_catalogue` at event creation (display/prototype only — never used for compliance)
+- **Phase F current scheduling contract (supersedes the following legacy
+  catalogue-display bullets):** create/update/series requests carry exactly one
+  active `teaching_name_id` or `global_session_type_id`; the server stores the
+  display snapshot and computes timing. Pool rows also store immutable source
+  programme/period snapshots, which survive source deletion. A pool source uses
+  the exact posting-specific mapped TTF duration and temporarily defaults to one
+  hour while unmapped; mapping changes update existing exact-scope timing. It
+  may not start after 23:00. A global source uses its configured duration.
+  Pending names are event-capable. Source text, client end time, and catalogue
+   mapping inference are never accepted. Phase G Resident/Non-NHG runtime
+   resolution uses persisted source evidence and never the catalogue. Inactive
+   global types disappear from new choices, but existing global events and
+   eligible attendance remain visible and operational.
+- Legacy pre-Phase-F dropdown and `session_type_id` catalogue-resolution wording is retained only as historical parser-era context; current scheduled creation uses the explicit source-option contract above.
 - `end_time` = `start_time + session_type.duration_hours` (server-computed — NOT a request field)
 - Event creation on public holiday dates is hard-blocked (422)
 - Recurrence: `POST /secretary/teaching-events/series` materialises individual event rows. PH occurrences skipped with warning. Three edit granularities: "this event only", "this and all following", "all events in the series"
 - Cannot delete events that have attendance records (409)
 
-**STP Ownership:** Secretary creates STP as a planning document. STP is never uploaded to the system. PC manually converts STP → TTF before a Master Admin or Programme PC for that normalized in-scope programme uploads it. Column K (Details of Training) must be added manually.
+**STP Ownership:** Secretary creates STP as a planning document. STP is never uploaded to the system. The PC manually converts it to a final A-J TTF before a Master Admin or in-scope Programme PC uploads it; no Column K data is required or accepted.
 
 **Provisioning:** TTSH-only at launch — 1 account per TTSH posting code. No schema change needed for other institutions.
 
@@ -543,7 +629,7 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
   - Native programme PC-created events: `created_for_programme_code = resident.programme_code`
 - **Critical gating rule:** Assigned-posting visibility exists only after the resident's posting schedule has been uploaded via RDB. No RDB upload = no assigned-posting visibility. Enforced by `resident_postings` lookup at request time.
 - Example: a native GRM resident posted to TTSH Rehab sees TTSH Rehab secretary events, TTSH GRM secretary events, and GRM PC events. A native Rehab resident posted to TTSH GRM sees TTSH GRM secretary events, TTSH Rehab secretary events, and Rehab PC events.
-- Events filtered by `teaching_name_catalogue` — only shows events whose `teaching_name` exists in the resident's catalogue for their `(posting_code, programme_code, r_year, reporting_period_id)`
+- Scheduled events use their explicit Teaching Name/global identity where present: an explicit pool identity must match the event-date reporting period and resident programme exactly; an explicit global identity remains global-first; both-null legacy events use deterministic persisted evidence only. No catalogue or display-text inference applies.
 - Only past/today events shown (`event_date <= today`)
 - Already-submitted events excluded
 
@@ -555,8 +641,8 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
   resubmission receives a new row.
 
 **Ad-hoc Teaching:**
-- Date-first dropdown flow: resident selects teaching date, backend derives assigned posting, resident selects attended TTSH department/programme, then selects catalogue-backed teaching evidence from TTF Column K / `teaching_name_catalogue`
-- `POST /resident/adhoc-teaching` — resident submits selected teaching not pre-created by secretary
+- Date-first fixed flow: backend derives the sole posting, exposes the fixed `Department/Programme Teaching [1h]` record, and accepts no client teaching-name, mapped-target, or alternate attended-posting selection.
+- `POST /resident/adhoc-teaching` — resident submits the server-owned fixed record not pre-created by a secretary
 - A narrow database function derives the authenticated creator/family and
   creates the immutable-owned `teaching_events` row plus matching attendance
   row in the same caller transaction.
@@ -578,18 +664,18 @@ For each event date, Non-NHG scheduled-event listing and attendance submission a
 
 ## Section 9 — TBD Register Summary
 
-### Open TBDs — Do NOT Resolve in Code
+### Previously Open Decisions — Do NOT Reopen in Code
 
 | TBD | Title | Summary | Instruction |
 |-----|-------|---------|-------------|
 | TBD-7 | Active/inactive source (resolved) | FormF1 is the final authoritative source for active/inactive status. `Active` and `Extension` are active; `Inactive` is inactive. The status selected by the AY bucket label gates both numerator and denominator for the whole bucket. | Keep FormF1 parser/upload + AY-label selection of `form_f1_records.is_active` as the final path. Do not implement RDB-derived denominator logic. |
-| TBD-MIGRATION | Historical data migration strategy | Three options: archive only / summary migration / full migration. decision needed before future final close/freeze. | Do NOT build migration tooling until option is confirmed. Add TODO: `# TBD-MIGRATION: awaiting stakeholder decision` |
+| TBD-MIGRATION (superseded) | Historical data migration strategy | Settled 2026-08-02: no historical data migration; legacy workbooks remain structural references only. | Do not import, backfill, or build migration tooling. |
 
 ### Resolved TBDs — Do NOT Reopen
 
 | TBD | Resolution | Reference |
 |-----|-----------|-----------|
-| TBD-1 (mechanism) | `teaching_name_catalogue` seeded from TTF col K. Session type resolved at compliance read time via `(keyword, r_year, posting_code, programme_code)`. Keyword data comes from TTF upload. | `business-logic.md` BL-6, BL-11; `schema.md` `teaching_name_catalogue` |
+| TBD-1 (resolved by E2+B2) | Revision `20260805_000036` removes the former `teaching_name_catalogue` and Column K path. Phase G runtime uses persisted scheduled-event source identity; the deferred compliance resolver must use that identity plus a scoped mapping, never an event display snapshot. | `business-logic.md` BL-6, BL-11; `schema.md` final TTF persistence |
 | TBD-2 | LOA types: 14 confirmed. Parser warns on unknown. Dormant posting codes: accepted with `display_name = NULL`. | `parsing.md` § LOA Type Validation; `schema.md` `loa_types` |
 | TBD-3 | Admin scope: `users.programme_scope TEXT[]` | `schema.md` `users` table |
 | TBD-4/PH | PH event creation hard-blocked (422) for secretary and resident. | `business-logic.md` BL-5 |
@@ -614,7 +700,7 @@ See `99_decision_log_and_gap_audit.md` for the full TBD register with placeholde
 | Reallocation scope | Raw session counts before final capping; one-for-one within physical posting/R-year context/tag prefix; alphabetical tag order; no duration or cross-posting transfer | PM approval |
 | Compliance unit | Session counts, never hours | PM approval |
 | Reallocation write | Read-time only via `reallocate_by_tag()`; never written to `surplus_ledger` | PM approval |
-| TTF upload behaviour | Full replace within `(reporting_period_id, programme_code)` scope; warn (not 422) if attendance exists | PM approval |
+| TTF upload behaviour | Logical replacement within `(reporting_period_id, programme_code)` via stable target reconciliation; warn (not 422) if attendance exists | PM approval |
 | RDB re-upload | Full replace within selected `reporting_period_id` after successful parse/validation | PM approval |
 | FormF1 re-upload | Full replace within `reporting_period_id` scope; allowed at any time | PM approval |
 | Posting code source | `posting_codes` table only; never derived by regex or string pattern | PM approval |
@@ -625,7 +711,7 @@ See `99_decision_log_and_gap_audit.md` for the full TBD register with placeholde
 | CME/SMC points | Informational only; do NOT feed compliance | PM approval |
 | Active/inactive source | `form_f1_records.is_active` (final authoritative source) | Confirmed |
 | R year configuration | 20 programmes use `r_year = 'ALL'`; 8 require R-year. SPORTSMED/PALLMED use R4–R6 and `is_subspecialty = false` | PM approval |
-| `global_session_types` priority | Matched events excluded from compliance BEFORE `teaching_name_catalogue` lookup | PM approval |
+| Explicit global source priority | An event with `global_session_type_id` is excluded before any future scoped compliance mapping; display-name matching is not a source classifier | PM approval |
 | ORTHO weekend mutation | Exact original 3h type only; subtract two hours from end, project to the 1h type, then apply Saturday 08:30–10:30 to adjusted time; raw rows unchanged | PM approval |
 | Compliance predicate | Unrounded posting percentage is canonical; `target_70` is a displayed whole-session target | PM approval |
 | Persistent surplus | Idempotently recomputed raw eligible attendance minus target; derived audit state, never added back to attendance | PM approval |
@@ -636,7 +722,7 @@ See `99_decision_log_and_gap_audit.md` for the full TBD register with placeholde
 | Multi-posting rules source | Seeded in DB; managed via admin CRUD; no file upload | PM approval |
 | Ad-hoc teaching | `POST /resident/adhoc-teaching`; `is_adhoc = true`; countable NHG ad-hoc maps to `Department/Programme Teaching [1h]` under assigned posting | PM approval |
 | Duration in TTF | Embedded in session type name as `[Xh]`; no separate duration column | PM approval |
-| Non-tracked events | Seeded into `teaching_name_catalogue` for visibility; excluded from compliance | PM approval |
+| Non-tracked events | Persist as target semantics only; TTF does not seed Teaching Names or mappings. Phase G scheduled-event visibility uses persisted source identity instead | PM approval |
 | Clawback tab | Future/deferred placeholder; ordinary compliance does not depend on its unresolved contract | Deferred |
 | Weekend submission | Session stored; `compliance_warning` returned if no matching exception | PM approval |
 | Secretary provisioning | TTSH-only at launch; 1 account per posting code; no schema change for others | PM approval |
@@ -684,18 +770,18 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 - **Writes to:** `residents`, `resident_postings`, `posting_codes`
 - **Re-upload:** complete snapshot full replace within selected `reporting_period_id` after successful parse/validation
 
-### TTF (Teaching Target File)
+### TTF (Teaching Target File) - final A-J contract
 
 - **Owner:** Master Admin uploads for any programme; Programme PC uploads only for a normalized programme in scope and manually creates it from STP
 - **Format:** `.xlsx`
-- **Columns:** A (reporting_period), B (programme_code), C (r_year — may be comma-separated), D (posting_code), E (dashboard_posting → seeds `posting_groups`), F (session_type with `[Xh]` duration), G (monthly_target), H (is_tracked), I (is_reallocatable), J (tag), K (details_of_training — comma-separated keywords, **mandatory**)
-- **Column K is mandatory.** Absent from STP — PC adds manually. Without it, `teaching_name_catalogue` is empty and residents see zero events.
+- **Columns:** A (reporting_period), B (programme_code), C (r_year — may be comma-separated), D (posting_code), E (dashboard_posting → seeds `posting_groups`), F (session_type with `[Xh]` duration), G (monthly_target), H (is_tracked), I (is_reallocatable), J (tag)
+- **Column K and later columns:** A populated legacy Column K or any populated unsupported later column receives controlled `422`; empty formatting beyond J is harmless. TTF does not seed `teaching_name_catalogue`, Teaching Names, or mappings.
 - **Duration:** Embedded in session type name as `[Xh]`. No separate column. Secretary picks `start_time` only; `end_time` server-computed.
 - **Multi-year rows:** "R1,R2,R3" exploded into separate `teaching_targets` rows. `r_year = 'ALL'` for 20 programmes; SPORTSMED/PALLMED use R4–R6 unchanged.
-- **Column E → `posting_groups`:** When non-empty, upserts a `posting_groups` row linking the posting code to the group.
-- **Writes to:** `teaching_targets`, `session_types`, `teaching_name_catalogue`, `posting_codes`, `posting_groups`
-- **Upload:** Full replace within `(reporting_period_id, programme_code)`. No 422 re-upload guard — warns if attendance exists.
-- **Concurrency:** Scope-level advisory lock; 409 if contended.
+- **Column E → `posting_groups`:** Non-empty rows form the programme-wide replacement configuration; each row upserts its posting/group membership and omitted membership is removed.
+- **Writes to:** `teaching_targets`, `session_types`, `posting_codes`, `posting_groups`, and pending `teaching_name_mappings` provisioned only from target scopes
+- **Upload:** Logical replacement within `(reporting_period_id, programme_code)` through stable target reconciliation. No 422 re-upload guard — warns if attendance exists.
+- **Concurrency:** Programme-global posting-group advisory lock first, then scope-level advisory lock; 409 if contended. Different programmes remain independent.
 
 ### FormF1
 
@@ -717,7 +803,7 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 
 - **Owner:** Secretary creates
 - **Never uploaded to the system** — no STP parser exists
-- PC manually converts STP → TTF. Column K absent from STP; must be added before upload. Conversion cannot be automated.
+- PC manually converts STP → final A-J TTF. No Column K data is required or accepted.
 
 > **⚠️ Most likely LLM mistake:** Building a TTF parser that hardcodes column positions without accounting for the dynamic sheet detection and the multi-year row explosion. The silent consequence is missing target rows for specific r_years, causing zero compliance targets for affected residents.
 
@@ -729,7 +815,7 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 
 ### Priority-Order Compliance Rules (Get These Right First)
 
-- ⚠️ **`global_session_types` check comes FIRST.** At compliance read time, before any `teaching_name_catalogue` lookup, check if `teaching_event.teaching_name` matches any active `global_session_types.name`. If matched → exclude from compliance entirely (both numerator and denominator). Do NOT proceed to catalogue lookup.
+- ⚠️ **Deferred Phase 6 compatibility specification:** `global_session_types` precedence applies only to the future compliance resolver. It must not be used to classify current Phase G Resident/Non-NHG scheduled-event runtime by display text.
   *Silent consequence if skipped:* Excluded events (e.g. Department Meeting) incorrectly feed compliance numbers.
 
 - ⚠️ **Raw reallocation then capping (BL-1/BL-3):** Transfer raw achieved session counts one-for-one within a physical posting/R-year context/tag prefix before final session-type/R-year-context caps. Duration is never a multiplier.
@@ -744,7 +830,7 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 - ⚠️ **Tag-based reallocation (`reallocate_by_tag()`, BL-3) is read-time only.** Within one physical posting/R-year context/tag prefix, use raw session-count donor supply above the type's 70% target, decrement it after every transfer, and cap only after all transfers. Never write to `surplus_ledger`; sort tags alphabetically, not by duration.
   *Silent consequence:* Writing back corrupts audit trail and causes double-counting.
 
-- ⚠️ **`teaching_events.session_type_id` is display only.** Compliance session type resolved per-resident at read time via `teaching_name_catalogue` using `(teaching_name, r_year, posting_code, programme_code, reporting_period_id)`.
+- ⚠️ **`teaching_events.session_type_id` is display only.** The deferred Phase 6 resolver must resolve a session type per resident through persisted event-source identity and a scoped mapping; it must not classify from an event display snapshot. This does not govern Phase G scheduled-event discovery or attendance authorization.
   *Silent consequence:* Using `teaching_events.session_type_id` produces wrong session type for cross-programme residents.
 
 - ⚠️ **`form_f1_records.is_active` gates the AY bucket.** The bucket label selects the FormF1 month for both denominator and numerator, even when the event's raw date crosses into the next calendar month.
@@ -767,11 +853,10 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 - Weekend teaching: session stored regardless. `compliance_warning` returned if no matching `weekend_exceptions` rule. Confirmed exceptions: URO (2 rows — OR logic), DERM (all Saturday), ORTHO (08:30–10:30 with mutation). FM: **removed from confirmed list; no seed row.**
 - Public holidays: event creation hard-blocked (422). No compliance denominator impact.
 - CME/SMC points: informational only. Do NOT feed compliance.
-- Non-tracked events (`is_tracked = false`): seeded into `teaching_name_catalogue` for visibility. Excluded from both numerator and denominator.
-- Zero-target TTF rows (`monthly_target = 0`): seeded into `teaching_name_catalogue` for visibility and attendance capture. Excluded from both numerator and denominator and from shortage, surplus, reallocation, percentage, and clawback calculations.
+- Non-tracked events (`is_tracked = false`) and zero-target rows remain target semantics only; TTF does not seed Teaching Names or mappings. Phase G scheduled-event visibility and attendance use persisted event source evidence instead. They remain excluded from the deferred compliance numerator and denominator.
 - FormF1 status: `Active` and `Extension` are active; `Inactive`, blank, `NULL`, and whitespace-only monthly cells are inactive. A valid MCR row persists an inactive record for each blank in-scope month.
 - Clawback (BL-10): explicitly deferred. Rates, funding-year selection, classification, suppressions, grouping/billing, rounding, and final-close behavior are not implementation-ready.
-- Ad-hoc teaching (BL-9): `is_adhoc = true` on `teaching_events`. Countable NHG ad-hoc maps to `Department/Programme Teaching [1h]` under assigned posting; selected teaching name is catalogue-backed evidence, not the compliance session type.
+- Ad-hoc teaching (BL-9): `is_adhoc = true` on `teaching_events`. Phase G uses a server-owned fixed `Department/Programme Teaching [1h]` record under the assigned/date-matched posting; there is no selected Teaching Name, target, or catalogue evidence.
 
 > **⚠️ Most likely LLM mistake:** Applying the 70% threshold per session type or per month, which is the intuitive but wrong approach. The threshold is at the POSTING level — sum all session types' `achieved_and_counted` and all session types' `target_100` for that posting, THEN check 70%. The silent consequence is wrong traffic light colours for every resident.
 
@@ -797,10 +882,10 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 | Endpoint | Purpose | Key Behaviour |
 |----------|---------|---------------|
 | `POST /admin/upload/rdb` | RDB upload | Calls `rdb_parser.py`; complete snapshot full-period replacement |
-| `POST /admin/upload/ttf` | TTF upload | Calls `ttf_parser.py`; 409 advisory lock; warns on existing attendance |
+| `POST /admin/upload/ttf` | TTF upload | Calls `ttf_parser.py`; programme then scope advisory locks; warns on existing attendance |
 | `POST /admin/upload/form-f1` | FormF1 upload | Calls `form_f1_parser.py`; full replace |
 | `POST /admin/upload/public-holidays` | Academic Calendar + PH upload | Upsert `public_holidays` and replace/seed `academic_month_boundaries` from AY Dates workbook content |
-| `PUT /admin/teaching-targets/{id}` | Mid-period TTF correction | Re-seeds `teaching_name_catalogue` for that specific target |
+| `PATCH /admin/parsed-data/teaching-targets/{id}` | Mid-period TTF correction | Allows only `monthly_target`, `is_tracked`, `is_reallocatable`, and `tag` |
 | `GET/POST /admin/programme-teaching-events` | Implemented 4B PC event CRUD | Programme-owned scheduled events via `created_for_programme_code` |
 | `GET /admin/secretary-events` | Secretary/PC Events | Master Admin review of both scheduled event sources; stable legacy route |
 | `POST /admin/secretary-events/{id}/force-delete` | Force-delete one scheduled event | Explicit Master Admin only; atomically deletes linked native/Non-NHG attendance, event, and writes audit |
@@ -814,7 +899,7 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 | Endpoint | Purpose | Key Behaviour |
 |----------|---------|---------------|
 | `POST /secretary/teaching-events` | Create event | 422 on PH dates; `end_time` server-computed |
-| `GET /secretary/teaching-name-options` | Dropdown options | Unified: TTF keywords + active `global_session_types`; includes `is_global` flag |
+| `GET /secretary/teaching-name-options` | Dropdown options | Unified: active Teaching Name pool + active `global_session_types`; includes `is_global` flag |
 | `POST /secretary/teaching-events/series` | Recurring series | PH occurrences skipped with warning |
 | `DELETE /secretary/teaching-events/series/{series_id}` | Delete series | Three edit scopes: `single`, `following`, `all` |
 
@@ -822,9 +907,9 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 
 | Endpoint | Purpose | Key Behaviour |
 |----------|---------|---------------|
-| `GET /resident/events` | Available events | NHG: assigned posting secretary + native programme department secretary + native PC events; gated by `resident_postings`, explicit native mapping, and catalogue rules |
+| `GET /resident/events` | Available events | NHG: assigned posting secretary + native programme department secretary + native PC events; gated by date-aware posting/programme scope and persisted source identity (or deterministic legacy evidence) |
 | `POST /resident/attendance` | Submit attendance | Returns `compliance_warning` for unmatched weekend sessions |
-| `GET /resident/adhoc-teaching-options` | Planned ad-hoc dropdown options | Date-first; derives assigned/date-matched posting; attended TTSH department dropdown; catalogue-backed options |
+| `GET /resident/adhoc-teaching-options` | Planned ad-hoc options | Date-first; derives one assigned/date-matched posting and returns the single fixed one-hour option |
 | `POST /resident/adhoc-teaching` | Ad-hoc submission | 422 on PH; `is_adhoc = true`; no CME points; NHG counts as `Department/Programme Teaching [1h]` under assigned posting, Non-NHG is export-only |
 | `GET /resident/dashboard` | Compliance view | JIT calculation per BL-6 |
 
@@ -862,11 +947,11 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 | Field | Table | Risk If Wrong |
 |---|---|---|
 | `r_year` | Use `resident_postings.r_year` for compliance; never `residents.r_year` | Silent wrong compliance target |
-| `r_year = 'ALL'` | `resident_postings`, `teaching_targets`, `teaching_name_catalogue` | Catalogue lookup fails silently for 20 programmes; SPORTSMED/PALLMED instead use R4–R6 |
+| `r_year = 'ALL'` | `resident_postings`, `teaching_targets`, deferred scoped source mappings | Scoped mapping/target resolution fails for 20 programmes; SPORTSMED/PALLMED instead use R4–R6 |
 | `is_tracked` | `teaching_targets` | Untracked sessions must not feed `achieved_and_counted` |
 | `is_reallocatable` + `tag` | `teaching_targets` | Missing tag = no reallocation; surplus silently stays unallocated |
 | `is_hibernating` | `surplus_ledger` | Lifecycle annotation only; the ledger is recomputed from raw attendance/target and is not a reallocation input |
-| `session_type_id` | `teaching_events` | Display only — NOT for compliance |
+| `session_type_id` | `teaching_events` | Legacy display/prototype data; never a Phase G source or deferred-compliance classifier |
 | `created_for_programme_code` | `teaching_events` | PC-created scheduled events are programme-owned; null secretary events remain programme-neutral |
 | `details_of_session` | `teaching_events` (planned) | Display/audit-only for ad-hoc sessions; no compliance use |
 | `achieved_and_counted` | Computed value | Final post-reallocation, post-context-cap value; raw achieved drives donor supply |
@@ -906,8 +991,8 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 - Resident list (current posting)
 
 **Resident:**
-- Submission portal: event list filtered by posting + catalogue
-- Ad-hoc teaching form: date-first → catalogue-backed teaching option dropdown + optional `details_of_session`
+- Submission portal: event list filtered by posting/programme and persisted scheduled-event source evidence
+- Ad-hoc teaching form: date-first → one fixed server-owned option + optional `details_of_session`
 - Personal compliance dashboard remains Phase 6 work
 - Submitted attendances list
 
@@ -921,8 +1006,8 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 
 - **Upload flow:** File select → POST to upload endpoint → parse JSON response → display results/warnings/errors
 - **Secretary dropdown:** Unified list from `GET /secretary/teaching-name-options` (includes `is_global` flag for visual distinction)
-- **NHG Resident ad-hoc:** Date-first input → assigned posting derivation → attended TTSH department dropdown → catalogue-backed teaching option dropdown → fixed `Department/Programme Teaching [1h]` attribution under assigned posting
-- **Non-NHG ad-hoc:** Date-first input → date-matched forecast posting → attended TTSH department dropdown for option filtering/export context; recording/export-only, no NHG compliance
+- **NHG Resident ad-hoc:** Date-first input → assigned posting derivation → one fixed `Department/Programme Teaching [1h]` record under that posting; no attended-department or catalogue dropdown
+- **Non-NHG ad-hoc:** Date-first input → date-matched forecast posting → fixed server-owned one-hour record; recording/export-only, no NHG compliance
 - **Non-NHG export:** Admin/PC preview + Excel download for forwarding Non-NHG attendance to NUH/SingHealth PCs
 - **Weekend compliance warning:** Display warning text after `POST /resident/attendance` when `compliance_warning` is non-null
 - **Traffic light:** Green (≥70%), Amber (50–69%), Red (<50%) colour indicators on compliance views
@@ -936,7 +1021,7 @@ Multi-posting (all sheets) → variant 10: explicit date ranges with AM/PM granu
 - API client functions: `src/api/`
 - Auth state: local/demo may use synthetic headers; production uses backend-owned opaque cookies, memory-only identity/CSRF state, and backend-mediated Supabase staff authentication
 
-> **⚠️ Most likely LLM mistake:** Building the resident ad-hoc teaching form with teaching name first and date second, or allowing arbitrary free-text teaching names to drive mapping. The confirmed UX flow is date-first, then assigned/date-matched posting derivation, attended TTSH department dropdown, and catalogue-backed teaching option dropdown. For NHG Residents, compliance attribution is fixed to `Department/Programme Teaching [1h]` under the assigned posting. The silent consequence is a broken dropdown, wrong attribution, or bypassed TTF Column K evidence.
+> **⚠️ Most likely LLM mistake:** Letting the resident select a teaching name, mapped target, or arbitrary attended department for ad-hoc submission. Phase G is date-first: the backend derives the sole posting and writes only `Department/Programme Teaching [1h]` at one hour. For NHG Residents, attribution remains under that assigned posting. The silent consequence is a client-controlled classification or an unintended legacy catalogue dependency.
 
 ---
 
@@ -1012,7 +1097,7 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
 - **Security headers:** HSTS, X-Frame-Options: DENY, X-Content-Type-Options: nosniff, Referrer-Policy, CSP
 - **Supabase service role key:** Server-only. Never exposed to frontend or client-side env vars.
 - **Browser/Data API grants:** `PUBLIC`, optional `anon`, and optional `authenticated` application-object privileges are revoked by `20260722_000024`.
-- **RLS:** H-E locally implements 34 RLS-enabled application tables, 84 runtime-targeted policies, exact helper/table/column grants, and a restricted non-owner runtime. Grant revocation alone was not RLS, and local implementation is not deployed proof.
+- **RLS:** H-E established the restricted non-owner runtime boundary; additive B1 raises the cumulative local inventory to 36 RLS-enabled application tables and 92 runtime-targeted policies, with exact helper/table/column grants. Grant revocation alone was not RLS, and local implementation is not deployed proof.
 - **Ad-hoc ownership:** Revision `20260728_000028` adds immutable typed native
   or Non-NHG creator identity to every Resident-created ad-hoc event. Only a
   narrow runtime helper may create the matching event/attendance pair;
@@ -1048,7 +1133,7 @@ Provide only placeholder values. Real secrets must not be committed. `.env` file
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 | Active/inactive source resolved | FormF1 is final; no RDB pivot for denominator logic | Gate on `form_f1_records.is_active`; keep RDB LOA/refresher/employed fields as parser/audit/display data only |
-| TBD-MIGRATION open | No historical data migration plan | Do not build tooling until decision confirmed |
+| TBD-MIGRATION settled | No historical data migration | Retain legacy workbooks as structural references only; do not import, backfill, or build migration tooling |
 | Posting code patterns | Regex-based code generation silently produces wrong codes | Always query `posting_codes` table |
 | `r_year = 'ALL'` sentinel | 20 programmes affected; lookup with actual r_year returns zero results | TTF matcher handles `ALL`; SPORTSMED/PALLMED preserve R4–R6 |
 | TTF mid-period correction | Warn-on-reupload, not 422 | CRUD endpoint for corrections |
@@ -1097,7 +1182,7 @@ MCR, programme coordinator, admin, secretary, resident portal,
 submission portal, duplicate detection, weekend_exceptions, public_holidays,
 advisory lock, programme_scope, dual posting, multi_posting_rules,
 dormant posting code, LOA, LOA types, employed, refresher training,
-TBD-1, TBD-MIGRATION, placeholder logic,
+TBD-1, TBD-MIGRATION (settled; no historical migration),
 X-User-Role, X-User-Id, X-User-Programme, X-User-MCR, X-User-Site,
 KEEP PORT discard legacy R script, Codex specification, implementation status,
 ORTHO mutation, mutates_to_session_type_id, adjusted_duration_hours,

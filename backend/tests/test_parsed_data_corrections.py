@@ -53,6 +53,9 @@ class _FakeResult:
     def scalar_one_or_none(self) -> object | None:
         return self._scalar
 
+    def scalar(self) -> object | None:
+        return self._scalar
+
 
 class FakeParsedDataCorrectionSession:
     def __init__(self) -> None:
@@ -68,8 +71,10 @@ class FakeParsedDataCorrectionSession:
         self.form_f1_id = str(uuid4())
         self.boundary_id = str(uuid4())
         self.new_posting_ids: list[str] = []
+        self.lock_available = True
         self.commits = 0
         self.audit_logs: list[dict] = []
+        self.teaching_name_reconciliations: list[dict[str, str]] = []
         self.programme_codes = {"GERI", "DR"}
         self.upload_logs = [
             {
@@ -91,21 +96,6 @@ class FakeParsedDataCorrectionSession:
                         }
                     ]
                 },
-            }
-        ]
-        self.catalogue_rows: list[dict] = [
-            {
-                "id": str(uuid4()),
-                "keyword": "Journal Club",
-                "session_type_id": self.session_type_id,
-                "posting_code": "TTSHGerMed",
-                "programme_code": "GERI",
-                "r_year": "ALL",
-                "reporting_period_id": self.period_id,
-                "duration_hours": Decimal("1.00"),
-                "is_tracked": True,
-                "created_at": self.now,
-                "updated_at": self.now,
             }
         ]
         self.session_types = {
@@ -167,7 +157,6 @@ class FakeParsedDataCorrectionSession:
                 "is_tracked": True,
                 "is_reallocatable": True,
                 "tag": "A1",
-                "details_of_training": "Journal Club",
                 "created_at": self.now,
                 "updated_at": self.now,
             }
@@ -253,6 +242,77 @@ class FakeParsedDataCorrectionSession:
     async def execute(self, statement, params=None):  # noqa: C901, PLR0912, PLR0915
         sql = str(statement)
         payload = dict(params or {})
+
+        if "mata_rls.reclassify_native_attendance_loa" in sql:
+            return _FakeResult(
+                rows=[
+                    {
+                        "affected_count": 0,
+                        "during_loa_count": 0,
+                        "non_loa_count": 0,
+                    }
+                ]
+            )
+
+        if "pg_try_advisory_xact_lock" in sql:
+            return _FakeResult(scalar=self.lock_available)
+
+        if "/* teaching_target_impacts:mapped_count */" in sql:
+            return _FakeResult(scalar=0)
+
+        if "/* teaching_target_impacts:stable_events */" in sql:
+            return _FakeResult(
+                rows=[
+                    {
+                        "affected_event_count": 0,
+                        "native_attendance_count": 0,
+                        "external_attendance_count": 0,
+                    }
+                ]
+            )
+
+        if "/* parsed_data_reconciliation:resident_programme_periods */" in sql:
+            rows = []
+            seen: set[tuple[str, str]] = set()
+            for posting in self.resident_postings:
+                if str(posting["resident_id"]) != str(payload["resident_id"]):
+                    continue
+                if (
+                    payload.get("reporting_period_id") is not None
+                    and str(posting["reporting_period_id"])
+                    != str(payload["reporting_period_id"])
+                ):
+                    continue
+                resident = next(
+                    item
+                    for item in self.residents
+                    if str(item["id"]) == str(posting["resident_id"])
+                )
+                key = (str(posting["reporting_period_id"]), resident["programme_code"])
+                if key not in seen:
+                    seen.add(key)
+                    rows.append(
+                        {
+                            "reporting_period_id": key[0],
+                            "programme_code": key[1],
+                        }
+                    )
+            return _FakeResult(rows=rows)
+
+        if "/* teaching_name_scopes:admit_owner */" in sql:
+            self.teaching_name_reconciliations.append(
+                {
+                    "reporting_period_id": str(payload["reporting_period_id"]),
+                    "programme_code": payload["programme_code"],
+                }
+            )
+            return _FakeResult(rowcount=0)
+
+        if "/* teaching_name_scopes:admit_resident_host */" in sql:
+            return _FakeResult(rowcount=0)
+
+        if "/* teaching_name_scopes:provision_mappings */" in sql:
+            return _FakeResult(rowcount=0)
 
         if "INSERT INTO audit_logs" in sql:
             row = {"id": payload["id"], "created_at": self.after_now, **payload}
@@ -442,9 +502,6 @@ class FakeParsedDataCorrectionSession:
             session_type = self.session_types.get(payload["session_type_id"])
             return _FakeResult(rows=[deepcopy(session_type)] if session_type else [])
 
-        if "/* parsed_data_validation:catalogue_keyword_conflict */" in sql:
-            return _FakeResult(scalar=None)
-
         if "UPDATE teaching_targets SET" in sql:
             row = next(item for item in self.teaching_targets if item["id"] == payload["id"])
             for key in (
@@ -457,44 +514,10 @@ class FakeParsedDataCorrectionSession:
                 "is_tracked",
                 "is_reallocatable",
                 "tag",
-                "details_of_training",
             ):
                 if key in payload:
                     row[key] = payload[key]
             row["updated_at"] = self.after_now
-            return _FakeResult(rowcount=1)
-
-        if "DELETE FROM teaching_name_catalogue" in sql:
-            target = next(row for row in self.teaching_targets if row["id"] == payload["target_id"])
-            self.catalogue_rows = [
-                row
-                for row in self.catalogue_rows
-                if not (
-                    row["reporting_period_id"] == target["reporting_period_id"]
-                    and row["programme_code"] == target["programme_code"]
-                    and row["posting_code"] == target["posting_code"]
-                    and row["r_year"] == target["r_year"]
-                    and row["session_type_id"] == target["session_type_id"]
-                )
-            ]
-            return _FakeResult(rowcount=1)
-
-        if "INSERT INTO teaching_name_catalogue" in sql:
-            self.catalogue_rows.append(
-                {
-                    "id": str(uuid4()),
-                    "keyword": payload["keyword"],
-                    "session_type_id": payload["session_type_id"],
-                    "posting_code": payload["posting_code"],
-                    "programme_code": payload["programme_code"],
-                    "r_year": payload["r_year"],
-                    "reporting_period_id": payload["reporting_period_id"],
-                    "duration_hours": payload["duration_hours"],
-                    "is_tracked": payload["is_tracked"],
-                    "created_at": self.after_now,
-                    "updated_at": self.after_now,
-                }
-            )
             return _FakeResult(rowcount=1)
 
         if "/* parsed_data_correction:form_f1_record_snapshot */" in sql:
@@ -887,6 +910,12 @@ def test_resident_programme_change_requires_existing_programme_in_admin_scope() 
     assert out_of_scope.status_code == 403
     assert master_allowed.status_code == 200
     assert session.residents[0]["programme_code"] == "DR"
+    assert session.teaching_name_reconciliations == [
+        {
+            "reporting_period_id": session.period_id,
+            "programme_code": "DR",
+        }
+    ]
 
 
 def test_correction_rejects_stale_last_seen_timestamp() -> None:
@@ -937,6 +966,12 @@ def test_resident_posting_patch_uses_documented_status_values() -> None:
     assert impact["scope"] == "resident_month"
     assert impact["warnings_created"] == 0
     assert session.resident_postings[0]["status"] == "loa_working"
+    assert session.teaching_name_reconciliations == [
+        {
+            "reporting_period_id": session.period_id,
+            "programme_code": "GERI",
+        }
+    ]
     assert blocked.status_code == 422
     assert session.resident_postings[1]["status"] == "active"
     assert len(session.audit_logs) == 1
@@ -1186,6 +1221,13 @@ def test_resident_posting_source_cell_replace_rewrites_rows_and_audits_original_
     assert metadata["verified_source_metadata"]["cell_ref"] == "J42"
     assert metadata["data_revalidation"]["changed_entity"] == "resident_posting_source_fragment"
     assert metadata["data_revalidation"]["details"]["replacement_row_count"] == 1
+    assert metadata["teaching_name_reconciliation"]["reconciled_programme_periods"] == 1
+    assert session.teaching_name_reconciliations == [
+        {
+            "reporting_period_id": session.period_id,
+            "programme_code": "GERI",
+        }
+    ]
 
 
 def test_source_cell_replace_uses_documented_status_values() -> None:
@@ -1219,7 +1261,7 @@ def test_source_cell_replace_uses_documented_status_values() -> None:
     assert session.audit_logs == []
 
 
-def test_teaching_target_correction_regenerates_catalogue_from_details_of_training() -> None:
+def test_teaching_target_correction_rejects_legacy_details_field() -> None:
     session = FakeParsedDataCorrectionSession()
     client = _build_client_with_session(session)
 
@@ -1227,22 +1269,77 @@ def test_teaching_target_correction_regenerates_catalogue_from_details_of_traini
         f"/admin/parsed-data/teaching-targets/{session.target_id}",
         headers=_headers(),
         json={
-            "correction_reason": "TTF column K was corrected",
+            "correction_reason": "Reject retired TTF field",
             "last_seen_updated_at": session.now.isoformat(),
             "changes": {"details_of_training": "Journal Club, Grand Round"},
         },
     )
 
+    assert response.status_code == 422
+    assert session.teaching_targets[0]["monthly_target"] == 4
+    assert session.audit_logs == []
+
+
+def test_teaching_target_correction_cache_failure_keeps_committed_success(monkeypatch) -> None:
+    session = FakeParsedDataCorrectionSession()
+    client = _build_client_with_session(session)
+    cache_calls: list[int] = []
+    safe_logs: list[tuple[str, str, str | None]] = []
+
+    def _failing_cache(**kwargs):  # noqa: ANN003
+        cache_calls.append(session.commits)
+        raise RuntimeError("cache backend unavailable")
+
+    def _safe_log(_logger, event, exc, *, category=None):  # noqa: ANN001
+        safe_logs.append((event, type(exc).__name__, category))
+
+    monkeypatch.setattr(
+        "app.services.parsed_data.cache_invalidation.invalidate_after_live_data_correction",
+        _failing_cache,
+    )
+    monkeypatch.setattr("app.services.parsed_data.log_safe_exception", _safe_log)
+
+    response = client.patch(
+        f"/admin/parsed-data/teaching-targets/{session.target_id}",
+        headers=_headers(),
+        json={
+            "correction_reason": "Adjust target despite transient cache failure",
+            "last_seen_updated_at": session.now.isoformat(),
+            "changes": {"monthly_target": 0},
+        },
+    )
+
     assert response.status_code == 200
-    body = response.json()
-    assert body["item"]["details_of_training"] == "Journal Club, Grand Round"
-    impact = _impact(body)
-    assert impact["changed_entity"] == "teaching_target"
-    assert impact["affected_models"] == ["teaching_targets", "teaching_name_catalogue"]
-    assert {row["keyword"] for row in session.catalogue_rows} == {"Journal Club", "Grand Round"}
-    audit_row = session.audit_logs[0]
-    assert audit_row["action"] == "admin.parsed_data.teaching_target.update"
-    assert _audit_json(audit_row, "metadata_json")["catalogue_keywords"] == ["Journal Club", "Grand Round"]
+    assert session.teaching_targets[0]["monthly_target"] == 0
+    assert len(session.audit_logs) == 1
+    assert cache_calls == [1]
+    assert safe_logs == [
+        (
+            "teaching_target_correction_cache_invalidation_failed",
+            "RuntimeError",
+            "cache_invalidation",
+        )
+    ]
+
+
+def test_teaching_target_correction_uses_shared_ttf_scope_lock() -> None:
+    session = FakeParsedDataCorrectionSession()
+    session.lock_available = False
+    client = _build_client_with_session(session)
+
+    response = client.patch(
+        f"/admin/parsed-data/teaching-targets/{session.target_id}",
+        headers=_headers(),
+        json={
+            "correction_reason": "TTF reconciliation is in progress",
+            "last_seen_updated_at": session.now.isoformat(),
+            "changes": {"monthly_target": 8},
+        },
+    )
+
+    assert response.status_code == 409
+    assert session.teaching_targets[0]["monthly_target"] == 4
+    assert session.audit_logs == []
 
 
 def test_teaching_target_correction_accepts_zero_and_rejects_fractional_or_negative_values() -> None:
@@ -1261,6 +1358,13 @@ def test_teaching_target_correction_accepts_zero_and_rejects_fractional_or_negat
 
     assert zero.status_code == 200
     assert session.teaching_targets[0]["monthly_target"] == 0
+    zero_audit_metadata = _audit_json(session.audit_logs[-1], "metadata_json")
+    assert zero_audit_metadata["target_semantic_changed_fields"] == ["monthly_target"]
+    assert zero_audit_metadata["target_semantic_impact"] == {
+        "mappings_with_target_semantics_changed": 0,
+        "affected_event_count": 0,
+        "affected_attendance_count": 0,
+    }
 
     for invalid_target in (None, 1.5, -1, -0.5):
         session = FakeParsedDataCorrectionSession()

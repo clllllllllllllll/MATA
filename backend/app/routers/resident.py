@@ -252,7 +252,6 @@ async def submit_adhoc_teaching(
             external_resident_id=resident_context.subject_id,
             event_date=request.teaching_date,
             start_time=request.start_time,
-            teaching_name=request.teaching_name,
             attended_posting_code=request.attended_posting_code,
             details_of_session=request.details_of_session,
         )
@@ -262,7 +261,6 @@ async def submit_adhoc_teaching(
         resident_id=resident_context.subject_id,
         event_date=request.teaching_date,
         start_time=request.start_time,
-        teaching_name=request.teaching_name,
         attended_posting_code=request.attended_posting_code,
         details_of_session=request.details_of_session,
     )

@@ -15,28 +15,39 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.errors import ApiError, ErrorCode
 from app.security import log_safe_exception
 from app.services import cache_invalidation
+from app.services.event_intervals import (
+    intervals_overlap,
+    overlap_candidate_dates,
+    spanned_dates,
+)
+from app.services.pool_event_timing import (
+    DEFAULT_POOL_EVENT_DURATION_HOURS,
+)
 from app.services.reporting_period_status import (
     list_effectively_active_reporting_periods,
     resolve_active_reporting_period_for_date,
     resolve_reporting_period_for_date,
 )
 from app.services.teaching_event_locks import acquire_teaching_event_locks
+from app.services.teaching_target_resolution import (
+    TeachingTargetResolutionUnavailable,
+    resolve_native_teaching_target,
+)
 
 
 logger = logging.getLogger(__name__)
 
-ACTIVE_POSTING_STATUSES = {"active", "loa_working"}
 WEEKEND_WARNING = (
     "{count} session(s) submitted on a weekend will not count toward your PTT compliance "
     "as they do not meet the weekend exception rules for your programme."
 )
 ADHOC_COMPLIANCE_TEACHING_NAME = "Department/Programme Teaching [1h]"
+ADHOC_DURATION_HOURS = Decimal("1.00")
 ExternalEventIneligibilityReason = Literal[
     "future_event",
     "posting_unavailable",
     "posting_mismatch",
     "event_scope",
-    "secretary_events_not_supported",
     "already_attended",
     "overlapping_attendance",
 ]
@@ -86,6 +97,8 @@ def _available_event_row(
         "session_type": resolved.get("session_type"),
         "session_type_name": resolved.get("session_type"),
         "duration_hours": event.get("duration_hours") or resolved.get("duration_hours"),
+        "duration_is_mapped": resolved.get("duration_is_mapped"),
+        "resident_r_year": resolved.get("resident_r_year"),
         "details_of_session": event.get("details_of_session"),
         "is_global": bool(resolved.get("is_global")),
         "is_adhoc": bool(event.get("is_adhoc", False)),
@@ -95,6 +108,67 @@ def _available_event_row(
         row["reporting_period_id"] = reporting_period["id"]
         row["reporting_period_label"] = reporting_period["label"]
     return row
+
+
+def _resolve_scheduled_event_source(
+    event: dict[str, Any],
+    *,
+    reporting_period_id: UUID | str,
+    programme_code: str | None,
+) -> dict[str, Any] | None:
+    """Project a scheduled event from persisted source evidence only.
+
+    Explicit pool identities retain their source programme and reporting-period
+    scope.  Global identities remain programme-neutral.  A pre-Phase-F row
+    with neither identity is deliberately treated as legacy: its immutable
+    event ownership, posting, timing, and snapshot are used by callers, never
+    its display text.
+    """
+
+    teaching_name_id = event.get("teaching_name_id")
+    global_session_type_id = event.get("global_session_type_id")
+    source_programme_code = event.get("source_programme_code")
+    source_reporting_period_id = event.get("source_reporting_period_id")
+    if teaching_name_id is not None and global_session_type_id is not None:
+        return None
+    if (source_programme_code is None) != (source_reporting_period_id is None):
+        return None
+
+    if source_programme_code is not None:
+        if (
+            global_session_type_id is not None
+            or programme_code is None
+            or str(source_reporting_period_id) != str(reporting_period_id)
+        ):
+            return None
+        return {
+            "kind": "teaching_name",
+            "session_type": event.get("session_type"),
+            "duration_hours": event.get("duration_hours"),
+            "is_global": False,
+        }
+
+    if teaching_name_id is not None:
+        return None
+
+    if global_session_type_id is not None:
+        return {
+            "kind": "global_session_type",
+            "session_type": event.get("session_type") or event["teaching_name"],
+            "duration_hours": event.get("duration_hours"),
+            "is_global": True,
+        }
+
+    return {
+        "kind": "legacy",
+        "session_type": event.get("session_type"),
+        # Legacy rows retain the persisted session type solely for the existing
+        # weekend-exception check.  It is not source classification and must
+        # never be recovered from display text or catalogue data.
+        "session_type_id": event.get("session_type_id"),
+        "duration_hours": event.get("duration_hours"),
+        "is_global": False,
+    }
 
 
 def _submission_period_row(period: dict[str, Any]) -> dict[str, Any]:
@@ -113,6 +187,8 @@ def _attendance_row(row: dict[str, Any]) -> dict[str, Any]:
         "teaching_event_id": row["teaching_event_id"],
         "status": row["status"],
         "posting_code": row.get("posting_code"),
+        "submitted_during_loa": bool(row.get("submitted_during_loa", False)),
+        "loa_type": row.get("loa_type"),
         "submitted_at": row.get("submitted_at"),
     }
 
@@ -131,6 +207,92 @@ def _external_attendance_row(row: dict[str, Any]) -> dict[str, Any]:
 def _compute_end_time(event_date: date, start_time: time, duration_hours: Decimal) -> time:
     minutes = int(duration_hours * Decimal("60"))
     return (datetime.combine(event_date, start_time) + timedelta(minutes=minutes)).time()
+
+
+async def _native_resident_event_view(
+    db: AsyncSession,
+    *,
+    event: dict[str, Any],
+    resident_id: UUID,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Apply one native resident's event-date R-year timing to a shared event."""
+
+    if (
+        event.get("teaching_name_id") is None
+        or event.get("global_session_type_id") is not None
+        or bool(event.get("is_adhoc"))
+    ):
+        return event, {}
+    if event.get("id") is None:
+        return event, {}
+    try:
+        resolution = await resolve_native_teaching_target(
+            db,
+            resident_id=resident_id,
+            event_id=UUID(str(event["id"])),
+        )
+    except TeachingTargetResolutionUnavailable as exc:
+        raise ApiError(
+            status_code=409,
+            detail=(
+                "Teaching Name mapping is unavailable for the resident's "
+                "event-date R-year. Ask the Programme PC to reconcile the "
+                "mapping before retrying."
+            ),
+            error_code=ErrorCode.CONFLICT.value,
+        ) from exc
+
+    if resolution.kind == "pending_mapping":
+        duration_hours = DEFAULT_POOL_EVENT_DURATION_HOURS
+        session_type_id = None
+        session_type_name = None
+        is_mapped = False
+        r_year = resolution.r_year
+    elif resolution.kind == "mapped_target":
+        session_result = await db.execute(
+            text(
+                """
+                /* native_resident_event_session_timing */
+                SELECT name, duration_hours
+                FROM session_types
+                WHERE id = :session_type_id
+                """
+            ),
+            {"session_type_id": str(resolution.session_type_id)},
+        )
+        session_row = session_result.mappings().one_or_none()
+        if session_row is None or session_row.get("duration_hours") is None:
+            raise ApiError(
+                status_code=409,
+                detail="Mapped session timing is unavailable",
+                error_code=ErrorCode.CONFLICT.value,
+            )
+        duration_hours = Decimal(str(session_row["duration_hours"]))
+        session_type_id = resolution.session_type_id
+        session_type_name = session_row.get("name")
+        is_mapped = True
+        r_year = resolution.r_year
+    else:
+        return event, {}
+
+    resident_event = {
+        **event,
+        "duration_hours": duration_hours,
+        "end_time": _compute_end_time(
+            event["event_date"],
+            event["start_time"],
+            duration_hours,
+        ),
+        "resident_r_year": r_year,
+        "duration_is_mapped": is_mapped,
+    }
+    return resident_event, {
+        "session_type": session_type_name,
+        "session_type_id": session_type_id,
+        "duration_hours": duration_hours,
+        "duration_is_mapped": is_mapped,
+        "resident_r_year": r_year,
+    }
 
 
 def _is_weekend(value: date) -> tuple[bool, str]:
@@ -276,15 +438,24 @@ async def _posting_contexts(
                 reporting_period_id,
                 posting_code,
                 r_year,
-                start_date,
-                end_date,
+                CASE WHEN status = 'loa'
+                     THEN GREATEST(start_date, COALESCE(loa_start_date, start_date))
+                     ELSE start_date END AS start_date,
+                CASE WHEN status = 'loa'
+                     THEN LEAST(end_date, COALESCE(loa_end_date, end_date))
+                     ELSE end_date END AS end_date,
                 status
             FROM resident_postings
             WHERE resident_id = :resident_id
               AND reporting_period_id = :reporting_period_id
               AND start_date <= :on_date
               AND end_date >= :on_date
-              AND status IN ('active', 'loa_working')
+              AND status IN ('active', 'loa', 'loa_working')
+              AND (
+                  status <> 'loa'
+                  OR :on_date BETWEEN COALESCE(loa_start_date, start_date)
+                                      AND COALESCE(loa_end_date, end_date)
+              )
             ORDER BY start_date DESC
             """
         ),
@@ -311,13 +482,17 @@ async def _posting_contexts_for_period(
                 reporting_period_id,
                 posting_code,
                 r_year,
-                start_date,
-                end_date,
+                CASE WHEN status = 'loa'
+                     THEN GREATEST(start_date, COALESCE(loa_start_date, start_date))
+                     ELSE start_date END AS start_date,
+                CASE WHEN status = 'loa'
+                     THEN LEAST(end_date, COALESCE(loa_end_date, end_date))
+                     ELSE end_date END AS end_date,
                 status
             FROM resident_postings
             WHERE resident_id = :resident_id
               AND reporting_period_id = :reporting_period_id
-              AND status IN ('active', 'loa_working')
+              AND status IN ('active', 'loa', 'loa_working')
             ORDER BY start_date DESC
             """
         ),
@@ -385,6 +560,21 @@ async def _native_teaching_posting_code(
     return row.get("native_teaching_posting_code")
 
 
+async def _attendance_posting_code(
+    db: AsyncSession,
+    *,
+    resident: dict[str, Any],
+    context: dict[str, Any],
+) -> str | None:
+    posting_code = context.get("posting_code")
+    if posting_code is not None or context.get("status") != "loa":
+        return str(posting_code) if posting_code is not None else None
+    return await _native_teaching_posting_code(
+        db,
+        programme_code=resident["programme_code"],
+    )
+
+
 async def _public_holiday_name(db: AsyncSession, event_date: date) -> str | None:
     result = await db.execute(
         text(
@@ -414,117 +604,6 @@ async def _ensure_not_public_holiday(db: AsyncSession, event_date: date) -> None
     )
 
 
-async def _resolve_teaching_name(
-    db: AsyncSession,
-    *,
-    posting_code: str,
-    programme_code: str,
-    r_year: str,
-    reporting_period_id: UUID | str,
-    teaching_name: str,
-) -> dict[str, Any] | None:
-    global_result = await db.execute(
-        text(
-            """
-            SELECT
-                name AS keyword,
-                NULL AS session_type_id,
-                name AS session_type,
-                duration_hours,
-                false AS is_tracked,
-                true AS is_global
-            FROM global_session_types
-            WHERE is_active = true
-              AND name = :teaching_name
-            ORDER BY name ASC
-            """
-        ),
-        {"teaching_name": teaching_name},
-    )
-    global_row = global_result.mappings().one_or_none()
-    if global_row is not None:
-        return dict(global_row)
-
-    result = await db.execute(
-        text(
-            """
-            SELECT
-                tnc.keyword,
-                tnc.session_type_id,
-                st.name AS session_type,
-                tnc.duration_hours,
-                tnc.is_tracked,
-                false AS is_global
-            FROM teaching_name_catalogue tnc
-            JOIN session_types st ON st.id = tnc.session_type_id
-            WHERE tnc.posting_code = :posting_code
-              AND tnc.programme_code = :programme_code
-              AND tnc.reporting_period_id = :reporting_period_id
-              AND tnc.r_year IN (:r_year, 'ALL')
-              AND tnc.keyword = :teaching_name
-            ORDER BY
-                CASE WHEN tnc.r_year = :r_year THEN 0 ELSE 1 END,
-                tnc.duration_hours DESC,
-                st.name ASC
-            """
-        ),
-        {
-            "posting_code": posting_code,
-            "programme_code": programme_code,
-            "reporting_period_id": str(reporting_period_id),
-            "r_year": r_year,
-            "teaching_name": teaching_name,
-        },
-    )
-    row = result.mappings().one_or_none()
-    return dict(row) if row is not None else None
-
-
-async def _resolve_teaching_target(
-    db: AsyncSession,
-    *,
-    posting_code: str,
-    programme_code: str,
-    r_year: str,
-    reporting_period_id: UUID | str,
-    session_type: str,
-) -> dict[str, Any] | None:
-    result = await db.execute(
-        text(
-            """
-            SELECT
-                st.name AS keyword,
-                tt.session_type_id,
-                st.name AS session_type,
-                st.duration_hours,
-                tt.is_tracked,
-                false AS is_global
-            FROM teaching_targets tt
-            JOIN session_types st ON st.id = tt.session_type_id
-            WHERE tt.posting_code = :posting_code
-              AND tt.programme_code = :programme_code
-              AND tt.reporting_period_id = :reporting_period_id
-              AND tt.r_year IN (:r_year, 'ALL')
-              AND st.name = :session_type
-            ORDER BY
-                CASE WHEN tt.r_year = :r_year THEN 0 ELSE 1 END,
-                st.duration_hours DESC,
-                st.name ASC
-            LIMIT 1
-            """
-        ),
-        {
-            "posting_code": posting_code,
-            "programme_code": programme_code,
-            "reporting_period_id": str(reporting_period_id),
-            "r_year": r_year,
-            "session_type": session_type,
-        },
-    )
-    row = result.mappings().one_or_none()
-    return dict(row) if row is not None else None
-
-
 async def _posting_display_label(db: AsyncSession, posting_code: str) -> str:
     result = await db.execute(
         text(
@@ -542,176 +621,26 @@ async def _posting_display_label(db: AsyncSession, posting_code: str) -> str:
     return row.get("display_name") or posting_code
 
 
-async def _teaching_options_for_context(
-    db: AsyncSession,
+def _fixed_adhoc_option(
     *,
     posting_code: str,
-    programme_code: str,
-    r_year: str,
+    posting_label: str,
     reporting_period_id: UUID | str,
-) -> list[dict[str, Any]]:
-    global_result = await db.execute(
-        text(
-            """
-            SELECT
-                name AS teaching_name,
-                name AS keyword,
-                NULL AS session_type_id,
-                name AS session_type,
-                name AS session_type_name,
-                duration_hours,
-                false AS is_tracked,
-                true AS is_global
-            FROM global_session_types
-            WHERE is_active = true
-            ORDER BY name ASC
-            """
-        )
-    )
-    catalogue_result = await db.execute(
-        text(
-            """
-            SELECT
-                tnc.keyword AS teaching_name,
-                tnc.keyword AS keyword,
-                tnc.session_type_id,
-                st.name AS session_type,
-                st.name AS session_type_name,
-                tnc.duration_hours,
-                tnc.is_tracked,
-                false AS is_global
-            FROM teaching_name_catalogue tnc
-            JOIN session_types st ON st.id = tnc.session_type_id
-            WHERE tnc.posting_code = :posting_code
-              AND tnc.programme_code = :programme_code
-              AND tnc.reporting_period_id = :reporting_period_id
-              AND tnc.r_year IN (:r_year, 'ALL')
-            ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
-            """
-        ),
-        {
-            "posting_code": posting_code,
-            "programme_code": programme_code,
-            "reporting_period_id": str(reporting_period_id),
-            "r_year": r_year,
-        },
-    )
-    rows = [dict(row) for row in global_result.mappings().all()]
-    rows.extend(dict(row) for row in catalogue_result.mappings().all())
-    rows.sort(key=lambda row: str(row["teaching_name"]).casefold())
-    return rows
-
-
-async def _teaching_options_for_posting(
-    db: AsyncSession,
-    *,
-    posting_code: str,
-    reporting_period_id: UUID | str,
-) -> list[dict[str, Any]]:
-    global_result = await db.execute(
-        text(
-            """
-            SELECT
-                name AS teaching_name,
-                name AS keyword,
-                NULL AS session_type_id,
-                name AS session_type,
-                name AS session_type_name,
-                duration_hours,
-                false AS is_tracked,
-                true AS is_global
-            FROM global_session_types
-            WHERE is_active = true
-            ORDER BY name ASC
-            """
-        )
-    )
-    catalogue_result = await db.execute(
-        text(
-            """
-            SELECT DISTINCT ON (tnc.keyword)
-                tnc.keyword AS teaching_name,
-                tnc.keyword AS keyword,
-                tnc.session_type_id,
-                st.name AS session_type,
-                st.name AS session_type_name,
-                tnc.duration_hours,
-                tnc.is_tracked,
-                false AS is_global
-            FROM teaching_name_catalogue tnc
-            JOIN session_types st ON st.id = tnc.session_type_id
-            WHERE tnc.posting_code = :posting_code
-              AND tnc.reporting_period_id = :reporting_period_id
-            ORDER BY tnc.keyword ASC, tnc.duration_hours DESC, st.name ASC
-            """
-        ),
-        {
-            "posting_code": posting_code,
-            "reporting_period_id": str(reporting_period_id),
-        },
-    )
-    rows = [dict(row) for row in global_result.mappings().all()]
-    rows.extend(dict(row) for row in catalogue_result.mappings().all())
-    rows.sort(key=lambda row: str(row["teaching_name"]).casefold())
-    return rows
-
-
-async def _attended_posting_options_for_resident(
-    db: AsyncSession,
-    *,
-    programme_code: str,
-    r_year: str,
-    reporting_period_id: UUID | str,
-) -> list[dict[str, Any]]:
-    result = await db.execute(
-        text(
-            """
-            SELECT DISTINCT
-                pc.code AS posting_code,
-                COALESCE(pc.display_name, pc.code) AS label,
-                tnc.programme_code,
-                p.name AS programme_name
-            FROM teaching_name_catalogue tnc
-            JOIN posting_codes pc ON pc.code = tnc.posting_code
-            LEFT JOIN programmes p ON p.code = tnc.programme_code
-            WHERE tnc.programme_code = :programme_code
-              AND tnc.reporting_period_id = :reporting_period_id
-              AND tnc.r_year IN (:r_year, 'ALL')
-            ORDER BY label ASC, pc.code ASC
-            """
-        ),
-        {
-            "programme_code": programme_code,
-            "reporting_period_id": str(reporting_period_id),
-            "r_year": r_year,
-        },
-    )
-    return [dict(row) for row in result.mappings().all()]
-
-
-async def _attended_posting_options_for_external(
-    db: AsyncSession,
-    *,
-    reporting_period_id: UUID | str,
-) -> list[dict[str, Any]]:
-    result = await db.execute(
-        text(
-            """
-            SELECT DISTINCT
-                pc.code AS posting_code,
-                COALESCE(pc.display_name, pc.code) AS label,
-                tnc.programme_code,
-                p.name AS programme_name
-            FROM teaching_name_catalogue tnc
-            JOIN posting_codes pc ON pc.code = tnc.posting_code
-            LEFT JOIN programmes p ON p.code = tnc.programme_code
-            WHERE tnc.reporting_period_id = :reporting_period_id
-            ORDER BY label ASC, pc.code ASC, tnc.programme_code ASC
-            """
-        ),
-        {"reporting_period_id": str(reporting_period_id)},
-    )
-    return [dict(row) for row in result.mappings().all()]
+    r_year: str | None,
+) -> dict[str, Any]:
+    return {
+        "teaching_name": ADHOC_COMPLIANCE_TEACHING_NAME,
+        "keyword": ADHOC_COMPLIANCE_TEACHING_NAME,
+        "session_type": ADHOC_COMPLIANCE_TEACHING_NAME,
+        "session_type_name": ADHOC_COMPLIANCE_TEACHING_NAME,
+        "session_type_id": None,
+        "duration_hours": ADHOC_DURATION_HOURS,
+        "posting_code": posting_code,
+        "posting_label": posting_label,
+        "reporting_period_id": str(reporting_period_id),
+        "r_year": r_year,
+        "is_global": False,
+    }
 
 
 def _select_attended_posting(
@@ -824,60 +753,46 @@ async def list_adhoc_teaching_options(
         )
 
     context = contexts[0]
-    assigned_posting_code = context["posting_code"]
-    posting_label = await _posting_display_label(db, assigned_posting_code)
-    attended_posting_options = await _attended_posting_options_for_resident(
+    assigned_posting_code = await _attendance_posting_code(
         db,
-        programme_code=resident["programme_code"],
-        r_year=context["r_year"],
-        reporting_period_id=period["id"],
+        resident=resident,
+        context=context,
     )
+    if assigned_posting_code is None:
+        return _adhoc_options_response(
+            teaching_date=teaching_date,
+            available=False,
+            reason="posting_unavailable",
+            message="No teaching posting is available for the selected teaching date.",
+            reporting_period_id=period["id"],
+        )
+    posting_label = await _posting_display_label(db, assigned_posting_code)
+    attended_posting_options = [
+        {
+            "posting_code": assigned_posting_code,
+            "label": posting_label,
+        }
+    ]
     selected_attended_posting = _select_attended_posting(
         attended_posting_options,
         requested_posting_code=attended_posting_code,
         default_posting_code=assigned_posting_code,
     )
     if selected_attended_posting is None:
-        return _adhoc_options_response(
-            teaching_date=teaching_date,
-            available=False,
-            reason="attended_posting_unavailable",
-            message="No attended department/programme options are available for this date.",
-            reporting_period_id=period["id"],
-            posting_code=assigned_posting_code,
-            posting_label=posting_label,
-            r_year=context["r_year"],
-            attended_posting_options=attended_posting_options,
-        )
-    raw_options = await _teaching_options_for_context(
-        db,
-        posting_code=selected_attended_posting["posting_code"],
-        programme_code=resident["programme_code"],
-        r_year=context["r_year"],
-        reporting_period_id=period["id"],
-    )
+        raise RuntimeError("Assigned posting option invariant was not established")
     options = [
-        {
-            "teaching_name": row["teaching_name"],
-            "keyword": row["keyword"],
-            "session_type": row.get("session_type"),
-            "session_type_name": row.get("session_type_name") or row.get("session_type"),
-            "session_type_id": row.get("session_type_id"),
-            "duration_hours": row.get("duration_hours"),
-            "posting_code": selected_attended_posting["posting_code"],
-            "posting_label": selected_attended_posting["label"],
-            "reporting_period_id": str(period["id"]),
-            "r_year": context["r_year"],
-            "is_tracked": bool(row.get("is_tracked")),
-            "is_global": bool(row.get("is_global")),
-        }
-        for row in raw_options
+        _fixed_adhoc_option(
+            posting_code=selected_attended_posting["posting_code"],
+            posting_label=selected_attended_posting["label"],
+            reporting_period_id=period["id"],
+            r_year=context["r_year"],
+        )
     ]
     return _adhoc_options_response(
         teaching_date=teaching_date,
-        available=bool(options),
-        reason=None if options else "no_catalogue_options",
-        message=None if options else "No teaching options are available for this posting and date.",
+        available=True,
+        reason=None,
+        message=None,
         reporting_period_id=period["id"],
         posting_code=assigned_posting_code,
         posting_label=posting_label,
@@ -920,52 +835,33 @@ async def list_external_adhoc_teaching_options(
 
     posting_code = posting_context["posting_code"]
     posting_label = await _posting_display_label(db, posting_code)
-    attended_posting_options = await _attended_posting_options_for_external(
-        db,
-        reporting_period_id=period["id"],
-    )
+    attended_posting_options = [
+        {
+            "posting_code": posting_code,
+            "label": posting_label,
+        }
+    ]
     selected_attended_posting = _select_attended_posting(
         attended_posting_options,
         requested_posting_code=attended_posting_code,
         default_posting_code=posting_code,
     )
     if selected_attended_posting is None:
-        return _adhoc_options_response(
-            teaching_date=teaching_date,
-            available=False,
-            reason="attended_posting_unavailable",
-            message="No attended department/programme options are available for this date.",
-            posting_code=posting_code,
-            posting_label=posting_label,
-            attended_posting_options=attended_posting_options,
-        )
-    raw_options = await _teaching_options_for_posting(
-        db,
-        posting_code=selected_attended_posting["posting_code"],
-        reporting_period_id=period["id"],
-    )
+        raise RuntimeError("Assigned posting option invariant was not established")
     options = [
-        {
-            "teaching_name": row["teaching_name"],
-            "keyword": row["keyword"],
-            "session_type": row.get("session_type"),
-            "session_type_name": row.get("session_type_name") or row.get("session_type"),
-            "session_type_id": row.get("session_type_id"),
-            "duration_hours": row.get("duration_hours"),
-            "posting_code": selected_attended_posting["posting_code"],
-            "posting_label": selected_attended_posting["label"],
-            "reporting_period_id": str(period["id"]),
-            "r_year": None,
-            "is_tracked": bool(row.get("is_tracked")),
-            "is_global": bool(row.get("is_global")),
-        }
-        for row in raw_options
+        _fixed_adhoc_option(
+            posting_code=selected_attended_posting["posting_code"],
+            posting_label=selected_attended_posting["label"],
+            reporting_period_id=period["id"],
+            r_year=None,
+        )
     ]
     return _adhoc_options_response(
         teaching_date=teaching_date,
-        available=bool(options),
-        reason=None if options else "no_catalogue_options",
-        message=None if options else "No teaching options are available for this posting and date.",
+        available=True,
+        reason=None,
+        message=None,
+        reporting_period_id=period["id"],
         posting_code=posting_code,
         posting_label=posting_label,
         attended_posting_options=attended_posting_options,
@@ -979,25 +875,35 @@ async def _get_event(db: AsyncSession, event_id: UUID) -> dict[str, Any]:
         text(
             """
             SELECT
-                id,
-                posting_code,
-                created_for_programme_code,
-                teaching_name,
-                details_of_session,
-                event_date,
-                start_time,
-                end_time,
-                duration_hours,
-                session_type_id,
-                series_id,
-                cme_points_awarded,
-                smc_event_code,
-                is_adhoc,
-                created_by_role,
-                created_at,
-                updated_at
+                teaching_events.id,
+                teaching_events.posting_code,
+                teaching_events.created_for_programme_code,
+                teaching_events.teaching_name,
+                teaching_events.details_of_session,
+                teaching_events.event_date,
+                teaching_events.start_time,
+                teaching_events.end_time,
+                teaching_events.duration_hours,
+                teaching_events.session_type_id,
+                teaching_events.teaching_name_id,
+                teaching_events.global_session_type_id,
+                source_scope.reporting_period_id AS source_reporting_period_id,
+                source_scope.programme_code AS source_programme_code,
+                session_type.name AS session_type,
+                teaching_events.series_id,
+                teaching_events.cme_points_awarded,
+                teaching_events.smc_event_code,
+                teaching_events.is_adhoc,
+                teaching_events.created_by_role,
+                teaching_events.created_at,
+                teaching_events.updated_at
             FROM teaching_events
-            WHERE id = :event_id
+            LEFT JOIN LATERAL mata_rls.scheduled_event_source_scope(
+                teaching_events.id
+            ) AS source_scope ON true
+            LEFT JOIN session_types AS session_type
+              ON session_type.id = teaching_events.session_type_id
+            WHERE teaching_events.id = :event_id
             """
         ),
         {"event_id": str(event_id)},
@@ -1087,26 +993,37 @@ async def _events_for_postings(
         text(
             f"""
             SELECT
-                id,
-                posting_code,
-                created_for_programme_code,
-                teaching_name,
-                details_of_session,
-                event_date,
-                start_time,
-                end_time,
-                duration_hours,
-                session_type_id,
-                series_id,
-                cme_points_awarded,
-                smc_event_code,
-                is_adhoc,
-                created_by_role,
-                created_at,
-                updated_at
+                teaching_events.id,
+                teaching_events.posting_code,
+                teaching_events.created_for_programme_code,
+                teaching_events.teaching_name,
+                teaching_events.details_of_session,
+                teaching_events.event_date,
+                teaching_events.start_time,
+                teaching_events.end_time,
+                teaching_events.duration_hours,
+                teaching_events.session_type_id,
+                teaching_events.teaching_name_id,
+                teaching_events.global_session_type_id,
+                source_scope.reporting_period_id AS source_reporting_period_id,
+                source_scope.programme_code AS source_programme_code,
+                session_type.name AS session_type,
+                teaching_events.series_id,
+                teaching_events.cme_points_awarded,
+                teaching_events.smc_event_code,
+                teaching_events.is_adhoc,
+                teaching_events.created_by_role,
+                teaching_events.created_at,
+                teaching_events.updated_at
             FROM teaching_events
+            LEFT JOIN LATERAL mata_rls.scheduled_event_source_scope(
+                teaching_events.id
+            ) AS source_scope ON true
+            LEFT JOIN session_types AS session_type
+              ON session_type.id = teaching_events.session_type_id
             WHERE {' AND '.join(where)}
-            ORDER BY event_date ASC, start_time ASC, teaching_name ASC
+            ORDER BY teaching_events.event_date ASC, teaching_events.start_time ASC,
+                     teaching_events.teaching_name ASC
             """
         ),
         params,
@@ -1147,23 +1064,28 @@ async def _events_for_external_posting(
         text(
             f"""
             SELECT
-                id,
-                posting_code,
-                created_for_programme_code,
-                teaching_name,
-                details_of_session,
-                event_date,
-                start_time,
-                end_time,
-                duration_hours,
-                session_type_id,
-                series_id,
-                cme_points_awarded,
-                smc_event_code,
-                is_adhoc,
-                created_by_role,
-                created_at,
-                updated_at,
+                teaching_events.id,
+                teaching_events.posting_code,
+                teaching_events.created_for_programme_code,
+                teaching_events.teaching_name,
+                teaching_events.details_of_session,
+                teaching_events.event_date,
+                teaching_events.start_time,
+                teaching_events.end_time,
+                teaching_events.duration_hours,
+                teaching_events.session_type_id,
+                teaching_events.teaching_name_id,
+                teaching_events.global_session_type_id,
+                source_scope.reporting_period_id AS source_reporting_period_id,
+                source_scope.programme_code AS source_programme_code,
+                session_type.name AS session_type,
+                teaching_events.series_id,
+                teaching_events.cme_points_awarded,
+                teaching_events.smc_event_code,
+                teaching_events.is_adhoc,
+                teaching_events.created_by_role,
+                teaching_events.created_at,
+                teaching_events.updated_at,
                 EXISTS (
                     SELECT 1
                     FROM external_attendance_records ear
@@ -1172,8 +1094,14 @@ async def _events_for_external_posting(
                       AND ear.status = 'submitted'
                 ) AS already_attended
             FROM teaching_events
+            LEFT JOIN LATERAL mata_rls.scheduled_event_source_scope(
+                teaching_events.id
+            ) AS source_scope ON true
+            LEFT JOIN session_types AS session_type
+              ON session_type.id = teaching_events.session_type_id
             WHERE {' AND '.join(where)}
-            ORDER BY event_date ASC, start_time ASC, teaching_name ASC
+            ORDER BY teaching_events.event_date ASC, teaching_events.start_time ASC,
+                     teaching_events.teaching_name ASC
             """
         ),
         params,
@@ -1216,10 +1144,12 @@ def _external_event_ineligibility_reason(
     *,
     event: dict[str, Any],
     posting_contexts: list[dict[str, Any]],
-    posting_capabilities: dict[str, bool],
     today: date,
     already_attended: bool,
 ) -> ExternalEventIneligibilityReason | None:
+    # Non-NHG Residents have no NHG compliance/R-year resolution. Exact
+    # date-matched posting is therefore the complete scheduled-event scope;
+    # event programme ownership and Secretary capability do not narrow it.
     if event["event_date"] > today:
         return "future_event"
     if not posting_contexts:
@@ -1235,13 +1165,6 @@ def _external_event_ineligibility_reason(
         return "posting_mismatch"
     if bool(event.get("is_adhoc")):
         return "event_scope"
-    owner = event.get("created_for_programme_code")
-    if owner is None:
-        if not posting_capabilities.get(event["posting_code"], False):
-            return "secretary_events_not_supported"
-    else:
-        if matching_contexts[0].get("programme_code") != owner:
-            return "event_scope"
     if already_attended:
         return "already_attended"
     return None
@@ -1265,9 +1188,6 @@ def _external_event_ineligibility_error(
         "posting_unavailable": "No Non-NHG Resident posting is available for the teaching date",
         "posting_mismatch": "Teaching event is outside the resident posting scope",
         "event_scope": "Teaching event is outside the Non-NHG Resident scope",
-        "secretary_events_not_supported": (
-            "Secretary-created events are not supported for this posting"
-        ),
     }
     return ApiError(
         status_code=422,
@@ -1321,7 +1241,10 @@ async def _external_posting_context_for_date(
         start_date=on_date,
         end_date=on_date,
     )
-    return contexts[0] if contexts else None
+    # Unlike a display option, the derived host posting is authorization
+    # evidence.  Corrupt/legacy overlapping schedules therefore fail closed
+    # instead of letting order choose an arbitrary department.
+    return contexts[0] if len(contexts) == 1 else None
 
 
 def _normalise_optional_filter(value: str | None) -> str | None:
@@ -1362,7 +1285,7 @@ def _native_visibility_contexts(
             "posting_code": native_posting_code,
         }
         for context in contexts
-        if context.get("posting_code")
+        if context.get("posting_code") or context.get("status") == "loa"
     ]
 
 
@@ -1424,7 +1347,6 @@ async def list_available_events(
             raise RuntimeError("External resident identity invariant was not established")
         all_contexts: list[dict[str, Any]] = []
         all_capability_codes: set[str] = set()
-        supported_anywhere = False
         event_rows: dict[str, dict[str, Any]] = {}
         option_names: set[str] = set()
         posting_option_codes: set[str] = set()
@@ -1459,11 +1381,6 @@ async def list_available_events(
             selected_codes = eligible_codes
             if posting_code is not None:
                 selected_codes = {posting_code} if posting_code in eligible_codes else set()
-            period_capabilities = await _posting_capabilities(
-                db,
-                posting_codes=eligible_codes,
-            )
-            supported_anywhere = supported_anywhere or any(period_capabilities.values())
             for external_posting_code in sorted(selected_codes):
                 raw_events = await _events_for_external_posting(
                     db,
@@ -1485,11 +1402,14 @@ async def list_available_events(
                     reason = _external_event_ineligibility_reason(
                         event=event,
                         posting_contexts=contexts,
-                        posting_capabilities=period_capabilities,
                         today=today,
                         already_attended=bool(event.get("already_attended")),
                     )
-                    if reason is None:
+                    if reason is None and not await _overlapping_external_attendance_exists(
+                        db,
+                        external_resident_id=external_resident_id,
+                        event=event,
+                    ):
                         event_rows[str(event["id"])] = _event_row(
                             event,
                             reporting_period=resolved_period,
@@ -1526,16 +1446,6 @@ async def list_available_events(
                 "reason": "posting_schedule_unavailable",
                 "ad_hoc_allowed": False,
                 "message": "No posting schedule is available for an active submission period.",
-                "posting_capabilities": posting_capability_rows,
-                "filter_options": filter_options,
-                "active_reporting_periods": active_period_rows,
-            }
-        if not supported_anywhere and not event_rows:
-            return {
-                "events": [],
-                "reason": "secretary_events_not_supported",
-                "ad_hoc_allowed": True,
-                "message": "No scheduled teaching events are supported for your postings.",
                 "posting_capabilities": posting_capability_rows,
                 "filter_options": filter_options,
                 "active_reporting_periods": active_period_rows,
@@ -1632,15 +1542,24 @@ async def list_available_events(
             )
             if context is None:
                 continue
-            resolved = await _resolve_teaching_name(
-                db,
-                posting_code=event["posting_code"],
-                programme_code=resident["programme_code"],
-                r_year=context["r_year"],
+            resolved = _resolve_scheduled_event_source(
+                event,
                 reporting_period_id=resolved_period["id"],
-                teaching_name=event["teaching_name"],
+                programme_code=resident["programme_code"],
             )
             if resolved is not None:
+                event, resident_timing = await _native_resident_event_view(
+                    db,
+                    event=event,
+                    resident_id=resident_id,
+                )
+                if await _overlapping_native_attendance_exists(
+                    db,
+                    resident_id=resident_id,
+                    event=event,
+                ):
+                    continue
+                resolved.update(resident_timing)
                 event_rows[str(event["id"])] = _available_event_row(
                     event,
                     resolved=resolved,
@@ -1674,16 +1593,23 @@ async def list_available_events(
             )
             if context is None:
                 continue
-            resolved = await _resolve_teaching_name(
-                db,
-                posting_code=event["posting_code"],
-                programme_code=resident["programme_code"],
-                r_year=context["r_year"],
+            resolved = _resolve_scheduled_event_source(
+                event,
                 reporting_period_id=resolved_period["id"],
-                teaching_name=event["teaching_name"],
+                programme_code=resident["programme_code"],
             )
             if resolved is not None:
-                option_names.add(event["teaching_name"])
+                event, _ = await _native_resident_event_view(
+                    db,
+                    event=event,
+                    resident_id=resident_id,
+                )
+                if not await _overlapping_native_attendance_exists(
+                    db,
+                    resident_id=resident_id,
+                    event=event,
+                ):
+                    option_names.add(event["teaching_name"])
 
     if not has_posting_context:
         return {
@@ -1776,7 +1702,8 @@ async def _submitted_attendance_for_event(
     result = await db.execute(
         text(
             """
-            SELECT id, resident_id, teaching_event_id, status, posting_code, submitted_at
+            SELECT id, resident_id, teaching_event_id, status, posting_code,
+                   submitted_at, submitted_during_loa, loa_type
             FROM attendance_records
             WHERE resident_id = :resident_id
               AND teaching_event_id = :event_id
@@ -1867,7 +1794,8 @@ async def _insert_attendance(
                 'submitted',
                 :posting_code
             )
-            RETURNING id, resident_id, teaching_event_id, status, posting_code, submitted_at
+            RETURNING id, resident_id, teaching_event_id, status, posting_code,
+                      submitted_at, submitted_during_loa, loa_type
             """
         ),
         {
@@ -1906,16 +1834,21 @@ async def _duplicate_external_attendance_exists(
 
 def _event_intervals_overlap(
     *,
+    left_date: date,
     left_start: time,
     left_end: time | None,
+    right_date: date,
     right_start: time,
     right_end: time | None,
 ) -> bool:
-    if left_start == right_start:
-        return True
-    effective_left_end = left_end or left_start
-    effective_right_end = right_end or right_start
-    return left_start < effective_right_end and right_start < effective_left_end
+    return intervals_overlap(
+        left_date=left_date,
+        left_start=left_start,
+        left_end=left_end,
+        right_date=right_date,
+        right_start=right_start,
+        right_end=right_end,
+    )
 
 
 def _native_attendance_lock_keys(
@@ -2052,34 +1985,66 @@ async def _overlapping_native_attendance_exists(
         text(
             """
             /* native_attendance_overlap_candidates */
-            SELECT existing.start_time, existing.end_time
+            SELECT
+                existing.id,
+                existing.posting_code,
+                existing.event_date,
+                existing.start_time,
+                existing.end_time,
+                existing.duration_hours,
+                existing.teaching_name_id,
+                existing.global_session_type_id,
+                existing.is_adhoc,
+                source_scope.reporting_period_id AS source_reporting_period_id,
+                source_scope.programme_code AS source_programme_code
             FROM attendance_records AS attendance
             JOIN teaching_events AS existing
               ON existing.id = attendance.teaching_event_id
+            LEFT JOIN LATERAL mata_rls.scheduled_event_source_scope(
+                existing.id
+            ) AS source_scope ON true
             WHERE attendance.resident_id = :resident_id
               AND attendance.status = 'submitted'
               AND (
                   CAST(:event_id AS uuid) IS NULL
                   OR existing.id <> CAST(:event_id AS uuid)
               )
-              AND existing.event_date = :event_date
+              AND existing.event_date = ANY(:candidate_dates)
             """
         ),
         {
             "resident_id": str(resident_id),
             "event_id": str(event["id"]) if event.get("id") is not None else None,
-            "event_date": event["event_date"],
+            "candidate_dates": sorted(
+                overlap_candidate_dates(
+                    event_date=event["event_date"],
+                    start_time=event["start_time"],
+                    end_time=event.get("end_time"),
+                )
+            ),
         },
     )
-    return any(
-        _event_intervals_overlap(
+    existing_events = [dict(row) for row in result.mappings().all()]
+    for existing in existing_events:
+        if (
+            existing.get("teaching_name_id") is not None
+            and existing.get("source_reporting_period_id") is not None
+        ):
+            existing, _ = await _native_resident_event_view(
+                db,
+                event=existing,
+                resident_id=resident_id,
+            )
+        if _event_intervals_overlap(
+            left_date=event["event_date"],
             left_start=event["start_time"],
             left_end=event.get("end_time"),
-            right_start=row["start_time"],
-            right_end=row.get("end_time"),
-        )
-        for row in result.mappings().all()
-    )
+            right_date=existing["event_date"],
+            right_start=existing["start_time"],
+            right_end=existing.get("end_time"),
+        ):
+            return True
+    return False
 
 
 async def _overlapping_external_attendance_exists(
@@ -2092,7 +2057,7 @@ async def _overlapping_external_attendance_exists(
         text(
             """
             /* external_attendance_overlap_candidates */
-            SELECT existing.start_time, existing.end_time
+            SELECT existing.event_date, existing.start_time, existing.end_time
             FROM external_attendance_records AS attendance
             JOIN teaching_events AS existing
               ON existing.id = attendance.teaching_event_id
@@ -2102,19 +2067,27 @@ async def _overlapping_external_attendance_exists(
                   CAST(:event_id AS uuid) IS NULL
                   OR existing.id <> CAST(:event_id AS uuid)
               )
-              AND existing.event_date = :event_date
+              AND existing.event_date = ANY(:candidate_dates)
             """
         ),
         {
             "external_resident_id": str(external_resident_id),
             "event_id": str(event["id"]) if event.get("id") is not None else None,
-            "event_date": event["event_date"],
+            "candidate_dates": sorted(
+                overlap_candidate_dates(
+                    event_date=event["event_date"],
+                    start_time=event["start_time"],
+                    end_time=event.get("end_time"),
+                )
+            ),
         },
     )
     return any(
         _event_intervals_overlap(
+            left_date=event["event_date"],
             left_start=event["start_time"],
             left_end=event.get("end_time"),
+            right_date=row["event_date"],
             right_start=row["start_time"],
             right_end=row.get("end_time"),
         )
@@ -2206,6 +2179,45 @@ async def _create_adhoc_attendance(
     return dict(result.mappings().one())
 
 
+async def _create_loa_adhoc_attendance(
+    db: AsyncSession,
+    *,
+    posting_code: str,
+    teaching_name: str,
+    details_of_session: str | None,
+    event_date: date,
+    start_time: time,
+    end_time: time,
+    duration_hours: Decimal,
+) -> dict[str, Any]:
+    result = await db.execute(
+        text(
+            """
+            SELECT event_id, attendance_id
+            FROM mata_rls.create_native_loa_adhoc_attendance(
+                :posting_code,
+                :teaching_name,
+                :details_of_session,
+                :event_date,
+                :start_time,
+                :end_time,
+                :duration_hours
+            )
+            """
+        ),
+        {
+            "posting_code": posting_code,
+            "teaching_name": teaching_name,
+            "details_of_session": details_of_session,
+            "event_date": event_date,
+            "start_time": start_time,
+            "end_time": end_time,
+            "duration_hours": duration_hours,
+        },
+    )
+    return dict(result.mappings().one())
+
+
 def _database_sqlstate(exc: DBAPIError) -> str | None:
     original = getattr(exc, "orig", None)
     return (
@@ -2264,63 +2276,6 @@ async def _raise_adhoc_helper_error(
         detail="Unauthorized",
         error_code=ErrorCode.UNAUTHORIZED.value,
     ) from exc
-
-
-async def _resolve_teaching_name_for_posting(
-    db: AsyncSession,
-    *,
-    posting_code: str,
-    teaching_name: str,
-    reporting_period_id: UUID | str,
-) -> dict[str, Any] | None:
-    global_result = await db.execute(
-        text(
-            """
-            SELECT
-                name AS keyword,
-                NULL AS session_type_id,
-                name AS session_type,
-                duration_hours,
-                false AS is_tracked,
-                true AS is_global
-            FROM global_session_types
-            WHERE is_active = true
-              AND name = :teaching_name
-            ORDER BY name ASC
-            """
-        ),
-        {"teaching_name": teaching_name},
-    )
-    global_row = global_result.mappings().one_or_none()
-    if global_row is not None:
-        return dict(global_row)
-
-    result = await db.execute(
-        text(
-            """
-            SELECT
-                tnc.keyword,
-                tnc.session_type_id,
-                st.name AS session_type,
-                tnc.duration_hours,
-                tnc.is_tracked,
-                false AS is_global
-            FROM teaching_name_catalogue tnc
-            JOIN session_types st ON st.id = tnc.session_type_id
-            WHERE tnc.posting_code = :posting_code
-              AND tnc.keyword = :teaching_name
-              AND tnc.reporting_period_id = :reporting_period_id
-            ORDER BY tnc.duration_hours DESC, st.name ASC
-            """
-        ),
-        {
-            "posting_code": posting_code,
-            "teaching_name": teaching_name,
-            "reporting_period_id": str(reporting_period_id),
-        },
-    )
-    row = result.mappings().one_or_none()
-    return dict(row) if row is not None else None
 
 
 async def _weekend_is_accepted(
@@ -2410,7 +2365,13 @@ async def submit_attendance(
                 break
             if event is None:
                 raise RuntimeError("Teaching event lookup returned no result or error")
-            lock_dates.add(event["event_date"])
+            lock_dates.update(
+                spanned_dates(
+                    event_date=event["event_date"],
+                    start_time=event["start_time"],
+                    end_time=event.get("end_time"),
+                )
+            )
         await _acquire_external_attendance_locks(
             db,
             external_resident_id=external_resident_id,
@@ -2442,14 +2403,6 @@ async def submit_attendance(
                 start_date=event["event_date"],
                 end_date=event["event_date"],
             )
-            posting_capabilities = await _posting_capabilities(
-                db,
-                posting_codes={
-                    context["posting_code"]
-                    for context in posting_contexts
-                    if context.get("posting_code")
-                },
-            )
             event_key = str(event_id)
             if event_key in seen_event_ids:
                 raise _external_event_ineligibility_error("already_attended")
@@ -2461,7 +2414,6 @@ async def submit_attendance(
             reason = _external_event_ineligibility_reason(
                 event=event,
                 posting_contexts=posting_contexts,
-                posting_capabilities=posting_capabilities,
                 today=today,
                 already_attended=already_attended,
             )
@@ -2473,10 +2425,11 @@ async def submit_attendance(
                 event=event,
             )
             overlaps_planned = any(
-                prior_event["event_date"] == event["event_date"]
-                and _event_intervals_overlap(
+                _event_intervals_overlap(
+                    left_date=event["event_date"],
                     left_start=event["start_time"],
                     left_end=event.get("end_time"),
+                    right_date=prior_event["event_date"],
                     right_start=prior_event["start_time"],
                     right_end=prior_event.get("end_time"),
                 )
@@ -2568,7 +2521,13 @@ async def submit_attendance(
             break
         if event is None:
             raise RuntimeError("Teaching event lookup returned no result or error")
-        lock_dates.add(event["event_date"])
+        lock_dates.update(
+            spanned_dates(
+                event_date=event["event_date"],
+                start_time=event["start_time"],
+                end_time=event.get("end_time"),
+            )
+        )
     await _acquire_native_attendance_locks(
         db,
         resident_id=resident_id,
@@ -2631,13 +2590,10 @@ async def submit_attendance(
                 detail="Teaching event is outside the resident posting schedule",
                 error_code=ErrorCode.VALIDATION_FAILED.value,
             )
-        resolved = await _resolve_teaching_name(
-            db,
-            posting_code=event["posting_code"],
-            programme_code=resident["programme_code"],
-            r_year=context["r_year"],
+        resolved = _resolve_scheduled_event_source(
+            event,
             reporting_period_id=period["id"],
-            teaching_name=event["teaching_name"],
+            programme_code=resident["programme_code"],
         )
         if resolved is None:
             raise ApiError(
@@ -2645,6 +2601,12 @@ async def submit_attendance(
                 detail="Teaching event is not visible for this resident",
                 error_code=ErrorCode.VALIDATION_FAILED.value,
             )
+        event, resident_timing = await _native_resident_event_view(
+            db,
+            event=event,
+            resident_id=resident_id,
+        )
+        resolved.update(resident_timing)
         event_key = str(event_id)
         if event_key in seen_event_ids:
             raise ApiError(
@@ -2669,10 +2631,11 @@ async def submit_attendance(
             event=event,
         )
         overlaps_planned = any(
-            prior_event["event_date"] == event["event_date"]
-            and _event_intervals_overlap(
+            _event_intervals_overlap(
+                left_date=event["event_date"],
                 left_start=event["start_time"],
                 left_end=event.get("end_time"),
+                right_date=prior_event["event_date"],
                 right_start=prior_event["start_time"],
                 right_end=prior_event.get("end_time"),
             )
@@ -2755,7 +2718,6 @@ async def submit_adhoc_teaching(
     external_resident_id: UUID | None = None,
     event_date: date,
     start_time: time,
-    teaching_name: str,
     attended_posting_code: str | None = None,
     details_of_session: str | None = None,
 ) -> dict[str, Any]:
@@ -2787,43 +2749,24 @@ async def submit_adhoc_teaching(
                 error_code=ErrorCode.VALIDATION_FAILED.value,
             )
         posting_code = posting_context["posting_code"]
-        attended_posting_options = await _attended_posting_options_for_external(
-            db,
-            reporting_period_id=period["id"],
-        )
+        attended_posting_options = [{"posting_code": posting_code}]
         selected_attended_posting = _select_attended_posting(
             attended_posting_options,
             requested_posting_code=attended_posting_code,
             default_posting_code=posting_code,
         )
         if selected_attended_posting is None:
-            raise ApiError(
-                status_code=422,
-                detail="No attended department/programme options are available for this teaching date",
-                error_code=ErrorCode.VALIDATION_FAILED.value,
-            )
-        resolved = await _resolve_teaching_name_for_posting(
-            db,
-            posting_code=selected_attended_posting["posting_code"],
-            teaching_name=teaching_name,
-            reporting_period_id=period["id"],
-        )
-        if resolved is None:
-            raise ApiError(
-                status_code=422,
-                detail="teaching_name must be selected from catalogue-backed ad-hoc teaching options",
-                error_code=ErrorCode.VALIDATION_FAILED.value,
-            )
-        duration_hours = resolved["duration_hours"] if resolved is not None else None
-        end_time = (
-            _compute_end_time(event_date, start_time, duration_hours)
-            if duration_hours is not None
-            else None
-        )
+            raise RuntimeError("Assigned posting option invariant was not established")
+        duration_hours = ADHOC_DURATION_HOURS
+        end_time = _compute_end_time(event_date, start_time, duration_hours)
         await _acquire_external_attendance_locks(
             db,
             external_resident_id=external_resident_id,
-            event_dates={event_date},
+            event_dates=spanned_dates(
+                event_date=event_date,
+                start_time=start_time,
+                end_time=end_time,
+            ),
         )
         if await _overlapping_external_attendance_exists(
             db,
@@ -2843,14 +2786,14 @@ async def submit_adhoc_teaching(
                 attended_posting_code=selected_attended_posting[
                     "posting_code"
                 ],
-                attended_teaching_name=teaching_name,
-                teaching_name=teaching_name,
+                attended_teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
+                teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
                 details_of_session=details_of_session,
                 event_date=event_date,
                 start_time=start_time,
                 end_time=end_time,
                 duration_hours=duration_hours,
-                session_type_id=resolved.get("session_type_id"),
+                session_type_id=None,
             )
         except DBAPIError as exc:
             await _raise_adhoc_helper_error(db, exc)
@@ -2915,67 +2858,35 @@ async def submit_adhoc_teaching(
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
     context = contexts[0]
-    attended_posting_options = await _attended_posting_options_for_resident(
+    assigned_posting_code = await _attendance_posting_code(
         db,
-        programme_code=resident["programme_code"],
-        r_year=context["r_year"],
-        reporting_period_id=period["id"],
+        resident=resident,
+        context=context,
     )
+    if assigned_posting_code is None:
+        raise ApiError(
+            status_code=422,
+            detail="No teaching posting is available for the submitted teaching date",
+            error_code=ErrorCode.VALIDATION_FAILED.value,
+        )
+    attended_posting_options = [{"posting_code": assigned_posting_code}]
     selected_attended_posting = _select_attended_posting(
         attended_posting_options,
         requested_posting_code=attended_posting_code,
-        default_posting_code=context["posting_code"],
+        default_posting_code=assigned_posting_code,
     )
     if selected_attended_posting is None:
-        raise ApiError(
-            status_code=422,
-            detail="No attended department/programme options are available for this teaching date",
-            error_code=ErrorCode.VALIDATION_FAILED.value,
-        )
-    selected = await _resolve_teaching_name(
-        db,
-        posting_code=selected_attended_posting["posting_code"],
-        programme_code=resident["programme_code"],
-        r_year=context["r_year"],
-        reporting_period_id=period["id"],
-        teaching_name=teaching_name,
-    )
-    if selected is None:
-        raise ApiError(
-            status_code=422,
-            detail="teaching_name must be selected from catalogue-backed ad-hoc teaching options",
-            error_code=ErrorCode.VALIDATION_FAILED.value,
-        )
-    if selected.get("is_global") or not bool(selected.get("is_tracked")):
-        raise ApiError(
-            status_code=422,
-            detail="teaching_name must be selected from tracked catalogue-backed ad-hoc teaching options",
-            error_code=ErrorCode.VALIDATION_FAILED.value,
-        )
-    resolved = await _resolve_teaching_target(
-        db,
-        posting_code=context["posting_code"],
-        programme_code=resident["programme_code"],
-        r_year=context["r_year"],
-        reporting_period_id=period["id"],
-        session_type=ADHOC_COMPLIANCE_TEACHING_NAME,
-    )
-    if resolved is None or resolved.get("is_global") or not bool(resolved.get("is_tracked")):
-        raise ApiError(
-            status_code=422,
-            detail=(
-                f"{ADHOC_COMPLIANCE_TEACHING_NAME} is unavailable for countable "
-                "ad-hoc teaching on this resident posting"
-            ),
-            error_code=ErrorCode.VALIDATION_FAILED.value,
-        )
-
-    duration_hours = resolved["duration_hours"]
+        raise RuntimeError("Assigned posting option invariant was not established")
+    duration_hours = ADHOC_DURATION_HOURS
     end_time = _compute_end_time(event_date, start_time, duration_hours)
     await _acquire_native_attendance_locks(
         db,
         resident_id=resident_id,
-        event_dates={event_date},
+        event_dates=spanned_dates(
+            event_date=event_date,
+            start_time=start_time,
+            end_time=end_time,
+        ),
     )
     if await _overlapping_native_attendance_exists(
         db,
@@ -2993,19 +2904,31 @@ async def submit_adhoc_teaching(
             error_code=ErrorCode.CONFLICT.value,
         )
     try:
-        created = await _create_adhoc_attendance(
-            db,
-            posting_code=context["posting_code"],
-            attended_posting_code=selected_attended_posting["posting_code"],
-            attended_teaching_name=teaching_name,
-            teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
-            details_of_session=details_of_session,
-            event_date=event_date,
-            start_time=start_time,
-            end_time=end_time,
-            duration_hours=duration_hours,
-            session_type_id=resolved.get("session_type_id"),
-        )
+        if context.get("status") == "loa" and context.get("posting_code") is None:
+            created = await _create_loa_adhoc_attendance(
+                db,
+                posting_code=assigned_posting_code,
+                teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
+                details_of_session=details_of_session,
+                event_date=event_date,
+                start_time=start_time,
+                end_time=end_time,
+                duration_hours=duration_hours,
+            )
+        else:
+            created = await _create_adhoc_attendance(
+                db,
+                posting_code=assigned_posting_code,
+                attended_posting_code=selected_attended_posting["posting_code"],
+                attended_teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
+                teaching_name=ADHOC_COMPLIANCE_TEACHING_NAME,
+                details_of_session=details_of_session,
+                event_date=event_date,
+                start_time=start_time,
+                end_time=end_time,
+                duration_hours=duration_hours,
+                session_type_id=None,
+            )
     except DBAPIError as exc:
         await _raise_adhoc_helper_error(db, exc)
     event = _event_row(await _get_event(db, created["event_id"]))
@@ -3021,7 +2944,7 @@ async def submit_adhoc_teaching(
         db,
         event=event,
         programme_code=resident["programme_code"],
-        session_type_id=resolved.get("session_type_id"),
+        session_type_id=None,
     )
     await db.commit()
     invalidate_resident_caches(
@@ -3288,6 +3211,9 @@ async def list_attendance_records(
         await _external_resident(db, external_resident_id)
         table_name = "external_attendance_records"
         id_column = "external_resident_id"
+        loa_projection = (
+            "false AS submitted_during_loa, NULL::text AS loa_type"
+        )
         params["subject_id"] = str(external_resident_id)
     else:
         if resident_id is None:
@@ -3299,6 +3225,7 @@ async def list_attendance_records(
         await _resident(db, resident_id)
         table_name = "attendance_records"
         id_column = "resident_id"
+        loa_projection = "attendance.submitted_during_loa, attendance.loa_type"
         params["subject_id"] = str(resident_id)
     where.append(f"attendance.{id_column} = :subject_id")
     if status:
@@ -3341,11 +3268,19 @@ async def list_attendance_records(
                 events.end_time,
                 events.duration_hours,
                 events.posting_code,
+                events.teaching_name_id,
+                events.global_session_type_id,
+                source_scope.reporting_period_id AS source_reporting_period_id,
+                source_scope.programme_code AS source_programme_code,
                 attendance.status,
-                attendance.submitted_at
+                attendance.submitted_at,
+                {loa_projection}
             FROM {table_name} attendance
             JOIN teaching_events events
               ON events.id = attendance.teaching_event_id
+            LEFT JOIN LATERAL mata_rls.scheduled_event_source_scope(
+                events.id
+            ) AS source_scope ON true
             WHERE {' AND '.join(where)}
             ORDER BY events.event_date DESC, events.start_time DESC, attendance.submitted_at DESC, attendance.id DESC
             LIMIT :limit OFFSET :offset
@@ -3354,6 +3289,20 @@ async def list_attendance_records(
         params,
     )
     rows = [dict(row) for row in result.mappings().all()]
+    if role != "external_resident" and resident_id is not None:
+        for index, row in enumerate(rows):
+            if (
+                row.get("teaching_name_id") is None
+                or row.get("source_reporting_period_id") is None
+                or bool(row.get("is_adhoc"))
+            ):
+                continue
+            resident_row, timing = await _native_resident_event_view(
+                db,
+                event=row,
+                resident_id=resident_id,
+            )
+            rows[index] = {**resident_row, **timing}
     return {
         "attendance": rows,
         "limit": params["limit"],

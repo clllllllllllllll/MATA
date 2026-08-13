@@ -78,24 +78,34 @@ jobs:
         run: |
           heads="$(python -B -m alembic heads)"
           test "$(printf '%s\n' "$heads" | wc -l)" -eq 1
-          test "$heads" = "20260728_000028 (head)"
+          test "$heads" = "20260813_000042 (head)"
 
-      - name: Apply clean baseline-to-head migration
+      - name: Apply migrations through the historical lifecycle ceiling
+        working-directory: backend
+        run: python -B -m alembic upgrade 20260812_000039
+
+      - name: Run serial historical migration lifecycle tests
+        working-directory: backend
+        env:
+          MATA_MIGRATION_LIFECYCLE_CEILING_REVISION: "20260812_000039"
+        run: >-
+          python -B -m pytest
+          -q --tb=short -p no:cacheprovider
+          --strict-markers
+          -m "migration_mutation and not post_boundary_migration" tests
+
+      - name: Upgrade the verified historical database to the latest head
         working-directory: backend
         run: python -B -m alembic upgrade head
 
-      - name: Verify the disposable database is at every Alembic head
-        working-directory: backend
-        run: python -B -m alembic current --check-heads
-
-      - name: Run serial direct-owner migration lifecycle tests
+      - name: Run serial post-boundary migration lifecycle tests
         working-directory: backend
         run: >-
           python -B -m pytest
           -q --tb=short -p no:cacheprovider
-          --strict-markers -m migration_mutation tests
+          --strict-markers -m post_boundary_migration tests
 
-      - name: Verify the lifecycle gate restored the database head
+      - name: Verify the lifecycle gates restored the database head
         working-directory: backend
         run: python -B -m alembic current --check-heads
 

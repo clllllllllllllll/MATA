@@ -3,7 +3,12 @@ import { DetailDrawer } from '../../components/DetailDrawer'
 import { IconCalendar, IconDownload, IconPlus } from '../../components/icons'
 import { frontendConfig } from '../../config/frontendConfig'
 import { useAppState } from '../../context/useAppState'
+import { useAuth } from '../../context/useAuth'
 import { ApiRequestError } from '../../api/http'
+import {
+  listSecretaryTeachingNameProgrammes,
+  secretaryTeachingNamesChangedEvent,
+} from '../../api/secretaryTeachingNames'
 import { teachingEventCreatedByDisplay } from '../../utils/teachingEventSource'
 import { formatUserFacingApiError } from '../../utils/userFacingErrors'
 import {
@@ -25,15 +30,26 @@ import {
 import {
   createSecretaryTeachingEvent,
   deleteSecretaryTeachingEvent,
+  duplicateSecretaryTeachingEvent,
   updateSecretaryTeachingEvent,
   listSecretaryTeachingEvents,
   listSecretaryTeachingNameOptions,
+  sourceKeyForSecretaryTeachingEvent,
   type SecretaryTeachingEvent,
   type TeachingNameOption,
 } from '../../api/secretaryEvents'
+import {
+  isCurrentTeachingSourceEligible,
+  poolStartTimeValidationError,
+  resolveSecretaryEventProgrammeContext,
+  serverComputedPoolEndTime,
+  shouldTemporarilyRetainPoolSource,
+} from '../../utils/secretaryTeachingScheduleState'
+import { createScopedRequestFence } from '../../utils/scopedRequestFence'
+import { countStaffEnvelopeOverlaps } from '../../utils/teachingEventOverlapWarning'
 
 interface TeachingFormState {
-  teachingName: string
+  sourceKey: string
   eventDate: string
   startTime: string
   cmePointsAwarded: boolean
@@ -43,7 +59,7 @@ interface TeachingFormState {
 type DrawerMode = 'create' | 'duplicate' | 'edit'
 
 const INITIAL_FORM: TeachingFormState = {
-  teachingName: '',
+  sourceKey: '',
   eventDate: '',
   startTime: '',
   cmePointsAwarded: false,
@@ -51,6 +67,7 @@ const INITIAL_FORM: TeachingFormState = {
 }
 
 const EMPTY_EVENTS: SecretaryTeachingEvent[] = []
+const EMPTY_TEACHING_NAME_OPTIONS: TeachingNameOption[] = []
 
 const START_TIME_OPTIONS = Array.from({ length: 24 * 4 }, (_, index) => {
   const totalMinutes = index * 15
@@ -124,6 +141,22 @@ const formatDuration = (value?: number) => {
   }
   const rounded = Number.isInteger(value) ? String(value) : value.toFixed(1)
   return `${rounded}h`
+}
+
+const formatStaffEventDuration = (
+  event: Pick<SecretaryTeachingEvent, 'durationHours' | 'durationVaries'>,
+) => event.durationVaries
+  ? `Varies by programme/R-year (up to ${formatDuration(event.durationHours)})`
+  : formatDuration(event.durationHours)
+
+const sourceProgrammeDisplay = (event: SecretaryTeachingEvent) => {
+  if (event.sourceProgrammeCode) {
+    return event.sourceProgrammeCode
+  }
+  if (event.globalSessionTypeId) {
+    return 'Global'
+  }
+  return 'Legacy'
 }
 
 const normaliseApiError = (error: ApiRequestError, mode: 'list' | 'create' | 'options'): string => {
@@ -210,6 +243,7 @@ export const SecretaryTeachingSchedulePage = () => {
     reportingPeriodsLoading,
     reportingPeriodsError,
   } = useAppState()
+  const { identity } = useAuth()
 
   const [events, setEvents] = useState<SecretaryTeachingEvent[]>([])
   const [recentCreatedEvents, setRecentCreatedEvents] = useState<SecretaryTeachingEvent[]>([])
@@ -222,7 +256,15 @@ export const SecretaryTeachingSchedulePage = () => {
   const [nameOptions, setNameOptions] = useState<TeachingNameOption[]>([])
   const [nameOptionsLoading, setNameOptionsLoading] = useState(false)
   const [nameOptionsError, setNameOptionsError] = useState<string | null>(null)
-  const [nameOptionsPeriodId, setNameOptionsPeriodId] = useState<string | null>(null)
+  const [loadedNameOptionsContextKey, setLoadedNameOptionsContextKey] = useState<string | null>(null)
+  const nameOptionsRequestFenceRef = useRef(createScopedRequestFence())
+  const [teachingNameProgrammes, setTeachingNameProgrammes] = useState<string[]>([])
+  const [teachingNameProgrammesLoading, setTeachingNameProgrammesLoading] = useState(true)
+  const [teachingNameProgrammesLoaded, setTeachingNameProgrammesLoaded] = useState(false)
+  const [teachingNameProgrammesError, setTeachingNameProgrammesError] = useState<string | null>(null)
+  const [selectedTeachingNameProgrammeCode, setSelectedTeachingNameProgrammeCode] = useState('')
+  const preservedEventSourceProgrammeRef = useRef<string | null>(null)
+  const [pendingSourceProgrammeContextKey, setPendingSourceProgrammeContextKey] = useState<string | null>(null)
 
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerMode, setDrawerMode] = useState<DrawerMode>('create')
@@ -241,7 +283,16 @@ export const SecretaryTeachingSchedulePage = () => {
   useEffect(() => {
     selectedPeriodIdRef.current = selectedPeriodId
   }, [selectedPeriodId])
-  const nameOptionsLoaded = Boolean(selectedPeriod && nameOptionsPeriodId === selectedPeriod.id)
+  const nameOptionsContextKey = selectedPeriod && teachingNameProgrammesLoaded
+    ? `${selectedPeriod.id}:${selectedTeachingNameProgrammeCode || 'global'}`
+    : null
+  const nameOptionsContextKeyRef = useRef<string | null>(nameOptionsContextKey)
+  useEffect(() => {
+    nameOptionsContextKeyRef.current = nameOptionsContextKey
+  }, [nameOptionsContextKey])
+  const nameOptionsLoaded = Boolean(
+    nameOptionsContextKey && loadedNameOptionsContextKey === nameOptionsContextKey,
+  )
 
   const loadEvents = useCallback(async (): Promise<SecretaryTeachingEvent[]> => {
     return (await loadSecretaryEventsForPeriod(selectedPeriod, listSecretaryTeachingEvents)) ?? []
@@ -306,30 +357,70 @@ export const SecretaryTeachingSchedulePage = () => {
     }
   }, [loadEvents, selectedPeriod])
 
+  useEffect(() => {
+    let active = true
+    ;(async () => {
+      setTeachingNameProgrammesLoading(true)
+      setTeachingNameProgrammesError(null)
+      try {
+        const response = await listSecretaryTeachingNameProgrammes()
+        if (!active) {
+          return
+        }
+        const nextProgrammes = [...new Set(response.map((item) => item.programmeCode))]
+        setTeachingNameProgrammes(nextProgrammes)
+        setSelectedTeachingNameProgrammeCode((current) =>
+          current && nextProgrammes.includes(current) ? current : nextProgrammes[0] ?? '',
+        )
+        setTeachingNameProgrammesLoaded(true)
+      } catch (error) {
+        if (!active) {
+          return
+        }
+        setTeachingNameProgrammes([])
+        setSelectedTeachingNameProgrammeCode('')
+        setTeachingNameProgrammesLoaded(false)
+        setTeachingNameProgrammesError(formatUserFacingApiError(error, {
+          fallbackMessage: 'Unable to load authorised Teaching Name programmes.',
+        }))
+      } finally {
+        if (active) {
+          setTeachingNameProgrammesLoading(false)
+        }
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [])
+
   const loadTeachingNameOptions = useCallback(async () => {
-    if (!selectedPeriod) {
+    const requestToken = nameOptionsRequestFenceRef.current.begin(nameOptionsContextKey)
+    if (!selectedPeriod || !nameOptionsContextKey) {
       setNameOptions([])
       setNameOptionsError(null)
-      setNameOptionsPeriodId(null)
+      setLoadedNameOptionsContextKey(null)
       setNameOptionsLoading(false)
+      setPendingSourceProgrammeContextKey(null)
       return
     }
-    const requestedPeriodId = selectedPeriod.id
+    const requestedContextKey = nameOptionsContextKey
     setNameOptions([])
     setNameOptionsLoading(true)
     setNameOptionsError(null)
-    setNameOptionsPeriodId(null)
+    setLoadedNameOptionsContextKey(null)
     try {
       const options = await listSecretaryTeachingNameOptions({
-        reportingPeriodId: requestedPeriodId,
+        reportingPeriodId: selectedPeriod.id,
+        programmeCode: selectedTeachingNameProgrammeCode || undefined,
       })
-      if (!shouldApplySecretaryEventLoad(requestedPeriodId, selectedPeriodIdRef.current)) {
+      if (!nameOptionsRequestFenceRef.current.isCurrent(requestToken, nameOptionsContextKeyRef.current)) {
         return
       }
       setNameOptions(options)
-      setNameOptionsPeriodId(requestedPeriodId)
+      setLoadedNameOptionsContextKey(requestedContextKey)
     } catch (error) {
-      if (!shouldApplySecretaryEventLoad(requestedPeriodId, selectedPeriodIdRef.current)) {
+      if (!nameOptionsRequestFenceRef.current.isCurrent(requestToken, nameOptionsContextKeyRef.current)) {
         return
       }
       const message =
@@ -338,13 +429,16 @@ export const SecretaryTeachingSchedulePage = () => {
           : 'Unable to load teaching name options.'
       setNameOptions([])
       setNameOptionsError(message)
-      setNameOptionsPeriodId(requestedPeriodId)
+      setLoadedNameOptionsContextKey(requestedContextKey)
     } finally {
-      if (shouldApplySecretaryEventLoad(requestedPeriodId, selectedPeriodIdRef.current)) {
+      if (nameOptionsRequestFenceRef.current.isCurrent(requestToken, nameOptionsContextKeyRef.current)) {
         setNameOptionsLoading(false)
+        setPendingSourceProgrammeContextKey((current) =>
+          current === requestedContextKey ? null : current,
+        )
       }
     }
-  }, [selectedPeriod])
+  }, [nameOptionsContextKey, selectedPeriod, selectedTeachingNameProgrammeCode])
 
   useEffect(() => {
     let active = true
@@ -359,41 +453,178 @@ export const SecretaryTeachingSchedulePage = () => {
     }
   }, [loadTeachingNameOptions])
 
-  const teachingTypeByName = useMemo(() => {
-    const map = new Map<string, string>()
-    nameOptions.forEach((option) => {
-      if (!map.has(option.keyword) && option.sessionType) {
-        map.set(option.keyword, option.sessionType)
+  useEffect(() => {
+    const refreshOptions = () => {
+      void loadTeachingNameOptions()
+    }
+    window.addEventListener(secretaryTeachingNamesChangedEvent, refreshOptions)
+    return () => window.removeEventListener(secretaryTeachingNamesChangedEvent, refreshOptions)
+  }, [loadTeachingNameOptions])
+
+  useEffect(() => {
+    let active = true
+    void Promise.resolve().then(() => {
+      if (!active) {
+        return
       }
+      const preserveEventDrawer = (
+        preservedEventSourceProgrammeRef.current === selectedTeachingNameProgrammeCode
+      )
+      preservedEventSourceProgrammeRef.current = null
+      if (preserveEventDrawer) {
+        return
+      }
+      setPendingSourceProgrammeContextKey(null)
+      setFormState(INITIAL_FORM)
+      setFormErrors({})
+      setSourceEvent(null)
+      setDrawerOpen(false)
+      setSubmitState('idle')
+      setSubmitMessage(null)
+    })
+    return () => {
+      active = false
+    }
+  }, [selectedPeriodId, selectedTeachingNameProgrammeCode])
+
+  const nameOptionsState = resolveTeachingNameOptionsState({
+    hasContext: Boolean(nameOptionsContextKey),
+    isLoading: nameOptionsLoading,
+    isLoaded: nameOptionsLoaded,
+    error: nameOptionsError,
+    optionCount: nameOptions.length,
+  })
+  const currentSourceOptions = nameOptionsState === 'ready'
+    ? nameOptions
+    : EMPTY_TEACHING_NAME_OPTIONS
+  const sourceProgrammeSwitchPending = (
+    pendingSourceProgrammeContextKey !== null
+    && pendingSourceProgrammeContextKey === nameOptionsContextKey
+  )
+  const optionsBySourceKey = useMemo(() => {
+    const map = new Map<string, TeachingNameOption>()
+    currentSourceOptions.forEach((option) => {
+      map.set(option.sourceKey, option)
     })
     return map
-  }, [nameOptions])
+  }, [currentSourceOptions])
+  const retainedInactiveGlobalOption = useMemo<TeachingNameOption | undefined>(() => {
+    if (drawerMode !== 'edit' || !sourceEvent?.globalSessionTypeId) {
+      return undefined
+    }
+    const sourceKey = sourceKeyForSecretaryTeachingEvent(sourceEvent)
+    if (!sourceKey || optionsBySourceKey.has(sourceKey)) {
+      return undefined
+    }
+    return {
+      sourceKey,
+      keyword: sourceEvent.teachingName,
+      globalSessionTypeId: sourceEvent.globalSessionTypeId,
+      sessionTypeId: sourceEvent.sessionTypeId,
+      sessionType: sourceEvent.sessionTypeName,
+      durationHours: sourceEvent.durationHours,
+      isGlobal: true,
+    }
+  }, [drawerMode, optionsBySourceKey, sourceEvent])
+  const retainedPoolSourceOption = useMemo<TeachingNameOption | undefined>(() => {
+    if (
+      (drawerMode !== 'edit' && drawerMode !== 'duplicate')
+      || !sourceEvent?.teachingNameId
+    ) {
+      return undefined
+    }
+    const sourceKey = sourceKeyForSecretaryTeachingEvent(sourceEvent)
+    if (!sourceKey || !shouldTemporarilyRetainPoolSource({
+      event: sourceEvent,
+      selectedProgrammeCode: selectedTeachingNameProgrammeCode,
+      optionsState: nameOptionsState,
+      programmeSwitchPending: sourceProgrammeSwitchPending,
+      sourceIsAvailable: optionsBySourceKey.has(sourceKey),
+    })) {
+      return undefined
+    }
+    const programmeContext = resolveSecretaryEventProgrammeContext(sourceEvent)
+    return {
+      sourceKey,
+      keyword: sourceEvent.teachingName,
+      teachingNameId: sourceEvent.teachingNameId,
+      programmeCode: programmeContext.kind === 'pool_backed'
+        ? programmeContext.programmeCode
+        : undefined,
+      durationHours: sourceEvent.durationHours,
+      durationIsMapped: false,
+      isGlobal: false,
+    }
+  }, [
+    drawerMode,
+    nameOptionsState,
+    optionsBySourceKey,
+    selectedTeachingNameProgrammeCode,
+    sourceEvent,
+    sourceProgrammeSwitchPending,
+  ])
+  const retainedEventSourceOption = retainedPoolSourceOption ?? retainedInactiveGlobalOption
+  const drawerSourceOptions = useMemo(
+    () => retainedEventSourceOption
+      ? [...currentSourceOptions, retainedEventSourceOption]
+      : currentSourceOptions,
+    [currentSourceOptions, retainedEventSourceOption],
+  )
+  const hasCurrentEligibleSource = isCurrentTeachingSourceEligible(
+    formState.sourceKey,
+    currentSourceOptions,
+  )
+  const activeSelectedSourceOption = hasCurrentEligibleSource
+    ? optionsBySourceKey.get(formState.sourceKey)
+    : undefined
+  const isRetainedInactiveGlobalSourceSelected =
+    retainedInactiveGlobalOption?.sourceKey === formState.sourceKey
+  const sourceOptionForSave = activeSelectedSourceOption
+    ?? (isRetainedInactiveGlobalSourceSelected ? retainedInactiveGlobalOption : undefined)
+  const selectedSourceOption = activeSelectedSourceOption
+    ?? (retainedEventSourceOption?.sourceKey === formState.sourceKey
+      ? retainedEventSourceOption
+      : undefined)
 
   const visibleEvents = selectedPeriod
     ? supportsEventListEndpoint
       ? events
       : recentCreatedEvents
     : EMPTY_EVENTS
-  const nameOptionsState = resolveTeachingNameOptionsState({
-    hasContext: Boolean(selectedPeriod),
-    isLoading: nameOptionsLoading,
-    isLoaded: nameOptionsLoaded,
-    error: nameOptionsError,
-    optionCount: nameOptions.length,
-  })
   const canAddTeaching = canAddTeachingFromOptions(nameOptionsState)
+  const canSubmitTeaching = Boolean(sourceOptionForSave)
+  const sourceEventProgrammeContext = sourceEvent
+    ? resolveSecretaryEventProgrammeContext(sourceEvent)
+    : null
+  const poolSourceRequiresReselection = Boolean(
+    (drawerMode === 'edit' || drawerMode === 'duplicate')
+    && sourceEventProgrammeContext?.kind === 'pool_backed'
+    && (nameOptionsState === 'ready' || nameOptionsState === 'empty')
+    && !sourceOptionForSave,
+  )
   const nameOptionsUnavailableMessage =
     nameOptionsState === 'unavailable'
-      ? 'Select an active reporting period to load teaching names.'
+      ? teachingNameProgrammesError
+        ? teachingNameProgrammesError
+        : teachingNameProgrammesLoading
+          ? 'Loading authorised Teaching Name programmes...'
+          : 'Select an active reporting period to load teaching names.'
       : nameOptionsState === 'loading'
         ? 'Loading teaching name options...'
         : nameOptionsState === 'error'
           ? nameOptionsError ?? 'Unable to load teaching name options.'
-          : 'No teaching-name options are available for this posting and reporting period.'
+          : 'No teaching-name options are available for this programme and reporting period.'
   const addTeachingTitle =
     nameOptionsState === 'ready'
-      ? 'Add a posting-owned teaching event.'
+      ? 'Add a teaching event from the selected source.'
       : nameOptionsUnavailableMessage
+  const sourceReselectionMessage =
+    'The original Name of Teaching is no longer active or available. Select a currently active source before saving.'
+  const disabledSubmitTitle = poolSourceRequiresReselection
+    ? sourceReselectionMessage
+    : nameOptionsState === 'ready'
+      ? 'Select a currently active source before saving.'
+      : addTeachingTitle
   const selectedPeriodDateError = useMemo(() => {
     if (!formState.eventDate || !selectedPeriod) {
       return null
@@ -402,6 +633,53 @@ export const SecretaryTeachingSchedulePage = () => {
       ? null
       : 'Event date must be within the selected reporting period.'
   }, [formState.eventDate, selectedPeriod])
+  const selectedPoolStartTimeError = selectedSourceOption?.teachingNameId
+    ? poolStartTimeValidationError(formState.startTime)
+    : null
+  const selectedPoolEndTime = selectedSourceOption?.teachingNameId
+    && selectedSourceOption.durationIsMapped
+    && !selectedSourceOption.durationVaries
+    && !selectedPoolStartTimeError
+    ? serverComputedPoolEndTime(
+        formState.startTime,
+        selectedSourceOption.durationHours,
+      )
+    : null
+  const selectedPoolRYearDurations = selectedSourceOption?.teachingNameId
+    ? selectedSourceOption.rYearDurations ?? []
+    : []
+  const selectedPoolHasNoMappedDurations = Boolean(
+    selectedSourceOption?.teachingNameId
+    && (
+      selectedPoolRYearDurations.length > 0
+        ? selectedPoolRYearDurations.every((timing) => !timing.isMapped)
+        : !selectedSourceOption.durationIsMapped
+    ),
+  )
+  const selectedPoolNeedsRYearBreakdown = Boolean(
+    selectedSourceOption?.teachingNameId
+    && !selectedPoolHasNoMappedDurations
+    && (selectedSourceOption.durationVaries || selectedSourceOption.hasPendingMappings),
+  )
+  const overlapWarningCount = useMemo(() => countStaffEnvelopeOverlaps(
+    visibleEvents,
+    {
+      postingCode: sourceEvent?.postingCode
+        ?? (identity?.role === 'secretary' ? identity.postingCode : undefined),
+      eventDate: formState.eventDate,
+      startTime: formState.startTime,
+      durationHours: selectedSourceOption?.durationHours,
+      excludedEventId: drawerMode === 'edit' ? sourceEvent?.id : undefined,
+    },
+  ), [
+    drawerMode,
+    formState.eventDate,
+    formState.startTime,
+    identity,
+    selectedSourceOption,
+    sourceEvent,
+    visibleEvents,
+  ])
 
   const toggleSelected = (id: string) => {
     setSelectedIds((previous) => {
@@ -467,6 +745,7 @@ export const SecretaryTeachingSchedulePage = () => {
   const closeDrawer = () => {
     setDrawerOpen(false)
     setDrawerMode('create')
+    setPendingSourceProgrammeContextKey(null)
     resetForm()
   }
 
@@ -487,14 +766,47 @@ export const SecretaryTeachingSchedulePage = () => {
     setSubmitState('idle')
   }
 
+  const prepareEventSourceProgramme = (event: SecretaryTeachingEvent): boolean => {
+    const programmeContext = resolveSecretaryEventProgrammeContext(event)
+    if (programmeContext.kind === 'not_pool_backed') {
+      return true
+    }
+    if (programmeContext.kind === 'missing_pool_programme') {
+      setSubmitState('error')
+      setSubmitMessage('This pool-backed teaching event has no source programme context. Refresh the schedule before editing or duplicating it.')
+      return false
+    }
+    if (teachingNameProgrammesLoading || !teachingNameProgrammesLoaded) {
+      setSubmitState('error')
+      setSubmitMessage('Authorised Teaching Name programmes are still loading. Try again when they are available.')
+      return false
+    }
+    if (!teachingNameProgrammes.includes(programmeContext.programmeCode)) {
+      setSubmitState('error')
+      setSubmitMessage('This teaching event belongs to a Teaching Name programme you are not currently authorised to manage.')
+      return false
+    }
+    if (selectedTeachingNameProgrammeCode !== programmeContext.programmeCode) {
+      preservedEventSourceProgrammeRef.current = programmeContext.programmeCode
+      setPendingSourceProgrammeContextKey(
+        selectedPeriod ? `${selectedPeriod.id}:${programmeContext.programmeCode}` : null,
+      )
+      setSelectedTeachingNameProgrammeCode(programmeContext.programmeCode)
+    }
+    return true
+  }
+
   const handleOpenDuplicate = () => {
     if (!singleSelectedEvent) {
+      return
+    }
+    if (!prepareEventSourceProgramme(singleSelectedEvent)) {
       return
     }
     setSourceEvent(singleSelectedEvent)
     setDrawerMode('duplicate')
     setFormState({
-      teachingName: singleSelectedEvent.teachingName,
+      sourceKey: sourceKeyForSecretaryTeachingEvent(singleSelectedEvent),
       eventDate: singleSelectedEvent.eventDate,
       startTime: toTimeInputValue(singleSelectedEvent.startTime),
       cmePointsAwarded: singleSelectedEvent.cmePointsAwarded,
@@ -516,10 +828,13 @@ export const SecretaryTeachingSchedulePage = () => {
       setSubmitMessage('Editing and deleting are disabled because attendance has been submitted for this event.')
       return
     }
+    if (!prepareEventSourceProgramme(targetEvent)) {
+      return
+    }
     setSourceEvent(targetEvent)
     setDrawerMode('edit')
     setFormState({
-      teachingName: targetEvent.teachingName,
+      sourceKey: sourceKeyForSecretaryTeachingEvent(targetEvent),
       eventDate: targetEvent.eventDate,
       startTime: toTimeInputValue(targetEvent.startTime),
       cmePointsAwarded: targetEvent.cmePointsAwarded,
@@ -551,8 +866,12 @@ export const SecretaryTeachingSchedulePage = () => {
     }
     setSubmitState('submitting')
     setSubmitMessage(null)
+    const requestedOptionsContextKey = nameOptionsContextKeyRef.current
 
     const deleteAttempts = await Promise.allSettled(idsToDelete.map((id) => deleteSecretaryTeachingEvent(id)))
+    if (nameOptionsContextKeyRef.current !== requestedOptionsContextKey) {
+      return
+    }
     const deletedIds: string[] = []
     const errorIds: string[] = []
     for (let index = 0; index < deleteAttempts.length; index++) {
@@ -568,6 +887,9 @@ export const SecretaryTeachingSchedulePage = () => {
     if (deletedIds.length > 0) {
       if (supportsEventListEndpoint) {
         const refreshed = await loadEvents()
+        if (nameOptionsContextKeyRef.current !== requestedOptionsContextKey) {
+          return
+        }
         setEvents(refreshed)
       } else {
         setRecentCreatedEvents((previous) => previous.filter((event) => !idsToDelete.includes(event.id)))
@@ -628,30 +950,30 @@ export const SecretaryTeachingSchedulePage = () => {
       return
     }
     if (drawerMode === 'duplicate' && sourceEvent) {
-      const sourceName = sourceEvent.teachingName.trim()
-      const targetName = formState.teachingName.trim()
+      const sourceKey = sourceKeyForSecretaryTeachingEvent(sourceEvent)
+      const targetSourceKey = formState.sourceKey
       const sourceStartTime = toTimeInputValue(sourceEvent.startTime)
       const targetStartTime = formState.startTime
       const sourceDate = sourceEvent.eventDate
-      const sourceCmeCode = sourceEvent.cmePointsAwarded ? sourceEvent.smcEventCode ?? '' : ''
-      const targetCmeCode = formState.cmePointsAwarded ? formState.smcEventCode.trim() : ''
       const sourceSame =
-        sourceName === targetName &&
+        sourceKey === targetSourceKey &&
         sourceDate === formState.eventDate &&
-        sourceStartTime === targetStartTime &&
-        sourceEvent.cmePointsAwarded === formState.cmePointsAwarded &&
-        sourceCmeCode === targetCmeCode
-      if (sourceSame) {
+        sourceStartTime === targetStartTime
+      if (sourceSame && sourceOptionForSave) {
         setSubmitState('error')
         setSubmitMessage('Duplicate has no changes. Update date/time or another field before saving.')
         return
       }
     }
     const nextErrors: Partial<Record<keyof TeachingFormState, string>> = {}
-    if (!formState.teachingName.trim()) {
-      nextErrors.teachingName = 'Teaching name is required.'
-    } else if (!nameOptions.some((option) => option.keyword === formState.teachingName.trim())) {
-      nextErrors.teachingName = 'Select a teaching name from the approved catalogue.'
+    if (!formState.sourceKey) {
+      nextErrors.sourceKey = poolSourceRequiresReselection
+        ? sourceReselectionMessage
+        : 'Name of Teaching is required.'
+    } else if (!sourceOptionForSave) {
+      nextErrors.sourceKey = poolSourceRequiresReselection
+        ? sourceReselectionMessage
+        : 'Select a currently active Name of Teaching from the approved pool or global sources.'
     }
     if (!selectedPeriod) {
       nextErrors.eventDate = 'An active reporting period is required.'
@@ -662,6 +984,8 @@ export const SecretaryTeachingSchedulePage = () => {
     }
     if (!formState.startTime) {
       nextErrors.startTime = 'Start time is required.'
+    } else if (selectedPoolStartTimeError) {
+      nextErrors.startTime = selectedPoolStartTimeError
     }
     setFormErrors(nextErrors)
     if (Object.keys(nextErrors).length > 0) {
@@ -672,8 +996,10 @@ export const SecretaryTeachingSchedulePage = () => {
 
     setSubmitState('submitting')
     setSubmitMessage(null)
+    const requestedOptionsContextKey = nameOptionsContextKeyRef.current
     const payload = {
-      teachingName: formState.teachingName.trim(),
+      teachingNameId: sourceOptionForSave?.teachingNameId,
+      globalSessionTypeId: sourceOptionForSave?.globalSessionTypeId,
       eventDate: formState.eventDate,
       startTime: formState.startTime,
       cmePointsAwarded: formState.cmePointsAwarded,
@@ -681,12 +1007,33 @@ export const SecretaryTeachingSchedulePage = () => {
     }
     try {
       const savedEvent =
-        drawerMode === 'edit' && sourceEvent
-          ? await updateSecretaryTeachingEvent(sourceEvent.id, payload)
-          : await createSecretaryTeachingEvent(payload)
+        drawerMode === 'duplicate' && sourceEvent
+          ? await duplicateSecretaryTeachingEvent({
+            sourceEventId: sourceEvent.id,
+            eventDate: formState.eventDate,
+            startTime: formState.startTime,
+            teachingNameId:
+              formState.sourceKey !== sourceKeyForSecretaryTeachingEvent(sourceEvent)
+                ? sourceOptionForSave?.teachingNameId
+                : undefined,
+            globalSessionTypeId:
+              formState.sourceKey !== sourceKeyForSecretaryTeachingEvent(sourceEvent)
+                ? sourceOptionForSave?.globalSessionTypeId
+                : undefined,
+          })
+          : drawerMode === 'edit' && sourceEvent
+            ? await updateSecretaryTeachingEvent(sourceEvent.id, payload)
+            : await createSecretaryTeachingEvent(payload)
+
+      if (nameOptionsContextKeyRef.current !== requestedOptionsContextKey) {
+        return
+      }
 
       if (supportsEventListEndpoint) {
         const refreshed = await loadEvents()
+        if (nameOptionsContextKeyRef.current !== requestedOptionsContextKey) {
+          return
+        }
         if (refreshed.some((event) => event.id === savedEvent.id)) {
           setEvents(refreshed)
         } else {
@@ -707,6 +1054,9 @@ export const SecretaryTeachingSchedulePage = () => {
       setSelectedIds(new Set())
       closeDrawer()
     } catch (error) {
+      if (nameOptionsContextKeyRef.current !== requestedOptionsContextKey) {
+        return
+      }
       const message =
         error instanceof ApiRequestError
           ? normaliseApiError(error, 'create')
@@ -763,13 +1113,42 @@ export const SecretaryTeachingSchedulePage = () => {
               <p className="upload-validation-text">Select an active reporting period.</p>
             ) : null}
           </div>
+          <div className="secretary-programme-row">
+            {teachingNameProgrammesLoading ? (
+              <span className="inline-muted">Loading authorised Teaching Name programmes...</span>
+            ) : null}
+            {teachingNameProgrammesError ? (
+              <span className="upload-validation-text">{teachingNameProgrammesError}</span>
+            ) : null}
+            {!teachingNameProgrammesLoading && !teachingNameProgrammesError && teachingNameProgrammes.length === 1 ? (
+              <span className="scope-chip">Teaching Name programme: {teachingNameProgrammes[0]}</span>
+            ) : null}
+            {!teachingNameProgrammesLoading && !teachingNameProgrammesError && teachingNameProgrammes.length > 1 ? (
+              <label className="secretary-teaching-names-select">
+                <span>Teaching Name programme</span>
+                <select
+                  value={selectedTeachingNameProgrammeCode}
+                  onChange={(event) => setSelectedTeachingNameProgrammeCode(event.target.value)}
+                >
+                  {teachingNameProgrammes.map((programmeCode) => (
+                    <option key={programmeCode} value={programmeCode}>{programmeCode}</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            {!teachingNameProgrammesLoading && !teachingNameProgrammesError && teachingNameProgrammes.length === 0 ? (
+              <span className="inline-muted">No authorised Teaching Name pool is available. Global session types remain separate.</span>
+            ) : null}
+          </div>
         </div>
 
         <div className="secretary-action-cluster">
           <div className="secretary-scope-row">
             <span className="scope-chip">
               <IconCalendar size={12} />
-              Scoped to {frontendConfig.demoSecretaryScopeLabel}
+              {selectedTeachingNameProgrammeCode
+                ? `Teaching Name programme: ${selectedTeachingNameProgrammeCode}`
+                : `Scoped to ${frontendConfig.demoSecretaryScopeLabel}`}
             </span>
           </div>
           <div className="secretary-action-row">
@@ -888,6 +1267,7 @@ export const SecretaryTeachingSchedulePage = () => {
                   <th className="col-check" />
                   <th>Teaching Type</th>
                   <th>Name of Teaching</th>
+                  <th>Source programme</th>
                   <th>Date</th>
                   <th>Start Time</th>
                   <th>Duration</th>
@@ -900,16 +1280,16 @@ export const SecretaryTeachingSchedulePage = () => {
               <tbody>
                 {eventsLoading ? (
                   <tr>
-                    <td colSpan={10}>Loading teaching events...</td>
+                    <td colSpan={11}>Loading teaching events...</td>
                   </tr>
                 ) : visibleEvents.length === 0 ? (
                   <tr>
-                    <td colSpan={10}>No teaching events yet.</td>
+                    <td colSpan={11}>No teaching events yet.</td>
                   </tr>
                 ) : (
                   visibleEvents.map((event) => {
                     const selected = selectedIds.has(event.id)
-                    const teachingType = event.sessionTypeName ?? teachingTypeByName.get(event.teachingName) ?? '-'
+                    const teachingType = event.sessionTypeName ?? '-'
                     return (
                       <tr
                         key={event.id}
@@ -929,9 +1309,10 @@ export const SecretaryTeachingSchedulePage = () => {
                           <span className="secretary-type-pill">{teachingType}</span>
                         </td>
                         <td className="secretary-teaching-name">{event.teachingName}</td>
+                        <td className="mono">{sourceProgrammeDisplay(event)}</td>
                         <td className="mono">{formatDate(event.eventDate)}</td>
                         <td className="mono">{formatTime(event.startTime)}</td>
-                        <td>{formatDuration(event.durationHours)}</td>
+                        <td>{formatStaffEventDuration(event)}</td>
                         <td>
                           <span
                             className={`status-badge ${
@@ -961,9 +1342,10 @@ export const SecretaryTeachingSchedulePage = () => {
           ) : (
             visibleEvents.map((event) => {
               const selected = selectedIds.has(event.id)
-              const teachingType = event.sessionTypeName ?? teachingTypeByName.get(event.teachingName) ?? '-'
+              const teachingType = event.sessionTypeName ?? '-'
               const postingLabel = event.postingCode || frontendConfig.demoSecretaryScopeLabel
               const sourceLabel = event.isAdhoc ? 'Ad-hoc' : 'Scheduled'
+              const sourceProgrammeLabel = sourceProgrammeDisplay(event)
 
               return (
                 <article
@@ -988,13 +1370,13 @@ export const SecretaryTeachingSchedulePage = () => {
                   <span className="secretary-event-card-meta">
                     <span className="secretary-event-card-line mono">
                       {formatCompactDate(event.eventDate)} · {formatTime(event.startTime)} ·{' '}
-                      {formatDuration(event.durationHours)}
+                      {formatStaffEventDuration(event)}
                     </span>
                     {teachingType !== '-' ? (
                       <span className="secretary-event-card-line safe-wrap">{teachingType}</span>
                     ) : null}
                     <span className="secretary-event-card-line">
-                      {postingLabel} · {sourceLabel}
+                      {postingLabel} · {sourceLabel} · Source {sourceProgrammeLabel}
                       {' | '}
                       {teachingEventCreatedByDisplay(event.createdByRole)}
                       {event.hasAttendance ? ' · Attendance submitted' : ''}
@@ -1047,15 +1429,15 @@ export const SecretaryTeachingSchedulePage = () => {
                 disabled={
                   submitState === 'submitting' ||
                   !selectedPeriod ||
-                  !canAddTeaching ||
+                  !canSubmitTeaching ||
                   !!selectedPeriodDateError ||
                   (drawerMode === 'edit' && (!sourceEvent || sourceEvent.hasAttendance))
                 }
                 title={
                   !selectedPeriod
                     ? 'Select an active reporting period before creating a teaching event.'
-                    : !canAddTeaching
-                      ? addTeachingTitle
+                    : !canSubmitTeaching
+                      ? disabledSubmitTitle
                       : selectedPeriodDateError
                         ? 'Event date must be within the selected reporting period.'
                         : drawerMode === 'edit' && sourceEvent?.hasAttendance
@@ -1077,41 +1459,88 @@ export const SecretaryTeachingSchedulePage = () => {
         }
       >
         <div className="secretary-form-grid">
+          {sourceEvent?.sourceProgrammeCode ? (
+            <div className="secretary-teaching-names-form-context" aria-label="Event source programme">
+              Source programme: {sourceEvent.sourceProgrammeCode}
+            </div>
+          ) : null}
           <label>
-            Teaching name
-            {nameOptionsState === 'ready' ? (
+            Name of Teaching
+            {nameOptionsState === 'ready' || retainedEventSourceOption ? (
               <select
-                value={formState.teachingName}
+                value={formState.sourceKey}
                 onChange={(event) =>
                   setFormState((previous) => ({
                     ...previous,
-                    teachingName: event.target.value,
+                    sourceKey: event.target.value,
                   }))
                 }
               >
-                <option value="">Select teaching name</option>
-                {nameOptions.map((option) => (
-                  <option key={option.keyword} value={option.keyword}>
+                <option value="">Select Name of Teaching</option>
+                {drawerSourceOptions.map((option) => (
+                  <option key={option.sourceKey} value={option.sourceKey}>
                     {option.keyword}
+                    {option.visibilityScope === 'programme_private'
+                      ? ' (PC-created)'
+                      : ''}
+                    {option.sourceKey === retainedInactiveGlobalOption?.sourceKey
+                      ? ' (current inactive global source)'
+                      : option.sourceKey === retainedPoolSourceOption?.sourceKey
+                        ? ' (current event source)'
+                      : ''}
                   </option>
                 ))}
               </select>
             ) : (
               <>
                 <input type="text" value={nameOptionsUnavailableMessage} readOnly disabled />
-                <small>Teaching names must come from the approved catalogue or global session types.</small>
+                <small>Names of Teaching must come from the approved Teaching Name pool or global session types.</small>
               </>
             )}
-            {formErrors.teachingName ? (
-              <small className="upload-validation-text">{formErrors.teachingName}</small>
+            {formErrors.sourceKey ? (
+              <small className="upload-validation-text">{formErrors.sourceKey}</small>
+            ) : null}
+            {poolSourceRequiresReselection ? (
+              <small className="upload-validation-text" role="alert">{sourceReselectionMessage}</small>
             ) : null}
             {nameOptionsError ? <small className="upload-validation-text">{nameOptionsError}</small> : null}
             {nameOptionsState === 'empty' ? (
               <small className="inline-muted">
-                No teaching-name options were returned for this posting and reporting period.
+                No teaching-name options were returned for this programme and reporting period.
               </small>
             ) : null}
           </label>
+
+          {selectedPoolHasNoMappedDurations ? (
+            <div className="inline-callout callout-neutral" role="status">
+              This Teaching Name has not been mapped by the Programme PC. This event will use a temporary one-hour duration. Once mapped, the system will automatically update its duration and end time.
+            </div>
+          ) : selectedPoolNeedsRYearBreakdown ? (
+            <div className="secretary-toggle-block" aria-live="polite">
+              <span className="secretary-toggle-label">
+                {selectedSourceOption?.durationVaries ? 'Duration varies by programme and R-year' : 'Duration by programme and R-year'}
+              </span>
+              {selectedPoolRYearDurations.map((timing) => (
+                <strong key={`${timing.programmeCode ?? 'programme'}:${timing.rYear}`}>
+                  {timing.programmeCode ? `${timing.programmeCode} · ` : ''}{timing.rYear}: {formatDuration(timing.durationHours)}
+                  {timing.isMapped ? '' : ' (temporary until mapped)'}
+                </strong>
+              ))}
+              <small>
+                Staff scheduling uses the longest duration across admitted programmes. Each native resident receives the duration mapped by their own programme for their event-date R-year.
+              </small>
+            </div>
+          ) : selectedSourceOption ? (
+            <div className="secretary-toggle-block" aria-live="polite">
+              <span className="secretary-toggle-label">Duration</span>
+              <strong>
+                {selectedSourceOption.globalSessionTypeId
+                  ? `${formatDuration(selectedSourceOption.durationHours)} (global source)`
+                  : `${formatDuration(selectedSourceOption.durationHours)} (TTF mapping)`}
+              </strong>
+              <small>End time is calculated by the server.</small>
+            </div>
+          ) : null}
 
           <div className="secretary-form-row">
             <label>
@@ -1153,41 +1582,89 @@ export const SecretaryTeachingSchedulePage = () => {
                 ))}
               </select>
               {formErrors.startTime ? <small className="upload-validation-text">{formErrors.startTime}</small> : null}
+              {!formErrors.startTime && selectedPoolStartTimeError ? (
+                <small className="upload-validation-text">{selectedPoolStartTimeError}</small>
+              ) : null}
             </label>
           </div>
 
-          <div className="secretary-toggle-block">
-            <span className="secretary-toggle-label">CME points awarded</span>
-            <div className="secretary-yes-no">
-              <button
-                type="button"
-                className={!formState.cmePointsAwarded ? 'is-active' : ''}
-                onClick={() =>
-                  setFormState((previous) => ({
-                    ...previous,
-                    cmePointsAwarded: false,
-                    smcEventCode: '',
-                  }))
-                }
-              >
-                No
-              </button>
-              <button
-                type="button"
-                className={formState.cmePointsAwarded ? 'is-active' : ''}
-                onClick={() =>
-                  setFormState((previous) => ({
-                    ...previous,
-                    cmePointsAwarded: true,
-                  }))
-                }
-              >
-                Yes
-              </button>
+          {selectedPoolNeedsRYearBreakdown ? (
+            <div className="secretary-toggle-block" aria-live="polite">
+              <span className="secretary-toggle-label">End time by R-year</span>
+              {selectedPoolRYearDurations.map((timing) => (
+                <strong key={timing.rYear}>
+                  {timing.rYear}: {
+                    selectedPoolStartTimeError
+                      ? 'Select a valid start time'
+                      : serverComputedPoolEndTime(formState.startTime, timing.durationHours)
+                  }
+                </strong>
+              ))}
+              <small>
+                Staff schedule envelope ends at {
+                  selectedPoolStartTimeError
+                    ? 'a valid calculated time'
+                    : serverComputedPoolEndTime(
+                        formState.startTime,
+                        selectedSourceOption?.durationHours,
+                      )
+                }.
+              </small>
             </div>
-          </div>
+          ) : selectedSourceOption?.teachingNameId && selectedSourceOption.durationIsMapped ? (
+            <div className="secretary-toggle-block" aria-live="polite">
+              <span className="secretary-toggle-label">End time</span>
+              <strong>{selectedPoolEndTime ?? 'Select a valid start time'}</strong>
+              <small>Server-computed from the posting-specific TTF mapping.</small>
+            </div>
+          ) : null}
 
-          {formState.cmePointsAwarded ? (
+          {overlapWarningCount > 0 ? (
+            <div className="inline-callout callout-warning" role="status">
+              This time overlaps {overlapWarningCount} existing scheduled event{overlapWarningCount === 1 ? '' : 's'} within the staff scheduling envelope. Overlapping sessions are allowed. Residents will see eligible alternatives and should submit only the session they attended.
+            </div>
+          ) : null}
+
+          {drawerMode === 'duplicate' ? (
+            <div className="secretary-toggle-block">
+              <span className="secretary-toggle-label">CME details</span>
+              <strong>{sourceEvent?.cmePointsAwarded ? 'Copied from the original event' : 'No CME points on the original event'}</strong>
+              <small>Duplicate requests preserve the server-authorised original event details.</small>
+            </div>
+          ) : (
+            <div className="secretary-toggle-block">
+              <span className="secretary-toggle-label">CME points awarded</span>
+              <div className="secretary-yes-no">
+                <button
+                  type="button"
+                  className={!formState.cmePointsAwarded ? 'is-active' : ''}
+                  onClick={() =>
+                    setFormState((previous) => ({
+                      ...previous,
+                      cmePointsAwarded: false,
+                      smcEventCode: '',
+                    }))
+                  }
+                >
+                  No
+                </button>
+                <button
+                  type="button"
+                  className={formState.cmePointsAwarded ? 'is-active' : ''}
+                  onClick={() =>
+                    setFormState((previous) => ({
+                      ...previous,
+                      cmePointsAwarded: true,
+                    }))
+                  }
+                >
+                  Yes
+                </button>
+              </div>
+            </div>
+          )}
+
+          {drawerMode !== 'duplicate' && formState.cmePointsAwarded ? (
             <label>
               SMC event code (optional)
               <input

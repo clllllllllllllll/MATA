@@ -26,7 +26,22 @@ from app.config import Settings
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
 VERSIONS_DIR = BACKEND_ROOT / "alembic" / "versions"
-H_E_DISPOSABLE_DATABASE_NAME = "mata_phase5b_final_security_review"
+DEFAULT_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_e2b2_verify"
+PHASE_R_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_r_verify"
+PHASE_K_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_k_verify"
+PHASE_L_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_l_verify"
+H_E_DISPOSABLE_DATABASE_NAME = os.environ.get(
+    "MATA_RLS_DISPOSABLE_DATABASE_NAME",
+    DEFAULT_DISPOSABLE_DATABASE_NAME,
+)
+_ALLOWED_DISPOSABLE_DATABASE_NAMES = frozenset(
+    {
+        DEFAULT_DISPOSABLE_DATABASE_NAME,
+        PHASE_R_DISPOSABLE_DATABASE_NAME,
+        PHASE_K_DISPOSABLE_DATABASE_NAME,
+        PHASE_L_DISPOSABLE_DATABASE_NAME,
+    }
+)
 ADHOC_DEFINER_ROLE = "mata_adhoc_attendance_definer"
 ADHOC_HELPER_SIGNATURE = (
     "mata_rls.create_adhoc_attendance("
@@ -39,6 +54,7 @@ _SYNC_POSTGRES_DRIVERS = frozenset(
 )
 _MUTATION_EXCLUSIVITY_ATTEMPTS = 20
 _MUTATION_EXCLUSIVITY_INTERVAL_SECONDS = 0.1
+HISTORICAL_MIGRATION_CEILING_REVISION = "20260812_000039"
 
 EXPECTED_POSTING_CODE_ROWS = (
     ("752081a5-51ce-5d5a-8049-b77f1a98a160", "NSCDermat"),
@@ -170,6 +186,7 @@ def _assert_local_postgres_source(
     if (
         url.drivername not in _SYNC_POSTGRES_DRIVERS
         or (url.host or "").casefold() not in _LOCAL_POSTGRES_HOSTS
+        or H_E_DISPOSABLE_DATABASE_NAME not in _ALLOWED_DISPOSABLE_DATABASE_NAMES
         or database != H_E_DISPOSABLE_DATABASE_NAME
         or not url.username
         or bool(url.query)
@@ -250,7 +267,8 @@ def _assert_h_e_target_ready(
         if revisions != [repository_head]:
             pytest.fail(
                 "H-E lifecycle tests require the exact named disposable database "
-                "to start at the single Alembic repository head",
+                "to start at the single Alembic repository head "
+                f"(observed={revisions!r}; expected={repository_head!r})",
                 pytrace=False,
             )
 
@@ -454,7 +472,7 @@ def clean_migration_database(
     settings = Settings(_env_file=None)
     source_url = make_url(settings.sync_database_url)
     _assert_local_postgres_source(source_url)
-    repository_head = _repository_head_revision()
+    _repository_head_revision()
     target_engine = create_engine(source_url, poolclass=NullPool)
     harness = MigrationHarness(
         database_name=H_E_DISPOSABLE_DATABASE_NAME,
@@ -466,7 +484,7 @@ def clean_migration_database(
     try:
         _assert_h_e_target_ready(
             target_engine,
-            repository_head=repository_head,
+            repository_head=HISTORICAL_MIGRATION_CEILING_REVISION,
         )
         with target_engine.connect() as connection:
             identity = _h_e_database_identity(connection)
@@ -490,7 +508,10 @@ def clean_migration_database(
         try:
             if mutation_authorized:
                 reset_result = harness.alembic("downgrade", "base")
-                restore_result = harness.alembic("upgrade", "head")
+                restore_result = harness.alembic(
+                    "upgrade",
+                    HISTORICAL_MIGRATION_CEILING_REVISION,
+                )
                 assert reset_result.returncode == 0, (
                     reset_result.stdout + reset_result.stderr
                 )
@@ -499,7 +520,7 @@ def clean_migration_database(
                 )
                 _assert_h_e_target_ready(
                     target_engine,
-                    repository_head=repository_head,
+                    repository_head=HISTORICAL_MIGRATION_CEILING_REVISION,
                 )
         finally:
             target_engine.dispose()

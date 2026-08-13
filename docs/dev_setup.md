@@ -66,8 +66,8 @@ python backend/scripts/smoke_upload_and_view.py
 ```
 
 This smoke flow verifies:
-- backend upload endpoints for Academic Calendar / Public Holidays, RDB, TTF (DR + GRM), and FormF1
-- persisted upload outputs are readable from admin view endpoints (`residents`, `resident_postings`, `posting_codes`, `session_types`, `teaching_targets`, `teaching_name_catalogue`, `form_f1_records`, `public_holidays`, `academic_month_boundaries`, `upload_logs`)
+- backend upload endpoints for Academic Calendar / Public Holidays, RDB, final A-J TTF, and FormF1
+- persisted upload outputs are readable from admin view endpoints (`residents`, `resident_postings`, `posting_codes`, `session_types`, `teaching_targets`, `form_f1_records`, `public_holidays`, `academic_month_boundaries`, `upload_logs`)
 
 ## 7. Run Phase 5A native resident flow smoke verification
 
@@ -111,30 +111,30 @@ python -B -m tests.run_rls_restricted_pytest -q --tb=short -p no:cacheprovider t
 
 Never substitute `mata_db`, the earlier H-D/H-E database, or a remote target.
 
-For the final cumulative security contract, the current restricted harness is
-pinned to exactly `mata_phase5b_final_security_review` at head
-`20260728_000028`. Both database
-URLs must name that local database in a fresh process; the runner derives
-separate temporary runtime/auth URLs and removes its `mata_test_*` roles:
+For Phase R local verification, use only the dedicated
+`mata_evolved_ttf_r_verify` runner at head `20260812_000039`. Its explicit
+owner and maintenance URLs must name localhost and the runner verifies the
+exact target, authorized owner (`mata_phase_r_owner`), and port (`5432`) before
+it recreates the disposable database. It derives separate temporary
+`mata_phase_r_runtime_*`/`mata_phase_r_auth_*` URLs and removes those generated
+roles; test partitions also remove any `mata_test_*` roles they create:
 
 ```powershell
-Set-Item -Path Env:SYNC_DATABASE_URL -Value "postgresql://<local-owner>:<local-password>@localhost:5432/mata_phase5b_final_security_review"
-Set-Item -Path Env:DATABASE_URL -Value "postgresql+asyncpg://<local-owner>:<local-password>@localhost:5432/mata_phase5b_final_security_review"
 cd backend
-python -B -m alembic current
-python -B -m pytest -q --tb=short -p no:cacheprovider --strict-markers -m migration_mutation tests
-python -B -m alembic current --check-heads
-python -B -m tests.attest_migration_database
-python -B -m tests.run_rls_restricted_pytest -q --tb=short -p no:cacheprovider --strict-markers -m "not migration_mutation" tests
+python -B -m tests.run_phase_r_postgres_verify -q tests/test_phase_r_pc_event_scope_migration_postgres.py
+python -B -m tests.run_phase_r_postgres_verify -q tests/test_rls_foundation_postgres.py tests/test_rls_policy_postgres.py tests/test_security_postgres_integration.py
 ```
 
-Print and assert the exact database name and local host before every mutation.
-Do not drop the database without separate authorization.
+The runner requires its two explicit URL environment variables. For a local
+operator they may be sourced from `backend/.env`; never use the repository-root
+`.env`. It rejects a remote, non-localhost, wrong-target, or wrong-owner URL;
+it never uses the generic cumulative-harness target. Do not drop the database
+outside this runner without separate authorization.
 
-GitHub backend jobs start their PostgreSQL service on the maintenance database
-`postgres`. The shared local CI action then creates and attests exactly
-`mata_phase5b_final_security_review`, exports URLs that all name that local
-database, and supplies only synthetic CI session/rate-limit secrets. The
+GitHub backend jobs retain their separate PostgreSQL service and cumulative
+restricted-harness target. The shared local CI action creates and attests that
+CI-only target, exports URLs that all name it, and supplies only synthetic CI
+session/rate-limit secrets. The
 `migration_mutation` partition runs first and serially through the direct owner
 while its guards require zero competing sessions; CI then rechecks the head.
 Before database reuse, a bounded fail-closed attestation proves the exact head,
@@ -178,9 +178,9 @@ Supabase project reference. Users who used a pre-cookie deployment must clear
 site data once after the corrected release, then open a new tab. This
 operational cleanup is not a substitute for the cookie-only build.
 
-The exact read-only Vercel inspection, deployment configuration, and
+The historical read-only Vercel inspection, deployment configuration, and
 post-deployment browser checklist is
-`docs/deployed_auth_transport_uat.md`. Do not treat local gates as deployed
+`docs/archive/deployed_auth_transport_uat.md`. Do not treat local gates as deployed
 evidence or deploy without separate authorization.
 
 The current security contract is `docs/security.md`. Historical

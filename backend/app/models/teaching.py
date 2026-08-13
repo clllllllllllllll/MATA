@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date, datetime, time
 from decimal import Decimal
 from uuid import UUID
 
@@ -8,8 +8,11 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Date,
+    DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -45,6 +48,14 @@ class TeachingTarget(UUIDTimestampMixin, Base):
             "posting_code",
             "session_type_id",
             name="uq_teaching_targets_scope",
+        ),
+        UniqueConstraint(
+            "id",
+            "reporting_period_id",
+            "programme_code",
+            "posting_code",
+            "r_year",
+            name="uq_teaching_targets_id_mapping_scope",
         ),
         Index(
             "idx_teaching_targets_lookup",
@@ -94,50 +105,66 @@ class TeachingTarget(UUIDTimestampMixin, Base):
         server_default=text("false"),
     )
     tag: Mapped[str | None] = mapped_column(String(10), nullable=True)
-    details_of_training: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-class TeachingNameCatalogue(UUIDTimestampMixin, Base):
-    __tablename__ = "teaching_name_catalogue"
+class TeachingName(UUIDTimestampMixin, Base):
+    __tablename__ = "teaching_names"
     __table_args__ = (
         UniqueConstraint(
-            "keyword",
-            "posting_code",
-            "programme_code",
-            "r_year",
-            "reporting_period_id",
-            name="uq_teaching_name_catalogue_resolution",
-        ),
-        Index(
-            "idx_teaching_name_catalogue_resolution",
             "reporting_period_id",
             "programme_code",
-            "posting_code",
-            "r_year",
-            "keyword",
+            "normalized_name",
+            name="uq_teaching_names_pool_normalized_name",
         ),
-        Index(
-            "idx_teaching_name_catalogue_session_type",
-            "session_type_id",
-        ),
-        Index(
-            "idx_teaching_name_catalogue_tracked",
+        UniqueConstraint(
+            "id",
             "reporting_period_id",
             "programme_code",
-            "posting_code",
-            "r_year",
-            "is_tracked",
+            name="uq_teaching_names_id_pool",
+        ),
+        UniqueConstraint(
+            "id",
+            "reporting_period_id",
+            name="uq_teaching_names_id_period",
+        ),
+        CheckConstraint(
+            "btrim(display_name) <> ''",
+            name="ck_teaching_names_display_name_nonblank",
+        ),
+        CheckConstraint(
+            "btrim(normalized_name) <> ''",
+            name="ck_teaching_names_normalized_name_nonblank",
+        ),
+        CheckConstraint(
+            "revision > 0",
+            name="ck_teaching_names_revision_positive",
+        ),
+        CheckConstraint(
+            "(created_by_role = 'secretary' "
+            "AND visibility_scope = 'department_shared' "
+            "AND origin_posting_code IS NOT NULL) OR "
+            "(created_by_role = 'programme_pc' "
+            "AND visibility_scope = 'programme_private' "
+            "AND origin_posting_code IS NULL)",
+            name="ck_teaching_names_provenance",
+        ),
+        Index(
+            "idx_teaching_names_active_pool",
+            "reporting_period_id",
+            "programme_code",
+            "display_name",
+            postgresql_where=text("is_active = true"),
+        ),
+        Index(
+            "idx_teaching_names_normalized_lookup",
+            "reporting_period_id",
+            "programme_code",
+            "normalized_name",
         ),
     )
 
-    keyword: Mapped[str] = mapped_column(String(200), nullable=False)
-    session_type_id: Mapped[UUID] = mapped_column(
-        ForeignKey("session_types.id"),
-        nullable=False,
-    )
-    posting_code: Mapped[str] = mapped_column(
-        String(50),
-        ForeignKey("posting_codes.code"),
+    reporting_period_id: Mapped[UUID] = mapped_column(
+        ForeignKey("reporting_periods.id"),
         nullable=False,
     )
     programme_code: Mapped[str] = mapped_column(
@@ -145,16 +172,182 @@ class TeachingNameCatalogue(UUIDTimestampMixin, Base):
         ForeignKey("programmes.code"),
         nullable=False,
     )
-    r_year: Mapped[str] = mapped_column(String(10), nullable=False)
-    reporting_period_id: Mapped[UUID] = mapped_column(
-        ForeignKey("reporting_periods.id"),
-        nullable=False,
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_by_role: Mapped[str] = mapped_column(String(20), nullable=False)
+    visibility_scope: Mapped[str] = mapped_column(String(30), nullable=False)
+    origin_posting_code: Mapped[str | None] = mapped_column(
+        String(50),
+        ForeignKey("posting_codes.code"),
+        nullable=True,
     )
-    duration_hours: Mapped[Decimal] = mapped_column(Numeric(4, 2), nullable=False)
-    is_tracked: Mapped[bool] = mapped_column(
+    is_active: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
         server_default=text("true"),
+    )
+    revision: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("1"),
+    )
+    created_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id"),
+        nullable=True,
+    )
+    updated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id"),
+        nullable=True,
+    )
+    deactivated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id"),
+        nullable=True,
+    )
+    deactivated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+
+class TeachingNameProgrammeScope(UUIDTimestampMixin, Base):
+    __tablename__ = "teaching_name_programme_scopes"
+    __table_args__ = (
+        UniqueConstraint(
+            "teaching_name_id",
+            "programme_code",
+            name="uq_teaching_name_programme_scopes_identity",
+        ),
+        UniqueConstraint(
+            "teaching_name_id",
+            "reporting_period_id",
+            "programme_code",
+            name="uq_teaching_name_programme_scopes_mapping_scope",
+        ),
+        ForeignKeyConstraint(
+            ["teaching_name_id", "reporting_period_id"],
+            ["teaching_names.id", "teaching_names.reporting_period_id"],
+            name="fk_teaching_name_programme_scopes_name_period",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "admission_reason IN "
+            "('owner_programme', 'resident_host_posting', 'pc_private')",
+            name="ck_teaching_name_programme_scopes_reason",
+        ),
+        Index(
+            "idx_teaching_name_programme_scopes_programme_period",
+            "programme_code",
+            "reporting_period_id",
+            "teaching_name_id",
+        ),
+    )
+
+    teaching_name_id: Mapped[UUID] = mapped_column(nullable=False)
+    reporting_period_id: Mapped[UUID] = mapped_column(nullable=False)
+    programme_code: Mapped[str] = mapped_column(
+        String(20),
+        ForeignKey("programmes.code"),
+        nullable=False,
+    )
+    admission_reason: Mapped[str] = mapped_column(String(30), nullable=False)
+    admitted_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id"),
+        nullable=True,
+    )
+
+
+class TeachingNameMapping(UUIDTimestampMixin, Base):
+    __tablename__ = "teaching_name_mappings"
+    __table_args__ = (
+        UniqueConstraint(
+            "teaching_name_id",
+            "programme_code",
+            "posting_code",
+            "r_year",
+            name="uq_teaching_name_mappings_identity",
+        ),
+        ForeignKeyConstraint(
+            ["teaching_name_id", "reporting_period_id", "programme_code"],
+            [
+                "teaching_name_programme_scopes.teaching_name_id",
+                "teaching_name_programme_scopes.reporting_period_id",
+                "teaching_name_programme_scopes.programme_code",
+            ],
+            name="fk_teaching_name_mappings_programme_scope",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            [
+                "teaching_target_id",
+                "reporting_period_id",
+                "programme_code",
+                "posting_code",
+                "r_year",
+            ],
+            [
+                "teaching_targets.id",
+                "teaching_targets.reporting_period_id",
+                "teaching_targets.programme_code",
+                "teaching_targets.posting_code",
+                "teaching_targets.r_year",
+            ],
+            name="fk_teaching_name_mappings_target_scope",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "revision > 0",
+            name="ck_teaching_name_mappings_revision_positive",
+        ),
+        Index(
+            "idx_teaching_name_mappings_pending_scope",
+            "reporting_period_id",
+            "programme_code",
+            "posting_code",
+            "r_year",
+            postgresql_where=text("teaching_target_id IS NULL"),
+        ),
+        Index(
+            "idx_teaching_name_mappings_mapped_scope",
+            "reporting_period_id",
+            "programme_code",
+            "posting_code",
+            "r_year",
+            "teaching_target_id",
+            postgresql_where=text("teaching_target_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_teaching_name_mappings_target_reverse",
+            "teaching_target_id",
+            postgresql_where=text("teaching_target_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_teaching_name_mappings_name",
+            "teaching_name_id",
+        ),
+    )
+
+    teaching_name_id: Mapped[UUID] = mapped_column(nullable=False)
+    reporting_period_id: Mapped[UUID] = mapped_column(nullable=False)
+    programme_code: Mapped[str] = mapped_column(String(20), nullable=False)
+    posting_code: Mapped[str] = mapped_column(
+        String(50),
+        ForeignKey("posting_codes.code"),
+        nullable=False,
+    )
+    r_year: Mapped[str] = mapped_column(String(10), nullable=False)
+    teaching_target_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    revision: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("1"),
+    )
+    created_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id"),
+        nullable=True,
+    )
+    updated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id"),
+        nullable=True,
     )
 
 
@@ -209,6 +402,36 @@ class TeachingEvent(UUIDTimestampMixin, Base):
             ")",
             name="ck_teaching_events_adhoc_creator_family",
         ),
+        CheckConstraint(
+            "NOT (teaching_name_id IS NOT NULL "
+            "AND global_session_type_id IS NOT NULL)",
+            name="ck_teaching_events_source_identity_exclusive",
+        ),
+        CheckConstraint(
+            "(source_programme_code IS NULL) "
+            "= (source_reporting_period_id IS NULL)",
+            name="ck_teaching_events_source_scope_pair",
+        ),
+        CheckConstraint(
+            "teaching_name_id IS NULL "
+            "OR (source_programme_code IS NOT NULL "
+            "AND source_reporting_period_id IS NOT NULL)",
+            name="ck_teaching_events_pool_source_scope_required",
+        ),
+        CheckConstraint(
+            "NOT is_adhoc OR ("
+            "teaching_name_id IS NULL "
+            "AND global_session_type_id IS NULL "
+            "AND source_programme_code IS NULL "
+            "AND source_reporting_period_id IS NULL)",
+            name="ck_teaching_events_adhoc_has_no_scheduled_source",
+        ),
+        CheckConstraint(
+            "global_session_type_id IS NULL "
+            "OR (source_programme_code IS NULL "
+            "AND source_reporting_period_id IS NULL)",
+            name="ck_teaching_events_global_has_no_pool_scope",
+        ),
         Index(
             "idx_teaching_events_posting_date",
             "posting_code",
@@ -246,6 +469,22 @@ class TeachingEvent(UUIDTimestampMixin, Base):
             "created_by_external_resident_id",
             postgresql_where=text("created_by_external_resident_id IS NOT NULL"),
         ),
+        Index(
+            "idx_teaching_events_teaching_name",
+            "teaching_name_id",
+            postgresql_where=text("teaching_name_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_teaching_events_global_session_type",
+            "global_session_type_id",
+            postgresql_where=text("global_session_type_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_teaching_events_source_scope",
+            "source_reporting_period_id",
+            "source_programme_code",
+            postgresql_where=text("source_reporting_period_id IS NOT NULL"),
+        ),
     )
 
     posting_code: Mapped[str] = mapped_column(
@@ -266,6 +505,23 @@ class TeachingEvent(UUIDTimestampMixin, Base):
     duration_hours: Mapped[Decimal | None] = mapped_column(Numeric(4, 2), nullable=True)
     session_type_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("session_types.id"),
+        nullable=True,
+    )
+    teaching_name_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("teaching_names.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    global_session_type_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("global_session_types.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    source_programme_code: Mapped[str | None] = mapped_column(
+        String(20),
+        ForeignKey("programmes.code", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    source_reporting_period_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("reporting_periods.id", ondelete="RESTRICT"),
         nullable=True,
     )
     series_id: Mapped[UUID | None] = mapped_column(

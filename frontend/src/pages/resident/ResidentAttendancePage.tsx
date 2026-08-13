@@ -259,7 +259,12 @@ export const ResidentAttendancePage = () => {
                     const canDelete = row.status.toLowerCase() === 'submitted'
                     return (
                       <tr key={row.attendanceId} className={row.status.toLowerCase() === 'removed' ? 'resident-row-removed' : ''}>
-                        <td className="resident-teaching-name">{row.teachingName}</td>
+                        <td className="resident-teaching-name">
+                          {row.teachingName}
+                          {row.submittedDuringLoa ? (
+                            <span className="inline-muted">During LOA{row.loaType ? ` - ${row.loaType}` : ''}</span>
+                          ) : null}
+                        </td>
                         <td className="mono">{formatDate(row.eventDate)}</td>
                         <td className="mono">
                           {formatTime(row.startTime)} - {formatTime(row.endTime)}
@@ -315,6 +320,9 @@ export const ResidentAttendancePage = () => {
                           <span className="mono">{row.postingCode}</span> | {row.source === 'adhoc' ? 'Ad-hoc' : 'Scheduled'}
                         </span>
                         {row.detailsOfSession ? <span>{row.detailsOfSession}</span> : null}
+                        {row.submittedDuringLoa ? (
+                          <span>During LOA{row.loaType ? ` - ${row.loaType}` : ''}</span>
+                        ) : null}
                       </div>
                     </div>
                     <div className="resident-history-side">

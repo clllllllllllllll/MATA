@@ -1,7 +1,7 @@
 # Security Contract
 
 Status: current repository security source of truth. This document describes
-the implemented local contract at Alembic revision `20260728_000028`. Local
+the implemented local contract at Alembic revision `20260813_000042`. Local
 source, test, and disposable-database evidence is not proof of a deployed
 Vercel or Supabase environment.
 
@@ -166,6 +166,162 @@ and subject verifier before any resident identity is used.
 Resident authentication assurance remains separately governed product debt.
 This security contract does not invent or imply an unapproved second factor.
 
+### Teaching Name lifecycle (Phase C), Phase D mapping, E1 reconciliation, and Phase F/G event identity/runtime
+
+Revisions `20260802_000029` through `20260803_000031` establish the reviewed
+database boundary and activate the shared Teaching Name lifecycle routes.
+Revision `20260803_000032` adds the narrow reconciliation required inside the
+existing TTF upload transaction. Phase D adds a guarded application mapping API
+on that boundary only; it does not add a parser change, event, resident, UI, or
+  compliance flow. The legacy A–K catalogue authorization path was retained
+  through Phase D; revision `20260804_000034` removed it from current
+  Resident/Non-NHG runtime authorization, and revision `20260805_000036`
+  physically removes the obsolete catalogue and target-details structures.
+
+Revision `20260804_000033` adds the runtime-only
+`mata_rls.can_insert_scheduled_event_source(text,text,uuid,uuid,date,boolean,text)`
+and `mata_rls.can_manage_scheduled_event_source(text,uuid,uuid,date,boolean)`
+helpers and replaces the scheduled branches of the `teaching_events` insert and
+update policies. They reject ad-hoc rows and missing/both source IDs, verify an
+active pool name in its event-date reporting period or an active global type,
+and enforce Master Admin, in-scope Programme PC, or explicitly capable
+Secretary authority without a display-text or catalogue lookup. The update
+helper validates the current editor's source authority separately from the
+row's immutable creator provenance, so already-authorized PC/Secretary
+cross-owner edits retain their existing boundary. The existing ad-hoc insert
+helper and all Resident/Non-NHG runtime policies remain unchanged by this
+revision.
+
+Revision `20260804_000034` removes the catalogue/target runtime dependency from
+Resident and Non-NHG scheduled-event selection, attendance authorization, and
+ad-hoc creation. The RLS selection and attendance helpers use explicit
+`teaching_name_id` plus exact source reporting-period/programme scope, or an
+explicit `global_session_type_id`; both-null rows retain only deterministic
+persisted legacy evidence and are never classified from display text. The
+runtime-only `mata_rls.scheduled_event_source_scope(uuid)` helper exposes that
+source scope only after the caller is already authorized for the event, so the
+application does not receive direct resident access to Teaching Name rows. The
+atomic ad-hoc helper accepts only the fixed one-hour
+`Department/Programme Teaching [1h]` record and does not query teaching targets
+or the retired catalogue.
+
+Revision `20260804_000035` persists immutable pool-source programme and period
+snapshots, safely backfills only explicit Teaching Name rows, and preserves those
+snapshots after guarded source deletion. The scheduled-event policies now call a
+row-local selection helper, allowing restricted `INSERT ... RETURNING` without
+re-querying the new tuple. Insert/manage helpers require exact Teaching Name,
+snapshot, event-owner, programme, period, posting, and Secretary-capability
+evidence. Historical selection does not require a referenced global type to
+remain active; activity still gates new choices and inserts. The source-scope
+helper returns the persisted `varchar(20)` programme contract, and external
+attendance requires exact schedule/source programme equality. Native and
+external attendance triggers plus the atomic ad-hoc helper enforce full-datetime
+overlap under per-subject/date locks, including wrapped midnight intervals.
+Every added helper has fixed `pg_catalog, pg_temp` search path, reviewed owner,
+runtime-only execution, and no `PUBLIC` or browser/auth-helper execution.
+
+The B1/Phase C RLS/grant boundary is intentionally narrow:
+
+- Master Admin may read names and use only the guarded deletion route; ordinary
+  create, rename, deactivate, and reactivate routes return `403`.
+- A Programme PC may read and use the normal lifecycle only for current
+  programme scope. Phase D additionally permits an in-scope PC to assign,
+  change, or explicitly clear an existing mapping through the guarded route;
+  no request field can expand persisted scope.
+- A Department Secretary may read and mutate names only through the current
+  exact posting plus an active `secretary_programme_pools` row with explicit
+  `can_manage_teaching_names`; no authority is inferred from a first match or
+  ordinary event visibility. The B1 migration enables only the active
+  `TTSHGerMed`/`GERI` pilot pool.
+- A Master Admin may read mapping status for oversight but has no mapping DML
+  authority. A Secretary and resident have no mapping-management authority.
+
+The immutable Teaching Name pool trigger, private owner-only reconciliation and
+used-name-delete triggers, non-owner `NOBYPASSRLS` runtime role, explicit
+grants, browser-role revocations, migration assertions, and startup attestation
+inventory are part of this boundary. The runtime-only
+`mata_rls.lock_master_teaching_name_delete(uuid)` helper independently verifies
+the Master Admin context, returns no row data, and holds only the requested
+name's row lock before a used-name delete counts references. Mapping rows
+cascade with their name; event identity is `SET NULL`, so event snapshots and
+attendance remain. These database controls do not replace FastAPI authorization.
+The helper is used only by an RLS runtime session; the supported non-RLS runtime
+uses the ordinary service row lock and retains the same authorization, revision,
+force-confirmation, audit, and evidence-preservation rules.
+
+E1 adds only the runtime-only
+`mata_rls.reconcile_ttf_teaching_name_mappings(uuid,text,uuid[],text[],text[])`
+helper at revision `20260803_000032`. It independently verifies a signed Master
+Admin or in-scope Programme PC context, exact period/programme/target scope, and
+bounded reconciliation inputs before it can clear stale in-scope target links or
+create in-scope pending mappings. It does not widen ordinary mapping DML:
+Secretary and resident contexts remain denied, and the auth capability has no
+execute privilege.
+
+The lifecycle endpoints use the existing protected mutation boundary:
+
+- Authenticate through the opaque application session; reload current staff
+  role, active state, programme scope, Secretary posting, and explicit
+  Secretary-to-programme management capability from trusted database state.
+  Do not infer authority from native teaching-posting visibility, request
+  fields, browser state, or display strings.
+- Require the current CSRF synchronizer and exact approved Origin for every
+  unsafe mutation, apply the applicable persistent rate limit, validate all
+  scope/identity/revision fields server-side, and return controlled `403`,
+  `409`, or `422` without a partial write as appropriate.
+- Require revision fencing for rename, deactivate, reactivate, delete, and
+  Phase D mapping apply. A stale name or mapping revision returns `409`. A
+  mapped-row change with a nonzero count-only impact returns controlled `409`
+  until the PC retries with explicit confirmation; no confirmation token or
+  client-supplied scope fingerprint is accepted.
+- Write the domain mutation and audit record atomically. Invalidate only the
+  affected scoped event, attendance, mapping, and future compliance read caches
+  after commit. Failed, unauthorized, stale, or preview-fenced requests do not
+  invalidate caches or record a successful mutation.
+- A Master Admin deletion of a used name requires the exact `DELETE`
+  confirmation, nonblank reason, current revision, and force flag. It locks the
+  name and referenced events before it counts linked attendance, writes a
+  count-only audit response, and clears only the optional event identity. Do not expose raw audit values in browser
+  storage, URLs, logs, or error details.
+
+#### Phase V cross-posting and PC-private authorization
+
+Phase V must treat source-name ownership, programme admission, mapping
+authority, and event/submission visibility as separate predicates:
+
+- A Programme PC may read an external Secretary-created source name only when
+  a durable server-owned admission exists for one of the PC's current programme
+  scopes and the same reporting period.
+- Admission may be created only from actual RDB-backed `resident_postings`
+  evidence for a native Resident of that programme at the source Secretary's
+  posting in that reporting period. Request parameters, TTF rows, configured
+  rotation possibilities, Secretary capabilities, display text, and posting
+  prefixes cannot create admission.
+- Admission grants read access to the source identity and mapping DML only for
+  the PC's own programme. It grants no cross-programme source-name lifecycle
+  DML and no access to the source programme's targets.
+- A PC-created private name is readable only by PCs in its immutable owner
+  programme and the Department Secretary holding the exact native-programme
+  Teaching Name capability. It is denied to other PCs and external-posting
+  Secretaries even when their Residents or events share a posting.
+- Creator role, owner programme, source posting, visibility class, admission
+  reason, and mapping programme are server-owned. Unsafe requests cannot set or
+  widen them.
+- Period deactivation removes names and mappings from active workflows without
+  deleting RLS-protected history. Historical access continues to require the
+  existing explicit administrative/subject scope.
+
+RLS and runtime helper changes must validate the complete tuple rather than
+granting broader `SELECT` on Teaching Name or mapping tables. Cross-posting
+resolution must not expose the Resident row or MCR that established admission.
+Mapping mutations remain revision-fenced, audited, exact-target validated, and
+atomic. A same-text name in another source department never confers access.
+
+Phase C, Phase D, Phase F, and Phase G remain additive historical milestones.
+E2+B2 is the single destructive cutover: it removes the physical A–K parser,
+catalogue, and target-details path without backfilling workbook text or
+rewriting historical events, attendance, warning evidence, or audit evidence.
+
 ## 5. Opaque sessions, expiry, rotation, and logout
 
 The production cookie is host-only, named `__Host-mata_session`, `Secure`,
@@ -268,16 +424,20 @@ entities, and external references before `openpyxl` runs. Parser-specific
 structural and cell limits remain authoritative after preflight. Spreadsheet
 exports sanitize formula-leading cells.
 
-Upload business rows, upload evidence, warnings, and audit rows currently have
-separate transaction boundaries. Their unification is deferred because it
-requires a coordinated workflow redesign and failure-evidence decision.
+For a successful TTF upload, reconciled targets, Teaching Name mapping state,
+posting-group rows, upload evidence, relevant derived warnings, audit evidence,
+and the Data Revalidation outcome share one transaction. Scoped cache
+invalidation occurs only after that commit. Cache-invalidation failure is safely
+logged and cannot turn an already committed TTF upload or teaching-target
+correction into an error response. A validation-failed workbook writes no TTF
+business rows; bounded failure evidence may still be recorded.
 
 ## 9. PostgreSQL roles, RLS, grants, and helpers
 
-At revision `20260728_000028`:
+At current revision `20260813_000042`:
 
-- 34 application tables have RLS enabled;
-- 84 action policies target only `mata_app_runtime`;
+- 36 application tables have RLS enabled;
+- 90 action policies target only `mata_app_runtime`;
 - application policies do not target `PUBLIC`, `anon`, `authenticated`, or a
   service role;
 - application login roles are non-owner and `NOBYPASSRLS`;
@@ -286,6 +446,72 @@ At revision `20260728_000028`:
 - table, column, sequence, schema, and function access is explicitly
   allowlisted; and
 - browser/Data API and `PUBLIC` application-object privileges are revoked.
+
+Revision `20260805_000037` adds the runtime-only
+`mata_rls.resolve_native_teaching_target(uuid,uuid)` helper for the Phase H
+read-time classification seam. It has a fixed `pg_catalog, pg_temp` search path,
+no `PUBLIC`, browser, service, or auth-helper execution grant, and enforces
+an exact signed-context boundary before deriving any source, phase, mapping, or
+target evidence: only the native Resident for the requested resident, a scoped
+Programme PC, or an explicit Master may invoke it. Secretary and external
+resident contexts return no resolver row before the ordinary event-visibility
+check. It returns no resident PII and performs no writes.
+
+Revision `20260806_000038` replaces (without adding a policy or widening a
+grant) the two existing pool-event write helpers. For the scoped Programme-PC
+branch only, a pool-backed insert or edit requires an exact
+`teaching_name_mappings` row matching Teaching Name ID, source reporting
+period, source programme, and event posting. The helpers remain `STABLE`,
+`SECURITY DEFINER`, fixed to `pg_catalog, pg_temp`, executable only by
+`mata_app_runtime`, and revoked from `PUBLIC`, browser roles, and the auth
+helper. Pending mappings remain eligible. Master and Secretary branches retain
+their prior boundaries; Resident and cross-programme denials are unchanged.
+
+Revision `20260812_000039` adds the runtime-only, read-only
+`mata_rls.resolve_staff_pool_event_timings(uuid[],uuid,text,text)` helper.
+It lets an authorized Master/Programme PC, or a Secretary with the exact
+posting/programme Teaching Name capability, resolve mapping-derived staff
+timing without granting the Secretary direct access to
+`teaching_name_mappings`. The helper validates signed context and exact scope,
+has a fixed `pg_catalog, pg_temp` search path, and is revoked from `PUBLIC`,
+browser/service roles, and the authentication helper. Resident and external
+resident contexts return no rows.
+
+Revision `20260812_000040` adds the RLS-protected
+`teaching_name_programme_scopes` admission table and runtime-only reconciliation,
+cross-resident target-resolution, staff-timing, and write-only Secretary-event
+timing helpers. A host source becomes readable to a Programme PC only through a
+durable same-period admission derived from actual usable Resident postings.
+Mapping DML remains confined to the PC's own programme and exact target tuple;
+source lifecycle DML remains with the immutable source owner. PC-private names
+never receive a foreign admission. The helpers have fixed
+`pg_catalog, pg_temp` search paths and are revoked from `PUBLIC`, browser/service
+roles, and the authentication helper.
+
+Revision `20260813_000041` connects the protected event selector used by the
+Phase V cross-posting path to the `teaching_events` Resident SELECT policy and
+corrects the cross-programme resolver's declared PostgreSQL result types. It
+does not add a policy, grant, role, table, or browser-facing database surface;
+the host event still requires exact Resident posting, source admission, and
+native programme posting/R-year mapping evidence.
+
+Revision `20260813_000042` adds pure-LOA native teaching visibility, a narrow
+native-LOA ad-hoc creator, automatic event-date classification on native
+attendance inserts, and an admin-scoped reclassification helper used after RDB
+replacement/correction. Pure LOA never grants an inferred host posting: it is
+limited to the programme's configured native teaching posting. The runtime
+helpers validate signed resident/admin context, expose no resident lookup
+surface, use fixed `pg_catalog, pg_temp` search paths, and are revoked from
+`PUBLIC`, browser/service roles, and the authentication helper.
+
+Migration lifecycle CI is split at the intentional one-way boundary in
+revision `20260812_000040`. Historical downgrade/re-upgrade tests run only
+through revision `20260812_000039`; the resulting database is then upgraded
+forward to the current head. A separate lifecycle test may move between
+`20260812_000040`, `20260813_000041`, and `20260813_000042`, but never attempts
+to downgrade through `20260812_000040`. This preserves historical coverage,
+proves the supported forward path to head, and does not weaken the admission
+data-loss safeguard.
 
 `mata_app_runtime` and `mata_auth_internal` are stable `NOLOGIN`,
 `NOINHERIT`, `NOSUPERUSER`, `NOCREATEDB`, `NOCREATEROLE`,
@@ -359,6 +585,11 @@ part of the current application-role contract.
 Attendance creation, overlap checks, deletion, and ad-hoc creation use
 transaction-scoped advisory or row locks, uniqueness constraints, typed
 ownership, and one caller-owned transaction.
+
+Overlap authorization uses complete timestamps. End times less than or equal to
+start times fall on the next date, and locks cover every spanned date. Exact
+boundary contact is allowed. A concurrent loser rolls back without changing the
+earlier event or attendance.
 
 Resident-created ad-hoc events preserve immutable native/Non-NHG creator
 identity. The narrow creation helper derives the current subject from database
@@ -478,7 +709,7 @@ build.
 
 Backend CI starts PostgreSQL on its maintenance database, then a shared local
 workflow action creates and attests exactly
-`mata_phase5b_final_security_review`. The workflow owns that provisioning and
+`mata_evolved_ttf_pre_d_fix_verify`. The workflow owns that provisioning and
 applies the single Alembic head before tests. The `migration_mutation` cases
 run first in one serial direct-owner pytest process;
 their fail-closed fixtures require the exact local database, direct owner, and
@@ -546,7 +777,7 @@ catalogue checks without displaying connection values or credentials. That
 failed attempt remains historical evidence only. The corrected retry later
 reached `20260728_000028`, and the deployed catalogue and startup attestation
 were separately verified as recorded in
-`docs/deployed_auth_transport_uat.md`.
+`docs/archive/deployed_auth_transport_uat.md`.
 
 Security migrations may restore historically compatible but weaker behavior
 during downgrade. A generic `alembic downgrade -1` is not an online production
@@ -558,6 +789,22 @@ ownership revisions requires:
 3. coordinated application rollback;
 4. post-migration role/grant/policy/helper attestation; and
 5. forced reauthentication before traffic resumes.
+
+For the additive B1 Teaching Name foundation at revision `20260802_000029`,
+those generic drained-traffic controls are necessary but not sufficient. Its
+downgrade to `20260728_000028` is permitted only when all of the following are
+true before the migration starts:
+
+1. `teaching_names` and `teaching_name_mappings` are empty;
+2. every `teaching_events` row has both `teaching_name_id` and
+   `global_session_type_id` set to `NULL`; and
+3. no `secretary_programme_pools` row outside the approved
+   `TTSHGerMed`/`GERI` pilot has `can_manage_teaching_names` enabled.
+
+The B1 downgrade guard enforces these data-state prerequisites so that it can
+remove only additive objects without discarding future-state rows, references,
+or a non-pilot capability expansion. They supplement, rather than replace, the
+generic drained, coordinated rollback and attestation procedure above.
 
 The `pgcrypto` move to `public` and the pre-existing classification of
 `public.users` RLS are retained hardening. Downgrade does not move the
@@ -650,8 +897,9 @@ approved deployment record; archived Phase 5B verdicts and evidence rows are
 never edited to imply a later deployment result.
 
 No local test result should be relabelled as deployed evidence.
-Use `docs/deployed_auth_transport_uat.md` for the current bounded deployment
-configuration and verification record.
+Use `docs/archive/deployed_auth_transport_uat.md` as historical bounded
+deployment configuration and verification evidence; a future deployment needs
+its own approved current record.
 
 ## 18. Deferred security debt
 
@@ -659,7 +907,7 @@ configuration and verification record.
 |---|---|---|
 | Medium | Invalid session and CSRF failures occur before the current application route limiter. | Add a non-consuming RLS-safe outer precheck plus failure-recording helper, or prove an ingress limiter, without double-counting valid requests. |
 | Medium | Admin Logs keeps its MCR-capable free-text search and record identifiers out of SPA history, but the compatible GET API still places them in a request URL. | Introduce an authorized POST search contract or prove query omission/redaction at every access-log layer. |
-| Medium | Upload domain changes, upload logs, warnings, and audit rows commit separately. | Design one transaction owner and explicit failed-upload evidence semantics; add failure-injection tests for every upload family. |
+| Medium | Remaining upload families may still commit upload domain changes, upload logs, warnings, and audit rows separately. | The TTF upload already uses one transaction for business rows, upload evidence, warnings, audit, and Data Revalidation outcome; design one transaction owner and explicit failed-upload evidence semantics for every remaining upload family. |
 | Medium | Most audited configuration mutations commit before revalidation and audit evidence. | Extend the existing non-committing service pattern and prove rollback on audit/revalidation failure. |
 | Medium | Security migration downgrades can temporarily restore weaker historical authorization. | Design security-monotone compatibility or mandate the drained rollback procedure above. |
 | Low | RLS policy attestation checks exact inventory but not a canonical hash of every predicate. | Add normalized expression/hash attestation and a negative drift test. |

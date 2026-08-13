@@ -27,6 +27,7 @@ from app.services.database_context import (
     MataSyncSession,
     configure_request_context,
 )
+from tests.postgres_disposable_database import configured_disposable_database_name
 
 
 @dataclass
@@ -42,7 +43,7 @@ class PostgresAdminEventHarness:
     suffix: str
 
 
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_final_security_review"
+DISPOSABLE_DATABASE_NAME = configured_disposable_database_name()
 _TEST_SESSION_HASH_KEY = "rls-admin-events-test-session-key-32-bytes"
 
 

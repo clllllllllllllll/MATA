@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import date
+import os
 from uuid import UUID, uuid4
 
 import httpx
@@ -25,8 +26,15 @@ from app.services.reporting_period_status import (
 )
 from app.services.session_transport import session_cookie_name
 
-DISPOSABLE_DATABASE_NAME = "mata_phase5b_final_security_review"
-EXPECTED_ALEMBIC_REVISION = "20260728_000028"
+DEFAULT_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_e2b2_verify"
+PHASE_R_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_r_verify"
+PHASE_K_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_k_verify"
+PHASE_L_DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_l_verify"
+DISPOSABLE_DATABASE_NAME = os.environ.get(
+    "MATA_RLS_DISPOSABLE_DATABASE_NAME",
+    DEFAULT_DISPOSABLE_DATABASE_NAME,
+)
+EXPECTED_ALEMBIC_REVISION = "20260813_000042"
 
 
 @dataclass
@@ -52,6 +60,13 @@ def _assert_local_postgres(database_url: str) -> None:
     if (
         url.drivername != "postgresql+asyncpg"
         or url.host not in {"localhost", "127.0.0.1", "::1"}
+        or DISPOSABLE_DATABASE_NAME
+        not in {
+            DEFAULT_DISPOSABLE_DATABASE_NAME,
+            PHASE_R_DISPOSABLE_DATABASE_NAME,
+            PHASE_K_DISPOSABLE_DATABASE_NAME,
+            PHASE_L_DISPOSABLE_DATABASE_NAME,
+        }
         or url.database != DISPOSABLE_DATABASE_NAME
         or bool(url.query)
     ):
