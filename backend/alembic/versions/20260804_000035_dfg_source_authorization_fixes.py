@@ -1543,13 +1543,15 @@ END
 $function$
 """
     )
-    _execute("SET LOCAL ROLE NONE")
-    _execute(f"REVOKE CREATE ON SCHEMA mata_rls FROM {DEFINER_ROLE}")
+    # Hosted migration logins are non-superusers, so apply the function ACL
+    # while the session is still acting as the function owner.
     _secure_runtime_helper(
         "create_adhoc_attendance("
         "text,text,text,text,text,date,time without time zone,"
         "time without time zone,numeric,uuid)"
     )
+    _execute("SET LOCAL ROLE NONE")
+    _execute(f"REVOKE CREATE ON SCHEMA mata_rls FROM {DEFINER_ROLE}")
 
 
 def _assert_security_and_backfill() -> None:
