@@ -504,6 +504,15 @@ helpers validate signed resident/admin context, expose no resident lookup
 surface, use fixed `pg_catalog, pg_temp` search paths, and are revoked from
 `PUBLIC`, browser/service roles, and the authentication helper.
 
+Migration lifecycle CI is split at the intentional one-way boundary in
+revision `20260812_000040`. Historical downgrade/re-upgrade tests run only
+through revision `20260812_000039`; the resulting database is then upgraded
+forward to the current head. A separate lifecycle test may move between
+`20260812_000040`, `20260813_000041`, and `20260813_000042`, but never attempts
+to downgrade through `20260812_000040`. This preserves historical coverage,
+proves the supported forward path to head, and does not weaken the admission
+data-loss safeguard.
+
 `mata_app_runtime` and `mata_auth_internal` are stable `NOLOGIN`,
 `NOINHERIT`, `NOSUPERUSER`, `NOCREATEDB`, `NOCREATEROLE`,
 `NOREPLICATION`, `NOBYPASSRLS` capability groups. Credentialed application

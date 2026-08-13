@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any
 from uuid import UUID, uuid5
 
 from openpyxl import Workbook

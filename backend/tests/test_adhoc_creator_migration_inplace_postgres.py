@@ -17,9 +17,8 @@ from sqlalchemy.pool import NullPool
 from app.config import Settings
 from app.models import Base
 from tests.test_external_registration_migrations_postgres import (
-    ALEMBIC_INI,
-    BACKEND_ROOT,
     H_E_DISPOSABLE_DATABASE_NAME,
+    HISTORICAL_MIGRATION_CEILING_REVISION,
     MigrationHarness,
     _adhoc_creator_columns,
     _assert_local_postgres_source,
@@ -191,9 +190,10 @@ def _expected_restricted_runner_roles() -> set[str]:
     return expected
 
 
-def _assert_seed_only_head(connection: Connection) -> None:
-    assert _revision(connection) == REPOSITORY_HEAD_REVISION
+def _assert_seed_only_ceiling(connection: Connection) -> None:
+    assert _revision(connection) == HISTORICAL_MIGRATION_CEILING_REVISION
     model_tables = {table.name for table in Base.metadata.tables.values()}
+    model_tables.remove("teaching_name_programme_scopes")
     assert _public_tables(connection) == {*model_tables, "alembic_version"}
     for table_name in sorted(model_tables):
         assert _SAFE_IDENTIFIER.fullmatch(table_name)
@@ -812,12 +812,12 @@ def _cleanup(engine: Engine) -> None:
             )
 
 
-def _recover_head(harness: InPlaceHarness) -> None:
+def _recover_ceiling(harness: InPlaceHarness) -> None:
     _cleanup(harness.engine)
-    _migrate(harness, "upgrade", "head")
+    _migrate(harness, "upgrade", HISTORICAL_MIGRATION_CEILING_REVISION)
     _cleanup(harness.engine)
     with harness.engine.connect() as connection:
-        _assert_seed_only_head(connection)
+        _assert_seed_only_ceiling(connection)
 
 
 @pytest.fixture
@@ -843,7 +843,7 @@ def in_place_migration_database(
             assert identity["session_role"] == identity["database_owner"]
             assert identity["session_role"] == source_url.username
             assert identity["login_is_superuser"] is True
-            _assert_seed_only_head(connection)
+            _assert_seed_only_ceiling(connection)
         _assert_exclusive(engine)
         migration = MigrationHarness(
             database_name=H_E_DISPOSABLE_DATABASE_NAME,
@@ -888,9 +888,9 @@ def test_phase_g_runtime_source_decoupling_migration_lifecycle_in_place(
                 )
             )
 
-        _migrate(harness, "upgrade", REPOSITORY_HEAD_REVISION)
+        _migrate(harness, "upgrade", HISTORICAL_MIGRATION_CEILING_REVISION)
         with harness.engine.connect() as connection:
-            assert _revision(connection) == REPOSITORY_HEAD_REVISION
+            assert _revision(connection) == HISTORICAL_MIGRATION_CEILING_REVISION
             for helper_signature in (SOURCE_SCOPE_HELPER, TARGET_RESOLUTION_HELPER):
                 runtime_helper = connection.execute(
                     text(
@@ -996,7 +996,7 @@ def test_phase_g_runtime_source_decoupling_migration_lifecycle_in_place(
                 )
             ) == pre_phase_g_external_access
     finally:
-        _recover_head(harness)
+        _recover_ceiling(harness)
 
 
 @pytest.mark.migration_mutation
@@ -1122,7 +1122,7 @@ def test_dfg_source_provenance_migration_lifecycle_in_place(
         failed_upgrade = _migrate(
             harness,
             "upgrade",
-            REPOSITORY_HEAD_REVISION,
+            HISTORICAL_MIGRATION_CEILING_REVISION,
             succeeds=False,
         )
         assert "Explicit Teaching Name event provenance is contradictory" in failed_upgrade
@@ -1132,9 +1132,9 @@ def test_dfg_source_provenance_migration_lifecycle_in_place(
                 text("DELETE FROM teaching_events WHERE id = :id"),
                 {"id": contradictory_event_id},
             )
-        _migrate(harness, "upgrade", REPOSITORY_HEAD_REVISION)
+        _migrate(harness, "upgrade", HISTORICAL_MIGRATION_CEILING_REVISION)
         with harness.engine.begin() as connection:
-            assert _revision(connection) == REPOSITORY_HEAD_REVISION
+            assert _revision(connection) == HISTORICAL_MIGRATION_CEILING_REVISION
             snapshot = (
                 connection.execute(
                     text(
@@ -1206,7 +1206,7 @@ def test_dfg_source_provenance_migration_lifecycle_in_place(
                 )
             )
 
-        _migrate(harness, "upgrade", REPOSITORY_HEAD_REVISION)
+        _migrate(harness, "upgrade", HISTORICAL_MIGRATION_CEILING_REVISION)
         with harness.engine.begin() as connection:
             connection.execute(
                 text("DELETE FROM teaching_events WHERE id = :id"),
@@ -1225,7 +1225,7 @@ def test_dfg_source_provenance_migration_lifecycle_in_place(
                 {"id": posting_id},
             )
     finally:
-        _recover_head(harness)
+        _recover_ceiling(harness)
 
 
 @pytest.mark.migration_mutation
@@ -1286,4 +1286,4 @@ def test_adhoc_creator_migration_lifecycle_in_place(
             assert _catalogue(connection) == previous_catalogue
             assert _data_snapshot(connection) == ambiguous_data
     finally:
-        _recover_head(harness)
+        _recover_ceiling(harness)

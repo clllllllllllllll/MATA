@@ -54,6 +54,7 @@ _SYNC_POSTGRES_DRIVERS = frozenset(
 )
 _MUTATION_EXCLUSIVITY_ATTEMPTS = 20
 _MUTATION_EXCLUSIVITY_INTERVAL_SECONDS = 0.1
+HISTORICAL_MIGRATION_CEILING_REVISION = "20260812_000039"
 
 EXPECTED_POSTING_CODE_ROWS = (
     ("752081a5-51ce-5d5a-8049-b77f1a98a160", "NSCDermat"),
@@ -471,7 +472,7 @@ def clean_migration_database(
     settings = Settings(_env_file=None)
     source_url = make_url(settings.sync_database_url)
     _assert_local_postgres_source(source_url)
-    repository_head = _repository_head_revision()
+    _repository_head_revision()
     target_engine = create_engine(source_url, poolclass=NullPool)
     harness = MigrationHarness(
         database_name=H_E_DISPOSABLE_DATABASE_NAME,
@@ -483,7 +484,7 @@ def clean_migration_database(
     try:
         _assert_h_e_target_ready(
             target_engine,
-            repository_head=repository_head,
+            repository_head=HISTORICAL_MIGRATION_CEILING_REVISION,
         )
         with target_engine.connect() as connection:
             identity = _h_e_database_identity(connection)
@@ -507,7 +508,10 @@ def clean_migration_database(
         try:
             if mutation_authorized:
                 reset_result = harness.alembic("downgrade", "base")
-                restore_result = harness.alembic("upgrade", "head")
+                restore_result = harness.alembic(
+                    "upgrade",
+                    HISTORICAL_MIGRATION_CEILING_REVISION,
+                )
                 assert reset_result.returncode == 0, (
                     reset_result.stdout + reset_result.stderr
                 )
@@ -516,7 +520,7 @@ def clean_migration_database(
                 )
                 _assert_h_e_target_ready(
                     target_engine,
-                    repository_head=repository_head,
+                    repository_head=HISTORICAL_MIGRATION_CEILING_REVISION,
                 )
         finally:
             target_engine.dispose()

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -327,8 +326,8 @@ async def test_programme_and_secretary_options_have_postgres_cardinality_and_sco
                     },
                 )
             await owner_db.execute(
-                    text(
-                        """
+                text(
+                    """
                         INSERT INTO teaching_name_programme_scopes (
                             teaching_name_id, reporting_period_id, programme_code,
                             admission_reason, admitted_by_user_id
@@ -340,17 +339,17 @@ async def test_programme_and_secretary_options_have_postgres_cardinality_and_sco
                              'owner_programme', :secretary_id),
                             (:inactive_id, :period_id, :programme_code,
                              'owner_programme', :secretary_id)
-                        """
-                    ),
-                    {
-                        "pending_id": pending_name_id,
-                        "mapped_id": mapped_name_id,
-                        "inactive_id": inactive_name_id,
-                        "period_id": period_id,
-                        "programme_code": programme_code,
-                        "secretary_id": secretary_user_id,
-                    },
-                )
+                    """
+                ),
+                {
+                    "pending_id": pending_name_id,
+                    "mapped_id": mapped_name_id,
+                    "inactive_id": inactive_name_id,
+                    "period_id": period_id,
+                    "programme_code": programme_code,
+                    "secretary_id": secretary_user_id,
+                },
+            )
             await owner_db.execute(
                     text(
                         """

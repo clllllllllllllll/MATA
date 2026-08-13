@@ -4,7 +4,7 @@ import asyncio
 from copy import deepcopy
 import json
 from io import BytesIO
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient

@@ -560,6 +560,21 @@ async def _native_teaching_posting_code(
     return row.get("native_teaching_posting_code")
 
 
+async def _attendance_posting_code(
+    db: AsyncSession,
+    *,
+    resident: dict[str, Any],
+    context: dict[str, Any],
+) -> str | None:
+    posting_code = context.get("posting_code")
+    if posting_code is not None or context.get("status") != "loa":
+        return str(posting_code) if posting_code is not None else None
+    return await _native_teaching_posting_code(
+        db,
+        programme_code=resident["programme_code"],
+    )
+
+
 async def _public_holiday_name(db: AsyncSession, event_date: date) -> str | None:
     result = await db.execute(
         text(
@@ -738,12 +753,11 @@ async def list_adhoc_teaching_options(
         )
 
     context = contexts[0]
-    assigned_posting_code = context.get("posting_code")
-    if assigned_posting_code is None and context.get("status") == "loa":
-        assigned_posting_code = await _native_teaching_posting_code(
-            db,
-            programme_code=resident["programme_code"],
-        )
+    assigned_posting_code = await _attendance_posting_code(
+        db,
+        resident=resident,
+        context=context,
+    )
     if assigned_posting_code is None:
         return _adhoc_options_response(
             teaching_date=teaching_date,
@@ -2844,12 +2858,11 @@ async def submit_adhoc_teaching(
             error_code=ErrorCode.VALIDATION_FAILED.value,
         )
     context = contexts[0]
-    assigned_posting_code = context.get("posting_code")
-    if assigned_posting_code is None and context.get("status") == "loa":
-        assigned_posting_code = await _native_teaching_posting_code(
-            db,
-            programme_code=resident["programme_code"],
-        )
+    assigned_posting_code = await _attendance_posting_code(
+        db,
+        resident=resident,
+        context=context,
+    )
     if assigned_posting_code is None:
         raise ApiError(
             status_code=422,

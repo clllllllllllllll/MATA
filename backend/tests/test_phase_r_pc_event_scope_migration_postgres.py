@@ -17,11 +17,13 @@ from tests.postgres_disposable_database import configured_disposable_database_na
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-TARGET_DATABASE_NAME = configured_disposable_database_name(
-    default="mata_evolved_ttf_r_verify"
-)
+TARGET_DATABASE_NAME = configured_disposable_database_name()
 PREVIOUS_REVISION = "20260805_000037"
 HEAD_REVISION = "20260806_000038"
+LIFECYCLE_CEILING_REVISION = os.environ.get(
+    "MATA_MIGRATION_LIFECYCLE_CEILING_REVISION",
+    HEAD_REVISION,
+)
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _INSERT_SIGNATURE = (
     "mata_rls.can_insert_scheduled_event_source("
@@ -138,6 +140,8 @@ def test_phase_r_pc_pool_event_scope_migration_rolls_back_and_reupgrades(
 ) -> None:
     engine = clean_migration_database
     try:
+        assert _revision(engine) == LIFECYCLE_CEILING_REVISION
+        _alembic("downgrade", HEAD_REVISION)
         assert _revision(engine) == HEAD_REVISION
         for signature in (_INSERT_SIGNATURE, _MANAGE_SIGNATURE):
             definition = _helper_definition(engine, signature)
@@ -157,8 +161,8 @@ def test_phase_r_pc_pool_event_scope_migration_rolls_back_and_reupgrades(
                 engine, signature
             )
 
-        _alembic("upgrade", "head")
+        _alembic("upgrade", HEAD_REVISION)
         assert _revision(engine) == HEAD_REVISION
     finally:
-        if _revision(engine) != HEAD_REVISION:
-            _alembic("upgrade", "head")
+        if _revision(engine) != LIFECYCLE_CEILING_REVISION:
+            _alembic("upgrade", LIFECYCLE_CEILING_REVISION)

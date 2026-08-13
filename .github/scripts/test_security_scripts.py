@@ -415,7 +415,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         for workflow_name in ("backend-ci.yml", "production-security.yml"):
             source = (WORKFLOW_ROOT / workflow_name).read_text(encoding="utf-8")
             dedicated_start = source.index(
-                "- name: Run serial direct-owner migration lifecycle tests"
+                "- name: Run serial historical migration lifecycle tests"
             )
             broad_name = (
                 "- name: Run backend tests through restricted PostgreSQL roles"
@@ -424,7 +424,7 @@ class WorkflowSecurityTests(unittest.TestCase):
             )
             self.assertEqual(
                 source.count(
-                    "- name: Run serial direct-owner migration lifecycle tests"
+                    "- name: Run serial historical migration lifecycle tests"
                 ),
                 1,
             )
@@ -442,11 +442,15 @@ class WorkflowSecurityTests(unittest.TestCase):
                 dedicated_block,
             )
             self.assertIn(
-                "--strict-markers -m migration_mutation tests",
+                '-m "migration_mutation and not post_boundary_migration" tests',
                 dedicated_block,
             )
             self.assertIn(
-                "Verify the lifecycle gate restored the database head",
+                "--strict-markers -m post_boundary_migration tests",
+                dedicated_block,
+            )
+            self.assertIn(
+                "Verify the lifecycle gates restored the database head",
                 dedicated_block,
             )
             self.assertIn(
