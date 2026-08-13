@@ -34,7 +34,7 @@ from tests.test_rls_policy_postgres import (
 PHASE_H_DATABASE_NAME = "mata_evolved_ttf_hij_verify"
 PHASE_H_REQUIRED_REVISION = "20260805_000037"
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
-_PHASE_H_SYNC_DATABASE_URL = "MATA_PHASE_H_SYNC_DATABASE_URL"
+_PHASE_H_SYNC_DATABASE_URL_ENV = "MATA_PHASE_H_SYNC_DATABASE_URL"
 _PHASE_H_RUNTIME_ROLE = "MATA_PHASE_H_RUNTIME_ROLE"
 _PHASE_H_RUNTIME_PASSWORD = "MATA_PHASE_H_RUNTIME_PASSWORD"
 _PHASE_H_AUTH_ROLE = "MATA_PHASE_H_AUTH_ROLE"
@@ -59,10 +59,10 @@ def _is_phase_h_local_url(url: URL, *, async_url: bool) -> bool:
 
 @pytest_asyncio.fixture
 async def policy_harness() -> AsyncIterator[RlsPostgresHarness]:
-    configured_url = os.environ.get(_PHASE_H_SYNC_DATABASE_URL)
+    configured_url = os.environ.get(_PHASE_H_SYNC_DATABASE_URL_ENV)
     if not configured_url:
         pytest.fail(
-            f"{_PHASE_H_SYNC_DATABASE_URL} is required for Phase H PostgreSQL verification",
+            f"{_PHASE_H_SYNC_DATABASE_URL_ENV} is required for Phase H PostgreSQL verification",
             pytrace=False,
         )
     owner_sync_url = make_url(configured_url)

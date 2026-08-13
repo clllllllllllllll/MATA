@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy.engine import URL, make_url
 
 
-_PHASE_H_SYNC_DATABASE_URL = "MATA_PHASE_H_SYNC_DATABASE_URL"
+_PHASE_H_SYNC_DATABASE_URL_ENV = "MATA_PHASE_H_SYNC_DATABASE_URL"
 _PHASE_H_DATABASE_NAME = "mata_evolved_ttf_hij_verify"
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _RUNTIME_GROUP = "mata_app_runtime"
@@ -107,10 +107,10 @@ def _drop_role(
 
 
 def main() -> int:
-    configured_url = os.environ.get(_PHASE_H_SYNC_DATABASE_URL)
+    configured_url = os.environ.get(_PHASE_H_SYNC_DATABASE_URL_ENV)
     if not configured_url:
         raise SystemExit(
-            f"{_PHASE_H_SYNC_DATABASE_URL} is required for Phase H PostgreSQL verification"
+            f"{_PHASE_H_SYNC_DATABASE_URL_ENV} is required for Phase H PostgreSQL verification"
         )
 
     owner_sync_url = make_url(configured_url)

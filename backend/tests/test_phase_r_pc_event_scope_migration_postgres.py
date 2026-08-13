@@ -12,7 +12,6 @@ from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.pool import NullPool
 
 from app.config import Settings
-from tests.run_phase_r_postgres_verify import _normalise_server_address
 from tests.postgres_disposable_database import configured_disposable_database_name
 
 
@@ -47,19 +46,17 @@ def _target_engine() -> Engine:
 
 def _revision(engine: Engine) -> str:
     with engine.connect() as connection:
+        # The URL preflight above proves the client target is local and disposable.
+        # PostgreSQL may report its Docker bridge address from inside a CI service.
         identity = connection.execute(
             text(
                 """
-                SELECT current_database(), current_user, session_user,
-                       inet_server_addr()::text, inet_server_port()
+                SELECT current_database(), current_user, session_user
                 """
             )
         ).one()
         assert identity[0] == TARGET_DATABASE_NAME
         assert identity[1] == identity[2]
-        assert _normalise_server_address(
-            str(identity[3]) if identity[3] is not None else None
-        ) in {"127.0.0.1", "::1"}
         return str(connection.scalar(text("SELECT version_num FROM alembic_version")))
 
 
