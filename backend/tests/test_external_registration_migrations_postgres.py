@@ -2132,7 +2132,7 @@ def test_adhoc_definer_accepts_exact_pg16_creator_membership(
 
 
 @pytest.mark.migration_mutation
-def test_adhoc_definer_non_superuser_creator_lifecycle_through_phase_g(
+def test_adhoc_definer_non_superuser_creator_lifecycle_through_ceiling(
     clean_migration_database: MigrationHarness,
 ) -> None:
     harness = clean_migration_database
@@ -2173,8 +2173,35 @@ def test_adhoc_definer_non_superuser_creator_lifecycle_through_phase_g(
                 f"GRANT {quoted_owner} TO {quoted_migration} "
                 "WITH INHERIT TRUE, SET FALSE, ADMIN FALSE"
             )
+            protected_functions = list(
+                connection.scalars(
+                    text(
+                        """
+                        SELECT procedure.oid::pg_catalog.regprocedure::text
+                        FROM pg_catalog.pg_proc AS procedure
+                        JOIN pg_catalog.pg_namespace AS namespace
+                          ON namespace.oid = procedure.pronamespace
+                        WHERE namespace.nspname IN ('mata_rls', 'mata_private')
+                          AND procedure.prokind IN ('f', 'p')
+                          AND procedure.proowner = (
+                              SELECT role.oid
+                              FROM pg_catalog.pg_roles AS role
+                              WHERE role.rolname = CURRENT_USER
+                          )
+                        """
+                    )
+                )
+            )
+            for function_signature in protected_functions:
+                connection.exec_driver_sql(
+                    f"ALTER FUNCTION {function_signature} "
+                    f"OWNER TO {quoted_migration}"
+                )
             connection.exec_driver_sql(
                 f"ALTER SCHEMA mata_rls OWNER TO {quoted_migration}"
+            )
+            connection.exec_driver_sql(
+                f"ALTER SCHEMA mata_private OWNER TO {quoted_migration}"
             )
             connection.exec_driver_sql(
                 f"ALTER DATABASE {quoted_database} OWNER TO {quoted_migration}"
@@ -2235,9 +2262,13 @@ def test_adhoc_definer_non_superuser_creator_lifecycle_through_phase_g(
                 False,
             )
 
-        _run_success(migration_harness, "upgrade", "20260804_000034")
+        _run_success(
+            migration_harness,
+            "upgrade",
+            HISTORICAL_MIGRATION_CEILING_REVISION,
+        )
         with migration_engine.connect() as connection:
-            assert _revision(connection) == "20260804_000034"
+            assert _revision(connection) == HISTORICAL_MIGRATION_CEILING_REVISION
             assert connection.scalar(
                 text(
                     "SELECT owner_role.rolname "
@@ -2298,6 +2329,12 @@ def test_adhoc_definer_non_superuser_creator_lifecycle_through_phase_g(
                         database_name,
                     )
                     connection.exec_driver_sql(
+                        f"REASSIGN OWNED BY {quoted_migration} TO {quoted_owner}"
+                    )
+                    connection.exec_driver_sql(
+                        f"DROP OWNED BY {quoted_migration}"
+                    )
+                    connection.exec_driver_sql(
                         f"ALTER DATABASE {quoted_database} OWNER TO {quoted_owner}"
                     )
 
@@ -2316,9 +2353,6 @@ def test_adhoc_definer_non_superuser_creator_lifecycle_through_phase_g(
                         migration_role,
                     )
                     quoted_owner = _quote_identifier(connection, original_owner)
-                    connection.exec_driver_sql(
-                        f"ALTER SCHEMA mata_rls OWNER TO {quoted_owner}"
-                    )
                     connection.exec_driver_sql(
                         f"REVOKE {quoted_owner} FROM {quoted_migration} "
                         f"GRANTED BY {quoted_owner} RESTRICT"
