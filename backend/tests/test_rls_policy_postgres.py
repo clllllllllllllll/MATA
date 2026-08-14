@@ -5274,7 +5274,8 @@ async def test_teaching_name_pool_shared_service_used_delete_requires_master_and
                     reason=None,
                     confirmation=None,
                 )
-            assert pc_used_delete.value.status_code == 409
+            assert pc_used_delete.value.status_code == 403
+            assert "source owner" in pc_used_delete.value.detail
 
         async with _service_runtime_context(
             policy_harness,
