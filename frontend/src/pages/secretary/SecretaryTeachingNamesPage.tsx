@@ -523,7 +523,6 @@ export const SecretaryTeachingNamesPage = () => {
               ))}
             </div>
             <label className="secretary-teaching-names-search">
-              <span className="sr-only">Search Name of Teaching</span>
               <input
                 type="search"
                 value={searchInput}

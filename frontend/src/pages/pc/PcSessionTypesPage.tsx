@@ -895,11 +895,7 @@ export const PcSessionTypesPage = () => {
             <div className="section-header pc-session-types-section-header">
               <div>
                 <h2>Mapping queue</h2>
-                <p className="pc-session-types-mapping-guidance">
-                  Department Secretary names appear after an actual resident posting admits them. Every mapping uses this programme's own TTF. A mapping updates existing event duration and end time for the exact scope while preserving attendance and historical Name of Teaching text. Pending names remain available with a temporary one-hour event duration until mapped.
-                </p>
               </div>
-              <span className="inline-muted">{mappingTotal} mapping{mappingTotal === 1 ? '' : 's'}</span>
             </div>
 
             <form
@@ -931,7 +927,6 @@ export const PcSessionTypesPage = () => {
                 ))}
               </div>
               <label className="pc-session-types-search">
-                <span className="sr-only">Search Name of Teaching</span>
                 <input
                   type="search"
                   value={mappingSearchInput}
@@ -942,7 +937,6 @@ export const PcSessionTypesPage = () => {
                 />
               </label>
               <label className="pc-session-types-short-filter">
-                <span className="sr-only">Posting</span>
                 <input
                   value={postingFilterInput}
                   onChange={(event) => setPostingFilterInput(event.target.value)}
@@ -952,7 +946,6 @@ export const PcSessionTypesPage = () => {
                 />
               </label>
               <label className="pc-session-types-short-filter">
-                <span className="sr-only">R-year</span>
                 <input
                   value={rYearFilterInput}
                   onChange={(event) => setRYearFilterInput(event.target.value)}
@@ -1151,12 +1144,7 @@ export const PcSessionTypesPage = () => {
             <div className="section-header pc-session-types-section-header">
               <div>
                 <h2>Names of Teaching</h2>
-                <p>PC · NHG names are managed here. Department Secretary names are read-only and remain available for mapping.</p>
               </div>
-              <button type="button" className="button button-secondary" onClick={() => void loadTeachingNames()} disabled={namesLoading || interactionLocked}>
-                <IconRefresh size={14} />
-                Refresh names
-              </button>
             </div>
 
             <form
@@ -1186,7 +1174,6 @@ export const PcSessionTypesPage = () => {
                 ))}
               </div>
               <label className="pc-session-types-search">
-                <span className="sr-only">Search Name of Teaching</span>
                 <input
                   type="search"
                   value={nameSearchInput}
@@ -1231,8 +1218,8 @@ export const PcSessionTypesPage = () => {
                   <thead>
                     <tr>
                       <th>Name of Teaching</th>
-                      <th>State</th>
-                      <th>Actions</th>
+                      <th className="pc-session-types-name-state-cell">State</th>
+                      <th className="pc-session-types-name-actions-cell">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1248,21 +1235,22 @@ export const PcSessionTypesPage = () => {
                             <strong>{name.teachingName}</strong>
                             <div className="inline-muted">{teachingNameSourceLabel(name)}</div>
                           </td>
-                          <td><span className={`status-badge ${name.isActive ? 'status-badge-success' : 'status-badge-neutral'}`}>{name.isActive ? 'Active' : 'Inactive'}</span></td>
-                          <td>
-                            <div className="pc-session-types-name-actions">
-                              <button type="button" className="button button-ghost" onClick={() => openNameDrawer('edit', name)} disabled={isMutating || !name.canManageName}>Rename</button>
-                              <button
-                                type="button"
-                                className="button button-ghost"
-                                onClick={() => void runLifecycleAction(name, name.isActive ? 'deactivate' : 'reactivate')}
-                                disabled={isMutating || !name.canManageName}
-                              >
-                                {name.isActive ? 'Deactivate' : 'Reactivate'}
-                              </button>
-                              <button type="button" className="button button-ghost danger" onClick={() => void runLifecycleAction(name, 'delete')} disabled={isMutating || !name.canManageName}>Delete unused</button>
-                              {!name.canManageName ? <span className="inline-muted">Source owner manages this name</span> : null}
-                            </div>
+                          <td className="pc-session-types-name-state-cell"><span className={`status-badge ${name.isActive ? 'status-badge-success' : 'status-badge-neutral'}`}>{name.isActive ? 'Active' : 'Inactive'}</span></td>
+                          <td className="pc-session-types-name-actions-cell">
+                            {name.canManageName ? (
+                              <div className="pc-session-types-name-actions">
+                                <button type="button" className="button button-ghost" onClick={() => openNameDrawer('edit', name)} disabled={isMutating}>Rename</button>
+                                <button
+                                  type="button"
+                                  className="button button-ghost"
+                                  onClick={() => void runLifecycleAction(name, name.isActive ? 'deactivate' : 'reactivate')}
+                                  disabled={isMutating}
+                                >
+                                  {name.isActive ? 'Deactivate' : 'Reactivate'}
+                                </button>
+                                <button type="button" className="button button-ghost danger" onClick={() => void runLifecycleAction(name, 'delete')} disabled={isMutating}>Delete unused</button>
+                              </div>
+                            ) : null}
                           </td>
                         </tr>
                       )
@@ -1284,11 +1272,13 @@ export const PcSessionTypesPage = () => {
                       <span className={`status-badge ${name.isActive ? 'status-badge-success' : 'status-badge-neutral'}`}>{name.isActive ? 'Active' : 'Inactive'}</span>
                     </div>
                     <p>{teachingNameSourceLabel(name)}</p>
-                    <div className="pc-session-types-mobile-actions">
-                      <button type="button" className="button button-secondary" onClick={() => openNameDrawer('edit', name)} disabled={isMutating || !name.canManageName}>Rename</button>
-                      <button type="button" className="button button-secondary" onClick={() => void runLifecycleAction(name, name.isActive ? 'deactivate' : 'reactivate')} disabled={isMutating || !name.canManageName}>{name.isActive ? 'Deactivate' : 'Reactivate'}</button>
-                      <button type="button" className="button button-ghost danger" onClick={() => void runLifecycleAction(name, 'delete')} disabled={isMutating || !name.canManageName}>Delete unused</button>
-                    </div>
+                    {name.canManageName ? (
+                      <div className="pc-session-types-mobile-actions">
+                        <button type="button" className="button button-secondary" onClick={() => openNameDrawer('edit', name)} disabled={isMutating}>Rename</button>
+                        <button type="button" className="button button-secondary" onClick={() => void runLifecycleAction(name, name.isActive ? 'deactivate' : 'reactivate')} disabled={isMutating}>{name.isActive ? 'Deactivate' : 'Reactivate'}</button>
+                        <button type="button" className="button button-ghost danger" onClick={() => void runLifecycleAction(name, 'delete')} disabled={isMutating}>Delete unused</button>
+                      </div>
+                    ) : null}
                   </article>
                 )
               }) : null}

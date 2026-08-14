@@ -441,8 +441,8 @@ invalidate an existing event.
 | `POST /secretary/teaching-names/{id}/reactivate` | Secretary | Source-owner only; requires `expected_revision`. |
 | `DELETE /secretary/teaching-names/{id}` | Secretary | Source-owner only; deletes only an unused name with `expected_revision`. |
 | `GET /admin/teaching-names` | Master Admin or Programme PC | Requires `reporting_period_id` and explicit `programme_code`. |
-| `POST`, `PATCH`, `POST .../deactivate`, `POST .../reactivate` under `/admin/teaching-names` | Programme PC only | Create makes a programme-private name. Lifecycle mutations require source ownership; an admitted host Secretary name is read-only. A Master Admin receives `403` for ordinary lifecycle mutations. |
-| `DELETE /admin/teaching-names/{id}` | Master Admin or Programme PC | A PC may delete an unused source owned by its programme, but not an admitted host source; Master Admin may perform the guarded used-name deletion below. |
+| `POST`, `PATCH`, `POST .../deactivate`, `POST .../reactivate` under `/admin/teaching-names` | Programme PC only | Create makes a programme-private name. Lifecycle mutations require PC-created programme-private source ownership; every Department Secretary-created name is read-only. A Master Admin receives `403` for ordinary lifecycle mutations. |
+| `DELETE /admin/teaching-names/{id}` | Master Admin or Programme PC | A PC may delete only an unused PC-created programme-private source in its programme; every Department Secretary-created source is read-only. Master Admin may perform the guarded used-name deletion below. |
 
 Both list routes support `is_active`, `search`, `limit`, and `offset`. Name
 responses expose the display value and lifecycle metadata, never the
@@ -635,7 +635,9 @@ in-programme mapping work. Request fields attempting to select another owner,
 source posting, creator role, or broader visibility are rejected. Master Admin
 ordinary creation remains forbidden.
 
-An external host name is read-only as a source to the consuming Programme PC:
+Every Department Secretary-created name is read-only as a source to a Programme
+PC, including a name created by the PC's native Department Secretary and an
+admitted external host name:
 the PC may assign, change, or clear mappings belonging to its own programme,
 but source-name rename, deactivate, reactivate, and delete routes return `403`
 unless the existing owner-side lifecycle authorization independently permits

@@ -97,11 +97,13 @@ scope in the same transaction. Reconciliation only adds missing admissions and
 pending mappings; correcting or removing a posting never deletes mapping work
 already retained for that reporting period.
 
-A cross-posting PC maps the admitted name only to targets from the PC's own
-programme TTF, at the exact host posting and R-year scope. The host department's
-TTF is never selected merely because its Secretary created the name. The PC may
-read the source name and manage its own mapping, but cannot rename, deactivate,
-reactivate, delete, or otherwise manage the host department's source name.
+A Programme PC maps a Department Secretary-created name only to targets from the
+PC's own programme TTF, at the exact posting and R-year scope. The source
+department's TTF is never selected merely because its Secretary created the
+name. The PC may read the source name and manage its own mapping, but cannot
+rename, deactivate, reactivate, delete, or otherwise manage any Department
+Secretary-created source name, including one created by its native Department
+Secretary.
 Names with identical normalized display text but different source identities
 remain distinct.
 

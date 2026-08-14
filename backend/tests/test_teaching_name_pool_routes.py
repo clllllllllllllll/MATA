@@ -157,6 +157,29 @@ def test_normalise_teaching_name_collides_only_for_nfc_equivalents() -> None:
     assert abbreviation != expanded
 
 
+def test_programme_pc_can_manage_only_pc_created_private_names() -> None:
+    actor = _programme_pc_actor(uuid4())
+    pc_private = {
+        "programme_code": "DR",
+        "created_by_role": "programme_pc",
+        "visibility_scope": "programme_private",
+    }
+
+    assert teaching_name_pool._actor_can_manage_name(actor, pc_private) is True
+    assert teaching_name_pool._actor_can_manage_name(
+        actor,
+        {
+            **pc_private,
+            "created_by_role": "secretary",
+            "visibility_scope": "department_shared",
+        },
+    ) is False
+    assert teaching_name_pool._actor_can_manage_name(
+        actor,
+        {**pc_private, "programme_code": "GERI"},
+    ) is False
+
+
 @pytest.mark.parametrize(
     "value",
     ["\t\n\u00a0", "name\x00with-control", "name\x01with-control", "x" * 201, "ß" * 200],

@@ -194,7 +194,11 @@ def _actor_can_manage_name(
 ) -> bool:
     owner_programme = str(row["programme_code"])
     if actor.kind == "programme_pc":
-        return owner_programme in _normalised_scope(actor.programme_scope)
+        return (
+            owner_programme in _normalised_scope(actor.programme_scope)
+            and row.get("created_by_role") == "programme_pc"
+            and row.get("visibility_scope") == "programme_private"
+        )
     if actor.kind == "secretary":
         return (
             row.get("created_by_role") == "secretary"

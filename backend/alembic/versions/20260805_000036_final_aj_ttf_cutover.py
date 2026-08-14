@@ -610,12 +610,15 @@ BEGIN
         JOIN pg_catalog.pg_proc AS procedure
           ON procedure.oid = trigger_row.tgfoid
         WHERE NOT trigger_row.tgisinternal
-          AND (
-              pg_catalog.lower(pg_catalog.pg_get_functiondef(procedure.oid))
-                  LIKE '%teaching_name_catalogue%'
-              OR pg_catalog.lower(pg_catalog.pg_get_functiondef(procedure.oid))
-                  LIKE '%details_of_training%'
-          )
+          AND CASE
+              WHEN procedure.prokind IN ('f', 'p') THEN (
+                  pg_catalog.lower(pg_catalog.pg_get_functiondef(procedure.oid))
+                      LIKE '%teaching_name_catalogue%'
+                  OR pg_catalog.lower(pg_catalog.pg_get_functiondef(procedure.oid))
+                      LIKE '%details_of_training%'
+              )
+              ELSE false
+          END
     ) THEN
         RAISE EXCEPTION 'Trigger depends on retired TTF catalogue state'
             USING ERRCODE = '2BP01';
