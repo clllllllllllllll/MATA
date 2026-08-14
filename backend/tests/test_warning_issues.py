@@ -575,6 +575,31 @@ def test_upload_warning_issue_list_and_detail_are_issue_centric() -> None:
     }
 
 
+def test_scoped_warning_list_survives_upload_log_rls_redaction() -> None:
+    session = FakeWarningIssueSession()
+    upload_log = session.add_upload_log(
+        summary={
+            "warnings": [
+                {
+                    "type": "empty_posting_cell",
+                    "programme_code": "GRM",
+                    "message": "Posting is blank.",
+                }
+            ]
+        }
+    )
+    _run(derive_upload_warnings_from_summary(session, upload_log, upload_log["summary"]))
+    # PostgreSQL LEFT JOINs expose the selected upload-log column as NULL when
+    # the Programme PC can see the scoped warning but RLS hides its RDB log.
+    session.upload_warnings[0]["upload_type"] = None
+    client = _client(session)
+
+    response = client.get("/admin/upload-warnings", headers=_headers("GRM"))
+
+    assert response.status_code == 200
+    assert response.json()[0]["upload_type"] == "rdb"
+
+
 def test_warning_issue_actions_record_note_actor_and_do_not_mutate_upload_log_summary() -> None:
     session = FakeWarningIssueSession()
     upload_log = session.add_upload_log(summary={"mcr_not_found_warnings": ["M99999Z not found"]})

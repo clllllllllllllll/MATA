@@ -41,7 +41,14 @@ import { countStaffEnvelopeOverlaps } from '../../utils/teachingEventOverlapWarn
 
 type DrawerMode = 'create' | 'edit' | 'duplicate'
 
-const todayIso = () => new Date().toISOString().slice(0, 10)
+const todayIso = () => {
+  const today = new Date()
+  return [
+    today.getFullYear(),
+    String(today.getMonth() + 1).padStart(2, '0'),
+    String(today.getDate()).padStart(2, '0'),
+  ].join('-')
+}
 
 const START_TIME_OPTIONS = Array.from({ length: 24 * 4 }, (_, index) => {
   const totalMinutes = index * 15
@@ -98,15 +105,44 @@ const formatStaffEventDuration = (
   ? `Varies by R-year (up to ${formatDuration(event.durationHours)})`
   : formatDuration(event.durationHours)
 
+const staffSessionTypeLabel = (event: ProgrammeTeachingEvent) => {
+  if (event.sessionTypeName) {
+    return event.sessionTypeName
+  }
+  if (!event.teachingNameId) {
+    return '-'
+  }
+  const mappedNames = new Set(
+    (event.rYearDurations ?? [])
+      .filter((timing) => timing.isMapped && timing.sessionTypeName)
+      .map((timing) => timing.sessionTypeName as string),
+  )
+  if (mappedNames.size === 1 && !event.hasPendingMappings) {
+    return [...mappedNames][0]
+  }
+  return mappedNames.size > 0 ? 'Varies by R-year' : 'Pending mapping'
+}
+
 const eventErrorMessage = (error: unknown, fallback: string) =>
   error instanceof ApiRequestError
     ? formatUserFacingApiError(error, { fallbackMessage: fallback })
     : fallback
 
-const emptyForm = (programmeCode: string): ProgrammeTeachingEventFormState => ({
+const defaultEventDateForPeriod = (period?: { startDate: string; endDate: string }) => {
+  if (!period) {
+    return ''
+  }
+  const today = todayIso()
+  return period.startDate <= today && today <= period.endDate ? today : period.startDate
+}
+
+const emptyForm = (
+  programmeCode: string,
+  period?: { startDate: string; endDate: string },
+): ProgrammeTeachingEventFormState => ({
   ...EMPTY_PROGRAMME_TEACHING_EVENT_FORM,
   programmeCode,
-  eventDate: todayIso(),
+  eventDate: defaultEventDateForPeriod(period),
   startTime: '08:00',
 })
 
@@ -239,6 +275,25 @@ export const PcTeachingEventsPage = () => {
       )
     : null
   const selectedPostingRYearDurations = selectedPostingDuration?.rYearDurations ?? []
+  const selectedPostingMappedSessionTypes = [...new Set(
+    selectedPostingRYearDurations
+      .filter((timing) => timing.isMapped && timing.sessionTypeName)
+      .map((timing) => timing.sessionTypeName as string),
+  )]
+  const selectedPostingSessionTypeLabel = selectedPostingMappedSessionTypes.length === 1
+    && !selectedPostingDuration?.hasPendingMappings
+    ? selectedPostingMappedSessionTypes[0]
+    : selectedPostingMappedSessionTypes.length > 0
+      ? 'Varies by R-year'
+      : 'Pending mapping'
+  const selectedDateOutsidePeriod = Boolean(
+    selectedPeriod
+    && formState.eventDate
+    && (
+      formState.eventDate < selectedPeriod.startDate
+      || formState.eventDate > selectedPeriod.endDate
+    ),
+  )
   const selectedPostingHasNoMappedDurations = Boolean(
     selectedPostingDuration
     && (
@@ -494,7 +549,7 @@ export const PcTeachingEventsPage = () => {
     }
     setDrawerMode('create')
     setSourceEvent(null)
-    setFormState(emptyForm(selectedPcProgrammeCode))
+    setFormState(emptyForm(selectedPcProgrammeCode, selectedPeriod))
     setFormErrors({})
     setSubmitError(null)
     setDrawerOpen(true)
@@ -526,7 +581,7 @@ export const PcTeachingEventsPage = () => {
     setFormState({
       ...formStateFromEvent(event, selectedPcProgrammeCode),
       programmeCode: selectedPcProgrammeCode,
-      eventDate: todayIso(),
+      eventDate: defaultEventDateForPeriod(selectedPeriod),
     })
     setFormErrors({})
     setSubmitError(null)
@@ -899,7 +954,7 @@ export const PcTeachingEventsPage = () => {
                 ) : (
                   events.map((event) => {
                     const selected = selectedIds.has(event.id)
-                    const teachingType = event.sessionTypeName ?? '-'
+                    const teachingType = staffSessionTypeLabel(event)
                     return (
                       <tr
                         key={event.id}
@@ -963,7 +1018,7 @@ export const PcTeachingEventsPage = () => {
           ) : (
             events.map((event) => {
               const selected = selectedIds.has(event.id)
-              const teachingType = event.sessionTypeName ?? '-'
+              const teachingType = staffSessionTypeLabel(event)
               const attendanceTotal = event.attendanceCount + event.externalAttendanceCount
 
               return (
@@ -1146,41 +1201,45 @@ export const PcTeachingEventsPage = () => {
             ) : null}
           </label>
 
-          {selectedSourceOption?.teachingNameId
-            && formState.postingCode
-            && selectedPostingDuration
-            && selectedPostingHasNoMappedDurations ? (
-              <div className="inline-callout callout-neutral" role="status">
-                This Teaching Name has not been mapped by the Programme PC. This event will use a temporary one-hour duration. Once mapped, the system will automatically update its duration and end time.
-              </div>
-            ) : selectedPostingNeedsRYearBreakdown ? (
-              <div className="secretary-toggle-block" aria-live="polite">
-                <span className="secretary-toggle-label">
-                  {selectedPostingDuration?.durationVaries ? 'Duration varies by R-year' : 'Duration by R-year'}
-                </span>
-                {selectedPostingRYearDurations.map((timing) => (
-                  <strong key={`${timing.programmeCode ?? selectedPcProgrammeCode}:${timing.rYear}`}>
-                    {timing.rYear}: {formatDuration(timing.durationHours)}
-                    {timing.isMapped ? '' : ' (temporary until mapped)'}
-                  </strong>
-                ))}
-                <small>
-                  Staff scheduling uses the longest duration. Each native resident receives the duration mapped to their event-date R-year.
-                </small>
-              </div>
-            ) : selectedPostingDuration?.isMapped ? (
-              <div className="secretary-toggle-block" aria-live="polite">
-                <span className="secretary-toggle-label">Duration</span>
-                <strong>{formatDuration(selectedPostingDuration.durationHours)} (TTF mapping)</strong>
-                <small>End time is calculated by the server.</small>
-              </div>
-            ) : selectedSourceOption?.globalSessionTypeId ? (
-              <div className="secretary-toggle-block" aria-live="polite">
-                <span className="secretary-toggle-label">Duration</span>
-                <strong>{formatDuration(selectedSourceOption.durationHours)} (global source)</strong>
-                <small>End time is calculated by the server.</small>
-              </div>
-            ) : null}
+          {!selectedDateOutsidePeriod ? (
+            selectedSourceOption?.teachingNameId
+              && formState.postingCode
+              && selectedPostingDuration
+              && selectedPostingHasNoMappedDurations ? (
+                <div className="inline-callout callout-neutral" role="status">
+                  This Teaching Name has not been mapped by the Programme PC. This event will use a temporary one-hour duration. Once mapped, the system will automatically update its duration and end time.
+                </div>
+              ) : selectedPostingNeedsRYearBreakdown ? (
+                <div className="secretary-toggle-block" aria-live="polite">
+                  <span className="secretary-toggle-label">
+                    {selectedPostingDuration?.durationVaries ? 'Duration varies by R-year' : 'Duration by R-year'}
+                  </span>
+                  {selectedPostingRYearDurations.map((timing) => (
+                    <strong key={`${timing.programmeCode ?? selectedPcProgrammeCode}:${timing.rYear}`}>
+                      {timing.rYear}: {timing.sessionTypeName ?? 'Pending mapping'} · {formatDuration(timing.durationHours)}
+                      {timing.isMapped ? '' : ' (temporary until mapped)'}
+                    </strong>
+                  ))}
+                  <small>
+                    Staff scheduling uses the longest duration. Each resident receives the duration mapped to their event-date R-year.
+                  </small>
+                </div>
+              ) : selectedPostingDuration?.isMapped ? (
+                <div className="secretary-toggle-block" aria-live="polite">
+                  <span className="secretary-toggle-label">Session type</span>
+                  <strong>{selectedPostingSessionTypeLabel}</strong>
+                  <span className="secretary-toggle-label">Duration</span>
+                  <strong>{formatDuration(selectedPostingDuration.durationHours)} (TTF mapping)</strong>
+                  <small>End time is calculated by the server.</small>
+                </div>
+              ) : selectedSourceOption?.globalSessionTypeId ? (
+                <div className="secretary-toggle-block" aria-live="polite">
+                  <span className="secretary-toggle-label">Duration</span>
+                  <strong>{formatDuration(selectedSourceOption.durationHours)} (global source)</strong>
+                  <small>End time is calculated by the server.</small>
+                </div>
+              ) : null
+          ) : null}
 
           <div className="secretary-form-row">
             <label>
@@ -1192,8 +1251,10 @@ export const PcTeachingEventsPage = () => {
                 max={selectedPeriod?.endDate}
                 onChange={(event) => updateField('eventDate', event.target.value)}
               />
-              {formErrors.eventDate ? (
-                <small className="upload-validation-text">{formErrors.eventDate}</small>
+              {formErrors.eventDate || selectedDateOutsidePeriod ? (
+                <small className="upload-validation-text">
+                  {formErrors.eventDate ?? 'Event date must be within the selected reporting period.'}
+                </small>
               ) : null}
             </label>
 
@@ -1213,7 +1274,7 @@ export const PcTeachingEventsPage = () => {
             </label>
           </div>
 
-          {selectedPostingNeedsRYearBreakdown ? (
+          {!selectedDateOutsidePeriod && selectedPostingNeedsRYearBreakdown ? (
             <div className="secretary-toggle-block" aria-live="polite">
               <span className="secretary-toggle-label">End time by R-year</span>
               {selectedPostingRYearDurations.map((timing) => (
@@ -1230,7 +1291,7 @@ export const PcTeachingEventsPage = () => {
                 }.
               </small>
             </div>
-          ) : selectedPostingDuration?.isMapped ? (
+          ) : !selectedDateOutsidePeriod && selectedPostingDuration?.isMapped ? (
             <div className="secretary-toggle-block" aria-live="polite">
               <span className="secretary-toggle-label">End time</span>
               <strong>{selectedMappedPoolEndTime ?? 'Select a valid start time'}</strong>

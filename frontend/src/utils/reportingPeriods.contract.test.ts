@@ -56,16 +56,16 @@ assertEqual(
 )
 assertEqual(
   selectCurrentReportingPeriodId([periods[0], periods[2]], currentDate),
-  '',
-  'no current-date period produces no unsafe active-period fallback',
+  'future-active',
+  'no current-date period falls back to the most recent active period',
 )
 assertEqual(
   selectCurrentReportingPeriodId([
     periods[1],
     { ...periods[1], id: 'overlapping-current', label: 'Overlapping current' },
   ], currentDate),
-  '',
-  'overlapping current periods fail closed without a frontend default',
+  'overlapping-current',
+  'overlapping current periods use a deterministic most-recent default',
 )
 assertEqual(
   defaultDeactivateOn('2026-12-31'),

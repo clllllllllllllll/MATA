@@ -173,7 +173,11 @@ state = applyReportingPeriodLoadSuccess(
   periods.filter((period) => period.id !== 'current'),
   currentDate,
 )
-assertEqual(state.selectedId, '', 'no current applicable period has no unsafe fallback')
+assertEqual(
+  state.selectedId,
+  'future-active',
+  'no current applicable period falls back to the most recent active period',
+)
 
 const staleCalls: string[] = []
 const staleResult = await withValidatedReportingPeriod(periods, 'missing-period', async (period) => {

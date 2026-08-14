@@ -637,6 +637,28 @@ def _json_payload_value(value: Any) -> Any:
     return value
 
 
+def _visible_upload_type(occurrence: Mapping[str, Any] | None) -> str:
+    """Return a stable list label when upload-log RLS redacts the joined row."""
+
+    if not occurrence:
+        return ""
+    upload_type = _string_value(occurrence.get("upload_type"))
+    if upload_type in {"rdb", "ttf", "form_f1", "public_holidays"}:
+        return upload_type
+    warning_type = _normalise_warning_type(occurrence.get("warning_type"))
+    source_table = _normalise_text(occurrence.get("source_table"))
+    if warning_type == "public_holiday_day_mismatch" or "public_holiday" in source_table:
+        return "public_holidays"
+    if warning_type == "tag_order_warning" or source_table in {
+        "session_types",
+        "teaching_targets",
+    }:
+        return "ttf"
+    if warning_type.startswith("form_f1") or source_table == "form_f1_records":
+        return "form_f1"
+    return "rdb"
+
+
 def _detail_occurrence_payload(occurrence: dict[str, Any]) -> dict[str, Any]:
     source_payload = _json_payload_value(occurrence.get("source_payload"))
     return {
@@ -644,7 +666,7 @@ def _detail_occurrence_payload(occurrence: dict[str, Any]) -> dict[str, Any]:
         "issue_id": str(occurrence["issue_id"]),
         "source_trace": _latest_trace(occurrence),
         "upload_log_id": str(occurrence["upload_log_id"]),
-        "upload_type": occurrence.get("upload_type"),
+        "upload_type": _visible_upload_type(occurrence),
         "uploaded_at": occurrence.get("uploaded_at"),
         "warning_type": occurrence["warning_type"],
         "severity": occurrence["severity"],
@@ -720,7 +742,7 @@ def _list_item(
         "upload_warning_id": latest_warning_id,
         "dedupe_key": issue["fingerprint"],
         "upload_log_id": str(issue.get("last_seen_upload_log_id") or ""),
-        "upload_type": occurrence.get("upload_type", "") if occurrence else "",
+        "upload_type": _visible_upload_type(occurrence),
         "uploaded_at": occurrence.get("created_at") or issue["last_seen_at"],
         "uploaded_by": None,
         "reporting_period_id": str(issue["reporting_period_id"]) if issue.get("reporting_period_id") else None,

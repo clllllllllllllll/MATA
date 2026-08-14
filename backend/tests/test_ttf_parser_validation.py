@@ -397,7 +397,14 @@ async def test_selected_reporting_period_label_must_match_every_data_row() -> No
 
     assert matching.errors == []
     assert mismatching.errors
-    assert any("reporting period" in error["message"].casefold() for error in mismatching.errors)
+    assert any(
+        error["message"]
+        == (
+            "Column A reporting period does not match the selected reporting "
+            "period. Expected 'Jan - June'."
+        )
+        for error in mismatching.errors
+    )
 
 
 @pytest.mark.asyncio
@@ -770,15 +777,14 @@ async def test_custom_programme_config_subspecialty_flag_does_not_remap_r_years(
 
 
 @pytest.mark.asyncio
-async def test_legacy_a_k_fixture_is_rejected_when_available() -> None:
+async def test_evolved_a_k_fixture_is_accepted_when_available() -> None:
     candidate_paths = [
-        Path("Teaching_Target_File_DR__CL.xlsx"),
         Path("tests/data/Teaching_Target_File_DR__CL.xlsx"),
         Path("../tests/data/Teaching_Target_File_DR__CL.xlsx"),
     ]
     workbook_path = next((path for path in candidate_paths if path.exists()), None)
     if workbook_path is None:
-        pytest.skip("Teaching_Target_File_DR__CL.xlsx not found at repo root or test fixture path.")
+        pytest.skip("Teaching_Target_File_DR__CL.xlsx not found in a test fixture path.")
 
     result = await parse_ttf_upload(
         file_bytes=workbook_path.read_bytes(),
@@ -787,5 +793,5 @@ async def test_legacy_a_k_fixture_is_rejected_when_available() -> None:
         programme_code="DR",
         programme_configs=_DR_PROGRAMME_CONFIG,
     )
-    assert result.errors
-    assert any(error["column"] == "K" for error in result.errors)
+    assert result.errors == []
+    assert result.metadata["counts"]["targets"] > 0

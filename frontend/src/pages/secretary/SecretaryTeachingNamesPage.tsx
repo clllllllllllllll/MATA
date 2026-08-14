@@ -15,8 +15,8 @@ import { IconPlus, IconRefresh } from '../../components/icons'
 import { PageHero } from '../../components/PageHero'
 import { useAppState } from '../../context/useAppState'
 import {
+  formatReportingPeriodOptionLabel,
   isEffectivelyActiveReportingPeriod,
-  reportingPeriodDisplayStatus,
 } from '../../utils/reportingPeriods'
 import {
   resolveTeachingNameLifecycleError,
@@ -42,8 +42,8 @@ const filterValue = (filter: LifecycleFilter): boolean | undefined => {
 
 const sourceLabel = (name: SecretaryTeachingName): string =>
   name.visibilityScope === 'programme_private'
-    ? 'Created by Programme PC · programme-private'
-    : `Created by Department Secretary${name.originPostingCode ? ` · ${name.originPostingCode}` : ''}`
+    ? 'PC NHG'
+    : `Department Secretary${name.originPostingCode ? ` · ${name.originPostingCode}` : ''}`
 
 export const SecretaryTeachingNamesPage = () => {
   const {
@@ -254,7 +254,7 @@ export const SecretaryTeachingNamesPage = () => {
   const openEditDrawer = (name: SecretaryTeachingName) => {
     if (!name.canManageName) {
       setFeedbackTone('warning')
-      setFeedback('This PC-created name is visible for scheduling but its lifecycle is managed by the Programme PC.')
+      setFeedback('This PC NHG name is visible for scheduling but its lifecycle is managed by the Programme PC.')
       return
     }
     clearFeedback()
@@ -342,7 +342,7 @@ export const SecretaryTeachingNamesPage = () => {
   ) => {
     if (!name.canManageName) {
       setFeedbackTone('warning')
-      setFeedback('This PC-created name is read-only for the Department Secretary.')
+      setFeedback('This PC NHG name is read-only for the Department Secretary.')
       return
     }
     clearFeedback()
@@ -403,7 +403,7 @@ export const SecretaryTeachingNamesPage = () => {
   return (
     <div className="page secretary-teaching-names-page">
       <PageHero
-        title="Update Names of Teaching"
+        title="Names of Teaching"
         subtitle="Manage approved Teaching Names in your authorised programme pool."
         actions={
           <button
@@ -414,7 +414,7 @@ export const SecretaryTeachingNamesPage = () => {
             title={canManageNames ? 'Create a Name of Teaching.' : 'Select an authorised programme and active reporting period first.'}
           >
             <IconPlus size={15} />
-            Update Name of Teaching
+            Add Name of Teaching
           </button>
         }
       />
@@ -462,28 +462,31 @@ export const SecretaryTeachingNamesPage = () => {
               </label>
             ) : null}
 
-            <div className="secretary-teaching-names-periods" aria-label="Reporting period">
+            <label className="secretary-teaching-names-select">
+              <span>Reporting period</span>
               {reportingPeriodsLoading ? <span className="inline-muted">Loading reporting periods...</span> : null}
-              {!reportingPeriodsLoading && reportingPeriods.length > 0 ? reportingPeriods.map((period) => {
-                const active = isEffectivelyActiveReportingPeriod(period)
-                return (
-                  <button
-                    key={period.id}
-                    type="button"
-                    className={`filter-chip ${period.id === selectedPeriodId ? 'active' : ''}`}
-                    onClick={() => setReportingPeriodId(period.id)}
-                    disabled={!active}
-                    title={active ? reportingPeriodDisplayStatus(period) : 'This reporting period is inactive.'}
-                  >
-                    {period.label}
-                  </button>
-                )
-              }) : null}
+              {!reportingPeriodsLoading && reportingPeriods.length > 0 ? (
+                <select
+                  value={selectedPeriodId}
+                  onChange={(event) => setReportingPeriodId(event.target.value)}
+                  aria-label="Reporting period"
+                >
+                  <option value="">Select an active reporting period</option>
+                  {reportingPeriods.map((period) => {
+                    const active = isEffectivelyActiveReportingPeriod(period)
+                    return (
+                      <option key={period.id} value={period.id} disabled={!active}>
+                        {formatReportingPeriodOptionLabel(period)}{active ? '' : ' — inactive'}
+                      </option>
+                    )
+                  })}
+                </select>
+              ) : null}
               {reportingPeriodsError ? <span className="upload-validation-text">{reportingPeriodsError}</span> : null}
               {!reportingPeriodsLoading && !reportingPeriodsError && !selectedPeriod ? (
                 <span className="upload-validation-text">Select an active reporting period.</span>
               ) : null}
-            </div>
+            </label>
           </div>
         )}
       </section>
@@ -566,15 +569,14 @@ export const SecretaryTeachingNamesPage = () => {
                     <th>Programme</th>
                     <th>Reporting period</th>
                     <th>State</th>
-                    <th>Revision</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {namesLoading ? (
-                    <tr><td colSpan={6}>Loading Names of Teaching...</td></tr>
+                    <tr><td colSpan={5}>Loading Names of Teaching...</td></tr>
                   ) : names.length === 0 ? (
-                    <tr><td colSpan={6}>No Names of Teaching match this scope.</td></tr>
+                    <tr><td colSpan={5}>No Names of Teaching match this scope.</td></tr>
                   ) : names.map((name) => {
                     const isMutating = mutatingNameId === name.id
                     return (
@@ -590,7 +592,6 @@ export const SecretaryTeachingNamesPage = () => {
                             {name.isActive ? 'Active' : 'Inactive'}
                           </span>
                         </td>
-                        <td className="mono">{name.revision}</td>
                         <td>
                           <div className="secretary-teaching-names-actions">
                             <button type="button" className="button button-ghost" onClick={() => openEditDrawer(name)} disabled={isMutating || !name.canManageName}>Rename</button>
@@ -634,7 +635,7 @@ export const SecretaryTeachingNamesPage = () => {
                     </span>
                   </div>
                   <p>{sourceLabel(name)}</p>
-                  <p>{name.programmeCode} · {selectedPeriod?.label ?? name.reportingPeriodId} · Revision {name.revision}</p>
+                  <p>{name.programmeCode} · {selectedPeriod?.label ?? name.reportingPeriodId}</p>
                   <div className="secretary-teaching-names-mobile-actions">
                     <button type="button" className="button button-secondary" onClick={() => openEditDrawer(name)} disabled={isMutating || !name.canManageName}>Rename</button>
                     <button

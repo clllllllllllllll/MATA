@@ -86,19 +86,16 @@ const impactSummary = (impact: TeachingNameMappingImpact): string =>
 
 const mappingSourceLabel = (mapping: ProgrammePcTeachingNameMapping): string => {
   if (mapping.teachingNameVisibilityScope === 'programme_private') {
-    return `PC-created for ${mapping.teachingNameOwnerProgrammeCode}`
+    return 'PC NHG'
   }
-  return `Secretary source: ${mapping.teachingNameOwnerProgrammeCode}${mapping.teachingNameOriginPostingCode ? ` / ${mapping.teachingNameOriginPostingCode}` : ''}`
+  return `Department Secretary${mapping.teachingNameOriginPostingCode ? ` · ${mapping.teachingNameOriginPostingCode}` : ''}`
 }
 
 const teachingNameSourceLabel = (name: ProgrammePcTeachingName): string => {
   if (name.visibilityScope === 'programme_private') {
-    return 'PC-created · private to this programme'
+    return 'PC NHG'
   }
-  if (name.admissionReason === 'resident_host_posting') {
-    return `Host Secretary: ${name.programmeCode}${name.originPostingCode ? ` / ${name.originPostingCode}` : ''}`
-  }
-  return `Native Secretary${name.originPostingCode ? ` · ${name.originPostingCode}` : ''}`
+  return `Department Secretary${name.originPostingCode ? ` · ${name.originPostingCode}` : ''}`
 }
 
 export const PcSessionTypesPage = () => {
@@ -145,6 +142,7 @@ export const PcSessionTypesPage = () => {
   const [mappingsError, setMappingsError] = useState<string | null>(null)
   const [draftTargetIds, setDraftTargetIds] = useState<Record<string, string>>({})
   const [selectedMappingIds, setSelectedMappingIds] = useState<Set<string>>(new Set())
+  const [expandedMappingGroupIds, setExpandedMappingGroupIds] = useState<Set<string>>(new Set())
   const [mappingMutatingId, setMappingMutatingId] = useState<string | null>(null)
   const [bulkMutating, setBulkMutating] = useState(false)
   const [mappingFeedback, setMappingFeedback] = useState<string | null>(null)
@@ -295,6 +293,7 @@ export const PcSessionTypesPage = () => {
     setMappingsError(null)
     setDraftTargetIds({})
     setSelectedMappingIds(new Set())
+    setExpandedMappingGroupIds(new Set())
     setMappingMutatingId(null)
     setBulkMutating(false)
     setMappingFeedback(null)
@@ -478,6 +477,21 @@ export const PcSessionTypesPage = () => {
   const canManageScope = Boolean(selectedPcProgrammeCode && selectedPeriod && programmeScope.mode !== 'none')
   const mappingPage = Math.floor(mappingOffset / PAGE_SIZE) + 1
   const mappingPageCount = Math.max(1, Math.ceil(mappingTotal / PAGE_SIZE))
+  const mappingGroups = useMemo(() => {
+    const groups = new Map<string, ProgrammePcTeachingNameMapping[]>()
+    mappings.forEach((mapping) => {
+      const group = groups.get(mapping.teachingNameId) ?? []
+      group.push(mapping)
+      groups.set(mapping.teachingNameId, group)
+    })
+    return [...groups.entries()].map(([teachingNameId, items]) => ({
+      teachingNameId,
+      teachingName: items[0].teachingName,
+      sourceLabel: mappingSourceLabel(items[0]),
+      mappedCount: items.filter((item) => item.state === 'mapped').length,
+      items,
+    }))
+  }, [mappings])
   const namePage = Math.floor(nameOffset / PAGE_SIZE) + 1
   const namePageCount = Math.max(1, Math.ceil(nameTotal / PAGE_SIZE))
   const selectedMappingCount = selectedMappingIds.size
@@ -698,9 +712,20 @@ export const PcSessionTypesPage = () => {
     }
   }
 
-  const toggleMappingSelection = (mappingId: string) => {
-    const interactionState = interactionCoordinatorRef.current.snapshot()
-    if (interactionState.pendingAction !== null || interactionState.overlay !== null) {
+  const handleToggleMappingGroup = (teachingNameId: string) => {
+    setExpandedMappingGroupIds((current) => {
+      const next = new Set(current)
+      if (next.has(teachingNameId)) {
+        next.delete(teachingNameId)
+      } else {
+        next.add(teachingNameId)
+      }
+      return next
+    })
+  }
+
+  const handleToggleMappingSelection = (mappingId: string) => {
+    if (interactionLocked) {
       return
     }
     setSelectedMappingIds((current) => {
@@ -716,9 +741,8 @@ export const PcSessionTypesPage = () => {
     setMappingFeedbackNeedsRefresh(false)
   }
 
-  const toggleAllMappings = () => {
-    const interactionState = interactionCoordinatorRef.current.snapshot()
-    if (interactionState.pendingAction !== null || interactionState.overlay !== null) {
+  const handleToggleAllMappings = () => {
+    if (interactionLocked) {
       return
     }
     if (selectedMappingIds.size === mappings.length) {
@@ -731,7 +755,7 @@ export const PcSessionTypesPage = () => {
   const openNameDrawer = (mode: NameDrawerMode, name?: ProgrammePcTeachingName) => {
     if (mode === 'edit' && name && !name.canManageName) {
       setNameFeedbackTone('warning')
-      setNameFeedback('This host department name is read-only. You can map it for your programme, but only its source owner can change it.')
+      setNameFeedback('This Department Secretary name is read-only. You can map it for your programme, but only its source owner can change it.')
       return
     }
     if (!canManageScope || !interactionCoordinatorRef.current.openOverlay('name-drawer')) {
@@ -818,7 +842,7 @@ export const PcSessionTypesPage = () => {
   ) => {
     if (!name.canManageName) {
       setNameFeedbackTone('warning')
-      setNameFeedback('This host department name is read-only. Only its source owner can change its lifecycle.')
+      setNameFeedback('This Department Secretary name is read-only. Only its source owner can change its lifecycle.')
       return
     }
     if (!beginInteraction('lifecycle-mutation')) {
@@ -906,7 +930,7 @@ export const PcSessionTypesPage = () => {
     <div className="page pc-session-types-page">
       <PageHero
         title="Map Names of Teaching to Session Types"
-        subtitle="Map every admitted native or host Secretary name to your programme's exact posting and R-year TTF target."
+        subtitle="Map Department Secretary and PC Names of Teaching to your programme's exact posting and R-year TTF target."
         actions={
           <div className="pc-session-types-hero-actions">
             <button
@@ -928,7 +952,7 @@ export const PcSessionTypesPage = () => {
               title={canManageScope ? 'Create a Name of Teaching.' : 'Select an active reporting period and an in-scope programme first.'}
             >
               <IconPlus size={15} />
-              Add private Name of Teaching
+              Add PC Name of Teaching
             </button>
           </div>
         }
@@ -1001,7 +1025,7 @@ export const PcSessionTypesPage = () => {
             <div className="section-header pc-session-types-section-header">
               <div>
                 <h2>Mapping queue</h2>
-                <p>Host names appear only after an actual resident posting admits them. Each mapping always uses this programme's own TTF.</p>
+                <p>Department Secretary names appear after an actual resident posting admits them. Every mapping uses this programme's own TTF.</p>
               </div>
               <span className="inline-muted">{mappingTotal} mapping{mappingTotal === 1 ? '' : 's'}</span>
             </div>
@@ -1109,77 +1133,90 @@ export const PcSessionTypesPage = () => {
                           type="checkbox"
                           aria-label="Select all visible mappings for bulk change"
                           checked={mappings.length > 0 && selectedMappingCount === mappings.length}
-                          onChange={toggleAllMappings}
+                          onChange={handleToggleAllMappings}
                           disabled={mappingsLoading || interactionLocked}
                         />
                       </th>
-                      <th>Name of Teaching</th>
                       <th>Posting</th>
                       <th>R-year</th>
                       <th>State</th>
                       <th>Current target</th>
                       <th>Exact session type target</th>
-                      <th>Revision</th>
                       <th>Action</th>
                     </tr>
                   </thead>
                   <tbody>
                     {mappingsLoading ? (
-                      <tr><td colSpan={9}>Loading Teaching Name mappings...</td></tr>
+                      <tr><td colSpan={7}>Loading Teaching Name mappings...</td></tr>
                     ) : mappings.length === 0 ? (
-                      <tr><td colSpan={9}>No mappings match this scope.</td></tr>
-                    ) : mappings.map((mapping) => {
-                      const draftTargetId = draftTargetIds[mapping.id] ?? mapping.teachingTargetId ?? ''
-                      const selectedTargetId = draftTargetId || null
-                      const isMutating = interactionLocked || mappingMutatingId === mapping.id || bulkMutating
-                      return (
-                        <tr key={mapping.id}>
-                          <td>
-                            <input
-                              type="checkbox"
-                              aria-label={`Select ${mapping.teachingName} mapping for ${mapping.postingCode} ${mapping.rYear}`}
-                              checked={selectedMappingIds.has(mapping.id)}
-                              onChange={() => toggleMappingSelection(mapping.id)}
-                              disabled={isMutating}
-                            />
-                          </td>
-                          <td className="safe-wrap">
-                            <strong>{mapping.teachingName}</strong>
-                            {!mapping.teachingNameIsActive ? <span className="inline-muted"> Inactive name</span> : null}
-                            <div className="inline-muted">{mappingSourceLabel(mapping)}</div>
-                          </td>
-                          <td className="mono">{mapping.postingCode}</td>
-                          <td>{mapping.rYear}</td>
-                          <td><span className={`status-badge ${mapping.state === 'mapped' ? 'status-badge-success' : 'status-badge-warning'}`}>{mapping.state === 'mapped' ? 'Mapped' : 'Pending'}</span></td>
-                          <td className="safe-wrap">{mapping.target ? targetOptionLabel(mapping.target) : 'No target assigned'}</td>
-                          <td>
-                            <label className="pc-session-types-target-select">
-                              <span className="sr-only">Exact target for {mapping.teachingName}</span>
-                              <select
-                                value={draftTargetId}
-                                onChange={(event) => setDraftTargetIds((current) => ({ ...current, [mapping.id]: event.target.value }))}
-                                disabled={isMutating}
-                              >
-                                <option value="">{mapping.state === 'mapped' ? 'Clear to pending' : 'Choose exact target'}</option>
-                                {targetOptionsForMapping(mapping).map((target) => (
-                                  <option key={target.id} value={target.id}>{targetOptionLabel(target)}</option>
-                                ))}
-                              </select>
-                            </label>
-                          </td>
-                          <td className="mono">{mapping.revision}</td>
-                          <td>
+                      <tr><td colSpan={7}>No mappings match this scope.</td></tr>
+                    ) : mappingGroups.flatMap((group) => {
+                      const expanded = expandedMappingGroupIds.has(group.teachingNameId)
+                      return [
+                        <tr key={`${group.teachingNameId}:summary`} className="pc-session-types-group-summary-row">
+                          <td colSpan={7}>
                             <button
                               type="button"
-                              className="button button-secondary"
-                              onClick={() => void previewAndApplySingleMapping(mapping)}
-                              disabled={isMutating || selectedTargetId === mapping.teachingTargetId}
+                              className="pc-session-types-group-toggle"
+                              aria-expanded={expanded}
+                              onClick={() => handleToggleMappingGroup(group.teachingNameId)}
                             >
-                              {mappingMutatingId === mapping.id ? 'Saving…' : mappingActionLabel(mapping, selectedTargetId)}
+                              <span>
+                                <strong>{group.teachingName}</strong>
+                                <small>{group.sourceLabel}</small>
+                              </span>
+                              <span>{group.mappedCount} of {group.items.length} mapped</span>
                             </button>
                           </td>
-                        </tr>
-                      )
+                        </tr>,
+                        ...(expanded ? group.items.map((mapping) => {
+                          const draftTargetId = draftTargetIds[mapping.id] ?? mapping.teachingTargetId ?? ''
+                          const selectedTargetId = draftTargetId || null
+                          const isMutating = interactionLocked || mappingMutatingId === mapping.id || bulkMutating
+                          return (
+                            <tr key={mapping.id}>
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  aria-label={`Select ${mapping.teachingName} mapping for ${mapping.postingCode} ${mapping.rYear}`}
+                                  checked={selectedMappingIds.has(mapping.id)}
+                                  onChange={() => handleToggleMappingSelection(mapping.id)}
+                                  disabled={isMutating}
+                                />
+                              </td>
+                              <td className="mono">{mapping.postingCode}</td>
+                              <td>{mapping.rYear}</td>
+                              <td><span className={`status-badge ${mapping.state === 'mapped' ? 'status-badge-success' : 'status-badge-warning'}`}>{mapping.state === 'mapped' ? 'Mapped' : 'Pending'}</span></td>
+                              <td className="safe-wrap">{mapping.target ? targetOptionLabel(mapping.target) : 'No target assigned'}</td>
+                              <td>
+                                <label className="pc-session-types-target-select">
+                                  <span className="sr-only">Exact target for {mapping.teachingName}</span>
+                                  <select
+                                    value={draftTargetId}
+                                    onChange={(event) => setDraftTargetIds((current) => ({ ...current, [mapping.id]: event.target.value }))}
+                                    disabled={isMutating}
+                                  >
+                                    <option value="">{mapping.state === 'mapped' ? 'Clear to pending' : 'Choose exact target'}</option>
+                                    {targetOptionsForMapping(mapping).map((target) => (
+                                      <option key={target.id} value={target.id}>{targetOptionLabel(target)}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                              </td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="button button-secondary"
+                                  onClick={() => void previewAndApplySingleMapping(mapping)}
+                                  disabled={isMutating || selectedTargetId === mapping.teachingTargetId}
+                                >
+                                  {mappingMutatingId === mapping.id ? 'Saving…' : mappingActionLabel(mapping, selectedTargetId)}
+                                </button>
+                              </td>
+                            </tr>
+                          )
+                        }) : []),
+                      ]
                     })}
                   </tbody>
                 </table>
@@ -1189,54 +1226,69 @@ export const PcSessionTypesPage = () => {
             <div className="pc-session-types-mobile-list" aria-label="Teaching Name mapping cards">
               {mappingsLoading ? <div className="mobile-record-card">Loading Teaching Name mappings...</div> : null}
               {!mappingsLoading && mappings.length === 0 ? <div className="mobile-record-card">No mappings match this scope.</div> : null}
-              {!mappingsLoading ? mappings.map((mapping) => {
-                const draftTargetId = draftTargetIds[mapping.id] ?? mapping.teachingTargetId ?? ''
-                const selectedTargetId = draftTargetId || null
-                const isMutating = interactionLocked || mappingMutatingId === mapping.id || bulkMutating
+              {!mappingsLoading ? mappingGroups.map((group) => {
+                const expanded = expandedMappingGroupIds.has(group.teachingNameId)
                 return (
-                  <article key={mapping.id} className="mobile-record-card pc-session-types-mobile-card">
-                    <div className="pc-session-types-mobile-heading">
-                      <div>
-                        <strong className="safe-wrap">{mapping.teachingName}</strong>
-                        <p>{mappingSourceLabel(mapping)}</p>
-                        <p>{mapping.postingCode} · {mapping.rYear} · Revision {mapping.revision}</p>
-                      </div>
-                      <span className={`status-badge ${mapping.state === 'mapped' ? 'status-badge-success' : 'status-badge-warning'}`}>{mapping.state === 'mapped' ? 'Mapped' : 'Pending'}</span>
-                    </div>
-                    <p className="pc-session-types-current-target"><strong>Current target:</strong> {mapping.target ? targetOptionLabel(mapping.target) : 'No target assigned'}</p>
-                    <label className="pc-session-types-target-select">
-                      <span>Exact session type target</span>
-                      <select
-                        value={draftTargetId}
-                        onChange={(event) => setDraftTargetIds((current) => ({ ...current, [mapping.id]: event.target.value }))}
-                        disabled={isMutating}
-                      >
-                        <option value="">{mapping.state === 'mapped' ? 'Clear to pending' : 'Choose exact target'}</option>
-                        {targetOptionsForMapping(mapping).map((target) => (
-                          <option key={target.id} value={target.id}>{targetOptionLabel(target)}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <div className="pc-session-types-mobile-actions">
-                      <label className="pc-session-types-checkbox-label">
-                        <input
-                          type="checkbox"
-                          checked={selectedMappingIds.has(mapping.id)}
-                          onChange={() => toggleMappingSelection(mapping.id)}
-                          disabled={isMutating}
-                        />
-                        Select for bulk change
-                      </label>
-                      <button
-                        type="button"
-                        className="button button-primary"
-                        onClick={() => void previewAndApplySingleMapping(mapping)}
-                        disabled={isMutating || selectedTargetId === mapping.teachingTargetId}
-                      >
-                        {mappingMutatingId === mapping.id ? 'Saving…' : mappingActionLabel(mapping, selectedTargetId)}
-                      </button>
-                    </div>
-                  </article>
+                  <section key={group.teachingNameId} className="pc-session-types-mobile-group">
+                    <button
+                      type="button"
+                      className="pc-session-types-group-toggle"
+                      aria-expanded={expanded}
+                      onClick={() => handleToggleMappingGroup(group.teachingNameId)}
+                    >
+                      <span><strong>{group.teachingName}</strong><small>{group.sourceLabel}</small></span>
+                      <span>{group.mappedCount} of {group.items.length} mapped</span>
+                    </button>
+                    {expanded ? group.items.map((mapping) => {
+                      const draftTargetId = draftTargetIds[mapping.id] ?? mapping.teachingTargetId ?? ''
+                      const selectedTargetId = draftTargetId || null
+                      const isMutating = interactionLocked || mappingMutatingId === mapping.id || bulkMutating
+                      return (
+                        <article key={mapping.id} className="mobile-record-card pc-session-types-mobile-card">
+                          <div className="pc-session-types-mobile-heading">
+                            <div>
+                              <strong className="safe-wrap">{mapping.postingCode}</strong>
+                              <p>{mapping.rYear}</p>
+                            </div>
+                            <span className={`status-badge ${mapping.state === 'mapped' ? 'status-badge-success' : 'status-badge-warning'}`}>{mapping.state === 'mapped' ? 'Mapped' : 'Pending'}</span>
+                          </div>
+                          <p className="pc-session-types-current-target"><strong>Current target:</strong> {mapping.target ? targetOptionLabel(mapping.target) : 'No target assigned'}</p>
+                          <label className="pc-session-types-target-select">
+                            <span>Exact session type target</span>
+                            <select
+                              value={draftTargetId}
+                              onChange={(event) => setDraftTargetIds((current) => ({ ...current, [mapping.id]: event.target.value }))}
+                              disabled={isMutating}
+                            >
+                              <option value="">{mapping.state === 'mapped' ? 'Clear to pending' : 'Choose exact target'}</option>
+                              {targetOptionsForMapping(mapping).map((target) => (
+                                <option key={target.id} value={target.id}>{targetOptionLabel(target)}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <div className="pc-session-types-mobile-actions">
+                            <label className="pc-session-types-checkbox-label">
+                              <input
+                                type="checkbox"
+                                checked={selectedMappingIds.has(mapping.id)}
+                                onChange={() => handleToggleMappingSelection(mapping.id)}
+                                disabled={isMutating}
+                              />
+                              Select for bulk change
+                            </label>
+                            <button
+                              type="button"
+                              className="button button-primary"
+                              onClick={() => void previewAndApplySingleMapping(mapping)}
+                              disabled={isMutating || selectedTargetId === mapping.teachingTargetId}
+                            >
+                              {mappingMutatingId === mapping.id ? 'Saving…' : mappingActionLabel(mapping, selectedTargetId)}
+                            </button>
+                          </div>
+                        </article>
+                      )
+                    }) : null}
+                  </section>
                 )
               }) : null}
             </div>
@@ -1254,7 +1306,7 @@ export const PcSessionTypesPage = () => {
             <div className="section-header pc-session-types-section-header">
               <div>
                 <h2>Names of Teaching</h2>
-                <p>PC-created names are private to this programme. Host Secretary names are read-only here but remain available for mapping.</p>
+                <p>PC NHG names are managed here. Department Secretary names are read-only and remain available for mapping.</p>
               </div>
               <button type="button" className="button button-secondary" onClick={() => void loadTeachingNames()} disabled={namesLoading || interactionLocked}>
                 <IconRefresh size={14} />
@@ -1329,15 +1381,14 @@ export const PcSessionTypesPage = () => {
                     <tr>
                       <th>Name of Teaching</th>
                       <th>State</th>
-                      <th>Revision</th>
                       <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {namesLoading ? (
-                      <tr><td colSpan={4}>Loading Names of Teaching...</td></tr>
+                      <tr><td colSpan={3}>Loading Names of Teaching...</td></tr>
                     ) : names.length === 0 ? (
-                      <tr><td colSpan={4}>No Names of Teaching match this scope.</td></tr>
+                      <tr><td colSpan={3}>No Names of Teaching match this scope.</td></tr>
                     ) : names.map((name) => {
                       const isMutating = interactionLocked || mutatingNameId === name.id
                       return (
@@ -1347,7 +1398,6 @@ export const PcSessionTypesPage = () => {
                             <div className="inline-muted">{teachingNameSourceLabel(name)}</div>
                           </td>
                           <td><span className={`status-badge ${name.isActive ? 'status-badge-success' : 'status-badge-neutral'}`}>{name.isActive ? 'Active' : 'Inactive'}</span></td>
-                          <td className="mono">{name.revision}</td>
                           <td>
                             <div className="pc-session-types-name-actions">
                               <button type="button" className="button button-ghost" onClick={() => openNameDrawer('edit', name)} disabled={isMutating || !name.canManageName}>Rename</button>
@@ -1382,7 +1432,7 @@ export const PcSessionTypesPage = () => {
                       <strong className="safe-wrap">{name.teachingName}</strong>
                       <span className={`status-badge ${name.isActive ? 'status-badge-success' : 'status-badge-neutral'}`}>{name.isActive ? 'Active' : 'Inactive'}</span>
                     </div>
-                    <p>{teachingNameSourceLabel(name)} · Revision {name.revision}</p>
+                    <p>{teachingNameSourceLabel(name)}</p>
                     <div className="pc-session-types-mobile-actions">
                       <button type="button" className="button button-secondary" onClick={() => openNameDrawer('edit', name)} disabled={isMutating || !name.canManageName}>Rename</button>
                       <button type="button" className="button button-secondary" onClick={() => void runLifecycleAction(name, name.isActive ? 'deactivate' : 'reactivate')} disabled={isMutating || !name.canManageName}>{name.isActive ? 'Deactivate' : 'Reactivate'}</button>
@@ -1426,7 +1476,7 @@ export const PcSessionTypesPage = () => {
           </div>
           {nameDrawerMode === 'create' ? (
             <div className="inline-callout" role="status">
-              This name will be PC-created and visible only to this programme's PCs and native Department Secretary.
+              This Name of Teaching will be labelled PC NHG and available to this programme's PCs and Department Secretary.
             </div>
           ) : null}
           <label>

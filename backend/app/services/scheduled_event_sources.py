@@ -30,6 +30,7 @@ class ScheduledEventSource:
     duration_hours: Decimal
     kind: ScheduledEventSourceKind
     programme_code: str | None = None
+    mapping_programme_code: str | None = None
     reporting_period_id: UUID | None = None
     duration_is_mapped: bool = True
     duration_varies: bool = False
@@ -176,10 +177,15 @@ async def _resolve_teaching_name_source(
 
     source = dict(row)
     source_programme_code = str(source["programme_code"])
+    mapping_programme_code = programme_code or source_programme_code
     await _require_pool_source_visibility(
         db,
         actor=actor,
-        programme_code=source_programme_code,
+        programme_code=(
+            mapping_programme_code
+            if actor.kind == "programme_pc"
+            else source_programme_code
+        ),
     )
     if actor.kind == "secretary":
         if source["visibility_scope"] == "department_shared":
@@ -206,10 +212,29 @@ async def _resolve_teaching_name_source(
                 raise _validation_error(
                     "PC-created Teaching Name is private to its native department"
                 )
-    if programme_code is not None and source_programme_code != programme_code:
-        raise _validation_error(
-            "Selected Teaching Name does not belong to the requested programme"
+    if actor.kind == "programme_pc":
+        admission_result = await db.execute(
+            text(
+                """
+                /* scheduled_event_sources:programme_admission */
+                SELECT 1
+                FROM teaching_name_programme_scopes
+                WHERE teaching_name_id = :teaching_name_id
+                  AND reporting_period_id = :reporting_period_id
+                  AND programme_code = :programme_code
+                LIMIT 1
+                """
+            ),
+            {
+                "teaching_name_id": str(source["id"]),
+                "reporting_period_id": str(source["reporting_period_id"]),
+                "programme_code": mapping_programme_code,
+            },
         )
+        if admission_result.scalar_one_or_none() is None:
+            raise _validation_error(
+                "Selected Teaching Name is not admitted to the requested programme"
+            )
     if str(source["reporting_period_id"]) != str(reporting_period_id):
         raise _validation_error(
             "Selected Teaching Name is not in the active reporting period for this event"
@@ -242,7 +267,7 @@ async def _resolve_teaching_name_source(
             scope=PoolEventTimingScope(
                 teaching_name_id=source["id"],
                 reporting_period_id=source["reporting_period_id"],
-                programme_code=source_programme_code,
+                programme_code=mapping_programme_code,
                 posting_code=posting_code,
             ),
         )
@@ -254,6 +279,7 @@ async def _resolve_teaching_name_source(
         duration_hours=timing.duration_hours,
         kind="teaching_name",
         programme_code=source_programme_code,
+        mapping_programme_code=mapping_programme_code,
         reporting_period_id=UUID(str(source["reporting_period_id"])),
         duration_is_mapped=timing.is_mapped,
         duration_varies=timing.duration_varies,
