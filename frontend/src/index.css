@@ -2975,6 +2975,15 @@ tr:last-child td {
   gap: 8px;
 }
 
+.pc-session-types-name-state-cell,
+.pc-session-types-name-actions-cell {
+  text-align: center;
+}
+
+.pc-session-types-name-actions {
+  justify-content: center;
+}
+
 .pc-session-types-name-actions .button {
   min-height: 36px;
   padding: 6px 10px;

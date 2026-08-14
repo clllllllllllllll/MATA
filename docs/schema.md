@@ -82,8 +82,9 @@ The current final model uses `teaching_name` as the canonical term:
 - An explicitly authorized Department Secretary creates and manages
   department-shared names at that Secretary's immutable source posting. A
   Programme PC creates and manages programme-private names in its own native
-  programme. A consuming PC may read and map an admitted host source but may
-  not change its source lifecycle; a native Secretary may schedule with a
+  programme. A Programme PC may read and map a Department Secretary-created
+  source, whether native or admitted from a host, but may not change its source
+  lifecycle; a native Secretary may schedule with a
   PC-private name but may not change its lifecycle. Phase D exposes a separate
   Programme-PC mapping queue and mutation API: a PC may assign, change, or
   explicitly clear only an in-scope mapping, while a Master Admin is read-only
