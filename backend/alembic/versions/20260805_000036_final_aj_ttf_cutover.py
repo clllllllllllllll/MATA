@@ -272,15 +272,20 @@ BEGIN
             USING ERRCODE = '2BP01';
     END IF;
 
+    -- pg_get_functiondef rejects aggregates.  Keep it inside CASE rather than
+    -- relying on a separate prokind predicate that the planner may reorder.
     IF EXISTS (
         SELECT 1
         FROM pg_catalog.pg_proc AS procedure
         JOIN pg_catalog.pg_namespace AS namespace
           ON namespace.oid = procedure.pronamespace
         WHERE namespace.nspname IN ('mata_rls', 'mata_private', 'public')
-          AND procedure.prokind IN ('f', 'p')
-          AND pg_catalog.lower(pg_catalog.pg_get_functiondef(procedure.oid))
-              LIKE '%details_of_training%'
+          AND CASE
+              WHEN procedure.prokind IN ('f', 'p') THEN
+                  pg_catalog.lower(pg_catalog.pg_get_functiondef(procedure.oid))
+                      LIKE '%details_of_training%'
+              ELSE false
+          END
     ) THEN
         RAISE EXCEPTION 'Database helper still depends on details_of_training'
             USING ERRCODE = '2BP01';
@@ -577,20 +582,23 @@ BEGIN
     END IF;
 
     -- Runtime and private helper bodies are text-scanned as PostgreSQL does not
-    -- record every PL/pgSQL body dependency in pg_depend.
+    -- record every PL/pgSQL body dependency in pg_depend.  pg_get_functiondef
+    -- must remain inside CASE because the planner may reorder WHERE predicates.
     IF EXISTS (
         SELECT 1
         FROM pg_catalog.pg_proc AS procedure
         JOIN pg_catalog.pg_namespace AS namespace
           ON namespace.oid = procedure.pronamespace
         WHERE namespace.nspname IN ('mata_rls', 'mata_private', 'public')
-          AND procedure.prokind IN ('f', 'p')
-          AND (
-              pg_catalog.lower(pg_catalog.pg_get_functiondef(procedure.oid))
-                  LIKE '%teaching_name_catalogue%'
-              OR pg_catalog.lower(pg_catalog.pg_get_functiondef(procedure.oid))
-                  LIKE '%details_of_training%'
-          )
+          AND CASE
+              WHEN procedure.prokind IN ('f', 'p') THEN (
+                  pg_catalog.lower(pg_catalog.pg_get_functiondef(procedure.oid))
+                      LIKE '%teaching_name_catalogue%'
+                  OR pg_catalog.lower(pg_catalog.pg_get_functiondef(procedure.oid))
+                      LIKE '%details_of_training%'
+              )
+              ELSE false
+          END
     ) THEN
         RAISE EXCEPTION 'Database helper still depends on retired TTF catalogue state'
             USING ERRCODE = '2BP01';
