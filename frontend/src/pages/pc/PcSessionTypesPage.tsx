@@ -931,22 +931,35 @@ export const PcSessionTypesPage = () => {
                 ))}
               </div>
               <label className="pc-session-types-search">
-                <span>Search Names of Teaching</span>
+                <span className="sr-only">Search Name of Teaching</span>
                 <input
                   type="search"
                   value={mappingSearchInput}
                   onChange={(event) => setMappingSearchInput(event.target.value)}
-                  placeholder="Search by name"
+                  placeholder="Search Name of Teaching"
+                  aria-label="Search Name of Teaching"
                   disabled={interactionLocked}
                 />
               </label>
               <label className="pc-session-types-short-filter">
-                <span>Posting</span>
-                <input value={postingFilterInput} onChange={(event) => setPostingFilterInput(event.target.value)} disabled={interactionLocked} />
+                <span className="sr-only">Posting</span>
+                <input
+                  value={postingFilterInput}
+                  onChange={(event) => setPostingFilterInput(event.target.value)}
+                  placeholder="Posting"
+                  aria-label="Posting"
+                  disabled={interactionLocked}
+                />
               </label>
               <label className="pc-session-types-short-filter">
-                <span>R-year</span>
-                <input value={rYearFilterInput} onChange={(event) => setRYearFilterInput(event.target.value)} disabled={interactionLocked} />
+                <span className="sr-only">R-year</span>
+                <input
+                  value={rYearFilterInput}
+                  onChange={(event) => setRYearFilterInput(event.target.value)}
+                  placeholder="R-year"
+                  aria-label="R-year"
+                  disabled={interactionLocked}
+                />
               </label>
               <button type="submit" className="button button-secondary" disabled={interactionLocked}>Apply filters</button>
             </form>
@@ -1173,12 +1186,13 @@ export const PcSessionTypesPage = () => {
                 ))}
               </div>
               <label className="pc-session-types-search">
-                <span>Search Names of Teaching</span>
+                <span className="sr-only">Search Name of Teaching</span>
                 <input
                   type="search"
                   value={nameSearchInput}
                   onChange={(event) => setNameSearchInput(event.target.value)}
-                  placeholder="Search by name"
+                  placeholder="Search Name of Teaching"
+                  aria-label="Search Name of Teaching"
                   disabled={interactionLocked}
                 />
               </label>

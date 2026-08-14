@@ -221,6 +221,11 @@ assert(pageSource.includes('Created By'), 'PC teaching-events table still render
 assert(pageSource.includes('<h2>Teaching schedule</h2>'), 'PC teaching-events table uses Secretary-style title')
 assert(pageSource.includes('Add Teaching'), 'PC teaching-events primary action follows Secretary wording')
 assert(
+  pageSource.includes("reportingPeriodsLoading ? 'Loading reporting periods...' : 'Select an active reporting period'")
+    && pageSource.includes('onClick={() => void reloadReportingPeriods()}'),
+  'PC teaching-events reports terminal period-load failures while transient failures retry automatically',
+)
+assert(
   pageSource.includes('selectedPostingDuration')
     && pageSource.includes('temporary one-hour duration')
     && pageSource.includes('automatically update its duration and end time'),

@@ -49,6 +49,8 @@ import {
   type ReportingPeriodContextState,
 } from '../utils/reportingPeriodContextState'
 
+const REPORTING_PERIOD_INITIAL_RETRY_DELAY_MS = 400
+
 const canIdentityLoadReportingPeriodData = (identity: AuthIdentity | null): boolean => {
   if (!identity) {
     return false
@@ -219,24 +221,39 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
     const loadToken = reportingPeriodLoadToken(reportingPeriodContextRef.current)
     const requestVersion = reportingPeriodRequestVersionRef.current + 1
     reportingPeriodRequestVersionRef.current = requestVersion
+    const requestIsCurrent = () => (
+      active
+      && requestVersion === reportingPeriodRequestVersionRef.current
+      && isReportingPeriodLoadCurrent(reportingPeriodContextRef.current, loadToken)
+    )
     ;(async () => {
       try {
-        const periods = await fetchReportingPeriods()
-        if (
-          !active
-          || requestVersion !== reportingPeriodRequestVersionRef.current
-          || !isReportingPeriodLoadCurrent(reportingPeriodContextRef.current, loadToken)
-        ) {
+        let periods
+        try {
+          periods = await fetchReportingPeriods()
+        } catch (initialError) {
+          if (!requestIsCurrent()) {
+            return
+          }
+          await new Promise<void>((resolve) => {
+            window.setTimeout(resolve, REPORTING_PERIOD_INITIAL_RETRY_DELAY_MS)
+          })
+          if (!requestIsCurrent()) {
+            return
+          }
+          try {
+            periods = await fetchReportingPeriods()
+          } catch {
+            throw initialError
+          }
+        }
+        if (!requestIsCurrent()) {
           return
         }
         setReportingPeriodsError(null)
         updateReportingPeriodContext((state) => applyReportingPeriodLoadSuccess(state, loadToken, periods))
       } catch (error) {
-        if (
-          !active
-          || requestVersion !== reportingPeriodRequestVersionRef.current
-          || !isReportingPeriodLoadCurrent(reportingPeriodContextRef.current, loadToken)
-        ) {
+        if (!requestIsCurrent()) {
           return
         }
         const message = formatUserFacingApiError(error, {
@@ -245,11 +262,7 @@ export const AppStateProvider = ({ children }: PropsWithChildren) => {
         setReportingPeriodsError(message)
         updateReportingPeriodContext((state) => applyReportingPeriodLoadFailure(state, loadToken))
       } finally {
-        if (
-          active
-          && requestVersion === reportingPeriodRequestVersionRef.current
-          && isReportingPeriodLoadCurrent(reportingPeriodContextRef.current, loadToken)
-        ) {
+        if (requestIsCurrent()) {
           setReportingPeriodsLoading(false)
         }
       }

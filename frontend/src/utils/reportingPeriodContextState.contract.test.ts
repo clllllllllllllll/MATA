@@ -153,6 +153,13 @@ token = reportingPeriodLoadToken(state)
 state = applyReportingPeriodLoadFailure(state, token)
 assertEqual(state.periods.length, 0, 'load failure clears the period list')
 assertEqual(state.selectedId, '', 'load failure clears the selected period')
+token = reportingPeriodLoadToken(state)
+state = applyReportingPeriodLoadSuccess(state, token, periods, currentDate)
+assertEqual(
+  state.selectedId,
+  'current',
+  'a successful retry restores the list and selects the current period',
+)
 
 state = createReportingPeriodContextState(principalA)
 token = reportingPeriodLoadToken(state)

@@ -136,3 +136,22 @@ assert(
   uploadPageSource.includes('programmeCode: selectedPcProgrammeCode'),
   'PC upload request keeps sending the raw selected programme code',
 )
+assert(
+  uploadPageSource.includes('activeReportingPeriods.find((period) => period.id === reportingPeriodId)'),
+  'PC upload resolves its selected period only from active reporting periods',
+)
+assert(
+  uploadPageSource.includes('!reportingPeriodsLoading && reportingPeriodsError'),
+  'PC upload shows retry only after automatic reporting-period loading has finished',
+)
+
+const appContextSource = readFileSync(
+  fileURLToPath(new URL('../../context/AppContext.tsx', import.meta.url)),
+  'utf8',
+)
+assert(
+  appContextSource.includes('REPORTING_PERIOD_INITIAL_RETRY_DELAY_MS')
+    && appContextSource.includes('catch (initialError)')
+    && (appContextSource.match(/periods = await fetchReportingPeriods\(\)/g)?.length ?? 0) >= 2,
+  'initial reporting-period loading retries one transient failure automatically',
+)

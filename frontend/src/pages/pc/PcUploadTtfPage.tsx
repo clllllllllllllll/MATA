@@ -7,7 +7,10 @@ import { PageHero } from '../../components/PageHero'
 import { UploadCard } from '../../components/UploadCard'
 import { useAuth } from '../../context/useAuth'
 import { useAppState } from '../../context/useAppState'
-import { formatReportingPeriodOptionLabel } from '../../utils/reportingPeriods'
+import {
+  formatReportingPeriodOptionLabel,
+  isEffectivelyActiveReportingPeriod,
+} from '../../utils/reportingPeriods'
 import { buildPcTtfWarningsPath, resolvePcProgrammeScope } from './pcUploadTtfPageLogic'
 
 const formatDateTime = (iso?: string | null) =>
@@ -50,9 +53,13 @@ export const PcUploadTtfPage = () => {
     [pcProgrammeScope, selectedProgrammeCode],
   )
   const selectedPcProgrammeCode = programmeScope.selectedProgrammeCode
+  const activeReportingPeriods = useMemo(
+    () => reportingPeriods.filter((period) => isEffectivelyActiveReportingPeriod(period)),
+    [reportingPeriods],
+  )
   const selectedPeriod = useMemo(
-    () => reportingPeriods.find((period) => period.id === reportingPeriodId),
-    [reportingPeriodId, reportingPeriods],
+    () => activeReportingPeriods.find((period) => period.id === reportingPeriodId),
+    [activeReportingPeriods, reportingPeriodId],
   )
   const activeReportingPeriodId = selectedPeriod?.id ?? ''
   const localLatestTtfUpload = latestLocalTtfUpload(uploadHistory, selectedPcProgrammeCode)
@@ -143,9 +150,9 @@ export const PcUploadTtfPage = () => {
 
               <label>
                 Reporting period
-                {reportingPeriods.length > 0 ? (
+                {activeReportingPeriods.length > 0 ? (
                   <select value={reportingPeriodId} onChange={(event) => setReportingPeriodId(event.target.value)}>
-                    {reportingPeriods.map((period) => (
+                    {activeReportingPeriods.map((period) => (
                       <option key={period.id} value={period.id}>
                         {formatReportingPeriodOptionLabel(period)}
                       </option>
@@ -153,17 +160,17 @@ export const PcUploadTtfPage = () => {
                   </select>
                 ) : null}
                 {reportingPeriodsLoading ? <small>Loading reporting periods...</small> : null}
-                {!reportingPeriodsLoading && reportingPeriods.length === 0 ? (
-                  <small className="upload-validation-text">
-                    No reporting period is available. Upload is disabled until a period can be selected.
-                  </small>
-                ) : null}
-                {reportingPeriodsError ? (
+                {!reportingPeriodsLoading && reportingPeriodsError ? (
                   <small className="upload-validation-text">
                     {reportingPeriodsError}{' '}
                     <button type="button" className="button-link" onClick={() => void reloadReportingPeriods()}>
                       Retry
                     </button>
+                  </small>
+                ) : null}
+                {!reportingPeriodsLoading && !reportingPeriodsError && activeReportingPeriods.length === 0 ? (
+                  <small className="upload-validation-text">
+                    No active reporting period is available. Upload is disabled until a period can be selected.
                   </small>
                 ) : null}
               </label>
