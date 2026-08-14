@@ -53,6 +53,43 @@ def test_remaining_public_tables_rls_migration_is_explicit_and_locked_down() -> 
         assert f'ALTER TABLE IF EXISTS public."{table_name}" DISABLE ROW LEVEL SECURITY' in source
 
 
+def test_final_cutover_guards_function_definition_scans_from_aggregates() -> None:
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "20260805_000036_final_aj_ttf_cutover.py"
+    )
+
+    spec = importlib.util.spec_from_file_location(
+        "final_aj_ttf_cutover",
+        migration_path,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    statements: list[str] = []
+    module._execute = statements.append
+    module._assert_upgrade_preflight()
+    module._assert_removal_preflight()
+
+    definition_scans = [
+        " ".join(statement.lower().split())
+        for statement in statements
+        if "pg_get_functiondef" in statement
+    ]
+    assert len(definition_scans) == 2
+    for statement in definition_scans:
+        assert "case when procedure.prokind in ('f', 'p') then" in statement
+        assert "else false end" in statement
+        assert (
+            "and pg_catalog.lower(pg_catalog.pg_get_functiondef(procedure.oid))"
+            not in statement
+        )
+
+
 def test_staff_pool_event_timing_resolver_is_exact_scoped_and_runtime_only() -> None:
     migration_path = (
         Path(__file__).resolve().parents[1]
