@@ -470,11 +470,17 @@ test('pending logout blocks hydration and protected dispatch while preserving ex
   )
   assert.match(
     loginSource,
-    /const isLogoutStatusPolite =[\s\S]*logoutRetryReason === 'retry-scheduled'[\s\S]*role=\{isLogoutStatusPolite[\s\S]*aria-live=\{isLogoutStatusPolite/,
+    /const LOGOUT_STATUS_REVEAL_DELAY_MS = 700[\s\S]*const shouldRevealLogoutStatus =[\s\S]*!isLogoutRetrying[\s\S]*logoutRetryReason !== 'retry-scheduled'/,
   )
-  assert.match(loginSource, /role=\{[\s\S]*'alert'[\s\S]*aria-live=/)
+  assert.match(
+    loginSource,
+    /window\.setTimeout\([\s\S]*setShowLogoutStatus\(true\)[\s\S]*LOGOUT_STATUS_REVEAL_DELAY_MS/,
+  )
+  assert.match(loginSource, /shouldRevealLogoutStatus && showLogoutStatus/)
+  assert.match(loginSource, /role="alert"[\s\S]*aria-live="assertive"/)
   assert.match(loginSource, /Retry server sign-out/)
   assert.doesNotMatch(loginSource, /Server sign-out confirmed/)
+  assert.doesNotMatch(loginSource, /Confirming server sign-out/)
   assert.match(loginSource, /tabIndex=\{-1\}/)
   assert.match(
     reliabilitySource,

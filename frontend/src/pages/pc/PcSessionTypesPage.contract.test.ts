@@ -6,8 +6,6 @@ import { fileURLToPath } from 'node:url'
 import { getRouteAccessDecision, routeAccessRules } from '../../routeGuards.ts'
 import { resolvePcProgrammeScope } from './pcUploadTtfPageLogic.ts'
 import {
-  MAX_BULK_MAPPING_ITEMS,
-  prepareBulkMappingChanges,
   targetOptionLabel,
 } from './pcSessionTypesPageLogic.ts'
 import { createPcSessionTypesInteractionCoordinator } from './pcSessionTypesInteractionCoordinator.ts'
@@ -32,28 +30,6 @@ const target = {
   isReallocatable: false,
   tag: 'Core',
 }
-
-const mapping = (overrides: Record<string, unknown> = {}) => ({
-  id: 'mapping-1',
-  teachingNameId: 'name-1',
-  teachingName: 'Ward teaching',
-  teachingNameIsActive: true,
-  teachingNameRevision: 1,
-  teachingNameOwnerProgrammeCode: 'PC-1',
-  teachingNameCreatedByRole: 'secretary',
-  teachingNameVisibilityScope: 'department_shared',
-  teachingNameOriginPostingCode: 'POST-1',
-  teachingNameAdmissionReason: 'owner_programme',
-  reportingPeriodId: 'period-1',
-  programmeCode: 'PC-1',
-  postingCode: 'POST-1',
-  rYear: 'R1',
-  teachingTargetId: null,
-  state: 'pending' as const,
-  revision: 1,
-  availableTargetOptions: [target],
-  ...overrides,
-})
 
 test('Session Types route is Programme PC-only and is registered in navigation', () => {
   assert.ok(routeAccessRules.some((rule) => rule.path === '/pc/session-types'))
@@ -109,7 +85,7 @@ test('the shared interaction coordinator blocks overlapping work and keeps exact
 
   assert.deepEqual(coordinator.snapshot(), { pendingAction: null, overlay: null })
   assert.equal(coordinator.tryBegin('mapping-impact-preview'), true)
-  assert.equal(coordinator.tryBegin('bulk-impact-preview'), false)
+  assert.equal(coordinator.tryBegin('lifecycle-mutation'), false)
   assert.equal(coordinator.openOverlay('name-drawer'), false)
   assert.equal(coordinator.replacePendingWithOverlay('mapping-impact-preview', 'single-confirmation'), true)
   assert.deepEqual(coordinator.snapshot(), { pendingAction: null, overlay: 'single-confirmation' })
@@ -118,13 +94,13 @@ test('the shared interaction coordinator blocks overlapping work and keeps exact
   assert.equal(coordinator.openOverlay('name-drawer'), true)
   assert.deepEqual(coordinator.snapshot(), { pendingAction: null, overlay: 'name-drawer' })
   assert.equal(coordinator.beginWithinOverlay('name-drawer', 'lifecycle-mutation'), true)
-  assert.equal(coordinator.openOverlay('bulk-confirmation'), false)
+  assert.equal(coordinator.openOverlay('single-confirmation'), false)
   assert.equal(coordinator.tryBegin('mapping-impact-preview'), false)
   assert.equal(coordinator.complete('lifecycle-mutation'), true)
 
-  assert.equal(coordinator.openOverlay('bulk-confirmation'), true)
-  assert.deepEqual(coordinator.snapshot(), { pendingAction: null, overlay: 'bulk-confirmation' })
-  assert.equal(coordinator.closeOverlay('bulk-confirmation'), true)
+  assert.equal(coordinator.openOverlay('single-confirmation'), true)
+  assert.deepEqual(coordinator.snapshot(), { pendingAction: null, overlay: 'single-confirmation' })
+  assert.equal(coordinator.closeOverlay('single-confirmation'), true)
   assert.deepEqual(coordinator.snapshot(), { pendingAction: null, overlay: null })
 })
 
@@ -148,7 +124,7 @@ test('queue rendering uses backend exact targets with pending and mapped filters
   assert.match(pageSource, /Exact session type target/)
   assert.match(pageSource, /targetOptionsForMapping\(mapping\)/)
   assert.match(pageSource, /targetOptionLabel\(target\)/)
-  assert.match(pageSource, /Pending names remain available for events and attendance\./)
+  assert.match(pageSource, /Pending names remain available with a temporary one-hour event duration until mapped\./)
   assert.match(pageSource, /setMappings\(response\.items\)/)
   assert.equal(pageSource.includes('resident_id'), false)
   assert.equal(pageSource.includes('mcr'), false)
@@ -171,52 +147,23 @@ test('single mapping workflow previews count-only impact, supports assign/change
   assert.match(pageSource, /display the updated event duration/)
   assert.match(pageSource, /conflicting durations/)
   assert.match(pageSource, /No mapping changes were applied/)
-  assert.match(pageSource, /updates existing pool-backed event duration and end time/)
+  assert.match(pageSource, /A mapping updates existing event duration and end time for the exact scope/)
 
   assert.match(apiSource, /metadata\.impact/)
   assert.match(apiSource, /affected_event_count/)
   assert.match(apiSource, /affected_attendance_count/)
 })
 
-test('bulk mapping is bounded, validates every selected exact target, and reports all-or-nothing behavior', () => {
-  assert.equal(MAX_BULK_MAPPING_ITEMS, 100)
+test('the queue presents compact single-row mapping controls without bulk selection', () => {
   assert.equal(targetOptionLabel(target), 'Teaching round — 3 per month · tracked · not reallocatable · tag: Core')
-
-  const ready = prepareBulkMappingChanges(
-    [mapping()],
-    new Set(['mapping-1']),
-    { 'mapping-1': 'target-1' },
-  )
-  assert.deepEqual(ready, {
-    kind: 'ready',
-    items: [{ mappingId: 'mapping-1', expectedRevision: 1, teachingTargetId: 'target-1' }],
-  })
-
-  const unchanged = prepareBulkMappingChanges(
-    [mapping({ teachingTargetId: 'target-1', state: 'mapped' })],
-    new Set(['mapping-1']),
-    { 'mapping-1': 'target-1' },
-  )
-  assert.equal(unchanged.kind, 'invalid')
-
-  const tooMany = Array.from({ length: MAX_BULK_MAPPING_ITEMS + 1 }, (_, index) =>
-    mapping({ id: `mapping-${index}` }),
-  )
-  const oversized = prepareBulkMappingChanges(
-    tooMany,
-    new Set(tooMany.map((row) => row.id)),
-    Object.fromEntries(tooMany.map((row) => [row.id, 'target-1'])),
-  )
-  assert.deepEqual(oversized, {
-    kind: 'invalid',
-    message: 'Bulk mapping is limited to 100 rows.',
-  })
-
-  assert.match(pageSource, /Bulk changes are atomic: if any selected row is invalid or stale, no row is applied\./)
-  assert.match(pageSource, /Confirm atomic bulk change/)
-  assert.match(pageSource, /All rows are applied together or none are applied\./)
-  assert.equal(pageSource.includes('CSV'), false)
-  assert.equal(pageSource.includes('type="file"'), false)
+  assert.doesNotMatch(pageSource, /selectedMappingIds/)
+  assert.doesNotMatch(pageSource, /Select all visible mappings/)
+  assert.doesNotMatch(pageSource, /Select for bulk change/)
+  assert.doesNotMatch(pageSource, /Apply prepared changes/)
+  assert.doesNotMatch(pageSource, /bulk-confirmation/)
+  assert.match(pageSource, /pc-session-types-no-target/)
+  assert.match(cssSource, /\.pc-session-types-no-target[\s\S]*white-space: nowrap/)
+  assert.match(cssSource, /\.pc-session-types-target-select[\s\S]*width: min\(100%, 340px\)/)
 })
 
 test('Teaching Name lifecycle, filters, mobile cards, and confirmation drawers remain accessible', () => {
@@ -237,10 +184,8 @@ test('Teaching Name lifecycle, filters, mobile cards, and confirmation drawers r
   assert.match(pageSource, /aria-label=\{value === 'all' \? 'Show all Names of Teaching' : `Show \$\{value\} Names of Teaching`\}/)
   assert.match(pageSource, /const interactionLocked = interaction\.pendingAction !== null \|\| interaction\.overlay !== null/)
   assert.match(pageSource, /beginInteraction\('mapping-impact-preview'\)/)
-  assert.match(pageSource, /beginInteraction\('bulk-impact-preview'\)/)
   assert.match(pageSource, /beginInteraction\('lifecycle-mutation'\)/)
   assert.match(pageSource, /open=\{interaction\.overlay === 'single-confirmation' && singleConfirmation !== null\}/)
-  assert.match(pageSource, /open=\{interaction\.overlay === 'bulk-confirmation' && bulkConfirmation !== null\}/)
   assert.match(pageSource, /disabled=\{interactionLocked\}/)
   assert.match(cssSource, /\.pc-session-types-mobile-list/)
   assert.match(cssSource, /@media \(max-width: 720px\)/)
@@ -255,6 +200,10 @@ test('Teaching Name lifecycle, filters, mobile cards, and confirmation drawers r
   assert.match(pageSource, /aria-expanded=\{expanded\}/)
   assert.match(pageSource, /mappedCount} of \{group\.items\.length} mapped/)
   assert.doesNotMatch(pageSource, /<th>Revision<\/th>/)
+  assert.match(pageSource, /Programme options are limited to your current Programme PC scope:/)
+  assert.doesNotMatch(pageSource, /<h2>Scope<\/h2>/)
+  assert.doesNotMatch(pageSource, /callout-warning pc-session-types-pending-callout/)
+  assert.match(cssSource, /\.pc-session-types-group-summary-row td[\s\S]*background: #fff/)
 })
 
 test('cross-posting source provenance is visible and Department Secretary lifecycle controls are read-only', () => {
@@ -265,6 +214,6 @@ test('cross-posting source provenance is visible and Department Secretary lifecy
   assert.match(pageSource, /Source owner manages this name/)
   assert.match(pageSource, /!name\.canManageName/)
   assert.match(pageSource, /Add PC Name of Teaching/)
-  assert.match(pageSource, /PC NHG/)
+  assert.match(pageSource, /PC \\u00b7 NHG/)
   assert.doesNotMatch(pageSource, /private to this programme/)
 })

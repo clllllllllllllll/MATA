@@ -112,7 +112,10 @@ test('Secretary schedule uses exact active source IDs from the selected programm
 
 test('Secretary Teaching Name page keeps mobile and dialog controls accessible', () => {
   assert.match(pageSource, /aria-label="Programme"/)
-  assert.match(pageSource, /Search Names of Teaching/)
+  assert.match(pageSource, /placeholder="Search Names of Teaching"/)
+  assert.doesNotMatch(pageSource, /placeholder="Search by name"/)
+  assert.match(pageSource, /Teaching Name access is limited to your authorised programme scope:/)
+  assert.doesNotMatch(pageSource, /<h2>Scope<\/h2>/)
   assert.match(pageSource, /role="alert"/)
   assert.match(pageSource, /secretary-teaching-names-mobile-list/)
   assert.match(cssSource, /\.secretary-teaching-names-mobile-list/)
@@ -127,8 +130,10 @@ test('Secretary Teaching Name page keeps mobile and dialog controls accessible',
 })
 
 test('Department Secretary sees PC NHG provenance without receiving lifecycle authority', () => {
-  assert.match(pageSource, /PC NHG/)
+  assert.match(pageSource, /PC \\u00b7 NHG/)
+  assert.match(pageSource, /Department Secretary/)
   assert.match(pageSource, /!name\.canManageName/)
   assert.match(pageSource, /read-only for the Department Secretary/)
   assert.doesNotMatch(pageSource, /<th>Revision<\/th>/)
+  assert.match(cssSource, /\.secretary-teaching-names-table-wrap \.table th,[\s\S]*vertical-align: middle/)
 })

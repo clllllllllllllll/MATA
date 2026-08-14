@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from 'react'
 import { ApiRequestError } from '../../api/http'
 import {
   applyProgrammePcTeachingNameMapping,
-  applyProgrammePcTeachingNameMappingBulk,
   createProgrammePcTeachingName,
   deactivateProgrammePcTeachingName,
   deleteProgrammePcTeachingName,
@@ -25,11 +24,8 @@ import { useAppState } from '../../context/useAppState'
 import { useAuth } from '../../context/useAuth'
 import { resolvePcProgrammeScope } from './pcUploadTtfPageLogic'
 import {
-  MAX_BULK_MAPPING_ITEMS,
-  prepareBulkMappingChanges,
   targetOptionLabel,
   targetOptionsForMapping,
-  type PreparedBulkMappingItem,
 } from './pcSessionTypesPageLogic'
 import {
   createPcSessionTypesInteractionCoordinator,
@@ -57,11 +53,6 @@ interface SingleConfirmationState {
   impact: TeachingNameMappingImpact
 }
 
-interface BulkConfirmationState {
-  items: PreparedBulkMappingItem[]
-  impact: TeachingNameMappingImpact
-}
-
 const PAGE_SIZE = 100
 
 const lifecycleFilterValue = (filter: LifecycleFilter): boolean | undefined => {
@@ -86,16 +77,16 @@ const impactSummary = (impact: TeachingNameMappingImpact): string =>
 
 const mappingSourceLabel = (mapping: ProgrammePcTeachingNameMapping): string => {
   if (mapping.teachingNameVisibilityScope === 'programme_private') {
-    return 'PC NHG'
+    return 'PC \u00b7 NHG'
   }
-  return `Department Secretary${mapping.teachingNameOriginPostingCode ? ` · ${mapping.teachingNameOriginPostingCode}` : ''}`
+  return `Department Secretary${mapping.teachingNameOriginPostingCode ? ` \u00b7 ${mapping.teachingNameOriginPostingCode}` : ''}`
 }
 
 const teachingNameSourceLabel = (name: ProgrammePcTeachingName): string => {
   if (name.visibilityScope === 'programme_private') {
-    return 'PC NHG'
+    return 'PC \u00b7 NHG'
   }
-  return `Department Secretary${name.originPostingCode ? ` · ${name.originPostingCode}` : ''}`
+  return `Department Secretary${name.originPostingCode ? ` \u00b7 ${name.originPostingCode}` : ''}`
 }
 
 export const PcSessionTypesPage = () => {
@@ -141,15 +132,12 @@ export const PcSessionTypesPage = () => {
   const [mappingsLoading, setMappingsLoading] = useState(false)
   const [mappingsError, setMappingsError] = useState<string | null>(null)
   const [draftTargetIds, setDraftTargetIds] = useState<Record<string, string>>({})
-  const [selectedMappingIds, setSelectedMappingIds] = useState<Set<string>>(new Set())
   const [expandedMappingGroupIds, setExpandedMappingGroupIds] = useState<Set<string>>(new Set())
   const [mappingMutatingId, setMappingMutatingId] = useState<string | null>(null)
-  const [bulkMutating, setBulkMutating] = useState(false)
   const [mappingFeedback, setMappingFeedback] = useState<string | null>(null)
   const [mappingFeedbackTone, setMappingFeedbackTone] = useState<FeedbackTone>('success')
   const [mappingFeedbackNeedsRefresh, setMappingFeedbackNeedsRefresh] = useState(false)
   const [singleConfirmation, setSingleConfirmation] = useState<SingleConfirmationState | null>(null)
-  const [bulkConfirmation, setBulkConfirmation] = useState<BulkConfirmationState | null>(null)
 
   const [nameFilter, setNameFilter] = useState<LifecycleFilter>('active')
   const [nameSearchInput, setNameSearchInput] = useState('')
@@ -185,60 +173,59 @@ export const PcSessionTypesPage = () => {
   const namesListScopeRef = useRef<string | null>(namesListScopeKey)
   const mappingRequestFenceRef = useRef(createScopedRequestFence())
   const namesRequestFenceRef = useRef(createScopedRequestFence())
-  const interactionCoordinatorRef = useRef(createPcSessionTypesInteractionCoordinator())
+  const interactionCoordinator = useMemo(
+    () => createPcSessionTypesInteractionCoordinator(),
+    [],
+  )
 
   const syncInteractionState = useCallback(() => {
-    setInteraction(interactionCoordinatorRef.current.snapshot())
-  }, [])
+    setInteraction(interactionCoordinator.snapshot())
+  }, [interactionCoordinator])
   const interactionLocked = interaction.pendingAction !== null || interaction.overlay !== null
   const interactionPending = interaction.pendingAction !== null
   const nameLifecyclePending = interaction.pendingAction === 'lifecycle-mutation'
   const mappingMutationPending = interaction.pendingAction === 'mapping-mutation'
-  const bulkMutationPending = interaction.pendingAction === 'bulk-mutation'
 
   const beginInteraction = useCallback((action: PcSessionTypesPendingAction) => {
-    const didBegin = interactionCoordinatorRef.current.tryBegin(action)
+    const didBegin = interactionCoordinator.tryBegin(action)
     if (didBegin) {
       syncInteractionState()
     }
     return didBegin
-  }, [syncInteractionState])
+  }, [interactionCoordinator, syncInteractionState])
 
   const transitionInteraction = useCallback((
     current: PcSessionTypesPendingAction,
     next: PcSessionTypesPendingAction,
   ) => {
-    const didTransition = interactionCoordinatorRef.current.transitionPending(current, next)
+    const didTransition = interactionCoordinator.transitionPending(current, next)
     if (didTransition) {
       syncInteractionState()
     }
     return didTransition
-  }, [syncInteractionState])
+  }, [interactionCoordinator, syncInteractionState])
 
   const beginInteractionWithinOverlay = useCallback((
     overlay: PcSessionTypesOverlay,
     action: PcSessionTypesPendingAction,
   ) => {
-    const didBegin = interactionCoordinatorRef.current.beginWithinOverlay(overlay, action)
+    const didBegin = interactionCoordinator.beginWithinOverlay(overlay, action)
     if (didBegin) {
       syncInteractionState()
     }
     return didBegin
-  }, [syncInteractionState])
+  }, [interactionCoordinator, syncInteractionState])
 
   const completeInteraction = useCallback((action: PcSessionTypesPendingAction) => {
-    if (interactionCoordinatorRef.current.complete(action)) {
+    if (interactionCoordinator.complete(action)) {
       syncInteractionState()
     }
-  }, [syncInteractionState])
+  }, [interactionCoordinator, syncInteractionState])
 
   const renderOverlay = useCallback((overlay: PcSessionTypesOverlay) => {
     setNameDrawerOpen(overlay === 'name-drawer')
     if (overlay !== 'single-confirmation') {
       setSingleConfirmation(null)
-    }
-    if (overlay !== 'bulk-confirmation') {
-      setBulkConfirmation(null)
     }
     if (overlay !== 'name-drawer') {
       setEditingName(null)
@@ -247,29 +234,28 @@ export const PcSessionTypesPage = () => {
   }, [])
 
   const closeActiveOverlay = useCallback((expectedOverlay?: PcSessionTypesOverlay) => {
-    if (!interactionCoordinatorRef.current.closeOverlay(expectedOverlay)) {
+    if (!interactionCoordinator.closeOverlay(expectedOverlay)) {
       return false
     }
     setNameDrawerOpen(false)
     setSingleConfirmation(null)
-    setBulkConfirmation(null)
     setEditingName(null)
     setNameDrawerSaving(false)
     syncInteractionState()
     return true
-  }, [syncInteractionState])
+  }, [interactionCoordinator, syncInteractionState])
 
   const replacePendingWithOverlay = useCallback((
     action: PcSessionTypesPendingAction,
     overlay: PcSessionTypesOverlay,
   ) => {
-    const didReplace = interactionCoordinatorRef.current.replacePendingWithOverlay(action, overlay)
+    const didReplace = interactionCoordinator.replacePendingWithOverlay(action, overlay)
     if (didReplace) {
       renderOverlay(overlay)
       syncInteractionState()
     }
     return didReplace
-  }, [renderOverlay, syncInteractionState])
+  }, [interactionCoordinator, renderOverlay, syncInteractionState])
 
   useEffect(() => {
     selectedScopeRef.current = selectedScopeKey
@@ -286,20 +272,17 @@ export const PcSessionTypesPage = () => {
   const clearScopeBoundState = useCallback(() => {
     mappingRequestFenceRef.current.invalidate()
     namesRequestFenceRef.current.invalidate()
-    interactionCoordinatorRef.current.reset()
+    interactionCoordinator.reset()
     syncInteractionState()
     setMappings([])
     setMappingTotal(0)
     setMappingsError(null)
     setDraftTargetIds({})
-    setSelectedMappingIds(new Set())
     setExpandedMappingGroupIds(new Set())
     setMappingMutatingId(null)
-    setBulkMutating(false)
     setMappingFeedback(null)
     setMappingFeedbackNeedsRefresh(false)
     setSingleConfirmation(null)
-    setBulkConfirmation(null)
     setNames([])
     setNameTotal(0)
     setNamesError(null)
@@ -310,7 +293,7 @@ export const PcSessionTypesPage = () => {
     setEditingName(null)
     setNameDrawerSaving(false)
     setFormError(null)
-  }, [syncInteractionState])
+  }, [interactionCoordinator, syncInteractionState])
 
   useEffect(() => {
     if (selectedPcProgrammeCode && selectedProgrammeCode !== selectedPcProgrammeCode) {
@@ -371,7 +354,6 @@ export const PcSessionTypesPage = () => {
         mapping.id,
         mapping.teachingTargetId ?? '',
       ])))
-      setSelectedMappingIds(new Set())
     } catch (error) {
       if (!mappingRequestFenceRef.current.isCurrent(requestToken, mappingListScopeRef.current)
         || selectedScopeRef.current !== requestedScopeKey) {
@@ -494,8 +476,6 @@ export const PcSessionTypesPage = () => {
   }, [mappings])
   const namePage = Math.floor(nameOffset / PAGE_SIZE) + 1
   const namePageCount = Math.max(1, Math.ceil(nameTotal / PAGE_SIZE))
-  const selectedMappingCount = selectedMappingIds.size
-
   const setMappingFeedbackState = (message: string, tone: FeedbackTone, needsRefresh = false) => {
     setMappingFeedback(message)
     setMappingFeedbackTone(tone)
@@ -504,7 +484,6 @@ export const PcSessionTypesPage = () => {
 
   const resolveMappingMutationFailure = (error: unknown, fallback: string) => {
     if (isTeachingNameMappingRevisionConflict(error)) {
-      setSelectedMappingIds(new Set())
       closeActiveOverlay()
       setMappingFeedbackState('This mapping changed by someone else. Refresh the queue and retry.', 'warning', true)
       return
@@ -548,7 +527,6 @@ export const PcSessionTypesPage = () => {
         return
       }
       mergeReturnedMapping(response)
-      setSelectedMappingIds(new Set())
       closeActiveOverlay('single-confirmation')
       setMappingFeedbackState(
         `Mapping updated. Existing event durations and end times were recalculated for the exact Teaching Name and posting. Attendance submissions were preserved. ${impactSummary(response.impact)} were reviewed.`,
@@ -628,87 +606,11 @@ export const PcSessionTypesPage = () => {
     }
   }
 
-  const executeBulkMappings = async (items: PreparedBulkMappingItem[], confirmImpact: boolean) => {
-    const requestedScopeKey = selectedScopeRef.current
-    setBulkMutating(true)
-    setMappingsError(null)
-    try {
-      const result = await applyProgrammePcTeachingNameMappingBulk({
-        adminId: pcAdminId,
-        programmeScope: pcProgrammeScope,
-        items: items.map((item) => ({ ...item, confirmImpact })),
-      })
-      if (selectedScopeRef.current !== requestedScopeKey) {
-        return
-      }
-      setSelectedMappingIds(new Set())
-      closeActiveOverlay('bulk-confirmation')
-      setMappingFeedbackState(
-        `Atomic bulk mapping updated ${result.updatedCount} row${result.updatedCount === 1 ? '' : 's'} (${result.mappedCount} mapped, ${result.pendingCount} pending). Existing event durations and end times were recalculated; attendance submissions were preserved.`,
-        'success',
-      )
-      await loadMappings()
-    } catch (error) {
-      if (selectedScopeRef.current === requestedScopeKey) {
-        resolveMappingMutationFailure(error, 'The bulk mapping could not be applied. No rows were changed.')
-      }
-    } finally {
-      if (selectedScopeRef.current === requestedScopeKey) {
-        setBulkMutating(false)
-      }
-      completeInteraction('bulk-mutation')
-    }
-  }
-
-  const previewAndApplyBulkMappings = async () => {
-    if (!beginInteraction('bulk-impact-preview')) {
-      return
-    }
-    const prepared = prepareBulkMappingChanges(mappings, selectedMappingIds, draftTargetIds)
-    if (prepared.kind === 'invalid') {
-      setMappingFeedbackState(prepared.message, 'warning')
-      completeInteraction('bulk-impact-preview')
-      return
-    }
-
-    const requestedScopeKey = selectedScopeRef.current
-    setBulkMutating(true)
-    setMappingsError(null)
-    try {
-      const impacts = await Promise.all(prepared.items.map((item) =>
-        getProgrammePcTeachingNameMappingImpact({
-          adminId: pcAdminId,
-          programmeScope: pcProgrammeScope,
-          mappingId: item.mappingId,
-          expectedRevision: item.expectedRevision,
-          teachingTargetId: item.teachingTargetId,
-        })))
-      if (selectedScopeRef.current !== requestedScopeKey) {
-        return
-      }
-      const impact = impacts.reduce<TeachingNameMappingImpact>((total, value) => ({
-        affectedEventCount: total.affectedEventCount + value.affectedEventCount,
-        affectedAttendanceCount: total.affectedAttendanceCount + value.affectedAttendanceCount,
-      }), { affectedEventCount: 0, affectedAttendanceCount: 0 })
-      if (impact.affectedEventCount > 0 || impact.affectedAttendanceCount > 0) {
-        if (replacePendingWithOverlay('bulk-impact-preview', 'bulk-confirmation')) {
-          setBulkConfirmation({ items: prepared.items, impact })
-        }
-        return
-      }
-      if (!transitionInteraction('bulk-impact-preview', 'bulk-mutation')) {
-        return
-      }
-      await executeBulkMappings(prepared.items, false)
-    } catch (error) {
-      if (selectedScopeRef.current === requestedScopeKey) {
-        resolveMappingMutationFailure(error, 'Unable to preview the bulk mapping change.')
-      }
-    } finally {
-      if (selectedScopeRef.current === requestedScopeKey) {
-        setBulkMutating(false)
-      }
-      completeInteraction('bulk-impact-preview')
+  const handleSingleMappingAction = (event: MouseEvent<HTMLButtonElement>) => {
+    const mappingId = event.currentTarget.dataset.mappingId
+    const mapping = mappings.find((candidate) => candidate.id === mappingId)
+    if (mapping) {
+      void previewAndApplySingleMapping(mapping)
     }
   }
 
@@ -724,41 +626,13 @@ export const PcSessionTypesPage = () => {
     })
   }
 
-  const handleToggleMappingSelection = (mappingId: string) => {
-    if (interactionLocked) {
-      return
-    }
-    setSelectedMappingIds((current) => {
-      const next = new Set(current)
-      if (next.has(mappingId)) {
-        next.delete(mappingId)
-      } else if (next.size < MAX_BULK_MAPPING_ITEMS) {
-        next.add(mappingId)
-      }
-      return next
-    })
-    setMappingFeedback(null)
-    setMappingFeedbackNeedsRefresh(false)
-  }
-
-  const handleToggleAllMappings = () => {
-    if (interactionLocked) {
-      return
-    }
-    if (selectedMappingIds.size === mappings.length) {
-      setSelectedMappingIds(new Set())
-      return
-    }
-    setSelectedMappingIds(new Set(mappings.slice(0, MAX_BULK_MAPPING_ITEMS).map((mapping) => mapping.id)))
-  }
-
   const openNameDrawer = (mode: NameDrawerMode, name?: ProgrammePcTeachingName) => {
     if (mode === 'edit' && name && !name.canManageName) {
       setNameFeedbackTone('warning')
       setNameFeedback('This Department Secretary name is read-only. You can map it for your programme, but only its source owner can change it.')
       return
     }
-    if (!canManageScope || !interactionCoordinatorRef.current.openOverlay('name-drawer')) {
+    if (!canManageScope || !interactionCoordinator.openOverlay('name-drawer')) {
       return
     }
     renderOverlay('name-drawer')
@@ -770,7 +644,7 @@ export const PcSessionTypesPage = () => {
   }
 
   const closeNameDrawer = () => {
-    if (interactionCoordinatorRef.current.snapshot().pendingAction !== null) {
+    if (interactionCoordinator.snapshot().pendingAction !== null) {
       return
     }
     closeActiveOverlay('name-drawer')
@@ -905,7 +779,7 @@ export const PcSessionTypesPage = () => {
   }
 
   const handleProgrammeChange = (programmeCode: string) => {
-    const interactionState = interactionCoordinatorRef.current.snapshot()
+    const interactionState = interactionCoordinator.snapshot()
     if (interactionState.pendingAction !== null || interactionState.overlay !== null) {
       return
     }
@@ -916,7 +790,7 @@ export const PcSessionTypesPage = () => {
   }
 
   const handlePeriodChange = (periodId: string) => {
-    const interactionState = interactionCoordinatorRef.current.snapshot()
+    const interactionState = interactionCoordinator.snapshot()
     if (interactionState.pendingAction !== null || interactionState.overlay !== null) {
       return
     }
@@ -959,12 +833,6 @@ export const PcSessionTypesPage = () => {
       />
 
       <section className="card pc-session-types-scope-card" aria-label="Programme and reporting period scope">
-        <div className="pc-session-types-scope-header">
-          <div>
-            <h2>Scope</h2>
-            <p>Programme options are limited to your current Programme PC scope.</p>
-          </div>
-        </div>
         {programmeScope.mode === 'none' ? (
           <div className="pc-session-types-empty-state" role="status">
             <h3>No programme scope</h3>
@@ -973,10 +841,12 @@ export const PcSessionTypesPage = () => {
         ) : (
           <div className="pc-session-types-scope-controls">
             {programmeScope.mode === 'locked' ? (
-              <span className="scope-chip">Programme: {programmeScope.selectedProgrammeLabel}</span>
+              <p className="pc-session-types-scope-copy">
+                Programme options are limited to your current Programme PC scope: <strong>{programmeScope.selectedProgrammeLabel}</strong>
+              </p>
             ) : (
               <label className="pc-session-types-select">
-                <span>Programme</span>
+                <span>Programme PC scope</span>
                 <select
                   value={selectedPcProgrammeCode}
                   onChange={(event) => handleProgrammeChange(event.target.value)}
@@ -1025,14 +895,11 @@ export const PcSessionTypesPage = () => {
             <div className="section-header pc-session-types-section-header">
               <div>
                 <h2>Mapping queue</h2>
-                <p>Department Secretary names appear after an actual resident posting admits them. Every mapping uses this programme's own TTF.</p>
+                <p className="pc-session-types-mapping-guidance">
+                  Department Secretary names appear after an actual resident posting admits them. Every mapping uses this programme's own TTF. A mapping updates existing event duration and end time for the exact scope while preserving attendance and historical Name of Teaching text. Pending names remain available with a temporary one-hour event duration until mapped.
+                </p>
               </div>
               <span className="inline-muted">{mappingTotal} mapping{mappingTotal === 1 ? '' : 's'}</span>
-            </div>
-
-            <div className="inline-callout callout-warning pc-session-types-pending-callout" role="status">
-              <span>A mapping updates existing pool-backed event duration and end time for this exact scope. Attendance submissions and historical Name of Teaching text remain unchanged.</span>
-              <span>Pending names remain available for events and attendance. Until mapped, their event timing uses the temporary one-hour duration.</span>
             </div>
 
             <form
@@ -1105,38 +972,19 @@ export const PcSessionTypesPage = () => {
               </div>
             ) : null}
 
-            {selectedMappingCount > 0 ? (
-              <div className="pc-session-types-bulk-toolbar" aria-label="Bulk mapping actions">
-                <span>{selectedMappingCount} selected</span>
-                <span className="inline-muted">Bulk changes are atomic: if any selected row is invalid or stale, no row is applied.</span>
-                <button
-                  type="button"
-                  className="button button-primary"
-                  onClick={() => void previewAndApplyBulkMappings()}
-                  disabled={interactionLocked}
-                >
-                  {bulkMutating ? 'Applying…' : 'Apply prepared changes'}
-                </button>
-                <button type="button" className="button button-ghost" onClick={() => setSelectedMappingIds(new Set())} disabled={interactionLocked}>
-                  Clear selection
-                </button>
-              </div>
-            ) : null}
-
             <div className="table-wrap pc-session-types-table-wrap">
               <div className="table-scroll">
                 <table className="table">
+                  <colgroup>
+                    <col className="pc-session-types-col-posting" />
+                    <col className="pc-session-types-col-r-year" />
+                    <col className="pc-session-types-col-state" />
+                    <col className="pc-session-types-col-current-target" />
+                    <col className="pc-session-types-col-target" />
+                    <col className="pc-session-types-col-action" />
+                  </colgroup>
                   <thead>
                     <tr>
-                      <th>
-                        <input
-                          type="checkbox"
-                          aria-label="Select all visible mappings for bulk change"
-                          checked={mappings.length > 0 && selectedMappingCount === mappings.length}
-                          onChange={handleToggleAllMappings}
-                          disabled={mappingsLoading || interactionLocked}
-                        />
-                      </th>
                       <th>Posting</th>
                       <th>R-year</th>
                       <th>State</th>
@@ -1147,14 +995,14 @@ export const PcSessionTypesPage = () => {
                   </thead>
                   <tbody>
                     {mappingsLoading ? (
-                      <tr><td colSpan={7}>Loading Teaching Name mappings...</td></tr>
+                      <tr><td colSpan={6}>Loading Teaching Name mappings...</td></tr>
                     ) : mappings.length === 0 ? (
-                      <tr><td colSpan={7}>No mappings match this scope.</td></tr>
+                      <tr><td colSpan={6}>No mappings match this scope.</td></tr>
                     ) : mappingGroups.flatMap((group) => {
                       const expanded = expandedMappingGroupIds.has(group.teachingNameId)
                       return [
                         <tr key={`${group.teachingNameId}:summary`} className="pc-session-types-group-summary-row">
-                          <td colSpan={7}>
+                          <td colSpan={6}>
                             <button
                               type="button"
                               className="pc-session-types-group-toggle"
@@ -1172,22 +1020,13 @@ export const PcSessionTypesPage = () => {
                         ...(expanded ? group.items.map((mapping) => {
                           const draftTargetId = draftTargetIds[mapping.id] ?? mapping.teachingTargetId ?? ''
                           const selectedTargetId = draftTargetId || null
-                          const isMutating = interactionLocked || mappingMutatingId === mapping.id || bulkMutating
+                          const isMutating = interactionLocked || mappingMutatingId === mapping.id
                           return (
-                            <tr key={mapping.id}>
-                              <td>
-                                <input
-                                  type="checkbox"
-                                  aria-label={`Select ${mapping.teachingName} mapping for ${mapping.postingCode} ${mapping.rYear}`}
-                                  checked={selectedMappingIds.has(mapping.id)}
-                                  onChange={() => handleToggleMappingSelection(mapping.id)}
-                                  disabled={isMutating}
-                                />
-                              </td>
+                            <tr key={mapping.id} className="pc-session-types-mapping-row">
                               <td className="mono">{mapping.postingCode}</td>
                               <td>{mapping.rYear}</td>
                               <td><span className={`status-badge ${mapping.state === 'mapped' ? 'status-badge-success' : 'status-badge-warning'}`}>{mapping.state === 'mapped' ? 'Mapped' : 'Pending'}</span></td>
-                              <td className="safe-wrap">{mapping.target ? targetOptionLabel(mapping.target) : 'No target assigned'}</td>
+                              <td className={mapping.target ? 'safe-wrap' : 'pc-session-types-no-target'}>{mapping.target ? targetOptionLabel(mapping.target) : 'No target assigned'}</td>
                               <td>
                                 <label className="pc-session-types-target-select">
                                   <span className="sr-only">Exact target for {mapping.teachingName}</span>
@@ -1207,7 +1046,8 @@ export const PcSessionTypesPage = () => {
                                 <button
                                   type="button"
                                   className="button button-secondary"
-                                  onClick={() => void previewAndApplySingleMapping(mapping)}
+                                  data-mapping-id={mapping.id}
+                                  onClick={handleSingleMappingAction}
                                   disabled={isMutating || selectedTargetId === mapping.teachingTargetId}
                                 >
                                   {mappingMutatingId === mapping.id ? 'Saving…' : mappingActionLabel(mapping, selectedTargetId)}
@@ -1242,7 +1082,7 @@ export const PcSessionTypesPage = () => {
                     {expanded ? group.items.map((mapping) => {
                       const draftTargetId = draftTargetIds[mapping.id] ?? mapping.teachingTargetId ?? ''
                       const selectedTargetId = draftTargetId || null
-                      const isMutating = interactionLocked || mappingMutatingId === mapping.id || bulkMutating
+                      const isMutating = interactionLocked || mappingMutatingId === mapping.id
                       return (
                         <article key={mapping.id} className="mobile-record-card pc-session-types-mobile-card">
                           <div className="pc-session-types-mobile-heading">
@@ -1267,19 +1107,11 @@ export const PcSessionTypesPage = () => {
                             </select>
                           </label>
                           <div className="pc-session-types-mobile-actions">
-                            <label className="pc-session-types-checkbox-label">
-                              <input
-                                type="checkbox"
-                                checked={selectedMappingIds.has(mapping.id)}
-                                onChange={() => handleToggleMappingSelection(mapping.id)}
-                                disabled={isMutating}
-                              />
-                              Select for bulk change
-                            </label>
                             <button
                               type="button"
                               className="button button-primary"
-                              onClick={() => void previewAndApplySingleMapping(mapping)}
+                              data-mapping-id={mapping.id}
+                              onClick={handleSingleMappingAction}
                               disabled={isMutating || selectedTargetId === mapping.teachingTargetId}
                             >
                               {mappingMutatingId === mapping.id ? 'Saving…' : mappingActionLabel(mapping, selectedTargetId)}
@@ -1306,7 +1138,7 @@ export const PcSessionTypesPage = () => {
             <div className="section-header pc-session-types-section-header">
               <div>
                 <h2>Names of Teaching</h2>
-                <p>PC NHG names are managed here. Department Secretary names are read-only and remain available for mapping.</p>
+                <p>PC · NHG names are managed here. Department Secretary names are read-only and remain available for mapping.</p>
               </div>
               <button type="button" className="button button-secondary" onClick={() => void loadTeachingNames()} disabled={namesLoading || interactionLocked}>
                 <IconRefresh size={14} />
@@ -1377,6 +1209,11 @@ export const PcSessionTypesPage = () => {
             <div className="table-wrap pc-session-types-names-table-wrap">
               <div className="table-scroll">
                 <table className="table">
+                  <colgroup>
+                    <col className="pc-session-types-name-col-name" />
+                    <col className="pc-session-types-name-col-state" />
+                    <col className="pc-session-types-name-col-actions" />
+                  </colgroup>
                   <thead>
                     <tr>
                       <th>Name of Teaching</th>
@@ -1476,7 +1313,7 @@ export const PcSessionTypesPage = () => {
           </div>
           {nameDrawerMode === 'create' ? (
             <div className="inline-callout" role="status">
-              This Name of Teaching will be labelled PC NHG and available to this programme's PCs and Department Secretary.
+              This Name of Teaching will be labelled PC · NHG and available to this programme's PCs and Department Secretary.
             </div>
           ) : null}
           <label>
@@ -1531,39 +1368,6 @@ export const PcSessionTypesPage = () => {
         ) : null}
       </DetailDrawer>
 
-      <DetailDrawer
-        title="Confirm atomic bulk mapping"
-        open={interaction.overlay === 'bulk-confirmation' && bulkConfirmation !== null}
-        onClose={() => closeActiveOverlay('bulk-confirmation')}
-        closeDisabled={interactionPending}
-        busy={bulkMutationPending}
-        footer={
-          <>
-            <button type="button" className="button button-ghost" onClick={() => closeActiveOverlay('bulk-confirmation')} disabled={interactionPending}>Cancel</button>
-            <button
-              type="button"
-              className="button button-primary"
-              onClick={() => {
-                const confirmation = bulkConfirmation
-                if (confirmation && beginInteractionWithinOverlay('bulk-confirmation', 'bulk-mutation')) {
-                  void executeBulkMappings(confirmation.items, true)
-                }
-              }}
-              disabled={interactionPending}
-            >
-              Confirm atomic bulk change
-            </button>
-          </>
-        }
-      >
-        {bulkConfirmation ? (
-          <div className="pc-session-types-confirmation" role="status">
-            <p>The {bulkConfirmation.items.length} prepared change{bulkConfirmation.items.length === 1 ? '' : 's'} may affect {impactSummary(bulkConfirmation.impact)}. Only aggregate counts are shown.</p>
-            <p>All rows are applied together or none are applied. Existing event durations and end times will be recalculated for the affected exact scopes. Attendance submissions will be preserved and will display the updated event duration.</p>
-            <p>Longer mapped durations may create or expand schedule overlaps. Mapping remains authoritative: overlapping events and existing attendance are preserved, and residents must submit only the session they attended.</p>
-          </div>
-        ) : null}
-      </DetailDrawer>
     </div>
   )
 }

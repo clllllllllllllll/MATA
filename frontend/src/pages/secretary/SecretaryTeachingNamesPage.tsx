@@ -42,8 +42,8 @@ const filterValue = (filter: LifecycleFilter): boolean | undefined => {
 
 const sourceLabel = (name: SecretaryTeachingName): string =>
   name.visibilityScope === 'programme_private'
-    ? 'PC NHG'
-    : `Department Secretary${name.originPostingCode ? ` · ${name.originPostingCode}` : ''}`
+    ? 'PC \u00b7 NHG'
+    : `Department Secretary${name.originPostingCode ? ` \u00b7 ${name.originPostingCode}` : ''}`
 
 export const SecretaryTeachingNamesPage = () => {
   const {
@@ -254,7 +254,7 @@ export const SecretaryTeachingNamesPage = () => {
   const openEditDrawer = (name: SecretaryTeachingName) => {
     if (!name.canManageName) {
       setFeedbackTone('warning')
-      setFeedback('This PC NHG name is visible for scheduling but its lifecycle is managed by the Programme PC.')
+      setFeedback('This PC · NHG name is visible for scheduling but its lifecycle is managed by the Programme PC.')
       return
     }
     clearFeedback()
@@ -342,7 +342,7 @@ export const SecretaryTeachingNamesPage = () => {
   ) => {
     if (!name.canManageName) {
       setFeedbackTone('warning')
-      setFeedback('This PC NHG name is read-only for the Department Secretary.')
+      setFeedback('This PC · NHG name is read-only for the Department Secretary.')
       return
     }
     clearFeedback()
@@ -420,14 +420,6 @@ export const SecretaryTeachingNamesPage = () => {
       />
 
       <section className="card secretary-teaching-names-scope-card" aria-label="Teaching Name scope">
-        <div className="secretary-teaching-names-scope-row">
-          <div>
-            <h2>Scope</h2>
-            <p>Choose an authorised programme and an active reporting period.</p>
-          </div>
-          {programmesLoading ? <span className="inline-muted">Loading authorised programmes...</span> : null}
-        </div>
-
         {programmesError ? (
           <div className="inline-callout callout-error" role="alert">
             <span>{programmesError}</span>
@@ -445,11 +437,14 @@ export const SecretaryTeachingNamesPage = () => {
           </div>
         ) : (
           <div className="secretary-teaching-names-scope-controls">
+            {programmesLoading ? <span className="inline-muted">Loading authorised programmes...</span> : null}
             {isSingleProgramme ? (
-              <span className="scope-chip">Programme: {programmes[0]}</span>
+              <p className="secretary-teaching-names-scope-copy">
+                Teaching Name access is limited to your authorised programme scope: <strong>{programmes[0]}</strong>
+              </p>
             ) : programmes.length > 1 ? (
               <label className="secretary-teaching-names-select">
-                <span>Programme</span>
+                <span>Authorised programme scope</span>
                 <select
                   value={selectedProgrammeCode}
                   onChange={(event) => setSelectedProgrammeCode(event.target.value)}
@@ -528,12 +523,13 @@ export const SecretaryTeachingNamesPage = () => {
               ))}
             </div>
             <label className="secretary-teaching-names-search">
-              <span>Search Names of Teaching</span>
+              <span className="sr-only">Search Names of Teaching</span>
               <input
                 type="search"
                 value={searchInput}
                 onChange={(event) => setSearchInput(event.target.value)}
-                placeholder="Search by name"
+                placeholder="Search Names of Teaching"
+                aria-label="Search Names of Teaching"
               />
             </label>
             <button type="submit" className="button button-secondary">Search</button>
@@ -563,6 +559,13 @@ export const SecretaryTeachingNamesPage = () => {
           <div className="table-wrap secretary-teaching-names-table-wrap">
             <div className="table-scroll">
               <table className="table">
+                <colgroup>
+                  <col className="secretary-teaching-names-col-name" />
+                  <col className="secretary-teaching-names-col-programme" />
+                  <col className="secretary-teaching-names-col-period" />
+                  <col className="secretary-teaching-names-col-state" />
+                  <col className="secretary-teaching-names-col-actions" />
+                </colgroup>
                 <thead>
                   <tr>
                     <th>Name of Teaching</th>
