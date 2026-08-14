@@ -523,13 +523,13 @@ export const SecretaryTeachingNamesPage = () => {
               ))}
             </div>
             <label className="secretary-teaching-names-search">
-              <span className="sr-only">Search Names of Teaching</span>
+              <span className="sr-only">Search Name of Teaching</span>
               <input
                 type="search"
                 value={searchInput}
                 onChange={(event) => setSearchInput(event.target.value)}
-                placeholder="Search Names of Teaching"
-                aria-label="Search Names of Teaching"
+                placeholder="Search Name of Teaching"
+                aria-label="Search Name of Teaching"
               />
             </label>
             <button type="submit" className="button button-secondary">Search</button>

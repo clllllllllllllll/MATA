@@ -178,6 +178,16 @@ test('Teaching Name lifecycle, filters, mobile cards, and confirmation drawers r
   assert.match(pageSource, /pc-session-types-names-mobile-list/)
   assert.match(pageSource, /aria-label="Mapping state"/)
   assert.match(pageSource, /aria-label="Teaching Name lifecycle state"/)
+  assert.equal(
+    pageSource.match(/placeholder="Search Name of Teaching"/g)?.length,
+    2,
+  )
+  assert.doesNotMatch(pageSource, /placeholder="Search by name"/)
+  assert.doesNotMatch(pageSource, /<span>Search Names? of Teaching<\/span>/)
+  assert.match(pageSource, /placeholder="Posting"[\s\S]*aria-label="Posting"/)
+  assert.match(pageSource, /placeholder="R-year"[\s\S]*aria-label="R-year"/)
+  assert.doesNotMatch(pageSource, /<span>Posting<\/span>/)
+  assert.doesNotMatch(pageSource, /<span>R-year<\/span>/)
   assert.match(pageSource, /aria-pressed=\{mappingFilter === value\}/)
   assert.match(pageSource, /aria-label=\{value === 'all' \? 'Show all mappings' : `Show \$\{value\} mappings`\}/)
   assert.match(pageSource, /aria-pressed=\{nameFilter === value\}/)

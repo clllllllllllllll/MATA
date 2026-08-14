@@ -153,6 +153,9 @@ export const PcTeachingEventsPage = () => {
   const {
     reportingPeriodId,
     reportingPeriods,
+    reportingPeriodsLoading,
+    reportingPeriodsError,
+    reloadReportingPeriods,
     setReportingPeriodId,
     selectedProgrammeCode,
     setSelectedProgrammeCode,
@@ -809,8 +812,11 @@ export const PcTeachingEventsPage = () => {
             <select
               value={selectedPeriod?.id ?? ''}
               onChange={(event) => setReportingPeriodId(event.target.value)}
+              disabled={reportingPeriodsLoading && reportingPeriods.length === 0}
             >
-              <option value="">Select an active reporting period</option>
+              <option value="">
+                {reportingPeriodsLoading ? 'Loading reporting periods...' : 'Select an active reporting period'}
+              </option>
               {reportingPeriods.map((period) => {
                 const active = isEffectivelyActiveReportingPeriod(period)
                 return (
@@ -822,12 +828,23 @@ export const PcTeachingEventsPage = () => {
             </select>
           </label>
         </div>
+        {!reportingPeriodsLoading && reportingPeriodsError ? (
+          <div className="inline-callout callout-warning pc-teaching-events-callout" role="alert">
+            <span>{reportingPeriodsError}</span>
+            <button type="button" className="button-link" onClick={() => void reloadReportingPeriods()}>
+              Retry
+            </button>
+          </div>
+        ) : null}
         {nameOptionsState === 'loading' ? (
           <div className="inline-callout pc-teaching-events-callout">
             <span>Loading teaching-name options...</span>
           </div>
         ) : null}
-        {nameOptionsState === 'unavailable' && selectedPcProgrammeCode ? (
+        {nameOptionsState === 'unavailable'
+          && selectedPcProgrammeCode
+          && !reportingPeriodsLoading
+          && !reportingPeriodsError ? (
           <div className="inline-callout callout-warning pc-teaching-events-callout">
             <span>Select an active reporting period to load teaching-name options.</span>
           </div>
