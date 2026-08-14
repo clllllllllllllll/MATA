@@ -15,6 +15,7 @@ type LoginFormId = 'staff' | 'resident'
 
 const RESIDENT_HELP =
   'NHG and registered Non-NHG residents use this shared MCR login.'
+const LOGOUT_STATUS_REVEAL_DELAY_MS = 700
 
 const getRedirectPath = (role: AppRole, from?: string) => {
   if (from && isPathAllowedForRole(from, role)) {
@@ -39,7 +40,6 @@ export const LoginPage = () => {
     logoutStatus,
     isLogoutRetrying,
     canRetryLogout,
-    logoutRetryCount,
     logoutRetryReason,
     retryLogout,
   } = useAuth()
@@ -52,15 +52,28 @@ export const LoginPage = () => {
   const [residentMcr, setResidentMcr] = useState('')
   const [error, setError] = useState<{ formId: LoginFormId; message: string } | null>(null)
   const [submittingForm, setSubmittingForm] = useState<LoginFormId | null>(null)
+  const [showLogoutStatus, setShowLogoutStatus] = useState(false)
   const isSubmitting = submittingForm !== null
-  const isLogoutStatusPolite =
-    isLogoutRetrying || logoutRetryReason === 'retry-scheduled'
+  const shouldRevealLogoutStatus =
+    logoutStatus === 'pending'
+    && !isLogoutRetrying
+    && logoutRetryReason !== 'retry-scheduled'
 
   useEffect(() => {
-    if (logoutStatus === 'pending') {
+    if (!shouldRevealLogoutStatus) {
+      return
+    }
+    const revealTimer = window.setTimeout(() => {
+      setShowLogoutStatus(true)
+    }, LOGOUT_STATUS_REVEAL_DELAY_MS)
+    return () => window.clearTimeout(revealTimer)
+  }, [shouldRevealLogoutStatus])
+
+  useEffect(() => {
+    if (showLogoutStatus) {
       logoutStatusHeadingRef.current?.focus()
     }
-  }, [logoutStatus])
+  }, [showLogoutStatus])
 
   const submitStaffLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -182,17 +195,14 @@ export const LoginPage = () => {
           </p>
         </div>
 
-        {logoutStatus === 'pending' ? (
+        {shouldRevealLogoutStatus && showLogoutStatus ? (
           <section
             className="auth-logout-status auth-logout-status-pending"
-            role={isLogoutStatusPolite ? 'status' : 'alert'}
-            aria-live={isLogoutStatusPolite ? 'polite' : 'assertive'}
-            aria-busy={isLogoutRetrying}
+            role="alert"
+            aria-live="assertive"
           >
             <h2 ref={logoutStatusHeadingRef} tabIndex={-1}>
-              {isLogoutRetrying
-                ? 'Confirming server sign-out'
-                : 'Server sign-out not confirmed'}
+              Server sign-out not confirmed
             </h2>
             <p>
               Your local identity and protected data were cleared immediately.
@@ -202,15 +212,7 @@ export const LoginPage = () => {
             {logoutRetryReason === 'offline' ? (
               <p>Reconnect to continue the bounded server sign-out retry.</p>
             ) : null}
-            {isLogoutRetrying ? (
-              <button
-                type="button"
-                className="auth-logout-retry"
-                disabled
-              >
-                Confirming attempt {logoutRetryCount}...
-              </button>
-            ) : canRetryLogout ? (
+            {canRetryLogout ? (
               <button
                 type="button"
                 className="auth-logout-retry"

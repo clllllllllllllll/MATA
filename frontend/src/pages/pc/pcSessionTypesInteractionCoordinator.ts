@@ -1,14 +1,11 @@
 export type PcSessionTypesPendingAction =
   | 'mapping-impact-preview'
   | 'mapping-mutation'
-  | 'bulk-impact-preview'
-  | 'bulk-mutation'
   | 'lifecycle-mutation'
 
 export type PcSessionTypesOverlay =
   | 'name-drawer'
   | 'single-confirmation'
-  | 'bulk-confirmation'
 
 export interface PcSessionTypesInteractionSnapshot {
   pendingAction: PcSessionTypesPendingAction | null
