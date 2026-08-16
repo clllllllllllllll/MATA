@@ -1,7 +1,7 @@
 # Security Contract
 
 Status: current repository security source of truth. This document describes
-the implemented local contract at Alembic revision `20260813_000042`. Local
+the implemented local contract at Alembic revision `20260816_000043`. Local
 source, test, and disposable-database evidence is not proof of a deployed
 Vercel or Supabase environment.
 
@@ -434,7 +434,7 @@ business rows; bounded failure evidence may still be recorded.
 
 ## 9. PostgreSQL roles, RLS, grants, and helpers
 
-At current revision `20260813_000042`:
+At current revision `20260816_000043`:
 
 - 36 application tables have RLS enabled;
 - 90 action policies target only `mata_app_runtime`;
@@ -504,11 +504,25 @@ helpers validate signed resident/admin context, expose no resident lookup
 surface, use fixed `pg_catalog, pg_temp` search paths, and are revoked from
 `PUBLIC`, browser/service roles, and the authentication helper.
 
+Revision `20260816_000043` adds the runtime-only, read-only
+`mata_rls.teaching_name_mapping_impact(uuid)` and
+`mata_rls.teaching_target_mapping_impacts(uuid[])` helpers. They independently
+validate Master or exact Programme-PC scope and return aggregate counts only,
+allowing confirmation and TTF re-upload impact reporting to include admitted
+cross-programme Secretary events without exposing event or attendance IDs or
+granting direct cross-programme table reads. The revision also replaces the
+existing staff timing resolver so its Secretary branch uses the exact active
+`secretary_programme_pools.can_manage_teaching_names` capability already
+required by the service contract, instead of inferring authority from a native
+posting configuration. All three functions retain fixed search paths and are
+revoked from `PUBLIC`, browser/service roles, and the authentication helper.
+
 Migration lifecycle CI is split at the intentional one-way boundary in
 revision `20260812_000040`. Historical downgrade/re-upgrade tests run only
 through revision `20260812_000039`; the resulting database is then upgraded
 forward to the current head. A separate lifecycle test may move between
-`20260812_000040`, `20260813_000041`, and `20260813_000042`, but never attempts
+`20260812_000040`, `20260813_000041`, `20260813_000042`, and
+`20260816_000043`, but never attempts
 to downgrade through `20260812_000040`. This preserves historical coverage,
 proves the supported forward path to head, and does not weaken the admission
 data-loss safeguard.

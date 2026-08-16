@@ -19,6 +19,7 @@ from app.schemas.data_revalidation import (
 from app.security import log_safe_exception
 from app.services import cache_invalidation, data_revalidation_service
 from app.services.audit import write_audit_log
+from app.services.database_context import RLS_ENABLED_INFO_KEY
 from app.services.pool_event_timing import (
     PoolEventTimingScope,
     sync_pool_event_timings,
@@ -482,9 +483,19 @@ async def _mapping_impact_counts(
     undercounting a same-name/posting event that may be resolved by the mapping.
     """
 
+    rls_enabled = bool(
+        getattr(db, "info", {}).get(RLS_ENABLED_INFO_KEY, False)
+    )
     result = await db.execute(
         text(
             """
+            SELECT affected_event_count, affected_attendance_count
+            FROM mata_rls.teaching_name_mapping_impact(
+                CAST(:mapping_id AS uuid)
+            )
+            """
+            if rls_enabled
+            else """
             WITH source_mapping AS (
                 SELECT
                     mapping.id,
@@ -530,6 +541,13 @@ async def _mapping_impact_counts(
         {"mapping_id": str(mapping["id"])},
     )
     row = result.mappings().one_or_none() or {}
+    if rls_enabled:
+        return {
+            "affected_event_count": int(row.get("affected_event_count") or 0),
+            "affected_attendance_count": int(
+                row.get("affected_attendance_count") or 0
+            ),
+        }
     return {
         "affected_event_count": int(row.get("affected_event_count") or 0),
         "affected_attendance_count": int(row.get("native_attendance_count") or 0)

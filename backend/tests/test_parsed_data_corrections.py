@@ -977,6 +977,50 @@ def test_resident_posting_patch_uses_documented_status_values() -> None:
     assert len(session.audit_logs) == 1
 
 
+def test_resident_posting_patch_allows_null_posting_for_pure_loa() -> None:
+    session = FakeParsedDataCorrectionSession()
+    client = _build_client_with_session(session)
+
+    response = client.patch(
+        f"/admin/parsed-data/resident-postings/{session.posting_ids[0]}",
+        headers=_headers(),
+        json={
+            "correction_reason": "Correct source month to pure maternity LOA",
+            "last_seen_updated_at": session.now.isoformat(),
+            "changes": {
+                "posting_code": None,
+                "status": "loa",
+                "loa_type": "Maternity Leave",
+                "loa_start_date": "2026-01-01",
+                "loa_end_date": "2026-01-15",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert session.resident_postings[0]["posting_code"] is None
+    assert session.resident_postings[0]["status"] == "loa"
+
+
+def test_resident_posting_patch_rejects_null_posting_outside_pure_loa() -> None:
+    session = FakeParsedDataCorrectionSession()
+    client = _build_client_with_session(session)
+
+    response = client.patch(
+        f"/admin/parsed-data/resident-postings/{session.posting_ids[0]}",
+        headers=_headers(),
+        json={
+            "correction_reason": "Invalid active row without a posting",
+            "last_seen_updated_at": session.now.isoformat(),
+            "changes": {"posting_code": None},
+        },
+    )
+
+    assert response.status_code == 422
+    assert session.resident_postings[0]["posting_code"] == "TTSHGerMed"
+    assert session.audit_logs == []
+
+
 def test_resident_posting_patch_rejects_unique_conflict_before_update() -> None:
     session = FakeParsedDataCorrectionSession()
     client = _build_client_with_session(session)
@@ -1152,6 +1196,32 @@ def test_source_cell_replace_rejects_duplicate_replacement_rows_before_delete() 
     assert {row["id"] for row in session.resident_postings} == set(session.posting_ids)
     assert session.new_posting_ids == []
     assert session.audit_logs == []
+
+
+def test_source_cell_replace_allows_pure_loa_without_posting_code() -> None:
+    session = FakeParsedDataCorrectionSession()
+    client = _build_client_with_session(session)
+    payload = _source_cell_replace_payload(session)
+    payload["replacement_rows"][0].update(
+        {
+            "posting_code": None,
+            "status": "loa",
+            "loa_type": "Maternity Leave",
+            "loa_start_date": "2026-01-01",
+            "loa_end_date": "2026-01-31",
+        }
+    )
+
+    response = client.post(
+        "/admin/parsed-data/resident-postings/source-cell-replace",
+        headers=_headers(),
+        json=payload,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["after_rows"][0]["posting_code"] is None
+    assert response.json()["after_rows"][0]["status"] == "loa"
+    assert session.resident_postings[0]["posting_code"] is None
 
 
 def test_source_cell_replace_rejects_conflict_with_unaffected_row_before_delete() -> None:

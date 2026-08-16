@@ -65,6 +65,8 @@ _RUNTIME_ONLY_HELPERS = frozenset(
         "resolve_native_teaching_target_v2(uuid,uuid)",
         "resolve_staff_pool_event_timings(uuid[],uuid,text,text)",
         "sync_secretary_pool_event_timing(uuid,uuid,text,text)",
+        "teaching_name_mapping_impact(uuid)",
+        "teaching_target_mapping_impacts(uuid[])",
         "reclassify_native_attendance_loa(uuid,uuid)",
         (
             "create_native_loa_adhoc_attendance("

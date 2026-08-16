@@ -3299,10 +3299,14 @@ async def list_attendance_records(
                 continue
             resident_row, timing = await _native_resident_event_view(
                 db,
-                event=row,
+                event={**row, "id": row["teaching_event_id"]},
                 resident_id=resident_id,
             )
-            rows[index] = {**resident_row, **timing}
+            rows[index] = {
+                **row,
+                "end_time": resident_row.get("end_time"),
+                **timing,
+            }
     return {
         "attendance": rows,
         "limit": params["limit"],

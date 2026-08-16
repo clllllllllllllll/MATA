@@ -21,6 +21,7 @@ from tests.test_external_registration_migrations_postgres import (
 PHASE_V_REVISION = "20260812_000040"
 CROSS_POSTING_POLICY_REVISION = "20260813_000041"
 LOA_CLASSIFICATION_REVISION = "20260813_000042"
+CURRENT_HEAD_REVISION = "20260816_000043"
 
 
 @pytest.fixture
@@ -30,7 +31,7 @@ def post_boundary_migration_database(
     settings = Settings(_env_file=None)
     source_url = make_url(settings.sync_database_url)
     _assert_local_postgres_source(source_url)
-    assert _repository_head_revision() == LOA_CLASSIFICATION_REVISION
+    assert _repository_head_revision() == CURRENT_HEAD_REVISION
     engine = create_engine(source_url, poolclass=NullPool)
     harness = MigrationHarness(
         database_name=H_E_DISPOSABLE_DATABASE_NAME,
@@ -41,16 +42,16 @@ def post_boundary_migration_database(
     try:
         _assert_h_e_target_ready(
             engine,
-            repository_head=LOA_CLASSIFICATION_REVISION,
+            repository_head=CURRENT_HEAD_REVISION,
         )
         yield harness
     finally:
         try:
-            restore = harness.alembic("upgrade", LOA_CLASSIFICATION_REVISION)
+            restore = harness.alembic("upgrade", CURRENT_HEAD_REVISION)
             assert restore.returncode == 0, restore.stdout + restore.stderr
             _assert_h_e_target_ready(
                 engine,
-                repository_head=LOA_CLASSIFICATION_REVISION,
+                repository_head=CURRENT_HEAD_REVISION,
             )
         finally:
             engine.dispose()
@@ -97,7 +98,7 @@ def test_post_boundary_migrations_downgrade_to_floor_and_reupgrade_to_head(
     }
 
     with harness.engine.connect() as connection:
-        assert _revision(connection) == LOA_CLASSIFICATION_REVISION
+        assert _revision(connection) == CURRENT_HEAD_REVISION
     assert loa_columns <= _attendance_columns(harness.engine)
 
     _run(harness, "downgrade", CROSS_POSTING_POLICY_REVISION)
@@ -115,7 +116,7 @@ def test_post_boundary_migrations_downgrade_to_floor_and_reupgrade_to_head(
             )
         ) is not None
 
-    _run(harness, "upgrade", LOA_CLASSIFICATION_REVISION)
+    _run(harness, "upgrade", CURRENT_HEAD_REVISION)
     with harness.engine.connect() as connection:
-        assert _revision(connection) == LOA_CLASSIFICATION_REVISION
+        assert _revision(connection) == CURRENT_HEAD_REVISION
     assert loa_columns <= _attendance_columns(harness.engine)

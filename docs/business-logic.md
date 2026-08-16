@@ -55,6 +55,11 @@ attendance rows remain unchanged. Non-NHG Residents use exact posting
 visibility and the staff envelope because NHG compliance/R-year resolution
 does not apply.
 
+Mapping confirmation and TTF target-change impact use the same stable
+Teaching Name/source identity. They include admitted host Secretary events and
+submitted attendance even when ordinary Programme-PC RLS cannot enumerate the
+linked rows, but return aggregate event and attendance counts only.
+
 ### Phase V: cross-posting Teaching Name mapping and PC-private names
 
 Phase V separates **Teaching Name ownership** from the **mapping programme**.
@@ -1179,6 +1184,11 @@ Data Revalidation is the standard service boundary for assessing the impact of A
 3H-B creates only the service contract/skeleton. It returns stable impact summaries with one of `no_op`, `warning_only`, `targeted_revalidation`, `future_compliance_impact`, or `manual_revalidation_required`.
 
 3H-C wires Admin Live Data correction mutations to the service. Successful Resident, Resident Posting, Resident Posting source-cell replacement, Teaching Target, FormF1, and Academic Month Boundary corrections include a `data_revalidation` impact summary in the API response and correction audit metadata. Failed validation, stale/concurrency, unauthorized, or out-of-scope mutations do not call Data Revalidation.
+
+Resident Posting corrections preserve the RDB LOA identity rule: a null
+`posting_code` is valid only for a pure `loa` row. Other posting statuses must
+retain a canonical posting code. Correcting either direction reclassifies
+linked attendance by event date without rewriting the submissions themselves.
 
 3H-D wires successful Admin/PC Config CRUD mutations to the service. Reporting periods, public holidays, programmes, LOA types, multi-posting rules, posting groups, weekend exceptions, and global session types return `data_revalidation` in successful mutation responses and config audit metadata. Failed validation, unauthorized, out-of-scope, not-found, duplicate/conflict, and protected-delete mutations do not call Data Revalidation.
 
