@@ -69,6 +69,16 @@ its own TTF targets for its own Residents. The same Secretary-created Teaching
 Name may therefore be mapped independently by several native programmes without
 copying display text or sharing a target selection.
 
+Every current native Department Secretary/programme pair is established as
+durable `secretary_programme_pools` configuration, including departments whose
+Secretary account has not yet been created. A Secretary account merely presents
+its exact posting identity; account creation, deactivation, deletion, or a UAT
+data wipe does not create or remove department ownership. Shared physical
+departments may intentionally own more than one programme pool, such as
+`TTSHGenMed` for AIM and IM, `TTSHGenSrg` for GS and SIG, and `TTSHLabMed` for
+PATH and MICROB. Do not infer this ownership from Non-NHG registration mappings,
+TTF rows, Resident postings, event visibility, or code/name similarity.
+
 For one effectively active reporting period, a Programme PC's mapping list is
 the union of:
 

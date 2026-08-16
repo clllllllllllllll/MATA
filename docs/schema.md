@@ -69,6 +69,30 @@ without widening ordinary RLS reads or exposing affected identities. It also
 aligns Secretary access to PC-created staff timing with the existing explicit
 `secretary_programme_pools` teaching-name capability.
 
+Revision `20260816_000044` idempotently expands the independent Department
+Secretary ownership configuration to all 28 current programme pools. It does
+not derive authority from staff accounts, Non-NHG registration mappings, TTF
+rows, resident postings, or posting-code text. The configuration therefore
+exists before a Secretary account is created and remains after an account is
+deactivated or deleted. The explicit baseline is:
+
+```text
+AIM:TTSHGenMed                 ANAES:TTSHAnaes
+CARDIO:TTSHCardio              DERM:NSCDermat
+DR:TTSHDiagRd                  EM:TTSHEmgMed
+ENDO:TTSHEndocr                ENT:TTSHOtolar
+EYE:TTSHOphtha                 FM:NHGPlyNHGPly
+GASTRO:TTSHGas                 GERI:TTSHGerMed
+GS:TTSHGenSrg                  ID:TTSHInfect
+IM:TTSHGenMed                  MEDONCO:TTSHMedOnc
+ORTHO:TTSHOrtSrg               PATH:TTSHLabMed
+PSY:TTSHPsychi                 REHAB:TTSHRehabi
+RENAL:TTSHRenal                RESPI:TTSHRespir
+RHEUM:TTSHRheuma               SPORTSMED:TTSHOrtSrg(Sports)
+SIG:TTSHGenSrg                 URO:TTSHUrolog
+MICROB:TTSHLabMed              PALLMED:TTSHPallia
+```
+
 The current final model uses `teaching_name` as the canonical term:
 
 - The `teaching_names` relation is scoped by
@@ -619,8 +643,10 @@ session types in the same scope.
   neither but rejects rows with both; B1 neither backfills nor changes the
   legacy `teaching_name` text workflow.
 - `secretary_programme_pools.can_manage_teaching_names` is non-null and defaults
-  to false. Migration preflight enables it only for the single active approved
-  `TTSHGerMed`/`GERI` pilot pool.
+  to false. Revision `20260816_000044` enables every explicit current
+  Department Secretary/programme ownership pair. These rows are durable
+  configuration and have no relationship to `users`; deleting an account or
+  clearing UAT data must not remove them.
 - The private owner-only `reconcile_teaching_name_pending_mappings` trigger
   inserts one pending mapping per distinct existing target `(posting_code,
   r_year)` scope on active-name creation and inactive-to-active reactivation.

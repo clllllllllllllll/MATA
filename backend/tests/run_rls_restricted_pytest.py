@@ -25,7 +25,7 @@ from sqlalchemy.pool import NullPool
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 DISPOSABLE_DATABASE_NAME = "mata_evolved_ttf_e2b2_verify"
-POLICY_REVISION = "20260816_000043"
+POLICY_REVISION = "20260816_000044"
 RUNTIME_GROUP = "mata_app_runtime"
 AUTH_GROUP = "mata_auth_internal"
 DATABASE_URL_ENV = "DATABASE_URL"

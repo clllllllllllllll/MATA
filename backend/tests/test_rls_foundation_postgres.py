@@ -404,6 +404,7 @@ POLICY_CUTOVER_REVISIONS = frozenset(
         "20260813_000041",
         "20260813_000042",
         "20260816_000043",
+        "20260816_000044",
     }
 )
 FINAL_AJ_CUTOVER_REVISIONS = frozenset(
@@ -416,6 +417,7 @@ FINAL_AJ_CUTOVER_REVISIONS = frozenset(
         "20260813_000041",
         "20260813_000042",
         "20260816_000043",
+        "20260816_000044",
     }
 )
 SESSION_LIFECYCLE_REVISIONS = frozenset(
@@ -437,6 +439,7 @@ SESSION_LIFECYCLE_REVISIONS = frozenset(
         "20260813_000041",
         "20260813_000042",
         "20260816_000043",
+        "20260816_000044",
     }
 )
 
@@ -2069,22 +2072,22 @@ async def test_foundation_function_acls_search_paths_and_table_denials_are_exact
         if harness.revision in FINAL_AJ_CUTOVER_REVISIONS:
             policy_helper_functions -= FINAL_AJ_RETIRED_POLICY_HELPER_FUNCTIONS
             private_functions -= FINAL_AJ_RETIRED_PRIVATE_FUNCTIONS
-        if harness.revision in {"20260812_000040", "20260813_000041", "20260813_000042", "20260816_000043"}:
+        if harness.revision in {"20260812_000040", "20260813_000041", "20260813_000042", "20260816_000043", "20260816_000044"}:
             private_functions = (
                 private_functions - PHASE_V_RETIRED_PRIVATE_FUNCTIONS
             ) | PHASE_V_PRIVATE_FUNCTIONS
             runtime_only_functions -= PHASE_V_RETIRED_RUNTIME_FUNCTIONS
-        if harness.revision in {"20260813_000042", "20260816_000043"}:
+        if harness.revision in {"20260813_000042", "20260816_000043", "20260816_000044"}:
             runtime_only_functions |= PHASE_LOA_RUNTIME_FUNCTIONS
             private_functions |= PHASE_LOA_PRIVATE_FUNCTIONS
-        if harness.revision == "20260816_000043":
+        if harness.revision in {"20260816_000043", "20260816_000044"}:
             runtime_only_functions |= EVOLVED_TTF_IMPACT_RUNTIME_FUNCTIONS
         expected_public_helpers = (
             runtime_only_functions
             | AUTH_ONLY_FUNCTIONS
             | BOTH_GROUP_FUNCTIONS
         )
-        if harness.revision in {"20260812_000040", "20260813_000041", "20260813_000042", "20260816_000043"}:
+        if harness.revision in {"20260812_000040", "20260813_000041", "20260813_000042", "20260816_000043", "20260816_000044"}:
             # The pre-v2 reconciliation entry point remains present for a
             # bounded compatibility window, but runtime EXECUTE is revoked.
             expected_public_helpers |= PHASE_V_RETIRED_RUNTIME_FUNCTIONS
