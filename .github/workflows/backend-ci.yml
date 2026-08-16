@@ -54,7 +54,7 @@ jobs:
         run: |
           heads="$(python -B -m alembic heads)"
           test "$(printf '%s\n' "$heads" | wc -l)" -eq 1
-          test "$heads" = "20260813_000042 (head)"
+          test "$heads" = "20260816_000043 (head)"
 
       - name: Apply migrations through the historical lifecycle ceiling
         run: python -B -m alembic upgrade 20260812_000039

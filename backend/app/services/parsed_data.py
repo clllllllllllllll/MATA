@@ -807,7 +807,6 @@ _REQUIRED_TEXT_FIELDS = {
     "mcr",
     "programme_code",
     "r_year",
-    "posting_code",
     "status",
     "academic_year_label",
     "ay_date_category",
@@ -1368,8 +1367,11 @@ async def _validate_resident_posting_payload(
         _raise_validation("start_date must be on or before end_date")
     if row.get("day_part") not in {None, "AM", "PM"}:
         _raise_validation("day_part must be AM, PM, or null")
-    if str(row.get("status") or "").lower() not in _POSTING_STATUS_VALUES:
+    status = str(row.get("status") or "").lower()
+    if status not in _POSTING_STATUS_VALUES:
         _raise_validation("status is not valid")
+    if not row.get("posting_code") and status != "loa":
+        _raise_validation("posting_code may be null only for pure LOA")
     active_weight = Decimal(str(row.get("active_months_weight") or "0"))
     if active_weight <= 0 or active_weight > Decimal("1.0"):
         _raise_validation("active_months_weight must be greater than 0 and at most 1.0")

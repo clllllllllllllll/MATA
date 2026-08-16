@@ -62,6 +62,13 @@ Teaching Name/reporting-period/programme/posting mapping durations without a
 direct grant on Programme-PC mapping rows. The resolver is runtime-only and
 does not expose mappings to Resident or Non-NHG contexts.
 
+Revision `20260816_000043` adds no table or policy. It adds two runtime-only,
+aggregate-count helpers for mapping-change and TTF-target impact confirmation,
+so cross-programme Secretary events and their linked attendance are counted
+without widening ordinary RLS reads or exposing affected identities. It also
+aligns Secretary access to PC-created staff timing with the existing explicit
+`secretary_programme_pools` teaching-name capability.
+
 The current final model uses `teaching_name` as the canonical term:
 
 - The `teaching_names` relation is scoped by

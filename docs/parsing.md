@@ -717,9 +717,11 @@ the same exact Teaching Name/posting/R-year mapping identity.
 For a newly introduced `(posting_code, r_year)` target scope, every active Teaching Name in the programme/period receives at most one pending mapping. Inactive names receive none, and re-upload is idempotent.
 
 Mapping, event, and attendance impact counters are aggregate only. They count
-direct stable Teaching Name target links and unambiguous structured event
-evidence; no fuzzy text matching is used, and transitional text-only or
-unresolved evidence is excluded.
+direct stable Teaching Name target links and structured pool-event source
+identity, including admitted host Secretary events affected by the uploaded
+programme's mappings. Submitted native and Non-NHG attendance linked to those
+events is included. No fuzzy text matching is used, and transitional text-only
+or unresolved evidence is excluded.
 
 TTF does not create Teaching Names, programme admissions, mappings, or warnings
 from workbook name text. Under planned Phase V, pending mappings are provisioned

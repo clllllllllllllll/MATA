@@ -33,12 +33,16 @@ from app.services import (
     teaching_name_pool,
 )
 from app.services.database_context import configure_request_context
+from app.services.pool_event_timing import list_pool_event_timings
 from app.services.teaching_target_resolution import (
     FixedAdhocTargetResolution,
     MappedTargetResolution,
     PendingMappingResolution,
     TeachingTargetResolutionUnavailable,
     resolve_native_teaching_target,
+)
+from app.services.teaching_target_impacts import (
+    stable_target_mapping_impact_counts,
 )
 from app.services.ttf_scope_lock import acquire_ttf_scope_lock
 from tests.rls_postgres_harness import (
@@ -521,7 +525,7 @@ async def _issue_context(
 async def policy_harness(
     rls_postgres_harness: RlsPostgresHarness,
 ) -> AsyncIterator[RlsPostgresHarness]:
-    assert rls_postgres_harness.revision == "20260813_000042"
+    assert rls_postgres_harness.revision == "20260816_000043"
     yield rls_postgres_harness
 
 
@@ -5859,6 +5863,378 @@ async def test_phase_d_mapping_service_uses_exact_identity_and_preserves_evidenc
             await db.execute(
                 text("DELETE FROM session_types WHERE id = :id"),
                 {"id": new_session_type_id},
+            )
+            await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_phase_v_cross_programme_mapping_impact_counts_shared_event_and_attendance(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+) -> None:
+    values = policy_seed.values
+    teaching_name_id = uuid4()
+    mapping_id = uuid4()
+    event_id = uuid4()
+    attendance_id = uuid4()
+    actor = _pc_teaching_name_actor(values)
+
+    try:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_names (
+                        id, reporting_period_id, programme_code, display_name,
+                        normalized_name, is_active, created_by_role,
+                        visibility_scope, origin_posting_code
+                    )
+                    VALUES (
+                        :id, :period_id, :source_programme,
+                        'Cross programme impact evidence',
+                        'cross programme impact evidence', true,
+                        'secretary', 'department_shared', :posting_code
+                    )
+                    """
+                ),
+                {
+                    "id": teaching_name_id,
+                    "period_id": values["period_id"],
+                    "source_programme": values["programme_b"],
+                    "posting_code": values["posting_a"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_programme_scopes (
+                        teaching_name_id, reporting_period_id, programme_code,
+                        admission_reason, admitted_by_user_id
+                    )
+                    VALUES
+                        (
+                            :teaching_name_id, :period_id, :source_programme,
+                            'owner_programme', :secretary_id
+                        ),
+                        (
+                            :teaching_name_id, :period_id, :mapping_programme,
+                            'resident_host_posting', :pc_id
+                        )
+                    """
+                ),
+                {
+                    "teaching_name_id": teaching_name_id,
+                    "period_id": values["period_id"],
+                    "source_programme": values["programme_b"],
+                    "mapping_programme": values["programme_a"],
+                    "secretary_id": values["secretary_id"],
+                    "pc_id": values["pc_id"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_mappings (
+                        id, teaching_name_id, reporting_period_id,
+                        programme_code, posting_code, r_year,
+                        teaching_target_id
+                    )
+                    VALUES (
+                        :id, :teaching_name_id, :period_id,
+                        :mapping_programme, :posting_code, 'R1',
+                        :teaching_target_id
+                    )
+                    """
+                ),
+                {
+                    "id": mapping_id,
+                    "teaching_name_id": teaching_name_id,
+                    "period_id": values["period_id"],
+                    "mapping_programme": values["programme_a"],
+                    "posting_code": values["posting_a"],
+                    "teaching_target_id": values["target_a_id"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_events (
+                        id, posting_code, teaching_name, event_date,
+                        start_time, end_time, duration_hours,
+                        session_type_id, is_adhoc, created_by_role,
+                        teaching_name_id, source_programme_code,
+                        source_reporting_period_id
+                    )
+                    VALUES (
+                        :id, :posting_code, 'Cross programme impact evidence',
+                        DATE '2035-03-07', TIME '09:00', TIME '10:00', 1.00,
+                        NULL, false, 'secretary', :teaching_name_id,
+                        :source_programme, :period_id
+                    )
+                    """
+                ),
+                {
+                    "id": event_id,
+                    "posting_code": values["posting_a"],
+                    "teaching_name_id": teaching_name_id,
+                    "source_programme": values["programme_b"],
+                    "period_id": values["period_id"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO attendance_records (
+                        id, resident_id, teaching_event_id, status, posting_code
+                    )
+                    VALUES (
+                        :id, :resident_id, :event_id, 'submitted', :posting_code
+                    )
+                    """
+                ),
+                {
+                    "id": attendance_id,
+                    "resident_id": values["resident_a_id"],
+                    "event_id": event_id,
+                    "posting_code": values["posting_a"],
+                },
+            )
+            await db.commit()
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["pc"],
+        ) as db:
+            impact = await teaching_name_mappings.get_mapping_impact(
+                db,
+                actor=actor,
+                mapping_id=mapping_id,
+                expected_revision=1,
+                teaching_target_id=None,
+            )
+            assert impact == {
+                "affected_event_count": 1,
+                "affected_attendance_count": 1,
+            }
+            target_impact = await stable_target_mapping_impact_counts(
+                db,
+                target_ids=[values["target_a_id"]],
+            )
+            assert target_impact["mapped_target_count"] >= 1
+            assert target_impact["affected_event_count"] >= 1
+            assert target_impact["affected_attendance_count"] >= 1
+            with pytest.raises(ApiError) as confirmation_required:
+                await teaching_name_mappings.apply_mapping_change(
+                    db,
+                    actor=actor,
+                    mapping_id=mapping_id,
+                    expected_revision=1,
+                    teaching_target_id=None,
+                    confirm_impact=False,
+                )
+            assert confirmation_required.value.status_code == 409
+            assert confirmation_required.value.metadata == {
+                "impact": impact,
+                "confirmation_required": True,
+            }
+    finally:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text("DELETE FROM attendance_records WHERE id = :id"),
+                {"id": attendance_id},
+            )
+            await db.execute(
+                text("DELETE FROM teaching_events WHERE id = :id"),
+                {"id": event_id},
+            )
+            await db.execute(
+                text("DELETE FROM teaching_names WHERE id = :id"),
+                {"id": teaching_name_id},
+            )
+            await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_phase_v_secretary_staff_timing_uses_explicit_programme_pool_capability(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+) -> None:
+    values = policy_seed.values
+    teaching_name_id = uuid4()
+    mapping_id = uuid4()
+
+    try:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    UPDATE secretary_programme_pools
+                    SET can_manage_teaching_names = true
+                    WHERE id = :pool_id
+                    """
+                ),
+                {"pool_id": values["pool_a_id"]},
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_names (
+                        id, reporting_period_id, programme_code, display_name,
+                        normalized_name, is_active, created_by_role,
+                        visibility_scope, origin_posting_code
+                    )
+                    VALUES (
+                        :id, :period_id, :programme_code,
+                        'PC private Secretary timing evidence',
+                        'pc private secretary timing evidence', true,
+                        'programme_pc', 'programme_private', NULL
+                    )
+                    """
+                ),
+                {
+                    "id": teaching_name_id,
+                    "period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_programme_scopes (
+                        teaching_name_id, reporting_period_id, programme_code,
+                        admission_reason, admitted_by_user_id
+                    )
+                    VALUES (
+                        :teaching_name_id, :period_id, :programme_code,
+                        'owner_programme', :pc_id
+                    )
+                    """
+                ),
+                {
+                    "teaching_name_id": teaching_name_id,
+                    "period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                    "pc_id": values["pc_id"],
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO teaching_name_mappings (
+                        id, teaching_name_id, reporting_period_id,
+                        programme_code, posting_code, r_year,
+                        teaching_target_id
+                    )
+                    VALUES (
+                        :id, :teaching_name_id, :period_id,
+                        :programme_code, :posting_code, 'R1', :target_id
+                    )
+                    """
+                ),
+                {
+                    "id": mapping_id,
+                    "teaching_name_id": teaching_name_id,
+                    "period_id": values["period_id"],
+                    "programme_code": values["programme_a"],
+                    "posting_code": values["posting_a"],
+                    "target_id": values["target_a_id"],
+                },
+            )
+            await db.commit()
+
+        async with _service_runtime_context(
+            policy_harness,
+            policy_seed.contexts["secretary"],
+        ) as db:
+            timings = await list_pool_event_timings(
+                db,
+                teaching_name_ids=[teaching_name_id],
+                reporting_period_id=values["period_id"],
+                programme_code=values["programme_a"],
+                posting_code=values["posting_a"],
+            )
+            timing = timings[(str(teaching_name_id), values["posting_a"])]
+            assert timing.is_mapped is True
+            assert timing.duration_hours == Decimal("1.00")
+    finally:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text("DELETE FROM teaching_names WHERE id = :id"),
+                {"id": teaching_name_id},
+            )
+            await db.execute(
+                text(
+                    """
+                    UPDATE secretary_programme_pools
+                    SET can_manage_teaching_names = false
+                    WHERE id = :pool_id
+                    """
+                ),
+                {"pool_id": values["pool_a_id"]},
+            )
+            await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_native_attendance_history_uses_exact_resident_r_year_timing(
+    policy_harness: RlsPostgresHarness,
+    policy_seed: PolicyMatrixSeed,
+) -> None:
+    values = policy_seed.values
+
+    try:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    UPDATE teaching_events
+                    SET duration_hours = 3.00,
+                        end_time = start_time + INTERVAL '3 hours'
+                    WHERE id = :event_id
+                    """
+                ),
+                {"event_id": values["event_seed_a_id"]},
+            )
+            await db.commit()
+
+        resident_context = policy_seed.contexts["resident"]
+        async with policy_harness.runtime_context_session() as db:
+            configure_request_context(
+                db,
+                token_digest=resident_context.token_digest,
+                expected_subject_type="resident",
+                expected_subject_id=resident_context.subject_id,
+                expected_app_session_id=resident_context.app_session_id,
+                expected_authorization_fingerprint=(
+                    resident_context.authorization_fingerprint
+                ),
+                lock_mode="exclusive",
+            )
+            history = await resident_submission.list_attendance_records(
+                db,
+                resident_id=values["resident_a_id"],
+            )
+            row = next(
+                item
+                for item in history["attendance"]
+                if item["teaching_event_id"] == values["event_seed_a_id"]
+            )
+            assert row["duration_hours"] == Decimal("1.00")
+            assert row["end_time"] == time(10, 0)
+            assert row["session_type"] == values["session_name"]
+            assert row["resident_r_year"] == "R1"
+    finally:
+        async with policy_harness.owner_session() as db:
+            await db.execute(
+                text(
+                    """
+                    UPDATE teaching_events
+                    SET duration_hours = 1.00,
+                        end_time = start_time + INTERVAL '1 hour'
+                    WHERE id = :event_id
+                    """
+                ),
+                {"event_id": values["event_seed_a_id"]},
             )
             await db.commit()
 

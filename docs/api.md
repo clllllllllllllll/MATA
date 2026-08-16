@@ -295,6 +295,11 @@ The current 3H-C wiring covers:
 - `PATCH /admin/parsed-data/form-f1-records/{id}`
 - `PATCH /admin/parsed-data/academic-month-boundaries/{id}`
 
+Resident-posting patch and source-cell replacement accept
+`posting_code: null` only when the resulting row has `status: "loa"`, matching
+the RDB pure-LOA representation. Active, working-LOA, and employed rows still
+require a canonical posting code.
+
 The current 3H-D Config wiring covers successful creates, updates, deletes, and reporting-period activate/deactivate mutations for reporting periods, public holidays, programmes, LOA types, multi-posting rules, posting groups, weekend exceptions, and global session types. Create/update/activate/deactivate responses preserve the entity fields and add `data_revalidation`. Delete responses return `{ "entity_type": "...", "entity_id": "...", "deleted": true, "data_revalidation": {...} }`.
 
 3H-D still does not mutate warnings, run RDB source-cell parsing, re-resolve existing multi-posting rows, regenerate `resident_postings`, generate period snapshots, hibernate surplus, generate clawback rows, or perform compliance calculation. Multi-posting rule changes return `manual_revalidation_required` to indicate existing RDB source cells/warnings need an explicit later revalidation or future RDB re-upload. Reporting-period mutations return the default `future_compliance_impact` summary. Successful Data Revalidation summaries use one of these canonical outcomes:
@@ -588,6 +593,9 @@ Teaching Name ID plus posting identity and submitted attendance. Because events
 do not carry R-year, the count is conservative across same-name/posting R-year
 mappings rather than silently treating potentially affected evidence as zero. It
 never returns event, attendance, resident, MCR, or external-resident identifiers.
+This includes an admitted host Secretary event whose linked rows are hidden by
+ordinary Programme-PC RLS; the protected count boundary still returns only the
+two aggregates.
 When either aggregate is nonzero, a first request without
 `confirm_impact: true` returns controlled `409` with count-only impact and no
 write; retrying with the same current revision and explicit confirmation applies

@@ -1808,6 +1808,7 @@ class FakeResidentSession:
             if "is_adhoc" in payload:
                 rows = [row for row in rows if row["is_adhoc"] is payload["is_adhoc"]]
             for row in rows:
+                row.pop("id", None)
                 row.pop("created_by_role", None)
                 row.pop("created_for_programme_code", None)
             rows.sort(key=lambda row: (row["event_date"], row["submitted_at"]), reverse=True)
@@ -1850,6 +1851,7 @@ class FakeResidentSession:
             if "is_adhoc" in payload:
                 rows = [row for row in rows if row["is_adhoc"] is payload["is_adhoc"]]
             for row in rows:
+                row.pop("id", None)
                 row.pop("created_by_role", None)
                 row.pop("created_for_programme_code", None)
             rows.sort(key=lambda row: (row["event_date"], row["start_time"], row["submitted_at"]), reverse=True)
