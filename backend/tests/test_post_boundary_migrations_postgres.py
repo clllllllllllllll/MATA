@@ -21,7 +21,38 @@ from tests.test_external_registration_migrations_postgres import (
 PHASE_V_REVISION = "20260812_000040"
 CROSS_POSTING_POLICY_REVISION = "20260813_000041"
 LOA_CLASSIFICATION_REVISION = "20260813_000042"
-CURRENT_HEAD_REVISION = "20260816_000043"
+CURRENT_HEAD_REVISION = "20260816_000044"
+
+EXPECTED_SECRETARY_POOLS = {
+    ("AIM", "TTSHGenMed"),
+    ("ANAES", "TTSHAnaes"),
+    ("CARDIO", "TTSHCardio"),
+    ("DERM", "NSCDermat"),
+    ("DR", "TTSHDiagRd"),
+    ("EM", "TTSHEmgMed"),
+    ("ENDO", "TTSHEndocr"),
+    ("ENT", "TTSHOtolar"),
+    ("EYE", "TTSHOphtha"),
+    ("FM", "NHGPlyNHGPly"),
+    ("GASTRO", "TTSHGas"),
+    ("GERI", "TTSHGerMed"),
+    ("GS", "TTSHGenSrg"),
+    ("ID", "TTSHInfect"),
+    ("IM", "TTSHGenMed"),
+    ("MEDONCO", "TTSHMedOnc"),
+    ("ORTHO", "TTSHOrtSrg"),
+    ("PATH", "TTSHLabMed"),
+    ("PSY", "TTSHPsychi"),
+    ("REHAB", "TTSHRehabi"),
+    ("RENAL", "TTSHRenal"),
+    ("RESPI", "TTSHRespir"),
+    ("RHEUM", "TTSHRheuma"),
+    ("SPORTSMED", "TTSHOrtSrg(Sports)"),
+    ("SIG", "TTSHGenSrg"),
+    ("URO", "TTSHUrolog"),
+    ("MICROB", "TTSHLabMed"),
+    ("PALLMED", "TTSHPallia"),
+}
 
 
 @pytest.fixture
@@ -84,6 +115,43 @@ def _attendance_columns(engine: Engine) -> set[str]:
         )
 
 
+def _active_secretary_pools(engine: Engine) -> set[tuple[str, str]]:
+    with engine.connect() as connection:
+        return {
+            (str(row["programme_code"]), str(row["posting_code"]))
+            for row in connection.execute(
+                text(
+                    """
+                    SELECT programme_code, posting_code
+                    FROM secretary_programme_pools
+                    WHERE is_active
+                      AND can_manage_teaching_names
+                    """
+                )
+            ).mappings()
+        }
+
+
+def _secretary_pool_user_foreign_keys(engine: Engine) -> int:
+    with engine.connect() as connection:
+        return int(
+            connection.scalar(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM pg_catalog.pg_constraint AS constraint_row
+                    WHERE constraint_row.conrelid =
+                          'public.secretary_programme_pools'::pg_catalog.regclass
+                      AND constraint_row.contype = 'f'
+                      AND constraint_row.confrelid =
+                          'public.users'::pg_catalog.regclass
+                    """
+                )
+            )
+            or 0
+        )
+
+
 @pytest.mark.migration_mutation
 @pytest.mark.post_boundary_migration
 def test_post_boundary_migrations_downgrade_to_floor_and_reupgrade_to_head(
@@ -100,11 +168,14 @@ def test_post_boundary_migrations_downgrade_to_floor_and_reupgrade_to_head(
     with harness.engine.connect() as connection:
         assert _revision(connection) == CURRENT_HEAD_REVISION
     assert loa_columns <= _attendance_columns(harness.engine)
+    assert EXPECTED_SECRETARY_POOLS <= _active_secretary_pools(harness.engine)
+    assert _secretary_pool_user_foreign_keys(harness.engine) == 0
 
     _run(harness, "downgrade", CROSS_POSTING_POLICY_REVISION)
     with harness.engine.connect() as connection:
         assert _revision(connection) == CROSS_POSTING_POLICY_REVISION
     assert not loa_columns.intersection(_attendance_columns(harness.engine))
+    assert EXPECTED_SECRETARY_POOLS <= _active_secretary_pools(harness.engine)
 
     _run(harness, "downgrade", PHASE_V_REVISION)
     with harness.engine.connect() as connection:
@@ -120,3 +191,4 @@ def test_post_boundary_migrations_downgrade_to_floor_and_reupgrade_to_head(
     with harness.engine.connect() as connection:
         assert _revision(connection) == CURRENT_HEAD_REVISION
     assert loa_columns <= _attendance_columns(harness.engine)
+    assert EXPECTED_SECRETARY_POOLS <= _active_secretary_pools(harness.engine)

@@ -449,6 +449,14 @@ invalidate an existing event.
 | `POST`, `PATCH`, `POST .../deactivate`, `POST .../reactivate` under `/admin/teaching-names` | Programme PC only | Create makes a programme-private name. Lifecycle mutations require PC-created programme-private source ownership; every Department Secretary-created name is read-only. A Master Admin receives `403` for ordinary lifecycle mutations. |
 | `DELETE /admin/teaching-names/{id}` | Master Admin or Programme PC | A PC may delete only an unused PC-created programme-private source in its programme; every Department Secretary-created source is read-only. Master Admin may perform the guarded used-name deletion below. |
 
+Department Secretary pool eligibility is permanent configuration, not account
+configuration. `GET /secretary/teaching-name-programmes` therefore returns the
+configured programme pool for the authenticated Secretary's posting whether
+that account was created before or after the pool seed. Creating, deactivating,
+or deleting a Secretary account does not create, deactivate, or delete a pool.
+The route never derives a pool from `programme_institution_posting_map`, TTF,
+resident postings, event visibility, or posting-code text.
+
 Both list routes support `is_active`, `search`, `limit`, and `offset`. Name
 responses expose the display value and lifecycle metadata, never the
 server-owned normalized key.

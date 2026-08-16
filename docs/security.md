@@ -1,7 +1,7 @@
 # Security Contract
 
 Status: current repository security source of truth. This document describes
-the implemented local contract at Alembic revision `20260816_000043`. Local
+the implemented local contract at Alembic revision `20260816_000044`. Local
 source, test, and disposable-database evidence is not proof of a deployed
 Vercel or Supabase environment.
 
@@ -231,8 +231,9 @@ The B1/Phase C RLS/grant boundary is intentionally narrow:
 - A Department Secretary may read and mutate names only through the current
   exact posting plus an active `secretary_programme_pools` row with explicit
   `can_manage_teaching_names`; no authority is inferred from a first match or
-  ordinary event visibility. The B1 migration enables only the active
-  `TTSHGerMed`/`GERI` pilot pool.
+  ordinary event visibility. Revision `20260816_000044` enables the explicit
+  28-programme Department Secretary baseline independently of whether an
+  account currently exists.
 - A Master Admin may read mapping status for oversight but has no mapping DML
   authority. A Secretary and resident have no mapping-management authority.
 
@@ -434,7 +435,7 @@ business rows; bounded failure evidence may still be recorded.
 
 ## 9. PostgreSQL roles, RLS, grants, and helpers
 
-At current revision `20260816_000043`:
+At current revision `20260816_000044`:
 
 - 36 application tables have RLS enabled;
 - 90 action policies target only `mata_app_runtime`;
@@ -517,12 +518,19 @@ required by the service contract, instead of inferring authority from a native
 posting configuration. All three functions retain fixed search paths and are
 revoked from `PUBLIC`, browser/service roles, and the authentication helper.
 
+Revision `20260816_000044` changes no RLS policy or grant. It idempotently seeds
+the explicit current Department Secretary ownership pairs as active Teaching
+Name capabilities. The migration does not query `users`,
+`programme_institution_posting_map`, TTF, Resident postings, or event data, so
+account lifecycle and unrelated data imports cannot grant or revoke authority.
+Its downgrade intentionally retains this durable authorization configuration.
+
 Migration lifecycle CI is split at the intentional one-way boundary in
 revision `20260812_000040`. Historical downgrade/re-upgrade tests run only
 through revision `20260812_000039`; the resulting database is then upgraded
 forward to the current head. A separate lifecycle test may move between
-`20260812_000040`, `20260813_000041`, `20260813_000042`, and
-`20260816_000043`, but never attempts
+`20260812_000040`, `20260813_000041`, `20260813_000042`,
+`20260816_000043`, and `20260816_000044`, but never attempts
 to downgrade through `20260812_000040`. This preserves historical coverage,
 proves the supported forward path to head, and does not weaken the admission
 data-loss safeguard.
