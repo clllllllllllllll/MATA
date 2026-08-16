@@ -20,6 +20,10 @@ const uploadPathByType: Record<UploadType, string> = {
   form_f1: '/admin/upload/form-f1',
 }
 
+// Full-snapshot workbook parsing can legitimately outlast the shared API
+// client's one-minute timeout, especially for an RDB replacement.
+export const WORKBOOK_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000
+
 export const uploadWorkbook = async (
   payload: UploadRequest,
 ): Promise<Record<string, unknown>> => {
@@ -45,6 +49,7 @@ export const uploadWorkbook = async (
         payload.actorName,
       ),
       skipMemoryCacheClear: true,
+      timeout: WORKBOOK_UPLOAD_TIMEOUT_MS,
     })
 
     if (typeof response.data === 'object' && response.data !== null) {
