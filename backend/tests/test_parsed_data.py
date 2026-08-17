@@ -324,6 +324,12 @@ class FakeParsedDataSession:
         self.executed_sql.append(sql)
         payload = dict(params or {})
         rows = self._rows_for_sql(sql, payload)
+        if "COUNT(*) OVER()" in sql:
+            page_total = len(rows)
+            rows = [{**row, "_page_total": page_total} for row in rows]
+            limit = int(payload.get("limit", len(rows)))
+            offset = int(payload.get("offset", 0))
+            return _FakeMappingResult(rows[offset : offset + limit])
         if "COUNT(*)" in sql:
             return _FakeScalarResult(len(rows))
         limit = int(payload.get("limit", len(rows)))
@@ -646,7 +652,8 @@ def test_programme_pc_with_null_or_empty_scope_sees_no_residents() -> None:
 
 
 def test_master_admin_can_list_resident_postings_with_joined_fields() -> None:
-    client = _build_client_with_session(FakeParsedDataSession())
+    session = FakeParsedDataSession()
+    client = _build_client_with_session(session)
 
     response = client.get(
         "/admin/parsed-data/resident-postings",
@@ -658,6 +665,11 @@ def test_master_admin_can_list_resident_postings_with_joined_fields() -> None:
     assert row["resident_name"] == "Geri Resident"
     assert row["programme_code"] == "GERI"
     assert row["reporting_period_label"] == "Jan - June 2026"
+    posting_queries = [
+        sql for sql in session.executed_sql if "FROM resident_postings rp" in sql
+    ]
+    assert len(posting_queries) == 1
+    assert "COUNT(*) OVER() AS _page_total" in posting_queries[0]
 
 
 def test_programme_pc_sees_only_resident_postings_for_scoped_residents() -> None:
@@ -668,6 +680,24 @@ def test_programme_pc_sees_only_resident_postings_for_scoped_residents() -> None
     assert response.status_code == 200
     assert response.json()["total"] == 1
     assert response.json()["items"][0]["programme_code"] == "DR"
+
+
+def test_resident_postings_empty_page_keeps_exact_total() -> None:
+    session = FakeParsedDataSession()
+    client = _build_client_with_session(session)
+
+    response = client.get(
+        "/admin/parsed-data/resident-postings?limit=1&offset=99",
+        headers=_admin_headers(scope=None, master=True),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+    assert response.json()["total"] == len(session.resident_postings)
+    posting_queries = [
+        sql for sql in session.executed_sql if "FROM resident_postings rp" in sql
+    ]
+    assert len(posting_queries) == 2
 
 
 def test_master_admin_can_list_teaching_targets() -> None:

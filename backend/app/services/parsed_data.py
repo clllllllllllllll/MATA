@@ -228,27 +228,29 @@ async def _page(
     order_sql: str,
     limit: int,
     offset: int,
+    single_query_total: bool = False,
 ) -> dict[str, Any]:
     where_sql = _where_sql(where_clauses)
-    count_result = await db.execute(
-        text(
-            f"""
-            SELECT COUNT(*)
-            {from_sql}
-            {where_sql}
-            """
-        ),
-        params,
-    )
-    total = int(count_result.scalar_one())
-
+    if not single_query_total:
+        count_result = await db.execute(
+            text(
+                f"""
+                SELECT COUNT(*)
+                {from_sql}
+                {where_sql}
+                """
+            ),
+            params,
+        )
+        total = int(count_result.scalar_one())
     query_params = dict(params)
     query_params["limit"] = limit
     query_params["offset"] = offset
+    total_column_sql = ", COUNT(*) OVER() AS _page_total" if single_query_total else ""
     result = await db.execute(
         text(
             f"""
-            {select_sql}
+            {select_sql}{total_column_sql}
             {from_sql}
             {where_sql}
             {order_sql}
@@ -257,8 +259,25 @@ async def _page(
         ),
         query_params,
     )
+    items = [dict(row) for row in result.mappings().all()]
+    if single_query_total:
+        total = int(items[0].pop("_page_total")) if items else 0
+        for item in items[1:]:
+            item.pop("_page_total")
+        if not items and offset:
+            count_result = await db.execute(
+                text(
+                    f"""
+                    SELECT COUNT(*)
+                    {from_sql}
+                    {where_sql}
+                    """
+                ),
+                params,
+            )
+            total = int(count_result.scalar_one())
     return {
-        "items": [dict(row) for row in result.mappings().all()],
+        "items": items,
         "total": total,
         "limit": limit,
         "offset": offset,
@@ -435,6 +454,7 @@ async def list_resident_postings(
         """,
         limit=limit,
         offset=offset,
+        single_query_total=True,
     )
 
 

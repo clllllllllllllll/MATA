@@ -69,6 +69,10 @@ class UploadValidationError(ValueError):
     pass
 
 
+class UploadSizeLimitError(UploadValidationError):
+    pass
+
+
 class AsyncUploadReader(Protocol):
     async def read(self, size: int = -1) -> bytes: ...
 
@@ -130,7 +134,7 @@ async def read_upload_bytes_limited(
             break
         payload.extend(chunk)
         if len(payload) > max_size_bytes:
-            raise UploadValidationError(
+            raise UploadSizeLimitError(
                 f"Uploaded file exceeds the {_upload_limit_label(max_size_bytes)} limit."
             )
     return bytes(payload)
@@ -177,7 +181,7 @@ def validate_upload_payload(
     workbook_hook: WorkbookReadabilityHook | None = None,
 ) -> ValidatedUpload:
     if max_size_bytes is not None and len(file_bytes) > max_size_bytes:
-        raise UploadValidationError(
+        raise UploadSizeLimitError(
             f"Uploaded file exceeds the {_upload_limit_label(max_size_bytes)} limit."
         )
 
