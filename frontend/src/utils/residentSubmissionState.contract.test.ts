@@ -11,19 +11,12 @@ const assertEqual = <T>(actual: T, expected: T, label: string) => {
 }
 
 const baseState = {
-  periodsLoading: false,
-  periodsError: null,
   activePeriodCount: 1,
   eventsLoading: false,
   eventsError: null,
   eventCount: 0,
 }
 
-assertEqual(
-  getResidentScheduledEventsState({ ...baseState, periodsLoading: true }),
-  'periods_loading',
-  'reporting-period loading is distinct',
-)
 assertEqual(
   getResidentScheduledEventsState({ ...baseState, eventsLoading: true }),
   'events_loading',

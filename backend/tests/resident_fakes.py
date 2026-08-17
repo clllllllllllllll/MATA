@@ -146,6 +146,7 @@ class FakeResidentSession:
         self.external_existing_attendance_id = str(uuid4())
         self.rate_limit_buckets: dict[tuple[str, str, datetime, int], int] = {}
         self.rate_limit_rows: list[dict[str, object]] = []
+        self.executed_sql: list[str] = []
 
         self.users = [
             {
@@ -607,6 +608,7 @@ class FakeResidentSession:
 
     async def execute(self, statement, params=None):  # noqa: C901, PLR0912, PLR0915
         sql = str(statement)
+        self.executed_sql.append(sql)
         payload = dict(params or {})
 
         if "mata_rls.resolve_native_teaching_target" in sql:

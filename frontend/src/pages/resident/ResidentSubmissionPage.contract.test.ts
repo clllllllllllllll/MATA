@@ -105,8 +105,8 @@ assert(apiSource.includes('date_to'), 'scheduled events API sends date_to filter
 assert(apiSource.includes('teaching_name'), 'scheduled events API sends teaching_name filter')
 assert(apiSource.includes('posting_code'), 'scheduled events API sends posting_code filter')
 assert(
-  apiSource.includes('/resident/submission-periods'),
-  'resident portal loads effectively active submission periods without a selector',
+  !pageSource.includes('listResidentSubmissionPeriods'),
+  'resident portal uses the available-events response instead of a prerequisite period request',
 )
 assert(
   pageSource.includes('getResidentPortalIdentitySubtitle(identity)'),
@@ -115,10 +115,6 @@ assert(
 assert(!pageSource.includes('demoResidentMcr'), 'resident header does not render demo MCR configuration')
 assert(!pageSource.includes('M00001A'), 'resident portal has no placeholder resident MCR')
 assert(!pageSource.includes('Reporting period'), 'resident portal does not render a reporting-period selector')
-assert(
-  pageSource.includes('Loading active submission periods...'),
-  'resident portal has a distinct period-loading state',
-)
 assert(
   pageSource.includes('Loading available scheduled events...'),
   'resident portal has a distinct event-loading state',

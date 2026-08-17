@@ -77,6 +77,8 @@ export const AdminStaffAccountsPage = () => {
   const [accounts, setAccounts] = useState<StaffAccount[]>([])
   const [programmes, setProgrammes] = useState<Programme[]>([])
   const [postingCodes, setPostingCodes] = useState<PostingCodeOption[]>([])
+  const [formOptionsLoading, setFormOptionsLoading] = useState(false)
+  const [formOptionsError, setFormOptionsError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -99,8 +101,25 @@ export const AdminStaffAccountsPage = () => {
     setLoading(true)
     setErrorMessage(null)
     try {
-      const [accountRows, programmeRows, postingRows] = await Promise.all([
-        listStaffAccounts(requestContext),
+      const accountRows = await listStaffAccounts(requestContext)
+      setAccounts(accountRows)
+    } catch (error) {
+      setErrorMessage(formatUserFacingApiError(error, {
+        fallbackMessage: 'Unable to load staff accounts.',
+      }))
+    } finally {
+      setLoading(false)
+    }
+  }, [requestContext])
+
+  const loadFormOptions = useCallback(async () => {
+    if (programmes.length > 0 && postingCodes.length > 0) {
+      return
+    }
+    setFormOptionsLoading(true)
+    setFormOptionsError(null)
+    try {
+      const [programmeRows, postingRows] = await Promise.all([
         listProgrammes({
           adminId: requestContext.adminId,
           adminProgrammes: requestContext.adminProgrammes,
@@ -112,17 +131,16 @@ export const AdminStaffAccountsPage = () => {
           adminLevel: 'master',
         }),
       ])
-      setAccounts(accountRows)
       setProgrammes(programmeRows)
       setPostingCodes(postingRows)
     } catch (error) {
-      setErrorMessage(formatUserFacingApiError(error, {
-        fallbackMessage: 'Unable to load staff accounts.',
+      setFormOptionsError(formatUserFacingApiError(error, {
+        fallbackMessage: 'Unable to load account options.',
       }))
     } finally {
-      setLoading(false)
+      setFormOptionsLoading(false)
     }
-  }, [requestContext])
+  }, [postingCodes.length, programmes.length, requestContext])
 
   useEffect(() => {
     void Promise.resolve().then(refresh)
@@ -134,6 +152,7 @@ export const AdminStaffAccountsPage = () => {
     setFormState(emptyForm)
     setSubmitMessage(null)
     setDrawerOpen(true)
+    void loadFormOptions()
   }
 
   const openEditDrawer = (account: StaffAccount) => {
@@ -142,6 +161,7 @@ export const AdminStaffAccountsPage = () => {
     setFormState(accountToForm(account))
     setSubmitMessage(null)
     setDrawerOpen(true)
+    void loadFormOptions()
   }
 
   const setFormField = <K extends keyof StaffAccountFormState>(
@@ -390,13 +410,27 @@ export const AdminStaffAccountsPage = () => {
             >
               Cancel
             </button>
-            <button type="submit" form="staff-account-form" className="button button-primary" disabled={submitting}>
+            <button
+              type="submit"
+              form="staff-account-form"
+              className="button button-primary"
+              disabled={submitting || formOptionsLoading || Boolean(formOptionsError)}
+            >
               {submitting ? 'Saving' : drawerMode === 'create' ? 'Create account' : 'Save changes'}
             </button>
           </>
         )}
       >
         <form id="staff-account-form" className="secretary-form-grid" onSubmit={(event) => void handleSubmit(event)}>
+          {formOptionsLoading ? <div className="notice">Loading account options...</div> : null}
+          {formOptionsError ? (
+            <div className="notice notice-error">
+              <span>{formOptionsError}</span>
+              <button type="button" className="button button-secondary" onClick={() => void loadFormOptions()}>
+                Try again
+              </button>
+            </div>
+          ) : null}
           <label>
             <span>Account display name</span>
             <input

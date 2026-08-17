@@ -272,6 +272,90 @@ async def _target_options(
     return [_target_summary(dict(row)) for row in result.mappings().all() if row["id"] is not None]
 
 
+async def _target_options_by_scope(
+    db: AsyncSession,
+    *,
+    rows: Sequence[dict[str, Any]],
+) -> dict[tuple[str, str, str, str], list[dict[str, Any]]]:
+    """Load target candidates for one mapping page in a single query."""
+
+    scopes = sorted(
+        {
+            (
+                UUID(str(row["reporting_period_id"])),
+                str(row["programme_code"]),
+                str(row["posting_code"]),
+                str(row["r_year"]),
+            )
+            for row in rows
+        },
+        key=lambda scope: tuple(str(value) for value in scope),
+    )
+    if not scopes:
+        return {}
+
+    result = await db.execute(
+        text(
+            f"""
+            WITH requested_scopes AS (
+                SELECT *
+                FROM unnest(
+                    CAST(:reporting_period_ids AS uuid[]),
+                    CAST(:programme_codes AS text[]),
+                    CAST(:posting_codes AS text[]),
+                    CAST(:r_years AS text[])
+                ) AS requested(
+                    reporting_period_id,
+                    programme_code,
+                    posting_code,
+                    r_year
+                )
+            )
+            SELECT
+                {_TARGET_COLUMNS},
+                target.reporting_period_id,
+                target.programme_code,
+                target.posting_code,
+                target.r_year
+            FROM requested_scopes AS requested
+            JOIN teaching_targets AS target
+              ON target.reporting_period_id = requested.reporting_period_id
+             AND target.programme_code = requested.programme_code
+             AND target.posting_code = requested.posting_code
+             AND target.r_year = requested.r_year
+            JOIN session_types AS session_type
+              ON session_type.id = target.session_type_id
+            ORDER BY
+                target.reporting_period_id ASC,
+                target.programme_code ASC,
+                target.posting_code ASC,
+                target.r_year ASC,
+                session_type.name ASC,
+                target.id ASC
+            """
+        ),
+        {
+            "reporting_period_ids": [scope[0] for scope in scopes],
+            "programme_codes": [scope[1] for scope in scopes],
+            "posting_codes": [scope[2] for scope in scopes],
+            "r_years": [scope[3] for scope in scopes],
+        },
+    )
+    options_by_scope: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+    for result_row in result.mappings().all():
+        row = dict(result_row)
+        key = (
+            str(row["reporting_period_id"]),
+            str(row["programme_code"]),
+            str(row["posting_code"]),
+            str(row["r_year"]),
+        )
+        option = _target_summary(row)
+        if option is not None:
+            options_by_scope.setdefault(key, []).append(option)
+    return options_by_scope
+
+
 def _normalised_search(value: str | None) -> str | None:
     if value is None or not value.strip():
         return None
@@ -380,16 +464,22 @@ async def list_mappings(
         params,
     )
     rows = [dict(row) for row in rows_result.mappings().all()]
-    items: list[dict[str, Any]] = []
-    for row in rows:
-        options = await _target_options(
-            db,
-            reporting_period_id=row["reporting_period_id"],
-            programme_code=str(row["programme_code"]),
-            posting_code=str(row["posting_code"]),
-            r_year=str(row["r_year"]),
+    options_by_scope = await _target_options_by_scope(db, rows=rows)
+    items = [
+        _mapping_response(
+            row,
+            options=options_by_scope.get(
+                (
+                    str(row["reporting_period_id"]),
+                    str(row["programme_code"]),
+                    str(row["posting_code"]),
+                    str(row["r_year"]),
+                ),
+                [],
+            ),
         )
-        items.append(_mapping_response(row, options=options))
+        for row in rows
+    ]
     return {
         "items": items,
         "total": int(count_result.scalar_one()),
