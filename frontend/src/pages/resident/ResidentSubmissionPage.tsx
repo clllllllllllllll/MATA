@@ -5,7 +5,6 @@ import {
   getResidentAdhocTeachingOptions,
   listResidentAttendance,
   listResidentEvents,
-  listResidentSubmissionPeriods,
   removeResidentAttendance,
   submitResidentAdhocTeaching,
   submitResidentAttendance,
@@ -13,7 +12,6 @@ import {
   type ResidentAttendanceHistoryRow,
   type ResidentEventFilters,
   type ResidentEventsResponse,
-  type ResidentSubmissionPeriod,
 } from '../../api/residentSubmissions'
 import { PageHero } from '../../components/PageHero'
 import { IconCalendar, IconRefresh, IconSend, IconX } from '../../components/icons'
@@ -149,10 +147,8 @@ export const ResidentSubmissionPage = () => {
     },
     activeReportingPeriods: [],
   })
-  const [activeSubmissionPeriods, setActiveSubmissionPeriods] = useState<ResidentSubmissionPeriod[]>([])
-  const [periodsLoading, setPeriodsLoading] = useState(true)
-  const [periodsError, setPeriodsError] = useState<string | null>(null)
-  const [eventsLoading, setEventsLoading] = useState(false)
+  const [activeSubmissionPeriods, setActiveSubmissionPeriods] = useState<ResidentEventsResponse['activeReportingPeriods']>([])
+  const [eventsLoading, setEventsLoading] = useState(true)
   const [eventsError, setEventsError] = useState<string | null>(null)
   const [selectedEventIds, setSelectedEventIds] = useState<Set<string>>(new Set())
 
@@ -202,36 +198,6 @@ export const ResidentSubmissionPage = () => {
       setEventsLoading(false)
     }
   }, [filters])
-
-  const loadSubmissionPeriods = useCallback(async () => {
-    setPeriodsLoading(true)
-    setPeriodsError(null)
-    try {
-      const periods = await listResidentSubmissionPeriods()
-      setActiveSubmissionPeriods(periods)
-      setEventsLoading(periods.length > 0)
-      if (periods.length === 0) {
-        setEventsResponse((previous) => ({
-          ...previous,
-          events: [],
-          reason: 'active_reporting_period_unavailable',
-          adHocAllowed: false,
-          message: 'No active submission period is currently available.',
-          activeReportingPeriods: [],
-        }))
-      }
-    } catch (error) {
-      const message =
-        error instanceof ApiRequestError
-          ? normaliseResidentApiError(error)
-          : 'Unable to load active submission periods right now.'
-      setPeriodsError(message)
-      setActiveSubmissionPeriods([])
-      setEventsLoading(false)
-    } finally {
-      setPeriodsLoading(false)
-    }
-  }, [])
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true)
@@ -292,27 +258,21 @@ export const ResidentSubmissionPage = () => {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void loadSubmissionPeriods()
       void loadHistory()
     }, 0)
     return () => {
       window.clearTimeout(timer)
     }
-  }, [loadHistory, loadSubmissionPeriods])
-
-  const activePeriodKey = activeSubmissionPeriods.map((period) => period.id).join(',')
+  }, [loadHistory])
 
   useEffect(() => {
-    if (periodsLoading || periodsError || activeSubmissionPeriods.length === 0) {
-      return
-    }
     const timer = window.setTimeout(() => {
       void loadResidentEvents()
     }, 0)
     return () => {
       window.clearTimeout(timer)
     }
-  }, [activePeriodKey, activeSubmissionPeriods.length, loadResidentEvents, periodsError, periodsLoading])
+  }, [loadResidentEvents])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -326,14 +286,12 @@ export const ResidentSubmissionPage = () => {
   const selectedCount = selectedEventIds.size
   const availableEvents = eventsResponse.events
   const scheduledEventsState = getResidentScheduledEventsState({
-    periodsLoading,
-    periodsError,
     activePeriodCount: activeSubmissionPeriods.length,
     eventsLoading,
     eventsError,
     eventCount: availableEvents.length,
   })
-  const scheduledEventsError = periodsError ?? eventsError
+  const scheduledEventsError = eventsError
   const filterOptions = eventsResponse.filterOptions
   const attendanceHistoryPath = isExternalResident ? '/external/attendance' : '/resident/attendance'
   const displayedDateFrom = filters.dateFrom ?? filterOptions.dateFrom ?? ''
@@ -556,9 +514,7 @@ export const ResidentSubmissionPage = () => {
           </div>
         </div>
 
-        {scheduledEventsState === 'periods_loading' ? (
-          <div className="resident-empty">Loading active submission periods...</div>
-        ) : scheduledEventsState === 'events_loading' ? (
+        {scheduledEventsState === 'events_loading' ? (
           <div className="resident-empty">Loading available scheduled events...</div>
         ) : scheduledEventsState === 'error' ? (
           <div className="resident-empty">

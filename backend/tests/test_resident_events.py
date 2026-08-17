@@ -69,6 +69,24 @@ def test_events_derive_posting_from_resident_postings_not_header_site() -> None:
     assert fake_db.other_posting_event_id not in ids
 
 
+def test_unfiltered_events_reuse_the_visible_rows_for_filter_options() -> None:
+    fake_db = FakeResidentSession()
+    client = _client(fake_db)
+
+    response = client.get("/resident/events", headers=_headers(fake_db))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert sum(
+        "/* resident_available_events_for_postings */" in sql
+        for sql in fake_db.executed_sql
+    ) == 1
+    assert {
+        option["teaching_name"]
+        for option in payload["filter_options"]["teaching_name_options"]
+    } == {event["teaching_name"] for event in payload["events"]}
+
+
 def test_native_event_timing_uses_residents_event_date_r_year() -> None:
     fake_db = FakeResidentSession()
     event = next(row for row in fake_db.events if row["id"] == fake_db.event_id)

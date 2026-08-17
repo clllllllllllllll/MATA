@@ -992,6 +992,7 @@ async def _events_for_postings(
     result = await db.execute(
         text(
             f"""
+            /* resident_available_events_for_postings */
             SELECT
                 teaching_events.id,
                 teaching_events.posting_code,
@@ -1565,51 +1566,53 @@ async def list_available_events(
                     resolved=resolved,
                     reporting_period=resolved_period,
                 )
+                option_names.add(event["teaching_name"])
 
-        option_raw_events = await _events_for_postings(
-            db,
-            resident_id=resident_id,
-            programme_code=resident["programme_code"],
-            posting_codes=selected_codes,
-            today=today,
-            period_start=period["start_date"],
-            period_end=period["end_date"],
-            date_from=range_start,
-            date_to=range_end,
-            teaching_name=None,
-        )
-        for event in option_raw_events:
-            resolved_period = resolve_reporting_period_for_date(
-                active_periods,
-                relevant_date=event["event_date"],
-                status_as_of_date=today,
-            )
-            if resolved_period is None or str(resolved_period["id"]) != str(period["id"]):
-                continue
-            context = _matching_context_for_event(
-                visibility_contexts,
-                posting_code=event["posting_code"],
-                event_date=event["event_date"],
-            )
-            if context is None:
-                continue
-            resolved = _resolve_scheduled_event_source(
-                event,
-                reporting_period_id=resolved_period["id"],
+        if teaching_name is not None:
+            option_raw_events = await _events_for_postings(
+                db,
+                resident_id=resident_id,
                 programme_code=resident["programme_code"],
+                posting_codes=selected_codes,
+                today=today,
+                period_start=period["start_date"],
+                period_end=period["end_date"],
+                date_from=range_start,
+                date_to=range_end,
+                teaching_name=None,
             )
-            if resolved is not None:
-                event, _ = await _native_resident_event_view(
-                    db,
-                    event=event,
-                    resident_id=resident_id,
+            for event in option_raw_events:
+                resolved_period = resolve_reporting_period_for_date(
+                    active_periods,
+                    relevant_date=event["event_date"],
+                    status_as_of_date=today,
                 )
-                if not await _overlapping_native_attendance_exists(
-                    db,
-                    resident_id=resident_id,
-                    event=event,
-                ):
-                    option_names.add(event["teaching_name"])
+                if resolved_period is None or str(resolved_period["id"]) != str(period["id"]):
+                    continue
+                context = _matching_context_for_event(
+                    visibility_contexts,
+                    posting_code=event["posting_code"],
+                    event_date=event["event_date"],
+                )
+                if context is None:
+                    continue
+                resolved = _resolve_scheduled_event_source(
+                    event,
+                    reporting_period_id=resolved_period["id"],
+                    programme_code=resident["programme_code"],
+                )
+                if resolved is not None:
+                    event, _ = await _native_resident_event_view(
+                        db,
+                        event=event,
+                        resident_id=resident_id,
+                    )
+                    if not await _overlapping_native_attendance_exists(
+                        db,
+                        resident_id=resident_id,
+                        event=event,
+                    ):
+                        option_names.add(event["teaching_name"])
 
     if not has_posting_context:
         return {
