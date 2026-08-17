@@ -168,6 +168,7 @@ from app.services.warning_issues import (
 )
 from app.services.parser_common import (
     ParserResult,
+    UploadSizeLimitError,
     UploadValidationError,
     normalise_scope_values,
     read_upload_bytes_limited,
@@ -178,6 +179,15 @@ from app.services.reporting_period_status import REPORTING_PERIOD_ACTIVE
 from app.services.formf1_parser import parse_formf1_upload
 from app.services.public_holiday_parser import parse_public_holiday_upload
 from app.services.ttf_parser import TTFUploadLockError, parse_ttf_upload
+
+
+def _upload_file_validation_error(exc: UploadValidationError) -> ApiError:
+    return ApiError(
+        status_code=413 if isinstance(exc, UploadSizeLimitError) else 422,
+        detail="Upload file validation failed",
+        error_code=ErrorCode.FILE_VALIDATION_FAILED.value,
+        errors=[str(exc)],
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -1156,12 +1166,7 @@ async def upload_rdb(
             max_size_bytes=settings.max_upload_size_bytes,
         )
     except UploadValidationError as exc:
-        raise ApiError(
-            status_code=422,
-            detail="Upload file validation failed",
-            error_code=ErrorCode.FILE_VALIDATION_FAILED.value,
-            errors=[str(exc)],
-        ) from exc
+        raise _upload_file_validation_error(exc) from exc
 
     await _require_active_upload_reporting_period(db, reporting_period_id)
 
@@ -1232,12 +1237,7 @@ async def upload_ttf(
             max_size_bytes=settings.max_upload_size_bytes,
         )
     except UploadValidationError as exc:
-        raise ApiError(
-            status_code=422,
-            detail="Upload file validation failed",
-            error_code=ErrorCode.FILE_VALIDATION_FAILED.value,
-            errors=[str(exc)],
-        ) from exc
+        raise _upload_file_validation_error(exc) from exc
 
     selected_reporting_period_label = await _require_active_upload_reporting_period(
         db,
@@ -1393,12 +1393,7 @@ async def upload_formf1(
             max_size_bytes=settings.max_upload_size_bytes,
         )
     except UploadValidationError as exc:
-        raise ApiError(
-            status_code=422,
-            detail="Upload file validation failed",
-            error_code=ErrorCode.FILE_VALIDATION_FAILED.value,
-            errors=[str(exc)],
-        ) from exc
+        raise _upload_file_validation_error(exc) from exc
 
     await _require_active_upload_reporting_period(db, reporting_period_id)
 
@@ -1452,12 +1447,7 @@ async def upload_public_holidays(
             max_size_bytes=settings.max_upload_size_bytes,
         )
     except UploadValidationError as exc:
-        raise ApiError(
-            status_code=422,
-            detail="Upload file validation failed",
-            error_code=ErrorCode.FILE_VALIDATION_FAILED.value,
-            errors=[str(exc)],
-        ) from exc
+        raise _upload_file_validation_error(exc) from exc
 
     parser_result = await parse_public_holiday_upload(
         file_bytes=validated.file_bytes,

@@ -9,6 +9,7 @@ from io import BytesIO
 import pytest
 
 from app.services.parser_common import (
+    UploadSizeLimitError,
     UploadValidationError,
     default_workbook_readability_hook,
     read_upload_bytes_limited,
@@ -94,7 +95,7 @@ async def test_upload_reader_enforces_size_while_streaming() -> None:
     assert all(size <= 4 for size in accepted.requested_sizes)
 
     rejected = _ChunkedUpload(b"b" * 11)
-    with pytest.raises(UploadValidationError, match="exceeds"):
+    with pytest.raises(UploadSizeLimitError, match="exceeds"):
         await read_upload_bytes_limited(
             rejected,
             max_size_bytes=10,

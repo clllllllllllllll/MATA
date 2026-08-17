@@ -420,8 +420,41 @@ def test_three_mib_file_is_accepted_inside_valid_multipart(
     assert captured_size == _FILE_LIMIT_BYTES
 
 
+@pytest.mark.parametrize(
+    ("path", "data", "filename", "content_type"),
+    [
+        (
+            "/api/v1/admin/upload/rdb",
+            {"reporting_period_id": str(uuid4())},
+            "rdb.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        (
+            "/api/v1/admin/upload/ttf",
+            {"reporting_period_id": str(uuid4()), "programme_code": "DR"},
+            "ttf.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        (
+            "/api/v1/admin/upload/form-f1",
+            {"reporting_period_id": str(uuid4())},
+            "form-f1.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        (
+            "/api/v1/admin/upload/public-holidays",
+            {},
+            "holidays.csv",
+            "text/csv",
+        ),
+    ],
+)
 def test_file_larger_than_three_mib_is_rejected_before_parser(
     monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    data: dict[str, str],
+    filename: str,
+    content_type: str,
 ) -> None:
     called = {"public_holidays": 0}
 
@@ -437,18 +470,19 @@ def test_file_larger_than_three_mib_is_rejected_before_parser(
     client = _build_body_limited_client()
     oversized_payload = b"x" * (_FILE_LIMIT_BYTES + 1)
     response = client.post(
-        "/api/v1/admin/upload/public-holidays",
+        path,
         headers=_admin_headers(),
+        data=data,
         files={
             "file": (
-                "oversized.csv",
+                filename,
                 oversized_payload,
-                "text/csv",
+                content_type,
             )
         },
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 413
     assert response.json()["error_code"] == "FILE_VALIDATION_FAILED"
     assert "exceeds the 3 MiB limit" in response.text
     assert called["public_holidays"] == 0
