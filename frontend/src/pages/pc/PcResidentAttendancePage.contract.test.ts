@@ -68,12 +68,12 @@ for (const role of ['master_admin', 'secretary', 'resident', 'external_resident'
       role,
     }).kind,
     'redirect_to_role_default',
-    `${role} cannot render a Programme PC resident detail`,
+    `${role} cannot render a PC resident detail`,
   )
 }
 
 assert.equal(attendanceSourceLabel('department_secretary'), 'Department Secretary')
-assert.equal(attendanceSourceLabel('Programme PC'), 'Programme PC')
+assert.equal(attendanceSourceLabel('programme_pc'), 'PC')
 assert.equal(attendanceSourceLabel('adhoc'), 'Ad-hoc')
 assert.equal(attendanceStatusLabel('submitted'), 'Submitted')
 assert.equal(attendanceStatusLabel('flagged'), 'Flagged')

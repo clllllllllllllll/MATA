@@ -836,17 +836,22 @@ export const PcSessionTypesPage = () => {
         {programmeScope.mode === 'none' ? (
           <div className="pc-session-types-empty-state" role="status">
             <h3>No programme scope</h3>
-            <p>You do not currently have a persisted Programme PC scope for Teaching Name management.</p>
+            <p>You do not currently have a persisted PC scope for Teaching Name management.</p>
           </div>
         ) : (
           <div className="pc-session-types-scope-controls">
             {programmeScope.mode === 'locked' ? (
-              <p className="pc-session-types-scope-copy">
-                Programme options are limited to your current Programme PC scope: <strong>{programmeScope.selectedProgrammeLabel}</strong>
-              </p>
+              <div className="pc-session-types-scope-copy">
+                <p>
+                  Programme options are limited to your current PC scope: <strong>{programmeScope.selectedProgrammeLabel}</strong>
+                </p>
+                <p className="pc-session-types-scope-ownership-note">
+                  Department Secretary-created Names of Teaching can only be edited or deleted by that Department Secretary. PCs can manage only PC-created Names of Teaching in their programme.
+                </p>
+              </div>
             ) : (
               <label className="pc-session-types-select">
-                <span>Programme PC scope</span>
+                <span>PC scope</span>
                 <select
                   value={selectedPcProgrammeCode}
                   onChange={(event) => handleProgrammeChange(event.target.value)}

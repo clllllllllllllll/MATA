@@ -2762,10 +2762,20 @@ tr:last-child td {
 
 .pc-session-types-scope-copy {
   flex: 1 1 420px;
+  display: grid;
+  gap: 4px;
   margin: 0;
   color: var(--ink-2);
   font-size: 13px;
   line-height: 1.45;
+}
+
+.pc-session-types-scope-copy p {
+  margin: 0;
+}
+
+.pc-session-types-scope-ownership-note {
+  color: var(--ink-3);
 }
 
 .pc-session-types-select,
@@ -2975,8 +2985,8 @@ tr:last-child td {
   gap: 8px;
 }
 
-.pc-session-types-name-state-cell,
-.pc-session-types-name-actions-cell {
+.pc-session-types-names-table-wrap .table .pc-session-types-name-state-cell,
+.pc-session-types-names-table-wrap .table .pc-session-types-name-actions-cell {
   text-align: center;
 }
 
@@ -8806,7 +8816,7 @@ button:disabled,
   }
 }
 
-/* Programme PC attendance pages */
+/* PC attendance pages */
 .pc-attendance-page,
 .pc-resident-attendance-page,
 .pc-resident-attendance-detail-page {

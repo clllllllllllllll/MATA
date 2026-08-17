@@ -38,8 +38,8 @@ const assertOrdered = (source: string, snippets: string[], label: string) => {
 assertEqual(adminTeachingEventSourceLabel('secretary'), 'Secretary', 'Secretary source badge label')
 assertEqual(
   adminTeachingEventSourceLabel('programme_pc'),
-  'Programme PC',
-  'Programme PC source badge label',
+  'PC',
+  'PC source badge label',
 )
 assertEqual(
   isAdminEventForceDeleteConfirmationValid('Operational duplicate', 'DELETE'),
@@ -84,7 +84,7 @@ assertEqual(
 assertEqual(
   resolveAdminSecretaryEventSourceType('programme_pc'),
   'programme_pc',
-  'valid Programme PC source is preserved',
+  'valid PC source is preserved',
 )
 assertEqual(
   resolveAdminSecretaryEventSourceType(undefined, { createdForProgrammeCode: 'DR' }),
@@ -144,7 +144,7 @@ assert(
 )
 assert(
   homeSource.includes("title: 'Secretary/PC Events'") &&
-    homeSource.includes('Review scheduled Secretary and Programme PC teaching events.'),
+    homeSource.includes('Review scheduled Secretary and PC teaching events.'),
   'Admin Home workspace tile uses the renamed surface and inclusive helper copy',
 )
 assert(
@@ -159,9 +159,9 @@ assert(
 assert(
   pageSource.includes('<option value="all">All sources</option>') &&
     pageSource.includes('<option value="secretary">Secretary</option>') &&
-    pageSource.includes('<option value="programme_pc">Programme PC</option>') &&
+    pageSource.includes('<option value="programme_pc">PC</option>') &&
     pageSource.includes('sourceType: filters.sourceType'),
-  'source filter exposes all, Secretary, and Programme PC choices and reaches the list client',
+  'source filter exposes all, Secretary, and PC choices and reaches the list client',
 )
 assert(
   apiSource.includes('resolveAdminSecretaryEventSourceType') &&
@@ -188,7 +188,7 @@ assert(
     pageSource.includes('Owner programme: {event.createdForProgrammeCode}') &&
     pageSource.includes("activeDetail.sourceType === 'programme_pc' && activeDetail.createdForProgrammeCode") &&
     pageSource.includes('<DetailField label="Owner programme" value={activeDetail.createdForProgrammeCode} />'),
-  'Programme PC owner renders conditionally in list/card and detail without inventing Secretary ownership',
+  'PC owner renders conditionally in list/card and detail without inventing Secretary ownership',
 )
 assert(
     pageSource.includes('NHG {event.nativeAttendanceCount}') &&
@@ -210,7 +210,7 @@ assert(
     !pageSource.includes('deleteProgrammeTeachingEvent') &&
     !pageSource.includes('/secretary/teaching-events') &&
     !pageSource.includes('/admin/programme-teaching-events'),
-  'Master Admin page never calls Secretary or Programme PC mutation endpoints',
+  'Master Admin page never calls Secretary or PC mutation endpoints',
 )
 assert(
   pageSource.includes("role === 'master_admin'") &&
