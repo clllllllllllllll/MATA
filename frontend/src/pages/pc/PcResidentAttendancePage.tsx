@@ -204,7 +204,7 @@ export const PcResidentAttendancePage = () => {
     <div className="page pc-attendance-page pc-resident-attendance-page">
       <PageHero
         title="NHG Resident Attendance"
-        subtitle="Programme PC - read-only attendance history for residents in your assigned programmes"
+        subtitle="PC - read-only attendance history for residents in your assigned programmes"
         actions={
           <button
             type="button"

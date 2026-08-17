@@ -5,7 +5,7 @@ import type {
 
 export const adminTeachingEventSourceLabel = (
   sourceType: AdminSecretaryEventSourceType,
-): string => sourceType === 'programme_pc' ? 'Programme PC' : 'Secretary'
+): string => sourceType === 'programme_pc' ? 'PC' : 'Secretary'
 
 export const isAdminEventForceDeleteConfirmationValid = (
   reason: string,

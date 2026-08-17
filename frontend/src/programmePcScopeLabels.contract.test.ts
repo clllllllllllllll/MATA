@@ -94,7 +94,7 @@ assert(
 )
 assert(
   !shellSource.includes('identity.programmeScope.join'),
-  'AppShell does not join Programme PC scopes for user-facing labels',
+  'AppShell does not join PC scopes for user-facing labels',
 )
 assert(
   adminConfigPageSource.includes('formatProgrammePcConfigSubtitle(identity.programmeScope)'),

@@ -254,7 +254,7 @@ export const SecretaryTeachingNamesPage = () => {
   const openEditDrawer = (name: SecretaryTeachingName) => {
     if (!name.canManageName) {
       setFeedbackTone('warning')
-      setFeedback('This PC · NHG name is visible for scheduling but its lifecycle is managed by the Programme PC.')
+      setFeedback('This PC · NHG name is visible for scheduling but its lifecycle is managed by the PC.')
       return
     }
     clearFeedback()

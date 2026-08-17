@@ -764,7 +764,7 @@ export const AdminSecretaryEventsPage = () => {
     <div className="page admin-secretary-events-page">
       <PageHero
         title="Secretary/PC Events"
-        subtitle="Master Admin - review scheduled Secretary and Programme PC teaching events"
+        subtitle="Master Admin - review scheduled Secretary and PC teaching events"
         actions={
           <button
             type="button"
@@ -832,7 +832,7 @@ export const AdminSecretaryEventsPage = () => {
           >
             <option value="all">All sources</option>
             <option value="secretary">Secretary</option>
-            <option value="programme_pc">Programme PC</option>
+            <option value="programme_pc">PC</option>
           </select>
         </label>
         <label>
@@ -914,8 +914,8 @@ export const AdminSecretaryEventsPage = () => {
           <strong>{hasFilters ? 'No Secretary/PC events match these filters' : 'No Secretary/PC events yet'}</strong>
           <p>
             {selectedPeriod
-              ? `No scheduled Secretary or Programme PC events are visible for ${selectedPeriod.label}.`
-              : 'Scheduled Secretary and Programme PC events will appear here after they are created.'}
+              ? `No scheduled Secretary or PC events are visible for ${selectedPeriod.label}.`
+              : 'Scheduled Secretary and PC events will appear here after they are created.'}
           </p>
         </section>
       ) : (

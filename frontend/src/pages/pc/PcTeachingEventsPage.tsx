@@ -1224,7 +1224,7 @@ export const PcTeachingEventsPage = () => {
               && selectedPostingDuration
               && selectedPostingHasNoMappedDurations ? (
                 <div className="inline-callout callout-neutral" role="status">
-                  This Teaching Name has not been mapped by the Programme PC. This event will use a temporary one-hour duration. Once mapped, the system will automatically update its duration and end time.
+                  This Teaching Name has not been mapped by the PC. This event will use a temporary one-hour duration. Once mapped, the system will automatically update its duration and end time.
                 </div>
               ) : selectedPostingNeedsRYearBreakdown ? (
                 <div className="secretary-toggle-block" aria-live="polite">

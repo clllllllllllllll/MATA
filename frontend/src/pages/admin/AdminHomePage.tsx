@@ -51,7 +51,7 @@ const workspaceTiles = [
   {
     title: 'Secretary/PC Events',
     path: '/admin/secretary-events',
-    description: 'Review scheduled Secretary and Programme PC teaching events.',
+    description: 'Review scheduled Secretary and PC teaching events.',
     stat: 'Operational review',
     icon: <IconCalendar size={18} />,
   },

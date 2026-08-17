@@ -31,7 +31,7 @@ const target = {
   tag: 'Core',
 }
 
-test('Session Types route is Programme PC-only and is registered in navigation', () => {
+test('Session Types route is PC-only and is registered in navigation', () => {
   assert.ok(routeAccessRules.some((rule) => rule.path === '/pc/session-types'))
   assert.equal(getRouteAccessDecision({
     pathname: '/pc/session-types',
@@ -214,7 +214,9 @@ test('Teaching Name lifecycle, filters, mobile cards, and confirmation drawers r
   assert.match(pageSource, /aria-expanded=\{expanded\}/)
   assert.match(pageSource, /mappedCount} of \{group\.items\.length} mapped/)
   assert.doesNotMatch(pageSource, /<th>Revision<\/th>/)
-  assert.match(pageSource, /Programme options are limited to your current Programme PC scope:/)
+  assert.match(pageSource, /Programme options are limited to your current PC scope:/)
+  assert.match(pageSource, /Department Secretary-created Names of Teaching can only be edited or deleted by that Department Secretary\./)
+  assert.match(pageSource, /PCs can manage only PC-created Names of Teaching in their programme\./)
   assert.doesNotMatch(pageSource, /<h2>Scope<\/h2>/)
   assert.doesNotMatch(pageSource, /callout-warning pc-session-types-pending-callout/)
   assert.match(cssSource, /\.pc-session-types-group-summary-row td[\s\S]*background: #fff/)
@@ -229,7 +231,7 @@ test('cross-posting source provenance is visible and Department Secretary lifecy
   assert.doesNotMatch(pageSource, /Source owner manages this name/)
   assert.match(pageSource, /pc-session-types-name-state-cell/)
   assert.match(pageSource, /pc-session-types-name-actions-cell/)
-  assert.match(cssSource, /\.pc-session-types-name-state-cell,[\s\S]*text-align: center/)
+  assert.match(cssSource, /\.pc-session-types-names-table-wrap \.table \.pc-session-types-name-state-cell,[\s\S]*text-align: center/)
   assert.match(pageSource, /Add PC Name of Teaching/)
   assert.match(pageSource, /PC \\u00b7 NHG/)
   assert.doesNotMatch(pageSource, /private to this programme/)

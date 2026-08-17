@@ -30,7 +30,7 @@ export const attendanceSourceLabel = (source: string): string => {
       return 'Department Secretary'
     case 'programme_pc':
     case 'programme pc':
-      return 'Programme PC'
+      return 'PC'
     case 'adhoc':
     case 'ad-hoc':
       return 'Ad-hoc'
@@ -47,7 +47,7 @@ export const attendanceSourceTone = (
   source: string,
 ): 'info' | 'warning' | 'neutral' => {
   const label = attendanceSourceLabel(source)
-  if (label === 'Programme PC') {
+  if (label === 'PC') {
     return 'info'
   }
   if (label === 'Ad-hoc') {
